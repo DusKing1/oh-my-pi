@@ -1,0 +1,19 @@
+[package]
+name = "omp-llm-error"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Classification, metadata extraction, and recovery policy for LLM provider errors"
+
+[dependencies]
+jiff = { workspace = true }
+omp-core = { workspace = true }
+regex = { workspace = true }
+serde_json = { workspace = true }
+smallvec = { workspace = true }
+
+[lints]
+workspace = true

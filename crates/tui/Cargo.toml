@@ -1,0 +1,42 @@
+[package]
+name = "omp-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Retained-mode terminal UI components, rendering, input, and terminal integration for Oh My Pi"
+
+[[example]]
+name = "chat"
+path = "examples/chat/main.rs"
+test = true
+
+[lints]
+workspace = true
+
+[dependencies]
+arboard = { workspace = true }
+flume = { workspace = true }
+mermaid-text = { workspace = true }
+omp-core = { workspace = true }
+omp-tui-macros = { workspace = true }
+png = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+smol_bitmap = { workspace = true }
+smallvec = { workspace = true }
+strum = { workspace = true }
+syntect = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+xutf = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }

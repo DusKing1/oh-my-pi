@@ -1,0 +1,7 @@
+{
+  "transport": "connect rpc trailer",
+  "http": {"status": 200, "headers": {"grpc-status": "3", "grpc-message": "an internal error occurred (trace ID: REDACTED)"}},
+  "wire_error": {"code": "invalid_argument", "message": "an internal error occurred (trace ID: REDACTED)"},
+  "request_evidence": {"cumulative_large_read_output": true, "estimated_chars": 200000},
+  "expect": {"error_kind": "context_overflow", "retryable": false}
+}

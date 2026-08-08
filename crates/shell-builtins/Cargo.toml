@@ -1,0 +1,95 @@
+[package]
+name = "omp-shell-builtins"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "In-process command-line utility and process builtins for the OMP shell"
+
+[lints]
+workspace = true
+
+[dependencies]
+argmax = { workspace = true }
+bigdecimal = { workspace = true }
+binary-heap-plus = { workspace = true }
+bstr = { workspace = true }
+bytecount = { workspace = true }
+cfg-if = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+codesnake = { workspace = true }
+compare = { workspace = true }
+faccess = { workspace = true }
+fancy-regex = { workspace = true }
+filetime = { workspace = true }
+flume = { workspace = true }
+foldhash = { workspace = true }
+fs_extra = { workspace = true }
+futures = { workspace = true }
+glob = { workspace = true }
+globset = { workspace = true }
+grep-cli = { workspace = true }
+grep-matcher = { workspace = true }
+grep-pcre2 = { workspace = true }
+grep-printer = { workspace = true }
+grep-regex = { workspace = true }
+grep-searcher = { workspace = true }
+hifijson = { workspace = true }
+ignore = { workspace = true }
+indicatif = { workspace = true }
+itertools = { workspace = true }
+jaq-core = { workspace = true }
+jaq-json = { workspace = true }
+jaq-std = { workspace = true }
+jiff = { workspace = true }
+lscolors = { workspace = true }
+memchr = { workspace = true }
+memmap2 = { workspace = true }
+nom = { workspace = true }
+num-bigint = { workspace = true }
+num-traits = { workspace = true }
+omp-core = { workspace = true }
+omp-shell-engine = { workspace = true }
+omp-walker = { workspace = true }
+onig = { workspace = true }
+os_display = { workspace = true }
+parking_lot = { workspace = true }
+parse_datetime = { workspace = true }
+platform-info = { workspace = true }
+rand = { workspace = true }
+rayon = { workspace = true }
+regex = { workspace = true }
+rustc-hash = { workspace = true }
+self_cell = { workspace = true }
+serde_json = { workspace = true }
+similar = { workspace = true }
+smallvec = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+uucore = { workspace = true }
+xutf = { workspace = true }
+
+[target.'cfg(any(unix, windows))'.dependencies]
+hostname = { workspace = true }
+notify = { workspace = true }
+rustix = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+dns-lookup = { workspace = true }
+libc = { workspace = true }
+nix = { workspace = true }
+uucore = { workspace = true, features = ["fsxattr", "safe-traversal"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }

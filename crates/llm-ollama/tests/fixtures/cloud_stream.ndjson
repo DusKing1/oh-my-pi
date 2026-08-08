@@ -1,0 +1,5 @@
+{"message":{"role":"assistant","thinking":"Check "},"done":false}
+{"message":{"role":"assistant","thinking":"tools."},"done":false}
+{"message":{"role":"assistant","content":"It is sunny."},"done":false}
+{"message":{"role":"assistant","tool_calls":[{"type":"function","function":{"index":0,"name":"weather","arguments":{"city":"Paris"}}}]},"done":false}
+{"message":{"role":"assistant","content":""},"done":true,"done_reason":"tool_calls","prompt_eval_count":21,"eval_count":8}

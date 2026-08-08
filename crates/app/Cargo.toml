@@ -1,0 +1,64 @@
+[package]
+name = "omp-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Production command-line application and daemon for OMP inference"
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "omp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+clap.workspace = true
+futures.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+omp-core.workspace = true
+omp-llm-broker.workspace = true
+omp-llm-bedrock.workspace = true
+omp-llm-catalog.workspace = true
+omp-llm-egress.workspace = true
+omp-llm-cursor.workspace = true
+omp-llm-devin.workspace = true
+omp-llm-error.workspace = true
+omp-llm-fm.workspace = true
+omp-llm-gateway.workspace = true
+omp-llm-google.workspace = true
+omp-llm-gitlab.workspace = true
+omp-llm-local.workspace = true
+omp-llm-ollama.workspace = true
+omp-llm-types.workspace = true
+omp-llm-tower.workspace = true
+omp-proto = { workspace = true, features = ["tonic"] }
+omp-rpc.workspace = true
+omp-storage.workspace = true
+serde_json.workspace = true
+omp-telemetry.workspace = true
+tokio.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+tonic.workspace = true
+tower.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+
+url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tonic-health.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys.workspace = true

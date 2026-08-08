@@ -1,0 +1,4 @@
+{
+  "canonical_intent": {"model": "gemini-3.5-flash", "messages": [{"role": "tool", "tool_call_id": "call_a", "tool_name": "read", "content": "A"}, {"role": "tool", "tool_call_id": "call_b", "tool_name": "grep", "content": "B"}]},
+  "wire_body": {"model": "gemini-3.5-flash", "request": {"contents": [{"role": "user", "parts": [{"functionResponse": {"id": "call_a", "name": "read", "response": {"output": "A"}}}, {"functionResponse": {"id": "call_b", "name": "grep", "response": {"output": "B"}}}]}]}, "project": "project-REDACTED"}
+}

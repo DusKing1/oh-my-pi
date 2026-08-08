@@ -1,0 +1,1430 @@
+//! Tokio host for retained terminal UIs.
+//!
+//! [`App`] owns capability resolution, terminal entry, input routing, animation
+//! wakes, resize coalescing, and presentation:
+//!
+//! ```no_run
+//! use std::io;
+//!
+//! use omp_tui::{AppOptions, Ui};
+//!
+//! #[tokio::main]
+//! async fn main() -> io::Result<()> {
+//! 	let mut app = AppOptions::new()
+//! 		.start(|env| Ui::from_markup("hello", env.viewport.width, env.ctx).unwrap())
+//! 		.await?;
+//! 	while let Some(event) = app.next().await? {
+//! 		let _ = event;
+//! 	}
+//! 	Ok(())
+//! }
+//! ```
+//!
+//! [`UiHandle`] queues mutations from synchronous threads or asynchronous
+//! tasks. Immediate-mode hosts instead drive [`Terminal::next`] with their
+//! own `tokio::select!`; `examples/chat` is the reference.
+
+use std::{fmt, io, time::Duration};
+
+use omp_core::SmolStr;
+use smallvec::SmallVec;
+use tokio_util::sync::CancellationToken;
+
+use crate::{
+	Appearance, CursorStyle, Graphics, InputEvent, Key, OverlayId, PaintStats, ProbeResults,
+	Renderer, Size, Terminal, TerminalCaps, TerminalOptions, TerminalResponse, Theme, TtyOut, Ui,
+	UiContext, UiEvent,
+	component::Slot,
+	components::ImgState,
+	detect, negotiate_async,
+	paste::{Clipboard, ClipboardRead, Pasted, PastedImage},
+	pump::{DebugOp, DebugQuery, TerminalEvent},
+};
+
+const RESIZE_SETTLE: Duration = Duration::from_millis(120);
+const RESIZE_RECHECK: Duration = Duration::from_millis(25);
+#[cfg(windows)]
+const WINDOWS_RESIZE_POLL: Duration = Duration::from_millis(100);
+/// Ceiling for one background clipboard read. Backend subprocesses cap
+/// themselves at 5–8 s; this covers a hung native handle so queued input
+/// can never stall indefinitely.
+const CLIPBOARD_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+pub enum Msg {
+	/// App-side mutation from a [`UiHandle`], applied between frames.
+	Update(Box<dyn FnOnce(&mut Ui) + Send>),
+	/// A finished off-thread decode for the `Img` at `slot`.
+	ImageDecoded { slot: Slot, state: ImgState },
+	/// A finished background system-clipboard read, tagged with its
+	/// [`ClipboardGate`] generation; `raw` requests verbatim insertion and
+	/// `None` means the clipboard was empty.
+	Pasted { generation: u64, raw: bool, clipboard: Option<crate::paste::Clipboard> },
+}
+
+/// Ordering discipline for one in-flight background clipboard read.
+///
+/// pi queues keystrokes typed behind an unsettled paste so a trailing Enter
+/// cannot submit before the payload lands (`custom-editor.ts` pending-input
+/// queue); this gate reproduces that contract for [`App`]. Input admitted
+/// while a read is in flight is buffered and replayed in order once the
+/// read settles or expires; quit chords bypass the buffer so a hung backend
+/// can never lock the user in, and results from an expired read are dropped
+/// by generation.
+#[derive(Default)]
+struct ClipboardGate {
+	in_flight:  Option<InFlightRead>,
+	generation: u64,
+	pending:    std::collections::VecDeque<InputEvent>,
+}
+
+struct InFlightRead {
+	generation: u64,
+	deadline:   tokio::time::Instant,
+}
+
+impl ClipboardGate {
+	/// Claims the gate for one read, returning its generation tag; `None`
+	/// while another read is still in flight.
+	fn begin(&mut self, now: tokio::time::Instant) -> Option<u64> {
+		if self.in_flight.is_some() {
+			return None;
+		}
+		self.generation += 1;
+		self.in_flight = Some(InFlightRead {
+			generation: self.generation,
+			deadline:   now + CLIPBOARD_READ_TIMEOUT,
+		});
+		Some(self.generation)
+	}
+
+	/// Admits `event` for immediate dispatch (`Some`) or queues it behind
+	/// the in-flight read (`None`). Quit chords always pass through.
+	fn admit(&mut self, event: InputEvent, quit: &[Key]) -> Option<InputEvent> {
+		if self.in_flight.is_none() {
+			return Some(event);
+		}
+		if let InputEvent::Key(key) = &event
+			&& quit.contains(key)
+		{
+			return Some(event);
+		}
+		self.pending.push_back(event);
+		None
+	}
+
+	/// Accepts a finished read when its generation is still current.
+	fn settle(&mut self, generation: u64) -> bool {
+		if self
+			.in_flight
+			.as_ref()
+			.is_some_and(|read| read.generation == generation)
+		{
+			self.in_flight = None;
+			return true;
+		}
+		false
+	}
+
+	/// Abandons an overdue read; its eventual result no longer settles.
+	const fn expire(&mut self) {
+		self.in_flight = None;
+	}
+
+	/// The in-flight read's expiry instant, when one is running.
+	fn deadline(&self) -> Option<tokio::time::Instant> {
+		self.in_flight.as_ref().map(|read| read.deadline)
+	}
+
+	/// Releases the oldest queued event once no read is in flight.
+	fn drain(&mut self) -> Option<InputEvent> {
+		if self.in_flight.is_some() {
+			return None;
+		}
+		self.pending.pop_front()
+	}
+}
+
+/// Off-thread image decoder used by asynchronous UI hosts.
+#[derive(Clone)]
+pub struct ImageLoader {
+	tx: flume::Sender<Msg>,
+	rx: flume::Receiver<Msg>,
+	rt: tokio::runtime::Handle,
+}
+
+impl ImageLoader {
+	/// Creates a loader attached to the current tokio runtime.
+	///
+	/// # Panics
+	/// Panics outside a tokio runtime.
+	pub fn new() -> Self {
+		let (tx, rx) = flume::unbounded();
+		Self { tx, rx, rt: tokio::runtime::Handle::current() }
+	}
+
+	pub(crate) fn request(
+		&self,
+		slot: Slot,
+		source: SmolStr,
+		width: u16,
+		height: Option<u16>,
+		trim: bool,
+	) {
+		let tx = self.tx.clone();
+		let _task = self.rt.spawn_blocking(move || {
+			let state = crate::components::decode_source(&source, width, height, trim);
+			let _ = tx.send(Msg::ImageDecoded { slot, state });
+		});
+	}
+}
+
+impl Default for ImageLoader {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl fmt::Debug for ImageLoader {
+	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+		formatter.write_str("ImageLoader")
+	}
+}
+
+/// Cloneable remote for mutating the [`Ui`] from any thread or task.
+///
+/// Sends are non-blocking; after the [`App`] is gone they are no-ops.
+#[derive(Clone)]
+pub struct UiHandle {
+	tx:     flume::Sender<Msg>,
+	cancel: CancellationToken,
+}
+
+impl UiHandle {
+	/// Queues a UI mutation to run between rendered frames.
+	pub fn update(&self, update: impl FnOnce(&mut Ui) + Send + 'static) {
+		let _ = self.tx.send(Msg::Update(Box::new(update)));
+	}
+
+	/// Queues replacement text for the component named by `id`.
+	pub fn set_text(&self, id: impl Into<SmolStr>, text: impl Into<SmolStr>) {
+		let id = id.into();
+		let text = text.into();
+		self.update(move |ui| {
+			ui.set_text(&id, text);
+		});
+	}
+
+	/// Queues invalidation of the component named by `id`.
+	pub fn invalidate(&self, id: impl Into<SmolStr>) {
+		let id = id.into();
+		self.update(move |ui| {
+			ui.invalidate(&id);
+		});
+	}
+
+	/// Requests shutdown of the application host.
+	pub fn shutdown(&self) {
+		self.cancel.cancel();
+	}
+}
+
+type GraphicsOverride = Box<dyn FnOnce(&TerminalCaps) -> Option<Graphics> + Send>;
+
+/// Configuration for [`AppOptions::start`].
+///
+/// Defaults to environment detection without probing, Ctrl-C to quit, and
+/// base-tree [`UiEvent::Cancel`] to shut down. A cancel from inside a
+/// visible modal overlay dismisses that layer instead of quitting.
+pub struct AppOptions {
+	probe:          Option<Duration>,
+	graphics:       Option<GraphicsOverride>,
+	cursor_style:   Option<CursorStyle>,
+	quit:           SmallVec<Key, 4>,
+	quit_on_cancel: bool,
+	mouse:          bool,
+	hold_alt:       bool,
+}
+
+impl AppOptions {
+	/// Creates the default application configuration.
+	pub fn new() -> Self {
+		let mut quit = SmallVec::new();
+		quit.push(Key::Ctrl('c'));
+		Self {
+			probe: None,
+			graphics: None,
+			cursor_style: None,
+			quit,
+			quit_on_cancel: true,
+			mouse: false,
+			hold_alt: false,
+		}
+	}
+
+	/// Runs the startup capability probe with this timeout.
+	pub const fn probe(mut self, timeout: Duration) -> Self {
+		self.probe = Some(timeout);
+		self
+	}
+
+	/// Resolves an optional forced graphics tier after capability detection.
+	pub fn graphics_with(
+		mut self,
+		forced: impl FnOnce(&TerminalCaps) -> Option<Graphics> + Send + 'static,
+	) -> Self {
+		self.graphics = Some(Box::new(forced));
+		self
+	}
+
+	/// Uses `style` while the application owns the terminal.
+	pub const fn cursor_style(mut self, style: CursorStyle) -> Self {
+		self.cursor_style = Some(style);
+		self
+	}
+
+	/// Enables inline mouse reporting (click, drag, motion, wheel) for the
+	/// whole session.
+	///
+	/// Off by default: an inline app leaves the mouse to the terminal so
+	/// native text selection and scrollback keep working, matching the
+	/// coding agent. Opt in for pointer-driven screens.
+	pub const fn mouse(mut self) -> Self {
+		self.mouse = true;
+		self
+	}
+
+	/// Replaces the quit chords checked before input routing.
+	pub fn quit(mut self, chords: impl IntoIterator<Item = Key>) -> Self {
+		self.quit = chords.into_iter().collect();
+		self
+	}
+
+	/// Starts with the alternate screen held: the very first frame paints
+	/// there and the inline transcript stays untouched underneath until
+	/// [`App::hold_alt`] releases it. Fullscreen opening scenes — a welcome
+	/// screen, a picker-first flow — use this so the main buffer never
+	/// flashes frame one. A Ui whose initial overlay stack is visible holds
+	/// automatically without this option.
+	pub const fn hold_alt(mut self) -> Self {
+		self.hold_alt = true;
+		self
+	}
+
+	/// Keeps running when the base tree yields [`UiEvent::Cancel`].
+	///
+	/// A cancel from inside a visible modal overlay is unaffected: it always
+	/// dismisses that layer and surfaces [`AppEvent::OverlayClosed`].
+	pub const fn keep_on_cancel(mut self) -> Self {
+		self.quit_on_cancel = false;
+		self
+	}
+
+	/// Negotiates, enters the terminal, builds the [`Ui`], paints the first
+	/// frame, and returns the running host.
+	///
+	/// # Errors
+	///
+	/// Propagates terminal, input, capability, and renderer failures.
+	pub async fn start(self, build: impl FnOnce(AppEnv) -> Ui + Send) -> io::Result<App> {
+		let Self { probe, graphics, cursor_style, quit, quit_on_cancel, mouse, hold_alt } = self;
+		let (base, probe) = match probe {
+			Some(timeout) => negotiate_async(timeout).await,
+			None => (detect(), ProbeResults::default()),
+		};
+		let forced = graphics.and_then(|forced| forced(&base));
+		let caps = TerminalCaps::resolve(base, None, forced);
+		let mut terminal_options = TerminalOptions::new(caps).mouse(mouse).probe_results(probe);
+		if let Some(style) = cursor_style {
+			terminal_options = terminal_options.cursor_style(style);
+		}
+		let mut terminal = Terminal::enter(terminal_options)?;
+		let viewport = terminal.size()?;
+
+		let loader = ImageLoader::new();
+		let msgs = loader.rx.clone();
+		let tx = loader.tx.clone();
+		let mut ctx = UiContext::default().with_terminal_caps(&caps);
+		ctx.loader = Some(loader);
+		let mut ui = build(AppEnv { viewport, caps, ctx });
+
+		let mut renderer = Renderer::new(TtyOut::new()?);
+		renderer.apply_caps(&caps)?;
+
+		// An initial hold — requested or from a visible overlay — paints
+		// frame one on the alternate screen; the main buffer stays untouched
+		// (and unseeded) until release.
+		let initial_hold = hold_alt || ui.has_overlay();
+		let last_stats = if initial_hold {
+			let alt_enter = terminal.stage_alt_enter(crate::AltScreenUse::Interactive);
+			ui.preview(&mut renderer, viewport.height, alt_enter.as_deref().unwrap_or(""))?
+		} else {
+			renderer.rebuild(ui.frame().clone(), viewport.height, 0, "")?
+		};
+		ui.clear_damage();
+		let now = tokio::time::Instant::now();
+		Ok(App {
+			ui,
+			renderer,
+			msgs,
+			tx,
+			cancel: CancellationToken::new(),
+			epoch: now,
+			caps,
+			viewport,
+			quit,
+			quit_on_cancel,
+			#[cfg(unix)]
+			resize_wait: None,
+			#[cfg(windows)]
+			resize_wait: Some(now + WINDOWS_RESIZE_POLL),
+			resize_settle: None,
+			resize_alt: false,
+			alt_hold: initial_hold,
+			hold_request: hold_alt,
+			main_stale: false,
+			held_damage: false,
+			tail_drag: false,
+			needs_rebuild: false,
+			clipboard: ClipboardGate::default(),
+			stable_rows: 0,
+			last_stats,
+			terminal,
+		})
+	}
+}
+
+impl Default for AppOptions {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+/// Inputs supplied to the [`AppOptions::start`] UI builder.
+pub struct AppEnv {
+	/// Initial terminal cell dimensions.
+	pub viewport: Size,
+	/// Resolved terminal capabilities.
+	pub caps:     TerminalCaps,
+	/// Capability-aware context with asynchronous image loading installed.
+	pub ctx:      UiContext,
+}
+
+/// Host-level event returned by [`App::next`].
+///
+/// Input has already been routed into the retained tree.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AppEvent {
+	/// Routed input changed the tree; the next [`App::next`] call presents it.
+	Updated,
+	/// The focused widget submitted.
+	Submitted,
+	/// An ID-carrying button fired.
+	Pressed(SmolStr),
+	/// A resize settled after [`Ui::resize`] ran.
+	Resized(Size),
+	/// The terminal background flipped between dark and light. The retained
+	/// context has already been restyled; hardcoded colors derived outside
+	/// the theme are the app's to refresh.
+	Appearance(Appearance),
+	/// A cancel from inside a layer dismissed the topmost visible overlay.
+	OverlayClosed(OverlayId),
+	/// An ID-carrying select's cursor rested on a new option.
+	Highlighted {
+		/// The select's `id`.
+		id:    SmolStr,
+		/// Value of the option under the cursor.
+		value: SmolStr,
+	},
+	/// An ID-carrying select committed an option.
+	Changed {
+		/// The select's `id`.
+		id:    SmolStr,
+		/// Value of the committed option.
+		value: SmolStr,
+	},
+	/// An ID-carrying filterable select's query changed.
+	Filtered {
+		/// The select's `id`.
+		id:    SmolStr,
+		/// The new filter query.
+		query: SmolStr,
+		/// Value of the option under the cursor after re-filtering.
+		value: Option<SmolStr>,
+	},
+}
+
+/// Running retained-UI terminal host.
+pub struct App {
+	ui:             Ui,
+	renderer:       Renderer<TtyOut>,
+	msgs:           flume::Receiver<Msg>,
+	tx:             flume::Sender<Msg>,
+	cancel:         CancellationToken,
+	epoch:          tokio::time::Instant,
+	caps:           TerminalCaps,
+	viewport:       Size,
+	quit:           SmallVec<Key, 4>,
+	quit_on_cancel: bool,
+	resize_wait:    Option<tokio::time::Instant>,
+	resize_settle:  Option<tokio::time::Instant>,
+	resize_alt:     bool,
+	alt_hold:       bool,
+	hold_request:   bool,
+	main_stale:     bool,
+	held_damage:    bool,
+	tail_drag:      bool,
+	needs_rebuild:  bool,
+	clipboard:      ClipboardGate,
+	stable_rows:    u16,
+	last_stats:     PaintStats,
+	terminal:       Terminal,
+}
+
+impl App {
+	/// Borrows the retained UI.
+	pub const fn ui(&self) -> &Ui {
+		&self.ui
+	}
+
+	/// Mutably borrows the retained UI between host events.
+	pub const fn ui_mut(&mut self) -> &mut Ui {
+		&mut self.ui
+	}
+
+	/// Creates a remote that can update or stop this host.
+	pub fn handle(&self) -> UiHandle {
+		UiHandle { tx: self.tx.clone(), cancel: self.cancel.clone() }
+	}
+
+	/// Mutably borrows the renderer for image registration and output policy.
+	pub const fn renderer_mut(&mut self) -> &mut Renderer<TtyOut> {
+		&mut self.renderer
+	}
+
+	/// Mutably borrows the terminal for titles, progress, and appearance hooks.
+	pub const fn terminal_mut(&mut self) -> &mut Terminal {
+		&mut self.terminal
+	}
+
+	/// Returns the resolved terminal capabilities.
+	pub const fn caps(&self) -> TerminalCaps {
+		self.caps
+	}
+
+	/// Returns the latest settled terminal geometry.
+	pub const fn viewport(&self) -> Size {
+		self.viewport
+	}
+
+	/// Returns statistics from the most recent present or rebuild.
+	pub const fn last_stats(&self) -> PaintStats {
+		self.last_stats
+	}
+
+	/// Sets the immutable leading-row boundary used for presentation.
+	pub const fn set_stable_rows(&mut self, rows: u16) {
+		self.stable_rows = rows;
+	}
+
+	/// Requests or releases a persistent alternate-screen hold.
+	///
+	/// Fullscreen scenes — a welcome screen, a pager — hold the alternate
+	/// screen for their lifetime: frames paint there with mouse tracking
+	/// active while the inline transcript stays untouched underneath. Every
+	/// visible modal overlay holds it automatically; this covers scenes
+	/// without one. Non-modal layers ([`crate::OverlayOptions::non_modal`])
+	/// never hold: they composite into the live inline viewport while the
+	/// document keeps committing to native scrollback. Release restores the
+	/// main screen, rebuilding history only when geometry changed while
+	/// held. Takes effect on the next [`App::next`] call.
+	pub const fn hold_alt(&mut self, hold: bool) {
+		self.hold_request = hold;
+	}
+
+	/// Flushes pending damage, waits for one host event, and routes it.
+	///
+	/// `None` means shutdown; subsequent calls continue returning `None`.
+	///
+	/// # Errors
+	///
+	/// Propagates terminal input, geometry, and renderer failures.
+	#[expect(
+		clippy::future_not_send,
+		reason = "terminal UI components are intentionally confined to their owning thread"
+	)]
+	pub async fn next(&mut self) -> io::Result<Option<AppEvent>> {
+		loop {
+			if self.cancel.is_cancelled() {
+				return Ok(None);
+			}
+
+			// Alternate-screen hold: scenes ([`App::hold_alt`]) and visible
+			// modal overlays paint the composited viewport on the alternate
+			// screen while the inline transcript stays untouched underneath.
+			// Non-modal layers ride the inline present instead.
+			let want_hold = self.hold_request || self.ui.has_overlay();
+			if want_hold {
+				if !self.alt_hold {
+					self.alt_hold = true;
+					// A drag borrow or a pending settled rebuild transfers to
+					// the hold: same buffer, but main-screen history stays
+					// stale until release.
+					if self.resize_alt || self.needs_rebuild {
+						self.resize_alt = false;
+						self.needs_rebuild = false;
+						self.main_stale = true;
+					}
+					// A tail-composed drag deferred the document reflow; the
+					// held surface is live UI, so run it now.
+					if self.tail_drag {
+						self.tail_drag = false;
+						self.ui.resize(self.viewport.width);
+					}
+					self.held_damage |= self.ui.has_damage();
+					let alt_enter = self
+						.terminal
+						.stage_alt_enter(crate::AltScreenUse::Interactive);
+					self.last_stats = self.ui.preview(
+						&mut self.renderer,
+						self.viewport.height,
+						alt_enter.as_deref().unwrap_or(""),
+					)?;
+				} else if self.ui.has_damage() {
+					// Previews consume damage that never reached the main
+					// buffer; remember to repaint it on release.
+					self.held_damage = true;
+					self.last_stats = self
+						.ui
+						.preview(&mut self.renderer, self.viewport.height, "")?;
+				}
+			} else if self.alt_hold {
+				self.alt_hold = false;
+				if self.main_stale {
+					// Geometry changed while held: leaving the alternate
+					// screen rides the rebuild's synchronized update so the
+					// buffer switch, history clear, and repaint land as one
+					// atomic frame.
+					self.main_stale = false;
+					self.held_damage = false;
+					self.ui.refit();
+					let alt_exit = self.terminal.stage_alt_leave().unwrap_or("");
+					self.last_stats = self.renderer.rebuild(
+						self.ui.frame().clone(),
+						self.viewport.height,
+						self.stable_rows,
+						alt_exit,
+					)?;
+					self.ui.clear_damage();
+				} else {
+					// The untouched main screen restores byte-exactly, but
+					// changes made during the hold only ever painted the
+					// alternate screen: revalidate every live row without
+					// touching history.
+					self.terminal.leave_alt()?;
+					if self.held_damage || self.ui.has_damage() {
+						self.held_damage = false;
+						self.ui.damage_all();
+						self.last_stats =
+							self
+								.ui
+								.present(&mut self.renderer, self.viewport.height, self.stable_rows)?;
+					}
+				}
+			} else if self.resize_settle.is_some() {
+				// A drag is live: ordinary damage — spinner ticks, streamed
+				// text, cursor moves — rides the same viewport fast path
+				// instead of freezing until settle; the settle rebuild
+				// repaints authoritatively.
+				if self.ui.has_damage() {
+					let tail = if self.tail_drag {
+						self.ui.compose_resize_tail(self.viewport)
+					} else {
+						None
+					};
+					match tail {
+						Some(frame) => {
+							self.renderer.preview(&frame, self.viewport.height, "")?;
+							self.ui.clear_damage();
+						},
+						None => {
+							self.last_stats =
+								self
+									.ui
+									.preview(&mut self.renderer, self.viewport.height, "")?;
+						},
+					}
+				}
+			} else if self.needs_rebuild {
+				// The app's `Resized` handler may have shrunk fixed-height
+				// components; drop the height watermark from the old viewport
+				// so the rebuilt document matches the content, not the
+				// pre-resize maximum.
+				self.ui.refit();
+				// Leaving the borrowed alternate screen rides the rebuild's
+				// synchronized update: buffer switch, history clear, and the
+				// settled repaint land as one atomic frame.
+				let alt_exit = if self.resize_alt {
+					self.resize_alt = false;
+					self.terminal.stage_alt_leave().unwrap_or("")
+				} else {
+					""
+				};
+				self.last_stats = self.renderer.rebuild(
+					self.ui.frame().clone(),
+					self.viewport.height,
+					self.stable_rows,
+					alt_exit,
+				)?;
+				self.ui.clear_damage();
+				self.needs_rebuild = false;
+			} else if self.ui.has_damage() {
+				self.last_stats =
+					self
+						.ui
+						.present(&mut self.renderer, self.viewport.height, self.stable_rows)?;
+			}
+
+			// Replay input queued behind a clipboard read — oldest first, one
+			// event per host turn, before polling for anything new.
+			if let Some(event) = self.clipboard.drain() {
+				match self.dispatch_input(event) {
+					Routed::Continue => continue,
+					Routed::Event(event) => return Ok(Some(event)),
+					Routed::Stop => return Ok(None),
+				}
+			}
+
+			let wake = self.ui.next_wake().map(|at| self.epoch + at);
+			let wakeup = tokio::select! {
+				() = self.cancel.cancelled() => Wakeup::Cancelled,
+				message = self.msgs.recv_async() => Wakeup::Message(message),
+				event = self.terminal.next() => Wakeup::Event(event),
+				() = deadline(wake) => Wakeup::Animation,
+				() = deadline(self.clipboard.deadline()) => Wakeup::ClipboardExpired,
+				() = deadline(self.resize_wait) => Wakeup::ResizeCheck,
+				() = deadline(self.resize_settle) => Wakeup::ResizeSettle,
+			};
+
+			match wakeup {
+				Wakeup::Cancelled => return Ok(None),
+				Wakeup::Message(Ok(Msg::Update(update))) => update(&mut self.ui),
+				Wakeup::Message(Ok(Msg::ImageDecoded { slot, state })) => {
+					self.ui.deliver_image(slot, state);
+				},
+				Wakeup::Message(Ok(Msg::Pasted { generation, raw, clipboard })) => {
+					// A result from an expired or superseded read is dropped;
+					// its queued input already replayed without it.
+					if self.clipboard.settle(generation)
+						&& let Some(clipboard) = clipboard
+						&& let Some(event) = self.deliver_clipboard(clipboard, raw)
+					{
+						return Ok(Some(event));
+					}
+				},
+				Wakeup::Message(Err(_)) => {},
+				Wakeup::Event(event) => match event? {
+					TerminalEvent::Resize => {
+						self.resize_wait = Some(tokio::time::Instant::now());
+					},
+					TerminalEvent::Debug(query) => self.answer_debug(query),
+					// `Terminal::next` reports closure as an error.
+					TerminalEvent::Closed => return Ok(None),
+					TerminalEvent::Input(event) => {
+						let in_band_resize =
+							matches!(&event, InputEvent::Response(TerminalResponse::InBandResize { .. }));
+						if self
+							.terminal
+							.handle_input_event(&event, &mut self.renderer)?
+						{
+							if in_band_resize {
+								self.resize_wait = Some(tokio::time::Instant::now());
+							}
+							if let Some(event) = self.sync_appearance() {
+								return Ok(Some(event));
+							}
+							if let Some(pasted) = self.terminal.take_paste()
+								&& let Some(event) = self.deliver_pasted(pasted)
+							{
+								return Ok(Some(event));
+							}
+							continue;
+						}
+						if let Some(event) = self.clipboard.admit(event, &self.quit) {
+							match self.dispatch_input(event) {
+								Routed::Continue => {},
+								Routed::Event(event) => return Ok(Some(event)),
+								Routed::Stop => return Ok(None),
+							}
+						}
+					},
+				},
+				Wakeup::Animation => {
+					self.ui.tick(self.epoch.elapsed());
+				},
+				Wakeup::ClipboardExpired => self.clipboard.expire(),
+				Wakeup::ResizeCheck => {
+					self.resize_wait = None;
+					let now = tokio::time::Instant::now();
+					let consumed = match self.terminal.take_resize()? {
+						// A same-size report outside a drag is an echo — some
+						// terminals re-report geometry whenever the alternate
+						// screen toggles — and starting a preview for it would
+						// loop the borrow forever.
+						Some(viewport) if viewport != self.viewport || self.resize_settle.is_some() => {
+							self.begin_resize(viewport, now)?;
+							true
+						},
+						// A consumed echo still ends the recheck loop below.
+						Some(_) => true,
+						None => false,
+					};
+					#[cfg(unix)]
+					if !consumed {
+						// A multiplexer burst is still inside its debounce
+						// window; keep polling until geometry is released.
+						self.resize_wait = Some(now + RESIZE_RECHECK);
+					}
+					#[cfg(windows)]
+					{
+						let _ = consumed;
+						self.resize_wait = Some(now + WINDOWS_RESIZE_POLL);
+					}
+				},
+				Wakeup::ResizeSettle => {
+					self.resize_settle = None;
+					if self.tail_drag {
+						self.tail_drag = false;
+						// The drag composed viewport tails only; reflow the
+						// whole document once, before the app's `Resized`
+						// handler and the settled rebuild observe layout.
+						self.ui.resize(self.viewport.width);
+					}
+					// While held, main-screen history is already flagged stale
+					// and rebuilds on release; only inline sessions rebuild at
+					// settle.
+					self.needs_rebuild = !self.alt_hold;
+					return Ok(Some(AppEvent::Resized(self.viewport)));
+				},
+			}
+		}
+	}
+
+	/// Applies a terminal-reported dark/light flip to the retained context.
+	///
+	/// A stock palette follows the flip; a custom theme is preserved so the
+	/// app can restyle it in response to [`AppEvent::Appearance`].
+	fn sync_appearance(&mut self) -> Option<AppEvent> {
+		let appearance = self.terminal.appearance()?;
+		let current = self.ui.context();
+		if current.appearance == appearance {
+			return None;
+		}
+		let mut ctx = current.clone();
+		if ctx.theme == Theme::for_appearance(ctx.appearance) {
+			ctx.theme = Theme::for_appearance(appearance);
+		}
+		ctx.appearance = appearance;
+		self.ui.set_context(ctx);
+		Some(AppEvent::Appearance(appearance))
+	}
+
+	/// Routes paste text into the focused component, mapping the outcome
+	/// like terminal-delivered bracketed paste. `raw` requests verbatim
+	/// insertion ([`Ui::handle_paste_raw`]).
+	fn route_paste(&mut self, text: &str, raw: bool) -> Option<AppEvent> {
+		let event = if raw {
+			self.ui.handle_paste_raw(text)
+		} else {
+			self.ui.handle_paste(text)
+		};
+		match select_event(event) {
+			Ok(event) => Some(event),
+			Err(_) if self.ui.has_damage() => Some(AppEvent::Updated),
+			Err(_) => None,
+		}
+	}
+
+	/// Persists a pasted image to a temp file and routes its path like a
+	/// file drop, which [`crate::components::EditInput`] stages as an
+	/// attachment chip.
+	fn route_image(&mut self, image: &PastedImage) -> Option<AppEvent> {
+		let path = image.persist().ok()?;
+		self.route_paste(path.to_str()?, false)
+	}
+
+	/// Dispatches a completed OSC 5522 enhanced-paste payload.
+	fn deliver_pasted(&mut self, pasted: Pasted) -> Option<AppEvent> {
+		match pasted {
+			Pasted::Text(text) => self.route_paste(&text, false),
+			Pasted::Image(image) => self.route_image(&image),
+		}
+	}
+
+	/// Dispatches a finished background clipboard read. `raw` preserves the
+	/// Ctrl+Shift+V contract end to end: text inserts verbatim instead of
+	/// collapsing to chips or classifying as a drop.
+	fn deliver_clipboard(&mut self, clipboard: Clipboard, raw: bool) -> Option<AppEvent> {
+		match clipboard {
+			Clipboard::Text(text) => self.route_paste(&text, raw),
+			Clipboard::Image(image) => self.route_image(&image),
+			Clipboard::Paths(paths) => {
+				// Quoted so paths containing spaces survive the editor's
+				// drop classification intact.
+				let mut joined = String::new();
+				for path in &paths {
+					if !joined.is_empty() {
+						joined.push(' ');
+					}
+					joined.push('"');
+					joined.push_str(path);
+					joined.push('"');
+				}
+				self.route_paste(&joined, false)
+			},
+		}
+	}
+
+	fn route_key(&mut self, key: Key) -> Routed {
+		let routed = route_key_event(&mut self.ui, key, &self.quit, self.quit_on_cancel);
+		if matches!(routed, Routed::Stop) {
+			self.cancel.cancel();
+		}
+		routed
+	}
+
+	/// Starts one background system-clipboard read; the result returns
+	/// through the message bus as [`Msg::Pasted`] tagged with the gate
+	/// generation. [`ClipboardRead::Text`] carries the Ctrl+Shift+V
+	/// contract through as `raw`: verbatim insertion of a text-only read.
+	///
+	/// The read rides [`crate::paste::spawn_clipboard_read`]'s detached
+	/// thread; a result arriving after the gate expired is dropped by
+	/// generation. A channel closed without a value (the reader thread
+	/// never spawned) settles the gate immediately so queued input is not
+	/// held until the deadline.
+	fn begin_clipboard_read(&mut self, scope: ClipboardRead) {
+		let Some(generation) = self.clipboard.begin(tokio::time::Instant::now()) else {
+			return;
+		};
+		let rx = crate::paste::spawn_clipboard_read(scope);
+		let raw = scope == ClipboardRead::Text;
+		let tx = self.tx.clone();
+		tokio::spawn(async move {
+			let clipboard = rx.await.unwrap_or(None);
+			let _ = tx.send(Msg::Pasted { generation, raw, clipboard });
+		});
+	}
+
+	/// Routes one decoded input event into the retained tree, mapping the
+	/// outcome exactly like the inline dispatch it replaced.
+	fn dispatch_input(&mut self, event: InputEvent) -> Routed {
+		// Input lands on the real clock: transitions started by this event
+		// must not begin on a stale animation tick.
+		self.ui.tick(self.epoch.elapsed());
+		match event {
+			InputEvent::Key(key) => match self.route_key(key) {
+				// Unclaimed paste chords fall back to the host clipboard
+				// read; components that consume them (damage or an event)
+				// keep the key.
+				Routed::Continue => {
+					if let Some(scope) = ClipboardRead::for_key(key) {
+						self.begin_clipboard_read(scope);
+					}
+					Routed::Continue
+				},
+				routed => routed,
+			},
+			InputEvent::Mouse(report) => {
+				let offset = self.ui.height().saturating_sub(self.viewport.height);
+				let event =
+					self
+						.ui
+						.handle_mouse(report.col, report.row.saturating_add(offset), report.kind);
+				match select_event(event) {
+					Ok(event) => Routed::Event(event),
+					Err(UiEvent::Submit) => Routed::Event(AppEvent::Submitted),
+					Err(UiEvent::Pressed(id)) => Routed::Event(AppEvent::Pressed(id)),
+					Err(_) if self.ui.has_damage() => Routed::Event(AppEvent::Updated),
+					Err(_) => Routed::Continue,
+				}
+			},
+			InputEvent::Paste(text) => {
+				// An empty bracketed paste is how some terminals announce an
+				// image-only pasteboard (macOS Cmd+V); answer it with a
+				// clipboard read instead.
+				if text.is_empty() {
+					self.begin_clipboard_read(ClipboardRead::Smart);
+					Routed::Continue
+				} else {
+					self
+						.route_paste(&text, false)
+						.map_or(Routed::Continue, Routed::Event)
+				}
+			},
+			InputEvent::Focus(_) | InputEvent::Response(_) => Routed::Continue,
+		}
+	}
+
+	/// Applies new terminal geometry: relayout, drag preview, settle timer.
+	///
+	/// Shared by the SIGWINCH-driven recheck and the `OMP_TUI_DEBUG` `resize`
+	/// op, which bypasses [`Terminal::take_resize`] because no resize signal
+	/// reaches an `OMP_TTY` override device.
+	fn begin_resize(&mut self, viewport: Size, now: tokio::time::Instant) -> io::Result<()> {
+		let width_changed = viewport.width != self.viewport.width;
+		self.viewport = viewport;
+		if self.alt_hold {
+			// The held surface is live UI: relayout immediately and repaint
+			// in place; the main-screen rebuild waits for release.
+			self.main_stale = true;
+			self.ui.resize(viewport.width);
+			self.ui.preview(&mut self.renderer, viewport.height, "")?;
+		} else {
+			// Only a width change borrows the alternate screen: the normal
+			// buffer rewraps under width churn, while height-only resizes
+			// repaint in place — and alt toggling on a height echo can
+			// self-sustain (terminals re-report size across the toggle).
+			// Multiplexer panes repaint in place: the host terminal owns
+			// the real screen. The settled rebuild leaves a borrow
+			// atomically.
+			let alt_enter = if self.caps.inside_multiplexer {
+				None
+			} else if width_changed && !self.resize_alt {
+				let staged = self.terminal.stage_alt_enter(crate::AltScreenUse::Resize);
+				self.resize_alt |= staged.is_some();
+				staged
+			} else {
+				None
+			};
+			let leading = alt_enter.as_deref().unwrap_or("");
+			// Drag frames compose one viewport tail bottom-up at the new
+			// width; the O(document) reflow is deferred to settle.
+			if let Some(frame) = self.ui.compose_resize_tail(viewport) {
+				self.tail_drag = true;
+				self.renderer.preview(&frame, viewport.height, leading)?;
+			} else {
+				self.ui.resize(viewport.width);
+				self
+					.ui
+					.preview(&mut self.renderer, viewport.height, leading)?;
+			}
+		}
+		self.resize_settle = Some(now + RESIZE_SETTLE);
+		Ok(())
+	}
+
+	/// Answers one retained-state debug query routed through the event
+	/// loop, keyed by the query id.
+	fn answer_debug(&self, query: DebugQuery) {
+		use serde_json::json;
+		let response = match query.op {
+			DebugOp::Frame => {
+				let frame = self.ui.frame();
+				let lines: Vec<String> = (0..frame.size().height)
+					.map(|row| crate::test_support::frame_row_text(frame, row))
+					.collect();
+				json!({ "ok": true, "lines": lines })
+			},
+			DebugOp::Tree => json!({ "ok": true, "tree": self.ui.debug_tree() }),
+			DebugOp::Values => json!({ "ok": true, "values": self.ui.values() }),
+			// Terminal-owned ops are answered inside `Terminal::next` and
+			// never surface here.
+			DebugOp::Info | DebugOp::Text | DebugOp::Resize | DebugOp::Quit => return,
+		};
+		crate::debug::respond_debug_query(query.id, response);
+	}
+}
+
+impl Drop for App {
+	fn drop(&mut self) {
+		// The final inline screen persists into native scrollback once the
+		// shell resumes, so composited layer cells must not survive
+		// teardown: release any alternate-screen hold, then repaint layer
+		// bands from the raw document. Best effort — teardown cannot fail.
+		let _ = self.terminal.leave_alt();
+		let _ = self.renderer.clear_layers();
+	}
+}
+
+/// Applies the host key policy after `key` routes into the retained tree.
+///
+/// Any [`UiEvent::Cancel`] surfacing from a visible modal overlay — Escape
+/// or a `<button cancel>` — dismisses that layer before the quit policy runs,
+/// following the layered-dismissal contract on [`Key::Esc`].
+fn route_key_event(ui: &mut Ui, key: Key, quit: &[Key], quit_on_cancel: bool) -> Routed {
+	if quit.contains(&key) {
+		return Routed::Stop;
+	}
+	match ui.handle_key(key) {
+		UiEvent::Cancel if ui.has_overlay() => {
+			let id = ui
+				.close_active_overlay()
+				.expect("a visible modal overlay routed this key");
+			Routed::Event(AppEvent::OverlayClosed(id))
+		},
+		UiEvent::Cancel if quit_on_cancel => Routed::Stop,
+		UiEvent::Submit => Routed::Event(AppEvent::Submitted),
+		UiEvent::Pressed(id) => Routed::Event(AppEvent::Pressed(id)),
+		event
+		@ (UiEvent::Highlighted { .. } | UiEvent::Changed { .. } | UiEvent::Filtered { .. }) => {
+			Routed::Event(select_event(event).expect("select events map to app events"))
+		},
+		UiEvent::None | UiEvent::Cancel if ui.has_damage() => Routed::Event(AppEvent::Updated),
+		UiEvent::None | UiEvent::Cancel => Routed::Continue,
+	}
+}
+
+/// Maps a select-originated [`UiEvent`] to its [`AppEvent`]; other events
+/// come back unchanged for the caller's own routing.
+fn select_event(event: UiEvent) -> Result<AppEvent, UiEvent> {
+	match event {
+		UiEvent::Highlighted { id, value } => Ok(AppEvent::Highlighted { id, value }),
+		UiEvent::Changed { id, value } => Ok(AppEvent::Changed { id, value }),
+		UiEvent::Filtered { id, query, value } => Ok(AppEvent::Filtered { id, query, value }),
+		other => Err(other),
+	}
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum Routed {
+	Continue,
+	Event(AppEvent),
+	Stop,
+}
+
+enum Wakeup {
+	Cancelled,
+	Message(Result<Msg, flume::RecvError>),
+	Event(io::Result<TerminalEvent>),
+	Animation,
+	ClipboardExpired,
+	ResizeCheck,
+	ResizeSettle,
+}
+
+/// Sleeps until `at`; `None` is a disabled select branch.
+async fn deadline(at: Option<tokio::time::Instant>) {
+	match at {
+		Some(at) => tokio::time::sleep_until(at).await,
+		None => std::future::pending().await,
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::time::Duration;
+
+	/// Flag routing the re-executed test binary into the PTY helper below.
+	#[cfg(unix)]
+	const HOLD_HELPER_FLAG: &str = "OMP_TUI_TEST_HOLD_HELPER";
+
+	/// Ctrl+V followed immediately by Enter must not submit before the
+	/// clipboard payload lands: input admitted behind the in-flight read
+	/// queues and replays in order only after the read settles.
+	#[test]
+	fn clipboard_gate_orders_input_behind_the_read() {
+		use super::{CLIPBOARD_READ_TIMEOUT, ClipboardGate};
+		use crate::{InputEvent, Key};
+
+		let mut gate = ClipboardGate::default();
+		let now = tokio::time::Instant::now();
+		let generation = gate.begin(now).expect("gate idle");
+		assert_eq!(gate.begin(now), None, "one read at a time");
+		let quit = [Key::Ctrl('c')];
+		assert_eq!(gate.admit(InputEvent::Key(Key::Enter), &quit), None, "Enter queues");
+		assert_eq!(gate.admit(InputEvent::Key(Key::Char('x')), &quit), None);
+		// Quit chords bypass the queue so a hung read cannot trap the user.
+		assert_eq!(
+			gate.admit(InputEvent::Key(Key::Ctrl('c')), &quit),
+			Some(InputEvent::Key(Key::Ctrl('c')))
+		);
+		assert_eq!(gate.drain(), None, "queue holds while the read runs");
+		assert_eq!(gate.deadline(), Some(now + CLIPBOARD_READ_TIMEOUT));
+		assert!(gate.settle(generation));
+		assert_eq!(gate.drain(), Some(InputEvent::Key(Key::Enter)));
+		assert_eq!(gate.drain(), Some(InputEvent::Key(Key::Char('x'))));
+		assert_eq!(gate.drain(), None);
+		assert_eq!(gate.deadline(), None);
+	}
+
+	/// An overdue read releases its queue, and its late result is dropped
+	/// by generation — even after a newer read begins.
+	#[test]
+	fn clipboard_gate_drops_expired_and_superseded_results() {
+		use super::ClipboardGate;
+		use crate::{InputEvent, Key};
+
+		let mut gate = ClipboardGate::default();
+		let now = tokio::time::Instant::now();
+		let first = gate.begin(now).expect("gate idle");
+		assert_eq!(gate.admit(InputEvent::Key(Key::Enter), &[]), None);
+		gate.expire();
+		assert_eq!(gate.drain(), Some(InputEvent::Key(Key::Enter)), "expiry releases queued input");
+		let second = gate.begin(now).expect("gate idle again");
+		assert!(!gate.settle(first), "stale result is dropped");
+		assert!(gate.settle(second));
+	}
+
+	/// Child half of `hold_alt_start_holds_without_overlay_and_releases`:
+	/// a no-op unless re-executed with [`HOLD_HELPER_FLAG`], so terminal
+	/// globals and the `OMP_TTY` override live in a dedicated process.
+	#[cfg(unix)]
+	#[test]
+	fn hold_alt_pty_helper() {
+		use super::AppOptions;
+		use crate::Ui;
+
+		if std::env::var_os(HOLD_HELPER_FLAG).is_none() {
+			return;
+		}
+		tokio::runtime::Builder::new_multi_thread()
+			.enable_all()
+			.build()
+			.expect("helper runtime builds")
+			.block_on(async {
+				let mut app = AppOptions::new()
+					.hold_alt()
+					.start(|env| {
+						Ui::from_markup("<text>inline</text>", env.viewport.width, env.ctx).unwrap()
+					})
+					.await
+					.expect("helper app starts on the override device");
+				tokio::time::sleep(Duration::from_millis(250)).await;
+				app.hold_alt(false);
+				let _ = tokio::time::timeout(Duration::from_millis(200), app.next()).await;
+				drop(app);
+			});
+	}
+
+	/// An `AppOptions::hold_alt()` start with no overlay paints frame one on
+	/// the alternate screen and `App::hold_alt(false)` releases it cleanly.
+	/// Runs the scenario in a re-executed child process: `OMP_TTY` and the
+	/// terminal's process-wide state never leak into this parallel harness.
+	#[cfg(unix)]
+	#[test]
+	fn hold_alt_start_holds_without_overlay_and_releases() {
+		use std::io::Read as _;
+
+		let winsize = nix::pty::Winsize { ws_row: 12, ws_col: 40, ws_xpixel: 0, ws_ypixel: 0 };
+		let pty = nix::pty::openpty(Some(&winsize), None).expect("openpty succeeds");
+		let device = nix::unistd::ttyname(&pty.slave).expect("the pty slave has a device path");
+		let mut master = std::fs::File::from(pty.master);
+		nix::fcntl::fcntl(&master, nix::fcntl::FcntlArg::F_SETFL(nix::fcntl::OFlag::O_NONBLOCK))
+			.expect("master goes nonblocking");
+
+		let exe = std::env::current_exe().expect("test binary path");
+		let mut child = std::process::Command::new(exe)
+			.args(["runtime::tests::hold_alt_pty_helper", "--exact", "--test-threads=1"])
+			.env(HOLD_HELPER_FLAG, "1")
+			.env(crate::tty::TTY_OVERRIDE, &device)
+			.stdout(std::process::Stdio::null())
+			.stderr(std::process::Stdio::null())
+			.spawn()
+			.expect("helper process spawns");
+
+		let mut stream = Vec::new();
+		let mut buffer = [0_u8; 4096];
+		let deadline = std::time::Instant::now() + Duration::from_secs(20);
+		loop {
+			match master.read(&mut buffer) {
+				Ok(0) => break,
+				Ok(read) => stream.extend_from_slice(&buffer[..read]),
+				Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+					if let Some(status) = child.try_wait().expect("helper status readable") {
+						assert!(status.success(), "helper scenario passes");
+						// One final drain after exit.
+						while let Ok(read) = master.read(&mut buffer) {
+							if read == 0 {
+								break;
+							}
+							stream.extend_from_slice(&buffer[..read]);
+						}
+						break;
+					}
+					assert!(std::time::Instant::now() < deadline, "helper finishes in time");
+					std::thread::sleep(Duration::from_millis(20));
+				},
+				Err(_) => break,
+			}
+		}
+		drop(child.kill());
+
+		let position = |needle: &[u8]| {
+			stream
+				.windows(needle.len())
+				.position(|window| window == needle)
+		};
+		let entry = position(b"\x1b[?1049h").expect("frame one stages the alternate screen");
+		let content = position(b"inline").expect("frame one paints the tree");
+		assert!(entry < content, "the buffer switch precedes the first paint");
+		let exit = position(b"\x1b[?1049l").expect("hold_alt(false) restores the main screen");
+		assert!(content < exit, "release follows the held frames");
+		assert!(
+			position(b"\x1b[3J").is_none(),
+			"an alt-first start and clean release never touch main history"
+		);
+	}
+
+	#[test]
+	fn overlay_cancel_dismisses_the_visible_layer_before_quit_policy() {
+		use super::{AppEvent, Routed, route_key_event};
+		use crate::{Key, OverlayOptions, dom};
+
+		let mut ui = Ui::from_markup("<input id=base/>", 40, UiContext::default()).unwrap();
+		let lower = ui.show_overlay(dom! { <text>{"lower"}</text> }, OverlayOptions::default());
+		let upper = ui.show_overlay(dom! { <text>{"upper"}</text> }, OverlayOptions::default());
+		assert!(ui.set_overlay_hidden(upper, true));
+
+		// A quit chord outranks any open layer.
+		let quit = [Key::Ctrl('c')];
+		assert_eq!(route_key_event(&mut ui, Key::Ctrl('c'), &quit, true), Routed::Stop);
+
+		// Escape targets the visible layer, not the hidden stack top.
+		assert_eq!(
+			route_key_event(&mut ui, Key::Esc, &quit, true),
+			Routed::Event(AppEvent::OverlayClosed(lower)),
+		);
+		assert!(ui.overlay(lower).is_none(), "the dismissed layer is gone");
+		assert!(ui.overlay(upper).is_some(), "the hidden layer is untouched");
+
+		// Every remaining layer is hidden, so Escape falls back to the policy.
+		assert_eq!(route_key_event(&mut ui, Key::Esc, &quit, true), Routed::Stop);
+		assert_eq!(
+			route_key_event(&mut ui, Key::Esc, &quit, false),
+			Routed::Event(AppEvent::Updated),
+			"a swallowed cancel still reports pending overlay damage",
+		);
+
+		// A `<button cancel>` inside a dialog dismisses the dialog, never the
+		// application, regardless of the quit policy.
+		let dialog =
+			ui.show_overlay(dom! { <button cancel>{"Cancel"}</button> }, OverlayOptions::default());
+		assert_eq!(
+			route_key_event(&mut ui, Key::Enter, &quit, true),
+			Routed::Event(AppEvent::OverlayClosed(dialog)),
+		);
+		assert!(ui.overlay(dialog).is_none());
+	}
+
+	#[test]
+	fn cancel_with_only_a_non_modal_layer_follows_the_quit_policy() {
+		use super::{Routed, route_key_event};
+		use crate::{Key, OverlayOptions, dom};
+
+		let mut ui = Ui::from_markup("<input id=base/>", 40, UiContext::default()).unwrap();
+		let rail =
+			ui.show_overlay(dom! { <text>{"rail"}</text> }, OverlayOptions::default().non_modal());
+		let quit = [Key::Ctrl('c')];
+		assert_eq!(
+			route_key_event(&mut ui, Key::Esc, &quit, true),
+			Routed::Stop,
+			"a non-modal layer never soaks up the cancel",
+		);
+		assert!(ui.overlay(rail).is_some(), "the rail is not dismissed");
+	}
+
+	#[test]
+	fn cancel_dismisses_the_modal_beneath_a_higher_z_non_modal_layer() {
+		use super::{AppEvent, Routed, route_key_event};
+		use crate::{Key, OverlayOptions, dom};
+
+		let mut ui = Ui::from_markup("<input id=base/>", 40, UiContext::default()).unwrap();
+		let rail = ui
+			.show_overlay(dom! { <text>{"rail"}</text> }, OverlayOptions::default().non_modal().z(10));
+		let dialog = ui.show_overlay(dom! { <text>{"confirm"}</text> }, OverlayOptions::default());
+		let quit = [Key::Ctrl('c')];
+		assert_eq!(
+			route_key_event(&mut ui, Key::Esc, &quit, true),
+			Routed::Event(AppEvent::OverlayClosed(dialog)),
+			"the cancel dismisses the modal that routed it, not the stack top",
+		);
+		assert!(ui.overlay(rail).is_some(), "the higher-z pane survives");
+		assert!(ui.overlay(dialog).is_none());
+	}
+
+	use super::{ImageLoader, Msg, UiHandle};
+	use crate::{
+		Cached, Component, Elements, Prop, Props, Ui, UiContext, components::Img,
+		test_support::frame_row_text,
+	};
+
+	async fn receive_image<'a>(loader: &'a ImageLoader, ui: &'a mut Ui) {
+		let message = tokio::time::timeout(Duration::from_secs(5), loader.rx.recv_async())
+			.await
+			.expect("image decode completes")
+			.expect("image bus remains connected");
+		let Msg::ImageDecoded { slot, state } = message else {
+			panic!("image loader only emits decode messages");
+		};
+		assert!(ui.deliver_image(slot, state));
+	}
+
+	#[tokio::test(flavor = "current_thread")]
+	async fn image_decode_delivers_without_blocking_initial_layout() {
+		let dir = std::env::temp_dir().join(format!("omp-tui-runtime-image-{}", std::process::id()));
+		std::fs::create_dir_all(&dir).unwrap();
+		let path = dir.join("async.ppm");
+		let mut ppm = b"P6\n4 4\n255\n".to_vec();
+		for y in 0..4 {
+			for _ in 0..4 {
+				ppm.extend(if y < 2 { [255, 0, 0] } else { [0, 0, 255] });
+			}
+		}
+		std::fs::write(&path, ppm).unwrap();
+
+		let loader = ImageLoader::new();
+		let ctx = UiContext { loader: Some(loader.clone()), ..UiContext::default() };
+		let mut ui = Ui::from_markup(format!("<img src={} w=4/>", path.display()), 10, ctx).unwrap();
+		let initial_rows = (0..ui.height())
+			.map(|row| frame_row_text(ui.frame(), row))
+			.collect::<Vec<_>>();
+		assert_eq!(ui.height(), 3, "loading uses the fixed box placeholder");
+		assert!(initial_rows[0].contains('┌'));
+		assert!(!initial_rows.iter().any(|row| row.contains('▀')));
+
+		receive_image(&loader, &mut ui).await;
+		assert_eq!(ui.height(), 2, "4px source relayouts to two half-block rows");
+		assert!((0..ui.height()).any(|row| frame_row_text(ui.frame(), row).contains('▀')));
+
+		let elements = Elements::builder()
+			.with("logo", |_: &str, props: Props, _: Vec<Cached>| {
+				let source = props.str_of(Prop::Src).map_or("", |value| value.as_str());
+				Box::new(Img::new().with_str(Prop::Src, source).with(Prop::W, 4_u16))
+					as Box<dyn Component>
+			})
+			.build();
+		let custom_loader = ImageLoader::new();
+		let mut custom_ctx = UiContext { elements, ..UiContext::default() };
+		custom_ctx.loader = Some(custom_loader.clone());
+		let mut custom_ui =
+			Ui::from_markup(format!("<logo src={}/>", path.display()), 10, custom_ctx).unwrap();
+		receive_image(&custom_loader, &mut custom_ui).await;
+		assert!(
+			(0..custom_ui.height()).any(|row| frame_row_text(custom_ui.frame(), row).contains('▀'))
+		);
+
+		std::fs::remove_file(path).unwrap();
+		std::fs::remove_dir(dir).unwrap();
+	}
+
+	#[test]
+	fn ui_handle_applies_sync_thread_update_between_frames() {
+		let (tx, rx) = flume::unbounded();
+		let handle = UiHandle { tx, cancel: tokio_util::sync::CancellationToken::new() };
+		let mut ui =
+			Ui::from_markup(r#"<text id="message">before</text>"#, 20, UiContext::default()).unwrap();
+		let before = frame_row_text(ui.frame(), 0);
+
+		std::thread::spawn(move || handle.set_text("message", "after"))
+			.join()
+			.expect("update thread finishes");
+		let Msg::Update(update) = rx.recv().expect("thread queues one mutation") else {
+			panic!("UiHandle only emits update messages");
+		};
+		update(&mut ui);
+
+		let after = frame_row_text(ui.frame(), 0);
+		assert_ne!(after, before);
+		assert_eq!(after, "after");
+	}
+}

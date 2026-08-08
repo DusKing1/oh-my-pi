@@ -1,0 +1,696 @@
+syntax = "proto3";
+
+package omp.inference.v1;
+
+import "omp/inference/v1/common.proto";
+import "omp/inference/v1/media.proto";
+import "omp/inference/v1/models.proto";
+import "omp/inference/v1/search.proto";
+import "omp/thread/v1/thread.proto";
+
+// The omp inference protocol: incremental, gateway-stateful chat turns plus
+// the non-chat facets (count, embed, media generation, search).
+//
+// Error model: protocol outcomes (conflict, need-full, upstream failure,
+// unsupported feature) are IN-BAND terminal `TurnEvent.error` frames, so the
+// foreign-JSON facade and the gRPC binding share one vocabulary. Transport
+// status codes are reserved for transport failures.
+//
+// Concurrency model (three separated mechanisms — none overloads another):
+//   1. Precondition: `ContextRef.expected` must equal the server revision
+//      exactly, else CONFLICT carrying the actual revision. A stale or
+//      concurrent writer can never mutate, truncate, or observe half-state.
+//   2. Intent: history rewind is only ever the explicit
+//      `ThreadDelta.truncate_to` (or `Fork`), and still runs under the
+//      precondition.
+//   3. Idempotency: `turn_id` dedupes retries of unacknowledged turns; the
+//      server attaches to the in-flight stream or replays the committed
+//      outcome instead of double-appending.
+//
+// Commit model: a turn is atomic. Context mutates only at `Outcome`
+// (delta applied, then the turn's output appended — for interactive turns
+// that output additionally includes the canonically-projected in-turn
+// invocations — tool calls and their client-provided results — one batch,
+// one new revision). Cancellation (dropping the RPC, including
+// mid-invocation) or any terminal error leaves the context at its
+// pre-turn revision; the client owns partial output it already saw and may
+// append it as a regular item later.
+
+service Inference {
+  // ── Chat ──────────────────────────────────────────────────────────────
+  // One model turn, bidirectional. The FIRST client frame MUST be `open`;
+  // a non-interactive client half-closes right after it (byte-identical to
+  // a unary request) and just receives events. Interactive clients keep
+  // the send side open and drive invocations: server `Invoke` -> client
+  // `InvokeInput`* -> client `InvokeComplete`. Cancel by dropping the RPC;
+  // upstream work is aborted
+  // structurally (no cooperative-cancellation opt-in).
+  rpc Turn(stream TurnFrame) returns (stream TurnEvent);
+
+  // Copy-on-write branch of an existing context. Regeneration trees fork;
+  // they do not truncate shared history.
+  rpc Fork(ForkRequest) returns (ForkResponse);
+  // Release a context ahead of its TTL.
+  rpc Drop(DropRequest) returns (DropResponse);
+
+  // ── Text utilities ────────────────────────────────────────────────────
+  rpc CountTokens(CountTokensRequest) returns (CountTokensResponse);
+  rpc Embed(EmbedRequest) returns (EmbedResponse);
+
+  // ── Media generation ──────────────────────────────────────────────────
+  // Images render in seconds: server-stream with progressive partials.
+  rpc GenerateImage(GenerateImageRequest) returns (stream ImageEvent);
+  // Speech synthesis streams encoded audio chunks in playback order.
+  rpc Speak(SpeakRequest) returns (stream SpeakEvent);
+  // One-shot transcription of a recorded blob.
+  rpc Transcribe(TranscribeRequest) returns (TranscribeResponse);
+  // Video renders in minutes: async job. Submit returns immediately with a
+  // QUEUED status; poll, attach, or cancel by generation id. Dropping an
+  // Attach stream NEVER cancels the render — only CancelGeneration does.
+  rpc GenerateVideo(GenerateVideoRequest) returns (GenerationStatus);
+  rpc GetGeneration(GetGenerationRequest) returns (GenerationStatus);
+  rpc AttachGeneration(AttachGenerationRequest) returns (stream GenerationStatus);
+  rpc CancelGeneration(CancelGenerationRequest) returns (GenerationStatus);
+
+  // ── Search ────────────────────────────────────────────────────────────
+  rpc Search(SearchRequest) returns (SearchResponse);
+
+  // ── Discovery ─────────────────────────────────────────────────────────
+  // What this gateway can serve: the join of the catalog (bundled +
+  // configured), live discovery (local servers like ollama only exist at
+  // runtime), and broker credential state. The foreign JSON facade's
+  // `GET /v1/models` (OpenAI and Anthropic shapes) is a projection of
+  // ListModels filtered to chat-capable + available. A federated daemon
+  // populates its `dialect = "omp"` provider entry from its upstream's
+  // ListModels — discovery composes transitively.
+  rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+  // Availability flips (credential added/blocked), discovery refreshes,
+  // and local servers appearing/vanishing. Resumable via epoch-bearing
+  // cursor; stale cursors open with `reset` (re-List to rebase).
+  rpc WatchModels(WatchModelsRequest) returns (stream ModelEvent);
+  // Force live discovery now ("I just started ollama").
+  rpc RefreshModels(RefreshModelsRequest) returns (ListModelsResponse);
+
+  // Future facets land as new rpcs on this service: Quota (account usage
+  // windows), Batch (deferred pricing via the job engine), and
+  // session-shaped Realtime (SDP/scoped-token handshake via
+  // omp.auth.v1.MintScopedToken). Adding an rpc is invisible to older
+  // peers.
+}
+
+// ── Context addressing ──────────────────────────────────────────────────
+
+// Handle on a server-held thread plus the caller's view of its state.
+message ContextRef {
+  // Client-minted ULID. Namespaced per authenticated client; collisions
+  // across clients are impossible by construction.
+  string context_id = 1;
+  // Precondition; must equal the server-side revision exactly.
+  omp.thread.v1.Revision expected = 2;
+}
+
+// Intentional history mutation, applied atomically at commit:
+// truncate first (explicit intent only), then append.
+message ThreadDelta {
+  // Rewind head to this seq before appending. Absent = pure append.
+  // Must be <= expected.head; a mismatched precondition fails with
+  // CONFLICT before any truncation is considered.
+  optional uint64 truncate_to = 1;
+  repeated omp.thread.v1.Item append = 2;
+}
+
+// Client-to-server frames on a Turn stream.
+message TurnFrame {
+  oneof frame {
+    // First frame, exactly once.
+    TurnRequest open = 1;
+    // Streamed data for a live invocation; zero or more per invocation.
+    InvokeInput input = 2;
+    // Terminal frame of an invocation; exactly one per invocation.
+    InvokeComplete complete = 3;
+  }
+}
+
+message TurnRequest {
+  // Client-minted idempotency key, unique per logical turn; retries reuse it.
+  string turn_id = 1;
+
+  oneof input {
+    // Stateful: delta against a held context.
+    Incremental incremental = 2;
+    // Stateless turn, or NEED_FULL recovery reseed.
+    Seed seed = 3;
+  }
+
+  ChatParams params = 4;
+  // In-turn execution capability. Declares the tool names (exact, or
+  // prefix globs like "cursor/*") this client answers WITHIN a turn via
+  // invocation frames. Dialects that require an in-turn executor
+  // (cursor's exec channel) fail admission with KIND_UNSUPPORTED
+  // when their tools are not covered — never a mid-stream stall.
+  // Absent for normal dialects: tool use ends the turn (STOP_TOOL_USE)
+  // and the agent loop answers in the next turn's delta.
+  Executor executor = 5;
+
+  ValueMap props = 15;
+}
+
+// In-turn tool execution capability (see TurnRequest.executor).
+message Executor {
+  // Tool names answered in-turn; exact or prefix glob ("cursor/*").
+  repeated string tools = 1;
+}
+
+message Incremental {
+  ContextRef context = 1;
+  ThreadDelta delta = 2;
+}
+
+// Full thread inline. With `context_id` set, seeds server state (only for a
+// context the server does not currently hold — reseeding a live context is
+// a CONFLICT; Drop it or send a delta). Without, the turn is fully
+// stateless and nothing is retained.
+message Seed {
+  string context_id = 1;
+  omp.thread.v1.Thread thread = 2;
+}
+
+// ── Request parameters ──────────────────────────────────────────────────
+
+message ChatParams {
+  // "provider/model", catalog alias, or role ("tiny", "smol", "slow").
+  string model = 1;
+  repeated ToolDef tools = 2;
+  ToolChoice tool_choice = 3;
+  Sampling sampling = 4;
+  Reasoning thinking = 5;
+  CacheHint cache = 6;
+  ResponseFormat response_format = 7;
+  RequestMeta meta = 8;
+  ServiceTier service_tier = 9;
+  ServiceTierByFamily service_tier_by_family = 10;
+  TaskBudget task_budget = 11;
+  // Message presence distinguishes absent from an explicit empty include set.
+  ResponsesInclude responses_include = 12;
+
+  ValueMap provider_options = 15;
+}
+
+enum ServiceTier {
+  SERVICE_TIER_UNSPECIFIED = 0;
+  SERVICE_TIER_AUTO = 1;
+  SERVICE_TIER_DEFAULT = 2;
+  SERVICE_TIER_FLEX = 3;
+  SERVICE_TIER_SCALE = 4;
+  SERVICE_TIER_PRIORITY = 5;
+}
+
+message ServiceTierByFamily {
+  ServiceTier openai = 1;
+  ServiceTier anthropic = 2;
+  ServiceTier google = 3;
+}
+
+message TaskBudget {
+  uint64 total_tokens = 1;
+  optional uint64 remaining_tokens = 2;
+}
+
+message ResponsesInclude {
+  enum Field {
+    FIELD_UNSPECIFIED = 0;
+    FIELD_FILE_SEARCH_RESULTS = 1;
+    FIELD_WEB_SEARCH_RESULTS = 2;
+    FIELD_WEB_SEARCH_SOURCES = 3;
+    FIELD_INPUT_IMAGE_URL = 4;
+    FIELD_COMPUTER_OUTPUT_IMAGE_URL = 5;
+    FIELD_CODE_INTERPRETER_OUTPUTS = 6;
+    FIELD_REASONING_ENCRYPTED_CONTENT = 7;
+    FIELD_OUTPUT_TEXT_LOGPROBS = 8;
+  }
+  repeated Field fields = 1;
+}
+
+message ToolDef {
+  string name = 1;
+  string description = 2;
+  // JSON Schema; dialect normalizers reshape per flavor (strict allowlists,
+  // CCA stripping, GBNF conversion) at the edge.
+  bytes schema_json = 3;
+  // Presence is significant: absent preserves the provider default, while
+  // explicit false disables strict enforcement.
+  optional bool strict = 4;
+}
+
+message ToolChoice {
+  enum Mode {
+    // Same as MODE_AUTO.
+    MODE_UNSPECIFIED = 0;
+    MODE_AUTO = 1;
+    MODE_NONE = 2;
+    MODE_REQUIRED = 3;
+    // Pin to `name`.
+    MODE_NAMED = 4;
+  }
+  Mode mode = 1;
+  string name = 2;
+  Fallback on_unsupported = 3;
+}
+
+// Every field optional: absent = provider default. Providers that reject a
+// param (reasoning models vs sampling) surface it via Outcome.unsupported
+// per the request's fallback policy.
+message Sampling {
+  optional double temperature = 1;
+  optional double top_p = 2;
+  optional uint32 top_k = 3;
+  optional double min_p = 4;
+  optional double frequency_penalty = 5;
+  optional double presence_penalty = 6;
+  repeated string stop = 7;
+  optional uint64 max_output_tokens = 8;
+  optional double repetition_penalty = 9;
+  // Repeated scalar fields have no native presence. This marker preserves
+  // explicit `Some([])` independently from an absent stop list.
+  optional bool stop_present = 10;
+}
+
+message Reasoning {
+  Effort effort = 1;
+  // Explicit token budget; wins over the effort mapping where budgets exist.
+  optional uint64 budget_tokens = 2;
+  optional bool hide_summary = 3;
+  Fallback on_unsupported = 4;
+}
+
+message CacheHint {
+  // Stable per conversation; drives provider cache affinity (prompt cache
+  // keys, session headers) and gateway credential pinning.
+  string session_key = 1;
+  enum Retention {
+    RETENTION_UNSPECIFIED = 0;
+    RETENTION_SHORT = 1;
+    RETENTION_LONG = 2;
+    RETENTION_NONE = 3;
+  }
+  Retention retention = 2;
+  enum Mode {
+    MODE_UNSPECIFIED = 0;
+    MODE_IMPLICIT = 1;
+    MODE_EXPLICIT = 2;
+  }
+  Mode mode = 3;
+  enum Ttl {
+    TTL_UNSPECIFIED = 0;
+    TTL_THIRTY_MINUTES = 1;
+  }
+  Ttl ttl = 4;
+  enum Breakpoint {
+    BREAKPOINT_UNSPECIFIED = 0;
+    BREAKPOINT_LATEST_STABLE_MESSAGE = 1;
+    BREAKPOINT_NONE = 2;
+    // Mark the last cacheable block of each of the final two messages, and
+    // place no dedicated system/tools breakpoint. Measured cheapest over a
+    // 1.2k-session replay; the freed slots are worth more on the tail.
+    BREAKPOINT_TAIL_TWO = 3;
+  }
+  Breakpoint breakpoint = 5;
+}
+
+message ResponseFormat {
+  message JsonSchema {
+    string name = 1;
+    bytes schema_json = 2;
+    optional bool strict = 3;
+  }
+  message Grammar {
+    enum Flavor {
+      FLAVOR_UNSPECIFIED = 0;
+      FLAVOR_LARK = 1;
+      FLAVOR_REGEX = 2;
+      FLAVOR_GBNF = 3;
+    }
+    Flavor flavor = 1;
+    string definition = 2;
+  }
+
+  oneof kind {
+    JsonSchema json_schema = 1;
+    Grammar grammar = 2;
+  }
+  Fallback on_unsupported = 3;
+}
+
+message RequestMeta {
+  // "user" | "agent" | subsystem tag; drives vendor headers (X-Initiator).
+  string initiator = 1;
+  // Metering/telemetry correlation; never sent upstream.
+  string session_id = 2;
+  map<string, string> telemetry = 3;
+}
+
+// ── Turn event stream ───────────────────────────────────────────────────
+
+message TurnEvent {
+  oneof event {
+    Accepted accepted = 1;
+    Attempt attempt = 2;
+    PartStart part_start = 3;
+    PartDelta part_delta = 4;
+    PartEnd part_end = 5;
+    // Terminal: success.
+    Outcome outcome = 6;
+    // Terminal: failure, context unchanged.
+    TurnError error = 7;
+    // Server-initiated in-turn invocation; the client streams
+    // InvokeInput frames and finishes with InvokeComplete. Multiple
+    // invocations may be live concurrently; invocation_id correlates.
+    Invoke invoke = 8;
+    // Server abandoned a live invocation (provider cancelled); the client
+    // stops work and MUST NOT send further frames for it.
+    InvokeCancel invoke_cancel = 9;
+  }
+}
+
+// One in-turn invocation, addressed to the client's declared executor.
+//
+// Projection is PRESENCE-BASED, not either/or: `tool_call` (here) and
+// `tool_result` (on InvokeComplete) are the canonical transcript
+// projection; `status`/`props` carry typed detail the dialect maps onto
+// the pinned wire; `vendor` is reserved for genuinely unprojectable
+// controls (context sync, vendor framing). A cursor shell exec is fully
+// canonical: the client NEVER encodes vendor protobuf.
+//
+// Lifecycle synthesis (the gateway dialect owns vendor framing):
+//   - InvokeComplete implies stream-close; the dialect emits the pinned
+//     close sequence (cursor: exit frame + structured shellResult ack +
+//     stream_close) from `status` + `tool_result`.
+//   - Liveness heartbeats on the vendor wire are synthesized by the
+//     gateway while an invocation is outstanding; the canonical stream
+//     relies on transport keepalive plus per-invocation deadlines.
+//   - Executor failure is not a separate frame: complete with
+//     `status.outcome = OUTCOME_FAILED` (maps to vendor throw/failure).
+message Invoke {
+  string invocation_id = 1;
+  // Executor dispatch key ("exec.shell", "fs.read", "cursor/<variant>");
+  // matched against TurnRequest.executor.tools.
+  string name = 2;
+  // Canonical call (args fully materialized). Present unless this is a
+  // pure control invocation.
+  omp.thread.v1.ToolCall tool_call = 3;
+  // Dialect-defined pinned-protocol payload for unprojectable variants.
+  bytes vendor = 4;
+  // Server-enforced completion deadline; missing it fails the turn with
+  // KIND_INVOKE_TIMEOUT (context unchanged).
+  uint64 timeout_ms = 5;
+  // Namespaced extras an executor may consult ("cursor/exec_id", ...).
+  // Integers remain exact so ids cannot be corrupted by double conversion.
+  ValueMap props = 15;
+}
+
+message InvokeCancel {
+  string invocation_id = 1;
+}
+
+// Incremental invocation data (cursor shellStream: start/stdout/stderr are
+// separate wire frames the provider consumes live).
+message InvokeInput {
+  string invocation_id = 1;
+  oneof payload {
+    Chunk chunk = 2;
+    bytes vendor = 3;
+  }
+
+  // Canonical streamed exec output; the dialect maps channels onto the
+  // pinned wire framing.
+  message Chunk {
+    Channel channel = 1;
+    bytes data = 2;
+    enum Channel {
+      CHANNEL_UNSPECIFIED = 0;
+      CHANNEL_STDOUT = 1;
+      CHANNEL_STDERR = 2;
+      CHANNEL_PROGRESS = 3;
+    }
+  }
+}
+
+message InvokeComplete {
+  string invocation_id = 1;
+  // Transcript projection: present (with Invoke.tool_call) => both commit
+  // as items in Outcome.output. Models see this projection only (L3);
+  // exit detail below never enters the transcript verbatim.
+  omp.thread.v1.ToolResult tool_result = 2;
+  // Typed execution status; the dialect derives the pinned completion
+  // from it (cursor: success/failure/rejected/timeout/permissionDenied
+  // shellResult variants + exit frame).
+  ExecStatus status = 3;
+  // Unprojectable control completions only.
+  bytes vendor = 4;
+  // Namespaced detail for pinned fields outside ExecStatus.
+  // Integers remain exact so exit counters and ids retain their wire value.
+  ValueMap props = 15;
+}
+
+// How an exec-shaped invocation ended, portable across dialects.
+message ExecStatus {
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+    // Ran to completion; `exit_code` (and `signal` when killed) apply.
+    OUTCOME_EXITED = 1;
+    // Executor error before or despite running; `reason` applies.
+    OUTCOME_FAILED = 2;
+    // User or policy declined to run it.
+    OUTCOME_REJECTED = 3;
+    // Permission denied by the environment.
+    OUTCOME_DENIED = 4;
+    OUTCOME_TIMEOUT = 5;
+    // Answered an InvokeCancel.
+    OUTCOME_CANCELLED = 6;
+  }
+  Outcome outcome = 1;
+  int32 exit_code = 2;
+  // Terminating signal name ("SIGKILL"), when killed.
+  string signal = 3;
+  // Abort/rejection/error detail.
+  string reason = 4;
+  // Working directory echoed by pinned exit frames.
+  string cwd = 5;
+  // Pinned wire kills the process but still reports an exit: set when the
+  // run was aborted (distinct from outcome for lossless exit framing).
+  bool aborted = 6;
+  // Where full output was persisted, when the executor spilled it
+  // (ShellStreamExit.output_location).
+  string output_location = 7;
+  // Wall-clock execution time measured by the executor.
+  uint64 local_execution_time_ms = 8;
+  // Rejected/denied because the environment is read-only.
+  bool is_readonly = 9;
+  // The COMMAND's own timeout that fired (OUTCOME_TIMEOUT), in ms.
+  // Distinct from Invoke.timeout_ms, the invocation-answer deadline.
+  uint64 command_timeout_ms = 10;
+}
+
+// Precondition passed; the turn is admitted.
+message Accepted {
+  // This turn_id already committed; the stream replays its Outcome and the
+  // delta was NOT re-applied.
+  bool replay = 1;
+}
+
+// Capability-resolver or credential-rotation retry. Attempts surface
+// honestly instead of restarting the stream invisibly.
+message Attempt {
+  // 1-based.
+  uint32 number = 1;
+  // Why the previous attempt was abandoned.
+  string reason = 2;
+}
+
+message PartStart {
+  uint32 index = 1;
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_TEXT = 1;
+    KIND_THINKING = 2;
+    KIND_TOOL_CALL = 3;
+  }
+  Kind kind = 2;
+  // KIND_TOOL_CALL only.
+  string tool_call_id = 3;
+  string tool_name = 4;
+}
+
+// Delta-only: no accumulated snapshots ride the stream. Receivers that want
+// a running message use a client-side accumulator.
+message PartDelta {
+  uint32 index = 1;
+  // UTF-8 text, thinking text, or tool-args JSON fragment per part kind.
+  bytes chunk = 2;
+}
+
+message ContextSnapshot {
+  uint64 prompt_tokens = 1;
+  uint64 non_message_tokens = 2;
+  optional uint64 history_rewrite_tokens_removed = 3;
+  optional uint64 last_message_timestamp_ms = 4;
+}
+
+message PartEnd {
+  uint32 index = 1;
+  // Opaque signature for a thinking part; empty when unsigned.
+  bytes signature = 2;
+}
+
+enum StopReason {
+  STOP_UNSPECIFIED = 0;
+  STOP_END_TURN = 1;
+  STOP_TOOL_USE = 2;
+  STOP_MAX_TOKENS = 3;
+  STOP_CONTENT_FILTER = 4;
+}
+
+// One classified route attempt retained for deterministic fallback and
+// recovery decisions. Provider-specific payloads remain in namespaced props;
+// this record contains only portable routing evidence.
+message Diagnostic {
+  string provider = 1;
+  string model = 2;
+  // One-based attempt number; 0 when the source did not supply one.
+  uint32 attempt = 3;
+  // Stable portable classification code, not a provider response body.
+  string code = 4;
+  // Human-readable classified detail safe to surface to callers.
+  string detail = 5;
+  Retryability retryability = 6;
+}
+
+// The safe recovery lane for a classified attempt.
+enum Retryability {
+  RETRYABILITY_UNSPECIFIED = 0;
+  RETRYABILITY_NEVER = 1;
+  RETRYABILITY_SAME_ROUTE = 2;
+  RETRYABILITY_AFTER_REPAIR = 3;
+  RETRYABILITY_AFTER_CREDENTIAL = 4;
+  RETRYABILITY_AFTER_DELAY = 5;
+}
+
+message Outcome {
+  // Items committed this turn (assistant message + tool calls), with seqs
+  // assigned. Redundant with the delta stream by design: it is the
+  // authoritative record.
+  repeated omp.thread.v1.Item output = 1;
+  StopReason stop = 2;
+  Usage usage = 3;
+  Cost cost = 4;
+  repeated Unsupported unsupported = 5;
+  // Context revision after commit; the client's next `expected`.
+  // Unset for stateless turns.
+  omp.thread.v1.Revision revision = 6;
+  // Resolved routing: what actually served the turn (aliases/roles/fallback
+  // chains resolve server-side).
+  string provider = 7;
+  string model = 8;
+  // Classified attempts, in execution order. Empty when no fallback or
+  // recovery evidence was reported.
+  repeated Diagnostic diagnostics = 9;
+  optional string upstream_provider = 10;
+  optional uint64 duration_ms = 11;
+  optional uint64 ttft_ms = 12;
+  ContextSnapshot context_snapshot = 13;
+
+  ValueMap props = 15;
+}
+
+message TurnError {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    // `expected` revision does not match; `actual` carries the truth.
+    KIND_CONFLICT = 1;
+    // Context unknown or evicted; recover by reseeding via Seed.
+    KIND_NEED_FULL = 2;
+    // A FALLBACK_ERROR feature tripped; see `unsupported`.
+    KIND_UNSUPPORTED = 3;
+    // No usable credential (all expired/blocked/disabled).
+    KIND_AUTH = 4;
+    // Upstream limit; honor `retry_after_ms`.
+    KIND_RATE_LIMITED = 5;
+    // Provider failure after retries; `detail` carries the classified cause.
+    KIND_UPSTREAM = 6;
+    // Gateway shed load.
+    KIND_OVERLOADED = 7;
+    // An in-turn Invoke deadline elapsed without InvokeComplete.
+    KIND_INVOKE_TIMEOUT = 8;
+  }
+  Kind kind = 1;
+  string detail = 2;
+  // KIND_CONFLICT.
+  omp.thread.v1.Revision actual = 3;
+  // KIND_UNSUPPORTED.
+  repeated Unsupported unsupported = 4;
+  // KIND_RATE_LIMITED.
+  uint64 retry_after_ms = 5;
+  // Classified attempted-route evidence, in execution order.
+  repeated Diagnostic diagnostics = 6;
+  // Stable machine-readable error identity.
+  optional uint64 error_id = 7;
+}
+
+// ── Context management ──────────────────────────────────────────────────
+
+message ForkRequest {
+  // Precondition on the parent: a concurrent mutation between deciding to
+  // fork and forking is a CONFLICT, not a mystery branch point.
+  ContextRef parent = 1;
+  // Seq to branch at; absent = parent head.
+  optional uint64 at = 2;
+  // Client-minted ULID for the new context.
+  string context_id = 3;
+}
+
+message ForkResponse {
+  omp.thread.v1.Revision revision = 1;
+}
+
+message DropRequest {
+  string context_id = 1;
+}
+
+message DropResponse {}
+
+// ── Text utilities ──────────────────────────────────────────────────────
+
+message CountTokensRequest {
+  string model = 1;
+  oneof input {
+    // Count a server-held thread without re-upload.
+    ContextRef context = 2;
+    omp.thread.v1.Thread thread = 3;
+  }
+  // Tool definitions weigh into the prompt.
+  repeated ToolDef tools = 4;
+}
+
+message CountTokensResponse {
+  uint64 tokens = 1;
+  // Exact when a provider endpoint or exact tokenizer served the count;
+  // estimated for heuristics.
+  Usage.Accuracy accuracy = 2;
+}
+
+message EmbedRequest {
+  string model = 1;
+  repeated string texts = 2;
+  optional uint32 dimensions = 3;
+
+  ValueMap props = 15;
+}
+
+message EmbedResponse {
+  message Vector {
+    repeated float values = 1;
+  }
+  repeated Vector vectors = 1;
+  Usage usage = 2;
+}

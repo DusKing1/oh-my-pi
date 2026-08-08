@@ -1,0 +1,532 @@
+//! Terminal event actor: one async task owns the input decoder and turns
+//! raw terminal bytes, debug injections, and decoder deadlines into a
+//! single mailbox of fully decoded [`TerminalEvent`]s.
+//!
+//! The actor `select!`s over three async sources — the byte source, the
+//! control channel, and the partial-escape deadline — plus, on Unix, the
+//! SIGWINCH self-pipe. Nothing here or in any host polls with a timeout:
+//!
+//! - [`crate::Terminal::next`] awaits the mailbox; resize rides a
+//!   `tokio::sync::watch` side channel so its biased `select!` observes a
+//!   resize before any backlog of queued input.
+//! - The `OMP_TUI_DEBUG` server has ONE ingress: it queues every debug action
+//!   on the control channel ([`send_event`], [`inject_bytes`]), and the actor
+//!   emits them into the mailbox in send order — injected raw bytes decode
+//!   before any later action, so acknowledged actions are ordering barriers.
+//! - Keymap edits arrive as actor commands ([`Pump::set_keymap`]) and apply
+//!   before the next decoded chord.
+//!
+//! The byte source is an [`AsyncFd`] wherever the platform can poll the
+//! terminal handle (Linux and other non-macOS Unix, plus every pipe or pty
+//! in tests); macOS `/dev/tty` and Windows `CONIN$` are not readiness-
+//! pollable, so those bridge through a minimal reader thread whose only job
+//! is `read` → flume. The actor is per-[`crate::Terminal`]: entry spawns it
+//! seeded with bytes preserved by capability negotiation, and
+//! [`crate::Terminal::leave`] stops it before the teardown drain reclaims
+//! the descriptor.
+
+use std::{fs::File, io};
+
+use parking_lot::Mutex;
+
+use crate::input::{InputDecoder, InputEvent, Keymap};
+
+/// One decoded terminal event.
+///
+/// Real input, debug-injected input, and debug queries share a single mailbox
+/// in arrival order. Pure data — the `OMP_TUI_DEBUG` protocol serializes it
+/// directly.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TerminalEvent {
+	/// A decoded input event — key, mouse, paste, focus, or a terminal
+	/// response the host forwards to [`crate::Terminal::handle_input_event`].
+	Input(InputEvent),
+	/// Terminal geometry may have changed; resolve it with
+	/// [`crate::Terminal::take_resize`]. Delivered ahead of queued input
+	/// through the resize watch in [`crate::Terminal::next`].
+	Resize,
+	/// A debug-protocol query routed through the event loop, in order with
+	/// injected and real input. [`crate::Terminal::next`] answers the
+	/// terminal-owned ops itself; retained-tree ops reach the host, which
+	/// answers via [`crate::respond_debug_query`] (hosts without a retained
+	/// tree ignore them and the server times the request out).
+	Debug(DebugQuery),
+	/// The terminal input closed or failed; no more input will arrive.
+	/// [`crate::Terminal::next`] surfaces it as an error.
+	Closed,
+}
+
+/// One correlated debug query routed through the event loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DebugQuery {
+	/// Server-side correlation id for [`crate::App`]'s reply.
+	pub id: u64,
+	/// The queried state.
+	pub op: DebugOp,
+}
+
+/// Debug-protocol ops carried by [`TerminalEvent::Debug`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DebugOp {
+	/// Viewport, document, and overlay summary; answered by the terminal
+	/// from the renderer's published snapshot.
+	Info,
+	/// Visible viewport as text; answered by the terminal from the
+	/// renderer's published snapshot.
+	Text,
+	/// Re-read tty geometry; the terminal emulates a SIGWINCH so the
+	/// normal resize flow runs.
+	Resize,
+	/// Quit request; the terminal acknowledges and emits `C-c`, the
+	/// conventional quit chord.
+	Quit,
+	/// Full document frame as text rows (retained hosts).
+	Frame,
+	/// Component tree with kinds, ids, rectangles, and focus (retained
+	/// hosts).
+	Tree,
+	/// [`crate::Ui::values`] of the base tree (retained hosts).
+	Values,
+}
+/// One command for the event actor.
+enum Ctl {
+	/// A terminal event to emit in ingress order — debug-injected input and
+	/// correlated debug queries. The actor flushes decoded input queued
+	/// ahead of it first, so a query can never overtake earlier injected
+	/// bytes.
+	Event(TerminalEvent),
+	/// Raw bytes to run through the live decoder.
+	Bytes(Vec<u8>),
+	/// Replace the chord keymap.
+	Keymap(Keymap),
+}
+
+/// The single debug ingress: every `OMP_TUI_DEBUG` action enters the actor
+/// through this control channel and is emitted into the mailbox in send
+/// order, so acknowledged actions are ordering barriers for later ones.
+static SHARED_CTL: Mutex<Option<flume::Sender<Ctl>>> = Mutex::new(None);
+
+/// Queues one event on the active actor's ingress. `false` when no
+/// terminal is live, in which case nothing would consume it.
+pub fn send_event(event: TerminalEvent) -> bool {
+	send_ctl(Ctl::Event(event))
+}
+
+/// Feeds debug-injected raw bytes through the active actor's decoder; the
+/// decode happens before any later ingress action is emitted.
+pub fn inject_bytes(bytes: Vec<u8>) -> bool {
+	send_ctl(Ctl::Bytes(bytes))
+}
+
+fn send_ctl(ctl: Ctl) -> bool {
+	let sender = SHARED_CTL.lock().clone();
+	sender.is_some_and(|sender| sender.send(ctl).is_ok())
+}
+
+/// Installs a bare ingress so debug-server tests can exercise the query
+/// path without a live terminal; the returned receiver yields the events
+/// the actor would emit.
+#[cfg(test)]
+pub fn publish_ingress_for_test() -> flume::Receiver<TerminalEvent> {
+	let (ctl_tx, ctl_rx) = flume::unbounded();
+	let (event_tx, event_rx) = flume::unbounded();
+	*SHARED_CTL.lock() = Some(ctl_tx);
+	std::thread::spawn(move || {
+		while let Ok(ctl) = ctl_rx.recv() {
+			if let Ctl::Event(event) = ctl
+				&& event_tx.send(event).is_err()
+			{
+				return;
+			}
+		}
+	});
+	event_rx
+}
+
+/// Handle to a running event actor; stopping is idempotent and dropping
+/// stops it.
+pub struct Pump {
+	task:   tokio::task::JoinHandle<()>,
+	bridge: Option<Bridge>,
+	ctl:    flume::Sender<Ctl>,
+}
+
+/// A reader thread bridging a non-pollable input handle into the actor.
+struct Bridge {
+	stop:   std::sync::Arc<std::sync::atomic::AtomicBool>,
+	worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Pump {
+	/// Publishes this actor's ingress for the `OMP_TUI_DEBUG` server;
+	/// entry-only, so test terminals stay private.
+	pub(crate) fn publish(&self) {
+		*SHARED_CTL.lock() = Some(self.ctl.clone());
+	}
+
+	/// Replaces the decoder's chord keymap; applies before the next decoded
+	/// chord.
+	pub(crate) fn set_keymap(&self, keymap: Keymap) {
+		let _ = self.ctl.send(Ctl::Keymap(keymap));
+	}
+
+	/// Stops the actor (and any bridge thread) and releases the input
+	/// handle.
+	///
+	/// Called by [`crate::Terminal::leave`] before the teardown drain reads
+	/// the descriptor directly.
+	pub(crate) fn stop(&mut self) {
+		self.task.abort();
+		if let Some(bridge) = self.bridge.as_mut() {
+			bridge
+				.stop
+				.store(true, std::sync::atomic::Ordering::Release);
+			if let Some(worker) = bridge.worker.take() {
+				let _ = worker.join();
+			}
+		}
+	}
+}
+
+impl Drop for Pump {
+	fn drop(&mut self) {
+		self.stop();
+	}
+}
+
+/// Everything the spawned actor hands back to its owning terminal.
+pub struct PumpChannels {
+	/// The running actor.
+	pub pump:   Pump,
+	/// Sole receiver of decoded terminal events.
+	pub events: flume::Receiver<TerminalEvent>,
+	/// Resize side channel; the value is a monotonically increasing wake
+	/// count. Never fires on Windows, where hosts poll geometry instead.
+	pub resize: tokio::sync::watch::Receiver<u64>,
+}
+
+/// Raw bytes flowing into the actor.
+enum ByteSource {
+	/// Readiness-pollable handle (non-macOS Unix terminals; test pipes and
+	/// ptys everywhere on Unix).
+	#[cfg(unix)]
+	Fd(tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>),
+	/// Reader-thread bridge for handles the OS cannot poll.
+	Thread(flume::Receiver<Vec<u8>>),
+}
+
+impl ByteSource {
+	/// Waits for the next chunk; `Ok(None)` means the handle closed.
+	///
+	/// Cancel-safe: no chunk is lost when the surrounding `select!` takes
+	/// another branch first.
+	async fn next(&mut self) -> io::Result<Option<Vec<u8>>> {
+		match self {
+			#[cfg(unix)]
+			Self::Fd(fd) => loop {
+				let mut guard = fd.readable().await?;
+				let mut bytes = [0_u8; 4096];
+				match guard.try_io(|fd| read_fd(fd.get_ref(), &mut bytes)) {
+					Ok(Ok(0)) => return Ok(None),
+					Ok(Ok(read)) => return Ok(Some(bytes[..read].to_vec())),
+					Ok(Err(error)) => return Err(error),
+					Err(_) => {},
+				}
+			},
+			Self::Thread(rx) => Ok(rx.recv_async().await.ok()),
+		}
+	}
+}
+
+/// Reads once from a raw descriptor, retrying `EINTR`.
+#[cfg(unix)]
+fn read_fd(fd: &std::os::fd::OwnedFd, bytes: &mut [u8]) -> io::Result<usize> {
+	use std::os::fd::AsRawFd as _;
+	loop {
+		// SAFETY: `fd` is open for reading and `bytes` is a writable slice.
+		let read = unsafe { nix::libc::read(fd.as_raw_fd(), bytes.as_mut_ptr().cast(), bytes.len()) };
+		if read >= 0 {
+			return Ok(read as usize);
+		}
+		let error = io::Error::last_os_error();
+		if error.kind() != io::ErrorKind::Interrupted {
+			return Err(error);
+		}
+	}
+}
+
+/// Spawns the event actor over `input` with `decoder`, seeded with
+/// `preserved` bytes from capability negotiation, watching `resize` (a
+/// duplicate of the SIGWINCH self-pipe read end) when given.
+///
+/// # Panics
+///
+/// Panics outside a tokio runtime; the terminal event loop is async.
+pub fn spawn(
+	input: Input,
+	mut decoder: InputDecoder,
+	preserved: &[u8],
+	#[cfg_attr(windows, expect(unused_variables, reason = "windows polls geometry instead"))]
+	resize: Option<ResizeFd>,
+) -> io::Result<PumpChannels> {
+	let (events_tx, events_rx) = flume::unbounded();
+	let (resize_tx, resize_rx) = tokio::sync::watch::channel(0_u64);
+	let (ctl_tx, ctl_rx) = flume::unbounded();
+
+	let (source, bridge) = input.into_source()?;
+	#[cfg(unix)]
+	let resize = resize.map(tokio::io::unix::AsyncFd::new).transpose()?;
+	#[cfg(windows)]
+	let resize = ();
+
+	let mut events = Vec::new();
+	decoder.feed(preserved, std::time::Instant::now(), &mut events);
+
+	let task = tokio::spawn(actor(source, decoder, events, events_tx, ctl_rx, resize, resize_tx));
+	Ok(PumpChannels {
+		pump:   Pump { task, bridge, ctl: ctl_tx },
+		events: events_rx,
+		resize: resize_rx,
+	})
+}
+
+/// The SIGWINCH self-pipe read end handed to the actor.
+#[cfg(unix)]
+pub type ResizeFd = std::os::fd::OwnedFd;
+#[cfg(windows)]
+pub(crate) type ResizeFd = std::convert::Infallible;
+
+/// The input handle the actor reads, chosen by the terminal per platform.
+pub enum Input {
+	/// A readiness-pollable Unix handle (terminal, pipe, or pty).
+	#[cfg(unix)]
+	#[cfg_attr(
+		target_os = "macos",
+		allow(dead_code, reason = "macOS terminals bridge; tests spawn pollable pipe sources")
+	)]
+	Pollable(File),
+	/// A handle that needs a reader-thread bridge (macOS `/dev/tty`,
+	/// Windows `CONIN$`).
+	Bridged(File),
+}
+
+impl Input {
+	fn into_source(self) -> io::Result<(ByteSource, Option<Bridge>)> {
+		match self {
+			#[cfg(unix)]
+			Self::Pollable(file) => {
+				use std::os::fd::AsRawFd as _;
+				// SAFETY: fcntl F_SETFL with O_NONBLOCK on an owned handle.
+				if unsafe {
+					nix::libc::fcntl(file.as_raw_fd(), nix::libc::F_SETFL, nix::libc::O_NONBLOCK)
+				} < 0
+				{
+					return Err(io::Error::last_os_error());
+				}
+				let fd = tokio::io::unix::AsyncFd::new(std::os::fd::OwnedFd::from(file))?;
+				Ok((ByteSource::Fd(fd), None))
+			},
+			Self::Bridged(file) => {
+				let (tx, rx) = flume::unbounded();
+				let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+				let bridge_stop = std::sync::Arc::clone(&stop);
+				let worker = std::thread::Builder::new()
+					.name("omp-tui-input".into())
+					.spawn(move || bridge_loop(file, &tx, &bridge_stop))?;
+				Ok((ByteSource::Thread(rx), Some(Bridge { stop, worker: Some(worker) })))
+			},
+		}
+	}
+}
+
+/// Blocking bridge for non-pollable handles: `read` → flume until EOF,
+/// error, or stop. The 50ms cadence exists only to observe `stop`; it never
+/// delays delivery of ready bytes.
+fn bridge_loop(input: File, tx: &flume::Sender<Vec<u8>>, stop: &std::sync::atomic::AtomicBool) {
+	use std::sync::atomic::Ordering;
+	let mut bytes = [0_u8; 4096];
+	#[cfg(unix)]
+	{
+		use std::{io::Read as _, os::fd::AsRawFd as _};
+		let mut input = input;
+		let mut descriptor =
+			nix::libc::pollfd { fd: input.as_raw_fd(), events: nix::libc::POLLIN, revents: 0 };
+		while !stop.load(Ordering::Acquire) {
+			descriptor.revents = 0;
+			// SAFETY: single pollfd, valid for the call.
+			let ready = unsafe { nix::libc::poll(&mut descriptor, 1, 50) };
+			if ready < 0 {
+				if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+					continue;
+				}
+				return;
+			}
+			if ready == 0 {
+				continue;
+			}
+			if descriptor.revents & (nix::libc::POLLERR | nix::libc::POLLNVAL) != 0 {
+				return;
+			}
+			match input.read(&mut bytes) {
+				Ok(0) => return,
+				Ok(read) => {
+					if tx.send(bytes[..read].to_vec()).is_err() {
+						return;
+					}
+				},
+				Err(error)
+					if matches!(
+						error.kind(),
+						io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+					) => {},
+				Err(_) => return,
+			}
+		}
+	}
+	#[cfg(windows)]
+	{
+		use std::{io::Read as _, os::windows::io::AsRawHandle as _};
+		let mut input = input;
+		let handle = input.as_raw_handle();
+		while !stop.load(Ordering::Acquire) {
+			let ready =
+				unsafe { windows_sys::Win32::System::Threading::WaitForSingleObject(handle, 50) };
+			if ready == windows_sys::Win32::Foundation::WAIT_TIMEOUT {
+				continue;
+			}
+			if ready != windows_sys::Win32::Foundation::WAIT_OBJECT_0 {
+				return;
+			}
+			match input.read(&mut bytes) {
+				Ok(0) => return,
+				Ok(read) => {
+					if tx.send(bytes[..read].to_vec()).is_err() {
+						return;
+					}
+				},
+				Err(_) => return,
+			}
+		}
+	}
+}
+
+/// The decode loop: byte source, control channel, decoder deadline, and
+/// resize pipe merged into one ordered stream of [`TerminalEvent`]s.
+async fn actor(
+	mut source: ByteSource,
+	mut decoder: InputDecoder,
+	mut events: Vec<InputEvent>,
+	events_tx: flume::Sender<TerminalEvent>,
+	ctl_rx: flume::Receiver<Ctl>,
+	#[cfg(unix)] resize: Option<tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>>,
+	#[cfg(windows)] resize: (),
+	resize_tx: tokio::sync::watch::Sender<u64>,
+) {
+	// The resize sender lives for the actor's lifetime so
+	// `watch::Receiver::changed` pends instead of erroring where resize
+	// wakes never fire.
+	let mut resize_wakes = 0_u64;
+	loop {
+		for event in std::mem::take(&mut events) {
+			if events_tx.send(TerminalEvent::Input(event)).is_err() {
+				return;
+			}
+		}
+		let wake = decoder.deadline().map(tokio::time::Instant::from_std);
+		tokio::select! {
+			// Resize outranks everything: a replenished debug or input
+			// backlog must never keep the watch from firing.
+			biased;
+			() = resize_readable(#[cfg(unix)] resize.as_ref()) => {
+				resize_wakes += 1;
+				if resize_tx.send(resize_wakes).is_err() {
+					return;
+				}
+			},
+			chunk = source.next() => if let Ok(Some(bytes)) = chunk {
+						decoder.feed(&bytes, std::time::Instant::now(), &mut events);
+					} else {
+						let _ = events_tx.send(TerminalEvent::Closed);
+						return;
+					},
+			// One ingress action per iteration: flume preserves send order
+			// and the loop-top flush keeps decoded input ahead of later
+			// actions, while resize stays reachable between actions.
+			ctl = ctl_rx.recv_async() => {
+				let Ok(ctl) = ctl else {
+					// The owning terminal is gone; nothing to serve.
+					return;
+				};
+				if !apply_ctl(ctl, &mut decoder, &mut events, &events_tx) {
+					return;
+				}
+			},
+			() = deadline(wake) => {
+				decoder.tick(std::time::Instant::now(), &mut events);
+			},
+		}
+	}
+}
+
+/// Applies one ingress action in order: raw bytes advance the decoder,
+/// events flush decoded input queued ahead of them and then emit, keymap
+/// swaps apply immediately. `false` once the mailbox is gone.
+fn apply_ctl(
+	ctl: Ctl,
+	decoder: &mut InputDecoder,
+	events: &mut Vec<InputEvent>,
+	events_tx: &flume::Sender<TerminalEvent>,
+) -> bool {
+	match ctl {
+		Ctl::Bytes(bytes) => {
+			decoder.feed(&bytes, std::time::Instant::now(), events);
+			true
+		},
+		Ctl::Event(event) => {
+			for decoded in events.drain(..) {
+				if events_tx.send(TerminalEvent::Input(decoded)).is_err() {
+					return false;
+				}
+			}
+			events_tx.send(event).is_ok()
+		},
+		Ctl::Keymap(keymap) => {
+			*decoder.keymap_mut() = keymap;
+			true
+		},
+	}
+}
+
+/// Resolves once the resize self-pipe is readable, after draining it; never
+/// resolves without a pipe.
+#[cfg(unix)]
+async fn resize_readable(resize: Option<&tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>>) -> () {
+	let Some(fd) = resize else {
+		return std::future::pending().await;
+	};
+	loop {
+		let Ok(mut guard) = fd.readable().await else {
+			return std::future::pending().await;
+		};
+		let mut bytes = [0_u8; 128];
+		match guard.try_io(|fd| read_fd(fd.get_ref(), &mut bytes)) {
+			Ok(Ok(0)) => return std::future::pending().await,
+			Ok(Ok(_)) => return,
+			Ok(Err(_)) => return std::future::pending().await,
+			Err(_) => {},
+		}
+	}
+}
+
+#[cfg(windows)]
+async fn resize_readable(_resize: ()) {
+	std::future::pending().await
+}
+
+/// Sleeps until `at`; `None` disables the branch.
+async fn deadline(at: Option<tokio::time::Instant>) {
+	match at {
+		Some(at) => tokio::time::sleep_until(at).await,
+		None => std::future::pending().await,
+	}
+}

@@ -1,0 +1,28 @@
+[package]
+name = "omp-llm-devin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Devin Cascade LLM transport codec and wire types"
+
+[dependencies]
+async-stream = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+omp-core = { workspace = true }
+omp-llm-types = { workspace = true }
+prost = { workspace = true }
+smallvec = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+
+
+[dev-dependencies]
+serde_json = { workspace = true }
+[lints]
+workspace = true

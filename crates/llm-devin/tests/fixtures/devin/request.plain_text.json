@@ -1,0 +1,4 @@
+{
+  "canonical_intent": {"model": "devin-test", "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}]},
+  "wire_body": {"model": "devin-test", "messages": [{"role": "USER", "content": "Hello"}], "stream": true}
+}

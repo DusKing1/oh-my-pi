@@ -1,0 +1,1958 @@
+//! Terminal-agnostic keyboard and mouse input primitives.
+
+use std::time::{Duration, Instant};
+
+use omp_core::SmolStr;
+use xutf::{IntoUnicodeNormalized, Text};
+
+use crate::rich::cell_width;
+
+// ---------------------------------------------------------------- events
+
+/// Decoded keyboard input, terminal-agnostic.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Key {
+	/// Arrow up: widget-local cursor until the top edge, then focus ring.
+	Up,
+	/// Arrow down: widget-local cursor until the bottom edge, then ring.
+	Down,
+	/// Arrow left: chips/enums/number fields consume; else focus ring.
+	Left,
+	/// Arrow right: chips/enums/number fields consume; else focus ring.
+	Right,
+	/// Next focusable widget (always escapes the current widget).
+	Tab,
+	/// Previous focusable widget.
+	BackTab,
+	/// Activate / choose / newline (editor) / press (button).
+	Enter,
+	/// Toggle (checkbox/multi) or activate; literal space in text entry.
+	Space,
+	/// Close popup, then clear filter, then cancel the whole dialog.
+	Esc,
+	/// Delete before the cursor in text entry.
+	Backspace,
+	/// Delete under the cursor in text entry.
+	Delete,
+	/// Insert at the cursor.
+	Insert,
+	/// Jump to line/list start.
+	Home,
+	/// Jump to line/list end.
+	End,
+	/// Scroll one viewport up.
+	PageUp,
+	/// Scroll one viewport down.
+	PageDown,
+	/// Function key, numbered from F1 through F12.
+	Function(u8),
+	/// Ctrl-chord with a letter, normalized to lowercase. Text widgets
+	/// implement the readline set (`a e k u w b f d`); others ignore.
+	Ctrl(char),
+	/// Alt-chord with a letter, normalized to lowercase, for chords without
+	/// a canonical cross-terminal meaning (e.g. pi binds `alt+y` yank-pop).
+	/// Encoding variants of one physical intent (`alt+f`/`alt+b` word
+	/// motion, `alt+d` word delete, ESC-CR newline) normalize to their
+	/// semantic keys instead and never reach this variant.
+	Alt(char),
+	/// Ctrl+Alt chord, normalized to lowercase. Used by pi's backward
+	/// character-jump binding and available to embedders for other chords.
+	CtrlAlt(char),
+	/// Shift+Enter: literal newline in multiline text entry.
+	ShiftEnter,
+	/// Ctrl/Alt+Left: previous word boundary.
+	WordLeft,
+	/// Ctrl/Alt+Right: next word boundary.
+	WordRight,
+	/// Alt+D / Alt+Delete: delete forward through the next word end.
+	WordDelete,
+	/// Ctrl+V: host-driven clipboard paste, preferring images (see the runtime's
+	/// clipboard fallback).
+	Paste,
+	/// Ctrl+Shift+V: host-driven clipboard paste of text only, inserted
+	/// verbatim ([`crate::Component::paste_raw`]) — no image or file-URL
+	/// interpretation, no drop classification, no large-paste collapse.
+	PasteRaw,
+	/// Printable input: text entry, type-to-search (`/`), shortcuts.
+	Char(char),
+}
+
+const INPUT_TIMEOUT: Duration = Duration::from_millis(75);
+const PARTIAL_HOLD_TIMEOUT: Duration = Duration::from_millis(150);
+const PASTE_INACTIVITY_TIMEOUT: Duration = Duration::from_millis(1000);
+const KITTY_DEDUP_TIMEOUT: Duration = Duration::from_millis(25);
+const MAX_CSI_BYTES: usize = 4096;
+const MAX_STRING_SEQ_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PASTE_BYTES: usize = 64 * 1024 * 1024;
+const PASTE_END: &[u8] = b"\x1b[201~";
+
+/// A terminal-generated reply separated from user key input.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum TerminalResponse {
+	/// Primary or secondary device attributes (`DA`).
+	DeviceAttributes(SmolStr),
+	/// DEC private-mode report (`DECRPM`).
+	ModeReport {
+		/// Queried DEC mode.
+		mode:   u16,
+		/// Mode status reported by the terminal.
+		status: u8,
+	},
+	/// Device-status report (`DSR`), including cursor position.
+	DeviceStatus(SmolStr),
+	/// Kitty keyboard protocol flags.
+	KittyKeyboardFlags(u8),
+	/// Operating-system command reply, without its framing bytes.
+	Osc(SmolStr),
+	/// Kitty graphics APC reply, without its framing bytes.
+	KittyGraphics(SmolStr),
+	/// Device-control string reply, without its framing bytes.
+	DeviceControlString(SmolStr),
+	/// OSC 11 terminal background-color report.
+	OscColor {
+		/// OSC color-table index (11 for the terminal background).
+		index: u8,
+		/// Red component normalized to 16 bits.
+		r:     u16,
+		/// Green component normalized to 16 bits.
+		g:     u16,
+		/// Blue component normalized to 16 bits.
+		b:     u16,
+	},
+	/// DEC mode 2031 appearance notification (`1` dark, `2` light).
+	AppearanceChanged(u8),
+	/// DEC mode 2048 in-band resize report.
+	InBandResize {
+		/// Terminal rows.
+		rows: u16,
+		/// Terminal columns.
+		cols: u16,
+		/// Cell width in pixels.
+		x_px: u16,
+		/// Cell height in pixels.
+		y_px: u16,
+	},
+	/// Non-kitty application-program command reply, without its framing bytes.
+	ApplicationProgramCommand(SmolStr),
+}
+/// Physical button encoded by an SGR mouse report.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum MouseButton {
+	/// Left button.
+	Left,
+	/// Middle button.
+	Middle,
+	/// Right button.
+	Right,
+	/// Vertical wheel up.
+	WheelUp,
+	/// Vertical wheel down.
+	WheelDown,
+	/// Horizontal wheel left.
+	WheelLeft,
+	/// Horizontal wheel right.
+	WheelRight,
+	/// Motion without a pressed button, or an unknown button code.
+	None,
+}
+
+/// Modifier bits attached to terminal input.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Mods {
+	/// Shift was held.
+	pub shift:     bool,
+	/// Alt was held.
+	pub alt:       bool,
+	/// Control was held.
+	pub ctrl:      bool,
+	/// Super (Command/Windows) was held.
+	pub super_key: bool,
+	/// Hyper was held.
+	pub hyper:     bool,
+	/// Meta was held.
+	pub meta:      bool,
+}
+
+/// Lossless SGR mouse report with its routable gesture kind.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MouseReport {
+	/// Gesture routed to widgets.
+	pub kind:    Mouse,
+	/// Zero-based column.
+	pub col:     u16,
+	/// Zero-based row.
+	pub row:     u16,
+	/// Physical button or wheel direction.
+	pub button:  MouseButton,
+	/// Keyboard modifiers encoded in the button bitfield.
+	pub mods:    Mods,
+	/// `true` for an `M` report and `false` for an `m` release report.
+	pub pressed: bool,
+}
+
+/// One framed event from the streaming terminal input decoder.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum InputEvent {
+	/// Keyboard input.
+	Key(Key),
+	/// Lossless SGR mouse input.
+	Mouse(MouseReport),
+	/// Sanitized bracketed-paste text.
+	Paste(SmolStr),
+	/// Focus gained (`true`) or lost (`false`).
+	Focus(bool),
+	/// A terminal-generated capability or status reply.
+	Response(TerminalResponse),
+}
+
+/// Stateful terminal input framer.
+///
+/// Incomplete escape sequences and UTF-8 scalars remain buffered until a
+/// later [`feed`](Self::feed) call completes them or [`tick`](Self::tick)
+/// reaches their deterministic timeout.
+#[derive(Default)]
+pub struct InputDecoder {
+	keymap:                Keymap,
+	buffer:                Vec<u8>,
+	incomplete_since:      Option<Instant>,
+	kitty_keyboard_active: bool,
+	pending_kitty_print:   Option<(u32, Instant)>,
+	paste:                 Vec<u8>,
+	paste_active:          bool,
+	paste_last_input:      Option<Instant>,
+	paste_scan_from:       usize,
+}
+
+impl InputDecoder {
+	/// Creates an empty decoder using pi-compatible timeout and size limits.
+	pub fn new() -> Self {
+		Self {
+			keymap:                Keymap::default(),
+			buffer:                Vec::new(),
+			incomplete_since:      None,
+			kitty_keyboard_active: false,
+			pending_kitty_print:   None,
+			paste:                 Vec::new(),
+			paste_active:          false,
+			paste_last_input:      None,
+			paste_scan_from:       0,
+		}
+	}
+
+	/// Returns the active chord-to-key map.
+	pub const fn keymap(&self) -> &Keymap {
+		&self.keymap
+	}
+
+	/// Returns the active chord-to-key map for rebinding.
+	///
+	/// Changes apply to the next chord emitted by the decoder.
+	pub const fn keymap_mut(&mut self) -> &mut Keymap {
+		&mut self.keymap
+	}
+
+	/// Tells the framer whether Kitty keyboard reporting is active.
+	///
+	/// Active Kitty mode extends the hold for every partial escape because a
+	/// bare escape is then itself reported as CSI-u.
+	pub const fn set_kitty_keyboard(&mut self, active: bool) {
+		self.kitty_keyboard_active = active;
+	}
+
+	/// Feeds one arbitrary byte chunk and appends every completed event to
+	/// `out`.
+	pub fn feed(&mut self, bytes: &[u8], now: Instant, out: &mut Vec<InputEvent>) {
+		self.expire_paste(now, out);
+		self.expire_partial(now, out);
+		if self.paste_active {
+			self.paste.extend_from_slice(bytes);
+			self.paste_last_input = Some(now);
+			self.process_paste(now, out);
+			return;
+		}
+		self.buffer.extend_from_slice(bytes);
+		self.process_buffer(now, out);
+	}
+
+	/// Advances timeout-driven recovery without reading input.
+	pub fn tick(&mut self, now: Instant, out: &mut Vec<InputEvent>) {
+		self.expire_paste(now, out);
+		self.expire_partial(now, out);
+	}
+
+	/// Earliest instant at which [`tick`](Self::tick) could release buffered
+	/// input, or `None` when nothing is pending. May be conservative; `tick`
+	/// re-checks the active deadline.
+	pub fn deadline(&self) -> Option<Instant> {
+		[
+			self.incomplete_since.map(|at| at + INPUT_TIMEOUT),
+			self
+				.paste_last_input
+				.map(|at| at + PASTE_INACTIVITY_TIMEOUT),
+			self
+				.pending_kitty_print
+				.map(|(_, at)| at + KITTY_DEDUP_TIMEOUT),
+		]
+		.into_iter()
+		.flatten()
+		.min()
+	}
+
+	fn process_buffer(&mut self, now: Instant, out: &mut Vec<InputEvent>) {
+		loop {
+			if self.buffer.is_empty() {
+				self.incomplete_since = None;
+				return;
+			}
+			if self.buffer.starts_with(b"\x1b\x1b[<") {
+				self.emit(Decoded::Chord(Chord::plain(Key::Esc)), now, out);
+				self.buffer.drain(..1);
+				continue;
+			}
+			let resolution = resolve_frame(&self.buffer);
+			match resolution {
+				FrameResolution::Incomplete => {
+					self.incomplete_since.get_or_insert(now);
+					return;
+				},
+				FrameResolution::Overflow(length) => {
+					if !emit_unterminated_response(&self.buffer[..length], out) {
+						emit_raw(&self.buffer[..length], &self.keymap, out);
+					}
+					self.pending_kitty_print = None;
+					self.buffer.drain(..length);
+					self.incomplete_since = None;
+				},
+				FrameResolution::Complete(length) => {
+					let decoded = decode_frame(&self.buffer[..length]);
+					self.buffer.drain(..length);
+					self.incomplete_since = None;
+					if matches!(decoded, Decoded::PasteStart) {
+						self.paste_active = true;
+						self.paste_last_input = Some(now);
+						self.paste_scan_from = 0;
+						self.paste.clear();
+						self.paste.append(&mut self.buffer);
+						self.process_paste(now, out);
+						if self.paste_active {
+							return;
+						}
+					} else {
+						self.emit(decoded, now, out);
+					}
+				},
+			}
+		}
+	}
+
+	fn process_paste(&mut self, now: Instant, out: &mut Vec<InputEvent>) {
+		let start = self.paste_scan_from.saturating_sub(PASTE_END.len() - 1);
+		let end = self.paste[start..]
+			.windows(PASTE_END.len())
+			.position(|window| window == PASTE_END)
+			.map(|offset| start + offset);
+		if let Some(end) = end {
+			let remaining = self.paste.split_off(end + PASTE_END.len());
+			self.paste.truncate(end);
+			self.finish_paste(out);
+			self.buffer = remaining;
+			self.process_buffer(now, out);
+			return;
+		}
+		self.paste_scan_from = self.paste.len();
+		if self.paste.len() > MAX_PASTE_BYTES {
+			self.finish_paste(out);
+		}
+	}
+
+	fn finish_paste(&mut self, out: &mut Vec<InputEvent>) {
+		let bytes = std::mem::take(&mut self.paste);
+		let decoded = decode_reencoded_paste_controls(&bytes);
+		out.push(InputEvent::Paste(SmolStr::from(sanitize_paste(&decoded))));
+		self.paste_active = false;
+		self.paste_last_input = None;
+		self.paste_scan_from = 0;
+		self.pending_kitty_print = None;
+	}
+
+	fn expire_paste(&mut self, now: Instant, out: &mut Vec<InputEvent>) {
+		if self.paste_active
+			&& self
+				.paste_last_input
+				.is_some_and(|last| now.saturating_duration_since(last) >= PASTE_INACTIVITY_TIMEOUT)
+		{
+			self.finish_paste(out);
+		}
+	}
+
+	fn expire_partial(&mut self, now: Instant, out: &mut Vec<InputEvent>) {
+		let Some(since) = self.incomplete_since else {
+			return;
+		};
+		let extended = self.kitty_keyboard_active || is_sgr_mouse_partial(&self.buffer);
+		let timeout = if extended {
+			INPUT_TIMEOUT + PARTIAL_HOLD_TIMEOUT
+		} else {
+			INPUT_TIMEOUT
+		};
+		if now.saturating_duration_since(since) < timeout {
+			return;
+		}
+		let buffered = std::mem::take(&mut self.buffer);
+		self.incomplete_since = None;
+		self.pending_kitty_print = None;
+		if !emit_unterminated_response(&buffered, out) {
+			if buffered == b"\x1b\x1b" {
+				emit_chord(&self.keymap, Chord::plain(Key::Esc), out);
+				emit_chord(&self.keymap, Chord::plain(Key::Esc), out);
+			} else {
+				emit_raw(&buffered, &self.keymap, out);
+			}
+		}
+	}
+
+	fn emit(&mut self, decoded: Decoded, now: Instant, out: &mut Vec<InputEvent>) {
+		let (event, chord, kitty_printable) = match decoded {
+			Decoded::Event(event) => (Some(event), None, false),
+			Decoded::Chord(chord) => (None, Some(chord), false),
+			Decoded::KittyChord(chord) => (None, Some(chord), true),
+			Decoded::PasteStart | Decoded::None => return,
+		};
+		let printable = chord.and_then(chord_printable_codepoint);
+		if printable.is_some_and(|printable| {
+			self.pending_kitty_print.is_some_and(|(codepoint, at)| {
+				printable == codepoint && now.saturating_duration_since(at) <= KITTY_DEDUP_TIMEOUT
+			})
+		}) {
+			self.pending_kitty_print = None;
+			return;
+		}
+		self.pending_kitty_print = if kitty_printable {
+			printable.map(|codepoint| (codepoint, now))
+		} else {
+			None
+		};
+		if let Some(InputEvent::Response(TerminalResponse::KittyKeyboardFlags(flags))) = event {
+			self.kitty_keyboard_active = flags != 0;
+			out.push(InputEvent::Response(TerminalResponse::KittyKeyboardFlags(flags)));
+		} else if let Some(event) = event {
+			out.push(event);
+		} else if let Some(chord) = chord {
+			emit_chord(&self.keymap, chord, out);
+		}
+	}
+}
+
+#[derive(Clone, Debug)]
+enum Decoded {
+	Event(InputEvent),
+	Chord(Chord),
+	KittyChord(Chord),
+	PasteStart,
+	None,
+}
+
+enum FrameResolution {
+	Complete(usize),
+	Incomplete,
+	Overflow(usize),
+}
+
+fn resolve_frame(bytes: &[u8]) -> FrameResolution {
+	if bytes[0] != 0x1b {
+		let width = utf8_width(bytes[0]);
+		return if width > bytes.len() {
+			FrameResolution::Incomplete
+		} else {
+			FrameResolution::Complete(width.max(1))
+		};
+	}
+	if bytes.len() == 1 {
+		return FrameResolution::Incomplete;
+	}
+	if bytes[1] == 0x1b {
+		if bytes.len() == 2 {
+			return FrameResolution::Incomplete;
+		}
+		if matches!(bytes[2], b'[' | b'O') {
+			return match resolve_escape(&bytes[1..]) {
+				FrameResolution::Complete(length) => FrameResolution::Complete(length + 1),
+				FrameResolution::Overflow(length) => FrameResolution::Overflow(length + 1),
+				FrameResolution::Incomplete => FrameResolution::Incomplete,
+			};
+		}
+		return FrameResolution::Complete(1);
+	}
+	resolve_escape(bytes)
+}
+
+fn resolve_escape(bytes: &[u8]) -> FrameResolution {
+	match bytes[1] {
+		b'[' => {
+			if bytes.len() < 3 {
+				return FrameResolution::Incomplete;
+			}
+			if bytes[2] == b'M' {
+				return if bytes.len() >= 6 {
+					FrameResolution::Complete(6)
+				} else {
+					FrameResolution::Incomplete
+				};
+			}
+			let limit = bytes.len().min(MAX_CSI_BYTES);
+			let sgr = bytes[2] == b'<';
+			for index in 2..limit {
+				if (0x40..=0x7e).contains(&bytes[index]) {
+					if !sgr {
+						return FrameResolution::Complete(index + 1);
+					}
+					if matches!(bytes[index], b'M' | b'm') && valid_sgr_body(&bytes[2..=index]) {
+						return FrameResolution::Complete(index + 1);
+					}
+				}
+			}
+			if bytes.len() >= MAX_CSI_BYTES {
+				FrameResolution::Overflow(MAX_CSI_BYTES)
+			} else {
+				FrameResolution::Incomplete
+			}
+		},
+		b']' | b'P' | b'_' => {
+			let limit = bytes.len().min(MAX_STRING_SEQ_BYTES);
+			for index in 2..limit {
+				if bytes[1] == b']' && bytes[index] == 0x07 {
+					return FrameResolution::Complete(index + 1);
+				}
+				if bytes[index] == 0x1b && index + 1 < limit && bytes[index + 1] == b'\\' {
+					return FrameResolution::Complete(index + 2);
+				}
+			}
+			if bytes.len() >= MAX_STRING_SEQ_BYTES {
+				FrameResolution::Overflow(MAX_STRING_SEQ_BYTES)
+			} else {
+				FrameResolution::Incomplete
+			}
+		},
+		b'O' => {
+			if bytes.len() >= 3 {
+				FrameResolution::Complete(3)
+			} else {
+				FrameResolution::Incomplete
+			}
+		},
+		_ => {
+			let width = utf8_width(bytes[1]);
+			if bytes.len() > width {
+				FrameResolution::Complete(width + 1)
+			} else {
+				FrameResolution::Incomplete
+			}
+		},
+	}
+}
+
+fn decode_frame(bytes: &[u8]) -> Decoded {
+	if bytes[0] != 0x1b {
+		return decode_plain(bytes, false).map_or(Decoded::None, Decoded::Chord);
+	}
+	if bytes == b"\x1b" {
+		return Decoded::Chord(Chord::plain(Key::Esc));
+	}
+	let (sequence, meta) = if bytes.starts_with(b"\x1b\x1b") {
+		(&bytes[1..], true)
+	} else {
+		(bytes, false)
+	};
+	match sequence.get(1) {
+		Some(b'[') => {
+			decode_csi(&sequence[2..sequence.len() - 1], sequence[sequence.len() - 1], meta)
+		},
+		Some(b'O') => {
+			let key = match sequence[2] {
+				b'A' => Some(Key::Up),
+				b'B' => Some(Key::Down),
+				b'C' => Some(Key::Right),
+				b'D' => Some(Key::Left),
+				b'H' => Some(Key::Home),
+				b'F' => Some(Key::End),
+				b'P'..=b'S' => Some(Key::Function(sequence[2] - b'P' + 1)),
+				_ => None,
+			};
+			key.map_or(Decoded::None, |key| {
+				Decoded::Chord(Chord::with_modifiers(key, u32::from(meta) * 2))
+			})
+		},
+		Some(b']') => {
+			let end = if sequence.ends_with(b"\x1b\\") {
+				sequence.len() - 2
+			} else {
+				sequence.len() - 1
+			};
+			let payload = &sequence[2..end];
+			if let Some((index, r, g, b)) = parse_osc_color(payload) {
+				Decoded::Event(InputEvent::Response(TerminalResponse::OscColor { index, r, g, b }))
+			} else {
+				Decoded::Event(InputEvent::Response(TerminalResponse::Osc(smol(payload))))
+			}
+		},
+		Some(b'P') => {
+			let end = sequence.len().saturating_sub(2);
+			Decoded::Event(InputEvent::Response(TerminalResponse::DeviceControlString(smol(
+				&sequence[2..end],
+			))))
+		},
+		Some(b'_') => {
+			let end = sequence.len().saturating_sub(2);
+			let payload = &sequence[2..end];
+			if let Some(payload) = payload.strip_prefix(b"G") {
+				Decoded::Event(InputEvent::Response(TerminalResponse::KittyGraphics(smol(payload))))
+			} else {
+				Decoded::Event(InputEvent::Response(TerminalResponse::ApplicationProgramCommand(smol(
+					payload,
+				))))
+			}
+		},
+		_ => decode_plain(&sequence[1..], true).map_or(Decoded::None, Decoded::Chord),
+	}
+}
+
+fn decode_csi(body: &[u8], final_byte: u8, meta: bool) -> Decoded {
+	if final_byte == b'c' && matches!(body.first(), Some(b'?' | b'>')) {
+		return Decoded::Event(InputEvent::Response(TerminalResponse::DeviceAttributes(smol(body))));
+	}
+	if final_byte == b'y'
+		&& let Some(fields) = body
+			.strip_prefix(b"?")
+			.and_then(|body| body.strip_suffix(b"$"))
+	{
+		let mut fields = fields.split(|byte| *byte == b';');
+		if let (Some(mode), Some(status)) =
+			(fields.next().and_then(parse_decimal_u16), fields.next().and_then(parse_decimal_u8))
+		{
+			return Decoded::Event(InputEvent::Response(TerminalResponse::ModeReport {
+				mode,
+				status,
+			}));
+		}
+	}
+	if final_byte == b'u'
+		&& let Some(flags) = body.strip_prefix(b"?").and_then(parse_decimal_u8)
+	{
+		return Decoded::Event(InputEvent::Response(TerminalResponse::KittyKeyboardFlags(flags)));
+	}
+	if final_byte == b'n'
+		&& let Some(appearance) = parse_appearance_response(body)
+	{
+		return Decoded::Event(InputEvent::Response(TerminalResponse::AppearanceChanged(appearance)));
+	}
+	if final_byte == b't'
+		&& let Some((rows, cols, x_px, y_px)) = parse_in_band_resize(body)
+	{
+		return Decoded::Event(InputEvent::Response(TerminalResponse::InBandResize {
+			rows,
+			cols,
+			x_px,
+			y_px,
+		}));
+	}
+	if matches!(final_byte, b'n' | b'R') {
+		return Decoded::Event(InputEvent::Response(TerminalResponse::DeviceStatus(smol(body))));
+	}
+	if body.is_empty() && matches!(final_byte, b'I' | b'O') {
+		return Decoded::Event(InputEvent::Focus(final_byte == b'I'));
+	}
+	if final_byte == b'~' && body == b"200" {
+		return Decoded::PasteStart;
+	}
+	if body.starts_with(b"<") && matches!(final_byte, b'M' | b'm') {
+		return decode_sgr_mouse(body, final_byte);
+	}
+	if final_byte == b'u' {
+		return decode_kitty_key(body, meta);
+	}
+	if final_byte == b'~' {
+		return decode_tilde_key(body, meta);
+	}
+	let mut fields = body.split(|byte| *byte == b';');
+	let first = fields.next().unwrap_or_default();
+	let modifiers = if first == b"1" {
+		fields.next().and_then(parse_modifier).unwrap_or(0)
+	} else {
+		0
+	} | if meta { 2 } else { 0 };
+	let key = match final_byte {
+		b'A' => Some(Key::Up),
+		b'B' => Some(Key::Down),
+		b'C' => Some(Key::Right),
+		b'D' => Some(Key::Left),
+		b'H' => Some(Key::Home),
+		b'F' => Some(Key::End),
+		b'Z' => Some(Key::Tab),
+		_ => None,
+	};
+	let modifiers = modifiers | u32::from(final_byte == b'Z');
+	key.map_or(Decoded::None, |key| Decoded::Chord(Chord::with_modifiers(key, modifiers)))
+}
+
+fn decode_kitty_key(body: &[u8], meta: bool) -> Decoded {
+	let mut fields = body.split(|byte| *byte == b';');
+	let codepoints = fields.next().unwrap_or_default();
+	let mut codepoints = codepoints.split(|byte| *byte == b':');
+	let primary = codepoints.next().and_then(parse_decimal).unwrap_or(0);
+	let shifted = codepoints.next().and_then(parse_decimal);
+	let modifier_field = fields.next().unwrap_or(b"1");
+	let mut modifier_parts = modifier_field.split(|byte| *byte == b':');
+	let mut modifiers = modifier_parts.next().and_then(parse_modifier).unwrap_or(0);
+	if meta {
+		modifiers |= 2;
+	}
+	let event_type = modifier_parts
+		.next()
+		.and_then(parse_decimal_u8)
+		.unwrap_or(1);
+	if event_type == 3 {
+		return Decoded::None;
+	}
+	let codepoint = if modifiers & 1 != 0 {
+		shifted.unwrap_or(primary)
+	} else {
+		primary
+	};
+	let Some(chord) = chord_from_codepoint(codepoint, modifiers) else {
+		return Decoded::None;
+	};
+	let printable = modifiers == 0 && codepoint >= 32;
+	if printable {
+		Decoded::KittyChord(chord)
+	} else {
+		Decoded::Chord(chord)
+	}
+}
+
+fn chord_printable_codepoint(chord: Chord) -> Option<u32> {
+	match chord.key {
+		Key::Char(character) => Some(u32::from(character)),
+		Key::Space => Some(32),
+		_ => None,
+	}
+}
+
+fn decode_tilde_key(body: &[u8], meta: bool) -> Decoded {
+	let mut fields = body.split(|byte| *byte == b';');
+	let first = fields.next().unwrap_or_default();
+	let second = fields.next();
+	let third = fields.next();
+	if first == b"27"
+		&& let (Some(modifiers), Some(codepoint), None) = (second, third, fields.next())
+	{
+		let modifiers = parse_modifier(modifiers).unwrap_or(0) | if meta { 2 } else { 0 };
+		let codepoint = parse_decimal(codepoint).unwrap_or(0);
+		return chord_from_codepoint(codepoint, modifiers).map_or(Decoded::None, Decoded::Chord);
+	}
+	let number = parse_decimal_u8(first).unwrap_or(0);
+	let modifiers = second.and_then(parse_modifier).unwrap_or(0) | if meta { 2 } else { 0 };
+	let key = match number {
+		1 | 7 => Some(Key::Home),
+		2 => Some(Key::Insert),
+		3 => Some(Key::Delete),
+		4 | 8 => Some(Key::End),
+		5 => Some(Key::PageUp),
+		6 => Some(Key::PageDown),
+		11..=15 => Some(Key::Function(number - 10)),
+		17..=21 => Some(Key::Function(number - 11)),
+		23 | 24 => Some(Key::Function(number - 12)),
+		_ => None,
+	};
+	key.map(|key| Chord::with_modifiers(key, modifiers))
+		.map_or(Decoded::None, Decoded::Chord)
+}
+
+fn decode_sgr_mouse(body: &[u8], final_byte: u8) -> Decoded {
+	let mut fields = body[1..].split(|byte| *byte == b';');
+	let Some(bits) = fields.next().and_then(parse_decimal_u16) else {
+		return Decoded::None;
+	};
+	let Some(column) = fields.next().and_then(parse_decimal_u16) else {
+		return Decoded::None;
+	};
+	let Some(row) = fields.next().and_then(parse_decimal_u16) else {
+		return Decoded::None;
+	};
+	let button = if bits & 64 != 0 {
+		match bits & 3 {
+			0 => MouseButton::WheelUp,
+			1 => MouseButton::WheelDown,
+			2 => MouseButton::WheelLeft,
+			_ => MouseButton::WheelRight,
+		}
+	} else {
+		match bits & 3 {
+			0 => MouseButton::Left,
+			1 => MouseButton::Middle,
+			2 => MouseButton::Right,
+			_ => MouseButton::None,
+		}
+	};
+	let kind = match button {
+		MouseButton::WheelUp => Mouse::WheelUp,
+		MouseButton::WheelDown => Mouse::WheelDown,
+		MouseButton::WheelLeft => Mouse::WheelLeft,
+		MouseButton::WheelRight => Mouse::WheelRight,
+		_ if final_byte == b'm' => Mouse::Release,
+		MouseButton::None if bits & 32 != 0 => Mouse::Move,
+		_ if bits & 32 != 0 => Mouse::Drag,
+		MouseButton::Left => Mouse::Click,
+		MouseButton::Middle => Mouse::MiddleClick,
+		MouseButton::Right => Mouse::RightClick,
+		MouseButton::None => Mouse::Move,
+	};
+	Decoded::Event(InputEvent::Mouse(MouseReport {
+		kind,
+		col: column.saturating_sub(1),
+		row: row.saturating_sub(1),
+		button,
+		mods: Mods {
+			shift: bits & 4 != 0,
+			alt: bits & 8 != 0,
+			ctrl: bits & 16 != 0,
+			..Mods::default()
+		},
+		pressed: final_byte == b'M',
+	}))
+}
+
+fn chord_from_codepoint(codepoint: u32, modifiers: u32) -> Option<Chord> {
+	let key = match codepoint {
+		57344 | 27 => Some(Key::Esc),
+		57345 | 10 | 13 => Some(Key::Enter),
+		57346 | 9 => Some(Key::Tab),
+		57347 | 127 => Some(Key::Backspace),
+		57348 => Some(Key::Insert),
+		57349 => Some(Key::Delete),
+		57350 => Some(Key::Left),
+		57351 => Some(Key::Right),
+		57352 => Some(Key::Up),
+		57353 => Some(Key::Down),
+		57354 => Some(Key::PageUp),
+		57355 => Some(Key::PageDown),
+		57356 => Some(Key::Home),
+		57357 => Some(Key::End),
+		57364..=57375 => Some(Key::Function(u8::try_from(codepoint - 57363).ok()?)),
+		_ => character_to_key(char::from_u32(codepoint)?),
+	}?;
+	Some(Chord::with_modifiers(key, modifiers))
+}
+
+fn decode_plain(bytes: &[u8], alt: bool) -> Option<Chord> {
+	let mut chord = if bytes[0] < 0x20 || bytes[0] == 0x7f {
+		decode_control(bytes[0])?
+	} else {
+		let character = std::str::from_utf8(bytes).ok()?.chars().next()?;
+		Chord::plain(character_to_key(character)?)
+	};
+	chord.mods.alt |= alt;
+	Some(chord)
+}
+
+fn decode_control(byte: u8) -> Option<Chord> {
+	let chord = match byte {
+		b'\t' => Chord::plain(Key::Tab),
+		b'\r' | b'\n' => Chord::plain(Key::Enter),
+		0x7f | 0x08 => Chord::plain(Key::Backspace),
+		0x01..=0x1a => {
+			Chord::new(Key::Char(char::from(b'a' + byte - 1)), Mods { ctrl: true, ..Mods::default() })
+		},
+		0x1b => Chord::plain(Key::Esc),
+		_ => return None,
+	};
+	Some(chord)
+}
+
+const fn character_to_key(character: char) -> Option<Key> {
+	match character {
+		' ' => Some(Key::Space),
+		'\r' | '\n' => Some(Key::Enter),
+		_ if !character.is_control() => Some(Key::Char(character)),
+		_ => None,
+	}
+}
+
+const fn utf8_width(byte: u8) -> usize {
+	match byte {
+		0x00..=0x7f => 1,
+		0xc2..=0xdf => 2,
+		0xe0..=0xef => 3,
+		0xf0..=0xf4 => 4,
+		_ => 1,
+	}
+}
+
+fn valid_sgr_body(body: &[u8]) -> bool {
+	let Some(body) = body.strip_prefix(b"<") else {
+		return false;
+	};
+	let Some(body) = body.strip_suffix(b"M").or_else(|| body.strip_suffix(b"m")) else {
+		return false;
+	};
+	let mut fields = body.split(|byte| *byte == b';');
+	(0..3).all(|_| fields.next().and_then(parse_decimal).is_some()) && fields.next().is_none()
+}
+
+fn is_sgr_mouse_partial(bytes: &[u8]) -> bool {
+	bytes.starts_with(b"\x1b[<")
+		&& bytes[3..]
+			.iter()
+			.all(|byte| byte.is_ascii_digit() || *byte == b';')
+}
+
+fn parse_modifier(bytes: &[u8]) -> Option<u32> {
+	parse_decimal(bytes).map(|modifier| modifier.saturating_sub(1))
+}
+
+fn parse_decimal(bytes: &[u8]) -> Option<u32> {
+	(!bytes.is_empty() && bytes.iter().all(u8::is_ascii_digit))
+		.then(|| std::str::from_utf8(bytes).ok()?.parse().ok())
+		.flatten()
+}
+
+fn parse_decimal_u16(bytes: &[u8]) -> Option<u16> {
+	parse_decimal(bytes).and_then(|number| u16::try_from(number).ok())
+}
+
+fn parse_decimal_u8(bytes: &[u8]) -> Option<u8> {
+	parse_decimal(bytes).and_then(|number| u8::try_from(number).ok())
+}
+
+fn smol(bytes: &[u8]) -> SmolStr {
+	SmolStr::from(String::from_utf8_lossy(bytes).as_ref())
+}
+fn parse_appearance_response(body: &[u8]) -> Option<u8> {
+	let mut fields = body.strip_prefix(b"?997;")?.split(|byte| *byte == b';');
+	let appearance = fields.next().and_then(parse_decimal_u8)?;
+	(matches!(appearance, 1 | 2) && fields.next().is_none()).then_some(appearance)
+}
+
+fn parse_in_band_resize(body: &[u8]) -> Option<(u16, u16, u16, u16)> {
+	let body = body.strip_suffix(b" ")?;
+	let mut fields = body.split(|byte| *byte == b';');
+	if fields.next()? != b"48" {
+		return None;
+	}
+	let mut number = || {
+		fields
+			.next()
+			.and_then(|field| field.split(|byte| *byte == b':').next())
+			.and_then(parse_decimal_u16)
+	};
+	let rows = number()?;
+	let cols = number()?;
+	let y_px = number()?;
+	let x_px = number()?;
+	(fields.next().is_none()).then_some((rows, cols, x_px, y_px))
+}
+
+fn parse_osc_color(payload: &[u8]) -> Option<(u8, u16, u16, u16)> {
+	let separator = payload.iter().position(|byte| *byte == b';')?;
+	let (index, color) = (&payload[..separator], &payload[separator + 1..]);
+	let index = parse_decimal_u8(index)?;
+	let color = color
+		.strip_prefix(b"rgb:")
+		.or_else(|| color.strip_prefix(b"rgba:"))?;
+	let mut components = color.split(|byte| *byte == b'/');
+	let r = components.next().and_then(parse_hex_component)?;
+	let g = components.next().and_then(parse_hex_component)?;
+	let b = components.next().and_then(parse_hex_component)?;
+	components.next().is_none().then_some((index, r, g, b))
+}
+
+fn parse_hex_component(bytes: &[u8]) -> Option<u16> {
+	if !matches!(bytes.len(), 2 | 4) || !bytes.iter().all(u8::is_ascii_hexdigit) {
+		return None;
+	}
+	let value = u16::from_str_radix(std::str::from_utf8(bytes).ok()?, 16).ok()?;
+	Some(if bytes.len() == 2 {
+		value * 0x101
+	} else {
+		value
+	})
+}
+
+fn emit_unterminated_response(bytes: &[u8], out: &mut Vec<InputEvent>) -> bool {
+	let response = if let Some(payload) = bytes.strip_prefix(b"\x1b]") {
+		TerminalResponse::Osc(smol(payload))
+	} else if let Some(payload) = bytes.strip_prefix(b"\x1b_G") {
+		TerminalResponse::KittyGraphics(smol(payload))
+	} else if let Some(payload) = bytes.strip_prefix(b"\x1b_") {
+		TerminalResponse::ApplicationProgramCommand(smol(payload))
+	} else if let Some(payload) = bytes.strip_prefix(b"\x1bP") {
+		TerminalResponse::DeviceControlString(smol(payload))
+	} else {
+		return false;
+	};
+	out.push(InputEvent::Response(response));
+	true
+}
+
+fn emit_raw(bytes: &[u8], keymap: &Keymap, out: &mut Vec<InputEvent>) {
+	let mut cursor = 0;
+	while cursor < bytes.len() {
+		let width = utf8_width(bytes[cursor]).min(bytes.len() - cursor).max(1);
+		if let Some(chord) = decode_plain(&bytes[cursor..cursor + width], false) {
+			emit_chord(keymap, chord, out);
+		}
+		cursor += width;
+	}
+}
+
+fn emit_chord(keymap: &Keymap, chord: Chord, out: &mut Vec<InputEvent>) {
+	if let Some(key) = keymap.resolve(chord) {
+		out.push(InputEvent::Key(key));
+	}
+}
+
+fn decode_reencoded_paste_controls(bytes: &[u8]) -> String {
+	let mut decoded = Vec::with_capacity(bytes.len());
+	let mut cursor = 0;
+	while cursor < bytes.len() {
+		if bytes[cursor..].starts_with(b"\x1b[") {
+			let tail = &bytes[cursor + 2..];
+			if let Some(end) = tail.iter().position(|byte| matches!(byte, b'u' | b'~')) {
+				let body = &tail[..end];
+				let final_byte = tail[end];
+				let mut fields = body.split(|byte| *byte == b';');
+				let codepoint = if final_byte == b'u' {
+					match (fields.next(), fields.next(), fields.next()) {
+						(Some(codepoint), Some(b"5"), None) => parse_decimal(codepoint),
+						_ => None,
+					}
+				} else {
+					match (fields.next(), fields.next(), fields.next(), fields.next()) {
+						(Some(b"27"), Some(b"5"), Some(codepoint), None) => parse_decimal(codepoint),
+						_ => None,
+					}
+				};
+				if let Some(codepoint @ (65..=90 | 97..=122)) = codepoint {
+					let control = if codepoint >= 97 {
+						codepoint - 96
+					} else {
+						codepoint - 64
+					};
+					decoded.push(u8::try_from(control).expect("control byte fits"));
+					cursor += 2 + end + 1;
+					continue;
+				}
+			}
+		}
+		decoded.push(bytes[cursor]);
+		cursor += 1;
+	}
+	String::from_utf8_lossy(&decoded).into_owned()
+}
+
+/// Decodes a complete byte slice without retaining partial framing state.
+///
+/// Prefer [`InputDecoder`] for PTY, SSH, or multiplexer streams where an
+/// escape sequence may be split between reads.
+pub fn decode_keys(bytes: &[u8], output: &mut Vec<Key>) {
+	let mut decoder = InputDecoder::new();
+	let now = Instant::now();
+	let mut events = Vec::new();
+	decoder.feed(bytes, now, &mut events);
+	decoder.tick(now + INPUT_TIMEOUT + PARTIAL_HOLD_TIMEOUT, &mut events);
+	output.extend(events.into_iter().filter_map(|event| match event {
+		InputEvent::Key(key) => Some(key),
+		_ => None,
+	}));
+}
+
+/// A terminal chord exactly as decoded: native key plus full modifiers.
+///
+/// Nothing is folded here — lookup canonicalization happens inside
+/// [`Keymap::resolve`], where an exact binding always wins over the
+/// shift-folded spelling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Chord {
+	/// The decoded native key.
+	pub key:  Key,
+	/// Full modifier set.
+	pub mods: Mods,
+}
+
+impl Chord {
+	/// Creates a chord from a native key and its terminal modifiers.
+	pub const fn new(key: Key, mods: Mods) -> Self {
+		Self { key, mods }
+	}
+
+	const fn plain(key: Key) -> Self {
+		Self::new(key, Mods {
+			shift:     false,
+			alt:       false,
+			ctrl:      false,
+			super_key: false,
+			hyper:     false,
+			meta:      false,
+		})
+	}
+
+	const fn with_modifiers(key: Key, modifiers: u32) -> Self {
+		Self::new(key, Mods {
+			shift:     modifiers & 1 != 0,
+			alt:       modifiers & 2 != 0,
+			ctrl:      modifiers & 4 != 0,
+			super_key: modifiers & 8 != 0,
+			hyper:     modifiers & 16 != 0,
+			meta:      modifiers & 32 != 0,
+		})
+	}
+
+	/// The shift-folded spelling used as a lookup fallback: letters under
+	/// Ctrl/Alt/Super lowercase and drop Shift, so `Alt+Shift+Y` also finds
+	/// an `Alt+y` binding. `None` when already canonical.
+	fn folded(self) -> Option<Self> {
+		if !(self.mods.ctrl || self.mods.alt || self.mods.super_key) {
+			return None;
+		}
+		let Key::Char(ch) = self.key else {
+			return None;
+		};
+		let lowered = ch.to_ascii_lowercase();
+		let mut mods = self.mods;
+		mods.shift = false;
+		(lowered != ch || mods != self.mods).then_some(Self { key: Key::Char(lowered), mods })
+	}
+}
+
+/// Chord-to-action table consulted before the identity fallbacks.
+///
+/// All semantic defaults (word motion, word deletes, newline spellings, the
+/// legacy `Shift+F3` alias) live here, so embedders can rebind, [`disable`],
+/// or [`unbind`] any of them.
+///
+/// [`disable`]: Keymap::disable
+/// [`unbind`]: Keymap::unbind
+#[derive(Clone)]
+pub struct Keymap {
+	bindings: Vec<(Chord, Option<Key>)>,
+}
+
+/// Default chord table. Mirrors pi's defaults: word motion/delete spellings
+/// (including macOS `super+alt+…`), the readline rubouts, every modified-Enter
+/// newline encoding, and smart/raw clipboard paste.
+///
+/// Modifier bits are `1 = Shift`, `2 = Alt`, `4 = Ctrl`, and `8 = Super`.
+const DEFAULT_BINDINGS: &[(Key, u8, Key)] = &[
+	(Key::Tab, 1, Key::BackTab),
+	(Key::Left, 2, Key::WordLeft),
+	(Key::Right, 2, Key::WordRight),
+	(Key::Left, 4, Key::WordLeft),
+	(Key::Right, 4, Key::WordRight),
+	(Key::Char('f'), 2, Key::WordRight),
+	(Key::Char('b'), 2, Key::WordLeft),
+	(Key::Char('d'), 2, Key::WordDelete),
+	(Key::Delete, 2, Key::WordDelete),
+	(Key::Char('d'), 10, Key::WordDelete),
+	(Key::Delete, 10, Key::WordDelete),
+	(Key::Backspace, 4, Key::Ctrl('w')),
+	(Key::Backspace, 2, Key::Ctrl('w')),
+	(Key::Backspace, 10, Key::Ctrl('w')),
+	(Key::Char('v'), 4, Key::Paste),
+	(Key::Char('v'), 5, Key::PasteRaw),
+	// xterm modifyOtherKeys emits the shifted codepoint, so this exact row must win
+	// before shift-folding `Ctrl+Shift+V` into the smart-paste `Ctrl+v` row.
+	(Key::Char('V'), 5, Key::PasteRaw),
+	// pi tui.input.newLine: every modified-Enter spelling; rows cover
+	// each shift/ctrl/alt combination so the semantics stay table-owned
+	(Key::Char('j'), 4, Key::ShiftEnter),
+	(Key::Enter, 1, Key::ShiftEnter),
+	(Key::Enter, 2, Key::ShiftEnter),
+	(Key::Enter, 3, Key::ShiftEnter),
+	(Key::Enter, 4, Key::ShiftEnter),
+	(Key::Enter, 5, Key::ShiftEnter),
+	(Key::Enter, 6, Key::ShiftEnter),
+	(Key::Enter, 7, Key::ShiftEnter),
+	// legacy `CSI 13;2~` is byte-identical for Shift+Enter and Shift+F3;
+	// pi resolves the same ambiguity to newline
+	(Key::Function(3), 1, Key::ShiftEnter),
+];
+
+const fn mods_from_bits(bits: u8) -> Mods {
+	Mods {
+		shift:     bits & 1 != 0,
+		alt:       bits & 2 != 0,
+		ctrl:      bits & 4 != 0,
+		super_key: bits & 8 != 0,
+		hyper:     false,
+		meta:      false,
+	}
+}
+
+impl Default for Keymap {
+	fn default() -> Self {
+		Self {
+			bindings: DEFAULT_BINDINGS
+				.iter()
+				.map(|&(key, bits, mapped)| (Chord::new(key, mods_from_bits(bits)), Some(mapped)))
+				.collect(),
+		}
+	}
+}
+
+impl Keymap {
+	/// Adds or replaces the binding for `chord`.
+	pub fn bind(&mut self, chord: Chord, key: Key) {
+		self.set(chord, Some(key));
+	}
+
+	/// Masks `chord` entirely: [`Keymap::resolve`] returns `None` even when
+	/// an identity fallback (`Ctrl+letter`, plain typing) would apply.
+	pub fn disable(&mut self, chord: Chord) {
+		self.set(chord, None);
+	}
+
+	/// Removes any entry for `chord`, restoring identity-fallback handling.
+	pub fn unbind(&mut self, chord: Chord) {
+		self.bindings.retain(|(bound, _)| *bound != chord);
+	}
+
+	fn set(&mut self, chord: Chord, key: Option<Key>) {
+		match self.bindings.iter_mut().find(|(bound, _)| *bound == chord) {
+			Some(slot) => slot.1 = key,
+			None => self.bindings.push((chord, key)),
+		}
+	}
+
+	fn entry(&self, chord: Chord) -> Option<&(Chord, Option<Key>)> {
+		self.bindings.iter().find(|(bound, _)| *bound == chord)
+	}
+
+	/// Resolves a native chord. Precedence: the exact chord's table entry,
+	/// the shift-folded spelling's entry, then identity fallbacks.
+	///
+	/// OS shortcut modifiers are discarded unless explicitly bound. A
+	/// [`Keymap::disable`]d chord resolves to `None` before any fallback.
+	pub fn resolve(&self, exact: Chord) -> Option<Key> {
+		let folded = exact.folded();
+		if let Some((_, entry)) = self
+			.entry(exact)
+			.or_else(|| folded.and_then(|chord| self.entry(chord)))
+		{
+			return *entry;
+		}
+		let chord = folded.unwrap_or(exact);
+		if chord.mods.super_key || chord.mods.hyper || chord.mods.meta {
+			return None;
+		}
+		if chord.mods.ctrl && chord.mods.alt {
+			return match chord.key {
+				Key::Char(ch) => Some(Key::CtrlAlt(ch.to_ascii_lowercase())),
+				_ => None,
+			};
+		}
+		if chord.mods.ctrl {
+			return match chord.key {
+				Key::Char(ch) => Some(Key::Ctrl(ch.to_ascii_lowercase())),
+				_ => None,
+			};
+		}
+		if chord.mods.alt {
+			return match chord.key {
+				Key::Char(ch) if ch.is_alphanumeric() => Some(Key::Alt(ch.to_ascii_lowercase())),
+				_ => None,
+			};
+		}
+		if chord.mods.shift && matches!(chord.key, Key::Function(_)) {
+			return None;
+		}
+		Some(match chord.key {
+			Key::Char(' ') => Key::Space,
+			Key::Char(ch) if chord.mods.shift => Key::Char(ch.to_ascii_uppercase()),
+			key => key,
+		})
+	}
+}
+
+/// Mouse gestures in document cell coordinates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Mouse {
+	/// Left-button press: focuses and activates the hit target.
+	Click,
+	/// Right-button press.
+	RightClick,
+	/// Middle-button press.
+	MiddleClick,
+	/// Pointer motion without a pressed button: drives hover highlights.
+	Move,
+	/// Pointer motion with a pressed button.
+	Drag,
+	/// Button release.
+	Release,
+	/// Wheel up: scroll viewports first, then list cursors.
+	WheelUp,
+	/// Wheel down: scroll viewports first, then list cursors.
+	WheelDown,
+	/// Horizontal wheel left.
+	WheelLeft,
+	/// Horizontal wheel right.
+	WheelRight,
+}
+
+/// Outcome of one input event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UiEvent {
+	/// Nothing to report; the frame may still have changed.
+	None,
+	/// A `submit` button fired (or a confirm completed on one).
+	Submit,
+	/// Esc at the top level or a `cancel` button fired.
+	Cancel,
+	/// A plain `id`-carrying button fired.
+	Pressed(SmolStr),
+	/// An `id`-carrying select's cursor rested on a new option.
+	Highlighted {
+		/// The select's `id`.
+		id:    SmolStr,
+		/// Value of the option under the cursor.
+		value: SmolStr,
+	},
+	/// An `id`-carrying select committed the option under its cursor.
+	Changed {
+		/// The select's `id`.
+		id:    SmolStr,
+		/// Value of the committed option.
+		value: SmolStr,
+	},
+	/// An `id`-carrying filterable select's query changed.
+	Filtered {
+		/// The select's `id`.
+		id:    SmolStr,
+		/// The new filter query.
+		query: SmolStr,
+		/// Value of the option under the cursor after re-filtering;
+		/// `None` when nothing matches.
+		value: Option<SmolStr>,
+	},
+}
+
+/// Grapheme-safe byte offset for a cell-column cursor within `text`.
+pub fn byte_at_column(text: &str, column: u16) -> usize {
+	let mut cells = 0u16;
+	for (offset, grapheme) in text.grapheme_indices() {
+		if cells >= column {
+			return offset;
+		}
+		cells += cell_width(grapheme);
+	}
+	text.len()
+}
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum WordClass {
+	Word,
+	Whitespace,
+	Cjk,
+	Delimiter,
+}
+
+const fn is_cjk(character: char) -> bool {
+	matches!(
+		character as u32,
+		0x2E80..=0x2FFF
+			| 0x3040..=0x30FF
+			| 0x3100..=0x312F
+			| 0x3130..=0x318F
+			| 0x31A0..=0x31BF
+			| 0x31F0..=0x31FF
+			| 0x3400..=0x4DBF
+			| 0x4E00..=0x9FFF
+			| 0xA960..=0xA97F
+			| 0xAC00..=0xD7AF
+			| 0xF900..=0xFAFF
+			| 0x20000..=0x2FA1F
+	)
+}
+
+fn word_class(grapheme: &str) -> WordClass {
+	let Some(character) = grapheme.chars().next() else {
+		return WordClass::Delimiter;
+	};
+	if character.is_whitespace() {
+		WordClass::Whitespace
+	} else if is_cjk(character) {
+		WordClass::Cjk
+	} else if character.is_alphanumeric() || character == '_' {
+		WordClass::Word
+	} else {
+		WordClass::Delimiter
+	}
+}
+
+fn is_word_joiner(grapheme: &str) -> bool {
+	matches!(grapheme, "'" | "’" | "-" | "‐" | "‑")
+}
+
+fn word_left_byte(text: &str, at: usize) -> usize {
+	let mut graphemes = text[..at].grapheme_indices().rev().peekable();
+	while graphemes
+		.peek()
+		.is_some_and(|(_, grapheme)| word_class(grapheme) == WordClass::Whitespace)
+	{
+		graphemes.next();
+	}
+	let Some((start, first)) = graphemes.next() else {
+		return 0;
+	};
+	let class = word_class(first);
+	if class == WordClass::Cjk {
+		return start;
+	}
+	if class != WordClass::Word {
+		let mut target = start;
+		while let Some(&(offset, grapheme)) = graphemes.peek() {
+			if word_class(grapheme) != class {
+				break;
+			}
+			target = offset;
+			graphemes.next();
+		}
+		return target;
+	}
+	let mut target = start;
+	while let Some((offset, grapheme)) = graphemes.next() {
+		if word_class(grapheme) == WordClass::Word {
+			target = offset;
+		} else if is_word_joiner(grapheme)
+			&& graphemes
+				.peek()
+				.is_some_and(|(_, left)| word_class(left) == WordClass::Word)
+		{
+			let (left_offset, _) = graphemes.next().expect("peeked left word");
+			target = left_offset;
+		} else {
+			break;
+		}
+	}
+	target
+}
+
+fn word_right_byte(text: &str, at: usize) -> usize {
+	let mut graphemes = text[at..].grapheme_indices().peekable();
+	while graphemes
+		.peek()
+		.is_some_and(|(_, grapheme)| word_class(grapheme) == WordClass::Whitespace)
+	{
+		graphemes.next();
+	}
+	let Some((first_offset, first)) = graphemes.next() else {
+		return text.len();
+	};
+	let class = word_class(first);
+	let mut end = at + first_offset + first.len();
+	if class == WordClass::Cjk {
+		return end;
+	}
+	if class != WordClass::Word {
+		while let Some(&(_, grapheme)) = graphemes.peek() {
+			if word_class(grapheme) != class {
+				break;
+			}
+			let (offset, grapheme) = graphemes.next().expect("peeked delimiter");
+			end = at + offset + grapheme.len();
+		}
+		return end;
+	}
+	while let Some((offset, grapheme)) = graphemes.next() {
+		if word_class(grapheme) == WordClass::Word
+			|| (is_word_joiner(grapheme)
+				&& graphemes
+					.peek()
+					.is_some_and(|(_, right)| word_class(right) == WordClass::Word))
+		{
+			end = at + offset + grapheme.len();
+		} else {
+			break;
+		}
+	}
+	end
+}
+
+/// Cell column of the previous coarse word start before `column`.
+pub fn word_left_column(text: &str, column: u16) -> u16 {
+	cell_width(&text[..word_left_byte(text, byte_at_column(text, column))])
+}
+
+/// Cell column just past the next coarse word after `column`.
+pub fn word_right_column(text: &str, column: u16) -> u16 {
+	cell_width(&text[..word_right_byte(text, byte_at_column(text, column))])
+}
+
+/// Byte start of the coarse word before `at` (pi `deleteWordBackward`).
+pub fn word_rubout_start(text: &str, at: usize) -> usize {
+	word_left_byte(text, at)
+}
+
+/// Normalizes terminal paste input before inserting it into a widget.
+pub fn sanitize_paste(text: &str) -> String {
+	let normalized_newlines = text.replace("\r\n", "\n").replace('\r', "\n");
+	normalized_newlines
+		.chars()
+		.filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+		.collect::<String>()
+		.into_nfc()
+}
+
+#[cfg(test)]
+mod tests {
+	use std::time::{Duration, Instant};
+
+	use super::{
+		Chord, InputDecoder, InputEvent, Key, Keymap, Mods, Mouse, MouseButton as RawMouseButton,
+		MouseReport, TerminalResponse, decode_keys, mods_from_bits,
+	};
+
+	fn drip(bytes: &[u8]) -> Vec<InputEvent> {
+		let start = Instant::now();
+		let mut decoder = InputDecoder::new();
+		let mut events = Vec::new();
+		for (offset, byte) in bytes.iter().enumerate() {
+			decoder.feed(
+				std::slice::from_ref(byte),
+				start + Duration::from_millis(u64::try_from(offset).unwrap()),
+				&mut events,
+			);
+		}
+		events
+	}
+
+	#[test]
+	fn native_keymap_covers_chords_and_motion() {
+		let cases: &[(Key, u8, Key)] = &[
+			(Key::Char('a'), 4, Key::Ctrl('a')),
+			(Key::Char('W'), 5, Key::Ctrl('w')),
+			(Key::Char('k'), 5, Key::Ctrl('k')),
+			(Key::Left, 2, Key::WordLeft),
+			(Key::Right, 4, Key::WordRight),
+			(Key::Enter, 1, Key::ShiftEnter),
+			(Key::Enter, 0, Key::Enter),
+			(Key::Char(' '), 0, Key::Space),
+			(Key::Char('Z'), 1, Key::Char('Z')),
+			(Key::BackTab, 1, Key::BackTab),
+			(Key::PageDown, 0, Key::PageDown),
+			(Key::Enter, 2, Key::ShiftEnter),
+			(Key::Enter, 4, Key::ShiftEnter),
+			(Key::Char('j'), 4, Key::ShiftEnter),
+			(Key::Function(3), 1, Key::ShiftEnter),
+			(Key::Char('d'), 2, Key::WordDelete),
+			(Key::Delete, 2, Key::WordDelete),
+			(Key::Backspace, 4, Key::Ctrl('w')),
+			(Key::Backspace, 10, Key::Ctrl('w')),
+			(Key::Char('d'), 10, Key::WordDelete),
+			(Key::Char('f'), 2, Key::WordRight),
+			(Key::Char('b'), 2, Key::WordLeft),
+			(Key::Char('d'), 4, Key::Ctrl('d')),
+			(Key::Char('y'), 2, Key::Alt('y')),
+			(Key::Char('Y'), 3, Key::Alt('y')),
+			(Key::Char(']'), 6, Key::CtrlAlt(']')),
+		];
+		let keymap = Keymap::default();
+		for &(key, bits, expected) in cases {
+			let chord = Chord::new(key, mods_from_bits(bits));
+			assert_eq!(keymap.resolve(chord), Some(expected), "{chord:?}");
+		}
+	}
+
+	#[test]
+	fn keymap_resolves_smart_and_raw_paste_chords() {
+		let mut keymap = Keymap::default();
+		let smart = Chord::new(Key::Char('v'), mods_from_bits(4));
+		assert_eq!(keymap.resolve(smart), Some(Key::Paste));
+		assert_eq!(
+			keymap.resolve(Chord::new(Key::Char('v'), mods_from_bits(5))),
+			Some(Key::PasteRaw)
+		);
+		assert_eq!(
+			keymap.resolve(Chord::new(Key::Char('V'), mods_from_bits(5))),
+			Some(Key::PasteRaw)
+		);
+
+		keymap.unbind(smart);
+		assert_eq!(keymap.resolve(smart), Some(Key::Ctrl('v')));
+	}
+
+	#[test]
+	fn decoder_normalizes_kitty_shifted_letters() {
+		let cases: &[(&[u8], Key)] = &[
+			(b"\x1b[97;2u", Key::Char('A')),
+			(b"\x1b[65;2u", Key::Char('A')),
+			(b"\x1b[49;2u", Key::Char('1')),
+			(b"\x1b[97;5u", Key::Ctrl('a')),
+			(b"A", Key::Char('A')),
+		];
+		for &(bytes, expected) in cases {
+			let mut keys = Vec::new();
+			decode_keys(bytes, &mut keys);
+			assert_eq!(keys, [expected], "{bytes:?}");
+		}
+	}
+
+	#[test]
+	fn decoder_filters_releases_and_keymap_filters_os_chords() {
+		let mut keys = Vec::new();
+		decode_keys(b"\x1b[97;1:3u", &mut keys);
+		assert!(keys.is_empty(), "kitty release must not become input");
+
+		let keymap = Keymap::default();
+		let os_mods = [
+			Mods { super_key: true, ..Mods::default() },
+			Mods { hyper: true, ..Mods::default() },
+			Mods { meta: true, ..Mods::default() },
+		];
+		for mods in os_mods {
+			assert_eq!(
+				keymap.resolve(Chord::new(Key::Char('c'), mods)),
+				None,
+				"OS shortcuts must never type ({mods:?})"
+			);
+		}
+		let hyper = Chord::new(Key::Char('c'), Mods { hyper: true, ..Mods::default() });
+		let mut keymap = Keymap::default();
+		keymap.bind(hyper, Key::Esc);
+		assert_eq!(keymap.resolve(hyper), Some(Key::Esc));
+	}
+
+	#[test]
+	fn keymap_bindings_are_customizable() {
+		let mut keymap = Keymap::default();
+		let legacy = Chord::new(Key::Function(3), mods_from_bits(1));
+		assert_eq!(keymap.resolve(legacy), Some(Key::ShiftEnter));
+		keymap.unbind(legacy);
+		assert_eq!(keymap.resolve(legacy), None);
+
+		let function = Chord::new(Key::Function(5), Mods::default());
+		keymap.bind(function, Key::Ctrl('r'));
+		assert_eq!(keymap.resolve(function), Some(Key::Ctrl('r')));
+		keymap.bind(function, Key::Esc);
+		assert_eq!(keymap.resolve(function), Some(Key::Esc));
+
+		let word = Chord::new(Key::Right, mods_from_bits(2));
+		keymap.unbind(word);
+		assert_eq!(keymap.resolve(word), None);
+
+		let quit = Chord::new(Key::Char('q'), Mods::default());
+		keymap.disable(quit);
+		assert_eq!(keymap.resolve(quit), None);
+		keymap.unbind(quit);
+		assert_eq!(keymap.resolve(quit), Some(Key::Char('q')));
+
+		let exact = Chord::new(Key::Char('Y'), mods_from_bits(3));
+		keymap.bind(exact, Key::PageUp);
+		assert_eq!(keymap.resolve(exact), Some(Key::PageUp));
+		assert_eq!(
+			keymap.resolve(Chord::new(Key::Char('y'), mods_from_bits(2))),
+			Some(Key::Alt('y')),
+			"lowercase spelling still uses the identity fallback"
+		);
+	}
+
+	#[test]
+	fn decoder_applies_live_keymap_changes_once() {
+		let start = Instant::now();
+		let chord = Chord::new(Key::Char('f'), Mods { alt: true, ..Mods::default() });
+		let mut decoder = InputDecoder::new();
+		let mut events = Vec::new();
+
+		decoder.feed(b"\x1bf", start, &mut events);
+		assert_eq!(events, [InputEvent::Key(Key::WordRight)]);
+
+		events.clear();
+		decoder.keymap_mut().disable(chord);
+		decoder.feed(b"\x1bf", start, &mut events);
+		assert!(events.is_empty());
+
+		decoder.keymap_mut().bind(chord, Key::PageDown);
+		decoder.feed(b"\x1bf", start, &mut events);
+		assert_eq!(events, [InputEvent::Key(Key::PageDown)]);
+
+		events.clear();
+		decoder.feed(b"x", start, &mut events);
+		assert_eq!(events, [InputEvent::Key(Key::Char('x'))]);
+	}
+
+	#[test]
+	fn raw_key_decoder_covers_terminal_sequence_families_and_utf8() {
+		let mut keys = Vec::new();
+		decode_keys(
+			b"\x1b[A\x1bOB\x1b[5~\x1b[6~\x1b[H\x1b[F\x1b[3~\x1b[13;2u\x01\x1bx\xc3\xa9\x1b",
+			&mut keys,
+		);
+		assert_eq!(keys, [
+			Key::Up,
+			Key::Down,
+			Key::PageUp,
+			Key::PageDown,
+			Key::Home,
+			Key::End,
+			Key::Delete,
+			Key::ShiftEnter,
+			Key::Ctrl('a'),
+			Key::Alt('x'),
+			Key::Char('é'),
+			Key::Esc,
+		]);
+	}
+
+	#[test]
+	fn streaming_decoder_holds_split_escapes_until_timeout() {
+		let start = Instant::now();
+		let mut decoder = InputDecoder::new();
+		let mut events = Vec::new();
+		decoder.feed(b"\x1b", start, &mut events);
+		decoder.feed(b"[A", start + Duration::from_millis(74), &mut events);
+		assert_eq!(events, [InputEvent::Key(Key::Up)]);
+
+		events.clear();
+		let mut decoder = InputDecoder::new();
+		decoder.feed(b"\x1b", start, &mut events);
+		decoder.feed(b"[A", start + Duration::from_millis(76), &mut events);
+		assert_eq!(events, [
+			InputEvent::Key(Key::Esc),
+			InputEvent::Key(Key::Char('[')),
+			InputEvent::Key(Key::Char('A')),
+		]);
+
+		events.clear();
+		let mut decoder = InputDecoder::new();
+		decoder.set_kitty_keyboard(true);
+		decoder.feed(b"\x1b", start, &mut events);
+		decoder.tick(start + Duration::from_millis(224), &mut events);
+		assert!(events.is_empty());
+		decoder.tick(start + Duration::from_millis(225), &mut events);
+		assert_eq!(events, [InputEvent::Key(Key::Esc)]);
+	}
+	#[test]
+	fn decoder_deadline_tracks_pending_partial_input() {
+		let start = Instant::now();
+		let mut decoder = InputDecoder::new();
+		let mut events = Vec::new();
+		assert_eq!(decoder.deadline(), None);
+
+		decoder.feed(b"\x1b[", start, &mut events);
+		assert!(events.is_empty());
+		assert_eq!(decoder.deadline(), Some(start + Duration::from_millis(75)));
+
+		decoder.tick(start + Duration::from_millis(75), &mut events);
+		assert_eq!(events, [InputEvent::Key(Key::Esc), InputEvent::Key(Key::Char('['))]);
+		assert_eq!(decoder.deadline(), None);
+	}
+
+	#[test]
+	fn streaming_decoder_disambiguates_alt_and_meta_escape_prefixes() {
+		let start = Instant::now();
+		let mut decoder = InputDecoder::new();
+		let mut events = Vec::new();
+		decoder.feed(b"\x1b\x1bd\x1b\x1b[D\x1b\x1b", start, &mut events);
+		decoder.tick(start + Duration::from_millis(75), &mut events);
+		assert_eq!(events, [
+			InputEvent::Key(Key::Esc),
+			InputEvent::Key(Key::WordDelete),
+			InputEvent::Key(Key::WordLeft),
+			InputEvent::Key(Key::Esc),
+			InputEvent::Key(Key::Esc),
+		]);
+	}
+
+	#[test]
+	fn streaming_decoder_filters_late_replies_and_decodes_key_families() {
+		let start = Instant::now();
+		let mut decoder = InputDecoder::new();
+		let mut events = Vec::new();
+		decoder.feed(b"x\x1b[?1;2c\x1b[15~\x1b[24~\x1b[1;5D\x1b[I\x1b[O", start, &mut events);
+		assert_eq!(events, [
+			InputEvent::Key(Key::Char('x')),
+			InputEvent::Response(TerminalResponse::DeviceAttributes("?1;2".into())),
+			InputEvent::Key(Key::Function(5)),
+			InputEvent::Key(Key::Function(12)),
+			InputEvent::Key(Key::WordLeft),
+			InputEvent::Focus(true),
+			InputEvent::Focus(false),
+		]);
+	}
+
+	#[test]
+	fn kitty_csi_u_suppresses_release_delivers_repeat_and_deduplicates_printable() {
+		let start = Instant::now();
+		let mut decoder = InputDecoder::new();
+		let mut events = Vec::new();
+		decoder.feed(b"\x1b[97;1:3u\x1b[98;1:2u\x1b[97u", start, &mut events);
+		decoder.feed(b"a", start + Duration::from_millis(25), &mut events);
+		decoder.feed(b"a", start + Duration::from_millis(26), &mut events);
+		decoder.feed(b"\x1b[32u ", start + Duration::from_millis(27), &mut events);
+		assert_eq!(events, [
+			InputEvent::Key(Key::Char('b')),
+			InputEvent::Key(Key::Char('a')),
+			InputEvent::Key(Key::Char('a')),
+			InputEvent::Key(Key::Space),
+		]);
+	}
+
+	#[test]
+	fn bracketed_paste_reassembles_recovers_and_decodes_tmux_controls() {
+		let start = Instant::now();
+		let mut decoder = InputDecoder::new();
+		let mut events = Vec::new();
+		decoder.feed(b"\x1b[20", start, &mut events);
+		decoder.feed(b"0~one\r", start + Duration::from_millis(10), &mut events);
+		decoder.feed(b"\ntwo\x1b[201~", start + Duration::from_millis(20), &mut events);
+		assert_eq!(events, [InputEvent::Paste("one\ntwo".into())]);
+
+		events.clear();
+		decoder.feed(
+			b"\x1b[200~a\x1b[106;5ub\x1b[27;5;105~c\x1b[201~",
+			start + Duration::from_millis(30),
+			&mut events,
+		);
+		assert_eq!(events, [InputEvent::Paste("a\nb\tc".into())]);
+
+		events.clear();
+		decoder.feed(b"\x1b[200~unterminated", start + Duration::from_millis(40), &mut events);
+		decoder.tick(start + Duration::from_millis(1040), &mut events);
+		assert_eq!(events, [InputEvent::Paste("unterminated".into())]);
+	}
+
+	#[test]
+	fn sgr_mouse_reports_hold_splits_and_preserve_raw_details() {
+		let start = Instant::now();
+		let mut decoder = InputDecoder::new();
+		let mut events = Vec::new();
+		decoder.feed(b"\x1b[<60;1", start, &mut events);
+		decoder.feed(b"0;4M", start + Duration::from_millis(150), &mut events);
+		decoder.feed(b"\x1b[<65;3;2M\x1b[<32;7;8M", start + Duration::from_millis(151), &mut events);
+		assert_eq!(events, [
+			InputEvent::Mouse(MouseReport {
+				kind:    Mouse::Drag,
+				col:     9,
+				row:     3,
+				button:  RawMouseButton::Left,
+				mods:    Mods { shift: true, alt: true, ctrl: true, ..Mods::default() },
+				pressed: true,
+			}),
+			InputEvent::Mouse(MouseReport {
+				kind:    Mouse::WheelDown,
+				col:     2,
+				row:     1,
+				button:  RawMouseButton::WheelDown,
+				mods:    Mods::default(),
+				pressed: true,
+			}),
+			InputEvent::Mouse(MouseReport {
+				kind:    Mouse::Drag,
+				col:     6,
+				row:     7,
+				button:  RawMouseButton::Left,
+				mods:    Mods::default(),
+				pressed: true,
+			}),
+		]);
+	}
+
+	#[test]
+	fn sgr_mouse_maps_buttons_wheels_drag_and_release() {
+		let cases = [
+			(b"\x1b[<2;4;5M".as_slice(), Mouse::RightClick),
+			(b"\x1b[<1;4;5M".as_slice(), Mouse::MiddleClick),
+			(b"\x1b[<66;4;5M".as_slice(), Mouse::WheelLeft),
+			(b"\x1b[<67;4;5M".as_slice(), Mouse::WheelRight),
+			(b"\x1b[<32;4;5M".as_slice(), Mouse::Drag),
+			(b"\x1b[<0;4;5m".as_slice(), Mouse::Release),
+		];
+		for (bytes, kind) in cases {
+			let start = Instant::now();
+			let mut decoder = InputDecoder::new();
+			let mut events = Vec::new();
+			decoder.feed(bytes, start, &mut events);
+			assert_eq!(events.len(), 1);
+			let InputEvent::Mouse(report) = events[0] else {
+				panic!("expected mouse report");
+			};
+			assert_eq!(report.kind, kind);
+			assert_eq!((report.col, report.row), (3, 4));
+		}
+	}
+
+	#[test]
+	fn capability_responses_parse_whole_and_byte_dripped() {
+		let cases = [
+			(
+				b"\x1b]11;rgb:ffff/0000/8080\x07".as_slice(),
+				InputEvent::Response(TerminalResponse::OscColor {
+					index: 11,
+					r:     0xffff,
+					g:     0,
+					b:     0x8080,
+				}),
+			),
+			(
+				b"\x1b]11;rgba:ff/00/80\x1b\\".as_slice(),
+				InputEvent::Response(TerminalResponse::OscColor {
+					index: 11,
+					r:     0xffff,
+					g:     0,
+					b:     0x8080,
+				}),
+			),
+			(b"\x1b[?997;1n".as_slice(), InputEvent::Response(TerminalResponse::AppearanceChanged(1))),
+			(
+				b"\x1b[48;24;80;1600;800 t".as_slice(),
+				InputEvent::Response(TerminalResponse::InBandResize {
+					rows: 24,
+					cols: 80,
+					x_px: 800,
+					y_px: 1600,
+				}),
+			),
+		];
+		for (bytes, expected) in cases {
+			let start = Instant::now();
+			let mut decoder = InputDecoder::new();
+			let mut events = Vec::new();
+			decoder.feed(bytes, start, &mut events);
+			assert_eq!(events, [expected.clone()]);
+			assert_eq!(drip(bytes), [expected]);
+		}
+	}
+
+	#[test]
+	fn decoder_maps_mouse_gestures_with_position() {
+		let cases = [
+			(b"\x1b[<0;4;8M".as_slice(), Mouse::Click),
+			(b"\x1b[<64;4;8M".as_slice(), Mouse::WheelUp),
+			(b"\x1b[<35;4;8M".as_slice(), Mouse::Move),
+			(b"\x1b[<2;4;8M".as_slice(), Mouse::RightClick),
+			(b"\x1b[<1;4;8M".as_slice(), Mouse::MiddleClick),
+			(b"\x1b[<32;4;8M".as_slice(), Mouse::Drag),
+			(b"\x1b[<0;4;8m".as_slice(), Mouse::Release),
+			(b"\x1b[<66;4;8M".as_slice(), Mouse::WheelLeft),
+			(b"\x1b[<67;4;8M".as_slice(), Mouse::WheelRight),
+		];
+		for (bytes, expected) in cases {
+			let events = drip(bytes);
+			let [InputEvent::Mouse(report)] = events.as_slice() else {
+				panic!("expected one mouse event");
+			};
+			assert_eq!(report.kind, expected);
+			assert_eq!((report.col, report.row), (3, 7));
+		}
+	}
+
+	#[test]
+	fn word_helpers_follow_pi_coarse_semantics() {
+		use super::{word_left_column, word_right_column, word_rubout_start};
+		let text = "foo-bar baz";
+		assert_eq!(word_left_column(text, 11), 8);
+		assert_eq!(word_left_column(text, 8), 0);
+		assert_eq!(word_right_column(text, 0), 7);
+		assert_eq!(word_right_column(text, 7), 11);
+		assert_eq!(word_rubout_start(text, 7), 0);
+		assert_eq!(word_left_column("中文", 4), 2);
+		assert_eq!(word_right_column("中文", 0), 2);
+	}
+}

@@ -1,0 +1,252 @@
+//! Generates the icon lookup tables from `icons.tsv` at build time.
+
+use std::{collections::BTreeSet, env, fmt::Write as _, fs, path::PathBuf};
+
+struct Row {
+	name:      String,
+	alias:     Option<String>,
+	ascii:     String,
+	unicode:   String,
+	nerd_font: String,
+	variant:   String,
+}
+
+fn main() {
+	println!("cargo:rerun-if-changed=icons.tsv");
+	let input = fs::read_to_string("icons.tsv").expect("icons.tsv must be readable");
+	let rows = parse(&input);
+	let generated = generate(&rows);
+	let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("icons.rs");
+	fs::write(output, generated).expect("generated icon catalog must be writable");
+}
+
+fn parse(input: &str) -> Vec<Row> {
+	let mut rows = Vec::new();
+	let mut variants = BTreeSet::new();
+	let mut lookups = BTreeSet::new();
+	let mut previous = None::<String>;
+	let mut saw_header = false;
+
+	for (index, line) in input.lines().enumerate() {
+		let line_number = index + 1;
+		if line.is_empty() || line.starts_with('#') {
+			continue;
+		}
+		if !saw_header {
+			assert_eq!(
+				line, "name\talias\tascii\tunicode\tnerd_font",
+				"icons.tsv:{line_number}: invalid header"
+			);
+			saw_header = true;
+			continue;
+		}
+
+		let mut fields = line.split('\t');
+		let name = field(&mut fields, line_number, "name");
+		let alias = field(&mut fields, line_number, "alias");
+		let ascii = decode(field(&mut fields, line_number, "ascii"), line_number);
+		let unicode = decode(field(&mut fields, line_number, "unicode"), line_number);
+		let nerd_font = decode(field(&mut fields, line_number, "nerd_font"), line_number);
+		assert!(fields.next().is_none(), "icons.tsv:{line_number}: expected exactly five columns");
+		assert!(valid_name(name), "icons.tsv:{line_number}: invalid short name `{name}`");
+		assert!(
+			alias.is_empty() || valid_alias(alias),
+			"icons.tsv:{line_number}: invalid alias `{alias}`"
+		);
+		assert!(!ascii.is_empty(), "icons.tsv:{line_number}: empty ASCII fallback");
+		assert!(
+			!ascii.chars().any(private_use),
+			"icons.tsv:{line_number}: ASCII fallback contains a private-use character"
+		);
+		// The `omp` brand mark is deliberately non-ASCII everywhere; every
+		// other fallback must honor the ASCII tier's pure-7-bit promise.
+		assert!(
+			name == "omp" || ascii.is_ascii(),
+			"icons.tsv:{line_number}: ASCII fallback for `{name}` contains non-ASCII characters"
+		);
+		assert!(!unicode.is_empty(), "icons.tsv:{line_number}: empty Unicode glyph");
+		assert!(
+			!unicode.chars().any(private_use),
+			"icons.tsv:{line_number}: Unicode glyph contains a private-use character"
+		);
+		assert!(!nerd_font.is_empty(), "icons.tsv:{line_number}: empty Nerd Font glyph");
+		if let Some(previous) = &previous {
+			assert!(
+				previous.as_str() < name,
+				"icons.tsv:{line_number}: names must be unique and sorted (`{previous}` before \
+				 `{name}`)"
+			);
+		}
+		previous = Some(name.to_owned());
+		assert!(
+			lookups.insert(name.to_owned()),
+			"icons.tsv:{line_number}: duplicate lookup name `{name}`"
+		);
+		if !alias.is_empty() {
+			assert!(
+				lookups.insert(alias.to_owned()),
+				"icons.tsv:{line_number}: duplicate lookup alias `{alias}`"
+			);
+		}
+		let variant = variant(name);
+		assert!(
+			variants.insert(variant.clone()),
+			"icons.tsv:{line_number}: `{name}` collides at Rust variant `{variant}`"
+		);
+		rows.push(Row {
+			name: name.to_owned(),
+			alias: (!alias.is_empty()).then(|| alias.to_owned()),
+			ascii,
+			unicode,
+			nerd_font,
+			variant,
+		});
+	}
+	assert!(saw_header, "icons.tsv: missing header");
+	assert!(!rows.is_empty(), "icons.tsv: catalog is empty");
+	rows
+}
+
+fn field<'a>(fields: &mut impl Iterator<Item = &'a str>, line: usize, name: &str) -> &'a str {
+	fields
+		.next()
+		.unwrap_or_else(|| panic!("icons.tsv:{line}: missing `{name}` column"))
+}
+
+fn decode(value: &str, line: usize) -> String {
+	let mut decoded = String::with_capacity(value.len());
+	let mut chars = value.chars();
+	while let Some(ch) = chars.next() {
+		if ch != '\\' {
+			decoded.push(ch);
+			continue;
+		}
+		match chars.next() {
+			Some('s') => decoded.push(' '),
+			Some('\\') => decoded.push('\\'),
+			Some(other) => panic!("icons.tsv:{line}: unknown escape `\\{other}`"),
+			None => panic!("icons.tsv:{line}: trailing backslash"),
+		}
+	}
+	decoded
+}
+
+fn valid_name(name: &str) -> bool {
+	let mut chars = name.chars();
+	chars.next().is_some_and(|first| first.is_ascii_lowercase())
+		&& chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+		&& !name.ends_with('-')
+		&& !name.contains("--")
+}
+
+fn valid_alias(alias: &str) -> bool {
+	alias.split('.').all(|part| {
+		let mut chars = part.chars();
+		chars
+			.next()
+			.is_some_and(|first| first.is_ascii_alphabetic())
+			&& chars.all(|ch| ch.is_ascii_alphanumeric())
+	})
+}
+
+const fn private_use(ch: char) -> bool {
+	matches!(ch as u32, 0xe000..=0xf8ff | 0xf0000..=0xffffd | 0x100000..=0x10fffd)
+}
+
+fn variant(name: &str) -> String {
+	let mut output = String::with_capacity(name.len());
+	let mut capitalize = true;
+	for ch in name.chars() {
+		if ch.is_ascii_alphanumeric() {
+			output.push(if capitalize {
+				ch.to_ascii_uppercase()
+			} else {
+				ch
+			});
+			capitalize = false;
+		} else {
+			capitalize = true;
+		}
+	}
+	output
+}
+
+fn generate(rows: &[Row]) -> String {
+	let mut output = String::new();
+	writeln!(output, "// @generated by build.rs from icons.tsv; do not edit.").unwrap();
+	writeln!(output, "#[repr(u16)]").unwrap();
+	writeln!(output, "#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]").unwrap();
+	writeln!(output, "/// Semantic icon generated from the canonical three-tier TSV catalog.")
+		.unwrap();
+	writeln!(output, "pub enum Icon {{").unwrap();
+	for row in rows {
+		writeln!(output, "\t/// Catalog key `{}`.", row.name).unwrap();
+		writeln!(output, "\t{},", row.variant).unwrap();
+	}
+	writeln!(output, "}}\n").unwrap();
+
+	writeln!(output, "struct Glyphs {{").unwrap();
+	writeln!(output, "\tname: &'static str,").unwrap();
+	writeln!(output, "\talias: Option<&'static str>,").unwrap();
+	writeln!(output, "\tascii: &'static str,").unwrap();
+	writeln!(output, "\tunicode: &'static str,").unwrap();
+	writeln!(output, "\tnerd_font: &'static str,").unwrap();
+	writeln!(output, "}}\n").unwrap();
+	writeln!(output, "static GLYPHS: [Glyphs; {}] = [", rows.len()).unwrap();
+	for row in rows {
+		writeln!(
+			output,
+			"\tGlyphs {{ name: {:?}, alias: {:?}, ascii: {:?}, unicode: {:?}, nerd_font: {:?} }},",
+			row.name,
+			row.alias.as_deref(),
+			row.ascii,
+			row.unicode,
+			row.nerd_font
+		)
+		.unwrap();
+	}
+	writeln!(output, "];\n").unwrap();
+
+	writeln!(output, "impl Icon {{").unwrap();
+	writeln!(output, "\t/// Every catalog icon, in stable key order.").unwrap();
+	writeln!(output, "\tpub const ALL: &'static [Self] = &[").unwrap();
+	for row in rows {
+		writeln!(output, "\t\tSelf::{},", row.variant).unwrap();
+	}
+	writeln!(output, "\t];\n").unwrap();
+	writeln!(output, "\t/// Short canonical name used by new call sites.").unwrap();
+	writeln!(output, "\tpub const fn name(self) -> &'static str {{").unwrap();
+	writeln!(output, "\t\tGLYPHS[self as usize].name").unwrap();
+	writeln!(output, "\t}}\n").unwrap();
+	writeln!(output, "\t/// Optional qualified compatibility key retained from an older catalog.")
+		.unwrap();
+	writeln!(output, "\tpub const fn alias(self) -> Option<&'static str> {{").unwrap();
+	writeln!(output, "\t\tGLYPHS[self as usize].alias").unwrap();
+	writeln!(output, "\t}}\n").unwrap();
+	writeln!(output, "\t/// Resolves either a short name or qualified alias without allocation.")
+		.unwrap();
+	writeln!(output, "\tpub fn from_name(name: &str) -> Option<Self> {{").unwrap();
+	writeln!(output, "\t\tmatch name {{").unwrap();
+	for row in rows {
+		if let Some(alias) = &row.alias {
+			writeln!(output, "\t\t\t{:?} | {:?} => Some(Self::{}),", row.name, alias, row.variant)
+				.unwrap();
+		} else {
+			writeln!(output, "\t\t\t{:?} => Some(Self::{}),", row.name, row.variant).unwrap();
+		}
+	}
+	writeln!(output, "\t\t\t_ => None,").unwrap();
+	writeln!(output, "\t\t}}\n\t}}\n").unwrap();
+	writeln!(output, "\t/// Glyph selected for `charset`; spacing remains the caller's concern.")
+		.unwrap();
+	writeln!(output, "\tpub const fn glyph(self, charset: crate::Charset) -> &'static str {{")
+		.unwrap();
+	writeln!(output, "\t\tlet glyphs = &GLYPHS[self as usize];").unwrap();
+	writeln!(output, "\t\tmatch charset {{").unwrap();
+	writeln!(output, "\t\t\tcrate::Charset::Ascii => glyphs.ascii,").unwrap();
+	writeln!(output, "\t\t\tcrate::Charset::Unicode => glyphs.unicode,").unwrap();
+	writeln!(output, "\t\t\tcrate::Charset::NerdFont => glyphs.nerd_font,").unwrap();
+	writeln!(output, "\t\t}}\n\t}}").unwrap();
+	writeln!(output, "}}").unwrap();
+	output
+}

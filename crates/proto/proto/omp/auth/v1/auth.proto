@@ -1,0 +1,369 @@
+syntax = "proto3";
+
+package omp.auth.v1;
+
+import "omp/inference/v1/common.proto";
+
+// Broker client surface: credential metadata, login orchestration, secret
+// INGRESS (one-way), block bookkeeping, and usage reporting.
+//
+// Provider token bytes never serialize OUT of the broker. Egress auth
+// happens inside the gateway process through sealed internal leases
+// (constructible only inside the broker module, Debug-redacted, zeroized on
+// drop). Secrets cross the wire in exactly two places, both one-way or
+// scoped:
+//   - ingress: PutApiKey / ImportOAuth / SubmitCode (sealed on arrival,
+//     never readable back through any RPC);
+//   - egress: MintScopedToken — ephemeral, single-facet, single-session,
+//     for client-direct connections only (realtime/WebRTC).
+//
+// Mapping from the previous implementation's broker HTTP surface:
+//   GET  /v1/snapshot(?wait=)      -> ListCredentials + WatchCredentials
+//   GET  /v1/snapshot/stream       -> WatchCredentials
+//   POST /v1/credential            -> PutApiKey / ImportOAuth   (migrate)
+//   POST /v1/credential/:id/refresh-> RefreshCredential          (meta out)
+//   POST /v1/credential/:id/disable-> DisableCredential
+//   GET  /v1/credentials/disabled  -> ListCredentials (state filter)
+//   POST /v1/credential/:id/block  -> ReportBlock
+//   DEL  /v1/credential/:id/blocks -> ClearBlocks
+//   GET  /v1/usage                 -> GetUsage
+//   POST /v1/usage/stale           -> MarkUsageStale
+//   GET  /v1/usage/history         -> GetUsageHistory
+//   GET  /v1/usage/clients         -> GetClientUsage
+//   POST /v1/usage/observed        -> (dropped: the gateway meters every
+//                                     turn server-side; clients no longer
+//                                     perform their own egress)
+//   GET  /v1/healthz               -> standard grpc.health.v1, not bespoke
+
+service Auth {
+  // ── Metadata ──────────────────────────────────────────────────────────
+  rpc ListCredentials(ListCredentialsRequest) returns (ListCredentialsResponse);
+  // Status stream; resumes from a generation. Replaces snapshot polling,
+  // SSE, and If-None-Match conditional gets.
+  rpc WatchCredentials(WatchCredentialsRequest) returns (stream CredentialEvent);
+
+  // ── Login orchestration ───────────────────────────────────────────────
+  // The browser dance (PKCE callback, pasted code, device code) happens on
+  // the client host; the token exchange happens broker-side.
+  rpc BeginLogin(BeginLoginRequest) returns (BeginLoginResponse);
+  // Deliver the client-side flow result (PKCE callback params, pasted code).
+  rpc SubmitCode(SubmitCodeRequest) returns (CredentialMeta);
+  // Device-code flows: the broker polls the IdP; the client just waits.
+  rpc WaitLogin(WaitLoginRequest) returns (CredentialMeta);
+
+  // ── Secret ingress (one-way) ──────────────────────────────────────────
+  rpc PutApiKey(PutApiKeyRequest) returns (CredentialMeta);
+  // AWS access, secret, and optional session material enters the broker once
+  // and is never returned by metadata or lease RPCs.
+  rpc PutAwsCredential(PutAwsCredentialRequest) returns (CredentialMeta);
+  // Credential migration onto a broker host (`omp auth migrate`) and
+  // CLIProxyAPI-style imports. Carries the real refresh token exactly once,
+  // client -> broker; sealed on arrival.
+  rpc ImportOAuth(ImportOAuthRequest) returns (CredentialMeta);
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────
+  // Force a refresh now; returns post-refresh metadata (STATE_EXPIRED when
+  // the refresh token is dead). Diagnostic/operator action — routine
+  // refresh is broker-internal and single-flight.
+  rpc RefreshCredential(RefreshCredentialRequest) returns (CredentialMeta);
+  rpc DisableCredential(DisableCredentialRequest) returns (CredentialMeta);
+  // Re-enable an auto-disabled credential ("I fixed the account").
+  rpc EnableCredential(EnableCredentialRequest) returns (CredentialMeta);
+  rpc DeleteCredential(DeleteCredentialRequest) returns (DeleteCredentialResponse);
+
+  // ── Blocks (rate-limit / quota) ───────────────────────────────────────
+  // The gateway observes 429s itself; this exists for scoped-token holders
+  // (client-direct facets) whose limit errors the gateway never sees.
+  rpc ReportBlock(ReportBlockRequest) returns (CredentialMeta);
+  // Operator override: "the limit reset early, unblock it".
+  rpc ClearBlocks(ClearBlocksRequest) returns (CredentialMeta);
+
+  // ── Usage ─────────────────────────────────────────────────────────────
+  // Provider-side quota reports (plan, windows, resets), broker-cached.
+  rpc GetUsage(GetUsageRequest) returns (GetUsageResponse);
+  // Invalidate the cached report so the next GetUsage refetches upstream.
+  rpc MarkUsageStale(MarkUsageStaleRequest) returns (MarkUsageStaleResponse);
+  // Durable history of upstream usage fetches on the broker host.
+  rpc GetUsageHistory(GetUsageHistoryRequest) returns (GetUsageHistoryResponse);
+  // Per-client token burn aggregates, metered by the gateway per turn.
+  rpc GetClientUsage(GetClientUsageRequest) returns (GetClientUsageResponse);
+
+  // ── Scoped egress ─────────────────────────────────────────────────────
+  rpc MintScopedToken(MintScopedTokenRequest) returns (ScopedToken);
+}
+
+// ── Credential metadata ───────────────────────────────────────────────────
+
+message CredentialMeta {
+  uint64 id = 1;
+  string provider = 2;
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_API_KEY = 1;
+    KIND_OAUTH = 2;
+    KIND_AWS = 3;
+  }
+  Kind kind = 3;
+  // Account label (email / org / plan) for display and identity-keyed
+  // rotation; never secret material.
+  string identity = 4;
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_ACTIVE = 1;
+    // OAuth expired and refresh failed; needs re-login.
+    STATE_EXPIRED = 2;
+    // One or more live blocks; see `blocks`.
+    STATE_BLOCKED = 3;
+    // Auto- or operator-disabled; see disabled_cause.
+    STATE_DISABLED = 4;
+  }
+  State state = 5;
+  // Live scoped blocks (a credential can be blocked for one meter and fine
+  // for another, e.g. codex chat vs spark).
+  repeated Block blocks = 6;
+  string disabled_cause = 7;
+  // OAuth access-token expiry, for "expires in 3m" display. Zero for keys.
+  uint64 expires_at_ms = 8;
+  uint64 created_at_ms = 9;
+  uint64 updated_at_ms = 10;
+}
+
+// One scoped rate-limit/quota block.
+message Block {
+  // Meter scope: "shared", "chat", "spark", provider-defined.
+  string scope = 1;
+  // Distinguishes per-endpoint accounts under one provider id.
+  string provider_key = 2;
+  uint64 until_ms = 3;
+}
+
+message ListCredentialsRequest {
+  // Empty = all providers.
+  string provider = 1;
+  // Empty = all states (disabled rows included; there is no separate
+  // tombstone listing).
+  repeated CredentialMeta.State states = 2;
+}
+
+// Resumable position in the credential store event stream; same contract
+// as omp.inference.v1.Cursor (epoch rotates on broker restart/compaction;
+// stale cursors get `reset`, never a silently incomplete replay).
+message Cursor {
+  // Opaque, server-defined.
+  bytes epoch = 1;
+  uint64 generation = 2;
+}
+
+message ListCredentialsResponse {
+  repeated CredentialMeta credentials = 1;
+  // Position to resume watching from; feed to WatchCredentials.
+  Cursor cursor = 2;
+}
+
+message WatchCredentialsRequest {
+  // Absent or stale => the stream opens with `reset`.
+  Cursor since = 1;
+}
+
+message CredentialEvent {
+  // Position AFTER this event; persist as the resume point.
+  Cursor cursor = 1;
+  oneof event {
+    CredentialMeta upserted = 2;
+    uint64 deleted_id = 3;
+    // Resumption from `since` is impossible; re-ListCredentials to rebase.
+    Reset reset = 4;
+  }
+
+  message Reset {}
+}
+
+// ── Login flows ───────────────────────────────────────────────────────────
+
+message BeginLoginRequest {
+  string provider = 1;
+}
+
+message BeginLoginResponse {
+  message Browse {
+    // Open in a browser on the client host; the callback or pasted code
+    // comes back via SubmitCode.
+    string url = 1;
+  }
+  message DeviceCode {
+    string user_code = 1;
+    string verify_url = 2;
+  }
+
+  string flow_id = 1;
+  oneof step {
+    Browse browse = 2;
+    DeviceCode device = 3;
+  }
+}
+
+message SubmitCodeRequest {
+  string flow_id = 1;
+  string code = 2;
+  // OAuth `state` from the callback, when the flow carries one.
+  string state = 3;
+}
+
+message WaitLoginRequest {
+  string flow_id = 1;
+}
+
+// ── Secret ingress ────────────────────────────────────────────────────────
+
+message PutApiKeyRequest {
+  string provider = 1;
+  string api_key = 2;
+}
+
+message PutAwsCredentialRequest {
+  string provider = 1;
+  string identity = 2;
+  bytes access_key_id = 3;
+  bytes secret_access_key = 4;
+  bytes session_token = 5;
+}
+
+message ImportOAuthRequest {
+  string provider = 1;
+  string refresh_token = 2;
+  // Optional current access token; the broker refreshes immediately when
+  // absent or expired.
+  string access_token = 3;
+  uint64 expires_at_ms = 4;
+  string identity = 5;
+  // Provider-specific extras (account ids, plan hints) from the source
+  // store, under namespaced keys. Integers remain exact so large account ids
+  // cannot be silently changed by IEEE-754 conversion.
+  omp.inference.v1.ValueMap props = 15;
+}
+
+// ── Lifecycle ─────────────────────────────────────────────────────────────
+
+message RefreshCredentialRequest {
+  uint64 id = 1;
+}
+
+message DisableCredentialRequest {
+  uint64 id = 1;
+  string cause = 2;
+}
+
+message EnableCredentialRequest {
+  uint64 id = 1;
+}
+
+message DeleteCredentialRequest {
+  uint64 id = 1;
+}
+
+message DeleteCredentialResponse {}
+
+// ── Blocks ────────────────────────────────────────────────────────────────
+
+message ReportBlockRequest {
+  uint64 id = 1;
+  Block block = 2;
+}
+
+message ClearBlocksRequest {
+  uint64 id = 1;
+  // Empty = clear every scope.
+  repeated string scopes = 2;
+}
+
+// ── Usage ─────────────────────────────────────────────────────────────────
+
+// Provider-side quota snapshot for one credential.
+message UsageReport {
+  uint64 credential_id = 1;
+  string provider = 2;
+  // Plan/tier display label ("pro", "max-20x").
+  string plan = 3;
+  repeated UsageWindow windows = 4;
+  uint64 fetched_at_ms = 5;
+  // Raw provider payload under namespaced keys, for surfaces that outgrow
+  // the window model. Integer counters and ids retain their exact value.
+  omp.inference.v1.ValueMap detail = 15;
+}
+
+message UsageWindow {
+  // "5h", "week", "opus-week", "chat", "spark" — provider-defined.
+  string label = 1;
+  // 0..100; may exceed 100 where providers overshoot.
+  double used_percent = 2;
+  uint64 resets_at_ms = 3;
+}
+
+message GetUsageRequest {
+  // Empty = all providers.
+  string provider = 1;
+  // Zero = every credential of the provider(s).
+  uint64 credential_id = 2;
+  // Bypass the broker cache and refetch upstream now.
+  bool refresh = 3;
+}
+
+message GetUsageResponse {
+  repeated UsageReport reports = 1;
+}
+
+message MarkUsageStaleRequest {
+  string provider = 1;
+  uint64 credential_id = 2;
+}
+
+message MarkUsageStaleResponse {}
+
+message GetUsageHistoryRequest {
+  uint64 credential_id = 1;
+  uint64 since_ms = 2;
+  uint64 until_ms = 3;
+}
+
+message GetUsageHistoryResponse {
+  message Entry {
+    uint64 at_ms = 1;
+    UsageReport report = 2;
+  }
+  repeated Entry entries = 1;
+}
+
+// Token burn per gateway client (TUI session, CI job, kernel), metered
+// server-side per turn.
+message GetClientUsageRequest {
+  uint64 since_ms = 1;
+}
+
+message GetClientUsageResponse {
+  message ClientUsage {
+    string client_id = 1;
+    // Human label ("tui@laptop", "ci/nightly").
+    string label = 2;
+    uint64 input_tokens = 3;
+    uint64 output_tokens = 4;
+    uint64 cache_read_tokens = 5;
+    uint64 cache_write_tokens = 6;
+    uint64 nanos_usd = 7;
+    uint64 last_seen_ms = 8;
+  }
+  repeated ClientUsage clients = 1;
+}
+
+// ── Scoped egress ─────────────────────────────────────────────────────────
+
+message MintScopedTokenRequest {
+  string provider = 1;
+  // Facet name, e.g. "realtime".
+  string facet = 2;
+  string session_id = 3;
+}
+
+message ScopedToken {
+  string token = 1;
+  uint64 expires_at_ms = 2;
+}

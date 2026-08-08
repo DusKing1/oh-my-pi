@@ -1,0 +1,8 @@
+{"frame":"interaction_update","payload":{"thinking":{"text":"Inspect first."}}}
+{"frame":"interaction_update","payload":{"toolCallStarted":{"id":"call-read","name":"read"}}}
+{"frame":"interaction_update","payload":{"toolCallArgsTextDelta":{"id":"call-read","argsText":"{\"pa"}}}
+{"frame":"interaction_update","payload":{"toolCallArgsTextDelta":{"id":"call-read","argsText":"th\":\"package.json\"}"}}}
+{"frame":"interaction_update","payload":{"toolCallCompleted":{"id":"call-read","name":"read"}}}
+{"frame":"interaction_update","payload":{"textDelta":{"text":"Done."}}}
+{"frame":"interaction_update","payload":{"usage":{"inputTokens":21,"outputTokens":8,"cachedInputTokens":13}}}
+{"frame":"interaction_update","payload":{"done":{"stopReason":"tool_use"}}}

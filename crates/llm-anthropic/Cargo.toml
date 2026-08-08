@@ -1,0 +1,28 @@
+[package]
+name = "omp-llm-anthropic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Anthropic Messages API request encoding and typed-SSE response decoding for OMP"
+
+[dependencies]
+base64 = { workspace = true }
+bytes = { workspace = true }
+crc32fast = { workspace = true }
+http = { workspace = true }
+omp-core = { workspace = true }
+omp-llm-catalog = { workspace = true }
+omp-llm-egress = { workspace = true }
+omp-llm-transport = { workspace = true }
+omp-llm-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+smallvec = { workspace = true }
+sha2 = "0.10.9"
+xxhash-rust = { workspace = true, features = ["xxh64"] }
+
+[lints]
+workspace = true

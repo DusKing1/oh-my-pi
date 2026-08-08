@@ -1,0 +1,166 @@
+syntax = "proto3";
+
+package omp.thread.v1;
+
+import "omp/inference/v1/common.proto";
+
+// Canonical conversation AST shared by every inference facet and the gateway
+// context store. This is the *transport binding* of the Rust-side types in
+// `omp-llm-types`, not the interface itself: in-process callers use the facet
+// traits directly and never serialize.
+//
+// Evolution rules (apply to every omp.* package):
+//   - Receivers skip unknown fields (proto3); peers MUST tolerate newer
+//   - Experimental knobs ride `props` (tag 15 everywhere) under namespaced
+//     keys ("openai/verbosity", "x/my-ext"); stabilized knobs graduate to
+//     numbered fields in a later revision. Integers remain exact so seeds,
+//     budgets, and ids cannot be silently changed by IEEE-754 conversion.
+//   - Field numbers are never reused; `reserved` marks removals only.
+
+// Optimistic-concurrency stamp of a server-held thread: monotone head seq
+// plus an opaque integrity token (BLAKE3 chain over committed items,
+// server-defined). Clients echo the whole message as a precondition;
+// any mismatch is a CONFLICT — a stale stamp never truncates anything.
+message Revision {
+  // Seq of the last committed item; 0 = empty thread.
+  uint64 head = 1;
+  // Opaque; catches equal-length divergent histories (ABA).
+  bytes token = 2;
+}
+
+// A full conversation, used for stateless turns and NEED_FULL reseeding.
+message Thread {
+  repeated Item items = 1;
+}
+
+// One transcript entry. `seq` is assigned by the gateway at turn commit;
+// senders set 0. Seqs are dense and deterministic: applying a delta over
+// head H numbers appended items H+1, H+2, ...
+message Item {
+  uint64 seq = 1;
+  // Creation time in Unix epoch milliseconds; 0 when the source did not
+  // supply one.
+  uint64 created_at_ms = 5;
+
+  oneof kind {
+    Message message = 2;
+    ToolCall tool_call = 3;
+    ToolResult tool_result = 4;
+  }
+
+  omp.inference.v1.ValueMap props = 15;
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  // Maps per dialect: system, developer, or `instructions`.
+  ROLE_SYSTEM = 1;
+  ROLE_USER = 2;
+  ROLE_ASSISTANT = 3;
+}
+
+message Message {
+  Role role = 1;
+  repeated Part parts = 2;
+}
+
+// Content part: visible text, replayable thinking, a blob reference, a model
+// fallback boundary, or a provider-hosted tool block. All media are blob-shaped;
+// inline/thumbnail/stub treatment is projection policy, never part shape.
+message Part {
+  oneof kind {
+    string text = 1;
+    Thinking thinking = 2;
+    Blob blob = 3;
+    ModelFallback fallback = 4;
+    ServerTool server_tool = 5;
+  }
+}
+
+message Thinking {
+  string text = 1;
+  // Provider replay signature, verbatim; required by Anthropic/Gemini to
+  // resend reasoning across turns.
+  bytes signature = 2;
+  // true => `text` is empty and `signature` carries the opaque redacted
+  // payload.
+  bool redacted = 3;
+}
+
+message ModelFallback {
+  string from_model = 1;
+  string to_model = 2;
+}
+
+message ServerTool {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_CALL = 1;
+    KIND_RESULT = 2;
+  }
+  string provider = 1;
+  Kind kind = 2;
+  string id = 3;
+  string name = 4;
+  // UTF-8 JSON input or result content retained verbatim.
+  bytes payload_json = 5;
+  omp.inference.v1.ValueMap provider_metadata = 15;
+}
+
+// Content-addressed payload. Peers with blob-store access send hash-only;
+// `inline` carries small payloads for peers without one. The gateway
+// resolves hashes against the daemon blob store, so media are never
+// re-uploaded turn after turn.
+message Blob {
+  // BLAKE3-256 of the content.
+  bytes hash = 1;
+  string mime = 2;
+  uint64 size = 3;
+  bytes inline = 4;
+  enum Detail {
+    DETAIL_UNSPECIFIED = 0;
+    DETAIL_AUTO = 1;
+    DETAIL_LOW = 2;
+    DETAIL_HIGH = 3;
+    DETAIL_ORIGINAL = 4;
+  }
+  Detail detail = 5;
+}
+
+// Canonical tool invocation. `id` is minted by omp; dialect codecs map it
+// onto provider constraints (OpenAI <=40 chars, Mistral exactly 9 alnum)
+// at the edge, in both directions.
+message ToolCall {
+  string id = 1;
+  string name = 2;
+  // UTF-8 JSON, tolerant-parsed by consumers (slopjson).
+  bytes args_json = 3;
+  // Gemini-style thought signature riding the call.
+  bytes thought_signature = 4;
+  optional string intent = 5;
+  optional bytes raw = 6;
+  optional string custom_wire_name = 7;
+  omp.inference.v1.ValueMap provider_metadata = 15;
+}
+
+message ToolResult {
+  string call_id = 1;
+  repeated Part parts = 2;
+  bool is_error = 3;
+  // Harness tool name. Required by dialects whose result wire carries it
+  // directly (Google/CCA functionResponse). Resolving it from a preceding
+  // ToolCall is insufficient after compaction, in reseeded contexts, and in
+  // threads containing standalone results.
+  string name = 4;
+  // Tool-specific structured detail.
+  omp.inference.v1.Value details = 5;
+  enum Attribution {
+    ATTRIBUTION_UNSPECIFIED = 0;
+    ATTRIBUTION_USER = 1;
+    ATTRIBUTION_AGENT = 2;
+  }
+  Attribution attribution = 6;
+  optional uint64 pruned_at_ms = 7;
+  optional bool useless = 8;
+  omp.inference.v1.ValueMap provider_metadata = 15;
+}

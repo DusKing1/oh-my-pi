@@ -1,0 +1,22 @@
+[package]
+name = "omp-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Self-contained embedded CPython runtime with frozen standard-library and project modules"
+
+[[bin]]
+name = "omp-demo"
+path = "src/bin/demo.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+pyo3 = { workspace = true }
+
+[build-dependencies]
+serde_json = { workspace = true }

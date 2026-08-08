@@ -1,0 +1,14 @@
+---
+source: crates/shell/src/parser/word.rs
+expression: "test_parse(\"$\")?"
+---
+ParseTestResults(
+  input: "$",
+  result: [
+    WordPieceWithSource(
+      piece: Text("$"),
+      start_index: 0,
+      end_index: 1,
+    ),
+  ],
+)

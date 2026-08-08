@@ -1,0 +1,23 @@
+{
+  "model": "gpt-5.6-terra",
+  "instructions": "Be precise.",
+  "input": [
+    {
+      "id": "msg_1",
+      "type": "message",
+      "role": "user",
+      "content": [
+        { "type": "input_text", "text": "inspect" },
+        { "type": "input_image", "image_url": "data:image/png;base64,AA==", "detail": "high" }
+      ]
+    },
+    { "id": "ref_1", "type": "item_reference" }
+  ],
+  "tools": [
+    { "type": "function", "name": "read", "description": "Read a file", "parameters": { "type": "object" } },
+    { "type": "web_search" }
+  ],
+  "tool_choice": { "type": "function", "name": "read" },
+  "temperature": 0.2,
+  "max_output_tokens": 1000
+}

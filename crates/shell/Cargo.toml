@@ -1,0 +1,20 @@
+[package]
+name = "omp-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Batteries-included shell facade combining the execution engine and builtin registries"
+
+[lints]
+workspace = true
+
+[dependencies]
+omp-shell-builtins = { workspace = true }
+omp-shell-engine = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

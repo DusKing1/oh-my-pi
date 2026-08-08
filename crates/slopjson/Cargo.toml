@@ -1,0 +1,18 @@
+[package]
+name = "omp-slopjson"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Tolerant JSON parsing for malformed and streaming LLM tool-call arguments"
+
+[lints]
+workspace = true
+
+[dependencies]
+omp-core = { workspace = true }
+serde = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }

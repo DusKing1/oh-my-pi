@@ -1,0 +1,51 @@
+[package]
+name = "omp-llm-tower"
+version.workspace = true
+edition.workspace = true
+description = "Tower middleware stack for omp.inference.v1 provider attempts"
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-stream = { workspace = true }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+omp-core = { workspace = true }
+omp-llm-anthropic = { workspace = true }
+omp-llm-bedrock = { workspace = true }
+omp-llm-catalog = { workspace = true }
+omp-llm-cursor = { workspace = true }
+omp-llm-devin = { workspace = true }
+omp-llm-dialect = { workspace = true }
+omp-llm-egress = { workspace = true }
+omp-llm-error = { workspace = true }
+omp-llm-google = { workspace = true }
+omp-llm-openai = { workspace = true }
+omp-llm-ollama = { workspace = true }
+omp-llm-transport = { workspace = true }
+omp-llm-types = { workspace = true }
+omp-proto = { workspace = true }
+omp-telemetry = { workspace = true }
+parking_lot = { workspace = true }
+pin-project-lite = { workspace = true }
+rustc-hash = { workspace = true }
+serde_json = { workspace = true }
+smallvec = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tower = { workspace = true }
+tiktoken-rs = { workspace = true }
+thiserror = { workspace = true }
+[dev-dependencies]
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

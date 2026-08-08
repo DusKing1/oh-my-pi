@@ -1,0 +1,30 @@
+[package]
+name = "omp-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Generated Protobuf message and optional gRPC bindings for OMP wire protocols"
+
+[features]
+default = []
+tonic = ["dep:tonic", "dep:tonic-prost"]
+
+[dependencies]
+bytes = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
+tonic = { workspace = true, optional = true }
+tonic-prost = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[build-dependencies]
+protox = { workspace = true }
+tonic-prost-build = { workspace = true }
+
+[lints]
+workspace = true

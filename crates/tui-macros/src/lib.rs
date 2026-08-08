@@ -1,0 +1,1452 @@
+//! Proc macros for `omp-tui`: the [`dom!`](macro@dom) markup macro.
+
+use proc_macro::TokenStream;
+use proc_macro2::{Delimiter, Group, Ident, Span, TokenStream as TokenStream2, TokenTree};
+use quote::{format_ident, quote};
+use syn::{Arm, Expr, ExprForLoop, ExprIf, ExprMatch, LitInt, LitStr, parse2};
+
+/// Builds one component tree from markup with child-level `for`, `if`, and
+/// `match` control flow.
+#[proc_macro]
+pub fn dom(input: TokenStream) -> TokenStream {
+	match expand(input.into()) {
+		Ok(tokens) => tokens.into(),
+		Err(error) => error.into_compile_error().into(),
+	}
+}
+
+fn expand(input: TokenStream2) -> syn::Result<TokenStream2> {
+	let mut parser = Parser::new(input);
+	let root = parser.element()?;
+	if let Some(token) = parser.peek() {
+		return Err(syn::Error::new(token.span(), "expected a single root element"));
+	}
+	lower_element(&root)
+}
+
+struct Element {
+	name:     Name,
+	attrs:    Vec<Attr>,
+	children: Vec<Child>,
+}
+
+struct Name {
+	text: String,
+	span: Span,
+	icon: Option<String>,
+}
+
+struct Attr {
+	name:  String,
+	span:  Span,
+	value: AttrValue,
+}
+
+enum AttrValue {
+	Flag,
+	String(LitStr),
+	Expr(TokenStream2),
+	Bare(LitStr),
+}
+
+enum Child {
+	Element(Element),
+	Expr(TokenStream2),
+	String(LitStr),
+	Control(Control),
+}
+
+enum Control {
+	For(ForControl),
+	If(IfControl),
+	Match(MatchControl),
+}
+
+struct ForControl {
+	head: TokenStream2,
+	body: Vec<Child>,
+}
+
+struct IfControl {
+	branches:  Vec<IfBranch>,
+	else_body: Option<Vec<Child>>,
+}
+
+struct IfBranch {
+	head: TokenStream2,
+	body: Vec<Child>,
+}
+
+struct MatchControl {
+	head: TokenStream2,
+	arms: Vec<MatchArm>,
+}
+
+struct MatchArm {
+	prefix: TokenStream2,
+	body:   Vec<Child>,
+}
+
+struct Parser {
+	tokens: Vec<TokenTree>,
+	at:     usize,
+}
+
+impl Parser {
+	fn new(input: TokenStream2) -> Self {
+		Self { tokens: input.into_iter().collect(), at: 0 }
+	}
+
+	fn peek(&self) -> Option<&TokenTree> {
+		self.tokens.get(self.at)
+	}
+
+	fn next(&mut self) -> Option<TokenTree> {
+		let token = self.tokens.get(self.at).cloned()?;
+		self.at += 1;
+		Some(token)
+	}
+
+	fn punct(&self, ch: char) -> bool {
+		matches!(self.peek(), Some(TokenTree::Punct(punct)) if punct.as_char() == ch)
+	}
+
+	fn keyword(&self, keyword: &str) -> bool {
+		matches!(self.peek(), Some(TokenTree::Ident(ident)) if ident == keyword)
+	}
+
+	fn take_punct(&mut self, ch: char) -> Option<Span> {
+		if !self.punct(ch) {
+			return None;
+		}
+		let span = self.peek().expect("punctuation was just checked").span();
+		self.at += 1;
+		Some(span)
+	}
+
+	fn expect_punct(&mut self, ch: char, message: &str) -> syn::Result<Span> {
+		self.take_punct(ch).ok_or_else(|| {
+			let span = self.peek().map_or_else(Span::call_site, TokenTree::span);
+			syn::Error::new(span, message)
+		})
+	}
+
+	fn word(&mut self, message: &str) -> syn::Result<(String, Span)> {
+		match self.next() {
+			Some(TokenTree::Ident(ident)) => Ok((ident.to_string(), ident.span())),
+			Some(token) => Err(syn::Error::new(token.span(), message)),
+			None => Err(syn::Error::new(Span::call_site(), message)),
+		}
+	}
+
+	fn finish_dashed(&mut self, mut value: String, message: &str) -> syn::Result<String> {
+		while self.take_punct('-').is_some() {
+			let (part, _) = self.word(message)?;
+			value.push('-');
+			value.push_str(&part);
+		}
+		Ok(value)
+	}
+
+	fn dashed_name(&mut self, message: &str) -> syn::Result<(String, Span)> {
+		let (name, span) = self.word(message)?;
+		let name = self.finish_dashed(name, "expected a word after `-`")?;
+		Ok((name, span))
+	}
+
+	fn tag_name(&mut self) -> syn::Result<Name> {
+		let (text, span) = self.dashed_name("expected a tag name")?;
+		if self.take_punct(':').is_some() {
+			if text != "i" {
+				return Err(syn::Error::new(span, "only `i:name` icon shorthand may contain `:`"));
+			}
+			let (icon, _) = self.dashed_name("expected an icon name after `i:`")?;
+			return Ok(Name { text: "i".into(), span, icon: Some(icon) });
+		}
+		Ok(Name { text, span, icon: None })
+	}
+
+	fn element(&mut self) -> syn::Result<Element> {
+		self.expect_punct('<', "expected `<` to start an element")?;
+		if self.punct('/') {
+			let span = self.peek().expect("slash was just checked").span();
+			return Err(syn::Error::new(span, "unexpected closing tag"));
+		}
+
+		let name = self.tag_name()?;
+		let mut attrs = Vec::new();
+		let self_closing = loop {
+			if self.take_punct('>').is_some() {
+				break false;
+			}
+			if self.take_punct('/').is_some() {
+				self.expect_punct('>', "expected `>` after `/`")?;
+				break true;
+			}
+			if self.peek().is_none() {
+				return Err(syn::Error::new(name.span, "unterminated opening tag"));
+			}
+			attrs.push(self.attr()?);
+		};
+
+		if self_closing {
+			return Ok(Element { name, attrs, children: Vec::new() });
+		}
+
+		let mut children = Vec::new();
+		loop {
+			let Some(_) = self.peek() else {
+				return Err(syn::Error::new(name.span, format!("unclosed tag <{}>", name.text)));
+			};
+			if self.punct('<')
+				&& matches!(
+					self.tokens.get(self.at + 1),
+					Some(TokenTree::Punct(punct)) if punct.as_char() == '/'
+				) {
+				self.at += 2;
+				let close = self.tag_name()?;
+				self.expect_punct('>', "expected `>` after closing tag")?;
+				if close.text != name.text || close.icon.as_deref() != name.icon.as_deref() {
+					let expected = name
+						.icon
+						.as_ref()
+						.map_or_else(|| name.text.clone(), |icon| format!("i:{icon}"));
+					let found = close
+						.icon
+						.as_ref()
+						.map_or_else(|| close.text.clone(), |icon| format!("i:{icon}"));
+					return Err(syn::Error::new(
+						close.span,
+						format!("mismatched closing tag: expected </{expected}>, found </{found}>"),
+					));
+				}
+				break;
+			}
+			children.push(self.child()?);
+		}
+
+		Ok(Element { name, attrs, children })
+	}
+
+	fn fragment(mut self) -> syn::Result<Vec<Child>> {
+		let mut children = Vec::new();
+		while self.peek().is_some() {
+			children.push(self.child()?);
+		}
+		Ok(children)
+	}
+
+	fn child(&mut self) -> syn::Result<Child> {
+		let Some(token) = self.peek() else {
+			return Err(syn::Error::new(Span::call_site(), "expected a child"));
+		};
+		if self.punct('<') {
+			return self.element().map(Child::Element);
+		}
+		if self.keyword("for") {
+			return self.for_control().map(Child::Control);
+		}
+		if self.keyword("if") {
+			return self.if_control().map(Child::Control);
+		}
+		if self.keyword("match") {
+			return self.match_control().map(Child::Control);
+		}
+
+		match token {
+			TokenTree::Group(group) if group.delimiter() == Delimiter::Brace => {
+				let Some(TokenTree::Group(group)) = self.next() else {
+					unreachable!("peeked group changed");
+				};
+				Ok(Child::Expr(parse_expr_group(group)?))
+			},
+			TokenTree::Literal(_) => {
+				let token = self.next().expect("peeked literal changed");
+				Ok(Child::String(string_literal(
+					token,
+					"text content must be a string literal or {expr}",
+				)?))
+			},
+			_ => Err(syn::Error::new(
+				token.span(),
+				"text content must be a string literal or {expr}, or control flow",
+			)),
+		}
+	}
+
+	fn control_head(
+		&mut self,
+		start: usize,
+		valid: impl Fn(TokenStream2) -> bool,
+		message: &str,
+	) -> syn::Result<(TokenStream2, Group)> {
+		for end in start + 1..self.tokens.len() {
+			let TokenTree::Group(group) = &self.tokens[end] else {
+				continue;
+			};
+			if group.delimiter() != Delimiter::Brace {
+				continue;
+			}
+			let head = self.tokens[start..end]
+				.iter()
+				.cloned()
+				.collect::<TokenStream2>();
+			if !valid(quote!(#head {})) {
+				continue;
+			}
+			self.at = end + 1;
+			return Ok((head, group.clone()));
+		}
+		Err(syn::Error::new(self.tokens[start].span(), message))
+	}
+
+	fn for_control(&mut self) -> syn::Result<Control> {
+		let start = self.at;
+		let (head, body) = self.control_head(
+			start,
+			|tokens| parse2::<ExprForLoop>(tokens).is_ok(),
+			"expected `for pattern in expression { children }`",
+		)?;
+		Ok(Control::For(ForControl { head, body: parse_child_group(body)? }))
+	}
+
+	fn if_control(&mut self) -> syn::Result<Control> {
+		let mut branches = Vec::new();
+		let mut else_body = None;
+		loop {
+			let start = self.at;
+			let (head, body) = self.control_head(
+				start,
+				|tokens| parse2::<ExprIf>(tokens).is_ok(),
+				"expected `if condition { children }`",
+			)?;
+			branches.push(IfBranch { head, body: parse_child_group(body)? });
+			if !self.keyword("else") {
+				break;
+			}
+			let else_span = self.next().expect("peeked else changed").span();
+			if self.keyword("if") {
+				continue;
+			}
+			let Some(TokenTree::Group(body)) = self.next() else {
+				return Err(syn::Error::new(else_span, "expected `if` or `{ children }` after `else`"));
+			};
+			if body.delimiter() != Delimiter::Brace {
+				return Err(syn::Error::new(body.span(), "expected `{ children }` after `else`"));
+			}
+			else_body = Some(parse_child_group(body)?);
+			break;
+		}
+		Ok(Control::If(IfControl { branches, else_body }))
+	}
+
+	fn match_control(&mut self) -> syn::Result<Control> {
+		let start = self.at;
+		let (head, body) = self.control_head(
+			start,
+			|tokens| parse2::<ExprMatch>(tokens).is_ok(),
+			"expected `match expression { pattern => children }`",
+		)?;
+		let arms = Self::new(body.stream()).match_arms()?;
+		Ok(Control::Match(MatchControl { head, arms }))
+	}
+
+	fn match_arms(mut self) -> syn::Result<Vec<MatchArm>> {
+		let mut arms = Vec::new();
+		while self.peek().is_some() {
+			if self.take_punct(',').is_some() {
+				if self.peek().is_none() {
+					break;
+				}
+				return Err(syn::Error::new(
+					self.peek().expect("checked next match arm").span(),
+					"expected a match pattern after `,`",
+				));
+			}
+			let start = self.at;
+			let arrow = (start..self.tokens.len().saturating_sub(1))
+				.find(|&at| {
+					matches!(&self.tokens[at], TokenTree::Punct(punct) if punct.as_char() == '=')
+						&& matches!(&self.tokens[at + 1], TokenTree::Punct(punct) if punct.as_char() == '>')
+				})
+				.ok_or_else(|| {
+					syn::Error::new(self.tokens[start].span(), "expected `=>` after match pattern")
+				})?;
+			let prefix = self.tokens[start..arrow]
+				.iter()
+				.cloned()
+				.collect::<TokenStream2>();
+			parse2::<Arm>(quote!(#prefix => (),)).map_err(|error| {
+				syn::Error::new(self.tokens[start].span(), format!("invalid match arm: {error}"))
+			})?;
+			self.at = arrow + 2;
+			let body = self.match_arm_body()?;
+			arms.push(MatchArm { prefix, body });
+			self.take_punct(',');
+		}
+		Ok(arms)
+	}
+
+	fn match_arm_body(&mut self) -> syn::Result<Vec<Child>> {
+		let Some(token) = self.peek() else {
+			return Err(syn::Error::new(Span::call_site(), "expected children after `=>`"));
+		};
+		if let TokenTree::Group(group) = token
+			&& group.delimiter() == Delimiter::Brace
+		{
+			let Some(TokenTree::Group(group)) = self.next() else {
+				unreachable!("peeked group changed");
+			};
+			return parse_child_group(group);
+		}
+		Ok(vec![self.child()?])
+	}
+
+	fn attr(&mut self) -> syn::Result<Attr> {
+		let (name, span) = self.dashed_name("expected an attribute name")?;
+		let value = if self.take_punct('=').is_none() {
+			AttrValue::Flag
+		} else {
+			self.attr_value()?
+		};
+		Ok(Attr { name, span, value })
+	}
+
+	fn attr_value(&mut self) -> syn::Result<AttrValue> {
+		let Some(token) = self.next() else {
+			return Err(syn::Error::new(Span::call_site(), "expected an attribute value"));
+		};
+		match token {
+			TokenTree::Group(group) if group.delimiter() == Delimiter::Brace => {
+				Ok(AttrValue::Expr(parse_expr_group(group)?))
+			},
+			TokenTree::Group(group) => {
+				Err(syn::Error::new(group.span(), "quote this value or use `{expr}`"))
+			},
+			TokenTree::Ident(ident) => {
+				let span = ident.span();
+				let value = self
+					.finish_dashed(ident.to_string(), "expected a word after `-` in attribute value")?;
+				Ok(AttrValue::Bare(LitStr::new(&value, span)))
+			},
+			TokenTree::Literal(literal) => {
+				let literal_token = TokenTree::Literal(literal.clone());
+				if let Ok(value) = parse2::<LitStr>(literal_token.clone().into()) {
+					return Ok(AttrValue::String(value));
+				}
+				let integer = parse2::<LitInt>(literal_token.into())
+					.map_err(|_| syn::Error::new(literal.span(), "quote this value"))?;
+				if !integer.suffix().is_empty() {
+					return Err(syn::Error::new(literal.span(), "quote this value"));
+				}
+				let mut value = literal.to_string();
+				if self.take_punct('%').is_some() {
+					value.push('%');
+				}
+				Ok(AttrValue::Bare(LitStr::new(&value, literal.span())))
+			},
+			other => Err(syn::Error::new(other.span(), "quote this value")),
+		}
+	}
+}
+
+fn parse_expr_group(group: Group) -> syn::Result<TokenStream2> {
+	let tokens = group.stream();
+	if tokens.is_empty() {
+		return Err(syn::Error::new(group.span(), "expected an expression inside braces"));
+	}
+	parse2::<Expr>(tokens.clone())?;
+	Ok(tokens)
+}
+
+fn parse_child_group(group: Group) -> syn::Result<Vec<Child>> {
+	let tokens = group.stream();
+	match Parser::new(tokens).fragment() {
+		Ok(children) => Ok(children),
+		Err(markup_error) => {
+			let expression = TokenStream2::from(TokenTree::Group(group));
+			if parse2::<Expr>(expression.clone()).is_ok() {
+				Ok(vec![Child::Expr(expression)])
+			} else {
+				Err(markup_error)
+			}
+		},
+	}
+}
+
+fn string_literal(token: TokenTree, message: &str) -> syn::Result<LitStr> {
+	let span = token.span();
+	parse2::<LitStr>(token.into()).map_err(|_| syn::Error::new(span, message))
+}
+
+#[derive(Clone, Copy)]
+struct EditorPaths(u8);
+
+impl EditorPaths {
+	const EMPTY: Self = Self(1);
+	const NONE: Self = Self(0);
+
+	fn add(self, element: &Element) -> syn::Result<Self> {
+		let kind = if element.name.text == "status" { 2 } else { 1 };
+		let mut next = 0;
+		for state in 0_u8..4 {
+			let path = 1_u8 << state;
+			if self.0 & path == 0 {
+				continue;
+			}
+			if state & kind != 0 {
+				return Err(syn::Error::new(
+					element.name.span,
+					"editor takes at most one input child and one <status>",
+				));
+			}
+			next |= 1_u8 << (state | kind);
+		}
+		Ok(Self(next))
+	}
+
+	const fn union(self, other: Self) -> Self {
+		Self(self.0 | other.0)
+	}
+}
+
+fn validate_editor_children(children: &[Child]) -> syn::Result<()> {
+	validate_editor_sequence(EditorPaths::EMPTY, children).map(|_| ())
+}
+
+fn validate_editor_sequence(
+	mut paths: EditorPaths,
+	children: &[Child],
+) -> syn::Result<EditorPaths> {
+	for child in children {
+		paths = match child {
+			Child::Element(element) => paths.add(element)?,
+			Child::Control(control) => validate_editor_control(paths, control)?,
+			Child::Expr(_) | Child::String(_) => paths,
+		};
+	}
+	Ok(paths)
+}
+
+fn validate_editor_control(paths: EditorPaths, control: &Control) -> syn::Result<EditorPaths> {
+	match control {
+		Control::For(control) => {
+			if let Some(element) = first_editor_element(&control.body) {
+				return Err(syn::Error::new(
+					element.name.span,
+					"editor cannot produce input or <status> children from a for loop",
+				));
+			}
+			Ok(paths)
+		},
+		Control::If(control) => {
+			let mut next = if control.else_body.is_some() {
+				EditorPaths::NONE
+			} else {
+				paths
+			};
+			for branch in &control.branches {
+				next = next.union(validate_editor_sequence(paths, &branch.body)?);
+			}
+			if let Some(children) = &control.else_body {
+				next = next.union(validate_editor_sequence(paths, children)?);
+			}
+			Ok(next)
+		},
+		Control::Match(control) => {
+			if control.arms.is_empty() {
+				return Ok(paths);
+			}
+			let mut next = EditorPaths::NONE;
+			for arm in &control.arms {
+				next = next.union(validate_editor_sequence(paths, &arm.body)?);
+			}
+			Ok(next)
+		},
+	}
+}
+
+fn first_editor_element(children: &[Child]) -> Option<&Element> {
+	children.iter().find_map(|child| match child {
+		Child::Element(element) => Some(element),
+		Child::Expr(_) | Child::String(_) => None,
+		Child::Control(Control::For(control)) => first_editor_element(&control.body),
+		Child::Control(Control::If(control)) => control
+			.branches
+			.iter()
+			.find_map(|branch| first_editor_element(&branch.body))
+			.or_else(|| control.else_body.as_deref().and_then(first_editor_element)),
+		Child::Control(Control::Match(control)) => control
+			.arms
+			.iter()
+			.find_map(|arm| first_editor_element(&arm.body)),
+	})
+}
+
+fn lower_element(element: &Element) -> syn::Result<TokenStream2> {
+	if is_data_tag(&element.name.text) {
+		return Err(syn::Error::new(
+			element.name.span,
+			format!("<{}> is only valid inside its owning component", element.name.text),
+		));
+	}
+
+	let mut output = lower_constructor(element);
+	for attr in &element.attrs {
+		if element.name.text != "icon" || attr.name != "name" {
+			output = lower_attr(output, attr)?;
+		}
+	}
+
+	if is_text_tag(&element.name.text) {
+		for child in &element.children {
+			output = lower_child(output, ChildTarget::Text(&element.name.text), child)?;
+		}
+		return Ok(output);
+	}
+	if element.name.text == "editor" {
+		validate_editor_children(&element.children)?;
+		for child in &element.children {
+			output = lower_child(output, ChildTarget::Editor, child)?;
+		}
+		return Ok(output);
+	}
+
+	for child in &element.children {
+		output = lower_child(output, ChildTarget::Owner(&element.name.text), child)?;
+	}
+	Ok(output)
+}
+
+fn lower_constructor(element: &Element) -> TokenStream2 {
+	if let Some(icon) = &element.name.icon {
+		let icon = LitStr::new(icon, element.name.span);
+		return quote!(::omp_tui::components::Icon::named(#icon));
+	}
+
+	let component = match element.name.text.as_str() {
+		"box" => Some("Boxed"),
+		"text" => Some("TextLeaf"),
+		"pre" => Some("Pre"),
+		"md" => Some("Markdown"),
+		"latex" => Some("Latex"),
+		"callout" => Some("Callout"),
+		"col" => Some("Col"),
+		"row" => Some("Row"),
+		"hr" => Some("Hr"),
+		"spacer" => Some("Spacer"),
+		"select" => Some("Select"),
+		"table" => Some("Table"),
+		"radio" => Some("Radio"),
+		"status" => Some("Status"),
+		"input" => Some("Input"),
+		"button" => Some("Button"),
+		"scroll" => Some("Scroll"),
+		"tabs" => Some("Tabs"),
+		"tree" => Some("Tree"),
+		"todo" => Some("Todo"),
+		"form" => Some("Form"),
+		"progress" => Some("Progress"),
+		"img" => Some("Img"),
+		"editor" => Some("EditorPane"),
+		"wizard" => Some("Wizard"),
+		"icon" => {
+			let name = attr_named(&element.attrs, "name").map_or_else(|| quote!(""), attr_tokens);
+			return quote!(::omp_tui::components::Icon::named(#name));
+		},
+		_ => None,
+	};
+	if let Some(component) = component {
+		let component = format_ident!("{component}", span = element.name.span);
+		quote!(::omp_tui::components::#component::new())
+	} else {
+		let name = LitStr::new(&element.name.text, element.name.span);
+		quote!(::omp_tui::components::CustomElement::new(#name))
+	}
+}
+
+fn lower_attrs(mut output: TokenStream2, attrs: &[Attr]) -> syn::Result<TokenStream2> {
+	for attr in attrs {
+		output = lower_attr(output, attr)?;
+	}
+	Ok(output)
+}
+
+fn lower_attr(output: TokenStream2, attr: &Attr) -> syn::Result<TokenStream2> {
+	if matches!(attr.name.as_str(), "gradient" | "dir") {
+		return Err(syn::Error::new(
+			attr.span,
+			"gradient and dir were replaced by fg=/bg= and angle=",
+		));
+	}
+	let name = LitStr::new(&attr.name, attr.span);
+	let value = attr_tokens(attr);
+	if let Some(prop) = prop_variant(&attr.name) {
+		let prop = format_ident!("{prop}", span = attr.span);
+		Ok(quote!(#output.with(::omp_tui::Prop::#prop, #value)))
+	} else {
+		Ok(quote!(#output.with_custom(#name, #value)))
+	}
+}
+
+fn attr_tokens(attr: &Attr) -> TokenStream2 {
+	match &attr.value {
+		AttrValue::Flag => quote!(true),
+		AttrValue::String(value) | AttrValue::Bare(value) => quote!(#value),
+		AttrValue::Expr(value) => quote!(#value),
+	}
+}
+
+#[derive(Clone, Copy)]
+enum ChildTarget<'a> {
+	Owner(&'a str),
+	Text(&'a str),
+	Editor,
+	DataRecord,
+	StatusSegment,
+	TreeNode,
+	TodoTask,
+	Pane,
+	TableRow,
+}
+
+fn lower_child(
+	output: TokenStream2,
+	target: ChildTarget<'_>,
+	child: &Child,
+) -> syn::Result<TokenStream2> {
+	match child {
+		Child::Control(control) => lower_control(output, target, control),
+		Child::Expr(expr) => match target {
+			ChildTarget::Owner(_) | ChildTarget::Pane => Ok(quote!(#output.child(#expr))),
+			ChildTarget::Text(_) => Ok(quote!(#output.text(#expr))),
+			ChildTarget::Editor => {
+				let span = expr
+					.clone()
+					.into_iter()
+					.next()
+					.map_or_else(Span::call_site, |token| token.span());
+				Err(syn::Error::new(span, "editor takes element children only"))
+			},
+			ChildTarget::DataRecord
+			| ChildTarget::StatusSegment
+			| ChildTarget::TreeNode
+			| ChildTarget::TodoTask => Ok(quote!(#output.label(#expr))),
+			ChildTarget::TableRow => {
+				let span = expr
+					.clone()
+					.into_iter()
+					.next()
+					.map_or_else(Span::call_site, |token| token.span());
+				Err(syn::Error::new(span, "<tr> takes <td> children only"))
+			},
+		},
+		Child::String(text) => match target {
+			ChildTarget::Owner(_) | ChildTarget::Pane => Ok(quote!(#output.child(#text))),
+			ChildTarget::Text(_) => Ok(quote!(#output.text(#text))),
+			ChildTarget::Editor => {
+				Err(syn::Error::new(text.span(), "editor takes element children only"))
+			},
+			ChildTarget::DataRecord
+			| ChildTarget::StatusSegment
+			| ChildTarget::TreeNode
+			| ChildTarget::TodoTask => Ok(quote!(#output.label(#text))),
+			ChildTarget::TableRow => {
+				Err(syn::Error::new(text.span(), "<tr> takes <td> children only"))
+			},
+		},
+		Child::Element(element) => match target {
+			ChildTarget::Owner(owner) if is_data_tag(&element.name.text) => {
+				lower_data_child(output, owner, element)
+			},
+			ChildTarget::DataRecord if element.name.text == "td" => {
+				let cell = lower_table_cell(element)?;
+				Ok(quote!(#output.cell(#cell)))
+			},
+			ChildTarget::TableRow if element.name.text == "td" => {
+				let cell = lower_table_cell(element)?;
+				Ok(quote!(#output.cell(#cell)))
+			},
+			ChildTarget::TableRow => {
+				Err(syn::Error::new(element.name.span, "<tr> takes <td> children only"))
+			},
+			ChildTarget::Owner(_) | ChildTarget::DataRecord | ChildTarget::Pane => {
+				let element = lower_element(element)?;
+				Ok(quote!(#output.child(#element)))
+			},
+			ChildTarget::Text(owner) => Err(syn::Error::new(
+				element.name.span,
+				format!("elements are not allowed inside <{owner}>; use a string literal or {{expr}}"),
+			)),
+			ChildTarget::Editor if element.name.text == "status" => {
+				let element = lower_element(element)?;
+				Ok(quote!(#output.status(#element)))
+			},
+			ChildTarget::Editor => {
+				let element = lower_element(element)?;
+				Ok(quote!(#output.input(#element)))
+			},
+			ChildTarget::StatusSegment => Err(syn::Error::new(
+				element.name.span,
+				"elements are not allowed inside <segment>; use a string literal or braced expression",
+			)),
+			ChildTarget::TreeNode if element.name.text == "node" => {
+				let nested = lower_tree_node(element)?;
+				Ok(quote!(#output.node(#nested)))
+			},
+			ChildTarget::TodoTask if element.name.text == "task" => {
+				let nested = lower_todo_task(element)?;
+				Ok(quote!(#output.task(#nested)))
+			},
+			ChildTarget::TreeNode | ChildTarget::TodoTask => {
+				let element = lower_element(element)?;
+				Ok(quote!(#output.child(#element)))
+			},
+		},
+	}
+}
+
+fn lower_control(
+	output: TokenStream2,
+	target: ChildTarget<'_>,
+	control: &Control,
+) -> syn::Result<TokenStream2> {
+	let builder = format_ident!("__omp_tui_layout", span = Span::mixed_site());
+	let statements = lower_control_statements(&builder, target, control)?;
+	if control_adds_children(control) {
+		Ok(quote!({
+			let mut #builder = #output;
+			#statements
+			#builder
+		}))
+	} else {
+		Ok(quote!({
+			let #builder = #output;
+			#statements
+			#builder
+		}))
+	}
+}
+
+fn lower_control_statements(
+	builder: &Ident,
+	target: ChildTarget<'_>,
+	control: &Control,
+) -> syn::Result<TokenStream2> {
+	match control {
+		Control::For(control) => {
+			let head = &control.head;
+			let body = lower_child_statements(builder, target, &control.body)?;
+			Ok(quote!(#head { #body }))
+		},
+		Control::If(control) => {
+			let mut output = TokenStream2::new();
+			for (index, branch) in control.branches.iter().enumerate() {
+				let head = &branch.head;
+				let body = lower_child_statements(builder, target, &branch.body)?;
+				if index == 0 {
+					output.extend(quote!(#head { #body }));
+				} else {
+					output.extend(quote!(else #head { #body }));
+				}
+			}
+			if let Some(children) = &control.else_body {
+				let body = lower_child_statements(builder, target, children)?;
+				output.extend(quote!(else { #body }));
+			}
+			Ok(output)
+		},
+		Control::Match(control) => {
+			let head = &control.head;
+			let mut arms = TokenStream2::new();
+			for arm in &control.arms {
+				let prefix = &arm.prefix;
+				let body = lower_child_statements(builder, target, &arm.body)?;
+				arms.extend(quote!(#prefix => { #body },));
+			}
+			Ok(quote!(#head { #arms }))
+		},
+	}
+}
+
+fn lower_child_statements(
+	builder: &Ident,
+	target: ChildTarget<'_>,
+	children: &[Child],
+) -> syn::Result<TokenStream2> {
+	let mut statements = TokenStream2::new();
+	for child in children {
+		let statement = match child {
+			Child::Control(control) => lower_control_statements(builder, target, control)?,
+			Child::Element(_) | Child::Expr(_) | Child::String(_) => {
+				let next = lower_child(quote!(#builder), target, child)?;
+				quote!(#builder = #next;)
+			},
+		};
+		statements.extend(statement);
+	}
+	Ok(statements)
+}
+
+fn control_adds_children(control: &Control) -> bool {
+	match control {
+		Control::For(control) => children_add(&control.body),
+		Control::If(control) => {
+			control
+				.branches
+				.iter()
+				.any(|branch| children_add(&branch.body))
+				|| control.else_body.as_deref().is_some_and(children_add)
+		},
+		Control::Match(control) => control.arms.iter().any(|arm| children_add(&arm.body)),
+	}
+}
+
+fn children_add(children: &[Child]) -> bool {
+	children.iter().any(|child| match child {
+		Child::Control(control) => control_adds_children(control),
+		Child::Element(_) | Child::Expr(_) | Child::String(_) => true,
+	})
+}
+
+fn lower_data_child(
+	output: TokenStream2,
+	owner: &str,
+	data: &Element,
+) -> syn::Result<TokenStream2> {
+	let valid_owner = matches!(
+		(owner, data.name.text.as_str()),
+		("select", "option")
+			| ("status", "segment")
+			| ("tabs", "tab")
+			| ("tree", "node")
+			| ("todo", "task")
+			| ("form", "field")
+			| ("wizard", "step")
+			| ("table", "tr")
+	);
+	if !valid_owner {
+		return Err(syn::Error::new(
+			data.name.span,
+			format!("<{}> is not valid inside <{owner}>", data.name.text),
+		));
+	}
+
+	match data.name.text.as_str() {
+		"option" => {
+			let item = lower_data_record("SelectOption", data)?;
+			Ok(quote!(#output.option(#item)))
+		},
+		"segment" => {
+			let item = lower_status_segment(data)?;
+			Ok(quote!(#output.segment(#item)))
+		},
+		"field" => {
+			let item = lower_data_record("Field", data)?;
+			Ok(quote!(#output.field(#item)))
+		},
+		"node" => {
+			let item = lower_tree_node(data)?;
+			Ok(quote!(#output.node(#item)))
+		},
+		"task" => {
+			let item = lower_todo_task(data)?;
+			Ok(quote!(#output.task(#item)))
+		},
+		"tab" => lower_named_pane(output, "pane", data),
+		"step" => lower_named_pane(output, "step", data),
+		"tr" => {
+			let item = lower_table_row(data)?;
+			Ok(quote!(#output.row(#item)))
+		},
+		_ => unreachable!("all data-only tags were matched"),
+	}
+}
+
+fn lower_data_record(kind: &str, data: &Element) -> syn::Result<TokenStream2> {
+	let kind = format_ident!("{kind}", span = data.name.span);
+	let mut output = quote!(::omp_tui::components::#kind::new());
+	output = lower_attrs(output, &data.attrs)?;
+	for child in &data.children {
+		output = lower_child(output, ChildTarget::DataRecord, child)?;
+	}
+	Ok(output)
+}
+fn lower_status_segment(data: &Element) -> syn::Result<TokenStream2> {
+	let mut output = quote!(::omp_tui::components::Segment::new());
+	output = lower_attrs(output, &data.attrs)?;
+	for child in &data.children {
+		output = lower_child(output, ChildTarget::StatusSegment, child)?;
+	}
+	Ok(output)
+}
+
+fn lower_tree_node(data: &Element) -> syn::Result<TokenStream2> {
+	let mut output = quote!(::omp_tui::components::TreeNode::new());
+	output = lower_attrs(output, &data.attrs)?;
+	for child in &data.children {
+		output = lower_child(output, ChildTarget::TreeNode, child)?;
+	}
+	Ok(output)
+}
+
+fn lower_todo_task(data: &Element) -> syn::Result<TokenStream2> {
+	let mut output = quote!(::omp_tui::components::TodoTask::new());
+	output = lower_attrs(output, &data.attrs)?;
+	for child in &data.children {
+		output = lower_child(output, ChildTarget::TodoTask, child)?;
+	}
+	Ok(output)
+}
+
+fn lower_table_row(data: &Element) -> syn::Result<TokenStream2> {
+	let mut output = quote!(::omp_tui::components::TableRow::new());
+	output = lower_attrs(output, &data.attrs)?;
+	for child in &data.children {
+		output = lower_child(output, ChildTarget::TableRow, child)?;
+	}
+	Ok(output)
+}
+
+fn lower_table_cell(data: &Element) -> syn::Result<TokenStream2> {
+	let mut output = quote!(::omp_tui::components::TableCell::new());
+	output = lower_attrs(output, &data.attrs)?;
+	for child in &data.children {
+		output = lower_child(output, ChildTarget::Pane, child)?;
+	}
+	Ok(output)
+}
+
+fn lower_named_pane(
+	output: TokenStream2,
+	method: &str,
+	data: &Element,
+) -> syn::Result<TokenStream2> {
+	let method = format_ident!("{method}", span = data.name.span);
+	let title = attr_named(&data.attrs, "title")
+		.or_else(|| attr_named(&data.attrs, "label"))
+		.map_or_else(|| quote!(""), attr_tokens);
+	let mut body = quote!(::omp_tui::components::Col::new());
+	for attr in &data.attrs {
+		if attr.name != "title" && attr.name != "label" {
+			body = lower_attr(body, attr)?;
+		}
+	}
+	for child in &data.children {
+		body = lower_child(body, ChildTarget::Pane, child)?;
+	}
+	Ok(quote!(#output.#method(#title, #body)))
+}
+
+fn attr_named<'a>(attrs: &'a [Attr], name: &str) -> Option<&'a Attr> {
+	attrs.iter().find(|attr| attr.name == name)
+}
+
+fn is_text_tag(name: &str) -> bool {
+	matches!(name, "text" | "pre" | "md" | "latex" | "callout")
+}
+
+fn is_data_tag(name: &str) -> bool {
+	matches!(name, "option" | "segment" | "tab" | "node" | "task" | "field" | "step" | "tr" | "td")
+}
+
+fn prop_variant(name: &str) -> Option<&'static str> {
+	Some(match name {
+		"gap" => "Gap",
+		"pad" => "Pad",
+		"pad-x" => "PadX",
+		"pad-y" => "PadY",
+		"grow" => "Grow",
+		"w" => "W",
+		"min" => "Min",
+		"max" => "Max",
+		"h" => "H",
+		"border" => "Border",
+		"bc" => "Bc",
+		"edge" => "Edge",
+		"bleed" => "Bleed",
+		"title" => "Title",
+		"title-align" => "TitleAlign",
+		"footer" => "Footer",
+		"footer-align" => "FooterAlign",
+		"align" => "Align",
+		"valign" => "VAlign",
+		"justify" => "Justify",
+		"fg" => "Fg",
+		"bg" => "Bg",
+		"on" => "On",
+		"bold" => "Bold",
+		"dim" => "Dim",
+		"italic" => "Italic",
+		"underline" => "Underline",
+		"reverse" => "Reverse",
+		"strike" => "Strike",
+		"wrap" => "Wrap",
+		"truncate" => "Truncate",
+		"trim" => "Trim",
+		"id" => "Id",
+		"when" => "When",
+		"value" => "Value",
+		"options" => "Options",
+		"label" => "Label",
+		"desc" => "Desc",
+		"kind" => "Kind",
+		"step" => "Step",
+		"multi" => "Multi",
+		"filter" => "Filter",
+		"custom" => "Custom",
+		"mask" => "Mask",
+		"recommended" => "Recommended",
+		"open" => "Open",
+		"required" => "Required",
+		"match" => "Match",
+		"src" => "Src",
+		"icon" => "Icon",
+		"badge" => "Badge",
+		"submit" => "Submit",
+		"cancel" => "Cancel",
+		"confirm" => "Confirm",
+		"placeholder" => "Placeholder",
+		"angle" => "Angle",
+		"accent" => "Accent",
+		"vertical" => "Vertical",
+		"anim" => "Anim",
+		"ease" => "Ease",
+		"spin" => "Spin",
+		"hover" => "Hover",
+		"lift" => "Lift",
+		"focus" => "Focus",
+		"guides" => "Guides",
+		"status" => "Status",
+		"shimmer" => "Shimmer",
+		"reveal" => "Reveal",
+		_ => return None,
+	})
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	const ATTR_FIXTURE: &[&str] = &[
+		"gap",
+		"pad",
+		"pad-x",
+		"pad-y",
+		"grow",
+		"w",
+		"min",
+		"max",
+		"h",
+		"border",
+		"bc",
+		"edge",
+		"bleed",
+		"title",
+		"title-align",
+		"footer",
+		"footer-align",
+		"align",
+		"valign",
+		"justify",
+		"fg",
+		"bg",
+		"on",
+		"bold",
+		"dim",
+		"italic",
+		"underline",
+		"reverse",
+		"strike",
+		"wrap",
+		"truncate",
+		"trim",
+		"id",
+		"when",
+		"value",
+		"options",
+		"label",
+		"desc",
+		"kind",
+		"step",
+		"multi",
+		"filter",
+		"custom",
+		"mask",
+		"recommended",
+		"open",
+		"required",
+		"match",
+		"src",
+		"icon",
+		"badge",
+		"submit",
+		"cancel",
+		"confirm",
+		"placeholder",
+		"angle",
+		"accent",
+		"vertical",
+		"anim",
+		"ease",
+		"spin",
+		"hover",
+		"lift",
+		"shimmer",
+		"reveal",
+	];
+
+	#[test]
+	fn known_attributes_match_mirrored_fixture() {
+		assert_eq!(ATTR_FIXTURE.len(), 65);
+		for &name in ATTR_FIXTURE {
+			assert!(prop_variant(name).is_some(), "missing macro entry for {name:?}");
+		}
+	}
+
+	#[test]
+	fn lowers_plan_example() {
+		let actual = expand(quote! {
+			<box bg=yellow><row><col fg=blue><i:new/><text italic>{x}</text></col></row></box>
+		})
+		.expect("example should expand");
+		let expected = quote! {
+			::omp_tui::components::Boxed::new()
+				.with(::omp_tui::Prop::Bg, "yellow")
+				.child(::omp_tui::components::Row::new()
+					.child(::omp_tui::components::Col::new()
+						.with(::omp_tui::Prop::Fg, "blue")
+						.child(::omp_tui::components::Icon::named("new"))
+						.child(::omp_tui::components::TextLeaf::new()
+							.with(::omp_tui::Prop::Italic, true)
+							.text(x))))
+		};
+		assert_eq!(actual.to_string(), expected.to_string());
+	}
+
+	#[test]
+	fn lowers_gradient_values_through_fg_bg_and_angle() {
+		let actual = expand(quote! {
+			<box bg="magenta..cyan" angle=45><text fg="yellow..red">"hi"</text></box>
+		})
+		.expect("gradient attributes should expand");
+		let expected = quote! {
+			::omp_tui::components::Boxed::new()
+				.with(::omp_tui::Prop::Bg, "magenta..cyan")
+				.with(::omp_tui::Prop::Angle, "45")
+				.child(::omp_tui::components::TextLeaf::new()
+					.with(::omp_tui::Prop::Fg, "yellow..red")
+					.text("hi"))
+		};
+		assert_eq!(actual.to_string(), expected.to_string());
+	}
+
+	#[test]
+	fn rejects_legacy_gradient_attributes() {
+		for input in [quote!(<pre gradient="accent..info">"x"</pre>), quote!(<pre dir=h>"x"</pre>)] {
+			let error = expand(input).expect_err("legacy gradient syntax must fail");
+			assert!(error.to_string().contains("replaced by fg=/bg= and angle="));
+		}
+	}
+
+	#[test]
+	fn accepts_dash_names_percent_and_expr_values() {
+		let actual = expand(quote!(<user-card pad-x=2 w=50% data-id={id}/>)).expect("valid layout");
+		let expected = quote! {
+			::omp_tui::components::CustomElement::new("user-card")
+				.with(::omp_tui::Prop::PadX, "2")
+				.with(::omp_tui::Prop::W, "50%")
+				.with_custom("data-id", id)
+		};
+		assert_eq!(actual.to_string(), expected.to_string());
+	}
+
+	#[test]
+	fn accepts_dashed_bare_values() {
+		let actual = expand(quote!(<box ease=in-out lift=2/>)).expect("dashed values should expand");
+		let expected = quote! {
+			::omp_tui::components::Boxed::new()
+				.with(::omp_tui::Prop::Ease, "in-out")
+				.with(::omp_tui::Prop::Lift, "2")
+		};
+		assert_eq!(actual.to_string(), expected.to_string());
+	}
+
+	#[test]
+	fn accepts_dashed_icon_shorthand() {
+		for input in [quote!(<i:log-in/>), quote!(<i:log-in></i:log-in>)] {
+			let actual = expand(input).expect("dashed icon shorthand should expand");
+			let expected = quote!(::omp_tui::components::Icon::named("log-in"));
+			assert_eq!(actual.to_string(), expected.to_string());
+		}
+	}
+
+	#[test]
+	fn lowers_typed_data_children() {
+		let actual = expand(quote! {
+			<select><option value=a>"Alpha"<md>"preview"</md></option></select>
+		})
+		.expect("data child should expand");
+		let expected = quote! {
+			::omp_tui::components::Select::new()
+				.option(::omp_tui::components::SelectOption::new()
+					.with(::omp_tui::Prop::Value, "a")
+					.label("Alpha")
+					.child(::omp_tui::components::Markdown::new().text("preview")))
+		};
+		assert_eq!(actual.to_string(), expected.to_string());
+	}
+
+	#[test]
+	fn editor_children_lower_to_status_and_input_builders() {
+		let actual = expand(quote! {
+			<editor value="hi"><status><segment>{"S1"}</segment></status><input id=body/></editor>
+		})
+		.expect("editor element children should expand");
+		let expected = quote! {
+			::omp_tui::components::EditorPane::new()
+				.with(::omp_tui::Prop::Value, "hi")
+				.status(::omp_tui::components::Status::new()
+					.segment(::omp_tui::components::Segment::new().label("S1")))
+				.input(::omp_tui::components::Input::new()
+					.with(::omp_tui::Prop::Id, "body"))
+		};
+		assert_eq!(actual.to_string(), expected.to_string());
+	}
+
+	#[test]
+	fn editor_rejects_non_elements_and_extra_input_children() {
+		for input in [quote!(<editor>{"text"}</editor>), quote!(<editor>"text"</editor>)] {
+			let error = expand(input).expect_err("editor text children must fail");
+			assert!(
+				error
+					.to_string()
+					.contains("editor takes element children only")
+			);
+		}
+		let error = expand(quote!(<editor><input/><button/></editor>))
+			.expect_err("a second input child must fail");
+		assert!(
+			error
+				.to_string()
+				.contains("editor takes at most one input child and one <status>")
+		);
+	}
+
+	#[test]
+	fn editor_accepts_mutually_exclusive_control_flow_children() {
+		expand(quote! {
+			<editor>
+				<status/>
+				if custom {
+					<input/>
+				} else if alternate {
+					<button/>
+				} else {
+					<row/>
+				}
+			</editor>
+		})
+		.expect("exclusive branches should contribute at most one editor input");
+	}
+
+	#[test]
+	fn editor_rejects_duplicates_across_control_flow_paths() {
+		for input in [
+			quote!(<editor>if custom { <input/><button/> }</editor>),
+			quote!(<editor><input/> if custom { <button/> }</editor>),
+			quote!(<editor>if custom { <input/> } <button/></editor>),
+			quote!(<editor>match mode {
+				Mode::A => { <status/><status/> },
+				_ => {},
+			}</editor>),
+		] {
+			let error = expand(input).expect_err("one reachable path contains duplicate editor slots");
+			assert!(
+				error
+					.to_string()
+					.contains("editor takes at most one input child and one <status>")
+			);
+		}
+	}
+
+	#[test]
+	fn editor_rejects_children_from_for_loops() {
+		let error = expand(quote!(<editor>for item in items { <input value={item}/> }</editor>))
+			.expect_err("an editor loop could produce the same slot more than once");
+		assert!(
+			error
+				.to_string()
+				.contains("editor cannot produce input or <status> children from a for loop")
+		);
+	}
+	#[test]
+	fn status_macro_lowers_segments() {
+		let actual = expand(quote! {
+			<status><segment fg=green data-kind={kind}>{"alpha"}</segment></status>
+		})
+		.expect("status segment should expand");
+		let expected = quote! {
+			::omp_tui::components::Status::new()
+				.segment(::omp_tui::components::Segment::new()
+					.with(::omp_tui::Prop::Fg, "green")
+					.with_custom("data-kind", kind)
+					.label("alpha"))
+		};
+		assert_eq!(actual.to_string(), expected.to_string());
+	}
+
+	#[test]
+	fn rejects_segment_outside_status() {
+		let error =
+			expand(quote!(<segment>{"alpha"}</segment>)).expect_err("orphan segment must fail");
+		assert!(
+			error
+				.to_string()
+				.contains("only valid inside its owning component")
+		);
+	}
+
+	#[test]
+	fn lowers_for_if_else_and_match_children() {
+		let expanded = expand(quote! {
+			<col>
+				for item in items {
+					<text>{item}</text>
+				}
+				if ready {
+					<text>"ready"</text>
+				} else if waiting {
+					<text>"waiting"</text>
+				} else {
+					<text>"idle"</text>
+				}
+				match state {
+					State::One => <row/>,
+					State::Many(value) if value > 1 => {
+						<text>{value}</text>
+						<spacer/>
+					},
+					_ => {},
+				}
+			</col>
+		})
+		.expect("control flow should expand");
+		parse2::<Expr>(expanded).expect("expanded control flow should be a Rust expression");
+	}
+
+	#[test]
+	fn points_out_mismatched_closer() {
+		let error = expand(quote!(<row></col>)).expect_err("closer should not match");
+		assert!(error.to_string().contains("mismatched closing tag"));
+	}
+
+	#[test]
+	fn rejects_bare_text() {
+		let error = expand(quote!(<text>hello</text>)).expect_err("bare text loses whitespace");
+		assert!(
+			error
+				.to_string()
+				.contains("text content must be a string literal or {expr}")
+		);
+	}
+}

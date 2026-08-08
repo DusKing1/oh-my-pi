@@ -1,0 +1,10 @@
+{
+  "events": [
+    {"type": "tool_call_arguments_delta", "id": "call-1", "fragment": "{\"agent\":"},
+    {"type": "tool_call_arguments_delta", "id": "call-1", "fragment": "\"task\",\"note\":\"initial\","},
+    {"type": "tool_call_arguments_delta", "id": "call-1", "fragment": "\"step\":12}"},
+    {"type": "usage", "input": 11, "output": 7, "cache_read": 5, "cache_write": 0},
+    {"type": "done", "reason": "tool_use"}
+  ],
+  "outcome": {"tool_calls": [{"id": "call-1", "name": "task", "arguments": {"agent": "task", "note": "initial", "step": 12}}]}
+}

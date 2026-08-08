@@ -1,0 +1,21 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_REDACTED","status":"in_progress","output":[]}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_REDACTED","type":"reasoning","summary":[],"encrypted_content":"enc_REDACTED"}}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_REDACTED","output_index":0,"summary_index":0,"delta":"Inspect first."}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":1,"item":{"id":"fc_REDACTED","type":"function_call","call_id":"call_read","name":"read","arguments":"","status":"in_progress"}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_REDACTED","output_index":1,"delta":"{\"pa"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_REDACTED","output_index":1,"delta":"th\":\"README.md\"}"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_REDACTED","status":"completed","output":[],"usage":{"input_tokens":30,"output_tokens":8,"total_tokens":38,"input_tokens_details":{"cached_tokens":20}}}}
+

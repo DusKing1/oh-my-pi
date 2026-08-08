@@ -1,0 +1,5 @@
+{
+  "events": [
+    {"type": "transport_error", "kind": "rate_limit"}
+  ]
+}

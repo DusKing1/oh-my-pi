@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package omp.gateway.v1;
+
+// Gateway connection pre-flight. Hello is the only RPC a client invokes
+// before using the capability-specific inference, auth, blob, search, or
+// media surfaces.
+//
+// The gateway must never be older than its client: proto3 receivers skip
+// fields they do not recognize, and prost does not retain those unknown
+// fields. A newer client talking to an older gateway could therefore appear
+// to work while silently losing wire-visible data. The client aborts when the
+// returned schema_rev is lower than the revision it requested.
+//
+// Capability strings gate optional facets and features independently of the
+// schema revision. A client only uses an optional surface when both peers
+// advertise its stable id: "inference.turn", "inference.invoke", "auth",
+// "blob.v1", "search", or "media".
+service Gateway {
+  // Negotiates the schema revision and optional capabilities for this
+  // connection. This is the only pre-flight RPC.
+  rpc Hello(HelloRequest) returns (HelloResponse);
+}
+
+// The client's wire requirements and optional feature set.
+message HelloRequest {
+  // Human-readable client implementation and version, for diagnostics.
+  string client = 1;
+  // Schema revision the client was generated against.
+  uint32 schema_rev = 2;
+  // Optional facet and feature ids understood by the client.
+  repeated string capabilities = 3;
+}
+
+// The gateway's wire revision and negotiated feature surface.
+message HelloResponse {
+  // Schema revision the gateway was generated against. The client must abort
+  // when this is lower than HelloRequest.schema_rev.
+  uint32 schema_rev = 1;
+  // Oldest client schema revision the gateway still accepts.
+  uint32 min_schema_rev = 2;
+  // Optional facet and feature ids available on this gateway.
+  repeated string capabilities = 3;
+  // Human-readable gateway implementation version, for diagnostics.
+  string server_version = 4;
+}

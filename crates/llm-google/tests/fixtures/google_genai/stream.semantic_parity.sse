@@ -1,0 +1,6 @@
+data: {"candidates":[{"content":{"parts":[{"text":"plan","thought":true,"thoughtSignature":"dGhvdWdodC1zaWc="}]}}]}
+
+data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"wire-call-1","name":"lookup","args":{"q":"rust"}},"thoughtSignature":"dG9vbC1zaWc="}]},"groundingMetadata":{"webSearchQueries":["rust"],"groundingChunks":[{"web":{"uri":"https://example.test/rust","title":"Rust"}}],"groundingSupports":[{"segment":{"startIndex":0,"endIndex":4,"text":"Rust"},"groundingChunkIndices":[0]}]},"citationMetadata":{"citationSources":[{"startIndex":0,"endIndex":4,"uri":"https://example.test/rust"}]},"safetyRatings":[{"category":"HARM_CATEGORY_DANGEROUS_CONTENT","probability":"NEGLIGIBLE","blocked":false}]}]}
+
+data: {"candidates":[{"content":{"parts":[{"executableCode":{"language":"PYTHON","code":"print(2 + 2)"}},{"codeExecutionResult":{"outcome":"OUTCOME_OK","output":"4\n"}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":9,"cachedContentTokenCount":5,"thoughtsTokenCount":3,"totalTokenCount":24}}
+

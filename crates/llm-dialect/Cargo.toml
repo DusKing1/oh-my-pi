@@ -1,0 +1,25 @@
+[package]
+name = "omp-llm-dialect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Model-prompt rendering and allocation-disciplined in-band event scanning for OMP"
+
+[dependencies]
+bytes = { workspace = true }
+omp-core = { workspace = true }
+omp-llm-catalog = { workspace = true }
+omp-llm-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+omp-llm-transport = { workspace = true }
+
+[lints]
+workspace = true

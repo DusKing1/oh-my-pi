@@ -1,0 +1,28 @@
+[package]
+name = "omp-rpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "gRPC transport, handshake, health, TLS, and Unix-socket plumbing for Oh My Pi"
+
+[dependencies]
+hyper-util = { workspace = true }
+omp-core = { workspace = true }
+omp-proto = { workspace = true, features = ["tonic"] }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
+tonic = { workspace = true, features = ["tls-ring"] }
+tonic-health = { workspace = true }
+tower = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

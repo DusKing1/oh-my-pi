@@ -1,0 +1,3 @@
+{"deltaToolCalls":[{"id":"call-1","name":"task","argumentsJson":"{\"agent\":"}],"stopReason":"UNSPECIFIED"}
+{"deltaToolCalls":[{"id":"call-1","name":"task","argumentsJson":"\"task\",\"note\":\"initial\","}],"stopReason":"UNSPECIFIED"}
+{"deltaToolCalls":[{"id":"call-1","name":"task","argumentsJson":"\"step\":12}"}],"stopReason":"TOOL_USE","usage":{"inputTokens":"11","outputTokens":"7","cachedInputTokens":"5"}}

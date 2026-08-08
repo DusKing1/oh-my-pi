@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Fetches the python-build-standalone "full" archive (static libpython +
+# stdlib) into vendor/python/, then generates the build inputs derived from it:
+#   vendor/python/stdlib.bin       in-memory stdlib blob embedded into omp-demo
+#   vendor/python/pyo3-config.txt  static-link config consumed via PYO3_CONFIG_FILE
+# Idempotent: re-running regenerates the derived artifacts only.
+#
+# The pgo+lto variant ships LLVM-22 LTO bitcode: linking requires an
+# LLVM-22 lld (scripts/ld64.lld, `brew install lld`) plus -export_dynamic so
+# wheels can resolve the full C-API at dlopen. The freethreaded+debug
+# variant is the plain Mach-O fallback if that path regresses.
+set -euo pipefail
+
+TAG=20260807
+VER=3.14.7
+TRIPLE=aarch64-apple-darwin
+NAME="cpython-${VER}+${TAG}-${TRIPLE}-freethreaded+pgo+lto-full"
+URL="https://github.com/astral-sh/python-build-standalone/releases/download/${TAG}/${NAME}.tar.zst"
+
+cd "$(dirname "$0")/.."
+ROOT=$PWD
+
+if [ ! -e vendor/python ]; then
+	echo "fetching ${NAME}..." >&2
+	mkdir -p vendor
+	curl -fsSL "$URL" | zstd -d | tar -x -C vendor
+fi
+
+# Derive layout facts from the archive: abiflags land in several names
+# (python3.14td for freethreaded+debug), so glob instead of hardcoding.
+STDLIB_DIR=$(dirname "$(echo vendor/python/install/lib/python3.14*/os.py)")
+CONFIG_DIR=$(echo "$STDLIB_DIR"/config-3.14*-darwin)
+LIB_NAME=$(basename "$CONFIG_DIR"/libpython3.14*.a .a | sed 's/^lib//')
+EXECUTABLE=vendor/python/install/bin/python3.14td
+[ -x "$EXECUTABLE" ] || EXECUTABLE=vendor/python/install/bin/python3.14t
+
+# In-memory stdlib: every module is compiled and marshalled by the vendored
+# interpreter itself (guaranteeing a matching bytecode format), packed into
+# an uncompressed blob that omp-demo embeds and registers wholesale as
+# frozen modules — per-interpreter machinery, so sub-interpreters work.
+# Uncompressed on purpose: the OS loader mmaps the binary, so modules that
+# are never imported are never paged in and startup does no decompression.
+# Every C extension is statically linked into the binary; tkinter/dbm (the
+# two dynload-only modules) and test/tooling packages are excluded.
+# The same packer builds the repo-local module blob in crates/py/build.rs.
+echo "generating stdlib.bin..." >&2
+"$ROOT/$EXECUTABLE" scripts/pack-pymodules.py "$STDLIB_DIR" vendor/python/stdlib.bin \
+	--prefix '<omp-stdlib>' \
+	--exclude lib-dynload test idlelib tkinter turtledemo ensurepip \
+	          site-packages __pycache__ 'config-*'
+
+# Bundled pure-Python packages (crates/py/requirements.txt): resolved with
+# uv into vendor/python/bundled, stamped with the manifest text so omp-py's
+# build script can verify freshness without network I/O. Built in a temp
+# dir and swapped in atomically — a failed fetch never destroys the cache.
+# Third-party license texts are collected into the tracked
+# crates/py/THIRD-PARTY-NOTICES.txt; rerun this script after editing the
+# manifest and commit the notices file when it changes.
+REQ=crates/py/requirements.txt
+BUNDLED=vendor/python/bundled
+if grep -qvE '^[[:space:]]*(#|$)' "$REQ"; then
+	if ! cmp -s "$REQ" "$BUNDLED/.requirements.stamp" 2>/dev/null; then
+		echo "fetching bundled python packages..." >&2
+		TMP=$(mktemp -d vendor/python/bundled.XXXXXX)
+		trap 'rm -rf "$TMP"' EXIT
+		uv pip install --link-mode=copy --python "$ROOT/$EXECUTABLE" --target "$TMP" -r "$REQ"
+		NATIVE=$(find "$TMP" -name '*.so' -o -name '*.dylib' -o -name '*.pyd')
+		if [ -n "$NATIVE" ]; then
+			echo "error: $REQ pulled native extensions; only pure-Python packages can be" >&2
+			echo "frozen — install native wheels into site-packages instead:" >&2
+			echo "$NATIVE" >&2
+			exit 1
+		fi
+		cp "$REQ" "$TMP/.requirements.stamp"
+		rm -rf "$BUNDLED"
+		mv "$TMP" "$BUNDLED"
+		trap - EXIT
+	fi
+else
+	rm -rf "$BUNDLED"
+fi
+"$ROOT/$EXECUTABLE" scripts/gen-py-notices.py "$BUNDLED" crates/py/THIRD-PARTY-NOTICES.txt
+
+echo "generating pyo3-config.txt..." >&2
+cat > vendor/python/pyo3-config.txt <<EOF
+implementation=CPython
+version=3.14
+shared=false
+abi3=false
+lib_name=${LIB_NAME}
+lib_dir=$ROOT/${CONFIG_DIR}
+executable=$ROOT/${EXECUTABLE}
+pointer_width=64
+build_flags=$(case "$LIB_NAME" in *td) echo "Py_DEBUG,Py_GIL_DISABLED";; *) echo "Py_GIL_DISABLED";; esac)
+suppress_build_script_link_lines=false
+EOF
+
+echo "done: vendor/python (${LIB_NAME})" >&2

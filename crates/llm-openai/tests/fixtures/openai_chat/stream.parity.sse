@@ -1,0 +1,7 @@
+data: {"id":"chatcmpl_parity","model":"gpt-parity","provider":"azure-east","system_fingerprint":"fp_1","choices":[{"index":1,"delta":{"content":[{"type":"text","text":"Second"}],"annotations":[{"type":"url_citation","url":"https://example.test"}]},"logprobs":{"content":[{"token":"Second","logprob":-0.1}]},"finish_reason":null},{"index":0,"delta":{"reasoning_text":"Plan ","tool_calls":[{"index":0,"id":"call_a","function":{"name":"alpha","arguments":"{\"x\":"}},{"index":1,"id":"call_b","function":{"name":"beta","arguments":"{\"y\":"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_parity","model":"gpt-parity","choices":[{"index":0,"delta":{"reasoning_content":"carefully","tool_calls":[{"index":0,"function":{"arguments":"1}"}},{"index":1,"function":{"arguments":"2}"}}]},"finish_reason":"length"},{"index":1,"delta":{"refusal":" blocked"},"finish_reason":"content_filter"}],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}
+
+data: {"id":"chatcmpl_parity","model":"gpt-parity","choices":[],"usage":{"prompt_tokens_details":{"cached_tokens":6,"cache_write_tokens":2},"completion_tokens_details":{"reasoning_tokens":2}}}
+
+data: [DONE]

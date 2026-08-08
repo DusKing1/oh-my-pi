@@ -1,0 +1,208 @@
+//! Session-local escalation for repeated byte-identical no-op edit payloads.
+
+use std::collections::HashMap;
+
+use bytes::Bytes;
+use omp_core::SmolStr;
+use xxhash_rust::xxh32::xxh32;
+
+/// Consecutive identical no-ops required before a hard diagnostic.
+pub const NOOP_HARD_LIMIT: usize = 3;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NoopEntry {
+	payload: Bytes,
+	count:   usize,
+}
+
+/// Severity of a repeated no-op diagnostic.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum NoopSeverity {
+	/// The caller should return guidance while allowing a corrected retry.
+	Soft,
+	/// The caller should fail the tool call to break an ignored retry loop.
+	Hard,
+}
+
+/// Outcome of recording one byte-identical no-op payload.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NoopRecord {
+	count:      usize,
+	severity:   NoopSeverity,
+	diagnostic: SmolStr,
+}
+
+impl NoopRecord {
+	/// Returns the consecutive identical no-op count including this attempt.
+	#[must_use]
+	pub const fn count(&self) -> usize {
+		self.count
+	}
+
+	/// Returns whether guidance remains soft or must be raised as a failure.
+	#[must_use]
+	pub const fn severity(&self) -> NoopSeverity {
+		self.severity
+	}
+
+	/// Returns the user-facing escalating diagnostic.
+	#[must_use]
+	pub fn diagnostic(&self) -> &str {
+		&self.diagnostic
+	}
+
+	/// Returns true when the caller must escalate to a tool failure.
+	#[must_use]
+	pub const fn should_escalate(&self) -> bool {
+		matches!(self.severity, NoopSeverity::Hard)
+	}
+}
+
+/// Per-session counters isolated by canonical path and exact raw payload bytes.
+#[derive(Clone, Debug, Default)]
+pub struct NoopLoopGuard {
+	entries: HashMap<SmolStr, NoopEntry>,
+}
+
+impl NoopLoopGuard {
+	/// Creates an empty per-session guard.
+	#[must_use]
+	pub fn new() -> Self {
+		Self::default()
+	}
+
+	/// Records a no-op and returns soft guidance or a mandatory hard failure.
+	///
+	/// Exact payload bytes are retained so a hash collision can never escalate a
+	/// different edit. A different payload on the same path starts again at one.
+	pub fn record_noop(&mut self, canonical_path: impl Into<SmolStr>, payload: Bytes) -> NoopRecord {
+		let canonical_path = canonical_path.into();
+		let count = self
+			.entries
+			.get(&canonical_path)
+			.filter(|entry| entry.payload == payload)
+			.map_or(1, |entry| entry.count.saturating_add(1));
+		self
+			.entries
+			.insert(canonical_path.clone(), NoopEntry { payload, count });
+		let severity = if count >= NOOP_HARD_LIMIT {
+			NoopSeverity::Hard
+		} else {
+			NoopSeverity::Soft
+		};
+		let diagnostic = match severity {
+			NoopSeverity::Soft => SmolStr::from(format!(
+				"Edits to {canonical_path} parsed and applied cleanly, but produced no change: your \
+				 body row(s) are byte-identical to the file at the targeted lines. The bug is \
+				 somewhere else — re-read the file before issuing another edit. Do NOT widen the \
+				 payload or add lines; verify the anchor first."
+			)),
+			NoopSeverity::Hard => SmolStr::from(format!(
+				"STOP. Edits to {canonical_path} have been a byte-identical no-op {count} times in a \
+				 row — the patch body matches the file at the targeted lines and the soft hint did \
+				 not break the cycle. Cease re-issuing this payload. Either the intended change is \
+				 already present (move on), or the anchor is wrong (re-read the current line numbers \
+				 and tag, then author a different edit). This exact payload will keep being rejected \
+				 until it changes."
+			)),
+		};
+		NoopRecord { count, severity, diagnostic }
+	}
+
+	/// Clears one path after a non-noop commit so a future no-op starts soft.
+	pub fn reset(&mut self, canonical_path: &str) {
+		self.entries.remove(canonical_path);
+	}
+
+	/// Clears every per-path counter in this session.
+	pub fn clear(&mut self) {
+		self.entries.clear();
+	}
+
+	/// Returns the number of canonical paths with an active no-op counter.
+	#[must_use]
+	pub fn len(&self) -> usize {
+		self.entries.len()
+	}
+
+	/// Returns whether the guard contains no active counters.
+	#[must_use]
+	pub fn is_empty(&self) -> bool {
+		self.entries.is_empty()
+	}
+}
+
+/// Computes a stable compact fingerprint for logs and metrics.
+///
+/// Loop identity deliberately uses retained exact bytes instead of this hash.
+#[must_use]
+pub fn hash_patch_input(input: &[u8]) -> u32 {
+	xxh32(input, 0)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn first_attempts_are_soft_and_third_identical_attempt_is_hard() {
+		let mut guard = NoopLoopGuard::new();
+		for count in 1..NOOP_HARD_LIMIT {
+			let record = guard.record_noop("a.rs", Bytes::from_static(b"same"));
+			assert_eq!(record.count(), count);
+			assert_eq!(record.severity(), NoopSeverity::Soft);
+			assert!(!record.diagnostic().contains("STOP."));
+		}
+		let record = guard.record_noop("a.rs", Bytes::from_static(b"same"));
+		assert_eq!(record.count(), NOOP_HARD_LIMIT);
+		assert!(record.should_escalate());
+		assert!(record.diagnostic().contains("STOP."));
+		assert!(record.diagnostic().contains("a.rs"));
+	}
+
+	#[test]
+	fn different_payload_and_successful_commit_reset_the_count() {
+		let mut guard = NoopLoopGuard::new();
+		guard.record_noop("a.rs", Bytes::from_static(b"one"));
+		guard.record_noop("a.rs", Bytes::from_static(b"one"));
+		assert_eq!(
+			guard
+				.record_noop("a.rs", Bytes::from_static(b"two"))
+				.count(),
+			1
+		);
+		guard.reset("a.rs");
+		assert_eq!(
+			guard
+				.record_noop("a.rs", Bytes::from_static(b"two"))
+				.count(),
+			1
+		);
+	}
+
+	#[test]
+	fn canonical_paths_and_sessions_are_isolated() {
+		let mut first = NoopLoopGuard::new();
+		first.record_noop("a.rs", Bytes::from_static(b"same"));
+		first.record_noop("a.rs", Bytes::from_static(b"same"));
+		assert_eq!(
+			first
+				.record_noop("b.rs", Bytes::from_static(b"same"))
+				.count(),
+			1
+		);
+		let mut second = NoopLoopGuard::new();
+		assert_eq!(
+			second
+				.record_noop("a.rs", Bytes::from_static(b"same"))
+				.count(),
+			1
+		);
+	}
+
+	#[test]
+	fn patch_fingerprint_is_stable_and_byte_sensitive() {
+		assert_eq!(hash_patch_input(b"payload"), hash_patch_input(b"payload"));
+		assert_ne!(hash_patch_input(b"payload"), hash_patch_input(b"payload\n"));
+	}
+}

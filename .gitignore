@@ -1,0 +1,18 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Vendored CPython: ~290 MB of build/install trees plus the derived
+# stdlib.bin and pyo3-config.txt. Regenerate with scripts/fetch-python.sh.
+/vendor/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Editors & OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

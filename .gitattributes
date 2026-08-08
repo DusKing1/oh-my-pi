@@ -1,0 +1,4 @@
+* text=auto eol=lf
+
+Cargo.lock linguist-generated
+*.bin binary

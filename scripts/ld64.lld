@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# ld64 shim: links with Homebrew LLD 22 (`brew install lld`), matching the
+# LLVM-22 LTO bitcode in vendor/python. Xcode's ld64 (LLVM 17) cannot read
+# that bitcode, and rustc's rust-lld (LLVM 23) mis-resolves a handful of
+# symbols in it; the producer-matched major is the one that links clean.
+LLD=/opt/homebrew/opt/lld/bin/ld64.lld
+case "$("$LLD" --version 2>/dev/null)" in
+	*"LLD 22."*) ;;
+	*)
+		echo "scripts/ld64.lld: need Homebrew LLD 22.x at $LLD (matching the" >&2
+		echo "LLVM-22 bitcode in vendor/python); found: $("$LLD" --version 2>&1)." >&2
+		echo "Pin it (brew install lld@22 / brew pin lld) or re-vendor python." >&2
+		exit 1
+		;;
+esac
+exec "$LLD" "$@"

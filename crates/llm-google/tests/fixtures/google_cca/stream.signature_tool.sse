@@ -1,0 +1,4 @@
+data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Plan lookup","thought":true,"thoughtSignature":"sig_REDACTED"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"cachedContentTokenCount":6,"totalTokenCount":12}}}
+
+data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_lookup","name":"lookup","args":{"q":"x"}},"thoughtSignature":"function-call-sig_REDACTED"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"cachedContentTokenCount":6,"totalTokenCount":15}}}
+

@@ -1,0 +1,76 @@
+[package]
+name = "omp-llm-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Gateway orchestration and protocol endpoints for OMP model inference"
+
+[dependencies]
+async-stream = { workspace = true }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+flume = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+multer = { workspace = true }
+omp-llm-broker = { workspace = true }
+omp-core = { workspace = true }
+omp-llm-catalog = { workspace = true }
+omp-llm-error = { workspace = true }
+omp-llm-egress = { workspace = true }
+omp-llm-transport = { workspace = true }
+omp-llm-types = { workspace = true }
+omp-llm-tower = { workspace = true }
+omp-proto = { workspace = true, features = ["tonic"] }
+omp-rpc = { workspace = true }
+omp-storage = { workspace = true }
+omp-telemetry = { workspace = true }
+parking_lot = { workspace = true }
+rustc-hash = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+tracing = { workspace = true }
+tower = { workspace = true }
+ulid = { workspace = true }
+xutf = { workspace = true }
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
+[dev-dependencies]
+crc32fast = { workspace = true }
+omp-llm-cursor = { workspace = true }
+omp-llm-devin = { workspace = true }
+omp-llm-gitlab = { workspace = true }
+omp-llm-local = { workspace = true }
+prost = { workspace = true }
+tokio-tungstenite = { workspace = true }
+pretty_assertions = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+tempfile = { workspace = true }
+wiremock = { workspace = true }
+
+[[test]]
+name = "image_providers"
+path = "tests/image_providers.rs"
+
+[[test]]
+name = "video_provider"
+path = "tests/video_provider.rs"
+
+[lints]
+workspace = true

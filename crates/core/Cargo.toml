@@ -1,0 +1,27 @@
+[package]
+name = "omp-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Core data structures, compact strings and bytes, sparse collections, and binary-to-text encodings for omp"
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+bytes-utils = { workspace = true }
+heapless = { workspace = true }
+parking_lot_core = { workspace = true }
+serde = { workspace = true }
+smallvec = { workspace = true }
+smol_bitmap = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+postcard = { workspace = true }
+serde_json = { workspace = true }

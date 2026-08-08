@@ -1,0 +1,36 @@
+{
+  "model": "qwen3.5-cloud",
+  "messages": [
+    { "role": "system", "content": "Be precise." },
+    { "role": "user", "content": "Describe this image", "images": ["AQID"] },
+    {
+      "role": "assistant",
+      "content": "I will check.",
+      "tool_calls": [
+        {
+          "type": "function",
+          "function": { "name": "weather", "arguments": { "city": "Paris" } }
+        }
+      ]
+    },
+    { "role": "tool", "content": "sunny", "tool_name": "weather" }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "weather",
+        "description": "Look up weather",
+        "parameters": {
+          "type": "object",
+          "properties": { "city": { "type": "string" } },
+          "required": ["city"]
+        }
+      }
+    }
+  ],
+  "think": "high",
+  "tool_choice": "required",
+  "options": { "num_predict": 65536 },
+  "stream": true
+}

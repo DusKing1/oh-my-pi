@@ -1,0 +1,4 @@
+{
+  "canonical_intent": {"model": "cursor-composer-2.5", "messages": [{"role": "user", "content": [{"type": "text", "text": "Inspect package.json"}]}], "tools": [{"name": "read", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}}]},
+  "wire_body": {"conversation": [{"type": "user_message", "text": "Inspect package.json"}], "model_details": {"model_name": "cursor-composer-2.5"}, "tools": [{"name": "read", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}]}
+}

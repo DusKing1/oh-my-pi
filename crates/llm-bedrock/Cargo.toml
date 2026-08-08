@@ -1,0 +1,24 @@
+[package]
+name = "omp-llm-bedrock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Amazon Bedrock Converse Stream wire codec for OMP"
+
+[dependencies]
+base64 = { workspace = true }
+bytes = { workspace = true }
+omp-core = { workspace = true }
+omp-llm-catalog = { workspace = true }
+omp-llm-transport = { workspace = true }
+omp-llm-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+smallvec = { workspace = true }
+
+
+[lints]
+workspace = true

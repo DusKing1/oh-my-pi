@@ -1,0 +1,312 @@
+syntax = "proto3";
+
+package omp.inference.v1;
+
+import "omp/inference/v1/common.proto";
+import "omp/thread/v1/thread.proto";
+
+// Media facets: image generation (server-stream, seconds), speech synthesis
+// (server-stream, binary chunks), transcription (unary), and video
+// generation (async job — every surveyed provider is submit/poll-shaped,
+// 20s-5min renders).
+//
+// All media payloads travel as `omp.thread.v1.Blob`: the gateway writes
+// artifacts into the daemon blob store and returns hash refs (inline bytes
+// only for small payloads or stateless clients). Provider download URLs
+// expire (Sora: 1h) — ingesting at the gateway is what makes results
+// durable and re-usable as conversation parts.
+//
+// Prompt engineering (pi's subject/action/scene/style prompt assembly) is
+// tool-level policy and stays OUT of this protocol; requests carry the
+// final prompt.
+
+// ── Shared media vocabulary ─────────────────────────────────────────────
+
+enum AspectRatio {
+  ASPECT_RATIO_UNSPECIFIED = 0;
+  ASPECT_RATIO_1_1 = 1;
+  ASPECT_RATIO_16_9 = 2;
+  ASPECT_RATIO_9_16 = 3;
+  ASPECT_RATIO_4_3 = 4;
+  ASPECT_RATIO_3_4 = 5;
+  ASPECT_RATIO_3_2 = 6;
+  ASPECT_RATIO_2_3 = 7;
+  ASPECT_RATIO_21_9 = 8;
+}
+
+// ── Image generation ────────────────────────────────────────────────────
+
+message GenerateImageRequest {
+  string model = 1;
+  string prompt = 2;
+  // Images per request; 0 = 1.
+  uint32 n = 3;
+  AspectRatio aspect_ratio = 4;
+  // Explicit pixel dimensions; wins over aspect_ratio where the provider
+  // takes sizes, otherwise mapped to the nearest supported tier.
+  ImageSize size = 5;
+  Quality quality = 6;
+  Format format = 7;
+  Background background = 8;
+  // 0-100 for lossy formats; absent = provider default.
+  optional uint32 compression = 9;
+  optional uint64 seed = 10;
+  // Edit / img2img / style references. Presence flips providers into their
+  // edit endpoints (OpenAI action:"edit", xAI /images/edits, inlineData).
+  repeated omp.thread.v1.Blob input_images = 11;
+
+  enum Quality {
+    QUALITY_UNSPECIFIED = 0;
+    QUALITY_LOW = 1;
+    QUALITY_MEDIUM = 2;
+    QUALITY_HIGH = 3;
+  }
+  enum Format {
+    FORMAT_UNSPECIFIED = 0;
+    FORMAT_PNG = 1;
+    FORMAT_WEBP = 2;
+    FORMAT_JPEG = 3;
+    FORMAT_SVG = 4;
+  }
+  enum Background {
+    BACKGROUND_UNSPECIFIED = 0;
+    BACKGROUND_OPAQUE = 1;
+    BACKGROUND_TRANSPARENT = 2;
+  }
+
+  message ImageSize {
+    uint32 width = 1;
+    uint32 height = 2;
+  }
+
+  ValueMap props = 15;
+}
+
+message ImageEvent {
+  oneof event {
+    Partial partial = 1;
+    Done done = 2;
+  }
+
+  // Low-res progressive preview (OpenAI partial_image, OpenRouter
+  // image_generation.partial_image).
+  message Partial {
+    uint32 index = 1;
+    omp.thread.v1.Blob preview = 2;
+  }
+
+  message Done {
+    repeated omp.thread.v1.Blob images = 1;
+    // Provider-rewritten prompt, when reported.
+    string revised_prompt = 2;
+    // Commentary text from chat-shaped backends (Gemini interleaves text
+    // parts with images).
+    string text = 3;
+    Usage usage = 4;
+    Cost cost = 5;
+    repeated Unsupported unsupported = 6;
+    ValueMap props = 15;
+  }
+}
+
+// ── Speech synthesis ────────────────────────────────────────────────────
+
+enum AudioEncoding {
+  AUDIO_ENCODING_UNSPECIFIED = 0;
+  AUDIO_ENCODING_MP3 = 1;
+  AUDIO_ENCODING_PCM16 = 2;
+  AUDIO_ENCODING_WAV = 3;
+  AUDIO_ENCODING_OPUS = 4;
+  AUDIO_ENCODING_AAC = 5;
+  AUDIO_ENCODING_FLAC = 6;
+}
+
+message SpeakRequest {
+  string model = 1;
+  string text = 2;
+  // Provider voice id ("alloy", "en-US-Harper:MAI-Voice-2", kokoro voice).
+  string voice = 3;
+  AudioEncoding encoding = 4;
+  // Absent = provider/encoding default.
+  optional uint32 sample_rate_hz = 5;
+  // Speed multiplier; absent = 1.0.
+  optional double speed = 6;
+  // Tonal/style direction for expressive models.
+  string instructions = 7;
+  // Stateless voice cloning (Fish/Voxtral/ElevenLabs-class providers).
+  Clone clone = 8;
+
+  message Clone {
+    omp.thread.v1.Blob reference = 1;
+    // Transcript of the reference sample, when known.
+    string transcript = 2;
+  }
+
+  ValueMap props = 15;
+}
+
+message SpeakEvent {
+  oneof event {
+    Chunk chunk = 1;
+    Done done = 2;
+  }
+
+  // Encoded audio, in playback order. Chunks are raw codec bytes; framing
+  // metadata is fixed by the request's encoding + sample rate.
+  message Chunk {
+    bytes audio = 1;
+    // Transcript alignment delta, when the provider reports one.
+    string transcript_delta = 2;
+  }
+
+  message Done {
+    // Full utterance, blob-store backed.
+    omp.thread.v1.Blob audio = 1;
+    uint64 duration_ms = 2;
+    Usage usage = 3;
+    Cost cost = 4;
+    repeated Unsupported unsupported = 5;
+    ValueMap props = 15;
+  }
+}
+
+// ── Transcription ───────────────────────────────────────────────────────
+
+message TranscribeRequest {
+  string model = 1;
+  omp.thread.v1.Blob audio = 2;
+  // ISO-639-1 hint; absent = auto-detect.
+  string language = 3;
+  // Vocabulary/domain hint to steer spelling.
+  string prompt = 4;
+  // Translate to English instead of transcribing.
+  bool translate = 5;
+  repeated Granularity granularities = 6;
+  // Speaker separation; populates `speaker` on segments/words where the
+  // provider supports it, reported via `unsupported` where not.
+  bool diarize = 7;
+  optional double temperature = 8;
+
+  enum Granularity {
+    GRANULARITY_UNSPECIFIED = 0;
+    GRANULARITY_SEGMENT = 1;
+    GRANULARITY_WORD = 2;
+  }
+
+  ValueMap props = 15;
+}
+
+message TranscribeResponse {
+  string text = 1;
+  // Detected/confirmed ISO-639-1 language.
+  string language = 2;
+  uint64 duration_ms = 3;
+  repeated Segment segments = 4;
+  repeated Word words = 5;
+  Usage usage = 6;
+  Cost cost = 7;
+  repeated Unsupported unsupported = 8;
+
+  message Segment {
+    uint64 start_ms = 1;
+    uint64 end_ms = 2;
+    string text = 3;
+    // Diarization label; absent when diarize was off/unsupported.
+    optional uint32 speaker = 4;
+    // 0..1 where reported.
+    optional double confidence = 5;
+  }
+  message Word {
+    uint64 start_ms = 1;
+    uint64 end_ms = 2;
+    string word = 3;
+    optional uint32 speaker = 4;
+  }
+
+  ValueMap props = 15;
+}
+
+// ── Video generation (async job) ────────────────────────────────────────
+
+message GenerateVideoRequest {
+  string model = 1;
+  string prompt = 2;
+  // Provider caps apply (Sora 2-20s, Veo fixed 8s, Kling 5/10s); clamping
+  // is reported via `unsupported`.
+  optional uint32 duration_seconds = 3;
+  AspectRatio aspect_ratio = 4;
+  Resolution resolution = 5;
+  optional uint64 seed = 6;
+  // Absent = provider default (several default audio ON).
+  optional bool audio = 7;
+  // Image-to-video first frame.
+  omp.thread.v1.Blob start_frame = 8;
+  omp.thread.v1.Blob end_frame = 9;
+  // Subject/style guidance references.
+  repeated omp.thread.v1.Blob references = 10;
+
+  enum Resolution {
+    RESOLUTION_UNSPECIFIED = 0;
+    RESOLUTION_480P = 1;
+    RESOLUTION_720P = 2;
+    RESOLUTION_1080P = 3;
+    RESOLUTION_4K = 4;
+  }
+
+  ValueMap props = 15;
+}
+
+// Lifecycle snapshot of a long-running generation. Modality-neutral: a
+// future music/long-audio facet submits with its own request message and
+// reuses this envelope, GetGeneration, AttachGeneration, and
+// CancelGeneration unchanged.
+message GenerationStatus {
+  // Gateway-scoped id, stable across client reconnects. Upstream job ids
+  // (Sora job, Veo LRO name) are gateway-internal.
+  string generation_id = 1;
+  State state = 2;
+  // 0-100 where the provider reports progress.
+  double progress_percent = 3;
+  // STATE_FAILED: classified cause.
+  string detail = 4;
+  repeated Artifact artifacts = 5;
+  Usage usage = 6;
+  Cost cost = 7;
+  repeated Unsupported unsupported = 8;
+  uint64 created_at_ms = 9;
+  uint64 updated_at_ms = 10;
+
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_QUEUED = 1;
+    STATE_RUNNING = 2;
+    STATE_COMPLETED = 3;
+    STATE_FAILED = 4;
+    STATE_CANCELLED = 5;
+  }
+
+  // One output. The gateway ingests provider downloads into the blob store
+  // before expiry; `url` is a passthrough for clients that want the
+  // provider's (expiring) link instead.
+  message Artifact {
+    omp.thread.v1.Blob blob = 1;
+    // "video" | "thumbnail" | "spritesheet" | provider-defined.
+    string variant = 2;
+    string url = 3;
+    uint64 url_expires_at_ms = 4;
+  }
+
+  ValueMap props = 15;
+}
+
+message GetGenerationRequest {
+  string generation_id = 1;
+}
+
+message AttachGenerationRequest {
+  string generation_id = 1;
+}
+
+message CancelGenerationRequest {
+  string generation_id = 1;
+}

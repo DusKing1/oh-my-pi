@@ -1,0 +1,132 @@
+syntax = "proto3";
+
+package omp.inference.v1;
+
+// Primitives shared by every inference facet (chat, media generation,
+// search): fallback policy, usage/cost accounting, and the honest
+// "what we could not honor" report.
+
+// Integer-preserving JSON vocabulary for namespaced extension bags. The
+// `google.protobuf.Value` number arm is always an IEEE-754 double, which can
+// silently change seeds, token budgets, and identifiers above 2^53. Signed
+// integers use `int`; non-negative JSON integers above `int64` use `uint`
+// rather than truncating or falling back to a string.
+message Value {
+  oneof kind {
+    bool null = 1;
+    int64 int = 2;
+    double double = 3;
+    bool bool = 4;
+    string string = 5;
+    ValueList list = 6;
+    ValueMap map = 7;
+    uint64 uint = 8;
+  }
+}
+
+// Array-shaped extension data; values recursively retain their numeric kind.
+message ValueList {
+  repeated Value values = 1;
+}
+
+// Object-shaped extension data. Top-level provider-option and extension keys
+// use `namespace/name` form; nested object keys retain their vendor-defined shape.
+// Request bindings retain message presence, so an absent provider-options bag
+// remains distinct from an explicitly supplied empty bag.
+message ValueMap {
+  map<string, Value> fields = 1;
+}
+
+// What to do when the resolved provider cannot honor a requested feature.
+enum Fallback {
+  // Facet default (usually FALLBACK_EMULATE).
+  FALLBACK_UNSPECIFIED = 0;
+  FALLBACK_ERROR = 1;
+  // Drop the feature, but report it in `unsupported` — never silent.
+  FALLBACK_IGNORE = 2;
+  // Soft strategy: prompt injection, tool filtering, bounded retry loop.
+  FALLBACK_EMULATE = 3;
+}
+
+// Reasoning effort vocabulary, shared by chat params and model cards
+// (a card advertises which levels a model serves after variant collapse).
+enum Effort {
+  // Provider default.
+  EFFORT_UNSPECIFIED = 0;
+  EFFORT_OFF = 1;
+  EFFORT_MINIMAL = 2;
+  EFFORT_LOW = 3;
+  EFFORT_MEDIUM = 4;
+  EFFORT_HIGH = 5;
+  EFFORT_MAX = 6;
+  // OpenAI's extra-high tier; distinct from provider-defined maximum.
+  EFFORT_XHIGH = 7;
+}
+
+message Usage {
+  uint64 input_tokens = 1;
+  uint64 output_tokens = 2;
+  uint64 cache_read_tokens = 3;
+  uint64 cache_write_tokens = 4;
+  enum Accuracy {
+    ACCURACY_UNSPECIFIED = 0;
+    ACCURACY_EXACT = 1;
+    ACCURACY_ESTIMATED = 2;
+    ACCURACY_MIXED = 3;
+  }
+  Accuracy accuracy = 5;
+  // Raw provider breakdown (TTL'd cache writes, service tier actually
+  // served, per-image billing units, search request counts, ...) under
+  // vendor-namespaced keys. Integer values remain exact rather than passing
+  // through an IEEE-754 double, which protects large counters and ids.
+  ValueMap detail = 6;
+  optional uint64 total_tokens = 7;
+  optional uint64 context_tokens = 8;
+  OrchestrationUsage orchestration = 9;
+  optional uint64 premium_requests = 10;
+  optional uint64 reasoning_tokens = 11;
+  CacheTtlUsage cache_ttl = 12;
+  ServerToolUsage server_tools = 13;
+}
+
+message OrchestrationUsage {
+  optional uint64 input_tokens = 1;
+  optional uint64 cache_read_tokens = 2;
+  optional uint64 output_tokens = 3;
+}
+
+message CacheTtlUsage {
+  optional uint64 ephemeral_5m_tokens = 1;
+  optional uint64 ephemeral_1h_tokens = 2;
+}
+
+message ServerToolUsage {
+  optional uint64 web_search_requests = 1;
+  optional uint64 web_fetch_requests = 2;
+}
+
+message Cost {
+  // Nano-USD. Computed from catalog rates at the metering layer, or exact
+  // when the provider bills in-band (`estimated = false`).
+  uint64 nanos_usd = 1;
+  bool estimated = 2;
+  optional uint64 input_nanos_usd = 3;
+  optional uint64 output_nanos_usd = 4;
+  optional uint64 cache_read_nanos_usd = 5;
+  optional uint64 cache_write_nanos_usd = 6;
+}
+
+// A requested feature or prop the resolved provider path could not honor.
+// The reply to every silent-drop bug in the previous implementation.
+message Unsupported {
+  // "tool_choice.required", "sampling.top_k", "props:openai/verbosity", ...
+  string what = 1;
+  string detail = 2;
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    ACTION_DROPPED = 1;
+    ACTION_EMULATED = 2;
+    ACTION_CLAMPED = 3;
+  }
+  Action action = 3;
+}

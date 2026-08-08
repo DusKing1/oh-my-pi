@@ -1,0 +1,1018 @@
+use std::sync::{
+	LazyLock,
+	atomic::{AtomicU64, Ordering},
+};
+
+use omp_core::SmolStr;
+use parking_lot::Mutex;
+use xutf::{Text, width_char};
+
+static NEXT_FRAME_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Terminal dimensions measured in character cells.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Size {
+	/// Number of columns.
+	pub width:  u16,
+	/// Number of rows.
+	pub height: u16,
+}
+
+impl Size {
+	/// Creates terminal dimensions from a column and row count.
+	pub const fn new(width: u16, height: u16) -> Self {
+		Self { width, height }
+	}
+
+	fn area(self) -> usize {
+		usize::from(self.width) * usize::from(self.height)
+	}
+}
+
+/// A rectangular cell region clipped by drawing operations to the frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Rect {
+	/// Leftmost column.
+	pub x:      u16,
+	/// Topmost row.
+	pub y:      u16,
+	/// Region width in cells.
+	pub width:  u16,
+	/// Region height in cells.
+	pub height: u16,
+}
+
+impl Rect {
+	/// Creates a cell rectangle.
+	pub const fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
+		Self { x, y, width, height }
+	}
+
+	const fn right(self) -> u16 {
+		self.x.saturating_add(self.width)
+	}
+
+	const fn bottom(self) -> u16 {
+		self.y.saturating_add(self.height)
+	}
+}
+
+/// A terminal foreground or background color.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Color {
+	/// The terminal's configured default color.
+	#[default]
+	Default,
+	/// An indexed color from the terminal's 256-color palette.
+	Indexed(u8),
+	/// A 24-bit RGB color.
+	Rgb(u8, u8, u8),
+}
+
+impl Color {
+	/// Parses any CSS color and lowers it to a cell color without
+	/// context: fully transparent values and `currentcolor` become
+	/// [`Color::Default`] (the terminal's pass-through color),
+	/// translucent values keep their color unblended, and system
+	/// colors — which need a theme — return `None`. Parse a
+	/// [`CssColor`](crate::CssColor) instead when alpha, `currentcolor`,
+	/// or system colors must survive to a context-aware lowering.
+	///
+	/// # Example
+	/// ```
+	/// use omp_tui::Color;
+	/// assert_eq!(Color::parse("rebeccapurple"), Some(Color::Rgb(0x66, 0x33, 0x99)));
+	/// assert_eq!(Color::parse("hsl(120 100% 50%)"), Some(Color::Rgb(0, 255, 0)));
+	/// assert_eq!(Color::parse("transparent"), Some(Color::Default));
+	/// assert_eq!(Color::parse("rgb(255 0 0 / 0)"), Some(Color::Default));
+	/// assert_eq!(Color::parse("Canvas"), None);
+	/// ```
+	pub fn parse(value: &str) -> Option<Self> {
+		use crate::color::CssColor;
+		match CssColor::parse(value)? {
+			CssColor::Rgba(_, _, _, alpha) if alpha <= 0.0 => Some(Self::Default),
+			CssColor::Rgba(red, green, blue, _) => Some(Self::Rgb(red, green, blue)),
+			CssColor::Current => Some(Self::Default),
+			CssColor::System(_) => None,
+		}
+	}
+}
+/// A two-stop terminal color ramp.
+///
+/// Zero degrees runs left-to-right; 90 degrees runs top-to-bottom.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Gradient {
+	start: Color,
+	end:   Color,
+	angle: u16,
+}
+
+impl Gradient {
+	/// Creates a ramp with an angle normalized by the markup parser.
+	pub(crate) const fn new(start: Color, end: Color, angle: u16) -> Self {
+		Self { start, end, angle }
+	}
+
+	fn projection(self, bounds: Rect) -> GradientProjection {
+		let (horizontal, vertical) = match self.angle % 360 {
+			0 => (1.0, 0.0),
+			90 => (0.0, 1.0),
+			180 => (-1.0, 0.0),
+			270 => (0.0, -1.0),
+			angle => {
+				let radians = f32::from(angle).to_radians();
+				(radians.cos(), radians.sin())
+			},
+		};
+		let width = f32::from(bounds.width.saturating_sub(1));
+		let height = f32::from(bounds.height.saturating_sub(1));
+		let horizontal_end = horizontal * width;
+		let vertical_end = vertical * height;
+		let min = 0.0_f32
+			.min(horizontal_end)
+			.min(vertical_end)
+			.min(horizontal_end + vertical_end);
+		let max = 0.0_f32
+			.max(horizontal_end)
+			.max(vertical_end)
+			.max(horizontal_end + vertical_end);
+		GradientProjection {
+			start: self.start,
+			end: self.end,
+			horizontal,
+			vertical,
+			origin_x: bounds.x,
+			origin_y: bounds.y,
+			min,
+			span: max - min,
+		}
+	}
+}
+
+#[derive(Clone, Copy)]
+struct GradientProjection {
+	start:      Color,
+	end:        Color,
+	horizontal: f32,
+	vertical:   f32,
+	origin_x:   u16,
+	origin_y:   u16,
+	min:        f32,
+	span:       f32,
+}
+
+impl GradientProjection {
+	fn color_at(self, x: u16, y: u16) -> Color {
+		let (Color::Rgb(red, green, blue), Color::Rgb(end_red, end_green, end_blue)) =
+			(self.start, self.end)
+		else {
+			return self.start;
+		};
+		if self.span <= f32::EPSILON {
+			return self.start;
+		}
+		let position = self.vertical.mul_add(
+			f32::from(y) - f32::from(self.origin_y),
+			self.horizontal * (f32::from(x) - f32::from(self.origin_x)),
+		);
+		let amount = ((position - self.min) / self.span).clamp(0.0, 1.0);
+		let channel = |start: u8, end: u8| {
+			f32::mul_add(f32::from(end) - f32::from(start), amount, f32::from(start))
+				.round()
+				.clamp(0.0, 255.0) as u8
+		};
+		Color::Rgb(channel(red, end_red), channel(green, end_green), channel(blue, end_blue))
+	}
+}
+/// Stable process-local identity for one terminal hyperlink target.
+///
+/// IDs are interned from URLs so copied rich-text styles and frame cells carry
+/// only a compact typed handle. The renderer resolves the handle immediately
+/// before materializing OSC 8.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LinkId(u32);
+impl LinkId {
+	pub(crate) const fn get(self) -> u32 {
+		self.0
+	}
+}
+
+#[derive(Default)]
+struct LinkRegistry {
+	urls: Vec<SmolStr>,
+}
+
+impl LinkRegistry {
+	fn intern(&mut self, url: &str) -> LinkId {
+		if let Some(index) = self.urls.iter().position(|known| known == url) {
+			return LinkId(u32::try_from(index + 1).expect("hyperlink registry exceeds u32"));
+		}
+		self.urls.push(SmolStr::new(url));
+		LinkId(u32::try_from(self.urls.len()).expect("hyperlink registry exceeds u32"))
+	}
+
+	fn get(&self, id: LinkId) -> Option<&str> {
+		let index = usize::try_from(id.0).ok()?.checked_sub(1)?;
+		self.urls.get(index).map(SmolStr::as_str)
+	}
+}
+
+static LINKS: LazyLock<Mutex<LinkRegistry>> = LazyLock::new(|| Mutex::new(LinkRegistry::default()));
+
+pub fn with_link_url<T>(id: LinkId, use_url: impl FnOnce(&str) -> T) -> Option<T> {
+	let links = LINKS.lock();
+	links.get(id).map(use_url)
+}
+
+fn intern_link(url: &str) -> Option<LinkId> {
+	if url.is_empty() || !url.bytes().any(|byte| !matches!(byte, b'\x1b' | b'\x07')) {
+		return None;
+	}
+	let mut links = LINKS.lock();
+	Some(links.intern(url))
+}
+
+/// Canonical visual attributes for one or more cells.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Style {
+	pub(super) foreground:      Color,
+	pub(super) background:      Color,
+	pub(super) bold:            bool,
+	pub(super) dim:             bool,
+	pub(super) italic:          bool,
+	pub(super) underline:       bool,
+	/// Underline color (SGR 58); also carries the Kitty placeholder
+	/// placement-ID reference on typed image cells.
+	pub(super) underline_color: Color,
+	pub(super) reverse:         bool,
+	pub(super) strikethrough:   bool,
+	pub(super) link:            Option<LinkId>,
+}
+
+impl Style {
+	/// Creates an unstyled terminal style.
+	pub const fn new() -> Self {
+		Self {
+			foreground:      Color::Default,
+			background:      Color::Default,
+			bold:            false,
+			dim:             false,
+			italic:          false,
+			underline:       false,
+			underline_color: Color::Default,
+			reverse:         false,
+			strikethrough:   false,
+			link:            None,
+		}
+	}
+
+	/// Sets the foreground color.
+	pub const fn fg(mut self, color: Color) -> Self {
+		self.foreground = color;
+		self
+	}
+
+	/// Sets the background color.
+	pub const fn bg(mut self, color: Color) -> Self {
+		self.background = color;
+		self
+	}
+
+	/// Enables bold intensity.
+	pub const fn bold(mut self) -> Self {
+		self.bold = true;
+		self
+	}
+
+	/// Enables faint intensity.
+	pub const fn dim(mut self) -> Self {
+		self.dim = true;
+		self
+	}
+
+	/// Enables italics.
+	pub const fn italic(mut self) -> Self {
+		self.italic = true;
+		self
+	}
+
+	/// Enables underlining.
+	pub const fn underline(mut self) -> Self {
+		self.underline = true;
+		self
+	}
+
+	/// Sets the underline color (SGR 58); [`Color::Default`] leaves the
+	/// terminal's underline color untouched.
+	pub const fn underline_color(mut self, color: Color) -> Self {
+		self.underline_color = color;
+		self
+	}
+
+	/// Enables reverse video.
+	pub const fn reverse(mut self) -> Self {
+		self.reverse = true;
+		self
+	}
+
+	/// Enables strikethrough.
+	pub const fn strikethrough(mut self) -> Self {
+		self.strikethrough = true;
+		self
+	}
+
+	/// Attaches a terminal hyperlink target to this style.
+	///
+	/// The URL is interned once and only its typed identity rides on rich-text
+	/// runs and frame cells. Empty targets are ignored.
+	pub fn link(mut self, url: &str) -> Self {
+		self.link = intern_link(url);
+		self
+	}
+
+	pub(crate) const fn without_link(mut self) -> Self {
+		self.link = None;
+		self
+	}
+
+	/// CSS-like cascade: unset properties adopt the parent's. A
+	/// `Color::Default` foreground counts as unset and attribute flags OR
+	/// together. The background never inherits — ancestor fills reach
+	/// descendants through the paint underlay instead.
+	pub const fn inherit(mut self, parent: Self) -> Self {
+		if matches!(self.foreground, Color::Default) {
+			self.foreground = parent.foreground;
+		}
+		self.bold |= parent.bold;
+		self.dim |= parent.dim;
+		self.italic |= parent.italic;
+		self.underline |= parent.underline;
+		if matches!(self.underline_color, Color::Default) {
+			self.underline_color = parent.underline_color;
+		}
+		self.reverse |= parent.reverse;
+		self.strikethrough |= parent.strikethrough;
+		if self.link.is_none() {
+			self.link = parent.link;
+		}
+		self
+	}
+
+	/// The foreground color, for callers deriving accents from a style.
+	pub const fn foreground_color(&self) -> Color {
+		self.foreground
+	}
+
+	/// The background color, for callers deciding whether to fill a region.
+	pub const fn background_color(&self) -> Color {
+		self.background
+	}
+}
+
+/// Stored glyph data for a declarative cell.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CellContent {
+	/// A one-cell space without owned text.
+	Blank,
+	Grapheme {
+		text:  SmolStr,
+		width: u16,
+	},
+	/// A Kitty Unicode-placeholder cell, materialized only by the renderer.
+	Image {
+		id:   u32,
+		row:  u16,
+		col:  u16,
+		rows: u16,
+		cols: u16,
+	},
+	Continuation,
+}
+
+/// One styled cell in a frame's internal grid.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Cell {
+	pub(super) content: CellContent,
+	pub(super) style:   Style,
+}
+
+impl Cell {
+	pub(super) fn blank(style: Style) -> Self {
+		Self { content: CellContent::Blank, style }
+	}
+
+	#[cfg(test)]
+	fn is_default_blank(&self) -> bool {
+		matches!(&self.content, CellContent::Blank) && self.style == Style::default()
+	}
+}
+
+/// A complete declarative terminal viewport.
+///
+/// Each frame owns a fixed cell grid. Wide graphemes reserve continuation
+/// cells, so overwriting either half cannot leave a stale terminal cell behind.
+#[derive(Clone, Debug)]
+pub struct Frame {
+	size:            Size,
+	cells:           Vec<Cell>,
+	cursor:          Option<(u16, u16)>,
+	may_have_images: bool,
+	source_id:       u64,
+	revision:        u64,
+}
+
+impl Frame {
+	/// Creates a blank frame using the terminal's default colors.
+	pub fn new(size: Size) -> Self {
+		Self {
+			size,
+			cells: vec![Cell::blank(Style::default()); size.area()],
+			cursor: None,
+			may_have_images: false,
+			source_id: NEXT_FRAME_ID.fetch_add(1, Ordering::Relaxed),
+			revision: 0,
+		}
+	}
+
+	/// Changes the document height, preserving retained rows and filling growth
+	/// with styled blanks.
+	pub fn resize_height(&mut self, height: u16, style: Style) {
+		if height == self.size.height {
+			return;
+		}
+		self.touch();
+		let area = usize::from(self.size.width).saturating_mul(usize::from(height));
+		self.cells.resize(area, Cell::blank(style));
+		self.size.height = height;
+		if self.cursor.is_some_and(|(_, y)| y >= height) {
+			self.cursor = None;
+		}
+	}
+
+	#[inline]
+	const fn touch(&mut self) {
+		self.revision = self.revision.wrapping_add(1);
+	}
+
+	#[inline]
+	pub(crate) const fn source_stamp(&self) -> (u64, u64) {
+		(self.source_id, self.revision)
+	}
+
+	#[inline]
+	pub(crate) const fn may_have_images(&self) -> bool {
+		self.may_have_images
+	}
+
+	/// Returns the frame dimensions.
+	pub const fn size(&self) -> Size {
+		self.size
+	}
+
+	/// Places the terminal's hardware cursor at a document cell.
+	///
+	/// The renderer hides the cursor when this cell falls outside the live
+	/// viewport.
+	pub const fn set_cursor(&mut self, x: u16, y: u16) {
+		self.touch();
+		self.cursor = Some((x, y));
+	}
+
+	/// Replaces every cell with a styled blank.
+	pub fn clear(&mut self, style: Style) {
+		self.touch();
+		self.cells.fill(Cell::blank(style));
+	}
+
+	/// Fills a clipped rectangle with styled blanks.
+	pub fn fill(&mut self, rect: Rect, style: Style) {
+		let left = rect.x.min(self.size.width);
+		let right = rect.right().min(self.size.width);
+		let top = rect.y.min(self.size.height);
+		let bottom = rect.bottom().min(self.size.height);
+		if left >= right || top >= bottom {
+			return;
+		}
+		self.touch();
+
+		let blank = Cell::blank(style);
+		for y in top..bottom {
+			self.clear_glyph_at(left, y);
+			if right - left > 1 {
+				self.clear_glyph_at(right - 1, y);
+			}
+			let start = self.index(left, y);
+			let end = self.index(right - 1, y) + 1;
+			self.cells[start..end].fill(blank.clone());
+		}
+	}
+
+	/// Paints `color` behind a clipped rectangle: cells still on the
+	/// terminal's default background adopt it, cells that named their own
+	/// keep it. Runs after a subtree paints, so glyph styles — which
+	/// replace the whole cell — never punch holes in a container's fill.
+	pub fn underlay(&mut self, rect: Rect, color: Color) {
+		self.touch();
+		let right = rect.right().min(self.size.width);
+		let bottom = rect.bottom().min(self.size.height);
+		for y in rect.y.min(self.size.height)..bottom {
+			for x in rect.x.min(self.size.width)..right {
+				let index = self.index(x, y);
+				if self.cells[index].style.background == Color::Default {
+					self.cells[index].style.background = color;
+				}
+			}
+		}
+	}
+
+	/// Recolors one cell's foreground in place — the chrome-glow primitive:
+	/// composite passes shift color without re-shaping glyphs.
+	pub(crate) fn recolor_fg(&mut self, x: u16, y: u16, recolor: impl FnOnce(Color) -> Color) {
+		if x >= self.size.width || y >= self.size.height {
+			return;
+		}
+		self.touch();
+		let index = self.index(x, y);
+		let style = &mut self.cells[index].style;
+		style.foreground = recolor(style.foreground);
+	}
+
+	/// Paints a gradient behind cells that did not name their own background.
+	pub(crate) fn underlay_gradient(&mut self, rect: Rect, gradient: Gradient, bounds: Rect) {
+		self.touch();
+		let projection = gradient.projection(bounds);
+		let right = rect.right().min(self.size.width);
+		let bottom = rect.bottom().min(self.size.height);
+		for y in rect.y.min(self.size.height)..bottom {
+			let mut x = rect.x.min(self.size.width);
+			while x < right {
+				let index = self.index(x, y);
+				let width = match &self.cells[index].content {
+					CellContent::Blank => 1,
+					CellContent::Grapheme { width, .. } => *width,
+					CellContent::Image { .. } => 1,
+					CellContent::Continuation => {
+						x += 1;
+						continue;
+					},
+				};
+				if self.cells[index].style.background == Color::Default {
+					let color = projection.color_at(x, y);
+					let end = x.saturating_add(width).min(right);
+					for column in x..end {
+						let index = self.index(column, y);
+						if self.cells[index].style.background == Color::Default {
+							self.cells[index].style.background = color;
+						}
+					}
+				}
+				x = x.saturating_add(width.max(1));
+			}
+		}
+	}
+
+	/// Tints visible glyphs that inherit their foreground from this node.
+	pub(crate) fn gradient_foreground(&mut self, rect: Rect, gradient: Gradient, bounds: Rect) {
+		self.touch();
+		let projection = gradient.projection(bounds);
+		let right = rect.right().min(self.size.width);
+		let bottom = rect.bottom().min(self.size.height);
+		for y in rect.y.min(self.size.height)..bottom {
+			let mut x = rect.x.min(self.size.width);
+			while x < right {
+				let index = self.index(x, y);
+				let (width, visible) = match &self.cells[index].content {
+					CellContent::Blank => (1, false),
+					CellContent::Grapheme { text, width } => (*width, text != " "),
+					CellContent::Image { .. } => (1, true),
+					CellContent::Continuation => {
+						x += 1;
+						continue;
+					},
+				};
+				if visible && self.cells[index].style.foreground == Color::Default {
+					let color = projection.color_at(x, y);
+					let end = x.saturating_add(width).min(right);
+					for column in x..end {
+						let index = self.index(column, y);
+						if self.cells[index].style.foreground == Color::Default {
+							self.cells[index].style.foreground = color;
+						}
+					}
+				}
+				x = x.saturating_add(width.max(1));
+			}
+		}
+	}
+
+	/// Places one typed Kitty image cell.
+	pub fn put_image_cell(
+		&mut self,
+		x: u16,
+		y: u16,
+		id: u32,
+		row: u16,
+		col: u16,
+		rows: u16,
+		cols: u16,
+	) {
+		if x >= self.size.width || y >= self.size.height {
+			return;
+		}
+		self.touch();
+		self.may_have_images = true;
+		self.clear_glyph_at(x, y);
+		let index = self.index(x, y);
+		self.cells[index] = Cell {
+			content: CellContent::Image { id, row, col, rows, cols },
+			style:   Style::default(),
+		};
+	}
+
+	/// Draws printable graphemes until a newline or the right frame edge.
+	///
+	/// Control characters are ignored. A wide grapheme that would be clipped is
+	/// omitted rather than leaving a half-cell artifact.
+	pub fn put(&mut self, x: u16, y: u16, text: &str, style: Style) -> u16 {
+		let width = self.size.width.saturating_sub(x);
+		self.put_clipped(x, y, width, text, style)
+	}
+
+	/// Draws printable graphemes within `width` cells.
+	///
+	/// The cell bound is also clipped to the frame edge. A wide grapheme that
+	/// crosses either bound is omitted rather than leaving a half-cell artifact.
+	pub fn put_clipped(&mut self, x: u16, y: u16, width: u16, text: &str, style: Style) -> u16 {
+		if y >= self.size.height {
+			return x;
+		}
+		self.touch();
+
+		let right = x.saturating_add(width).min(self.size.width);
+		let mut column = x;
+		if text.is_ascii() {
+			for &byte in text.as_bytes() {
+				if matches!(byte, b'\n' | b'\r') {
+					break;
+				}
+				if byte.is_ascii_control() {
+					continue;
+				}
+				if column >= right {
+					break;
+				}
+				self.set_ascii(column, y, byte, style);
+				column += 1;
+			}
+			return column;
+		}
+		if let Some(character) = text
+			.chars()
+			.next()
+			.filter(|character| character.len_utf8() == text.len())
+		{
+			if character.is_control() {
+				return column;
+			}
+			let glyph_width = u16::try_from(width_char(character)).unwrap_or(u16::MAX);
+			if glyph_width == 0 || column >= right || glyph_width > right - column {
+				return column;
+			}
+			self.set_grapheme(column, y, text, glyph_width, style);
+			return column + glyph_width;
+		}
+
+		for grapheme in text.graphemes() {
+			if grapheme == "\n" || grapheme == "\r" {
+				break;
+			}
+			if grapheme.chars().any(char::is_control) {
+				continue;
+			}
+
+			let width = u16::try_from(grapheme.visible_width()).unwrap_or(u16::MAX);
+			if width == 0 {
+				continue;
+			}
+			if column >= right || width > right - column {
+				break;
+			}
+
+			self.set_grapheme(column, y, grapheme, width, style);
+			column += width;
+		}
+		column
+	}
+
+	pub(super) const fn cursor(&self) -> Option<(u16, u16)> {
+		self.cursor
+	}
+
+	#[inline(always)]
+	pub(super) fn cell(&self, x: u16, y: u16) -> &Cell {
+		&self.cells[self.index(x, y)]
+	}
+
+	#[inline(always)]
+	pub(super) fn cell_or<'a>(&'a self, row: u16, column: u16, blank: &'a Cell) -> &'a Cell {
+		if row >= self.size.height || column >= self.size.width {
+			blank
+		} else {
+			self.cell(column, row)
+		}
+	}
+
+	pub(crate) fn same_grid(&self, other: &Self) -> bool {
+		self.size == other.size && self.cursor == other.cursor && self.cells == other.cells
+	}
+
+	pub(super) fn row_equals(&self, row: u16, other: &Self, other_row: u16) -> bool {
+		if self.size.width != other.size.width
+			|| row >= self.size.height
+			|| other_row >= other.size.height
+		{
+			return false;
+		}
+		let width = usize::from(self.size.width);
+		let start = usize::from(row) * width;
+		let other_start = usize::from(other_row) * width;
+		self.cells[start..start + width] == other.cells[other_start..other_start + width]
+	}
+
+	/// Copies one row's cells from `src` (same width required). The
+	/// damage-snapshot primitive: presenters copy only rows a caller
+	/// reported dirty instead of cloning the whole grid.
+	pub(crate) fn copy_row_from(&mut self, src: &Self, row: u16) {
+		if row >= self.size.height || row >= src.size.height || self.size.width != src.size.width {
+			return;
+		}
+		self.touch();
+		let width = usize::from(self.size.width);
+		let start = usize::from(row) * width;
+		self.cells[start..start + width].clone_from_slice(&src.cells[start..start + width]);
+		self.may_have_images |= src.may_have_images;
+	}
+
+	/// Copies a cell region from `src` into this frame — the scroll
+	/// viewport blit, and the way an embedder composites a sub-document
+	/// (e.g. a [`crate::Ui`]-rendered message) into a hand-painted frame.
+	/// `src` rows `[src_top, src_top + rows)` land at `(dst_x, dst_y)`,
+	/// clipped to both frames. Wide glyphs whose lead cell falls outside
+	/// the copied span degrade to blanks rather than leaving orphan
+	/// continuations.
+	/// A cursor set on `src` inside the copied region is translated into
+	/// this frame's coordinates; outside it, this frame's cursor is kept.
+	pub fn blit(&mut self, src: &Self, src_top: u16, rows: u16, dst_x: u16, dst_y: u16) {
+		self.touch();
+		let width = src.size.width.min(self.size.width.saturating_sub(dst_x));
+		if let Some((cx, cy)) = src.cursor
+			&& cx < width
+			&& cy >= src_top
+			&& cy < src_top.saturating_add(rows)
+		{
+			let to_y = dst_y.saturating_add(cy - src_top);
+			if to_y < self.size.height {
+				self.cursor = Some((dst_x.saturating_add(cx), to_y));
+			}
+		}
+		for row in 0..rows {
+			let from_y = src_top.saturating_add(row);
+			let to_y = dst_y.saturating_add(row);
+			if from_y >= src.size.height || to_y >= self.size.height {
+				break;
+			}
+			let mut x = 0u16;
+			while x < width {
+				let cell = src.cell(x, from_y);
+				match &cell.content {
+					CellContent::Blank => {
+						let style = cell.style;
+						self.clear_glyph_at(dst_x + x, to_y);
+						let index = self.index(dst_x + x, to_y);
+						self.cells[index] = Cell::blank(style);
+						x += 1;
+					},
+					CellContent::Grapheme { text, width: glyph_w } => {
+						if x + glyph_w <= width {
+							let text = text.clone();
+							let style = cell.style;
+							let w = *glyph_w;
+							self.set_grapheme(dst_x + x, to_y, &text, w, style);
+							x += w;
+						} else {
+							let style = cell.style;
+							let index = self.index(dst_x + x, to_y);
+							self.clear_glyph_at(dst_x + x, to_y);
+							self.cells[index] = Cell::blank(style);
+							x += 1;
+						}
+					},
+					CellContent::Image { id, row, col, rows, cols } => {
+						self.put_image_cell(dst_x + x, to_y, *id, *row, *col, *rows, *cols);
+						x += 1;
+					},
+					CellContent::Continuation => {
+						// lead cell was left of the copy origin: blank
+						let style = cell.style;
+						self.clear_glyph_at(dst_x + x, to_y);
+						let index = self.index(dst_x + x, to_y);
+						self.cells[index] = Cell::blank(style);
+						x += 1;
+					},
+				}
+			}
+		}
+	}
+
+	#[inline(always)]
+	fn index(&self, x: u16, y: u16) -> usize {
+		usize::from(y) * usize::from(self.size.width) + usize::from(x)
+	}
+
+	#[inline(always)]
+	fn set_ascii(&mut self, x: u16, y: u16, byte: u8, style: Style) {
+		let lead = self.index(x, y);
+		let existing = &self.cells[lead];
+		if existing.style == style {
+			match &existing.content {
+				CellContent::Blank if byte == b' ' => return,
+				CellContent::Grapheme { text, width: 1 }
+					if text.len() == 1 && text.as_bytes()[0] == byte =>
+				{
+					return;
+				},
+				_ => {},
+			}
+		}
+		if !matches!(
+			&self.cells[lead].content,
+			CellContent::Blank | CellContent::Grapheme { width: 1, .. } | CellContent::Image { .. }
+		) {
+			self.clear_glyph_at(x, y);
+		}
+		let content = if byte == b' ' {
+			CellContent::Blank
+		} else {
+			let bytes = [byte];
+			// SAFETY: `byte` came from a string already known to be ASCII.
+			let text = unsafe { str::from_utf8_unchecked(&bytes) };
+			CellContent::Grapheme { text: SmolStr::new_inline(text), width: 1 }
+		};
+		self.cells[lead] = Cell { content, style };
+	}
+
+	fn set_grapheme(&mut self, x: u16, y: u16, grapheme: &str, width: u16, style: Style) {
+		if width == 1 {
+			let lead = self.index(x, y);
+			let existing = &self.cells[lead];
+			if existing.style == style {
+				match &existing.content {
+					CellContent::Blank if grapheme == " " => return,
+					CellContent::Grapheme { text, width: 1 } if text == grapheme => return,
+					_ => {},
+				}
+			}
+			if !matches!(
+				&self.cells[lead].content,
+				CellContent::Blank | CellContent::Grapheme { width: 1, .. } | CellContent::Image { .. }
+			) {
+				self.clear_glyph_at(x, y);
+			}
+			let content = if grapheme == " " {
+				CellContent::Blank
+			} else {
+				CellContent::Grapheme { text: SmolStr::new(grapheme), width }
+			};
+			self.cells[lead] = Cell { content, style };
+			return;
+		}
+
+		for column in x..x + width {
+			self.clear_glyph_at(column, y);
+		}
+
+		let lead = self.index(x, y);
+		self.cells[lead] =
+			Cell { content: CellContent::Grapheme { text: SmolStr::new(grapheme), width }, style };
+		for column in x + 1..x + width {
+			let index = self.index(column, y);
+			self.cells[index] = Cell { content: CellContent::Continuation, style };
+		}
+	}
+
+	fn clear_glyph_at(&mut self, x: u16, y: u16) {
+		let mut start = x;
+		while start > 0 && matches!(self.cell(start, y).content, CellContent::Continuation) {
+			start -= 1;
+		}
+
+		let span = match self.cell(start, y).content {
+			CellContent::Blank => 1,
+			CellContent::Grapheme { width, .. } => width,
+			CellContent::Image { .. } => 1,
+			CellContent::Continuation => 1,
+		};
+		let end = start.saturating_add(span).min(self.size.width);
+		for column in start..end {
+			let index = self.index(column, y);
+			let style = self.cells[index].style;
+			self.cells[index] = Cell::blank(style);
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{CellContent, Frame, Size, Style};
+
+	#[test]
+	fn overwriting_wide_grapheme_clears_its_continuation() {
+		let mut frame = Frame::new(Size::new(4, 1));
+		frame.put(0, 0, "界", Style::default());
+		frame.put(0, 0, "a", Style::default());
+
+		assert!(matches!(frame.cell(1, 0).content, CellContent::Blank));
+	}
+
+	#[test]
+	fn clipped_wide_grapheme_is_not_drawn() {
+		let mut frame = Frame::new(Size::new(2, 1));
+		let end = frame.put(1, 0, "界", Style::default());
+
+		assert_eq!(end, 1);
+		assert!(frame.cell(1, 0).is_default_blank());
+	}
+
+	#[test]
+	fn clipped_text_preserves_cells_beyond_its_bound() {
+		let mut frame = Frame::new(Size::new(4, 1));
+		frame.put(0, 0, "xxxx", Style::default());
+		let end = frame.put_clipped(1, 0, 2, "ab界", Style::default());
+
+		assert_eq!(end, 3);
+		assert!(matches!(
+			frame.cell(3, 0).content,
+			CellContent::Grapheme { ref text, width: 1 } if text == "x"
+		));
+	}
+
+	#[test]
+	fn ascii_text_skips_controls_and_clips_without_unicode_segmentation() {
+		let mut frame = Frame::new(Size::new(4, 1));
+		let end = frame.put_clipped(0, 0, 3, "a\tbcd", Style::default());
+
+		assert_eq!(end, 3);
+		assert!(matches!(
+			frame.cell(2, 0).content,
+			CellContent::Grapheme { ref text, width: 1 } if text == "c"
+		));
+		assert!(frame.cell(3, 0).is_default_blank());
+	}
+	#[test]
+	fn resizing_height_preserves_rows_and_initializes_growth() {
+		let mut frame = Frame::new(Size::new(3, 1));
+		frame.put(0, 0, "a", Style::default());
+		let fill = Style::new().bold();
+
+		frame.resize_height(3, fill);
+
+		assert!(matches!(
+			frame.cell(0, 0).content,
+			CellContent::Grapheme { ref text, width: 1 } if text == "a"
+		));
+		assert_eq!(frame.cell(0, 2).style, fill);
+		frame.set_cursor(0, 2);
+		frame.resize_height(1, Style::default());
+		assert_eq!(frame.cursor(), None);
+	}
+
+	#[test]
+	fn blit_translates_cursor_from_copied_region() {
+		let mut source = Frame::new(Size::new(8, 6));
+		source.set_cursor(3, 4);
+		let mut destination = Frame::new(Size::new(12, 8));
+
+		destination.blit(&source, 2, 3, 5, 1);
+
+		assert_eq!(destination.cursor(), Some((8, 3)));
+	}
+
+	#[test]
+	fn blit_keeps_cursor_when_source_cursor_cannot_be_copied() {
+		let mut source = Frame::new(Size::new(8, 6));
+		let mut destination = Frame::new(Size::new(6, 4));
+		destination.set_cursor(1, 1);
+
+		source.set_cursor(6, 3);
+		destination.blit(&source, 2, 3, 2, 0);
+		assert_eq!(destination.cursor(), Some((1, 1)), "cursor past copied width");
+
+		source.set_cursor(2, 5);
+		destination.blit(&source, 2, 3, 0, 0);
+		assert_eq!(destination.cursor(), Some((1, 1)), "cursor past copied rows");
+
+		source.set_cursor(2, 3);
+		destination.blit(&source, 2, 2, 0, 3);
+		assert_eq!(destination.cursor(), Some((1, 1)), "translated cursor past destination height");
+	}
+}

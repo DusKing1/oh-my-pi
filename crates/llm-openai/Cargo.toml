@@ -1,0 +1,33 @@
+[package]
+name = "omp-llm-openai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "OpenAI chat, Responses, embeddings, and audio transport codecs for Oh My Pi"
+
+[dependencies]
+base64 = { workspace = true }
+bytes = { workspace = true }
+blake3 = { workspace = true }
+omp-core = { workspace = true }
+omp-llm-catalog = { workspace = true }
+omp-llm-error = { workspace = true }
+omp-llm-transport = { workspace = true }
+omp-llm-types = { workspace = true }
+serde_json = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+block2 = { workspace = true }
+objc2-device-check = { workspace = true, features = ["DCDevice", "block2"] }
+rand = { workspace = true }
+tokio = { workspace = true }
+objc2-foundation = { workspace = true, features = ["NSData", "NSError", "NSLocale", "NSString", "NSTimeZone"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,1 @@
+{"type":"error","error":{"code":502,"message":"Upstream provider failed","metadata":{"provider_name":"ExampleAI","raw":"MALFORMED_FUNCTION_CALL"}}}

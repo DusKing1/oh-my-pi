@@ -1,0 +1,23 @@
+disallowed-methods = [
+	{ path = "std::sync::Mutex::new", reason = "use `parking_lot::Mutex::new` instead" },
+	{ path = "tokio::sync::mpsc::channel", reason = "use `flume::bounded` instead" },
+	{ path = "tokio::sync::mpsc::unbounded_channel", reason = "use `flume::unbounded` instead" },
+]
+
+disallowed-types = [
+	{ path = "std::sync::Mutex", reason = "use `parking_lot::Mutex` instead" },
+	{ path = "std::sync::MutexGuard", reason = "use `parking_lot::MutexGuard` instead" },
+	{ path = "tokio::sync::mpsc::Sender", reason = "use `flume::Sender` instead" },
+	{ path = "tokio::sync::mpsc::Receiver", reason = "use `flume::Receiver` instead" },
+	{ path = "tokio::sync::mpsc::UnboundedSender", reason = "use `flume::Sender` instead" },
+	{ path = "tokio::sync::mpsc::UnboundedReceiver", reason = "use `flume::Receiver` instead" },
+	{ path = "tokio::sync::mpsc::WeakSender", reason = "use `flume::Sender` instead" },
+	{ path = "tokio::sync::mpsc::WeakUnboundedSender", reason = "use `flume::Sender` instead" },
+	{ path = "tokio::sync::mpsc::Permit", reason = "use Flume channel operations instead" },
+	{ path = "tokio::sync::mpsc::OwnedPermit", reason = "use Flume channel operations instead" },
+	{ path = "tokio::sync::mpsc::PermitIterator", reason = "use Flume channel operations instead" },
+	{ path = "tokio::sync::mpsc::error::SendError", reason = "use Flume send errors instead" },
+	{ path = "tokio::sync::mpsc::error::TrySendError", reason = "use Flume send errors instead" },
+	{ path = "tokio::sync::mpsc::error::TryRecvError", reason = "use Flume receive errors instead" },
+	{ path = "tokio::sync::mpsc::error::RecvError", reason = "use Flume receive errors instead" },
+]

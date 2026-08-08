@@ -1,0 +1,1066 @@
+syntax = "proto3";
+
+package omp.document.v1;
+
+// Revisioned document, transaction, watch, and LSP-passthrough protocol.
+//
+// A project daemon is the sole authority for active document contents. Opening
+// a document installs a logical native watch before the initial head is
+// published. Thereafter reads are served from the actor's immutable in-memory
+// head. Native watch messages and client commands enter the same mailbox, so an
+// external disk mismatch invalidates every provisional candidate before the
+// actor adopts the newly-read disk contents as another committed revision.
+//
+// Persistence is split only through temporary-file preparation: a worker may
+// write and flush a same-directory temporary, then must return ReadyToReplace
+// to the actor without renaming it. The actor rechecks both transaction
+// generation and the persisted disk fingerprint immediately before performing
+// the rename itself. A mismatch discards the temporary and provisional state.
+// This closes the stale-background-task overwrite; an uncooperative writer can
+// still race the final fingerprint-check/rename interval, which no advisory
+// userspace protocol can eliminate.
+//
+// Evolution rules:
+//   - Receivers skip unknown fields and enum values.
+//   - Field numbers are never reused; removed fields are reserved.
+//   - Empty request_id is not a concept: request_id 0 is reserved for events.
+//   - ReadSelection byte and line ranges are zero-based, half-open intervals;
+//     structural summary coordinates are explicitly 1-based and inclusive.
+
+// Exact identity of immutable document content. `sequence` is monotone within
+// one document and `content_hash` is BLAKE3-256 over the exact stored bytes.
+// Clients echo the complete value as an optimistic-concurrency precondition.
+message Revision {
+  uint64 sequence = 1;
+  bytes content_hash = 2;
+}
+
+// Canonical daemon identity and current URI of a document. The id survives an
+// in-daemon rename; LSP URI lifecycle remains capability-driven per server.
+message DocumentRef {
+  bytes id = 1;
+  string uri = 2;
+}
+
+enum DocumentPresence {
+  DOCUMENT_PRESENCE_UNSPECIFIED = 0;
+  DOCUMENT_PRESENCE_PRESENT = 1;
+  DOCUMENT_PRESENCE_MISSING = 2;
+}
+
+enum DocumentKind {
+  DOCUMENT_KIND_UNSPECIFIED = 0;
+  DOCUMENT_KIND_TEXT = 1;
+  DOCUMENT_KIND_BINARY = 2;
+}
+
+// Public committed state. Provisional formatting/rebase candidates are never
+// exposed as a DocumentHead.
+message DocumentHead {
+  DocumentRef document = 1;
+  Revision revision = 2;
+  DocumentPresence presence = 3;
+  DocumentKind kind = 4;
+  uint64 byte_length = 5;
+  // Empty for binary or unclassified text.
+  string language_id = 6;
+}
+
+// Addresses a document by canonical id, active lease, or URI. Id/lease forms
+// avoid repeated path resolution; URI is primarily for the first open/create.
+message DocumentTarget {
+  oneof target {
+    bytes document_id = 1;
+    bytes lease_id = 2;
+    string uri = 3;
+  }
+}
+
+message ByteRange {
+  uint64 start = 1;
+  uint64 end = 2;
+}
+
+message LineRange {
+  uint64 start = 1;
+  uint64 end = 2;
+}
+
+message WholeDocument {}
+
+message ByteRangeSelection {
+  repeated ByteRange ranges = 1;
+}
+
+message LineRangeSelection {
+  repeated LineRange ranges = 1;
+}
+
+message ReadSelection {
+  oneof selection {
+    WholeDocument whole = 1;
+    ByteRangeSelection bytes = 2;
+    LineRangeSelection lines = 3;
+  }
+}
+
+message ContentSlice {
+  uint64 start = 1;
+  uint64 end = 2;
+  bytes content = 3;
+}
+
+message ContentSlices {
+  repeated ContentSlice slices = 1;
+}
+
+message OpenDocumentRequest {
+  string uri = 1;
+  // Language identifier (e.g. "rust", "typescript"). Empty means infer from path or remain unclassified.
+  string language_id = 2;
+}
+
+// The lease keeps the document actor, native watch, cached head, and event
+// subscription alive. The first lease may hit disk; later opens do not.
+message OpenDocumentResponse {
+  bytes lease_id = 1;
+  DocumentHead head = 2;
+}
+
+message CloseDocumentRequest {
+  bytes lease_id = 1;
+}
+
+message CloseDocumentResponse {}
+
+message ReadDocumentRequest {
+  DocumentTarget document = 1;
+  // Omit for the current head. A specified revision reads retained history or
+  // fails with PROTOCOL_ERROR_REVISION_EXPIRED; it never falls back to disk.
+  Revision revision = 2;
+  ReadSelection selection = 3;
+}
+
+message ReadDocumentResponse {
+  DocumentHead head = 1;
+  oneof body {
+    bytes content = 2;
+    ContentSlices slices = 3;
+  }
+}
+// Kept and elided summary coordinates are 1-based inclusive original source
+// lines. They intentionally differ from zero-based half-open ReadSelection.
+message CodeSummaryOptions {
+  // Values below the parser floors are clamped to two body lines and four
+  // comment lines.
+  uint32 min_body_lines = 1;
+  uint32 min_comment_lines = 2;
+  // Zero disables breadth-first unfolding.
+  uint32 unfold_until_lines = 3;
+  // Hard visible-line ceiling for breadth-first unfolding.
+  uint32 unfold_limit_lines = 4;
+  // Markdown-family and plain-text paths are otherwise unavailable.
+  bool enable_prose = 5;
+  // Documents shorter than this use the explicit fallback outcome.
+  uint32 min_total_lines = 6;
+  SummaryRenderMode render_mode = 7;
+  // Optional parser alias. A non-empty value takes precedence over path
+  // inference; an unsupported value does not fall back to the path.
+  string language = 8;
+}
+
+enum SummaryRenderMode {
+  SUMMARY_RENDER_MODE_UNSPECIFIED = 0;
+  SUMMARY_RENDER_MODE_HASHLINE = 1;
+  SUMMARY_RENDER_MODE_NUMBERED = 2;
+  SUMMARY_RENDER_MODE_PLAIN = 3;
+}
+
+message DocumentSummarySegment {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_KEPT = 1;
+    KIND_ELIDED = 2;
+  }
+
+  Kind kind = 1;
+  // 1-based inclusive original source line.
+  uint32 start_line = 2;
+  // 1-based inclusive original source line.
+  uint32 end_line = 3;
+  // Present only for kept segments and verbatim apart from newline joining.
+  optional string text = 4;
+}
+
+message SummaryLineRange {
+  // 1-based inclusive original source line.
+  uint32 start_line = 1;
+  // 1-based inclusive original source line.
+  uint32 end_line = 2;
+}
+
+message RenderedDocumentSummary {
+  string text = 1;
+  string display_text = 2;
+  repeated SummaryLineRange elided_ranges = 3;
+  uint32 elided_lines = 4;
+}
+
+message DocumentSummaryResult {
+  string language = 1;
+  bool parsed = 2;
+  bool elided = 3;
+  uint32 total_lines = 4;
+  repeated DocumentSummarySegment segments = 5;
+  RenderedDocumentSummary rendered = 6;
+}
+
+enum SummaryUnavailableReason {
+  SUMMARY_UNAVAILABLE_REASON_UNSPECIFIED = 0;
+  SUMMARY_UNAVAILABLE_REASON_BINARY = 1;
+  SUMMARY_UNAVAILABLE_REASON_MISSING_DOCUMENT = 2;
+  SUMMARY_UNAVAILABLE_REASON_TOO_LARGE = 3;
+  SUMMARY_UNAVAILABLE_REASON_TOO_MANY_LINES = 4;
+  SUMMARY_UNAVAILABLE_REASON_BELOW_MINIMUM_LINES = 5;
+  SUMMARY_UNAVAILABLE_REASON_PROSE_DISABLED = 6;
+  SUMMARY_UNAVAILABLE_REASON_UNSUPPORTED_LANGUAGE = 7;
+  SUMMARY_UNAVAILABLE_REASON_EMPTY = 8;
+  SUMMARY_UNAVAILABLE_REASON_SYNTAX_ERROR = 9;
+  SUMMARY_UNAVAILABLE_REASON_NO_ELISIONS = 10;
+  SUMMARY_UNAVAILABLE_REASON_PARSER_FAILURE = 11;
+}
+
+// Explicit fallback metadata; clients should issue an ordinary snapshot read
+// rather than presenting a structural result.
+message DocumentSummaryUnavailable {
+  SummaryUnavailableReason reason = 1;
+  uint32 total_lines = 2;
+  string language = 3;
+  bool parsed = 4;
+}
+
+message SummarizeDocumentRequest {
+  DocumentTarget document = 1;
+  // Omit for the current head. A specified revision reads retained history or
+  // fails with PROTOCOL_ERROR_REVISION_EXPIRED; it never falls back to disk.
+  Revision revision = 2;
+  CodeSummaryOptions options = 3;
+}
+
+message SummarizeDocumentResponse {
+  DocumentHead head = 1;
+  oneof outcome {
+    DocumentSummaryResult summary = 2;
+    DocumentSummaryUnavailable unavailable = 3;
+  }
+}
+
+// Path operations below are the Environment's only ordinary local-filesystem
+// API. Every path is an absolute file URI; the daemon converts it to an
+// absolute, normalized path before access. No path operation transfers file
+// contents to or from the client: content reads use OpenDocumentRequest and
+// ReadDocumentRequest, while content creation and replacement use
+// CommitTransactionRequest. Server-side CopyPathRequest is serialized by the
+// same mutation authority, including when it touches an active document.
+// Operations that would displace a destination with an active lease fail with
+// PRECONDITION_FAILED: an active DocumentId is never silently retired or
+// aliased. Copying bytes into an active regular-file destination is instead a
+// revisioned content commit that preserves the destination identity.
+
+// Portable classification of a filesystem directory entry.
+enum FileKind {
+  // No kind was supplied; valid metadata responses never use this value.
+  FILE_KIND_UNSPECIFIED = 0;
+  // The entry is a regular file.
+  FILE_KIND_REGULAR_FILE = 1;
+  // The entry is a directory.
+  FILE_KIND_DIRECTORY = 2;
+  // The entry is a symbolic link. This is reported only without following it.
+  FILE_KIND_SYMBOLIC_LINK = 3;
+  // The entry has another platform-specific kind, such as a socket or device.
+  FILE_KIND_OTHER = 4;
+}
+
+// Portable permissions shared by path metadata and permission changes. An
+// absent field means the host cannot report that property in metadata, or that
+// SetPermissionsRequest must preserve the current property.
+message PortablePermissions {
+  // Host-standard read-only state. On POSIX, changing it updates write bits;
+  // on attribute-based hosts, it updates the read-only attribute.
+  optional bool read_only = 1;
+  // Owner-execute intent. On POSIX this reflects and changes only the owner
+  // execute bit. Hosts without an independently mutable execute bit omit it
+  // from metadata and reject requested changes as unsupported.
+  optional bool executable = 2;
+}
+
+// Reusable metadata for one path. Times are nanoseconds from the Unix epoch;
+// an absent time is unavailable from the host filesystem. Metadata describes
+// the selected entry after applying the request's symlink-following policy.
+message PathMetadata {
+  // Absolute file URI naming the entry whose metadata was read.
+  string uri = 1;
+  // Portable kind of the selected entry.
+  FileKind kind = 2;
+  // Byte length reported by the host; directory and special-file values are
+  // host-defined and clients must not interpret them as content lengths.
+  uint64 byte_length = 3;
+  // Portable permission state of the selected entry.
+  PortablePermissions permissions = 4;
+  // Last modification time, when the host exposes it.
+  optional sint64 modified_time_unix_nanos = 5;
+  // Last access time, when the host exposes it.
+  optional sint64 accessed_time_unix_nanos = 6;
+  // Creation/birth time, when the host exposes it.
+  optional sint64 created_time_unix_nanos = 7;
+}
+
+// Controls whether the final path component is dereferenced. Intermediate
+// symbolic links are always followed while resolving an absolute path.
+enum FollowSymlinks {
+  // Operate on the final symbolic-link entry itself, matching lstat semantics.
+  FOLLOW_SYMLINKS_NO = 0;
+  // Dereference the final symbolic link, matching stat semantics.
+  FOLLOW_SYMLINKS_YES = 1;
+}
+
+// Controls replacement of an existing destination directory entry.
+enum DestinationOverwritePolicy {
+  // Fail with PROTOCOL_ERROR_CODE_ALREADY_EXISTS if any destination exists.
+  DESTINATION_OVERWRITE_POLICY_FAIL_IF_EXISTS = 0;
+  // Replace an existing non-directory entry without following a destination
+  // symbolic link. An existing directory is never removed by this policy.
+  DESTINATION_OVERWRITE_POLICY_REPLACE_NON_DIRECTORY = 1;
+  // For rename only, replace an existing empty directory with a source
+  // directory. Other operations reject this value as an invalid argument.
+  DESTINATION_OVERWRITE_POLICY_REPLACE_EMPTY_DIRECTORY = 2;
+}
+
+// Requests the canonical location of an existing path.
+message CanonicalizePathRequest {
+  // Absolute file URI to resolve. Every symbolic link is followed and every
+  // component must exist.
+  string uri = 1;
+}
+
+// Returns the unique host-canonical spelling of a path.
+message CanonicalizePathResponse {
+  // Absolute canonical file URI, with symbolic links and dot components
+  // resolved and host path normalization applied.
+  string canonical_uri = 1;
+}
+
+// Requests stat or lstat metadata for a path.
+message StatPathRequest {
+  // Absolute file URI whose metadata is requested.
+  string uri = 1;
+  // Whether to stat the final target or lstat the final directory entry.
+  FollowSymlinks follow_symlinks = 2;
+}
+
+// Returns metadata captured by one stat/lstat operation.
+message StatPathResponse {
+  // Metadata for the requested entry or dereferenced target.
+  PathMetadata metadata = 1;
+}
+
+// One immediate child returned by a directory listing.
+message DirectoryEntry {
+  // Final path component as a displayable Unicode name.
+  string name = 1;
+  // lstat metadata for the child; symbolic-link children are not followed.
+  PathMetadata metadata = 2;
+}
+
+// Requests the immediate children of a directory.
+message ListDirectoryRequest {
+  // Absolute file URI of the directory to enumerate.
+  string uri = 1;
+  // Whether a symbolic link in the final component may be followed to a
+  // directory. Child symbolic links are never followed.
+  FollowSymlinks follow_symlinks = 2;
+}
+
+// Returns one point-in-time directory enumeration. Entry order is unspecified;
+// concurrent filesystem changes may make individual metadata stale.
+message ListDirectoryResponse {
+  // Immediate children observed during enumeration.
+  repeated DirectoryEntry entries = 1;
+}
+
+// Controls how directory creation treats an existing leaf.
+enum ExistingDirectoryPolicy {
+  // Fail if the requested leaf already exists.
+  EXISTING_DIRECTORY_POLICY_FAIL_IF_EXISTS = 0;
+  // Succeed only when the existing leaf is a directory; a symbolic link to a
+  // directory does not count as the existing directory.
+  EXISTING_DIRECTORY_POLICY_ALLOW_EXISTING_DIRECTORY = 1;
+}
+
+// Requests creation of one directory or a complete missing parent chain.
+message CreateDirectoryRequest {
+  // Absolute file URI of the directory to create.
+  string uri = 1;
+  // When true, create every missing parent; when false, the parent must exist.
+  bool recursive = 2;
+  // Policy for an already-existing leaf. Existing parents are always accepted
+  // in recursive mode only when each is a directory after normal resolution.
+  ExistingDirectoryPolicy existing_leaf = 3;
+}
+
+// Returns metadata for the created or explicitly accepted directory.
+message CreateDirectoryResponse {
+  // lstat metadata for the resulting directory entry.
+  PathMetadata metadata = 1;
+}
+
+// Requests removal of a filesystem entry without following its final symlink.
+// Revisions are required when the addressed regular file is already active
+// and omitted for inactive or resource-only entries.
+message RemovePathRequest {
+  // Absolute file URI of the entry to remove.
+  string uri = 1;
+  // When true, remove a directory and all descendants; when false, remove a
+  // file, symlink, or empty directory only. A symlink is always removed as a
+  // single entry, even in recursive mode.
+  bool recursive = 2;
+  // Precondition revision required when removing an active regular file.
+  Revision revision = 3;
+}
+
+// Confirms that the named entry and, when requested, its descendants no longer
+// exist. A missing input is an error rather than an idempotent success.
+message RemovePathResponse {}
+
+// Requests an in-filesystem rename. The source's final symbolic link is moved
+// as an entry rather than dereferenced; destination symbolic links are replaced
+// as entries. Missing destination parents are not created.
+// Revisions are required when the addressed regular file is already active
+// and omitted for inactive or resource-only entries.
+message RenamePathRequest {
+  // Absolute file URI of the source entry.
+  string source_uri = 1;
+  // Absolute file URI of the destination entry.
+  string destination_uri = 2;
+  // Exact treatment of an existing destination.
+  DestinationOverwritePolicy overwrite = 3;
+  // Precondition revision required when moving an active regular source file.
+  Revision source_revision = 4;
+  // Precondition revision required when overwriting an active regular destination file.
+  Revision destination_revision = 5;
+}
+
+// Returns the destination entry after a successful rename.
+message RenamePathResponse {
+  // lstat metadata for the renamed destination entry.
+  PathMetadata metadata = 1;
+}
+
+// Requests a server-side copy of one regular file or symbolic link. Directories
+// are rejected; clients create directory trees explicitly. A followed source
+// must resolve to a regular file. A non-followed symbolic link is recreated
+// with the same semantic target and relative/absolute form.
+// Revisions are required when the addressed regular file is already active
+// and omitted for inactive or resource-only entries.
+message CopyPathRequest {
+  // Absolute file URI of the source entry.
+  string source_uri = 1;
+  // Absolute file URI of the destination entry.
+  string destination_uri = 2;
+  // Whether a final source symbolic link is dereferenced or copied as a link.
+  FollowSymlinks follow_source_symlinks = 3;
+  // Destination policy; REPLACE_EMPTY_DIRECTORY is invalid for copy.
+  DestinationOverwritePolicy overwrite = 4;
+  // Precondition revision required when overwriting an active regular destination file.
+  Revision destination_revision = 5;
+}
+
+// Returns the destination after a successful server-side copy.
+message CopyPathResponse {
+  // lstat metadata for the new destination entry.
+  PathMetadata metadata = 1;
+  // Number of regular-file content bytes copied; zero when copying a symlink.
+  uint64 bytes_copied = 2;
+}
+
+// Describes how a symbolic-link target is represented on disk.
+enum SymlinkTargetForm {
+  // Store an absolute target path.
+  SYMLINK_TARGET_FORM_ABSOLUTE = 0;
+  // Store a target path relative to the symbolic link's parent.
+  SYMLINK_TARGET_FORM_RELATIVE = 1;
+}
+
+// Portable semantic representation of a symbolic-link target. `uri` always
+// identifies an absolute target location, even when `form` records that the
+// on-disk link uses a relative path. Relative links are lexically resolved
+// against their link parent without dereferencing or requiring the target.
+message SymlinkTarget {
+  // Absolute file URI of the link's lexical target location.
+  string uri = 1;
+  // Whether the on-disk target is absolute or relative.
+  SymlinkTargetForm form = 2;
+}
+
+// Requests the target of a symbolic link without dereferencing it.
+message ReadLinkRequest {
+  // Absolute file URI of the symbolic-link entry.
+  string uri = 1;
+}
+
+// Returns the link's semantic target, including whether it was relative.
+message ReadLinkResponse {
+  // Target resolved lexically to an absolute file URI plus its stored form.
+  SymlinkTarget target = 1;
+}
+
+// Portable hint required by hosts that distinguish file and directory links.
+enum SymlinkTargetKind {
+  // No target kind was supplied; create requests reject this value.
+  SYMLINK_TARGET_KIND_UNSPECIFIED = 0;
+  // Create a symbolic link intended to resolve to a regular/non-directory
+  // entry. The target may be missing at creation time.
+  SYMLINK_TARGET_KIND_FILE = 1;
+  // Create a symbolic link intended to resolve to a directory.
+  SYMLINK_TARGET_KIND_DIRECTORY = 2;
+}
+
+// Requests creation of a symbolic link without requiring its target to exist.
+message CreateSymlinkRequest {
+  // Semantic target and desired absolute/relative on-disk form.
+  SymlinkTarget target = 1;
+  // Absolute file URI at which to create the symbolic-link entry.
+  string link_uri = 2;
+  // Portable target-kind hint used by hosts that require one.
+  SymlinkTargetKind target_kind = 3;
+  // Destination policy; REPLACE_EMPTY_DIRECTORY is invalid for symlink.
+  DestinationOverwritePolicy overwrite = 4;
+}
+
+// Returns lstat metadata for the newly created symbolic link.
+message CreateSymlinkResponse {
+  // Metadata whose kind is FILE_KIND_SYMBOLIC_LINK.
+  PathMetadata metadata = 1;
+}
+
+// Requests creation of a hard link. The selected source must be a regular file
+// unless the host supports hard-linking a symbolic-link entry.
+message CreateHardLinkRequest {
+  // Absolute file URI of the existing source entry.
+  string source_uri = 1;
+  // Absolute file URI at which to create the new hard-link entry.
+  string link_uri = 2;
+  // Whether to dereference a final source symbolic link before linking it.
+  FollowSymlinks follow_source_symlinks = 3;
+  // Destination policy; REPLACE_EMPTY_DIRECTORY is invalid for hard links.
+  DestinationOverwritePolicy overwrite = 4;
+}
+
+// Returns metadata for the newly linked directory entry.
+message CreateHardLinkResponse {
+  // lstat metadata for the new hard-link entry.
+  PathMetadata metadata = 1;
+}
+
+// Requests a portable permission transition for one entry. At least one field
+// in `permissions` must be present; omitted properties remain unchanged.
+// Revisions are required when the addressed regular file is already active
+// and omitted for inactive or resource-only entries.
+message SetPermissionsRequest {
+  // Absolute file URI of the entry whose permissions will change.
+  string uri = 1;
+  // Desired portable permission state.
+  PortablePermissions permissions = 2;
+  // Whether a final symbolic link is dereferenced. Hosts that cannot change
+  // link-entry permissions reject NO with PROTOCOL_ERROR_CODE_UNSUPPORTED.
+  FollowSymlinks follow_symlinks = 3;
+  // Precondition revision required when updating permissions of an active regular file.
+  Revision revision = 4;
+}
+
+// Returns metadata after a successful permission change.
+message SetPermissionsResponse {
+  // Metadata for the changed entry or dereferenced target.
+  PathMetadata metadata = 1;
+}
+
+
+// Exact byte replacement against the mutation's base revision. Edits in one
+// set must be sorted by start, non-overlapping, and use base-revision offsets.
+message ByteEdit {
+  uint64 start = 1;
+  uint64 end = 2;
+  bytes replacement = 3;
+}
+
+message ByteEdits {
+  repeated ByteEdit edits = 1;
+}
+
+// Opaque format proposal submitted by edit syntaxes (e.g. "omp.hashline", "omp.replace").
+// Lowered by the connection/session-scoped edit adapter registry to sorted base-coordinate
+// ByteEdits before transaction coordination.
+message EditFormatProposal {
+  // Named edit syntax format identifier (e.g. "omp.hashline", "omp.replace").
+  string format = 1;
+  // Opaque format-specific payload bytes.
+  bytes payload = 2;
+  // Opaque format-specific options serialized as JSON bytes.
+  bytes options_json = 3;
+}
+
+enum StalePolicy {
+  // Reject when base_revision is not the current head.
+  STALE_POLICY_FAIL = 0;
+  // Rebase only ranges whose base context maps unchanged and unambiguously.
+  STALE_POLICY_REBASE_NON_OVERLAPPING = 1;
+  // Explicit destructive replacement; valid only with proposed_content.
+  STALE_POLICY_FORCE_REPLACE = 2;
+}
+
+enum FormatPolicy {
+  FORMAT_POLICY_DISABLED = 0;
+  // Format when a selected LSP server can synchronize the provisional text;
+  // otherwise commit unformatted content.
+  FORMAT_POLICY_BEST_EFFORT = 1;
+  // Reject unless formatting succeeds against the exact provisional version.
+  FORMAT_POLICY_REQUIRED = 2;
+}
+
+// A format-independent text transition. Edit syntaxes may submit their exact
+// canonical delta, submit proposed bytes and let the daemon derive it from
+// the retained base revision, or submit an opaque EditFormatProposal to be lowered
+// by the adapter registry to sorted base-coordinate ByteEdits.
+message TextMutation {
+  Revision base_revision = 1;
+  oneof change {
+    bytes proposed_content = 2;
+    ByteEdits edits = 3;
+    EditFormatProposal proposal = 6;
+  }
+  StalePolicy stale_policy = 4;
+  FormatPolicy format_policy = 5;
+}
+
+enum ExistingDocumentPolicy {
+  // Safe default: fail when the target already exists.
+  EXISTING_DOCUMENT_POLICY_FAIL_IF_EXISTS = 0;
+  // Replace an existing regular file through the normal revisioned commit path.
+  EXISTING_DOCUMENT_POLICY_REPLACE_EXISTING = 1;
+}
+
+message CreateMutation {
+  bytes content = 1;
+  ExistingDocumentPolicy existing_document = 2;
+  FormatPolicy format_policy = 3;
+}
+
+message DeleteMutation {
+  Revision base_revision = 1;
+}
+
+// Moves the source identity to `destination_uri`. Replacing an inactive
+// destination is permitted only when its retained/disk revision matches
+// `destination_revision`. A destination with any active lease is never
+// displaced and fails with PRECONDITION_FAILED regardless of precondition.
+message MoveMutation {
+  Revision base_revision = 1;
+  string destination_uri = 2;
+  oneof destination_precondition {
+    Revision destination_revision = 3;
+    bool destination_must_not_exist = 4;
+  }
+}
+
+// Operations execute in declared order against a transaction-local overlay.
+message DocumentMutation {
+  DocumentTarget document = 1;
+  oneof operation {
+    TextMutation text = 2;
+    CreateMutation create = 3;
+    DeleteMutation delete = 4;
+    MoveMutation move = 5;
+  }
+}
+
+message CommitTransactionRequest {
+  // Idempotency key unique within the `server_epoch` returned by ServerHello.
+  // The daemon retains every outcome for that epoch; a retry returns the exact
+  // original outcome and never applies remaining or repeated operations.
+  bytes transaction_id = 1;
+  repeated DocumentMutation operations = 2;
+}
+
+message OperationResult {
+  uint32 operation_index = 1;
+  DocumentHead head = 2;
+  bool rebased = 3;
+  bool formatted = 4;
+  // Ranges in the finalized committed head, after rebase and formatting.
+  repeated ByteRange changed_ranges = 5;
+  // Populated for a successful move.
+  string previous_uri = 6;
+}
+
+message TransactionCommitted {
+  bytes transaction_id = 1;
+  repeated OperationResult operations = 2;
+}
+
+enum TransactionRejectReason {
+  TRANSACTION_REJECT_REASON_UNSPECIFIED = 0;
+  TRANSACTION_REJECT_REASON_STALE_BASE = 1;
+  TRANSACTION_REJECT_REASON_OVERLAPPING_CHANGE = 2;
+  TRANSACTION_REJECT_REASON_EXTERNAL_MODIFICATION = 3;
+  TRANSACTION_REJECT_REASON_REVISION_EXPIRED = 4;
+  TRANSACTION_REJECT_REASON_INVALID_CONTENT = 5;
+  TRANSACTION_REJECT_REASON_FORMAT_FAILED = 6;
+  TRANSACTION_REJECT_REASON_PERSIST_FAILED = 7;
+  TRANSACTION_REJECT_REASON_PRECONDITION_FAILED = 8;
+  TRANSACTION_REJECT_REASON_CANCELLED = 9;
+}
+
+message DocumentConflict {
+  uint32 operation_index = 1;
+  Revision expected = 2;
+  DocumentHead current = 3;
+  // Ranges in `expected`, the operation's base-revision coordinate space.
+  repeated ByteRange conflicting_ranges = 4;
+}
+
+message TransactionRejected {
+  bytes transaction_id = 1;
+  TransactionRejectReason reason = 2;
+  string message = 3;
+  repeated DocumentConflict conflicts = 4;
+}
+
+// A failure after at least one operation became durable. Local filesystems do
+// not provide atomic multi-path replacement; callers must not infer rollback.
+// A retry of this transaction id returns this same terminal outcome.
+message TransactionPartiallyCommitted {
+  bytes transaction_id = 1;
+  repeated OperationResult committed_operations = 2;
+  uint32 failed_operation_index = 3;
+  TransactionRejectReason reason = 4;
+  string message = 5;
+}
+
+message CommitTransactionResponse {
+  oneof outcome {
+    TransactionCommitted committed = 1;
+    TransactionRejected rejected = 2;
+    TransactionPartiallyCommitted partially_committed = 3;
+  }
+}
+
+enum DocumentEventKind {
+  DOCUMENT_EVENT_KIND_UNSPECIFIED = 0;
+  DOCUMENT_EVENT_KIND_COMMITTED = 1;
+  DOCUMENT_EVENT_KIND_EXTERNAL_CREATED = 2;
+  DOCUMENT_EVENT_KIND_EXTERNAL_MODIFIED = 3;
+  DOCUMENT_EVENT_KIND_EXTERNAL_DELETED = 4;
+  DOCUMENT_EVENT_KIND_EXTERNAL_RENAMED = 5;
+  // Native watch overflow/rebind forced a stable disk rescan.
+  DOCUMENT_EVENT_KIND_WATCH_RESCANNED = 6;
+}
+
+// Unsolicited event delivered to every active lease. External events are sent
+// only after the actor has discarded provisional state, stably re-read disk,
+// and installed `head`; a following read is therefore memory-only.
+message DocumentEvent {
+  uint64 event_sequence = 1;
+  DocumentEventKind kind = 2;
+  DocumentHead head = 3;
+  Revision previous_revision = 4;
+  bytes transaction_id = 5;
+  repeated bytes invalidated_transaction_ids = 6;
+  string previous_uri = 7;
+}
+
+// Resolved, per-document LSP synchronization behavior. Dynamic registration
+// may change this policy during a server's lifetime.
+enum TextDocumentSyncKind {
+  // Matches LSP TextDocumentSyncKind.None and the omitted/default behavior.
+  TEXT_DOCUMENT_SYNC_NONE = 0;
+  TEXT_DOCUMENT_SYNC_FULL = 1;
+  TEXT_DOCUMENT_SYNC_INCREMENTAL = 2;
+}
+
+message SyncPolicy {
+  TextDocumentSyncKind change = 1;
+  bool open_close = 2;
+  bool will_save = 3;
+  bool will_save_wait_until = 4;
+  bool save = 5;
+  // `didSave.text` is present only when save && save_include_text.
+  bool save_include_text = 6;
+  // Exact negotiated LSP PositionEncodingKind, normally utf-8/utf-16/utf-32.
+  string position_encoding = 7;
+}
+
+message LspServerBinding {
+  bytes server_id = 1;
+  string name = 2;
+  SyncPolicy sync_policy = 3;
+  // UTF-8 JSON InitializeResult.capabilities, retained losslessly for arbitrary
+  // passthrough methods and newer LSP versions.
+  bytes capabilities_json = 4;
+}
+
+message GetLspBindingsRequest {
+  DocumentTarget document = 1;
+}
+
+message GetLspBindingsResponse {
+  repeated LspServerBinding bindings = 1;
+}
+
+enum LspStalePolicy {
+  LSP_STALE_POLICY_FAIL = 0;
+  LSP_STALE_POLICY_RETRY_CURRENT_HEAD = 1;
+}
+
+// Arbitrary JSON-RPC LSP request. The daemon injects lifecycle synchronization
+// before forwarding it. `textDocument/willSaveWaitUntil` is actor-owned and is
+// rejected here; notification lifecycle method names are rejected as invalid
+// request methods rather than forwarded.
+message LspRequest {
+  bytes server_id = 1;
+  string method = 2;
+  bytes params_json = 3;
+  // Required for revision-sensitive textDocument methods; omit for workspace
+  // methods. The response is always tagged with the revision actually used.
+  DocumentTarget document = 4;
+  Revision revision = 5;
+  LspStalePolicy stale_policy = 6;
+}
+
+message LspError {
+  int32 code = 1;
+  string message = 2;
+  bytes data_json = 3;
+}
+
+message LspResponse {
+  bytes server_id = 1;
+  Revision revision = 2;
+  oneof outcome {
+    bytes result_json = 3;
+    LspError error = 4;
+  }
+}
+
+// Non-synchronization notification passthrough. The daemon rejects
+// textDocument/didOpen, didChange, didSave, didClose, and willSave: only the
+// actor may emit them according to SyncPolicy. Other notifications are
+// acknowledged only after entering the selected server's ordered write lane.
+message LspNotificationRequest {
+  bytes server_id = 1;
+  string method = 2;
+  bytes params_json = 3;
+}
+
+message LspNotificationResponse {}
+
+// Server notification forwarded to subscribers. Document-scoped events carry
+// the public revision to which the daemon could prove they belong. Revision is
+// absent for workspace events and unversioned diagnostics that cannot be
+// authoritatively associated with a head.
+message LspEvent {
+  bytes server_id = 1;
+  string method = 2;
+  bytes params_json = 3;
+  DocumentRef document = 4;
+  Revision revision = 5;
+}
+
+enum LspBindingEventKind {
+  LSP_BINDING_EVENT_KIND_UNSPECIFIED = 0;
+  LSP_BINDING_EVENT_KIND_READY = 1;
+  LSP_BINDING_EVENT_KIND_POLICY_CHANGED = 2;
+  LSP_BINDING_EVENT_KIND_RESTARTED = 3;
+  LSP_BINDING_EVENT_KIND_STOPPED = 4;
+}
+
+message LspBindingEvent {
+  LspBindingEventKind kind = 1;
+  LspServerBinding binding = 2;
+  // Document whose resolved policy changed; omitted only when an entire server
+  // stopped or restarted and every binding for it must be refreshed.
+  DocumentRef document = 3;
+}
+
+// Identifies a bounded unsolicited-event stream whose continuity was lost.
+enum EventStreamKind {
+  EVENT_STREAM_KIND_UNSPECIFIED = 0;
+  // Events attached to one OpenDocument lease.
+  EVENT_STREAM_KIND_DOCUMENT = 1;
+  // Connection-wide LspEvent and LspBindingEvent delivery.
+  EVENT_STREAM_KIND_LSP_REGISTRY = 2;
+}
+
+enum EventStreamFailure {
+  EVENT_STREAM_FAILURE_UNSPECIFIED = 0;
+  // A bounded receiver was too slow and one or more events were overwritten.
+  EVENT_STREAM_FAILURE_LAGGED = 1;
+  // A committed document head could not be synchronized to its LSP bindings.
+  EVENT_STREAM_FAILURE_SYNCHRONIZATION = 2;
+  // The stream producer stopped before its owning lease or connection.
+  EVENT_STREAM_FAILURE_CLOSED = 3;
+}
+
+// Terminal continuity failure for an unsolicited event stream. No event after
+// a gap is delivered as if it were contiguous. For DOCUMENT, the daemon has
+// already closed `lease_id`; discard that lease and open the document again.
+// For LSP_REGISTRY, the daemon closes the connection after sending this frame;
+// reconnect, reopen documents, and query GetLspBindings before issuing further
+// revision-sensitive LSP requests. EOF without this frame has the same
+// connection-wide recovery requirement.
+message EventStreamError {
+  EventStreamKind stream = 1;
+  EventStreamFailure failure = 2;
+  // Present only for a DOCUMENT stream.
+  bytes lease_id = 3;
+  // Number of overwritten events when failure is LAGGED.
+  uint64 skipped_events = 4;
+  string message = 5;
+}
+
+message ClientHello {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  bytes client_id = 3;
+}
+
+message ServerHello {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  bytes workspace_id = 3;
+  string root_uri = 4;
+  // Opaque identity regenerated whenever the daemon loses its transaction
+  // outcome ledger. Transaction idempotency is scoped to this epoch.
+  bytes server_epoch = 5;
+}
+
+message CancelRequest {
+  uint64 target_request_id = 1;
+}
+
+enum ProtocolErrorCode {
+  PROTOCOL_ERROR_CODE_UNSPECIFIED = 0;
+  PROTOCOL_ERROR_CODE_INVALID_ARGUMENT = 1;
+  PROTOCOL_ERROR_CODE_NOT_FOUND = 2;
+  PROTOCOL_ERROR_CODE_REVISION_EXPIRED = 3;
+  PROTOCOL_ERROR_CODE_PERMISSION_DENIED = 4;
+  PROTOCOL_ERROR_CODE_UNSUPPORTED = 5;
+  PROTOCOL_ERROR_CODE_INTERNAL = 6;
+  // A destination exists and the selected policy forbids replacement.
+  PROTOCOL_ERROR_CODE_ALREADY_EXISTS = 7;
+  // A directory was required but the selected entry is not one.
+  PROTOCOL_ERROR_CODE_NOT_A_DIRECTORY = 8;
+  // A non-directory was required but the selected entry is a directory.
+  PROTOCOL_ERROR_CODE_IS_A_DIRECTORY = 9;
+  // A non-recursive removal or replacement encountered a non-empty directory.
+  PROTOCOL_ERROR_CODE_DIRECTORY_NOT_EMPTY = 10;
+  // The host cannot perform the requested atomic operation across filesystems.
+  PROTOCOL_ERROR_CODE_CROSS_DEVICE = 11;
+  // The host filesystem returned an error without a more specific protocol code.
+  PROTOCOL_ERROR_CODE_IO = 12;
+  // A precondition (such as an active-lease precondition or optimistic revision check) failed.
+  PROTOCOL_ERROR_CODE_PRECONDITION_FAILED = 13;
+  // The operation was explicitly cancelled before completion.
+  PROTOCOL_ERROR_CODE_CANCELLED = 14;
+  // The underlying resource or document content was modified, invalidating a request precondition.
+  PROTOCOL_ERROR_CODE_CONTENT_MODIFIED = 15;
+}
+
+message ProtocolError {
+  ProtocolErrorCode code = 1;
+  string message = 2;
+}
+
+// Bidirectional connection frame. request_id 0 is reserved for hello/events;
+// all ordinary client requests use a nonzero id unique among in-flight calls.
+message ClientFrame {
+  uint64 request_id = 1;
+  oneof body {
+    ClientHello hello = 2;
+    OpenDocumentRequest open_document = 3;
+    CloseDocumentRequest close_document = 4;
+    ReadDocumentRequest read_document = 5;
+    CommitTransactionRequest commit_transaction = 6;
+    CancelRequest cancel = 7;
+    GetLspBindingsRequest get_lsp_bindings = 8;
+    LspRequest lsp_request = 9;
+    LspNotificationRequest lsp_notification = 10;
+    // Resolves an existing path to its canonical file URI.
+    CanonicalizePathRequest canonicalize_path = 11;
+    // Reads stat/lstat metadata.
+    StatPathRequest stat_path = 12;
+    // Enumerates the immediate children of a directory.
+    ListDirectoryRequest list_directory = 13;
+    // Creates a directory, optionally including missing parents.
+    CreateDirectoryRequest create_directory = 14;
+    // Removes one entry or a recursive directory tree.
+    RemovePathRequest remove_path = 15;
+    // Renames one filesystem entry.
+    RenamePathRequest rename_path = 16;
+    // Copies one regular file or symbolic link within the daemon.
+    CopyPathRequest copy_path = 17;
+    // Reads a symbolic-link target.
+    ReadLinkRequest read_link = 18;
+    // Creates a symbolic link.
+    CreateSymlinkRequest create_symlink = 19;
+    // Creates a hard link.
+    CreateHardLinkRequest create_hard_link = 20;
+    // Changes portable permissions.
+    SetPermissionsRequest set_permissions = 21;
+    // Requests a structural summary of an immutable current or retained head.
+    SummarizeDocumentRequest summarize_document = 22;
+  }
+}
+
+message ServerFrame {
+  uint64 request_id = 1;
+  oneof body {
+    ServerHello hello = 2;
+    OpenDocumentResponse document_opened = 3;
+    CloseDocumentResponse document_closed = 4;
+    ReadDocumentResponse document_read = 5;
+    CommitTransactionResponse transaction_result = 6;
+    GetLspBindingsResponse lsp_bindings = 7;
+    LspResponse lsp_response = 8;
+    LspNotificationResponse lsp_notification_accepted = 9;
+    DocumentEvent document_event = 10;
+    LspEvent lsp_event = 11;
+    LspBindingEvent lsp_binding_event = 12;
+    ProtocolError error = 13;
+    // Result of canonical path resolution.
+    CanonicalizePathResponse path_canonicalized = 14;
+    // Result of stat/lstat.
+    StatPathResponse path_stat = 15;
+    // Result of immediate directory enumeration.
+    ListDirectoryResponse directory_listed = 16;
+    // Result of directory creation.
+    CreateDirectoryResponse directory_created = 17;
+    // Result of path removal.
+    RemovePathResponse path_removed = 18;
+    // Result of filesystem rename.
+    RenamePathResponse path_renamed = 19;
+    // Result of server-side copy.
+    CopyPathResponse path_copied = 20;
+    // Result of reading a symbolic-link target.
+    ReadLinkResponse link_read = 21;
+    // Result of symbolic-link creation.
+    CreateSymlinkResponse symlink_created = 22;
+    // Result of hard-link creation.
+    CreateHardLinkResponse hard_link_created = 23;
+    // Result of a portable permission change.
+    SetPermissionsResponse permissions_set = 24;
+    // Structural summary or explicit ordinary-read fallback.
+    SummarizeDocumentResponse document_summarized = 25;
+    // Terminal event-continuity failure; recovery is defined by EventStreamError.
+    EventStreamError event_stream_error = 26;
+  }
+}

@@ -1,0 +1,58 @@
+[package]
+name = "omp-shell-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Standalone Bash parser and execution engine for Oh My Pi"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-recursion = { workspace = true }
+bon = { workspace = true }
+cached = { workspace = true }
+cfg-if = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+fancy-regex = { workspace = true }
+futures = { workspace = true }
+indenter = { workspace = true }
+inherent = { workspace = true }
+itertools = { workspace = true }
+normalize-path = { workspace = true }
+omp-core = { workspace = true }
+peg = { workspace = true }
+rand = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+uucore = { workspace = true }
+xutf = { workspace = true }
+
+[target.'cfg(any(unix, windows))'.dependencies]
+hostname = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+command-fds = { workspace = true }
+libc = { workspace = true }
+nix = { workspace = true }
+rlimit = { workspace = true }
+terminfo = { workspace = true }
+uzers = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+check_elevation = { workspace = true }
+whoami = { workspace = true }
+windows-sys = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+serde = { workspace = true }
+tempfile = { workspace = true }

@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package omp.blob.v1;
+
+// Content-addressed blob transfer for remote clients that cannot access the
+// gateway's blob store directly. Hashes are raw 32-byte BLAKE3-256 digests.
+//
+// In-daemon clients with direct blob-store access never use this service;
+// they pass hash references to stored content instead. Small payloads remain
+// inline in omp.thread.v1.Blob.inline and never touch this service.
+service Blob {
+  // Checks whether a digest is present without transferring its content.
+  rpc Stat(StatRequest) returns (StatResponse);
+  // Streams all or a requested byte range of the identified content.
+  rpc Get(GetRequest) returns (stream Chunk);
+  // Stores one ordered stream of blob bytes. The server hashes bytes as they
+  // arrive. Put is idempotent: content addressing makes re-putting existing
+  // content a no-op that returns the same hash and size.
+  rpc Put(stream Chunk) returns (PutResponse);
+  // Removes content identified by its digest.
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+}
+
+// Identifies content whose presence is being queried.
+message StatRequest {
+  // Raw 32-byte BLAKE3-256 digest.
+  bytes hash = 1;
+}
+
+// Presence and stored size for a content digest.
+message StatResponse {
+  // True when the blob store contains the requested digest.
+  bool present = 1;
+  // Blob size in bytes. Zero when absent; an empty present blob also has size
+  // zero, so callers must inspect present rather than infer it from size.
+  uint64 size = 2;
+}
+
+// Identifies content to download.
+message GetRequest {
+  // Raw 32-byte BLAKE3-256 digest.
+  bytes hash = 1;
+  // Zero-based byte offset. It may equal the blob size for an empty range.
+  uint64 offset = 2;
+  // Maximum bytes to return. Zero returns the remainder of the blob.
+  uint64 length = 3;
+}
+
+// One ordered portion of a blob transfer.
+message Chunk {
+  // Blob bytes. For Put, concatenating data from the stream in arrival order
+  // yields the complete blob that the server hashes while receiving.
+  bytes data = 1;
+  // Optional expected digest on the first Put chunk. On Get, the first chunk
+  // carries the stored digest.
+  bytes hash = 2;
+  // Optional expected total size on the first Put chunk. On Get, the first
+  // chunk carries the full stored size, even for ranged reads.
+  optional uint64 size = 3;
+}
+
+// Content identity returned after a successful upload.
+message PutResponse {
+  // Raw 32-byte BLAKE3-256 digest computed by the server.
+  bytes hash = 1;
+  // Total number of blob bytes received.
+  uint64 size = 2;
+}
+
+// Identifies content to remove.
+message DeleteRequest {
+  // Raw 32-byte BLAKE3-256 digest.
+  bytes hash = 1;
+}
+
+// Reports whether content existed and was removed.
+message DeleteResponse {
+  bool deleted = 1;
+}

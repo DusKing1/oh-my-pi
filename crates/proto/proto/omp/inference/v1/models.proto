@@ -1,0 +1,199 @@
+syntax = "proto3";
+
+package omp.inference.v1;
+
+import "omp/inference/v1/common.proto";
+
+// Model discovery: what THIS gateway can serve, as one coherent join of
+//   catalog      — bundled models.json + curated providers.toml + user config,
+//   discovery    — live provider listings (ollama/vllm/lm-studio exist only
+//                  at runtime; credentialed accounts unlock model lists),
+//   credentials  — broker state deciding availability per provider.
+//
+// Cards are client-facing: display, capability, pricing, availability.
+// Gateway-internal routing (base urls, dialects, compat flags, headers)
+// never appears here — clients pick a model id; the gateway owns the rest.
+
+// A capability a provider/model serves through this gateway. Mirrors the
+// facet rpcs on the Inference service.
+enum Facet {
+  FACET_UNSPECIFIED = 0;
+  FACET_CHAT = 1;
+  FACET_EMBED = 2;
+  FACET_IMAGE_GEN = 3;
+  FACET_VIDEO_GEN = 4;
+  FACET_SPEAK = 5;
+  FACET_TRANSCRIBE = 6;
+  FACET_REALTIME = 7;
+  FACET_SEARCH = 8;
+}
+
+enum Modality {
+  MODALITY_UNSPECIFIED = 0;
+  MODALITY_TEXT = 1;
+  MODALITY_IMAGE = 2;
+  MODALITY_AUDIO = 3;
+  MODALITY_VIDEO = 4;
+  MODALITY_PDF = 5;
+}
+
+// Whether requests against this entry can succeed right now.
+enum Availability {
+  AVAILABILITY_UNSPECIFIED = 0;
+  AVAILABILITY_AVAILABLE = 1;
+  // Provider known, no usable credential; BeginLogin fixes it.
+  AVAILABILITY_LOGIN_REQUIRED = 2;
+  // Every credential is rate-limit blocked; see blocked_until_ms.
+  AVAILABILITY_BLOCKED = 3;
+  AVAILABILITY_DISABLED = 4;
+}
+
+// One pricing component. Media facets bill in non-token units (per image,
+// per video-second); a repeated component list covers every model shape
+// without unit-specific messages.
+message Price {
+  enum Unit {
+    UNIT_UNSPECIFIED = 0;
+    UNIT_MTOK_INPUT = 1;
+    UNIT_MTOK_OUTPUT = 2;
+    UNIT_MTOK_CACHE_READ = 3;
+    UNIT_MTOK_CACHE_WRITE = 4;
+    UNIT_IMAGE = 5;
+    UNIT_VIDEO_SECOND = 6;
+    UNIT_AUDIO_SECOND = 7;
+    UNIT_MCHAR_INPUT = 8;
+    UNIT_REQUEST = 9;
+  }
+  Unit unit = 1;
+  uint64 nanos_usd = 2;
+}
+
+message ModelCard {
+  // Canonical "provider/model"; what ChatParams.model & friends accept.
+  string id = 1;
+  string provider = 2;
+  // Provider-local logical id ("claude-opus-4-6").
+  string model = 3;
+  // Display name.
+  string name = 4;
+  // Vendor lineage token ("anthropic", "qwen", "glm") for grouping and
+  // consistent treatment across reseller gateways.
+  string family = 5;
+  repeated Facet facets = 6;
+  repeated Modality inputs = 7;
+  repeated Modality outputs = 8;
+  bool reasoning = 9;
+  // Effort levels this model serves, after variant collapse (-thinking /
+  // effort-tier wire ids fold into one card).
+  repeated Effort efforts = 10;
+  uint64 context_window = 11;
+  uint64 max_output_tokens = 12;
+  repeated Price pricing = 13;
+  Availability availability = 14;
+  Source source = 16;
+  // AVAILABILITY_BLOCKED: earliest credential unblock.
+  uint64 blocked_until_ms = 17;
+  bool deprecated = 18;
+  uint64 updated_at_ms = 19;
+
+  enum Source {
+    SOURCE_UNSPECIFIED = 0;
+    // Shipped catalog (models.json).
+    SOURCE_BUNDLED = 1;
+    // Live provider listing.
+    SOURCE_DISCOVERED = 2;
+    // User/project config.
+    SOURCE_CONFIGURED = 3;
+  }
+  // Extra catalog metadata that clients do not understand yet (or do not
+  // care about) under namespaced keys. Integers remain exact for limits and
+  // vendor ids rather than being coerced through an IEEE-754 double.
+  ValueMap props = 15;
+}
+
+message ProviderCard {
+  string id = 1;
+  string name = 2;
+  repeated Facet facets = 3;
+  // Login affordances for auth UI (a provider may support several).
+  repeated AuthKind auth = 4;
+  // At least one usable credential exists via this gateway.
+  bool credentialed = 5;
+  uint32 model_count = 6;
+
+  enum AuthKind {
+    AUTH_KIND_UNSPECIFIED = 0;
+    AUTH_KIND_API_KEY = 1;
+    AUTH_KIND_OAUTH = 2;
+    // Keyless: local servers, credential-free engines.
+    AUTH_KIND_NONE = 3;
+  }
+
+  ValueMap props = 15;
+}
+
+message ListProvidersRequest {
+  // Only providers serving this facet; unspecified = all.
+  Facet facet = 1;
+}
+
+// Resumable position in the registry event stream. `epoch` identifies one
+// registry instance (rotates on gateway restart, rebuild, or event-log
+// compaction); `generation` is monotone within an epoch. A cursor from a
+// dead epoch or outside the retained delta window cannot resume — the
+// watch answers with `reset`, never with a silently incomplete replay.
+message Cursor {
+  // Opaque, server-defined (e.g. boot ULID).
+  bytes epoch = 1;
+  uint64 generation = 2;
+}
+
+message ListProvidersResponse {
+  repeated ProviderCard providers = 1;
+  Cursor cursor = 2;
+}
+
+message ListModelsRequest {
+  // Empty = all providers.
+  string provider = 1;
+  // Only models serving this facet; unspecified = all.
+  Facet facet = 2;
+  bool available_only = 3;
+}
+
+message ListModelsResponse {
+  repeated ModelCard models = 1;
+  // Position to resume watching from; feed to WatchModels.
+  Cursor cursor = 2;
+  // Gateway role bindings ("tiny" -> "cerebras/glm-4.7"), resolvable in
+  // ChatParams.model.
+  map<string, string> roles = 3;
+}
+
+message WatchModelsRequest {
+  // Absent or stale => the stream opens with `reset`.
+  Cursor since = 1;
+}
+
+message ModelEvent {
+  // Position AFTER this event; persist as the resume point. Events carry
+  // their own cursor, so a client re-listing after `reset` just drops
+  // deltas at or below the list's cursor — no coordination window.
+  Cursor cursor = 1;
+  oneof event {
+    ModelCard upserted = 2;
+    // Card id that vanished (local server gone, model delisted).
+    string removed_id = 3;
+    // Resumption from `since` is impossible (epoch changed / delta window
+    // gone). Client MUST re-ListModels to rebase; deltas continue from the
+    // registry's current state.
+    Reset reset = 4;
+  }
+
+  message Reset {}
+}
+
+message RefreshModelsRequest {
+  // Empty = every discovery-capable provider.
+  string provider = 1;
+}
