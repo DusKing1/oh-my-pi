@@ -93,44 +93,45 @@ nom = "8"
 normalize-path = "0.2"
 objc2-device-check = "0.3.2"
 objc2-foundation = "0.3.2"
-omp-llm = { path = "crates/llm" }
-omp-llm-broker = { path = "crates/llm-broker" }
-omp-llm-gateway = { path = "crates/llm-gateway" }
-omp-llm-anthropic = { path = "crates/llm-anthropic" }
-omp-llm-bedrock = { path = "crates/llm-bedrock" }
-omp-llm-catalog = { path = "crates/llm-catalog" }
-omp-llm-cursor = { path = "crates/llm-cursor" }
-omp-llm-devin = { path = "crates/llm-devin" }
-omp-llm-dialect = { path = "crates/llm-dialect" }
-omp-llm-egress = { path = "crates/llm-egress" }
-omp-llm-google = { path = "crates/llm-google" }
-omp-llm-gitlab = { path = "crates/llm-gitlab" }
-omp-llm-openai = { path = "crates/llm-openai" }
-omp-llm-ollama = { path = "crates/llm-ollama" }
-omp-llm-transport = { path = "crates/llm-transport" }
-omp-llm-types = { path = "crates/llm-types" }
+omp-llm = { path = "crates/llm", version = "0.1.0" }
+omp-llm-broker = { path = "crates/llm-broker", version = "0.1.0" }
+omp-llm-gateway = { path = "crates/llm-gateway", version = "0.1.0" }
+omp-llm-anthropic = { path = "crates/llm-anthropic", version = "0.1.0" }
+omp-llm-bedrock = { path = "crates/llm-bedrock", version = "0.1.0" }
+omp-llm-catalog = { path = "crates/llm-catalog", version = "0.1.0" }
+omp-llm-cursor = { path = "crates/llm-cursor", version = "0.1.0" }
+omp-llm-devin = { path = "crates/llm-devin", version = "0.1.0" }
+omp-llm-dialect = { path = "crates/llm-dialect", version = "0.1.0" }
+omp-llm-egress = { path = "crates/llm-egress", version = "0.1.0" }
+omp-llm-google = { path = "crates/llm-google", version = "0.1.0" }
+omp-llm-gitlab = { path = "crates/llm-gitlab", version = "0.1.0" }
+omp-llm-openai = { path = "crates/llm-openai", version = "0.1.0" }
+omp-llm-ollama = { path = "crates/llm-ollama", version = "0.1.0" }
+omp-llm-transport = { path = "crates/llm-transport", version = "0.1.0" }
+omp-llm-types = { path = "crates/llm-types", version = "0.1.0" }
 notify = { version = "=8.2.0", features = ["macos_kqueue"] }
 num-bigint = "0.4"
 num-traits = "0.2"
-omp-llm-fm = { path = "crates/llm-fm" }
-omp-ast = { path = "crates/ast" }
-omp-core = { path = "crates/core" }
-omp-docserver = { path = "crates/docserver" }
-omp-hashline = { path = "crates/hashline" }
-omp-llm-tower = { path = "crates/llm-tower" }
-omp-llm-error = { path = "crates/llm-error" }
-omp-llm-local = { path = "crates/llm-local" }
-omp-proto = { path = "crates/proto" }
-omp-py = { path = "crates/py" }
-omp-rpc = { path = "crates/rpc" }
-omp-shell = { path = "crates/shell" }
-omp-shell-builtins = { path = "crates/shell-builtins" }
-omp-shell-engine = { path = "crates/shell-engine" }
-omp-slopjson = { path = "crates/slopjson" }
-omp-storage = { path = "crates/storage" }
-omp-telemetry = { path = "crates/telemetry" }
-omp-tui-macros = { path = "crates/tui-macros" }
-omp-walker = { path = "crates/walker" }
+omp-llm-fm = { path = "crates/llm-fm", version = "0.1.0" }
+omp-ast = { path = "crates/ast", version = "0.1.0" }
+omp-core = { path = "crates/core", version = "0.1.0" }
+omp-docserver = { path = "crates/docserver", version = "0.1.0" }
+omp-hashline = { path = "crates/hashline", version = "0.1.0" }
+omp-llm-tower = { path = "crates/llm-tower", version = "0.1.0" }
+omp-llm-error = { path = "crates/llm-error", version = "0.1.0" }
+omp-llm-local = { path = "crates/llm-local", version = "0.1.0" }
+omp-proto = { path = "crates/proto", version = "0.1.0" }
+omp-py = { path = "crates/py", version = "0.1.0" }
+omp-rpc = { path = "crates/rpc", version = "0.1.0" }
+omp-shell = { path = "crates/shell", version = "0.1.0" }
+omp-shell-builtins = { path = "crates/shell-builtins", version = "0.1.0" }
+omp-shell-engine = { path = "crates/shell-engine", version = "0.1.0" }
+omp-slopjson = { path = "crates/slopjson", version = "0.1.0" }
+omp-storage = { path = "crates/storage", version = "0.1.0" }
+omp-telemetry = { path = "crates/telemetry", version = "0.1.0" }
+omp-tui-macros = { path = "crates/tui-macros", version = "0.1.0" }
+omp-voice-kokoro = { path = "crates/voice-kokoro", version = "0.1.0" }
+omp-walker = { path = "crates/walker", version = "0.1.0" }
 onig = { version = "6", default-features = false }
 ort = { version = "=2.0.0-rc.13", default-features = false }
 opentelemetry = "0.32.0"
@@ -257,7 +258,6 @@ ulid = "3.0"
 uzers = "0.12"
 webpki-roots = "1.0"
 voice-g2p = "0.2.2"
-voice-kokoro = { git = "https://github.com/rgbkrk/voice", rev = "0e911aaff676ad4c5e08c395df790041418f87b9" }
 whoami = "2"
 wiremock = "0.6"
 whisper-rs = { version = "0.16", default-features = false }

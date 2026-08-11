@@ -45,7 +45,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 voice-g2p.workspace = true
-voice-kokoro.workspace = true
+omp-voice-kokoro.workspace = true
 whisper-rs = { workspace = true, features = ["tracing_backend"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
