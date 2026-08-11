@@ -1086,6 +1086,7 @@ async fn generated_catalog_transports_complete_through_registered_production_rou
 					b"AKIDMATRIX",
 					b"matrix-secret-signing-key",
 					Some(b"matrix-session"),
+					0,
 					1,
 				)
 				.expect("insert Bedrock credential");

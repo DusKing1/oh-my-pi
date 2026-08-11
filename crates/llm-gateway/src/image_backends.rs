@@ -12,7 +12,7 @@ use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Body as HyperBody;
-use omp_core::{Str, base64};
+use omp_core::{Str, USER_AGENT, base64};
 use omp_llm_catalog::{
 	codex::{CODEX_CLIENT_VERSION, CODEX_ORIGINATOR},
 	provider::ProviderCatalog,
@@ -25,6 +25,7 @@ use omp_llm_types::{
 	AspectRatio, BlobPart, GenerateImageRequest, ImageDone, ImageFormat, ImageSize, Props,
 };
 use serde_json::{Value, json};
+use smallvec::SmallVec;
 use tower::{Layer, Service, ServiceExt};
 
 use crate::images::{
@@ -116,7 +117,7 @@ impl EgressImageBackend {
 		provider: ImageProvider,
 		credential: &ImageCredential,
 		url: &str,
-		headers: &[(&str, String)],
+		headers: &[(&str, &str)],
 		body: Value,
 	) -> Result<HttpPayload, ImageAttemptError> {
 		let mut builder = Request::builder()
@@ -128,8 +129,8 @@ impl EgressImageBackend {
 				builder = builder.header(name.as_str(), value.as_str());
 			}
 		}
-		for (name, value) in headers {
-			builder = builder.header(*name, value);
+		for &(name, value) in headers {
+			builder = builder.header(name, value);
 		}
 		let bytes = serde_json::to_vec(&body).map_err(|error| parse_error(provider, error))?;
 		let mut request = builder
@@ -256,8 +257,10 @@ impl EgressImageBackend {
 				headers.push(("session_id", session.to_owned()));
 			}
 		}
+		let header_refs: SmallVec<(&str, &str), 6> =
+			headers.iter().map(|(name, value)| (*name, value.as_str())).collect();
 		let payload = self
-			.post_json(provider, credential, &url, &headers, body)
+			.post_json(provider, credential, &url, &header_refs, body)
 			.await?;
 		let value = if codex || payload.content_type.contains("text/event-stream") {
 			last_sse_response(provider, &payload.body)?
@@ -346,7 +349,7 @@ impl EgressImageBackend {
 			"userAgent":"antigravity"
 		});
 		let payload = self
-			.post_json(provider, credential, &url, &[("accept", "text/event-stream".to_owned())], body)
+			.post_json(provider, credential, &url, &[("accept", "text/event-stream")], body)
 			.await?;
 		let chunks = sse_values(provider, &payload.body)?;
 		let mut images = Vec::new();
@@ -425,11 +428,7 @@ impl EgressImageBackend {
 				provider,
 				credential,
 				&url,
-				&[
-					("http-referer", "https://omp.sh/".to_owned()),
-					("x-openrouter-title", "omp".to_owned()),
-					("x-openrouter-categories", "cli-agent".to_owned()),
-				],
+				&[("user-agent", USER_AGENT)],
 				json!({"model":model, "messages":[{"role":"user", "content":content}]}),
 			)
 			.await?;

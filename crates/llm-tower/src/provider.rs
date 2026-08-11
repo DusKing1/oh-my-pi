@@ -40,7 +40,8 @@ use omp_llm_egress::{
 };
 use omp_llm_google::{
 	GoogleCodec,
-	cca::{AntigravityRequestMetadata, CcaCodec},
+	cca::{AntigravityRequestMetadata, CcaCodec, CcaEndpointPlan},
+	stream::cca_first_event_timeout,
 	vertex as google_vertex,
 };
 use omp_llm_ollama::OllamaChatCodec;
@@ -323,15 +324,18 @@ pub enum ProviderAttemptError<E, B> {
 	/// The response ended without a canonical event.
 	#[error("provider response ended before its first event")]
 	Empty,
+	/// Successful response headers arrived, but the first SSE event stalled.
+	#[error("provider response timed out before its first event")]
+	FirstEventTimeout,
 }
 
-/// Catalog-driven service performing exactly one routed HTTP provider attempt.
+/// Catalog-driven service performing one routed provider attempt, including
+/// catalog-defined CCA endpoint failover before the first SSE event.
 ///
 /// The sole request contract is [`Routed`], supplied by the completed selection
 /// stack so leases and validated non-secret metadata remain out-of-band from
-/// [`TurnRequest`]. This service never retries. Its `poll_ready` and `call`
-/// methods delegate to the
-/// same egress instance, allowing reservation-based services underneath it.
+/// [`TurnRequest`]. Its `poll_ready` and `call` methods delegate to the same
+/// egress instance, allowing reservation-based services underneath it.
 /// Authentication is represented only by request extensions; the downstream
 /// egress stack is responsible for mutating the request in place.
 #[derive(Clone)]
@@ -423,7 +427,7 @@ where
 		let mut egress = std::mem::replace(&mut self.egress, replacement);
 		let shared = Arc::clone(&self.shared);
 		async move {
-			let (mut request, unsupported, codec, model) = match prepared {
+			let (mut request, unsupported, mut codec, model) = match prepared {
 				Ok(prepared) => prepared,
 				Err(error) => return Err(error),
 			};
@@ -441,10 +445,73 @@ where
 					.headers_mut()
 					.insert(http::HeaderName::from_static("x-oai-attestation"), value);
 			}
-			let response = egress
+			let first_event_timeout = matches!(codec.as_ref(), HttpCodec::GoogleCca(_))
+				.then(|| cca_first_event_timeout(model.as_str()));
+			let mut fallback_attempts: SmallVec<(Request<Body>, Arc<HttpCodec>), 2> =
+				SmallVec::new();
+			if let HttpCodec::GoogleCca(cca) = codec.as_ref()
+				&& cca.is_antigravity()
+			{
+				for endpoint in &shared.provider.fallback_base_urls {
+					let url = CcaEndpointPlan::stream_url(endpoint);
+					let fallback_request = clone_request_for_endpoint(&request, url.as_str())
+						.map_err(ProviderAttemptError::HttpRequest)?;
+					let fallback_codec = Arc::new(HttpCodec::GoogleCca(
+						cca.clone().with_served_endpoint(endpoint.clone()),
+					));
+					fallback_attempts.push((fallback_request, fallback_codec));
+				}
+			}
+			let mut response = egress
 				.call(request)
 				.await
 				.map_err(ProviderAttemptError::Egress)?;
+			if let Some(first_event_timeout) = first_event_timeout {
+				let mut fallback_attempts = fallback_attempts.into_iter();
+				loop {
+					if !response.status().is_success() {
+						break;
+					}
+					let framing = Framing::for_response(
+						shared.provider.transport,
+						&shared.provider.compat,
+						response.headers(),
+					);
+					let machine = DecodeMachine::new(
+						response.into_body(),
+						Arc::clone(&codec),
+						framing,
+						unsupported.clone(),
+						shared.provider.id.clone(),
+						model.clone(),
+					);
+					match tokio::time::timeout(
+						first_event_timeout,
+						establish_first_wire_event(machine),
+					)
+					.await
+					{
+						Ok(Ok(machine)) => return establish_commit(machine).await,
+						Ok(Err(error)) => return Err(error),
+						Err(_) => {
+							let Some((fallback_request, fallback_codec)) =
+								fallback_attempts.next()
+							else {
+								return Err(ProviderAttemptError::FirstEventTimeout);
+							};
+							egress
+								.ready()
+								.await
+								.map_err(ProviderAttemptError::Egress)?;
+							response = egress
+								.call(fallback_request)
+								.await
+								.map_err(ProviderAttemptError::Egress)?;
+							codec = fallback_codec;
+						},
+					}
+				}
+			}
 			if !response.status().is_success() {
 				if shared.provider.transport == TransportId::AnthropicVertex {
 					const MAX_ERROR_BODY: usize = 64 * 1024;
@@ -564,7 +631,8 @@ fn prepare_request<E, B>(
 		.map_err(ProviderAttemptError::Endpoint)?;
 	let proxy_computer_use_demoted =
 		demote_proxy_computer_use(shared, &mut native, endpoint.as_str());
-	let model_headers = model_headers(&native).map_err(ProviderAttemptError::Encode)?;
+	let model_headers =
+		model_headers(&native, shared.provider.transport).map_err(ProviderAttemptError::Encode)?;
 	let cca_codec = match shared.codec.as_ref() {
 		HttpCodec::GoogleCca(codec) => Some((codec.clone(), false, None)),
 		HttpCodec::GoogleCcaAntigravity(project) => {
@@ -795,7 +863,21 @@ fn prepare_request<E, B>(
 	Ok((request, unsupported, codec, model))
 }
 
-fn model_headers(request: &ChatRequest) -> Result<HeaderMap, ChatError> {
+fn clone_request_for_endpoint(
+	request: &Request<Body>,
+	endpoint: &str,
+) -> Result<Request<Body>, http::Error> {
+	let mut cloned = Request::builder()
+		.method(request.method().clone())
+		.version(request.version())
+		.uri(endpoint)
+		.body(request.body().clone())?;
+	*cloned.headers_mut() = request.headers().clone();
+	*cloned.extensions_mut() = request.extensions().clone();
+	Ok(cloned)
+}
+
+fn model_headers(request: &ChatRequest, transport: TransportId) -> Result<HeaderMap, ChatError> {
 	let mut headers = HeaderMap::new();
 	let Some(policy) = request.model_policy.as_deref() else {
 		return Ok(headers);
@@ -804,6 +886,16 @@ fn model_headers(request: &ChatRequest) -> Result<HeaderMap, ChatError> {
 		let name: http::header::HeaderName = raw_name.parse().map_err(|_| {
 			ChatError::Provider(fmts!("model policy contains an invalid HTTP header name: {raw_name}"))
 		})?;
+		// Bedrock caller headers are added to the request before the sealed egress
+		// layer signs it. Drop fields whose wire value is generated or replaced by
+		// SigV4/fetch so the signer cannot cover bytes different from those sent.
+		if matches!(
+			transport,
+			TransportId::AnthropicBedrock | TransportId::BedrockConverse
+		) && bedrock_transport_owned_header(name.as_str())
+		{
+			continue;
+		}
 		if unsafe_model_header(name.as_str()) {
 			return Err(ChatError::Provider(fmts!(
 				"model policy forbids unsafe HTTP header: {raw_name}"
@@ -817,6 +909,20 @@ fn model_headers(request: &ChatRequest) -> Result<HeaderMap, ChatError> {
 		headers.insert(name, value);
 	}
 	Ok(headers)
+}
+
+fn bedrock_transport_owned_header(name: &str) -> bool {
+	matches!(
+		name,
+		"host"
+			| "x-amz-date"
+			| "x-amz-content-sha256"
+			| "x-amz-security-token"
+			| "content-length"
+			| "content-type"
+			| "accept"
+			| "authorization"
+	)
 }
 
 fn unsafe_model_header(name: &str) -> bool {
@@ -1350,6 +1456,7 @@ struct DecodeMachine<B> {
 	selected_provider: Str,
 	selected_model:    Str,
 	terminal:          bool,
+	wire_event_seen:   bool,
 }
 
 enum FramingState {
@@ -1384,6 +1491,7 @@ impl<B> DecodeMachine<B> {
 			selected_provider,
 			selected_model,
 			terminal: false,
+			wire_event_seen: false,
 		}
 	}
 
@@ -1416,6 +1524,9 @@ impl<B> DecodeMachine<B> {
 				(frames, decoder.is_terminal())
 			},
 		};
+		if !frames.is_empty() {
+			self.wire_event_seen = true;
+		}
 		for frame in frames {
 			let events = match &frame {
 				WireFrame::Data(data) => self.codec.decode(Frame::Data(data), &mut self.state)?,
@@ -1494,6 +1605,41 @@ impl<B> DecodeMachine<B> {
 			.retry_after_ms(0)
 			.build();
 		self.push_native([NativeTurnEvent::Error(error)]);
+	}
+}
+
+#[allow(
+	clippy::result_large_err,
+	reason = "the public attempt error keeps rich typed provider failures unboxed for \
+	          classification by retry policy"
+)]
+async fn establish_first_wire_event<E, B>(
+	mut machine: DecodeMachine<B>,
+) -> Result<DecodeMachine<B>, ProviderAttemptError<E, B::Error>>
+where
+	B: HttpBody<Data = Bytes> + Send + Unpin + 'static,
+	B::Error: fmt::Display + Send + 'static,
+{
+	loop {
+		if machine.wire_event_seen {
+			return Ok(machine);
+		}
+		let frame = futures::future::poll_fn(|cx| {
+			let body = machine.body.as_mut().expect("body remains before first event");
+			Pin::new(body).poll_frame(cx)
+		})
+		.await;
+		match frame {
+			Some(Ok(frame)) => {
+				if let Ok(data) = frame.into_data() {
+					machine
+						.push_chunk(data)
+						.map_err(ProviderAttemptError::Decode)?;
+				}
+			},
+			Some(Err(error)) => return Err(ProviderAttemptError::Body(error)),
+			None => return Err(ProviderAttemptError::Empty),
+		}
 	}
 }
 

@@ -1,5 +1,7 @@
 //! Gemini stream terminal, metadata, and semantic retry rules.
 
+use std::time::Duration;
+
 use omp_core::Str;
 use omp_llm_types::{Props, StopReason, TurnError, TurnErrorKind};
 use serde::Deserialize;
@@ -16,6 +18,20 @@ pub const MAX_OVERLOAD_RETRIES: u8 = 2;
 const EMPTY_BASE_DELAY_MS: u64 = 500;
 const OVERLOAD_BASE_DELAY_MS: u64 = 1_000;
 const MAX_OVERLOAD_DELAY_MS: u64 = 8_000;
+/// Maximum wait for the first Cloud Code Assist event from Flash models.
+pub const FLASH_FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(60);
+/// Maximum wait for the first Cloud Code Assist event from non-Flash models.
+pub const DEFAULT_FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Returns the Cloud Code Assist first-event deadline for a wire model.
+#[must_use]
+pub fn cca_first_event_timeout(model: &str) -> Duration {
+	if model.contains("flash") {
+		FLASH_FIRST_EVENT_TIMEOUT
+	} else {
+		DEFAULT_FIRST_EVENT_TIMEOUT
+	}
+}
 
 /// Decision produced by [`SemanticRetryBudget`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -220,7 +236,16 @@ pub(crate) fn incomplete_stream_error() -> TurnError {
 mod tests {
 	use omp_llm_types::{StopReason, TurnErrorKind};
 
-	use super::{RetryDecision, SemanticRetryBudget, finish_reason, stream_error};
+	use super::{
+		DEFAULT_FIRST_EVENT_TIMEOUT, FLASH_FIRST_EVENT_TIMEOUT, RetryDecision, SemanticRetryBudget,
+		cca_first_event_timeout, finish_reason, stream_error,
+	};
+
+	#[test]
+	fn cca_flash_uses_shorter_first_event_deadline() {
+		assert_eq!(cca_first_event_timeout("gemini-3-flash"), FLASH_FIRST_EVENT_TIMEOUT);
+		assert_eq!(cca_first_event_timeout("gemini-3-pro"), DEFAULT_FIRST_EVENT_TIMEOUT);
+	}
 
 	#[test]
 	fn two_empty_retries_then_terminal() {

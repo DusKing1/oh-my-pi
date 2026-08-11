@@ -16,6 +16,8 @@ pub struct OpenAiModelPolicy {
 	pub omit_reasoning_effort: bool,
 	pub allows_synthetic_reasoning_content_for_tool_calls: bool,
 	pub requires_reasoning_content_for_tool_calls: bool,
+	pub requires_reasoning_content_for_all_assistant_turns: bool,
+	pub reasoning_enabled: bool,
 	pub requires_assistant_content_for_tool_calls: bool,
 	pub filter_reasoning_history: bool,
 	pub include_encrypted_reasoning: bool,
@@ -45,6 +47,8 @@ impl OpenAiModelPolicy {
 				omit_reasoning_effort: false,
 				allows_synthetic_reasoning_content_for_tool_calls: false,
 				requires_reasoning_content_for_tool_calls: false,
+				requires_reasoning_content_for_all_assistant_turns: false,
+				reasoning_enabled: thinking_enabled(req),
 				requires_assistant_content_for_tool_calls: false,
 				filter_reasoning_history: false,
 				include_encrypted_reasoning: compat.reasoning_wire_format
@@ -60,9 +64,7 @@ impl OpenAiModelPolicy {
 			};
 		};
 
-		let thinking_enabled = req.thinking.as_ref().is_some_and(|feature| {
-			feature.value.effort != Some(Effort::Off) && feature.value.budget_tokens != Some(0)
-		});
+		let thinking_enabled = thinking_enabled(req);
 		let overlay = policy
 			.compat
 			.get_ns("wire", "when_thinking")
@@ -226,6 +228,12 @@ impl OpenAiModelPolicy {
 				false,
 				unsupported,
 			),
+			requires_reasoning_content_for_all_assistant_turns: boolean(
+				"requires_reasoning_content_for_all_assistant_turns",
+				false,
+				unsupported,
+			),
+			reasoning_enabled: thinking_enabled,
 			requires_assistant_content_for_tool_calls: boolean(
 				"requires_assistant_content_for_tool_calls",
 				false,
@@ -266,6 +274,12 @@ impl OpenAiModelPolicy {
 			}
 		})
 	}
+}
+
+fn thinking_enabled(req: &ChatRequest) -> bool {
+	req.thinking.as_ref().is_some_and(|feature| {
+		feature.value.effort != Some(Effort::Off) && feature.value.budget_tokens != Some(0)
+	})
 }
 
 pub const fn effort_name(value: Effort) -> &'static str {

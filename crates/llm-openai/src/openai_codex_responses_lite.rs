@@ -3,7 +3,7 @@
 //! This module only transforms JSON wire bodies. Authentication and HTTP
 //! dispatch remain owned by the gateway egress stack.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, env};
 
 use omp_core::Str;
 use omp_llm_types::{Error, Unsupported};
@@ -31,12 +31,25 @@ pub fn transform_codex_request(
 	body: &mut Value,
 	responses_lite: bool,
 ) -> Result<Vec<Unsupported>, Error> {
+	transform_codex_request_with_concurrent_summaries(
+		body,
+		responses_lite,
+		concurrent_summaries_enabled(),
+	)
+}
+
+fn transform_codex_request_with_concurrent_summaries(
+	body: &mut Value,
+	responses_lite: bool,
+	concurrent_summaries: bool,
+) -> Result<Vec<Unsupported>, Error> {
 	let object = body
 		.as_object_mut()
 		.ok_or_else(|| Error::Provider(Str::new("Codex request body must be a JSON object")))?;
 	object.insert("store".into(), Value::Bool(false));
 	object.insert("stream".into(), Value::Bool(true));
 	include_encrypted_reasoning(object);
+	apply_reasoning_summary_controls(object);
 	remove_rejected_controls(object);
 	filter_replayed_items(object);
 	let sent_calls = BTreeSet::new();
@@ -48,7 +61,83 @@ pub fn transform_codex_request(
 	if responses_lite {
 		apply_responses_lite(object);
 	}
+	apply_reasoning_summary_delivery(object, concurrent_summaries);
 	Ok(unsupported)
+}
+
+fn apply_reasoning_summary_controls(object: &mut Map<String, Value>) {
+	let supports_summary = object
+		.get("model")
+		.and_then(Value::as_str)
+		.is_some_and(supports_reasoning_summary);
+	let Some(reasoning) = object.get_mut("reasoning").and_then(Value::as_object_mut) else {
+		return;
+	};
+	if !supports_summary {
+		reasoning.remove("summary");
+		return;
+	}
+	if reasoning.get("summary").is_some_and(Value::is_null) {
+		reasoning.remove("summary");
+	} else if reasoning.contains_key("effort") && !reasoning.contains_key("summary") {
+		reasoning.insert("summary".into(), Value::String("auto".into()));
+	}
+}
+
+fn apply_reasoning_summary_delivery(
+	object: &mut Map<String, Value>,
+	concurrent_summaries: bool,
+) {
+	let summary_requested = object
+		.get("reasoning")
+		.and_then(Value::as_object)
+		.is_some_and(|reasoning| reasoning.contains_key("summary"));
+	if summary_requested && concurrent_summaries {
+		object.insert(
+			"stream_options".into(),
+			json!({"reasoning_summary_delivery": "sequential_cutoff"}),
+		);
+	} else {
+		object.remove("stream_options");
+	}
+}
+
+fn concurrent_summaries_enabled() -> bool {
+	env::var("OMP_CODEX_CONCURRENT_SUMMARIES").is_ok_and(|value| {
+		let value = value.trim();
+		value == "1" || value.eq_ignore_ascii_case("true")
+	})
+}
+
+fn supports_reasoning_summary(model: &str) -> bool {
+	let model = model.rsplit('/').next().unwrap_or(model);
+	let Some(version) = model
+		.get(..4)
+		.filter(|prefix| prefix.eq_ignore_ascii_case("gpt-"))
+		.and_then(|_| model.get(4..))
+	else {
+		return false;
+	};
+	let major_end = version
+		.bytes()
+		.position(|byte| !byte.is_ascii_digit())
+		.unwrap_or(version.len());
+	let Ok(major) = version[..major_end].parse::<u32>() else {
+		return false;
+	};
+	if major != 5 {
+		return major > 5;
+	}
+	let Some(minor) = version[major_end..].strip_prefix('.') else {
+		return false;
+	};
+	let minor_end = minor
+		.bytes()
+		.position(|byte| !byte.is_ascii_digit())
+		.unwrap_or(minor.len());
+	minor[..minor_end]
+		.parse::<u32>()
+		.is_ok_and(|minor| minor >= 4)
 }
 
 fn include_encrypted_reasoning(object: &mut Map<String, Value>) {
@@ -228,10 +317,10 @@ mod tests {
 	use omp_llm_types::UnsupportedAction;
 	use serde_json::json;
 
-	use super::transform_codex_request;
+	use super::{transform_codex_request, transform_codex_request_with_concurrent_summaries};
 
 	#[test]
-	fn codex_transform_uses_shared_pi_pair_repair() {
+	fn codex_transform_uses_shared_pair_repair() {
 		let mut body = json!({
 			"input": [
 				{
@@ -274,5 +363,43 @@ mod tests {
 		assert_eq!(unsupported.len(), 1);
 		assert_eq!(unsupported[0].what, "thread.tool_result");
 		assert_eq!(unsupported[0].action, UnsupportedAction::Emulated);
+	}
+
+	#[test]
+	fn codex_reasoning_summaries_default_on_and_delivery_is_opt_in() {
+		let mut defaulted = json!({
+			"model": "gpt-5.5",
+			"reasoning": {"effort": "medium"},
+		});
+		transform_codex_request_with_concurrent_summaries(&mut defaulted, false, false).unwrap();
+		assert_eq!(defaulted["reasoning"], json!({"effort": "medium", "summary": "auto"}));
+		assert!(defaulted.get("stream_options").is_none());
+
+		let mut opted_in = json!({
+			"model": "gpt-5.6-terra",
+			"reasoning": {"effort": "medium", "summary": "detailed"},
+		});
+		transform_codex_request_with_concurrent_summaries(&mut opted_in, false, true).unwrap();
+		assert_eq!(
+			opted_in["stream_options"],
+			json!({"reasoning_summary_delivery": "sequential_cutoff"}),
+		);
+		assert_eq!(opted_in["reasoning"]["summary"], "detailed");
+
+		let mut suppressed = json!({
+			"model": "gpt-5.6-terra",
+			"reasoning": {"effort": "medium", "summary": null},
+		});
+		transform_codex_request_with_concurrent_summaries(&mut suppressed, false, true).unwrap();
+		assert_eq!(suppressed["reasoning"], json!({"effort": "medium"}));
+		assert!(suppressed.get("stream_options").is_none());
+
+		let mut unsupported = json!({
+			"model": "gpt-5.3-codex",
+			"reasoning": {"effort": "medium", "summary": "detailed"},
+		});
+		transform_codex_request_with_concurrent_summaries(&mut unsupported, false, true).unwrap();
+		assert_eq!(unsupported["reasoning"], json!({"effort": "medium"}));
+		assert!(unsupported.get("stream_options").is_none());
 	}
 }

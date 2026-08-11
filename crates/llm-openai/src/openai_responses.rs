@@ -1094,13 +1094,62 @@ fn encode_input(
 	let custom_names = custom_tool_names(req);
 	let mut replay_calls: BTreeMap<CallId, (Str, bool)> = BTreeMap::new();
 	let sent_calls = seed_sent_calls(req, start, mapper, &custom_names, &mut replay_calls);
-	for item in req.thread.items.iter().skip(start) {
+	let mut reasoning_replayed = false;
+	for (item_index, item) in req.thread.items.iter().enumerate().skip(start) {
+		if matches!(
+			&item.kind,
+			ItemKind::ToolResult(_)
+				| ItemKind::Message(Message {
+					role: Role::User | Role::System,
+					..
+				})
+		) {
+			reasoning_replayed = false;
+		}
 		if matches!(&item.kind, ItemKind::Message(_)) {
 			input.append(&mut deferred_media);
 		}
 		match &item.kind {
 			ItemKind::Message(message) if message.role != Role::System => {
-				encode_message(message, &item.props, policy, &mut input, unsupported);
+				let turn_items = req
+					.thread
+					.items
+					.iter()
+					.skip(item_index + 1)
+					.take_while(|next| {
+						!matches!(
+							&next.kind,
+							ItemKind::ToolResult(_)
+								| ItemKind::Message(Message {
+									role: Role::User | Role::System,
+									..
+								})
+						)
+					});
+				let has_tool_call =
+					turn_items.clone().any(|next| matches!(&next.kind, ItemKind::ToolCall(_)));
+				let has_assistant_content = turn_items.clone().any(|next| {
+					matches!(
+						&next.kind,
+						ItemKind::Message(next_message)
+							if next_message.role == Role::Assistant
+								&& next_message.parts.iter().any(|part| !matches!(part, Part::Thinking(_)))
+					)
+				});
+				let reasoning_emitted = encode_message(
+					message,
+					&item.props,
+					policy,
+					has_tool_call,
+					item_index,
+					reasoning_replayed,
+					has_assistant_content,
+					&mut input,
+					unsupported,
+				);
+				if reasoning_emitted {
+					reasoning_replayed = true;
+				}
 			},
 			ItemKind::Message(_) => {},
 			ItemKind::ToolCall(call) => {
@@ -1263,16 +1312,23 @@ fn encode_message(
 	message: &Message,
 	props: &Props,
 	policy: &OpenAiModelPolicy,
+	has_tool_call: bool,
+	item_index: usize,
+	reasoning_already_replayed: bool,
+	turn_has_assistant_content: bool,
 	input: &mut Vec<Value>,
 	unsupported: &mut Vec<Unsupported>,
-) {
+) -> bool {
+	let mut replayed_reasoning = false;
 	if let Some(server_item) = props.get_ns("openai", "server_tool_item") {
 		if let Some(mut object) = server_item.as_object().cloned() {
 			if policy.filter_reasoning_history
 				&& object.get("type").and_then(Value::as_str) == Some("reasoning")
 			{
-				return;
+				return false;
 			}
+			replayed_reasoning =
+				object.get("type").and_then(Value::as_str) == Some("reasoning");
 			demote_computer_item(&mut object, policy, unsupported);
 			apply_item_options(&mut object, props);
 			input.push(Value::Object(object));
@@ -1282,11 +1338,36 @@ fn encode_message(
 				"server tool history must be a JSON object",
 			));
 		}
-		return;
+		return replayed_reasoning;
+	}
+	let requires_reasoning_item = message.role == Role::Assistant
+		&& policy.reasoning_enabled
+		&& !reasoning_already_replayed
+		&& (policy.requires_reasoning_content_for_all_assistant_turns
+			|| (policy.requires_reasoning_content_for_tool_calls && has_tool_call));
+	let has_native_reasoning_id = props.get_ns("openai", "item_id").and_then(Value::as_str).is_some();
+	let mut reasoning_item_emitted = false;
+	let mut carried_reasoning = String::new();
+	if requires_reasoning_item {
+		for part in &message.parts {
+			if let Part::Thinking(thinking) = part
+				&& !thinking.text.trim().is_empty()
+			{
+				if !carried_reasoning.is_empty() {
+					carried_reasoning.push('\n');
+				}
+				carried_reasoning.push_str(&thinking.text);
+			}
+		}
 	}
 	if !policy.filter_reasoning_history {
 		for part in &message.parts {
 			if let Part::Thinking(thinking) = part {
+				if requires_reasoning_item
+					&& (thinking.signature.is_empty() || !has_native_reasoning_id)
+				{
+					continue;
+				}
 				let mut reasoning = Map::new();
 				reasoning.insert("type".into(), Value::String("reasoning".into()));
 				reasoning.insert(
@@ -1314,6 +1395,7 @@ fn encode_message(
 				}
 				apply_item_options(&mut reasoning, props);
 				input.push(Value::Object(reasoning));
+				reasoning_item_emitted = true;
 			}
 		}
 	}
@@ -1336,6 +1418,24 @@ fn encode_message(
 				.push(dropped("thread.message.part", "content part is not representable by Responses")),
 		}
 	}
+	let should_synthesize = requires_reasoning_item
+		&& !reasoning_item_emitted
+		&& (!content.is_empty() || has_tool_call || turn_has_assistant_content);
+	if should_synthesize {
+		let mut reasoning = Map::new();
+		reasoning.insert("type".into(), Value::String("reasoning".into()));
+		if let Some(id) = props.get_ns("openai", "item_id").and_then(Value::as_str) {
+			reasoning.insert("id".into(), Value::String(id.into()));
+		} else {
+			reasoning.insert("id".into(), Value::String(format!("rs_replay_{item_index}")));
+		}
+		reasoning.insert("summary".into(), Value::Array(Vec::new()));
+		reasoning.insert(
+			"content".into(),
+			json!([{ "type": "reasoning_text", "text": carried_reasoning }]),
+		);
+		input.push(Value::Object(reasoning));
+	}
 	if !content.is_empty() {
 		let role = match message.role {
 			Role::User => "user",
@@ -1356,6 +1456,7 @@ fn encode_message(
 		apply_item_options(&mut value, props);
 		input.push(Value::Object(value));
 	}
+	requires_reasoning_item && (reasoning_item_emitted || should_synthesize)
 }
 
 fn tool_result_text(parts: &[Part], unsupported: &mut Vec<Unsupported>) -> String {
@@ -2180,9 +2281,191 @@ mod tests {
 				"content": "[Orphan tool result; call_id=call_orphan]: not found",
 			}]),
 		);
+
 		assert_eq!(unsupported.len(), 1);
 		assert_eq!(unsupported[0].what, "thread.tool_result");
 		assert_eq!(unsupported[0].action, UnsupportedAction::Emulated);
+	}
+	fn reasoning_request(parts: Vec<Part>, compat: Props) -> ChatRequest {
+		let assistant = Item::builder()
+			.seq(0)
+			.kind(ItemKind::Message(
+				Message::builder().role(Role::Assistant).parts(parts).build(),
+			))
+			.props(Props::default())
+			.build();
+		let user = Item::builder()
+			.seq(1)
+			.kind(ItemKind::Message(
+				Message::builder()
+					.role(Role::User)
+					.parts(vec![Part::Text(Str::new_static("continue"))])
+					.build(),
+			))
+			.props(Props::default())
+			.build();
+		let mut req = request(vec![assistant, user]);
+		req.thinking = Some(
+			Feature::builder()
+				.value(Reasoning::builder().effort(Effort::High).build())
+				.on_unsupported(Fallback::Ignore)
+				.build(),
+		);
+		req.model_policy = Some(Arc::new(policy(compat)));
+		req
+	}
+
+	#[test]
+	fn replay_synthesizes_reasoning_text_before_assistant_message_when_required() {
+		let mut compat = Props::default();
+		compat.insert_ns(
+			"wire",
+			"requires_reasoning_content_for_all_assistant_turns",
+			json!(true),
+		);
+		let req = reasoning_request(
+			vec![
+				Part::Thinking(
+					Thinking::builder()
+						.text(Str::new_static("Inspect before editing."))
+						.signature(Bytes::new())
+						.redacted(false)
+						.build(),
+				),
+				Part::Text(Str::new_static("Edited.")),
+			],
+			compat,
+		);
+		let input = encoded(&req)["input"].as_array().unwrap().clone();
+		assert_eq!(
+			input[0],
+			json!({
+				"type": "reasoning",
+				"id": "rs_replay_0",
+				"summary": [],
+				"content": [{
+					"type": "reasoning_text",
+					"text": "Inspect before editing."
+				}]
+			}),
+		);
+		assert_eq!(input[1]["type"], "message");
+		assert_eq!(input[1]["role"], "assistant");
+	}
+
+	#[test]
+	fn replay_synthesizes_empty_reasoning_text_for_assistant_turn_without_thinking() {
+		let mut compat = Props::default();
+		compat.insert_ns(
+			"wire",
+			"requires_reasoning_content_for_all_assistant_turns",
+			json!(true),
+		);
+		let req = reasoning_request(vec![Part::Text(Str::new_static("Answer."))], compat);
+		let input = encoded(&req)["input"].as_array().unwrap().clone();
+
+		assert_eq!(input[0]["type"], "reasoning");
+		assert_eq!(
+			input[0]["content"],
+			json!([{ "type": "reasoning_text", "text": "" }]),
+		);
+		assert_eq!(input[1]["type"], "message");
+	}
+	#[test]
+	fn split_canonical_turn_carries_reasoning_once_before_assistant_text() {
+		let mut compat = Props::default();
+		compat.insert_ns(
+			"wire",
+			"requires_reasoning_content_for_all_assistant_turns",
+			json!(true),
+		);
+		let mut req = reasoning_request(
+			vec![Part::Thinking(
+				Thinking::builder()
+					.text(Str::new_static("Inspect split turn."))
+					.signature(Bytes::new())
+					.redacted(false)
+					.build(),
+			)],
+			compat,
+		);
+		req.thread.items.insert(
+			1,
+			Item::builder()
+				.seq(0)
+				.kind(ItemKind::Message(
+					Message::builder()
+						.role(Role::Assistant)
+						.parts(vec![Part::Text(Str::new_static("Edited."))])
+						.build(),
+				))
+				.props(Props::default())
+				.build(),
+		);
+		let input = encoded(&req)["input"].as_array().unwrap().clone();
+		assert_eq!(
+			input.iter().filter(|item| item["type"] == "reasoning").count(),
+			1,
+		);
+		assert_eq!(
+			input[0]["content"],
+			json!([{ "type": "reasoning_text", "text": "Inspect split turn." }]),
+		);
+		assert_eq!(input[1]["type"], "message");
+	}
+
+	#[test]
+	fn replay_reasoning_requirement_is_inactive_when_request_reasoning_is_disabled() {
+		let mut compat = Props::default();
+		compat.insert_ns(
+			"wire",
+			"requires_reasoning_content_for_all_assistant_turns",
+			json!(true),
+		);
+		let mut req = reasoning_request(vec![Part::Text(Str::new_static("Answer."))], compat);
+		req.thinking = None;
+		let input = encoded(&req)["input"].as_array().unwrap().clone();
+		assert_eq!(input[0]["type"], "message");
+		assert!(input.iter().all(|item| item["type"] != "reasoning"));
+	}
+
+	#[test]
+	fn replay_does_not_synthesize_reasoning_without_requirement() {
+		let req = reasoning_request(
+			vec![Part::Text(Str::new_static("Answer."))],
+			Props::default(),
+		);
+		let input = encoded(&req)["input"].as_array().unwrap().clone();
+		assert_eq!(input[0]["type"], "message");
+		assert!(input.iter().all(|item| item["type"] != "reasoning"));
+	}
+
+	#[test]
+	fn tool_call_replay_requirement_places_reasoning_before_message_and_call() {
+		let mut compat = Props::default();
+		compat.insert_ns(
+			"wire",
+			"requires_reasoning_content_for_tool_calls",
+			json!(true),
+		);
+		let mut req = reasoning_request(vec![Part::Text(Str::new_static("Calling."))], compat);
+		let call = Item::builder()
+			.seq(0)
+			.kind(ItemKind::ToolCall(
+				ToolCall::builder()
+					.id(CallId::new())
+					.name(Str::new_static("lookup"))
+					.args_json(Bytes::from_static(b"{}"))
+					.thought_signature(Bytes::new())
+					.build(),
+			))
+			.props(Props::default())
+			.build();
+		req.thread.items.insert(1, call);
+		let input = encoded(&req)["input"].as_array().unwrap().clone();
+		assert_eq!(input[0]["type"], "reasoning");
+		assert_eq!(input[1]["type"], "message");
+		assert_eq!(input[2]["type"], "function_call");
 	}
 
 	#[test]

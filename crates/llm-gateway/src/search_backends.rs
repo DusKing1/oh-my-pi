@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use http::{Method, Request, header};
 use http_body_util::{BodyExt as _, Full};
-use omp_core::Str;
+use omp_core::{Str, USER_AGENT};
 use omp_llm_egress::{
 	auth_inject::{AuthContext, AuthInjectLayer, CredentialSource},
 	client::{Body, EgressClient},
@@ -330,8 +330,12 @@ fn build_request(
 		)
 		.header(
 			header::USER_AGENT,
-			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/149 \
-			 Safari/537.36",
+			if is_scraper(id) {
+				"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/149 \
+				 Safari/537.36"
+			} else {
+				USER_AGENT
+			},
 		);
 	if !encoded.is_empty() {
 		builder = builder.header(

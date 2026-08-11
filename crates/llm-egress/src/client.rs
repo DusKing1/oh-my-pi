@@ -14,7 +14,7 @@ use std::{
 
 use bytes::Bytes;
 use futures::future::Either;
-use http::{Request, Response};
+use http::{HeaderValue, Request, Response, header};
 use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
@@ -202,6 +202,10 @@ impl Service<Request<Body>> for EgressClient {
 	}
 
 	fn call(&mut self, mut request: Request<Body>) -> Self::Future {
+		request
+			.headers_mut()
+			.entry(header::USER_AGENT)
+			.or_insert(HeaderValue::from_static(omp_core::USER_AGENT));
 		self.proxy.inject_proxy_auth(&mut request);
 		if apply_sensitive_query(&mut request).is_err() {
 			return Either::Left(ready(Err(EgressError::InvalidSensitiveQuery)));

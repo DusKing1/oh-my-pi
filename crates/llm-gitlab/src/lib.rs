@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{SinkExt as _, StreamExt as _, stream::BoxStream};
 use http::{HeaderMap, HeaderValue, header};
-use omp_core::Str;
+use omp_core::{Str, USER_AGENT};
 use omp_llm_types::{
 	Accuracy, CallIdMapper, Chat, ChatOutcome, ChatRequest, Diagnostic, Error, Executor, Fallback,
 	Invoke, Item, ItemKind, Message, Part, Props, Retryability, Role, StopReason, StreamPartKind,
@@ -316,10 +316,7 @@ async fn open_socket(
 		"x-gitlab-language-server-version",
 		HeaderValue::from_static(LANGUAGE_SERVER_VERSION),
 	);
-	headers.insert(
-		header::USER_AGENT,
-		HeaderValue::from_static("unknown/unknown unknown/unknown gitlab-language-server/8.104.0"),
-	);
+	headers.insert(header::USER_AGENT, HeaderValue::from_static(USER_AGENT));
 	let mut origin = url::Url::parse(&config.websocket_url).map_err(transport_error)?;
 	let origin_scheme = if origin.scheme() == "ws" {
 		"http"

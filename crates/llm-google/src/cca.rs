@@ -249,6 +249,12 @@ impl CcaCodec {
 		self
 	}
 
+	/// Returns whether this codec uses Antigravity's endpoint failover policy.
+	#[must_use]
+	pub const fn is_antigravity(&self) -> bool {
+		matches!(self.flavor, CcaFlavor::Antigravity)
+	}
+
 	/// Enables Flash planning-leak suppression with the active tool names.
 	#[must_use]
 	pub fn with_planning_leak_filter(mut self, tool_names: impl IntoIterator<Item = Str>) -> Self {
@@ -871,6 +877,9 @@ pub enum CcaAttemptFailure {
 	Transport,
 	/// A response stream completed without meaningful content.
 	EmptyBody,
+	/// Successful headers arrived, but no first SSE event arrived before the
+	/// model-specific deadline.
+	FirstEventTimeout,
 	/// A response began but ended without a finish reason.
 	IncompleteStream,
 	/// The provider emitted an explicit output error.
@@ -880,8 +889,9 @@ pub enum CcaAttemptFailure {
 /// Returns whether the next catalog endpoint should be attempted.
 ///
 /// CCA fallback is limited to failures before response content begins. HTTP
-/// 408, 429, and 5xx statuses are transient, as are retryable transport and
-/// empty-body failures. Explicit model output failures never change hosts.
+/// 408, 429, and 5xx statuses are transient, as are retryable transport,
+/// empty-body, and first-event timeout failures. Explicit model output failures
+/// never change hosts.
 #[must_use]
 pub const fn should_fallback(failure: CcaAttemptFailure, response_started: bool) -> bool {
 	if response_started {
@@ -889,7 +899,9 @@ pub const fn should_fallback(failure: CcaAttemptFailure, response_started: bool)
 	}
 	match failure {
 		CcaAttemptFailure::HttpStatus(status) => status == 408 || status == 429 || status >= 500,
-		CcaAttemptFailure::Transport | CcaAttemptFailure::EmptyBody => true,
+		CcaAttemptFailure::Transport
+		| CcaAttemptFailure::EmptyBody
+		| CcaAttemptFailure::FirstEventTimeout => true,
 		CcaAttemptFailure::IncompleteStream | CcaAttemptFailure::Output => false,
 	}
 }
@@ -1277,6 +1289,8 @@ mod tests {
 		assert!(should_fallback(CcaAttemptFailure::HttpStatus(503), false));
 		assert!(!should_fallback(CcaAttemptFailure::HttpStatus(400), false));
 		assert!(!should_fallback(CcaAttemptFailure::Transport, true));
+		assert!(should_fallback(CcaAttemptFailure::FirstEventTimeout, false));
+		assert!(!should_fallback(CcaAttemptFailure::FirstEventTimeout, true));
 	}
 
 	#[test]

@@ -43,6 +43,71 @@ const DEFAULT_INVOKE_TIMEOUT_MS: u64 = 120_000;
 const CONNECT_END_STREAM: u8 = 0x02;
 const CURSOR_CLIENT_VERSION: &str = "cli-2026.07.23-e383d2b";
 
+fn cursor_request_headers(
+	request: &ChatRequest,
+	auth_headers: HeaderMap,
+) -> Result<HeaderMap, Error> {
+	let mut headers = HeaderMap::new();
+	headers.insert(header::CONTENT_TYPE, http::HeaderValue::from_static("application/connect+proto"));
+	headers.insert(
+		http::HeaderName::from_static("connect-protocol-version"),
+		http::HeaderValue::from_static("1"),
+	);
+	headers.insert(
+		http::HeaderName::from_static("x-ghost-mode"),
+		http::HeaderValue::from_static("true"),
+	);
+	headers.insert(
+		http::HeaderName::from_static("x-cursor-client-version"),
+		http::HeaderValue::from_static(CURSOR_CLIENT_VERSION),
+	);
+	headers.insert(
+		http::HeaderName::from_static("x-cursor-client-type"),
+		http::HeaderValue::from_static("cli"),
+	);
+
+	if let Some(policy) = request.model_policy.as_deref() {
+		for (raw_name, raw_value) in policy.headers.iter() {
+			if raw_name.starts_with(':') {
+				continue;
+			}
+			let name: http::HeaderName = raw_name.parse().map_err(|_| {
+				Error::Transport(omp_core::fmts!("invalid Cursor caller header name: {raw_name}"))
+			})?;
+			let field = name.as_str();
+			if matches!(
+				field,
+				"connection"
+					| "keep-alive"
+					| "proxy-connection"
+					| "transfer-encoding"
+					| "upgrade"
+					| "http2-settings"
+					| "host"
+					| "content-length"
+					| "content-type"
+					| "connect-protocol-version"
+					| "x-ghost-mode"
+			) || field.starts_with("x-cursor-")
+				|| auth_headers.contains_key(&name)
+			{
+				continue;
+			}
+			let value: http::HeaderValue = raw_value.parse().map_err(|_| {
+				Error::Transport(omp_core::fmts!(
+					"invalid value for Cursor caller header {raw_name}"
+				))
+			})?;
+			if field == "te" && !value.as_bytes().eq_ignore_ascii_case(b"trailers") {
+				continue;
+			}
+			headers.insert(name, value);
+		}
+	}
+	headers.extend(auth_headers);
+	Ok(headers)
+}
+
 /// Mutable decoder state exposed as the pin-test entry point.
 ///
 /// This is deliberately transport-independent so recorded frames can be
@@ -129,14 +194,9 @@ where
 			});
 			let body = BodyExt::boxed(StreamBody::new(request_stream));
 			let mut outbound = Request::post(uri.clone())
-				.header(header::CONTENT_TYPE, "application/connect+proto")
-				.header("connect-protocol-version", "1")
-				.header("x-ghost-mode", "true")
-				.header("x-cursor-client-version", CURSOR_CLIENT_VERSION)
-				.header("x-cursor-client-type", "cli")
 				.body(body)
 				.map_err(|error| Error::Transport(Str::from(error.to_string())))?;
-			outbound.headers_mut().extend(auth_headers);
+			*outbound.headers_mut() = cursor_request_headers(&request, auth_headers)?;
 
 			omp_llm_egress::client::ensure_crypto_provider();
 			let mut connector = HttpsConnectorBuilder::new()
@@ -1107,13 +1167,23 @@ fn invoke_from_exec(
 			state
 				.calls
 				.insert(Str::from(args.tool_call_id.as_str()), call_id);
-			let args_json = serde_json::to_vec(&serde_json::json!({
-				"command": args.command,
-				"working_directory": args.working_directory,
-				"timeout": args.timeout,
-				"tool_call_id": args.tool_call_id,
-			}))
-			.map_err(|error| Error::Provider(Str::from(error.to_string())))?;
+			let mut args_value = serde_json::Map::new();
+			args_value.insert("command".to_owned(), serde_json::Value::String(args.command));
+			if !args.working_directory.is_empty() {
+				args_value.insert(
+					"working_directory".to_owned(),
+					serde_json::Value::String(args.working_directory),
+				);
+			}
+			if args.timeout > 0 {
+				args_value.insert("timeout".to_owned(), serde_json::Value::from(args.timeout));
+			}
+			args_value.insert(
+				"tool_call_id".to_owned(),
+				serde_json::Value::String(args.tool_call_id),
+			);
+			let args_json = serde_json::to_vec(&args_value)
+				.map_err(|error| Error::Provider(Str::from(error.to_string())))?;
 			Ok(Invoke::builder()
 				.invocation_id(invocation_id)
 				.name(Str::new_static("bash"))
@@ -1472,20 +1542,22 @@ fn u64_to_i32(value: u64) -> i32 {
 
 #[cfg(test)]
 mod tests {
-	use std::{sync::Arc, time::Duration};
+	use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 	use bytes::Bytes;
+	use http::header;
 	use omp_core::Str;
 	use omp_llm_types::{
 		ChatRequest, ExecOutcome, ExecStatus, Invoke, InvokeChannel, InvokeChunk, InvokeComplete,
-		InvokeInput, InvokePayload, Props, ResolvedModelPolicy, StopReason, StreamPartKind, Thread,
-		TurnErrorKind, TurnEvent, facet::Executor,
+		InvokeInput, InvokePayload, Props, ResolvedModelHeaders, ResolvedModelPolicy, StopReason,
+		StreamPartKind, Thread, TurnErrorKind, TurnEvent, facet::Executor,
 	};
 	use tokio::sync::oneshot;
 
 	use super::{
-		CursorDecodeState, InvocationFramer, ShellContext, assemble_request, decode_server_message,
-		drive_invocation_to, invocation_id, require_executor,
+		CURSOR_CLIENT_VERSION, CursorDecodeState, InvocationFramer, ShellContext, assemble_request,
+		cursor_request_headers, decode_server_message, drive_invocation_to, invocation_id,
+		invoke_from_exec, require_executor,
 	};
 
 	fn context() -> ShellContext {
@@ -1526,6 +1598,75 @@ mod tests {
 	}
 
 	#[test]
+	fn caller_headers_reach_cursor_request_with_lowercase_names() {
+		let request = ChatRequest::builder()
+			.model(Str::new_static("cursor/model"))
+			.thread(Thread::builder().items(Vec::new()).build())
+			.tools(Vec::new())
+			.model_policy(Arc::new(ResolvedModelPolicy {
+				headers: ResolvedModelHeaders(BTreeMap::from([
+					("X-Trace".into(), "abc".into()),
+					("TE".into(), "trailers".into()),
+				])),
+				..ResolvedModelPolicy::default()
+			}))
+			.build();
+		let headers = cursor_request_headers(&request, http::HeaderMap::new()).expect("headers");
+		assert_eq!(headers["x-trace"], "abc");
+		assert_eq!(headers["te"], "trailers");
+	}
+
+	#[test]
+	fn cursor_transport_owned_and_http1_headers_cannot_be_overridden() {
+		let request = ChatRequest::builder()
+			.model(Str::new_static("cursor/model"))
+			.thread(Thread::builder().items(Vec::new()).build())
+			.tools(Vec::new())
+			.model_policy(Arc::new(ResolvedModelPolicy {
+				headers: ResolvedModelHeaders(BTreeMap::from([
+					(":path".into(), "/evil".into()),
+					("Authorization".into(), "Bearer stolen".into()),
+					("Connection".into(), "keep-alive".into()),
+					("HTTP2-Settings".into(), "forged".into()),
+					("Keep-Alive".into(), "timeout=5".into()),
+					("Proxy-Connection".into(), "keep-alive".into()),
+					("Content-Length".into(), "999".into()),
+					("Content-Type".into(), "text/plain".into()),
+					("Host".into(), "evil.example.com".into()),
+					("TE".into(), "gzip".into()),
+					("Transfer-Encoding".into(), "chunked".into()),
+					("Upgrade".into(), "h2c".into()),
+					("X-Cursor-Client-Version".into(), "forged".into()),
+					("X-Ghost-Mode".into(), "false".into()),
+					("X-Trace".into(), "kept".into()),
+				])),
+				..ResolvedModelPolicy::default()
+			}))
+			.build();
+		let mut auth = http::HeaderMap::new();
+		auth.insert(header::AUTHORIZATION, http::HeaderValue::from_static("Bearer sealed"));
+		let headers = cursor_request_headers(&request, auth).expect("headers");
+		assert_eq!(headers[header::AUTHORIZATION], "Bearer sealed");
+		assert_eq!(headers[header::CONTENT_TYPE], "application/connect+proto");
+		assert_eq!(headers["x-cursor-client-version"], CURSOR_CLIENT_VERSION);
+		assert_eq!(headers["x-ghost-mode"], "true");
+		assert_eq!(headers["x-trace"], "kept");
+		for name in [
+			"connection",
+			"content-length",
+			"host",
+			"http2-settings",
+			"keep-alive",
+			"proxy-connection",
+			"te",
+			"transfer-encoding",
+			"upgrade",
+		] {
+			assert!(!headers.contains_key(name), "{name}");
+		}
+	}
+
+	#[test]
 	fn model_policy_sets_both_cursor_max_mode_fields() {
 		for enabled in [false, true] {
 			let policy = Arc::new(ResolvedModelPolicy {
@@ -1548,6 +1689,56 @@ mod tests {
 			assert_eq!(run.model_details.expect("model details").max_mode, Some(enabled));
 			assert_eq!(run.requested_model.expect("requested model").max_mode, enabled);
 		}
+	}
+
+	#[test]
+	fn shell_exec_args_omit_unset_optionals_and_keep_set_values() {
+		fn invoke(working_directory: &str, timeout: i32) -> Invoke {
+			invoke_from_exec(
+				super::wire::ExecServerMessage {
+					id:      7,
+					exec_id: "exec-7".to_owned(),
+					message: Some(super::wire::exec_server_message::Message::ShellStreamArgs(
+						super::wire::ShellArgs {
+							command: "echo hi".to_owned(),
+							working_directory: working_directory.to_owned(),
+							timeout,
+							tool_call_id: "call-shell".to_owned(),
+							..Default::default()
+						},
+					)),
+					..Default::default()
+				},
+				&mut CursorDecodeState::default(),
+			)
+			.expect("shell invocation")
+		}
+
+		let omitted = invoke("", 0);
+		let omitted_args: serde_json::Value = serde_json::from_slice(
+			&omitted.tool_call.expect("canonical shell tool call").args_json,
+		)
+		.expect("shell args JSON");
+		assert_eq!(
+			omitted_args,
+			serde_json::json!({ "command": "echo hi", "tool_call_id": "call-shell" })
+		);
+		assert!(omitted_args.get("working_directory").is_none());
+		assert!(omitted_args.get("timeout").is_none());
+
+		let kept = invoke("/tmp", 12);
+		let kept_args: serde_json::Value =
+			serde_json::from_slice(&kept.tool_call.expect("canonical shell tool call").args_json)
+				.expect("shell args JSON");
+		assert_eq!(
+			kept_args,
+			serde_json::json!({
+				"command": "echo hi",
+				"working_directory": "/tmp",
+				"timeout": 12,
+				"tool_call_id": "call-shell",
+			})
+		);
 	}
 
 	#[test]

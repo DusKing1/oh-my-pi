@@ -214,6 +214,40 @@ impl Service<Request<Body>> for CaptureService {
 	}
 }
 
+#[derive(Clone)]
+struct SequenceService {
+	bodies: Arc<Mutex<VecDeque<ControlledBody>>>,
+	uris:   Arc<Mutex<Vec<Str>>>,
+}
+
+impl SequenceService {
+	fn new(bodies: impl IntoIterator<Item = ControlledBody>) -> Self {
+		Self {
+			bodies: Arc::new(Mutex::new(bodies.into_iter().collect())),
+			uris:   Arc::new(Mutex::new(Vec::new())),
+		}
+	}
+}
+
+impl Service<Request<Body>> for SequenceService {
+	type Error = EgressFailure;
+	type Future = Ready<Result<Self::Response, Self::Error>>;
+	type Response = Response<ControlledBody>;
+
+	fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+		Poll::Ready(Ok(()))
+	}
+
+	fn call(&mut self, request: Request<Body>) -> Self::Future {
+		self.uris.lock().push(Str::new(request.uri().to_string()));
+		let body = self.bodies.lock().pop_front().expect("response body remains");
+		ready(Ok(Response::builder()
+			.header(header::CONTENT_TYPE, "text/event-stream")
+			.body(body)
+			.unwrap()))
+	}
+}
+
 fn request() -> TurnRequest {
 	let message = Message::builder()
 		.role(Role::User)
@@ -639,6 +673,63 @@ async fn bedrock_converse_constructs_geo_endpoint_and_sealed_sigv4_metadata() {
 }
 
 #[tokio::test]
+async fn bedrock_forwards_caller_headers_but_drops_transport_owned_fields_before_sigv4() {
+	let provider = load_builtin()
+		.unwrap()
+		.remove("amazon-bedrock")
+		.expect("Amazon Bedrock");
+	let (body, control) = ControlledBody::new();
+	control.fail();
+	let egress = CaptureService::new(body, "application/vnd.amazon.eventstream");
+	let capture = CaptureService { shared: Arc::clone(&egress.shared), id: egress.id };
+	let mut adapter = ProviderAttempt::new(
+		provider,
+		ProviderRoute { region: "us-east-1".into(), ..ProviderRoute::default() },
+		egress,
+	)
+	.unwrap();
+	let policy = Arc::new(ResolvedModelPolicy {
+		headers: ResolvedModelHeaders(BTreeMap::from([
+			("Accept".into(), "text/plain".into()),
+			("Authorization".into(), "forged".into()),
+			("Content-Length".into(), "999".into()),
+			("Content-Type".into(), "text/plain".into()),
+			("Host".into(), "evil.example.com".into()),
+			("X-Amz-Content-Sha256".into(), "deadbeef".into()),
+			("X-Amz-Date".into(), "19700101T000000Z".into()),
+			("X-Amz-Security-Token".into(), "forged".into()),
+			("X-Trace".into(), "kept".into()),
+		])),
+		..ResolvedModelPolicy::default()
+	});
+	let result = adapter
+		.ready()
+		.await
+		.unwrap()
+		.call(Routed::new(request(), None, None).with_model_policy(Some(policy)))
+		.await;
+	assert!(matches!(result, Err(ProviderAttemptError::Body(BodyFailure))));
+	let request = capture.take_request();
+	assert_eq!(request.headers()["x-trace"], "kept");
+	assert_eq!(request.headers()[header::CONTENT_TYPE], "application/json");
+	assert_eq!(request.headers()[header::ACCEPT], "application/vnd.amazon.eventstream");
+	for name in [
+		"authorization",
+		"content-length",
+		"host",
+		"x-amz-content-sha256",
+		"x-amz-date",
+		"x-amz-security-token",
+	] {
+		assert!(!request.headers().contains_key(name), "{name}");
+	}
+	assert!(
+		request.extensions().get::<AwsSigV4Context>().is_some(),
+		"caller headers must be assembled before sealed SigV4 signing"
+	);
+}
+
+#[tokio::test]
 async fn azure_chat_and_responses_append_one_catalog_selected_api_version() {
 	let providers = load_builtin().unwrap();
 	let route = ProviderRoute { region: "eastus".into(), ..ProviderRoute::default() };
@@ -690,7 +781,6 @@ async fn copilot_headers_follow_user_tool_result_vision_and_safe_overrides() {
 		captured_provider_request(provider.clone(), ProviderRoute::default(), request()).await;
 	assert_eq!(user.headers()["x-initiator"], "user");
 	assert_eq!(user.headers()["openai-intent"], "conversation-edits");
-	assert_eq!(user.headers()["user-agent"], "opencode/1.3.15");
 	assert_eq!(user.headers()["x-github-api-version"], "2026-06-01");
 	assert!(!user.headers().contains_key("copilot-vision-request"));
 	assert!(!user.headers().contains_key("editor-version"));
@@ -879,6 +969,70 @@ async fn antigravity_envelope_and_flash_planning_filter_are_used_in_production_a
 	assert_eq!(encoded["requestId"], request_id);
 	assert_eq!(encoded["request"]["sessionId"], "-8392019482710394817");
 	assert_eq!(encoded["request"]["labels"]["trajectory_id"], trajectory_id);
+}
+
+#[tokio::test(start_paused = true)]
+async fn antigravity_flash_headers_only_stall_fails_over_before_commit() {
+	let provider = load_builtin()
+		.unwrap()
+		.remove("google-antigravity")
+		.unwrap();
+	let (stalled_body, stalled_control) = ControlledBody::new();
+	let (recovered_body, recovered_control) = ControlledBody::new();
+	recovered_control.push(Bytes::from_static(
+		b"data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"recovered\"}]},\"finishReason\":\"STOP\"}]}}\n\n",
+	));
+	recovered_control.finish();
+	let egress = SequenceService::new([stalled_body, recovered_body]);
+	let uris = Arc::clone(&egress.uris);
+	let route = ProviderRoute { project: "catalog-placeholder".into(), ..ProviderRoute::default() };
+	let mut adapter = ProviderAttempt::new(provider, route, egress).unwrap();
+
+	let mut native = ChatRequest::try_from(request()).unwrap();
+	native.model = "gemini-3-flash".into();
+	let mut meta = RequestMeta::default();
+	meta.session_id = "-8392019482710394817".into();
+	native.meta = Some(meta);
+	let mut options = Props::default();
+	for (name, value) in [
+		("agent_id", Value::String("agent-id".to_owned())),
+		(
+			"request_id",
+			Value::String("agent/agent-id/1700000000000/trajectory-id/2".to_owned()),
+		),
+		("trajectory_id", Value::String("trajectory-id".to_owned())),
+		("step_index", Value::from(2_u64)),
+	] {
+		options.insert_ns("google-antigravity", name, value);
+	}
+	native.provider_options = Some(options);
+	let lease = CredentialLease::new("google-antigravity", 71, 5);
+	let credential = CredentialMetadata {
+		auth_kind:       CredentialAuthKind::OAuth,
+		identity:        "developer@example.test".into(),
+		account_id:      Some("account-71".into()),
+		project_id:      Some("selected-project".into()),
+		organization_id: None,
+	};
+
+	let attempt = adapter
+		.ready()
+		.await
+		.unwrap()
+		.call(Routed::new(native.into(), Some(lease), Some(credential)));
+	let task = tokio::spawn(attempt);
+	tokio::task::yield_now().await;
+	tokio::time::advance(Duration::from_secs(61)).await;
+	let mut stream = task.await.unwrap().unwrap();
+	assert!(stream.next().await.is_some());
+	assert!(stalled_control.dropped());
+	assert_eq!(
+		uris.lock().as_slice(),
+		[
+			"https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+			"https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+		]
+	);
 }
 
 #[tokio::test]
