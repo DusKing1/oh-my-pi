@@ -84,10 +84,7 @@ fn apply_reasoning_summary_controls(object: &mut Map<String, Value>) {
 	}
 }
 
-fn apply_reasoning_summary_delivery(
-	object: &mut Map<String, Value>,
-	concurrent_summaries: bool,
-) {
+fn apply_reasoning_summary_delivery(object: &mut Map<String, Value>, concurrent_summaries: bool) {
 	let summary_requested = object
 		.get("reasoning")
 		.and_then(Value::as_object)

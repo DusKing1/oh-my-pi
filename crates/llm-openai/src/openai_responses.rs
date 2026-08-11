@@ -1099,10 +1099,7 @@ fn encode_input(
 		if matches!(
 			&item.kind,
 			ItemKind::ToolResult(_)
-				| ItemKind::Message(Message {
-					role: Role::User | Role::System,
-					..
-				})
+				| ItemKind::Message(Message { role: Role::User | Role::System, .. })
 		) {
 			reasoning_replayed = false;
 		}
@@ -1120,14 +1117,12 @@ fn encode_input(
 						!matches!(
 							&next.kind,
 							ItemKind::ToolResult(_)
-								| ItemKind::Message(Message {
-									role: Role::User | Role::System,
-									..
-								})
+								| ItemKind::Message(Message { role: Role::User | Role::System, .. })
 						)
 					});
-				let has_tool_call =
-					turn_items.clone().any(|next| matches!(&next.kind, ItemKind::ToolCall(_)));
+				let has_tool_call = turn_items
+					.clone()
+					.any(|next| matches!(&next.kind, ItemKind::ToolCall(_)));
 				let has_assistant_content = turn_items.clone().any(|next| {
 					matches!(
 						&next.kind,
@@ -1327,8 +1322,7 @@ fn encode_message(
 			{
 				return false;
 			}
-			replayed_reasoning =
-				object.get("type").and_then(Value::as_str) == Some("reasoning");
+			replayed_reasoning = object.get("type").and_then(Value::as_str) == Some("reasoning");
 			demote_computer_item(&mut object, policy, unsupported);
 			apply_item_options(&mut object, props);
 			input.push(Value::Object(object));
@@ -1345,7 +1339,10 @@ fn encode_message(
 		&& !reasoning_already_replayed
 		&& (policy.requires_reasoning_content_for_all_assistant_turns
 			|| (policy.requires_reasoning_content_for_tool_calls && has_tool_call));
-	let has_native_reasoning_id = props.get_ns("openai", "item_id").and_then(Value::as_str).is_some();
+	let has_native_reasoning_id = props
+		.get_ns("openai", "item_id")
+		.and_then(Value::as_str)
+		.is_some();
 	let mut reasoning_item_emitted = false;
 	let mut carried_reasoning = String::new();
 	if requires_reasoning_item {
@@ -2290,7 +2287,10 @@ mod tests {
 		let assistant = Item::builder()
 			.seq(0)
 			.kind(ItemKind::Message(
-				Message::builder().role(Role::Assistant).parts(parts).build(),
+				Message::builder()
+					.role(Role::Assistant)
+					.parts(parts)
+					.build(),
 			))
 			.props(Props::default())
 			.build();
@@ -2318,11 +2318,7 @@ mod tests {
 	#[test]
 	fn replay_synthesizes_reasoning_text_before_assistant_message_when_required() {
 		let mut compat = Props::default();
-		compat.insert_ns(
-			"wire",
-			"requires_reasoning_content_for_all_assistant_turns",
-			json!(true),
-		);
+		compat.insert_ns("wire", "requires_reasoning_content_for_all_assistant_turns", json!(true));
 		let req = reasoning_request(
 			vec![
 				Part::Thinking(
@@ -2356,29 +2352,18 @@ mod tests {
 	#[test]
 	fn replay_synthesizes_empty_reasoning_text_for_assistant_turn_without_thinking() {
 		let mut compat = Props::default();
-		compat.insert_ns(
-			"wire",
-			"requires_reasoning_content_for_all_assistant_turns",
-			json!(true),
-		);
+		compat.insert_ns("wire", "requires_reasoning_content_for_all_assistant_turns", json!(true));
 		let req = reasoning_request(vec![Part::Text(Str::new_static("Answer."))], compat);
 		let input = encoded(&req)["input"].as_array().unwrap().clone();
 
 		assert_eq!(input[0]["type"], "reasoning");
-		assert_eq!(
-			input[0]["content"],
-			json!([{ "type": "reasoning_text", "text": "" }]),
-		);
+		assert_eq!(input[0]["content"], json!([{ "type": "reasoning_text", "text": "" }]),);
 		assert_eq!(input[1]["type"], "message");
 	}
 	#[test]
 	fn split_canonical_turn_carries_reasoning_once_before_assistant_text() {
 		let mut compat = Props::default();
-		compat.insert_ns(
-			"wire",
-			"requires_reasoning_content_for_all_assistant_turns",
-			json!(true),
-		);
+		compat.insert_ns("wire", "requires_reasoning_content_for_all_assistant_turns", json!(true));
 		let mut req = reasoning_request(
 			vec![Part::Thinking(
 				Thinking::builder()
@@ -2404,7 +2389,10 @@ mod tests {
 		);
 		let input = encoded(&req)["input"].as_array().unwrap().clone();
 		assert_eq!(
-			input.iter().filter(|item| item["type"] == "reasoning").count(),
+			input
+				.iter()
+				.filter(|item| item["type"] == "reasoning")
+				.count(),
 			1,
 		);
 		assert_eq!(
@@ -2417,11 +2405,7 @@ mod tests {
 	#[test]
 	fn replay_reasoning_requirement_is_inactive_when_request_reasoning_is_disabled() {
 		let mut compat = Props::default();
-		compat.insert_ns(
-			"wire",
-			"requires_reasoning_content_for_all_assistant_turns",
-			json!(true),
-		);
+		compat.insert_ns("wire", "requires_reasoning_content_for_all_assistant_turns", json!(true));
 		let mut req = reasoning_request(vec![Part::Text(Str::new_static("Answer."))], compat);
 		req.thinking = None;
 		let input = encoded(&req)["input"].as_array().unwrap().clone();
@@ -2431,10 +2415,7 @@ mod tests {
 
 	#[test]
 	fn replay_does_not_synthesize_reasoning_without_requirement() {
-		let req = reasoning_request(
-			vec![Part::Text(Str::new_static("Answer."))],
-			Props::default(),
-		);
+		let req = reasoning_request(vec![Part::Text(Str::new_static("Answer."))], Props::default());
 		let input = encoded(&req)["input"].as_array().unwrap().clone();
 		assert_eq!(input[0]["type"], "message");
 		assert!(input.iter().all(|item| item["type"] != "reasoning"));
@@ -2443,11 +2424,7 @@ mod tests {
 	#[test]
 	fn tool_call_replay_requirement_places_reasoning_before_message_and_call() {
 		let mut compat = Props::default();
-		compat.insert_ns(
-			"wire",
-			"requires_reasoning_content_for_tool_calls",
-			json!(true),
-		);
+		compat.insert_ns("wire", "requires_reasoning_content_for_tool_calls", json!(true));
 		let mut req = reasoning_request(vec![Part::Text(Str::new_static("Calling."))], compat);
 		let call = Item::builder()
 			.seq(0)
