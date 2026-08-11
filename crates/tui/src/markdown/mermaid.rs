@@ -143,7 +143,7 @@ fn flow_direction_span(source: &str) -> Option<(usize, usize, bool)> {
 	None
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CellRole {
 	Text,
 	Border,
@@ -198,5 +198,19 @@ fn cell_role(character: char) -> CellRole {
 		CellRole::Accent
 	} else {
 		CellRole::Text
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{CellRole, cell_role};
+
+	#[test]
+	fn punctuation_inside_labels_keeps_the_text_role() {
+		for character in ['=', '#', ':', ',', '.'] {
+			assert_eq!(cell_role(character), CellRole::Text);
+		}
+		assert_eq!(cell_role('═'), CellRole::Border);
+		assert_eq!(cell_role('●'), CellRole::Accent);
 	}
 }

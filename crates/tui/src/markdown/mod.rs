@@ -471,8 +471,11 @@ fn render_fenced_code(
 		let body = join_lines(&lines[body_start..body_end]);
 		let after = after_fence(body_end, lines.len());
 		if is_mermaid_language(language) {
-			let styles =
-				mermaid::MermaidStyles { text: theme.base, line: theme.rule, accent: theme.bullet };
+			let styles = mermaid::MermaidStyles {
+				text:   theme.base,
+				line:   Style::new().fg(theme.semantic.muted),
+				accent: theme.bullet,
+			};
 			if mermaid::render(body.as_str(), width, theme.charset, styles, sink) {
 				*index = after;
 				return;
@@ -901,8 +904,11 @@ fn render_list_fenced_code(
 		let body = join_list_fence_lines(lines, body_start, body_end, root_indent);
 		let after = after_fence(body_end, lines.len());
 		if is_mermaid_language(language) {
-			let styles =
-				mermaid::MermaidStyles { text: theme.base, line: theme.rule, accent: theme.bullet };
+			let styles = mermaid::MermaidStyles {
+				text:   theme.base,
+				line:   Style::new().fg(theme.semantic.muted),
+				accent: theme.bullet,
+			};
 			let content_width = width.saturating_sub(continuation.width());
 			let clipped = (&mut *sink).clip(width, None);
 			let mut prefixed = clipped.prefixed(first_prefix, continuation);
