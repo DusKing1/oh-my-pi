@@ -12,6 +12,7 @@ use futures::{StreamExt as _, future::join_all, stream::FuturesUnordered};
 use omp_core::Str;
 use omp_llm_broker::{
 	BrokerCliBackend,
+	aws::{AwsCredentialSink, AwsEngine, AwsError, AwsIntoError},
 	oauth::{OAuthEngine, OAuthError},
 	service::AuthService,
 	source::{BrokerCredentialSource, SpecializedCredentialAuth},
@@ -247,6 +248,12 @@ pub enum DaemonError {
 	/// OAuth configuration could not be constructed.
 	#[error(transparent)]
 	OAuth(#[from] OAuthError),
+	/// AWS shared-config discovery or STS role resolution failed.
+	#[error(transparent)]
+	Aws(#[from] AwsError),
+	/// Resolved AWS key material could not be persisted at the broker ingress.
+	#[error(transparent)]
+	AwsStore(#[from] AwsIntoError<StoreError>),
 	/// Google ADC discovery or route resolution failed.
 	#[error(transparent)]
 	Adc(#[from] AdcError),
@@ -355,8 +362,10 @@ impl DaemonHandle {
 		}
 
 		let store = Arc::new(Store::open(data_dir.join("broker.db"))?);
-		bootstrap_catalog_credentials(&store, &providers)?;
 		let client = Arc::new(EgressClient::new(config.first_byte_timeout));
+		let aws = Arc::new(AwsEngine::new(client.as_ref().clone()));
+		let aws_region = aws.region()?;
+		bootstrap_catalog_credentials(&store, &providers, &aws).await?;
 		let adc = Arc::new(AdcEngine::new(client.as_ref().clone()));
 		let adc_routes = bootstrap_adc(&adc, &store, &providers).await?;
 		let broker_http = Arc::new(BrokerHttp::with_client(client.as_ref().clone()));
@@ -412,7 +421,8 @@ impl DaemonHandle {
 			Arc::clone(&store),
 			credential_source.clone(),
 		)));
-		let route_providers = usable_providers(&providers, &store, &adc_routes, apple_fm_available);
+		let route_providers =
+			usable_providers(&providers, &store, &adc_routes, &aws_region, apple_fm_available);
 		let mut specialized = config.specialized;
 		mount_apple_chat(&mut specialized, apple_chat);
 		for provider in &route_providers {
@@ -453,19 +463,19 @@ impl DaemonHandle {
 		let audio = register_production_audio_routes(
 			providers
 				.values()
-				.filter(|provider| provider_is_routable(provider, &store, &adc_routes)),
+				.filter(|provider| provider_is_routable(provider, &store, &adc_routes, &aws_region)),
 			egress.clone(),
-			|provider| provider_route(provider, &adc_routes),
+			|provider| provider_route(provider, &adc_routes, &aws_region),
 		)?;
 		let mut embed = EmbedRouter::new(Arc::clone(&model_catalog), Arc::clone(&providers));
 		let mut has_embed_route = false;
 		for provider in providers.values().filter(|provider| {
 			provider.facets.contains(&Facet::Embeddings)
-				&& provider_is_routable(provider, &store, &adc_routes)
+				&& provider_is_routable(provider, &store, &adc_routes, &aws_region)
 		}) {
 			let route = remote_embed_route(
 				provider.clone(),
-				provider_route(provider, &adc_routes),
+				provider_route(provider, &adc_routes, &aws_region),
 				egress.clone(),
 			)?;
 			embed.insert_route(provider.id.clone(), route);
@@ -474,11 +484,11 @@ impl DaemonHandle {
 		let mut count_tokens = CountRouter::new(Arc::clone(&model_catalog), Arc::clone(&providers));
 		for provider in providers.values().filter(|provider| {
 			provider.transport == TransportId::AnthropicMessages
-				&& provider_is_routable(provider, &store, &adc_routes)
+				&& provider_is_routable(provider, &store, &adc_routes, &aws_region)
 		}) {
 			let route = remote_count_route(
 				provider.clone(),
-				provider_route(provider, &adc_routes),
+				provider_route(provider, &adc_routes, &aws_region),
 				egress.clone(),
 			)?;
 			count_tokens.insert_provider_endpoint(provider.id.clone(), route);
@@ -487,6 +497,7 @@ impl DaemonHandle {
 		let dependency_oauth = Arc::clone(&oauth);
 		let dependency_blocks = Arc::clone(&blocks);
 		let dependency_adc = Arc::clone(&adc);
+		let dependency_aws = Arc::clone(&aws);
 		let dependency_adc_projects = Arc::new(
 			adc_routes
 				.iter()
@@ -494,6 +505,7 @@ impl DaemonHandle {
 				.collect::<BTreeMap<_, _>>(),
 		);
 		let registration_adc_routes = adc_routes.clone();
+		let registration_aws_region = aws_region.clone();
 		let dependency_observer = observer.clone();
 		let dependency_premium_multipliers = Arc::clone(&premium_multipliers);
 		let registration = register_production_routes(
@@ -506,6 +518,7 @@ impl DaemonHandle {
 					Arc::clone(&dependency_store),
 					Arc::clone(&dependency_oauth),
 					Arc::clone(&dependency_adc),
+					Arc::clone(&dependency_aws),
 					dependency_adc_projects.get(provider.id.as_str()).cloned(),
 					Arc::clone(&dependency_blocks),
 					dependency_observer.clone(),
@@ -516,7 +529,7 @@ impl DaemonHandle {
 				cache: cache_policy(provider.transport),
 				..RouteStackConfig::default()
 			},
-			move |provider| provider_route(provider, &registration_adc_routes),
+			move |provider| provider_route(provider, &registration_adc_routes, &registration_aws_region),
 			specialized,
 		)?;
 
@@ -544,7 +557,7 @@ impl DaemonHandle {
 		if facets.image_gen.is_none()
 			&& providers.values().any(|provider| {
 				provider.facets.contains(&Facet::ImageGeneration)
-					&& provider_is_routable(provider, &store, &adc_routes)
+					&& provider_is_routable(provider, &store, &adc_routes, &aws_region)
 			}) {
 			let credentials = Arc::new(LeasedImageCredentials::new(credential_source.clone()));
 			let backend = Arc::new(EgressImageBackend::new(egress.clone(), Arc::clone(&providers)));
@@ -553,7 +566,7 @@ impl DaemonHandle {
 		if facets.video_gen.is_none()
 			&& let Some(openai) = providers.get("openai").filter(|provider| {
 				provider.facets.contains(&Facet::VideoGeneration)
-					&& provider_is_routable(provider, &store, &adc_routes)
+					&& provider_is_routable(provider, &store, &adc_routes, &aws_region)
 			}) {
 			let leases = Arc::new(BrokerVideoLeases { store: Arc::clone(&store) });
 			let video = OpenAiVideoBackend::new(
@@ -720,13 +733,14 @@ fn usable_providers<'a>(
 	providers: &'a ProviderCatalog,
 	store: &Store,
 	adc_routes: &BTreeMap<Str, AdcRoute>,
+	aws_region: &str,
 	apple_fm_available: bool,
 ) -> Vec<&'a ProviderEntry> {
 	providers
 		.values()
 		.filter(|provider| provider.facets.contains(&Facet::Chat))
 		.filter(|provider| runtime_provider_is_usable(provider, apple_fm_available))
-		.filter(|provider| provider_is_routable(provider, store, adc_routes))
+		.filter(|provider| provider_is_routable(provider, store, adc_routes, aws_region))
 		.collect()
 }
 
@@ -762,9 +776,10 @@ fn provider_is_routable(
 	provider: &ProviderEntry,
 	store: &Store,
 	adc_routes: &BTreeMap<Str, AdcRoute>,
+	aws_region: &str,
 ) -> bool {
 	provider_is_configured(provider, store)
-		&& provider_route_is_complete(provider, &provider_route(provider, adc_routes))
+		&& provider_route_is_complete(provider, &provider_route(provider, adc_routes, aws_region))
 }
 
 fn provider_route_is_complete(provider: &ProviderEntry, route: &ProviderRoute) -> bool {
@@ -787,10 +802,11 @@ fn provider_route_is_complete(provider: &ProviderEntry, route: &ProviderRoute) -
 	!base_url.contains("{gateway}") || !route.gateway.is_empty()
 }
 
-fn bootstrap_catalog_credentials(
-	store: &Store,
+async fn bootstrap_catalog_credentials(
+	store: &Arc<Store>,
 	providers: &ProviderCatalog,
-) -> Result<(), StoreError> {
+	aws: &Arc<AwsEngine<EgressClient>>,
+) -> Result<(), DaemonError> {
 	let observed_at_ms = now_ms();
 	for provider in providers.values() {
 		match &provider.auth {
@@ -818,22 +834,13 @@ fn bootstrap_catalog_credentials(
 				}
 			},
 			AuthSpec::AwsSigV4 => {
-				if let (Ok(access), Ok(secret)) =
-					(std::env::var("AWS_ACCESS_KEY_ID"), std::env::var("AWS_SECRET_ACCESS_KEY"))
-					&& !access.is_empty()
-					&& !secret.is_empty()
-				{
-					let session = std::env::var("AWS_SESSION_TOKEN")
-						.ok()
-						.filter(|token| !token.is_empty());
-					store.upsert_aws(
-						provider.id.as_str(),
-						"environment",
-						access.as_bytes(),
-						secret.as_bytes(),
-						session.as_deref().map(str::as_bytes),
-						observed_at_ms,
-					)?;
+				if aws.has_credential_source() {
+					aws
+						.authorize_into(&BrokerAwsSink {
+							store:    Arc::clone(store),
+							provider: provider.id.clone(),
+						})
+						.await?;
 				}
 			},
 			AuthSpec::None | AuthSpec::OAuth { .. } => {},
@@ -954,11 +961,43 @@ impl AdcTokenSink for BrokerAdcSink {
 	}
 }
 
+#[derive(Clone)]
+struct BrokerAwsSink {
+	store:    Arc<Store>,
+	provider: Str,
+}
+
+impl AwsCredentialSink for BrokerAwsSink {
+	type Error = StoreError;
+
+	fn accept(
+		&self,
+		access_key_id: &[u8],
+		secret_access_key: &[u8],
+		session_token: Option<&[u8]>,
+		expires_at_ms: u64,
+	) -> Result<(), Self::Error> {
+		self
+			.store
+			.upsert_aws(
+				self.provider.as_str(),
+				"shared-config",
+				access_key_id,
+				secret_access_key,
+				session_token,
+				expires_at_ms,
+				now_ms(),
+			)
+			.map(|_| ())
+	}
+}
+
 fn route_dependencies(
 	provider: &ProviderEntry,
 	store: Arc<Store>,
 	oauth: Arc<OAuthEngine>,
 	adc: Arc<AdcEngine<EgressClient>>,
+	aws: Arc<AwsEngine<EgressClient>>,
 	adc_project: Option<String>,
 	blocks: Arc<Mutex<BlockTable>>,
 	observer: BrokerObserver,
@@ -973,6 +1012,14 @@ fn route_dependencies(
 				store:    Arc::clone(&store),
 				provider: provider_id.clone(),
 				project:  adc_project,
+			},
+		}
+	} else if matches!(&provider.auth, AuthSpec::AwsSigV4) {
+		RouteRefresh::Aws {
+			engine: aws,
+			sink:   BrokerAwsSink {
+				store:    Arc::clone(&store),
+				provider: provider_id.clone(),
 			},
 		}
 	} else if matches!(&provider.auth, AuthSpec::OAuth { .. }) || provider.oauth_flow.is_some() {
@@ -999,7 +1046,11 @@ fn route_dependencies(
 	}
 }
 
-fn provider_route(provider: &ProviderEntry, adc_routes: &BTreeMap<Str, AdcRoute>) -> ProviderRoute {
+fn provider_route(
+	provider: &ProviderEntry,
+	adc_routes: &BTreeMap<Str, AdcRoute>,
+	aws_region: &str,
+) -> ProviderRoute {
 	let mut route = ProviderRoute {
 		project:    env_str(&["GOOGLE_CLOUD_PROJECT", "CLOUDSDK_CORE_PROJECT"]),
 		region:     env_str(&[
@@ -1013,7 +1064,7 @@ fn provider_route(provider: &ProviderEntry, adc_routes: &BTreeMap<Str, AdcRoute>
 		gateway:    env_str(&["CLOUDFLARE_AI_GATEWAY_ID"]),
 	};
 	if matches!(&provider.auth, AuthSpec::AwsSigV4) {
-		route.region = env_str(&["AWS_REGION", "AWS_DEFAULT_REGION"]);
+		route.region = Str::new(aws_region);
 	}
 	if let AuthSpec::GoogleAdc { project_env, location_env, .. } = &provider.auth {
 		if let Some(project) = first_catalog_env(project_env) {
@@ -1216,6 +1267,7 @@ impl UsageOracle for BrokerUsageOracle {
 enum RouteRefresh {
 	OAuth(Arc<OAuthEngine>),
 	Adc { engine: Arc<AdcEngine<EgressClient>>, sink: BrokerAdcSink },
+	Aws { engine: Arc<AwsEngine<EgressClient>>, sink: BrokerAwsSink },
 	Static,
 }
 
@@ -1236,7 +1288,7 @@ impl RouteCredentialRefresher for BrokerRouteRefresher {
 
 	fn refresh(
 		&self,
-		_force: bool,
+		force: bool,
 	) -> std::pin::Pin<Box<dyn Future<Output = Result<(), RefreshFailure>> + Send + '_>> {
 		Box::pin(async move {
 			match &self.refresh {
@@ -1256,6 +1308,14 @@ impl RouteCredentialRefresher for BrokerRouteRefresher {
 					.refresh_into(sink)
 					.await
 					.map_err(|error| RefreshFailure::new(error.to_string())),
+				RouteRefresh::Aws { engine, sink } => {
+					if force {
+						engine.refresh_into(sink).await
+					} else {
+						engine.authorize_into(sink).await
+					}
+					.map_err(|error| RefreshFailure::new(error.to_string()))
+				},
 				RouteRefresh::Static => {
 					Err(RefreshFailure::new("provider credential is not refreshable"))
 				},
