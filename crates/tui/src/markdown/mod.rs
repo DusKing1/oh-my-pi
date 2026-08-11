@@ -10,12 +10,24 @@ use crate::{
 };
 
 mod highlight;
+mod graphviz;
 mod inline;
 mod mermaid;
 mod table;
 
 use inline::code_span_len;
 pub(crate) use inline::{math_span, parse_inline};
+
+/// Semantic styles shared by terminal diagram renderers.
+#[derive(Clone, Copy)]
+struct DiagramStyles {
+	/// Node labels and other prose.
+	text:   Style,
+	/// Borders, connectors, and corners.
+	line:   Style,
+	/// Arrowheads, markers, and fills.
+	accent: Style,
+}
 
 /// Styles used by the Markdown renderer.
 #[derive(Clone, Copy)]
@@ -435,8 +447,44 @@ fn fence_language(info: &str) -> &str {
 	info.split_ascii_whitespace().next().unwrap_or("")
 }
 
-fn is_mermaid_language(info: &str) -> bool {
-	fence_language(info).eq_ignore_ascii_case("mermaid")
+#[derive(Clone, Copy)]
+enum DiagramLanguage {
+	Graphviz,
+	Mermaid,
+}
+
+fn diagram_language(info: &str) -> Option<DiagramLanguage> {
+	let language = fence_language(info);
+	if language.eq_ignore_ascii_case("mermaid") {
+		Some(DiagramLanguage::Mermaid)
+	} else if ["dot", "graphviz", "gv"]
+		.iter()
+		.any(|candidate| language.eq_ignore_ascii_case(candidate))
+	{
+		Some(DiagramLanguage::Graphviz)
+	} else {
+		None
+	}
+}
+
+impl DiagramLanguage {
+	fn render(
+		self,
+		source: &str,
+		width: u16,
+		theme: &MdTheme,
+		sink: &mut dyn RichSink,
+	) -> bool {
+		let styles = DiagramStyles {
+			text:   theme.base,
+			line:   Style::new().fg(theme.semantic.muted),
+			accent: theme.bullet,
+		};
+		match self {
+			Self::Graphviz => graphviz::render(source, width, theme.charset, styles, sink),
+			Self::Mermaid => mermaid::render(source, width, theme.charset, styles, sink),
+		}
+	}
 }
 
 fn is_closing_fence(line: &str, fence: char, opening_count: usize) -> bool {
@@ -463,20 +511,16 @@ fn render_fenced_code(
 		.take_while(|character| *character == fence)
 		.count();
 	let syntax = fence_language(language);
-	let highlighted = if is_mermaid_language(language) || highlight::supports_language(syntax) {
+	let diagram = diagram_language(language);
+	let highlighted = if diagram.is_some() || highlight::supports_language(syntax) {
 		let body_start = *index + 1;
 		let body_end = (body_start..lines.len())
 			.find(|candidate| is_closing_fence(lines[*candidate], fence, opening_count))
 			.unwrap_or(lines.len());
 		let body = join_lines(&lines[body_start..body_end]);
 		let after = after_fence(body_end, lines.len());
-		if is_mermaid_language(language) {
-			let styles = mermaid::MermaidStyles {
-				text:   theme.base,
-				line:   Style::new().fg(theme.semantic.muted),
-				accent: theme.bullet,
-			};
-			if mermaid::render(body.as_str(), width, theme.charset, styles, sink) {
+		if let Some(diagram) = diagram {
+			if diagram.render(body.as_str(), width, theme, sink) {
 				*index = after;
 				return;
 			}
@@ -890,7 +934,8 @@ fn render_list_fenced_code(
 ) {
 	let opening_count = 3;
 	let syntax = fence_language(language);
-	let highlighted = if is_mermaid_language(language) || highlight::supports_language(syntax) {
+	let diagram = diagram_language(language);
+	let highlighted = if diagram.is_some() || highlight::supports_language(syntax) {
 		let body_start = *index + 1;
 		let body_end = (body_start..lines.len())
 			.find(|candidate| {
@@ -903,16 +948,11 @@ fn render_list_fenced_code(
 			.unwrap_or(lines.len());
 		let body = join_list_fence_lines(lines, body_start, body_end, root_indent);
 		let after = after_fence(body_end, lines.len());
-		if is_mermaid_language(language) {
-			let styles = mermaid::MermaidStyles {
-				text:   theme.base,
-				line:   Style::new().fg(theme.semantic.muted),
-				accent: theme.bullet,
-			};
+		if let Some(diagram) = diagram {
 			let content_width = width.saturating_sub(continuation.width());
 			let clipped = (&mut *sink).clip(width, None);
 			let mut prefixed = clipped.prefixed(first_prefix, continuation);
-			if mermaid::render(body.as_str(), content_width, theme.charset, styles, &mut prefixed) {
+			if diagram.render(body.as_str(), content_width, theme, &mut prefixed) {
 				*index = after;
 				return;
 			}
@@ -1693,6 +1733,69 @@ mod tests {
 			.map(|row| ascii.row_text(row))
 			.collect::<String>();
 		assert!(ascii.is_ascii());
+	}
+
+	#[test]
+	fn graphviz_fences_render_dot_features_and_invalid_source_falls_back() {
+		let source = concat!(
+			"```dot\n",
+			"strict digraph pipeline {\n",
+			"  rankdir=LR;\n",
+			"  node [shape=box];\n",
+			"  Start [shape=doublecircle];\n",
+			"  Parse [shape=record, label=\"{Read|Validate}\"];\n",
+			"  Start -> Parse [label=\"on success\"];\n",
+			"  Parse -> Done [style=dashed];\n",
+			"  Done -> Done [label=\"retry\"];\n",
+			"}\n",
+			"```",
+		);
+		let diagram = plain(source, 100).join("\n");
+		for label in ["Start", "Read", "Validate", "on success", "Done", "retry"] {
+			assert!(diagram.contains(label), "missing {label:?}: {diagram}");
+		}
+		assert!(!diagram.contains("digraph"), "{diagram}");
+		assert!(!diagram.contains("```dot"), "{diagram}");
+
+		let invalid = plain("```dot\ndigraph { a -> }\n```", 80).join("\n");
+		assert!(invalid.contains("```dot"), "{invalid}");
+		assert!(invalid.contains("digraph { a -> }"), "{invalid}");
+	}
+
+	#[test]
+	fn graphviz_aliases_fit_lists_width_and_ascii_contexts() {
+		for language in ["dot", "graphviz", "gv"] {
+			let source = format!("```{language}\ndigraph {{ One -> Two }}\n```");
+			let diagram = plain(&source, 40).join("\n");
+			assert!(diagram.contains("One"), "{language}: {diagram}");
+			assert!(diagram.contains("Two"), "{language}: {diagram}");
+			assert!(!diagram.contains("digraph"), "{language}: {diagram}");
+		}
+
+		let listed = plain("- ```dot\n  digraph {\n    One -> Two\n  }\n  ```", 40).join("\n");
+		assert!(listed.starts_with("- "), "{listed}");
+		assert!(listed.contains("One"), "{listed}");
+		assert!(listed.contains("Two"), "{listed}");
+
+		let source =
+			"```dot\ndigraph { rankdir=LR; Start -> Build -> Test -> Deploy }\n```";
+		let narrow = plain(source, 16);
+		assert!(narrow.iter().all(|line| crate::rich::cell_width(line) <= 16), "{narrow:?}");
+		assert!(
+			["Start", "Build", "Test", "Deploy"]
+				.into_iter()
+				.all(|label| narrow.iter().any(|line| line.contains(label))),
+			"{narrow:?}",
+		);
+
+		let source = Str::new(source);
+		let context = UiContext { charset: Charset::Ascii, ..UiContext::default() };
+		let theme = MdTheme::from_context(&context);
+		let ascii = rendered(source.as_str(), 40, &theme);
+		let ascii = (0..RichText::rows(&ascii))
+			.map(|row| ascii.row_text(row))
+			.collect::<String>();
+		assert!(ascii.is_ascii(), "{ascii}");
 	}
 
 	#[test]

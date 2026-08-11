@@ -10,16 +10,8 @@ use crate::{
 	rich::{Pipeline, RichSink},
 };
 
-/// Semantic styles applied to rendered diagram cells.
-#[derive(Clone, Copy)]
-pub(super) struct MermaidStyles {
-	/// Node labels and other prose.
-	pub text:   Style,
-	/// Borders, connectors, and corners.
-	pub line:   Style,
-	/// Arrowheads, markers, and chart fills.
-	pub accent: Style,
-}
+use super::DiagramStyles;
+
 
 /// Renders Mermaid source. Returns `false` without emitting so Markdown can
 /// preserve invalid source.
@@ -27,7 +19,7 @@ pub(super) fn render(
 	source: &str,
 	width: u16,
 	charset: Charset,
-	styles: MermaidStyles,
+	styles: DiagramStyles,
 	sink: &mut dyn RichSink,
 ) -> bool {
 	let source = source.trim();
@@ -150,7 +142,7 @@ enum CellRole {
 	Accent,
 }
 
-fn style_row(text: &str, charset: Charset, styles: MermaidStyles, sink: &mut dyn RichSink) {
+fn style_row(text: &str, charset: Charset, styles: DiagramStyles, sink: &mut dyn RichSink) {
 	if text.is_empty() {
 		return;
 	}
@@ -172,7 +164,7 @@ fn style_row(text: &str, charset: Charset, styles: MermaidStyles, sink: &mut dyn
 	sink.run(style_for(current.unwrap_or(CellRole::Text), styles), &text[start..]);
 }
 
-const fn style_for(role: CellRole, styles: MermaidStyles) -> Style {
+const fn style_for(role: CellRole, styles: DiagramStyles) -> Style {
 	match role {
 		CellRole::Text => styles.text,
 		CellRole::Border => styles.line,
