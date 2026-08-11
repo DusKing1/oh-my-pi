@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, fmt::Write};
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde_json::Value;
 
 use crate::{
@@ -63,7 +63,7 @@ impl Wizard {
 	}
 
 	/// Appends a titled step pane.
-	pub fn step(mut self, title: impl Into<SmolStr>, children: impl IntoChildren) -> Self {
+	pub fn step(mut self, title: impl Into<Str>, children: impl IntoChildren) -> Self {
 		let pane = super::Col::new()
 			.with(Prop::Title, title.into())
 			.child(children);
@@ -179,7 +179,7 @@ impl Component for Wizard {
 		if rect.y < pc.clip {
 			let mut x = rect.x;
 			for (index, step) in self.steps.iter().enumerate() {
-				let title = step.comp().props().title().map_or("step", SmolStr::as_str);
+				let title = step.comp().props().title().map_or("step", Str::as_str);
 				let start = x.saturating_sub(rect.x);
 				match u16::try_from(index)
 					.unwrap_or(u16::MAX)

@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, convert::Infallible, future::pending, sync::Arc
 use bytes::Bytes;
 use http::{Request, Response, header};
 use http_body_util::{BodyExt, Full};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{
 	compat::Compat,
 	models::{
@@ -29,9 +29,9 @@ use tower::service_fn;
 
 fn provider(id: &str, transport: TransportId, facet: CatalogFacet) -> ProviderEntry {
 	ProviderEntry::builder()
-		.id(SmolStr::from(id))
+		.id(Str::from(id))
 		.transport(transport)
-		.base_url(SmolStr::from("https://example.test/v1"))
+		.base_url(Str::from("https://example.test/v1"))
 		.fallback_base_urls(SmallVec::new())
 		.auth(AuthSpec::default())
 		.facets(smallvec![facet])
@@ -42,11 +42,11 @@ fn provider(id: &str, transport: TransportId, facet: CatalogFacet) -> ProviderEn
 
 fn model(provider: &str, wire_model: &str, pricing: SmallVec<Price, 4>) -> ModelCard {
 	ModelCard::builder()
-		.id(SmolStr::from(format!("{provider}/{wire_model}")))
-		.provider(SmolStr::from(provider))
-		.model(SmolStr::from(wire_model))
-		.name(SmolStr::from("Embedding model"))
-		.family(SmolStr::from("embedding"))
+		.id(Str::from(format!("{provider}/{wire_model}")))
+		.provider(Str::from(provider))
+		.model(Str::from(wire_model))
+		.name(Str::from("Embedding model"))
+		.family(Str::from("embedding"))
 		.facets(smallvec![CatalogFacet::Embeddings])
 		.inputs(smallvec![Modality::Text])
 		.outputs(SmallVec::new())
@@ -130,10 +130,10 @@ async fn openai_batches_restores_indexes_and_accounts_exact_usage_and_cost() {
 	let response = router
 		.embed(
 			EmbedRequest::builder()
-				.model(SmolStr::from("openai/text-embedding-3-small"))
+				.model(Str::from("openai/text-embedding-3-small"))
 				.texts(
 					(0..2_049)
-						.map(|index| SmolStr::from(index.to_string()))
+						.map(|index| Str::from(index.to_string()))
 						.collect(),
 				)
 				.dimensions(1)
@@ -188,8 +188,8 @@ async fn google_batch_wire_preserves_native_order_and_estimates_missing_usage() 
 	let response = router
 		.embed(
 			EmbedRequest::builder()
-				.model(SmolStr::from("google/gemini-embedding-001"))
-				.texts(vec![SmolStr::from("abcd"), SmolStr::from("abcdefgh")])
+				.model(Str::from("google/gemini-embedding-001"))
+				.texts(vec![Str::from("abcd"), Str::from("abcdefgh")])
 				.dimensions(2)
 				.props(Props::default())
 				.build(),
@@ -240,10 +240,10 @@ async fn vertex_predict_wire_uses_route_metadata_and_exact_statistics() {
 	});
 	let mut provider =
 		provider("google-vertex", TransportId::GoogleVertex, CatalogFacet::Embeddings);
-	provider.base_url = SmolStr::from("https://{location}-aiplatform.googleapis.com/v1");
+	provider.base_url = Str::from("https://{location}-aiplatform.googleapis.com/v1");
 	let route_meta = ProviderRoute {
-		project: SmolStr::from("project-a"),
-		region: SmolStr::from("us-central1"),
+		project: Str::from("project-a"),
+		region: Str::from("us-central1"),
 		..ProviderRoute::default()
 	};
 	let route = remote_embed_route(provider.clone(), route_meta, service).unwrap();
@@ -252,8 +252,8 @@ async fn vertex_predict_wire_uses_route_metadata_and_exact_statistics() {
 	let response = router
 		.embed(
 			EmbedRequest::builder()
-				.model(SmolStr::from("google-vertex/text-embedding-005"))
-				.texts(vec![SmolStr::from("first"), SmolStr::from("second")])
+				.model(Str::from("google-vertex/text-embedding-005"))
+				.texts(vec![Str::from("first"), Str::from("second")])
 				.dimensions(2)
 				.props(Props::default())
 				.build(),
@@ -291,8 +291,8 @@ async fn status_errors_are_structured_and_fixed_dimension_providers_reject_befor
 	let unsupported = remote
 		.embed(
 			EmbedRequest::builder()
-				.model(SmolStr::from("mistral-embed"))
-				.texts(vec![SmolStr::from("text")])
+				.model(Str::from("mistral-embed"))
+				.texts(vec![Str::from("text")])
 				.dimensions(128)
 				.props(Props::default())
 				.build(),
@@ -305,8 +305,8 @@ async fn status_errors_are_structured_and_fixed_dimension_providers_reject_befor
 	let failed = remote
 		.embed(
 			EmbedRequest::builder()
-				.model(SmolStr::from("mistral-embed"))
-				.texts(vec![SmolStr::from("text")])
+				.model(Str::from("mistral-embed"))
+				.texts(vec![Str::from("text")])
 				.props(Props::default())
 				.build(),
 		)
@@ -351,8 +351,8 @@ async fn dropping_embedding_future_cancels_egress_without_fallback() {
 			remote
 				.embed(
 					EmbedRequest::builder()
-						.model(SmolStr::from("text-embedding-3-small"))
-						.texts(vec![SmolStr::from("cancel")])
+						.model(Str::from("text-embedding-3-small"))
+						.texts(vec![Str::from("cancel")])
 						.props(Props::default())
 						.build(),
 				)
@@ -376,10 +376,10 @@ fn every_advertised_remote_embedding_route_constructs_and_rerank_stays_unadverti
 		.filter(|provider| provider.facets.contains(&CatalogFacet::Embeddings))
 	{
 		let route = ProviderRoute {
-			project: SmolStr::from("project"),
-			region: SmolStr::from("us-central1"),
-			account: SmolStr::from("account"),
-			gateway: SmolStr::from("gateway"),
+			project: Str::from("project"),
+			region: Str::from("us-central1"),
+			account: Str::from("account"),
+			gateway: Str::from("gateway"),
 			..ProviderRoute::default()
 		};
 		let service = service_fn(|_request: Request<Body>| async {

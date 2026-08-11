@@ -16,7 +16,7 @@ use http::{
 	Request,
 	header::{HeaderMap, HeaderName},
 };
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::provider::{AuthSpec, ProviderCatalog};
 use omp_llm_cursor::CursorAuth;
 use omp_llm_devin::{
@@ -301,13 +301,13 @@ impl<R> BrokerCredentialSource<R> {
 #[derive(Clone)]
 pub struct SpecializedCredentialAuth<R = OAuthEngine> {
 	source:   BrokerCredentialSource<R>,
-	provider: SmolStr,
+	provider: Str,
 }
 
 impl<R> SpecializedCredentialAuth<R> {
 	/// Binds a broker credential source to one catalog provider id.
 	#[must_use]
-	pub fn new(source: BrokerCredentialSource<R>, provider: impl Into<SmolStr>) -> Self {
+	pub fn new(source: BrokerCredentialSource<R>, provider: impl Into<Str>) -> Self {
 		Self { source, provider: provider.into() }
 	}
 }

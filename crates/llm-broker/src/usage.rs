@@ -12,7 +12,7 @@ use http::{
 	header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue},
 };
 use jiff::Timestamp;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_egress::{
 	auth_inject::CredentialLease,
 	limits::{BlockSink, CredentialBlock as EgressCredentialBlock},
@@ -252,7 +252,7 @@ pub enum UsageError {
 	StaleCredential(u64),
 	/// No usage implementation exists for a provider.
 	#[error("provider {0} has no usage fetcher")]
-	UnsupportedProvider(SmolStr),
+	UnsupportedProvider(Str),
 	/// Request construction failed.
 	#[error("invalid usage request: {0}")]
 	Request(#[from] http::Error),
@@ -269,9 +269,9 @@ pub enum UsageError {
 	#[error("invalid {provider} usage response: {message}")]
 	InvalidResponse {
 		/// Provider whose response was invalid.
-		provider: SmolStr,
+		provider: Str,
 		/// Client-safe reason.
-		message:  SmolStr,
+		message:  Str,
 	},
 }
 
@@ -281,7 +281,7 @@ pub struct CodexResetConsume {
 	/// `true` only when the provider reports that a reset was applied.
 	pub applied: bool,
 	/// Provider business outcome (`reset`, `already_redeemed`, and so on).
-	pub code:    SmolStr,
+	pub code:    Str,
 	/// HTTP status returned by the consume route.
 	pub status:  StatusCode,
 }
@@ -604,7 +604,7 @@ impl UsageManager {
 		);
 		Ok(CodexResetConsume {
 			applied: code == "reset",
-			code:    SmolStr::new(code),
+			code:    Str::new(code),
 			status:  response.status,
 		})
 	}
@@ -669,8 +669,8 @@ async fn fetch_table(
 		&& json_path(&payload, "base_resp.status_code").and_then(value_number) != Some(0.0)
 	{
 		return Err(UsageError::InvalidResponse {
-			provider: SmolStr::new(fetcher.provider),
-			message:  SmolStr::new("base_resp.status_code was not zero"),
+			provider: Str::new(fetcher.provider),
+			message:  Str::new("base_resp.status_code was not zero"),
 		});
 	}
 	Ok(report_from_payload(fetcher, credential.id, now_ms, payload))
@@ -695,7 +695,7 @@ fn report_from_payload(
 		};
 		let scaled = raw * spec.used_percent_scale;
 		windows.push(UsageWindow {
-			label:        SmolStr::new(spec.label),
+			label:        Str::new(spec.label),
 			used_percent: if spec.remaining {
 				100.0 - scaled
 			} else {
@@ -711,8 +711,8 @@ fn report_from_payload(
 		.unwrap_or_default();
 	UsageReport {
 		credential_id,
-		provider: SmolStr::new(fetcher.provider),
-		plan: SmolStr::new(plan),
+		provider: Str::new(fetcher.provider),
+		plan: Str::new(plan),
 		windows,
 		fetched_at_ms: now_ms,
 		detail: payload,
@@ -752,7 +752,7 @@ fn minimax_report(provider: &str, credential_id: u64, now_ms: u64, payload: Valu
 				};
 				if let Some(used_percent) = used {
 					windows.push(UsageWindow {
-						label: SmolStr::new(format!("{model}:{suffix}")),
+						label: Str::new(format!("{model}:{suffix}")),
 						used_percent,
 						resets_at_ms: bucket.get(reset_name).and_then(timestamp_ms).unwrap_or(0),
 					});
@@ -762,8 +762,8 @@ fn minimax_report(provider: &str, credential_id: u64, now_ms: u64, payload: Valu
 	}
 	UsageReport {
 		credential_id,
-		provider: SmolStr::new(provider),
-		plan: SmolStr::new("token-plan"),
+		provider: Str::new(provider),
+		plan: Str::new("token-plan"),
 		windows,
 		fetched_at_ms: now_ms,
 		detail: payload,
@@ -793,7 +793,7 @@ fn alibaba_token_plan_report(credential_id: u64, now_ms: u64, payload: Value) ->
 		if let Some(raw) = normalized.get(percent_name).and_then(value_number) {
 			let used_percent = if raw <= 1.0 { raw * 100.0 } else { raw }.clamp(0.0, 100.0);
 			windows.push(UsageWindow {
-				label: SmolStr::new(label),
+				label: Str::new(label),
 				used_percent,
 				resets_at_ms: normalized
 					.get(reset_name)
@@ -804,8 +804,8 @@ fn alibaba_token_plan_report(credential_id: u64, now_ms: u64, payload: Value) ->
 	}
 	UsageReport {
 		credential_id,
-		provider: SmolStr::new("alibaba-token-plan"),
-		plan: SmolStr::new("token-plan"),
+		provider: Str::new("alibaba-token-plan"),
+		plan: Str::new("token-plan"),
 		windows,
 		fetched_at_ms: now_ms,
 		detail: payload,
@@ -986,7 +986,7 @@ impl UsageOverride for LocalUsageOverride {
 						context.now_ms,
 					)?;
 					windows.push(UsageWindow {
-						label:        SmolStr::new(label),
+						label:        Str::new(label),
 						used_percent: observed.nanos_usd as f64 * 100.0 / limit_nanos_usd as f64,
 						resets_at_ms: observed
 							.first_observed_at_ms
@@ -996,8 +996,8 @@ impl UsageOverride for LocalUsageOverride {
 				}
 				return Ok(UsageReport {
 					credential_id: context.credential.id,
-					provider: SmolStr::new(self.provider),
-					plan: SmolStr::new(self.plan),
+					provider: Str::new(self.provider),
+					plan: Str::new(self.plan),
 					windows,
 					fetched_at_ms: context.now_ms,
 					detail: Value::Object(spend),
@@ -1005,13 +1005,13 @@ impl UsageOverride for LocalUsageOverride {
 			}
 			Ok(UsageReport {
 				credential_id: context.credential.id,
-				provider:      SmolStr::new(self.provider),
-				plan:          SmolStr::new(self.plan),
+				provider:      Str::new(self.provider),
+				plan:          Str::new(self.plan),
 				windows:       self
 					.windows
 					.iter()
 					.map(|(label, used_percent)| UsageWindow {
-						label:        SmolStr::new(label),
+						label:        Str::new(label),
 						used_percent: *used_percent,
 						resets_at_ms: 0,
 					})
@@ -1207,7 +1207,7 @@ mod tests {
 		assert_eq!(report.plan, "plus");
 		assert_eq!(report.windows.len(), 2);
 		assert_eq!(report.windows[0], UsageWindow {
-			label:        SmolStr::new("primary"),
+			label:        Str::new("primary"),
 			used_percent: 31.5,
 			resets_at_ms: 1_800_000_000_000,
 		});
@@ -1248,7 +1248,7 @@ mod tests {
 		assert_eq!(report.plan, "token-plan");
 		assert_eq!(report.windows.len(), 2);
 		assert_eq!(report.windows[0], UsageWindow {
-			label:        SmolStr::new("general:interval"),
+			label:        Str::new("general:interval"),
 			used_percent: 10.0,
 			resets_at_ms: 1_800_000_000_000,
 		});
@@ -1275,12 +1275,12 @@ mod tests {
 		let report = report_from_payload(&descriptor, 9, 42, payload);
 		assert_eq!(report.windows, [
 			UsageWindow {
-				label:        SmolStr::new("5h"),
+				label:        Str::new("5h"),
 				used_percent: 25.0,
 				resets_at_ms: 1_800_000_000_000,
 			},
 			UsageWindow {
-				label:        SmolStr::new("7d"),
+				label:        Str::new("7d"),
 				used_percent: 80.0,
 				resets_at_ms: 1_900_000_000_000,
 			},
@@ -1362,7 +1362,7 @@ mod tests {
 			.expect("consume result");
 		assert_eq!(result, CodexResetConsume {
 			applied: false,
-			code:    SmolStr::new("already_redeemed"),
+			code:    Str::new("already_redeemed"),
 			status:  StatusCode::CONFLICT,
 		});
 		let request = http.request.lock().take().expect("captured request");

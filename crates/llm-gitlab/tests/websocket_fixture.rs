@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{SinkExt as _, StreamExt as _};
 use http::{HeaderMap, HeaderValue, header};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_gitlab::{GitLabDuoChat, WorkflowAuth, WorkflowConfig};
 use omp_llm_types::{
 	Chat, ChatRequest, Error, Executor, Invoke, InvokeComplete, InvokeInput, Item, ItemKind,
@@ -43,7 +43,7 @@ impl Executor for FixtureExecutor {
 				ToolResult::builder()
 					.call_id(call.id)
 					.name(call.name)
-					.parts(vec![Part::Text(SmolStr::new_static("tool-ok"))])
+					.parts(vec![Part::Text(Str::new_static("tool-ok"))])
 					.is_error(false)
 					.build(),
 			)
@@ -59,7 +59,7 @@ fn request() -> ChatRequest {
 		.kind(ItemKind::Message(
 			Message::builder()
 				.role(Role::Assistant)
-				.parts(vec![Part::Text(SmolStr::new_static("ready"))])
+				.parts(vec![Part::Text(Str::new_static("ready"))])
 				.build(),
 		))
 		.props(Props::default())
@@ -69,18 +69,18 @@ fn request() -> ChatRequest {
 		.kind(ItemKind::Message(
 			Message::builder()
 				.role(Role::User)
-				.parts(vec![Part::Text(SmolStr::new_static("fix the file"))])
+				.parts(vec![Part::Text(Str::new_static("fix the file"))])
 				.build(),
 		))
 		.props(Props::default())
 		.build();
 	ChatRequest::builder()
-		.model(SmolStr::new_static("duo-agent"))
+		.model(Str::new_static("duo-agent"))
 		.thread(Thread::builder().items(vec![prior, current]).build())
 		.tools(vec![
 			ToolDef::builder()
-				.name(SmolStr::new_static("edit"))
-				.description(SmolStr::new_static("edit a file"))
+				.name(Str::new_static("edit"))
+				.description(Str::new_static("edit a file"))
 				.schema_json(Bytes::from_static(br#"{"type":"object"}"#))
 				.build(),
 		])
@@ -245,7 +245,7 @@ async fn authenticated_turn_maps_tool_result_and_resumes_after_disconnect() {
 		})
 		.expect("successful outcome");
 	assert_eq!(outcome.usage.as_ref().map(|usage| usage.input_tokens), Some(321));
-	assert!(outcome.output.iter().any(|item| matches!(&item.kind, ItemKind::ToolResult(result) if result.parts == vec![Part::Text(SmolStr::new_static("tool-ok"))])));
+	assert!(outcome.output.iter().any(|item| matches!(&item.kind, ItemKind::ToolResult(result) if result.parts == vec![Part::Text(Str::new_static("tool-ok"))])));
 }
 
 #[tokio::test]

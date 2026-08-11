@@ -7,7 +7,7 @@ use futures::{StreamExt, stream};
 use http::{Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, StreamBody};
 use hyper::body::{Body, Frame};
-use omp_core::{SmolStr, base64};
+use omp_core::{Str, base64};
 use omp_llm_types::{
 	AudioEncoding, BlobPart, Props, SpeakEvent, SpeakRequest, TranscribeRequest, TranscribeResponse,
 	TranscriptionGranularity,
@@ -21,34 +21,34 @@ use super::{
 
 #[derive(Deserialize)]
 struct SpeechRequest {
-	model:           SmolStr,
-	input:           SmolStr,
-	voice:           SmolStr,
+	model:           Str,
+	input:           Str,
+	voice:           Str,
 	#[serde(default = "default_mp3", alias = "format")]
-	response_format: SmolStr,
+	response_format: Str,
 	#[serde(default)]
 	speed:           Option<f64>,
 	#[serde(default)]
-	instructions:    SmolStr,
+	instructions:    Str,
 }
 
 #[derive(Deserialize)]
 struct JsonTranscriptionRequest {
-	model:                   SmolStr,
+	model:                   Str,
 	#[serde(alias = "audio")]
 	file:                    JsonAudio,
 	#[serde(default = "default_audio_mime")]
-	mime_type:               SmolStr,
+	mime_type:               Str,
 	#[serde(default)]
-	language:                SmolStr,
+	language:                Str,
 	#[serde(default)]
-	prompt:                  SmolStr,
+	prompt:                  Str,
 	#[serde(default = "default_json")]
-	response_format:         SmolStr,
+	response_format:         Str,
 	#[serde(default)]
 	temperature:             Option<f64>,
 	#[serde(default)]
-	timestamp_granularities: Vec<SmolStr>,
+	timestamp_granularities: Vec<Str>,
 	#[serde(default)]
 	diarize:                 bool,
 }
@@ -56,20 +56,20 @@ struct JsonTranscriptionRequest {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum JsonAudio {
-	Base64(SmolStr),
+	Base64(Str),
 	Object {
-		data:      SmolStr,
+		data:      Str,
 		#[serde(default)]
-		mime_type: Option<SmolStr>,
+		mime_type: Option<Str>,
 	},
 }
 
 struct ParsedTranscription {
-	model:           SmolStr,
+	model:           Str,
 	audio:           BlobPart,
-	language:        SmolStr,
-	prompt:          SmolStr,
-	response_format: SmolStr,
+	language:        Str,
+	prompt:          Str,
+	response_format: Str,
 	temperature:     Option<f64>,
 	granularities:   Vec<TranscriptionGranularity>,
 	diarize:         bool,
@@ -77,15 +77,15 @@ struct ParsedTranscription {
 
 #[derive(Serialize)]
 struct SimpleTranscript {
-	text: SmolStr,
+	text: Str,
 }
 
 #[derive(Serialize)]
 struct VerboseTranscript {
 	task:     &'static str,
-	language: SmolStr,
+	language: Str,
 	duration: f64,
-	text:     SmolStr,
+	text:     Str,
 	segments: Vec<VerboseSegment>,
 	words:    Vec<VerboseWord>,
 }
@@ -95,28 +95,28 @@ struct VerboseSegment {
 	id:      usize,
 	start:   f64,
 	end:     f64,
-	text:    SmolStr,
+	text:    Str,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	speaker: Option<u32>,
 }
 
 #[derive(Serialize)]
 struct VerboseWord {
-	word:    SmolStr,
+	word:    Str,
 	start:   f64,
 	end:     f64,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	speaker: Option<u32>,
 }
 
-fn default_mp3() -> SmolStr {
-	SmolStr::new("mp3")
+fn default_mp3() -> Str {
+	Str::new("mp3")
 }
-fn default_json() -> SmolStr {
-	SmolStr::new("json")
+fn default_json() -> Str {
+	Str::new("json")
 }
-fn default_audio_mime() -> SmolStr {
-	SmolStr::new("application/octet-stream")
+fn default_audio_mime() -> Str {
+	Str::new("application/octet-stream")
 }
 
 pub(crate) async fn handle<B>(request: Request<B>, state: Arc<FacadeState>) -> FacadeResponse
@@ -292,14 +292,14 @@ where
 
 fn parse_json_transcription(
 	wire: JsonTranscriptionRequest,
-) -> Result<ParsedTranscription, SmolStr> {
+) -> Result<ParsedTranscription, Str> {
 	let (encoded, mime) = match wire.file {
 		JsonAudio::Base64(data) => (data, wire.mime_type),
 		JsonAudio::Object { data, mime_type } => (data, mime_type.unwrap_or(wire.mime_type)),
 	};
 	let audio = base64::decode(encoded.as_bytes())
 		.into_vec()
-		.map_err(|_| SmolStr::new("file must be valid base64"))?;
+		.map_err(|_| Str::new("file must be valid base64"))?;
 	let audio = Bytes::from(audio);
 	Ok(ParsedTranscription {
 		model:           wire.model,
@@ -313,7 +313,7 @@ fn parse_json_transcription(
 	})
 }
 
-async fn parse_multipart<B>(request: Request<B>) -> Result<ParsedTranscription, SmolStr>
+async fn parse_multipart<B>(request: Request<B>) -> Result<ParsedTranscription, Str>
 where
 	B: Body<Data = Bytes> + Send + 'static,
 	B::Error: Display,
@@ -322,21 +322,21 @@ where
 		.headers()
 		.get(header::CONTENT_TYPE)
 		.and_then(|value| value.to_str().ok())
-		.ok_or_else(|| SmolStr::new("multipart Content-Type is required"))?;
+		.ok_or_else(|| Str::new("multipart Content-Type is required"))?;
 	let boundary = multer::parse_boundary(content_type)
-		.map_err(|error| SmolStr::new(format!("invalid multipart boundary: {error}")))?;
+		.map_err(|error| Str::new(format!("invalid multipart boundary: {error}")))?;
 	let bytes = request
 		.into_body()
 		.collect()
 		.await
-		.map_err(|error| SmolStr::new(format!("failed to read multipart body: {error}")))?
+		.map_err(|error| Str::new(format!("failed to read multipart body: {error}")))?
 		.to_bytes();
 	let source = stream::once(async move { Ok::<Bytes, Infallible>(bytes) });
 	let mut multipart = multer::Multipart::new(source, boundary);
 	let mut model = None;
 	let mut audio = None;
-	let mut language = SmolStr::default();
-	let mut prompt = SmolStr::default();
+	let mut language = Str::default();
+	let mut prompt = Str::default();
 	let mut response_format = default_json();
 	let mut temperature = None;
 	let mut timestamp_granularities = Vec::new();
@@ -344,16 +344,16 @@ where
 	while let Some(field) = multipart
 		.next_field()
 		.await
-		.map_err(|error| SmolStr::new(format!("invalid multipart body: {error}")))?
+		.map_err(|error| Str::new(format!("invalid multipart body: {error}")))?
 	{
 		let name = field.name().unwrap_or_default().to_owned();
 		let mime = field
 			.content_type()
-			.map_or_else(default_audio_mime, |value| SmolStr::from(value.to_string()));
+			.map_or_else(default_audio_mime, |value| Str::from(value.to_string()));
 		let data = field
 			.bytes()
 			.await
-			.map_err(|error| SmolStr::new(format!("invalid multipart field: {error}")))?;
+			.map_err(|error| Str::new(format!("invalid multipart field: {error}")))?;
 		match name.as_str() {
 			"file" => audio = Some(blob_part(data, mime)),
 			"model" => model = Some(text_field(data, "model")?),
@@ -364,7 +364,7 @@ where
 				temperature = Some(
 					text_field(data, "temperature")?
 						.parse()
-						.map_err(|_| SmolStr::new("invalid temperature"))?,
+						.map_err(|_| Str::new("invalid temperature"))?,
 				);
 			},
 			"timestamp_granularities[]" | "timestamp_granularities" => {
@@ -375,8 +375,8 @@ where
 		}
 	}
 	Ok(ParsedTranscription {
-		model: model.ok_or_else(|| SmolStr::new("model is required"))?,
-		audio: audio.ok_or_else(|| SmolStr::new("file is required"))?,
+		model: model.ok_or_else(|| Str::new("model is required"))?,
+		audio: audio.ok_or_else(|| Str::new("file is required"))?,
 		language,
 		prompt,
 		response_format,
@@ -386,32 +386,32 @@ where
 	})
 }
 
-fn parse_granularities(values: &[SmolStr]) -> Result<Vec<TranscriptionGranularity>, SmolStr> {
+fn parse_granularities(values: &[Str]) -> Result<Vec<TranscriptionGranularity>, Str> {
 	values
 		.iter()
 		.map(|value| match value.as_str() {
 			"segment" => Ok(TranscriptionGranularity::Segment),
 			"word" => Ok(TranscriptionGranularity::Word),
-			_ => Err(SmolStr::new("timestamp_granularities values must be segment or word")),
+			_ => Err(Str::new("timestamp_granularities values must be segment or word")),
 		})
 		.collect()
 }
 
-fn text_field(bytes: Bytes, name: &str) -> Result<SmolStr, SmolStr> {
+fn text_field(bytes: Bytes, name: &str) -> Result<Str, Str> {
 	let text =
-		std::str::from_utf8(&bytes).map_err(|_| SmolStr::new(format!("{name} must be UTF-8")))?;
-	Ok(SmolStr::from(text))
+		std::str::from_utf8(&bytes).map_err(|_| Str::new(format!("{name} must be UTF-8")))?;
+	Ok(Str::from(text))
 }
 
-fn bool_field(bytes: Bytes, name: &str) -> Result<bool, SmolStr> {
+fn bool_field(bytes: Bytes, name: &str) -> Result<bool, Str> {
 	match text_field(bytes, name)?.as_str() {
 		"true" | "1" => Ok(true),
 		"false" | "0" => Ok(false),
-		_ => Err(SmolStr::new(format!("{name} must be true or false"))),
+		_ => Err(Str::new(format!("{name} must be true or false"))),
 	}
 }
 
-fn blob_part(bytes: Bytes, mime: SmolStr) -> BlobPart {
+fn blob_part(bytes: Bytes, mime: Str) -> BlobPart {
 	BlobPart::builder()
 		.hash(*blake3::hash(&bytes).as_bytes())
 		.mime(mime)
@@ -460,7 +460,7 @@ fn transcription_response(
 	})
 }
 
-fn invalid(detail: impl Into<SmolStr>) -> FacadeResponse {
+fn invalid(detail: impl Into<Str>) -> FacadeResponse {
 	error_response(Vendor::OpenAi, FacadeError::Invalid(detail.into()))
 }
 
@@ -502,7 +502,7 @@ mod tests {
 				SpeakEvent::Chunk(
 					SpeakChunk::builder()
 						.audio(audio.clone())
-						.transcript_delta(SmolStr::new(""))
+						.transcript_delta(Str::new(""))
 						.build(),
 				),
 				SpeakEvent::Done(
@@ -529,14 +529,14 @@ mod tests {
 				"transcribed"
 			};
 			Ok(TranscribeResponse::builder()
-				.text(SmolStr::new(task))
-				.language(SmolStr::new("en"))
+				.text(Str::new(task))
+				.language(Str::new("en"))
 				.duration_ms(500)
 				.segments(vec![
 					TranscriptSegment::builder()
 						.start_ms(0)
 						.end_ms(500)
-						.text(SmolStr::new(task))
+						.text(Str::new(task))
 						.build(),
 				])
 				.words(Vec::new())
@@ -565,21 +565,21 @@ mod tests {
 	#[tokio::test]
 	async fn verbose_response_includes_segments_and_words() {
 		let response = TranscribeResponse::builder()
-			.text(SmolStr::new("hello"))
-			.language(SmolStr::new("en"))
+			.text(Str::new("hello"))
+			.language(Str::new("en"))
 			.duration_ms(1250)
 			.segments(vec![
 				TranscriptSegment::builder()
 					.start_ms(0)
 					.end_ms(1000)
-					.text(SmolStr::new("hello"))
+					.text(Str::new("hello"))
 					.build(),
 			])
 			.words(vec![
 				TranscriptWord::builder()
 					.start_ms(0)
 					.end_ms(1000)
-					.word(SmolStr::new("hello"))
+					.word(Str::new("hello"))
 					.build(),
 			])
 			.unsupported(Vec::new())

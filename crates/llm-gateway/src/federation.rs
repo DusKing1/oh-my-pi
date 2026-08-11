@@ -21,7 +21,7 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use futures::{StreamExt, stream::BoxStream};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{
 	models::{Availability, Modality, ModelCard, Price, PriceUnit, Source},
 	provider::{Facet, ProviderEntry, TransportId},
@@ -47,7 +47,7 @@ pub const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 pub enum FederationError {
 	/// The configured provider does not use the native OMP transport.
 	#[error("provider {0} is not an omp federation provider")]
-	NotOmp(SmolStr),
+	NotOmp(Str),
 	/// The refresh timer must make forward progress.
 	#[error("federation refresh interval must be non-zero")]
 	ZeroRefreshInterval,
@@ -84,8 +84,8 @@ impl From<ConvertError> for FederationError {
 /// client.
 #[derive(Clone)]
 pub struct FederatedProvider {
-	provider_id: SmolStr,
-	cards:       Arc<RwLock<BTreeMap<SmolStr, ModelCard>>>,
+	provider_id: Str,
+	cards:       Arc<RwLock<BTreeMap<Str, ModelCard>>>,
 	discovery:   InferenceClient<Channel>,
 	turns:       OmpFederation,
 	lifetime:    Arc<RefreshLifetime>,
@@ -211,7 +211,7 @@ impl FederatedProvider {
 
 async fn refresh_loop(
 	mut client: InferenceClient<Channel>,
-	cards: Arc<RwLock<BTreeMap<SmolStr, ModelCard>>>,
+	cards: Arc<RwLock<BTreeMap<Str, ModelCard>>>,
 	mut cursor: Option<pb::Cursor>,
 	refresh_interval: Duration,
 	mut stop: watch::Receiver<bool>,
@@ -304,7 +304,7 @@ enum EventAction {
 }
 
 fn apply_event(
-	cards: &RwLock<BTreeMap<SmolStr, ModelCard>>,
+	cards: &RwLock<BTreeMap<Str, ModelCard>>,
 	event: pb::ModelEvent,
 ) -> Result<EventAction, FederationError> {
 	let cursor = event.cursor;
@@ -342,9 +342,9 @@ fn federated_request<T>(message: T) -> Request<T> {
 fn pass_through_event(event: TurnEvent) -> TurnEvent {
 	match event {
 		TurnEvent::Error(mut error) => {
-			error.detail = SmolStr::new_static("federated upstream turn failed");
+			error.detail = Str::new_static("federated upstream turn failed");
 			for diagnostic in &mut error.diagnostics {
-				diagnostic.detail = SmolStr::new_static("federated upstream attempt failed");
+				diagnostic.detail = Str::new_static("federated upstream attempt failed");
 			}
 			TurnEvent::Error(error)
 		},
@@ -370,7 +370,7 @@ fn federation_stream_error(detail: impl AsRef<str>) -> TurnEvent {
 	TurnEvent::Error(
 		TurnError::builder()
 			.kind(TurnErrorKind::Upstream)
-			.detail(SmolStr::new(detail.as_ref()))
+			.detail(Str::new(detail.as_ref()))
 			.unsupported(Vec::new())
 			.retry_after_ms(0)
 			.build(),
@@ -379,7 +379,7 @@ fn federation_stream_error(detail: impl AsRef<str>) -> TurnEvent {
 
 fn convert_snapshot(
 	cards: Vec<pb::ModelCard>,
-) -> Result<BTreeMap<SmolStr, ModelCard>, FederationError> {
+) -> Result<BTreeMap<Str, ModelCard>, FederationError> {
 	cards
 		.into_iter()
 		.map(convert_card)
@@ -420,11 +420,11 @@ fn convert_card(card: pb::ModelCard) -> Result<ModelCard, FederationError> {
 		None => Props::default(),
 	};
 	Ok(ModelCard::builder()
-		.id(SmolStr::from(card.id))
-		.provider(SmolStr::from(card.provider))
-		.model(SmolStr::from(card.model))
-		.name(SmolStr::from(card.name))
-		.family(SmolStr::from(card.family))
+		.id(Str::from(card.id))
+		.provider(Str::from(card.provider))
+		.model(Str::from(card.model))
+		.name(Str::from(card.name))
+		.family(Str::from(card.family))
 		.facets(facets)
 		.inputs(inputs)
 		.outputs(outputs)
@@ -528,7 +528,7 @@ const fn invalid(field: &'static str, value: i32) -> FederationError {
 
 #[cfg(test)]
 mod tests {
-	use omp_core::SmolStr;
+	use omp_core::Str;
 	use omp_llm_catalog::models::Availability;
 	use omp_llm_types::{TurnError, TurnErrorKind, TurnEvent};
 	use omp_proto::inference::v1 as pb;
@@ -560,7 +560,7 @@ mod tests {
 		let event = TurnEvent::Error(
 			TurnError::builder()
 				.kind(TurnErrorKind::NeedFull)
-				.detail(SmolStr::new_static(CANARY))
+				.detail(Str::new_static(CANARY))
 				.unsupported(Vec::new())
 				.retry_after_ms(37)
 				.build(),

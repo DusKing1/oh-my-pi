@@ -1766,7 +1766,7 @@ impl Display for BinaryPredicate {
 #[cfg_attr(test, derive(PartialEq, Eq, serde::Serialize, serde::Deserialize))]
 pub struct Word {
 	/// Raw text of the word.
-	pub value: omp_core::SmolStr,
+	pub value: omp_core::Str,
 	/// Location of the word
 	pub loc:   Option<SourceSpan>,
 }

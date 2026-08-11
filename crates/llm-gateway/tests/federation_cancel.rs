@@ -14,7 +14,7 @@ use std::{
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use http::Request as HttpRequest;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_broker::{
 	source::{BrokerCredentialSource, CredentialRefresher},
 	store::Store,
@@ -728,7 +728,7 @@ fn card_to_wire(card: ModelCard) -> pb::ModelCard {
 
 fn chat(model: &str) -> ChatRequest {
 	ChatRequest::builder()
-		.model(SmolStr::from(model))
+		.model(Str::from(model))
 		.thread(Thread::default())
 		.tools(Vec::new())
 		.provider_options(Props::default())
@@ -737,9 +737,9 @@ fn chat(model: &str) -> ChatRequest {
 
 fn terminal_provider() -> ProviderEntry {
 	ProviderEntry::builder()
-		.id(SmolStr::new("terminal-provider"))
+		.id(Str::new("terminal-provider"))
 		.transport(TransportId::Omp)
-		.base_url(SmolStr::new("https://terminal.invalid"))
+		.base_url(Str::new("https://terminal.invalid"))
 		.auth(AuthSpec::Bearer { env: smallvec::smallvec![] })
 		.facets(smallvec::smallvec![Facet::Chat])
 		.headers(BTreeMap::new())
@@ -749,9 +749,9 @@ fn terminal_provider() -> ProviderEntry {
 
 fn omp_provider(endpoint: &str) -> ProviderEntry {
 	ProviderEntry::builder()
-		.id(SmolStr::new("relay-upstream"))
+		.id(Str::new("relay-upstream"))
 		.transport(TransportId::Omp)
-		.base_url(SmolStr::from(endpoint))
+		.base_url(Str::from(endpoint))
 		.auth(AuthSpec::None)
 		.facets(smallvec::smallvec![Facet::Chat])
 		.headers(BTreeMap::new())

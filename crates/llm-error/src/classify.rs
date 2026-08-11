@@ -5,7 +5,7 @@
 //! Several sources merge into one [`Kinds`] set — one error can carry
 //! several truths, and downstream predicates pick the axis they care about.
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use smallvec::SmallVec;
 
 use crate::{
@@ -65,16 +65,16 @@ pub struct Classification {
 	/// Resolved HTTP status (given, embedded in body, or recovered from prose).
 	pub status:          Option<u16>,
 	/// Verbatim machine code (`usage_limit_reached`, `cyber_policy`, ...).
-	pub code:            Option<SmolStr>,
+	pub code:            Option<Str>,
 	/// Verbatim error type token when distinct from `code`.
-	pub error_type:      Option<SmolStr>,
+	pub error_type:      Option<Str>,
 	/// Provider request id when the envelope carried one.
-	pub request_id:      Option<SmolStr>,
+	pub request_id:      Option<Str>,
 	/// Rejected request feature, when the failure is feature-scoped.
 	pub feature:         Option<Feature>,
 	/// Allowed `reasoning.effort` values scraped from the rejection, in
 	/// provider order.
-	pub allowed_efforts: SmallVec<SmolStr, 6>,
+	pub allowed_efforts: SmallVec<Str, 6>,
 	/// Rate-limit lane verdict (429/402/quota family only).
 	pub rate_limit:      Option<RateLimit>,
 	/// Provider-stated retry timing (headers preferred over prose).
@@ -177,7 +177,7 @@ pub fn classify_at(ev: &Evidence<'_>, now_ms: u64) -> Classification {
 	// ── Structural: machine codes ────────────────────────────────────────
 	let code = ev
 		.code
-		.map(SmolStr::new)
+		.map(Str::new)
 		.or_else(|| env.as_ref().and_then(|e| e.code.clone()));
 	let error_type = env.as_ref().and_then(|e| e.error_type.clone());
 	for token in [code.as_deref(), error_type.as_deref()]
@@ -467,7 +467,7 @@ fn apply_feature_guards(
 					for cap in patterns::REASONING_ALLOWED_VALUE.captures_iter(text) {
 						let value = &cap[1];
 						if !cls.allowed_efforts.iter().any(|v| v == value) {
-							cls.allowed_efforts.push(SmolStr::new(value));
+							cls.allowed_efforts.push(Str::new(value));
 						}
 					}
 				}

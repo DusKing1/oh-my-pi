@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::compat::{
 	Compat, MaxTokensField, ReasoningWireFormat, ThinkingToolChoiceConflict,
 };
@@ -12,7 +12,7 @@ pub(crate) struct OpenAiModelPolicy {
 	pub compat: Compat,
 	pub supports_tool_choice: bool,
 	pub supports_developer_role: bool,
-	pub reasoning_content_field: Option<SmolStr>,
+	pub reasoning_content_field: Option<Str>,
 	pub omit_reasoning_effort: bool,
 	pub allows_synthetic_reasoning_content_for_tool_calls: bool,
 	pub requires_reasoning_content_for_tool_calls: bool,
@@ -24,7 +24,7 @@ pub(crate) struct OpenAiModelPolicy {
 	pub store_override: Option<bool>,
 	pub supports_computer_use: Option<bool>,
 	pub extra_body: Option<Map<String, Value>>,
-	pub effort_map: BTreeMap<Effort, SmolStr>,
+	pub effort_map: BTreeMap<Effort, Str>,
 	pub thinking_mode: Option<ResolvedThinkingMode>,
 	pub effort_budgets: BTreeMap<Effort, u64>,
 }
@@ -162,7 +162,7 @@ impl OpenAiModelPolicy {
 		let reasoning_content_field =
 			value("reasoning_content_field").and_then(|value| match value.as_str() {
 				Some("reasoning") | Some("reasoning_content") | Some("reasoning_text") => {
-					Some(SmolStr::from(value.as_str().expect("matched string")))
+					Some(Str::from(value.as_str().expect("matched string")))
 				},
 				_ => {
 					unsupported.push(malformed(
@@ -191,7 +191,7 @@ impl OpenAiModelPolicy {
 					};
 					match (effort, value.as_str()) {
 						(Some(effort), Some(value)) => {
-							effort_map.insert(effort, SmolStr::from(value));
+							effort_map.insert(effort, Str::from(value));
 						},
 						_ => unsupported.push(malformed(
 							"reasoning_effort_map",
@@ -258,14 +258,14 @@ impl OpenAiModelPolicy {
 		}
 	}
 
-	pub(crate) fn mapped_effort(&self, effort: Effort) -> SmolStr {
+	pub(crate) fn mapped_effort(&self, effort: Effort) -> Str {
 		self.effort_map.get(&effort).cloned().unwrap_or_else(|| {
 			if effort == Effort::Off
 				&& self.compat.reasoning_wire_format == ReasoningWireFormat::OpenAiResponses
 			{
-				SmolStr::new_static("off")
+				Str::new_static("off")
 			} else {
-				SmolStr::new(effort_name(effort))
+				Str::new(effort_name(effort))
 			}
 		})
 	}
@@ -286,8 +286,8 @@ pub(crate) const fn effort_name(value: Effort) -> &'static str {
 
 fn malformed(name: &str, detail: &str) -> Unsupported {
 	Unsupported::builder()
-		.what(SmolStr::from(format!("model_policy.compat:wire/{name}")))
-		.detail(SmolStr::from(detail))
+		.what(Str::from(format!("model_policy.compat:wire/{name}")))
+		.detail(Str::from(detail))
 		.action(UnsupportedAction::Dropped)
 		.build()
 }

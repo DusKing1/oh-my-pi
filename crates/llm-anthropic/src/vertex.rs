@@ -6,7 +6,7 @@
 //! resolution and sealed bearer injection happen at the credential boundary.
 
 use bytes::Bytes;
-use omp_core::{SmolStr, SmolStrMut};
+use omp_core::{Str, StrMut};
 use omp_llm_catalog::{compat::Compat, provider::TransportId};
 use omp_llm_egress::auth_inject::AuthContext;
 use omp_llm_transport::{DecodeState, Frame, Transport};
@@ -60,7 +60,7 @@ impl Transport for VertexCodec {
 		let mut events = self.inner.decode(frame, state)?;
 		for event in &mut events {
 			if let TurnEvent::Outcome(outcome) = event {
-				outcome.provider = SmolStr::new_static("anthropic-vertex");
+				outcome.provider = Str::new_static("anthropic-vertex");
 			}
 		}
 		Ok(events)
@@ -76,7 +76,7 @@ pub fn endpoint(
 	project: &str,
 	location: &str,
 	model: &str,
-) -> Result<SmolStr, Error> {
+) -> Result<Str, Error> {
 	for (name, value) in [("project", project), ("location", location), ("model", model)] {
 		if value.is_empty() {
 			return Err(provider_error(format!("Vertex Anthropic {name} must not be empty")));
@@ -85,12 +85,12 @@ pub fn endpoint(
 	if base_url.is_empty() {
 		return regional_endpoint(project, location, model);
 	}
-	let mut target = SmolStrMut::new(base_url.trim_end_matches('/'));
+	let mut target = StrMut::new(base_url.trim_end_matches('/'));
 	append_path(&mut target, project, location, model);
 	Ok(target.freeze())
 }
 
-fn regional_endpoint(project: &str, location: &str, model: &str) -> Result<SmolStr, Error> {
+fn regional_endpoint(project: &str, location: &str, model: &str) -> Result<Str, Error> {
 	if !location
 		.bytes()
 		.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
@@ -98,9 +98,9 @@ fn regional_endpoint(project: &str, location: &str, model: &str) -> Result<SmolS
 		return Err(provider_error("Vertex location contains invalid hostname characters"));
 	}
 	let mut target = if location == "global" {
-		SmolStrMut::new("https://aiplatform.googleapis.com")
+		StrMut::new("https://aiplatform.googleapis.com")
 	} else {
-		let mut target = SmolStrMut::new("https://");
+		let mut target = StrMut::new("https://");
 		target.push_str(location);
 		target.push_str("-aiplatform.googleapis.com");
 		target
@@ -109,7 +109,7 @@ fn regional_endpoint(project: &str, location: &str, model: &str) -> Result<SmolS
 	Ok(target.freeze())
 }
 
-fn append_path(target: &mut SmolStrMut, project: &str, location: &str, model: &str) {
+fn append_path(target: &mut StrMut, project: &str, location: &str, model: &str) {
 	target.push_str("/v1/projects/");
 	push_path_segment(target, project);
 	target.push_str("/locations/");
@@ -180,7 +180,7 @@ pub fn classify_error(status: http::StatusCode, body: &[u8]) -> TurnError {
 	};
 	TurnError::builder()
 		.kind(kind)
-		.detail(SmolStr::new(message))
+		.detail(Str::new(message))
 		.unsupported(Vec::new())
 		.retry_after_ms(0)
 		.build()
@@ -193,7 +193,7 @@ fn contains_ascii_case_insensitive(haystack: &str, needle: &[u8]) -> bool {
 		.any(|window| window.eq_ignore_ascii_case(needle))
 }
 
-fn push_path_segment(target: &mut SmolStrMut, value: &str) {
+fn push_path_segment(target: &mut StrMut, value: &str) {
 	const HEX: &[u8; 16] = b"0123456789ABCDEF";
 	for byte in value.bytes() {
 		if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
@@ -206,7 +206,7 @@ fn push_path_segment(target: &mut SmolStrMut, value: &str) {
 	}
 }
 
-fn provider_error(detail: impl Into<SmolStr>) -> Error {
+fn provider_error(detail: impl Into<Str>) -> Error {
 	Error::Provider(detail.into())
 }
 

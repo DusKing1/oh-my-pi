@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use bon::Builder;
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -26,16 +26,16 @@ pub enum RegistryMapping {
 	/// The identifier is an alternate login or spelling for another row.
 	Alias {
 		/// Canonical provider identifier.
-		target: SmolStr,
+		target: Str,
 		/// Why the source registry keeps the alternate identifier.
-		reason: SmolStr,
+		reason: Str,
 	},
 	/// The source entry moved to a non-inference subsystem.
 	Replacement {
 		/// Owning subsystem or component.
-		component: SmolStr,
+		component: Str,
 		/// Why this is deliberately not selectable as inference.
-		reason:    SmolStr,
+		reason:    Str,
 	},
 }
 
@@ -62,7 +62,7 @@ pub struct DiscoverySpec {
 	/// Listing protocol.
 	pub kind:          DiscoveryKind,
 	/// Human-readable account source shown by model discovery.
-	pub label:         SmolStr,
+	pub label:         Str,
 	/// Whether a successful account listing replaces, rather than augments, the
 	/// bundled model set.
 	#[serde(default)]
@@ -78,12 +78,12 @@ pub enum CredentialPlacement {
 	/// A provider-defined header.
 	Header {
 		/// Header name.
-		name: SmolStr,
+		name: Str,
 	},
 	/// A provider-defined query parameter.
 	Query {
 		/// Query parameter name.
-		param: SmolStr,
+		param: Str,
 	},
 }
 /// Preferred wire path for ChatGPT Codex Responses requests.
@@ -105,7 +105,7 @@ pub enum CodexTransportPreference {
 #[derive(Builder, Clone, Debug, Eq, PartialEq)]
 pub struct ProviderEntry {
 	/// Stable catalog identifier.
-	pub id:                   SmolStr,
+	pub id:                   Str,
 	/// Wire transport implemented by the endpoint.
 	pub transport:            TransportId,
 	/// Preferred Codex wire path; ignored by non-Codex transports.
@@ -116,7 +116,7 @@ pub struct ProviderEntry {
 	pub codex_responses_lite: bool,
 	/// Base URL, optionally containing the bounded placeholders accepted by
 	/// [`BaseUrlVars`].
-	pub base_url:             SmolStr,
+	pub base_url:             Str,
 	/// Whether a user or project overlay explicitly selected [`Self::base_url`].
 	///
 	/// Server-only routing provenance; built-in model wire routes may override
@@ -128,19 +128,19 @@ pub struct ProviderEntry {
 	#[builder(default)]
 	pub transport_overridden: bool,
 	/// Default API version appended by transports that require a version query.
-	pub api_version:          Option<SmolStr>,
+	pub api_version:          Option<Str>,
 	/// Ordered failover base URLs attempted after [`Self::base_url`].
 	///
 	/// This is transport-agnostic catalog data; Cloud Code Assist is its first
 	/// user.
 	#[builder(default)]
-	pub fallback_base_urls:   SmallVec<SmolStr, 2>,
+	pub fallback_base_urls:   SmallVec<Str, 2>,
 	/// Credential injection description.
 	pub auth:                 AuthSpec,
 	/// Facets exposed at this endpoint.
 	pub facets:               SmallVec<Facet, 4>,
 	/// Static request headers.
-	pub headers:              BTreeMap<SmolStr, SmolStr>,
+	pub headers:              BTreeMap<Str, Str>,
 	/// Data-like deviations from the transport defaults.
 	pub compat:               Compat,
 	/// Source-registry reconciliation for this identifier.
@@ -151,7 +151,7 @@ pub struct ProviderEntry {
 	/// This is separate from [`AuthSpec::OAuth`] because providers such as
 	/// Anthropic accept both environment API keys and broker-minted OAuth
 	/// credentials.
-	pub oauth_flow:           Option<SmolStr>,
+	pub oauth_flow:           Option<Str>,
 	/// Credential placement for [`Self::oauth_flow`] when it differs from
 	/// [`Self::auth`].
 	pub oauth_auth:           Option<CredentialPlacement>,
@@ -161,7 +161,7 @@ pub struct ProviderEntry {
 	#[builder(default)]
 	pub pending_facets:       SmallVec<Facet, 2>,
 	/// Upstream wire name for [`Self::pending_facets`].
-	pub pending_transport:    Option<SmolStr>,
+	pub pending_transport:    Option<Str>,
 }
 
 /// Supported provider wire transports.
@@ -215,27 +215,27 @@ pub enum AuthSpec {
 	/// A bearer token read from the first populated environment variable.
 	Bearer {
 		/// Environment variables in priority order.
-		env: SmallVec<SmolStr, 2>,
+		env: SmallVec<Str, 2>,
 	},
 	/// An optional bearer token, used by local servers that accept authenticated
 	/// and unauthenticated requests.
 	OptionalBearer {
 		/// Environment variables in priority order.
-		env: SmallVec<SmolStr, 2>,
+		env: SmallVec<Str, 2>,
 	},
 	/// A token sent in a custom header.
 	Header {
 		/// Header name.
-		name: SmolStr,
+		name: Str,
 		/// Environment variables in priority order.
-		env:  SmallVec<SmolStr, 2>,
+		env:  SmallVec<Str, 2>,
 	},
 	/// A token sent in a query parameter.
 	Query {
 		/// Query parameter name.
-		param: SmolStr,
+		param: Str,
 		/// Environment variables in priority order.
-		env:   SmallVec<SmolStr, 2>,
+		env:   SmallVec<Str, 2>,
 	},
 	/// AWS Signature Version 4 request signing.
 	AwsSigV4,
@@ -243,17 +243,17 @@ pub enum AuthSpec {
 	/// metadata fallbacks.
 	GoogleAdc {
 		/// API-key environment variables in priority order.
-		api_key_env:  SmallVec<SmolStr, 2>,
+		api_key_env:  SmallVec<Str, 2>,
 		/// Project environment variables in priority order.
-		project_env:  SmallVec<SmolStr, 3>,
+		project_env:  SmallVec<Str, 3>,
 		/// Location environment variables in priority order.
-		location_env: SmallVec<SmolStr, 3>,
+		location_env: SmallVec<Str, 3>,
 	},
 	/// A broker-managed OAuth flow.
 	#[serde(rename = "oauth")]
 	OAuth {
 		/// Flow identifier in the OAuth parameter catalog.
-		flow: SmolStr,
+		flow: Str,
 	},
 }
 
@@ -278,7 +278,7 @@ pub enum Facet {
 }
 
 /// Loaded provider rows indexed by stable provider id.
-pub type ProviderCatalog = BTreeMap<SmolStr, ProviderEntry>;
+pub type ProviderCatalog = BTreeMap<Str, ProviderEntry>;
 
 /// Failure while parsing a provider catalog.
 #[derive(Debug, thiserror::Error)]
@@ -313,7 +313,7 @@ pub struct BaseUrlVars<'a> {
 pub enum BaseUrlTemplateError {
 	/// The template contains an unsupported placeholder syntax.
 	#[error("unsupported placeholder syntax in template: {0}")]
-	UnsupportedPlaceholder(SmolStr),
+	UnsupportedPlaceholder(Str),
 	/// Unclosed placeholder delimiter `{`.
 	#[error("unclosed placeholder bracket at byte index {0}")]
 	UnclosedBracket(usize),
@@ -331,34 +331,34 @@ pub enum BaseUrlTemplateError {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProviderDocument {
-	providers: BTreeMap<SmolStr, ProviderConfig>,
+	providers: BTreeMap<Str, ProviderConfig>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProviderConfig {
 	transport:            TransportId,
-	base_url:             SmolStr,
+	base_url:             Str,
 	#[serde(default)]
-	api_version:          Option<SmolStr>,
+	api_version:          Option<Str>,
 	#[serde(default)]
 	codex_transport:      CodexTransportPreference,
 	#[serde(default)]
 	codex_responses_lite: bool,
 	#[serde(default)]
-	fallback_base_urls:   SmallVec<SmolStr, 2>,
+	fallback_base_urls:   SmallVec<Str, 2>,
 	#[serde(default)]
 	auth:                 AuthSpec,
 	#[serde(default)]
 	facets:               SmallVec<Facet, 4>,
 	#[serde(default)]
-	headers:              BTreeMap<SmolStr, SmolStr>,
+	headers:              BTreeMap<Str, Str>,
 	#[serde(default)]
 	compat:               Compat,
 	#[serde(default)]
 	mapping:              RegistryMapping,
 	#[serde(default)]
-	oauth_flow:           Option<SmolStr>,
+	oauth_flow:           Option<Str>,
 	#[serde(default)]
 	oauth_auth:           Option<CredentialPlacement>,
 	#[serde(default)]
@@ -366,11 +366,11 @@ struct ProviderConfig {
 	#[serde(default)]
 	pending_facets:       SmallVec<Facet, 2>,
 	#[serde(default)]
-	pending_transport:    Option<SmolStr>,
+	pending_transport:    Option<Str>,
 }
 
 impl ProviderConfig {
-	fn with_id(self, id: SmolStr) -> ProviderEntry {
+	fn with_id(self, id: Str) -> ProviderEntry {
 		ProviderEntry {
 			id,
 			transport: self.transport,
@@ -421,12 +421,12 @@ pub fn load_builtin() -> Result<ProviderCatalog, ProviderLoadError> {
 pub fn expand_base_url(
 	template: &str,
 	vars: BaseUrlVars<'_>,
-) -> Result<SmolStr, BaseUrlTemplateError> {
+) -> Result<Str, BaseUrlTemplateError> {
 	if !template.contains('{') {
 		if template.len() > MAX_EXPANDED_BASE_URL_LEN {
 			return Err(BaseUrlTemplateError::UrlTooLong);
 		}
-		return Ok(SmolStr::new(template));
+		return Ok(Str::new(template));
 	}
 
 	let mut result = String::with_capacity(template.len() + 32);
@@ -479,7 +479,7 @@ pub fn expand_base_url(
 				.gateway
 				.ok_or(BaseUrlTemplateError::MissingVar("gateway"))?,
 			_ => {
-				return Err(BaseUrlTemplateError::UnsupportedPlaceholder(SmolStr::new(
+				return Err(BaseUrlTemplateError::UnsupportedPlaceholder(Str::new(
 					&template[open..=close],
 				)));
 			},
@@ -497,12 +497,12 @@ pub fn expand_base_url(
 		return Err(BaseUrlTemplateError::UrlTooLong);
 	}
 
-	Ok(SmolStr::new(result))
+	Ok(Str::new(result))
 }
 
 #[cfg(test)]
 mod tests {
-	use omp_core::SmolStr;
+	use omp_core::Str;
 	use smallvec::smallvec;
 
 	use super::{AuthSpec, CodexTransportPreference, load_builtin};
@@ -511,35 +511,35 @@ mod tests {
 	fn auth_spec_wire_names_round_trip() {
 		let cases = [
 			(AuthSpec::None, "none"),
-			(AuthSpec::Bearer { env: smallvec![SmolStr::new_static("TOKEN")] }, "bearer"),
+			(AuthSpec::Bearer { env: smallvec![Str::new_static("TOKEN")] }, "bearer"),
 			(
-				AuthSpec::OptionalBearer { env: smallvec![SmolStr::new_static("TOKEN")] },
+				AuthSpec::OptionalBearer { env: smallvec![Str::new_static("TOKEN")] },
 				"optional-bearer",
 			),
 			(
 				AuthSpec::Header {
-					name: SmolStr::new_static("x-api-key"),
-					env:  smallvec![SmolStr::new_static("TOKEN")],
+					name: Str::new_static("x-api-key"),
+					env:  smallvec![Str::new_static("TOKEN")],
 				},
 				"header",
 			),
 			(
 				AuthSpec::Query {
-					param: SmolStr::new_static("key"),
-					env:   smallvec![SmolStr::new_static("TOKEN")],
+					param: Str::new_static("key"),
+					env:   smallvec![Str::new_static("TOKEN")],
 				},
 				"query",
 			),
 			(AuthSpec::AwsSigV4, "aws-sig-v4"),
 			(
 				AuthSpec::GoogleAdc {
-					api_key_env:  smallvec![SmolStr::new_static("GOOGLE_CLOUD_API_KEY")],
-					project_env:  smallvec![SmolStr::new_static("GOOGLE_CLOUD_PROJECT")],
-					location_env: smallvec![SmolStr::new_static("GOOGLE_VERTEX_LOCATION")],
+					api_key_env:  smallvec![Str::new_static("GOOGLE_CLOUD_API_KEY")],
+					project_env:  smallvec![Str::new_static("GOOGLE_CLOUD_PROJECT")],
+					location_env: smallvec![Str::new_static("GOOGLE_VERTEX_LOCATION")],
 				},
 				"google-adc",
 			),
-			(AuthSpec::OAuth { flow: SmolStr::new_static("test-flow") }, "oauth"),
+			(AuthSpec::OAuth { flow: Str::new_static("test-flow") }, "oauth"),
 		];
 
 		for (spec, wire_name) in cases {

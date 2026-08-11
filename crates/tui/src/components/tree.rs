@@ -1,4 +1,4 @@
-use omp_core::{SmolStr, SmolStrMut};
+use omp_core::{Str, StrMut};
 use smallvec::SmallVec;
 
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
 pub struct TreeNode {
 	props:    Props,
 	slot:     Slot,
-	label:    SmolStr,
+	label:    Str,
 	children: Vec<Self>,
 }
 
@@ -24,7 +24,7 @@ impl TreeNode {
 		Self {
 			props:    Props::new(),
 			slot:     next_slot(),
-			label:    SmolStr::default(),
+			label:    Str::default(),
 			children: Vec::new(),
 		}
 	}
@@ -36,7 +36,7 @@ impl TreeNode {
 	}
 
 	/// Appends node label text.
-	pub fn label(mut self, label: impl Into<SmolStr>) -> Self {
+	pub fn label(mut self, label: impl Into<Str>) -> Self {
 		append(&mut self.label, label.into());
 		self
 	}
@@ -49,7 +49,7 @@ impl TreeNode {
 
 	fn effective_label(&self) -> &str {
 		if self.label.is_empty() {
-			self.props.str_of(Prop::Label).map_or("", SmolStr::as_str)
+			self.props.str_of(Prop::Label).map_or("", Str::as_str)
 		} else {
 			&self.label
 		}
@@ -65,7 +65,7 @@ impl Default for TreeNode {
 #[derive(Clone, Debug, Default)]
 struct TreeState {
 	cursor: u16,
-	chosen: Option<SmolStr>,
+	chosen: Option<Str>,
 	open:   SmallVec<Slot, 8>,
 }
 
@@ -73,8 +73,8 @@ struct TreeState {
 struct TreeRow {
 	node:         Slot,
 	depth:        u16,
-	path:         SmolStr,
-	label:        SmolStr,
+	path:         Str,
+	label:        Str,
 	has_children: bool,
 	/// Continuation bits for ancestor levels below the root: `true` when
 	/// that ancestor has further siblings, so its guide column keeps
@@ -423,10 +423,10 @@ fn walk_rows(
 	for (index, node) in nodes.iter().enumerate() {
 		let label = node.effective_label();
 		let path = if prefix.is_empty() {
-			SmolStr::new(label)
+			Str::new(label)
 		} else {
 			let mut path =
-				SmolStrMut::with_capacity(prefix.len().saturating_add(label.len()).saturating_add(1));
+				StrMut::with_capacity(prefix.len().saturating_add(label.len()).saturating_add(1));
 			path.push_str(prefix);
 			path.push('/');
 			path.push_str(label);
@@ -446,7 +446,7 @@ fn walk_rows(
 			node: node.slot,
 			depth,
 			path: path.clone(),
-			label: SmolStr::new(label),
+			label: Str::new(label),
 			has_children,
 			gutters,
 			last,
@@ -459,12 +459,12 @@ fn walk_rows(
 	}
 }
 
-fn append(target: &mut SmolStr, suffix: SmolStr) {
+fn append(target: &mut Str, suffix: Str) {
 	if target.is_empty() {
 		*target = suffix;
 		return;
 	}
-	let mut joined = SmolStrMut::with_capacity(target.len().saturating_add(suffix.len()));
+	let mut joined = StrMut::with_capacity(target.len().saturating_add(suffix.len()));
 	joined.push_str(target);
 	joined.push_str(&suffix);
 	*target = joined.freeze();

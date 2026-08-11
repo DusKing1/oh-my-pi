@@ -10,7 +10,7 @@ use std::{
 
 use bytes::Bytes;
 use globset::{Glob, GlobMatcher};
-use omp_core::SmolStr;
+use omp_core::Str;
 use parking_lot::Mutex;
 use serde_json::Value;
 use thiserror::Error;
@@ -69,8 +69,8 @@ impl LspBindingHandle {
 #[derive(Clone)]
 pub struct LspSelector {
 	languages:     Vec<LanguageId>,
-	schemes:       Vec<SmolStr>,
-	path_patterns: Vec<SmolStr>,
+	schemes:       Vec<Str>,
+	path_patterns: Vec<Str>,
 	path_matchers: Vec<GlobMatcher>,
 }
 
@@ -90,14 +90,14 @@ impl LspSelector {
 	/// dimension.
 	pub fn new(
 		languages: Vec<LanguageId>,
-		schemes: Vec<SmolStr>,
-		path_patterns: Vec<SmolStr>,
+		schemes: Vec<Str>,
+		path_patterns: Vec<Str>,
 	) -> Result<Self, LspRegistryError> {
 		let mut path_matchers = Vec::with_capacity(path_patterns.len());
 		for pattern in &path_patterns {
 			let matcher = Glob::new(pattern.as_str())
 				.map_err(|error| LspRegistryError::InvalidSelector {
-					reason: SmolStr::new(error.to_string()),
+					reason: Str::new(error.to_string()),
 				})?
 				.compile_matcher();
 			path_matchers.push(matcher);
@@ -124,13 +124,13 @@ impl LspSelector {
 
 	/// Returns the URI-scheme restrictions in declaration order.
 	#[must_use]
-	pub fn schemes(&self) -> &[SmolStr] {
+	pub fn schemes(&self) -> &[Str] {
 		&self.schemes
 	}
 
 	/// Returns the path glob restrictions in declaration order.
 	#[must_use]
-	pub fn path_patterns(&self) -> &[SmolStr] {
+	pub fn path_patterns(&self) -> &[Str] {
 		&self.path_patterns
 	}
 
@@ -156,7 +156,7 @@ impl LspSelector {
 /// Declaration used when installing a named server binding.
 #[derive(Clone, Debug)]
 pub struct LspBindingSpec {
-	name:     SmolStr,
+	name:     Str,
 	priority: i32,
 	selector: LspSelector,
 }
@@ -172,7 +172,7 @@ impl LspBindingSpec {
 		if name.is_empty() {
 			return Err(LspRegistryError::InvalidBindingName);
 		}
-		Ok(Self { name: SmolStr::new(name), priority, selector })
+		Ok(Self { name: Str::new(name), priority, selector })
 	}
 
 	/// Returns the unique binding name.
@@ -264,8 +264,8 @@ pub enum StaleResponsePolicy {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaggedLspEvent {
 	binding_id:        LspBindingId,
-	binding_name:      SmolStr,
-	method:            SmolStr,
+	binding_name:      Str,
+	method:            Str,
 	params_json:       Bytes,
 	revision:          Option<Revision>,
 	document_identity: Option<(DocumentId, Url)>,
@@ -389,7 +389,7 @@ pub enum DocumentEventStreamError {
 	#[error("document event synchronization failed: {message}")]
 	Synchronization {
 		/// Registry or LSP failure.
-		message: SmolStr,
+		message: Str,
 	},
 	/// The document actor stopped while the lease remained open.
 	#[error("document event stream closed unexpectedly")]
@@ -493,9 +493,9 @@ struct ProvisionalLeaseKey {
 struct RegistryState {
 	next_binding_id:    u64,
 	bindings:           HashMap<LspBindingId, Binding>,
-	binding_names:      HashMap<SmolStr, LspBindingId>,
+	binding_names:      HashMap<Str, LspBindingId>,
 	leases:             HashMap<LeaseId, LeaseRecord>,
-	public_versions:    HashMap<(LspBindingId, DocumentId), VecDeque<(SmolStr, i32)>>,
+	public_versions:    HashMap<(LspBindingId, DocumentId), VecDeque<(Str, i32)>>,
 	provisional_leases: HashSet<ProvisionalLeaseKey>,
 	publication_gates:  HashMap<TransactionId, CancellationToken>,
 }
@@ -956,7 +956,7 @@ impl LspRegistry {
 							{
 								let _ = client_events_sender
 									.send_async(Err(DocumentEventStreamError::Synchronization {
-										message: SmolStr::new(error.to_string()),
+										message: Str::new(error.to_string()),
 									}))
 									.await;
 								break;
@@ -1150,7 +1150,7 @@ impl LspRegistry {
 				},
 			};
 			acquired.push((document_id, 1));
-			public_versions.push((document_id, SmolStr::new(uri.as_str()), version));
+			public_versions.push((document_id, Str::new(uri.as_str()), version));
 			for _ in 1..count {
 				if let Err(error) = server.retain_document(document_id).await {
 					self.cleanup_replacement_leases(&server, &acquired).await;
@@ -1285,7 +1285,7 @@ impl LspRegistry {
 		let binding_id = binding.id;
 		let method = method.as_ref();
 		let value: Value = serde_json::from_slice(&params_json).map_err(|error| {
-			LspRegistryError::InvalidInboundJson { reason: SmolStr::new(error.to_string()) }
+			LspRegistryError::InvalidInboundJson { reason: Str::new(error.to_string()) }
 		})?;
 		let uri = value
 			.get("uri")
@@ -1347,7 +1347,7 @@ impl LspRegistry {
 		Ok(TaggedLspEvent {
 			binding_id,
 			binding_name: binding.spec.name,
-			method: SmolStr::new(method),
+			method: Str::new(method),
 			params_json,
 			revision,
 			document_identity,
@@ -2432,7 +2432,7 @@ fn record_public_version(
 	if entries.len() == PUBLIC_VERSION_LIMIT {
 		entries.pop_front();
 	}
-	entries.push_back((SmolStr::new(uri.as_str()), version));
+	entries.push_back((Str::new(uri.as_str()), version));
 }
 
 fn provisional_snapshot(
@@ -2465,7 +2465,7 @@ const fn language_for_head(head: &DocumentHead) -> Option<&LanguageId> {
 }
 
 fn registry_protocol_error(error: LspRegistryError) -> crate::Error {
-	crate::Error::Protocol { reason: SmolStr::new(error.to_string()) }
+	crate::Error::Protocol { reason: Str::new(error.to_string()) }
 }
 
 const fn lsp_document<'a>(
@@ -2504,13 +2504,13 @@ pub enum LspRegistryError {
 	#[error("LSP binding {name} already exists")]
 	DuplicateBinding {
 		/// Duplicate binding name.
-		name: SmolStr,
+		name: Str,
 	},
 	/// A selector glob could not be compiled.
 	#[error("invalid LSP selector: {reason}")]
 	InvalidSelector {
 		/// Selector diagnostic.
-		reason: SmolStr,
+		reason: Str,
 	},
 	/// No installed binding has this identity.
 	#[error("unknown LSP binding {}", binding_id.get())]
@@ -2579,7 +2579,7 @@ pub enum LspRegistryError {
 	#[error("invalid inbound LSP JSON: {reason}")]
 	InvalidInboundJson {
 		/// JSON diagnostic.
-		reason: SmolStr,
+		reason: Str,
 	},
 	/// No selected server advertised an operation capable of formatting bytes.
 	#[error("no selected LSP binding provides formatting")]
@@ -2785,7 +2785,7 @@ mod tests {
 			_: Bytes,
 			_: CancellationToken,
 		) -> Result<(), LspTransportError> {
-			Err(LspTransportError::Closed { message: SmolStr::new_static("injected failure") })
+			Err(LspTransportError::Closed { message: Str::new_static("injected failure") })
 		}
 	}
 
@@ -2813,7 +2813,7 @@ mod tests {
 		) -> Result<(), LspTransportError> {
 			self.params.lock().push(params);
 			if self.fail.load(Ordering::Relaxed) {
-				Err(LspTransportError::Closed { message: SmolStr::new_static("injected failure") })
+				Err(LspTransportError::Closed { message: Str::new_static("injected failure") })
 			} else {
 				Ok(())
 			}
@@ -2843,7 +2843,7 @@ mod tests {
 		) -> Result<(), LspTransportError> {
 			if self.notifications.fetch_add(1, Ordering::Relaxed) == 1 {
 				Err(LspTransportError::Closed {
-					message: SmolStr::new_static("injected second notification failure"),
+					message: Str::new_static("injected second notification failure"),
 				})
 			} else {
 				Ok(())
@@ -2931,8 +2931,8 @@ mod tests {
 	fn selector_requires_every_declared_dimension() {
 		let selector = LspSelector::new(
 			vec![LanguageId::new("rust").unwrap()],
-			vec![SmolStr::new_static("file")],
-			vec![SmolStr::new_static("**/*.rs")],
+			vec![Str::new_static("file")],
+			vec![Str::new_static("**/*.rs")],
 		)
 		.unwrap();
 		let rust = LanguageId::new("rust").unwrap();

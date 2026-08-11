@@ -1,5 +1,5 @@
 //! Property tests for transcript replay capture and reconstruction.
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_storage::transcript::{
 	block::{Block, BlockKind, CallId, Replay},
 	capsule::{Ant, JoinMode, Oai, REV_1, split_markers},
@@ -9,8 +9,8 @@ use pretty_assertions::assert_eq;
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
-fn smol(value: &str) -> SmolStr {
-	SmolStr::new(value)
+fn string(value: &str) -> Str {
+	Str::new(value)
 }
 
 const fn block(kind: BlockKind) -> Block {
@@ -18,19 +18,19 @@ const fn block(kind: BlockKind) -> Block {
 }
 
 fn text(value: &str) -> Block {
-	block(BlockKind::Text { text: smol(value) })
+	block(BlockKind::Text { text: string(value) })
 }
 
 fn think(value: &str) -> Block {
-	block(BlockKind::Think { text: smol(value) })
+	block(BlockKind::Think { text: string(value) })
 }
 
 fn tool(id: &str, name: &str, wire: Option<&str>, args: &str) -> Block {
 	block(BlockKind::Tool {
-		id:   CallId(smol(id)),
-		name: smol(name),
-		wire: wire.map(smol),
-		args: smol(args),
+		id:   CallId(string(id)),
+		name: string(name),
+		wire: wire.map(string),
+		args: string(args),
 	})
 }
 
@@ -129,7 +129,7 @@ fn anthropic_thinking_capsule_contains_only_the_signature_residue() {
 	let capsule = capsules[0]
 		.as_ref()
 		.expect("thinking item has signature residue");
-	assert_eq!(capsule.f.keys().map(SmolStr::as_str).collect::<Vec<_>>(), vec!["sig"]);
+	assert_eq!(capsule.f.keys().map(Str::as_str).collect::<Vec<_>>(), vec!["sig"]);
 	attach(&mut blocks, capsules);
 
 	assert_eq!(rebuild(&blocks, &Ant, REV_1), native);

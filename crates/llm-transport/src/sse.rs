@@ -1,14 +1,14 @@
 //! Incremental Server-Sent Events decoding over byte chunks.
 
 use bytes::{Bytes, BytesMut};
-use omp_core::SmolStr;
+use omp_core::Str;
 use smallvec::SmallVec;
 
 /// One assembled Server-Sent Event.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SseEvent {
 	/// The optional value of the event's `event:` field.
-	pub name: Option<SmolStr>,
+	pub name: Option<Str>,
 	/// The assembled `data:` payload.
 	///
 	/// Multiple data fields are joined with a single line feed as required by
@@ -24,7 +24,7 @@ pub struct SseEvent {
 #[derive(Default)]
 pub struct SseDecoder {
 	buffer:        BytesMut,
-	last_event_id: Option<SmolStr>,
+	last_event_id: Option<Str>,
 	retry_ms:      Option<u64>,
 	done:          bool,
 }
@@ -87,7 +87,7 @@ impl SseDecoder {
 	/// Returns the most recently accepted `id:` field.
 	#[must_use]
 	pub fn last_event_id(&self) -> Option<&str> {
-		self.last_event_id.as_ref().map(SmolStr::as_str)
+		self.last_event_id.as_ref().map(Str::as_str)
 	}
 
 	/// Returns the most recently accepted non-negative `retry:` value.
@@ -147,12 +147,12 @@ impl SseDecoder {
 
 				match field {
 					b"data" => data.push((value_start, end)),
-					b"event" => match SmolStr::from_utf8(&frame[value_start..end]) {
+					b"event" => match Str::from_utf8(&frame[value_start..end]) {
 						Ok(value) if !value.is_empty() => name = Some(value),
 						Ok(_) | Err(_) => {},
 					},
 					b"id" if !frame[value_start..end].contains(&0) => {
-						if let Ok(value) = SmolStr::from_utf8(&frame[value_start..end]) {
+						if let Ok(value) = Str::from_utf8(&frame[value_start..end]) {
 							self.last_event_id = Some(value);
 						}
 					},

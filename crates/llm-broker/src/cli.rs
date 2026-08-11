@@ -11,7 +11,7 @@ use bytes::Bytes;
 use clap::{Args, Parser, Subcommand};
 use futures::future::BoxFuture;
 use jiff::Timestamp;
-use omp_core::SmolStr;
+use omp_core::Str;
 use rusqlite::Connection;
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -52,14 +52,14 @@ pub enum AuthCommand {
 #[derive(Clone, Debug, Args)]
 pub struct LoginArgs {
 	/// Provider to log into; omitted to show the daemon's provider chooser.
-	pub provider: Option<SmolStr>,
+	pub provider: Option<Str>,
 }
 
 /// Arguments for `auth logout`.
 #[derive(Clone, Debug, Args)]
 pub struct LogoutArgs {
 	/// Numeric credential id or provider identifier.
-	pub selector: SmolStr,
+	pub selector: Str,
 }
 
 /// Arguments for `auth list`.
@@ -67,7 +67,7 @@ pub struct LogoutArgs {
 pub struct ListArgs {
 	/// Restrict output to one provider.
 	#[arg(long)]
-	pub provider: Option<SmolStr>,
+	pub provider: Option<Str>,
 	/// Emit structured JSON.
 	#[arg(long)]
 	pub json:     bool,
@@ -96,7 +96,7 @@ pub struct MigrateArgs {
 pub struct UsageArgs {
 	/// Restrict output to one provider.
 	#[arg(long)]
-	pub provider: Option<SmolStr>,
+	pub provider: Option<Str>,
 	/// Emit structured JSON.
 	#[arg(long)]
 	pub json:     bool,
@@ -116,18 +116,18 @@ pub enum CredentialImport {
 	/// A provider API key.
 	ApiKey {
 		/// Canonical provider catalog id.
-		provider: SmolStr,
+		provider: Str,
 		/// Stable non-secret account identity.
-		identity: SmolStr,
+		identity: Str,
 		/// API-key bytes.
 		secret:   Bytes,
 	},
 	/// An OAuth credential and its provider account metadata.
 	OAuth {
 		/// Canonical provider catalog id.
-		provider:      SmolStr,
+		provider:      Str,
 		/// Stable non-secret account identity.
-		identity:      SmolStr,
+		identity:      Str,
 		/// OAuth access token bytes.
 		access_token:  Bytes,
 		/// OAuth refresh token bytes when supplied by the source.
@@ -142,7 +142,7 @@ pub enum CredentialImport {
 /// Daemon operations consumed by the mountable CLI.
 pub trait AuthCliBackend: Send + Sync {
 	/// Begins login and returns client-safe instructions.
-	fn login<'a>(&'a self, provider: Option<&'a str>) -> BoxFuture<'a, Result<SmolStr, CliError>>;
+	fn login<'a>(&'a self, provider: Option<&'a str>) -> BoxFuture<'a, Result<Str, CliError>>;
 	/// Deletes credentials selected by numeric id or provider.
 	fn logout<'a>(&'a self, selector: &'a str) -> BoxFuture<'a, Result<usize, CliError>>;
 	/// Lists client-safe credential metadata.
@@ -208,7 +208,7 @@ impl BrokerCliBackend {
 }
 
 impl AuthCliBackend for BrokerCliBackend {
-	fn login<'a>(&'a self, provider: Option<&'a str>) -> BoxFuture<'a, Result<SmolStr, CliError>> {
+	fn login<'a>(&'a self, provider: Option<&'a str>) -> BoxFuture<'a, Result<Str, CliError>> {
 		Box::pin(async move {
 			let oauth = self.oauth_ref()?;
 			let Some(provider) = provider else {
@@ -412,13 +412,13 @@ pub enum CliError {
 	#[error("{kind} record for {provider} has no secret")]
 	MissingSecret {
 		/// Canonical provider id.
-		provider: SmolStr,
+		provider: Str,
 		/// Human-readable credential kind.
 		kind:     &'static str,
 	},
 	/// The mounted daemon operation failed.
 	#[error("{0}")]
-	Backend(SmolStr),
+	Backend(Str),
 }
 
 /// Runs a parsed command against a daemon adapter and returns printable output.
@@ -708,17 +708,17 @@ fn import_from_value(
 	{
 		let secret =
 			string_field(value, &["key", "apiKey", "api_key", "token"]).ok_or_else(|| {
-				CliError::MissingSecret { provider: SmolStr::new(canonical), kind: "API-key" }
+				CliError::MissingSecret { provider: Str::new(canonical), kind: "API-key" }
 			})?;
 		return Ok(CredentialImport::ApiKey {
-			provider: SmolStr::new(canonical),
-			identity: SmolStr::new(identity),
+			provider: Str::new(canonical),
+			identity: Str::new(identity),
 			secret:   Bytes::from(secret),
 		});
 	}
 	let access =
 		string_field(value, &["accessToken", "access_token", "access", "token"]).ok_or_else(
-			|| CliError::MissingSecret { provider: SmolStr::new(canonical), kind: "OAuth" },
+			|| CliError::MissingSecret { provider: Str::new(canonical), kind: "OAuth" },
 		)?;
 	let refresh =
 		string_field(value, &["refreshToken", "refresh_token", "refresh"]).unwrap_or_default();
@@ -731,8 +731,8 @@ fn import_from_value(
 			})
 			.unwrap_or(0);
 	Ok(CredentialImport::OAuth {
-		provider: SmolStr::new(canonical),
-		identity: SmolStr::new(identity),
+		provider: Str::new(canonical),
+		identity: Str::new(identity),
 		access_token: Bytes::from(access),
 		refresh_token: Bytes::from(refresh),
 		props: account_props(value),
@@ -820,12 +820,12 @@ mod tests {
 	fn populated_meta() -> CredentialMeta {
 		CredentialMeta {
 			id:             9,
-			provider:       SmolStr::new("anthropic"),
+			provider:       Str::new("anthropic"),
 			kind:           CredentialKind::OAuth,
-			identity:       SmolStr::new("person@example.test"),
+			identity:       Str::new("person@example.test"),
 			state:          CredentialState::Active,
 			blocks:         SmallVec::new(),
-			disabled_cause: SmolStr::new(""),
+			disabled_cause: Str::new(""),
 			expires_at_ms:  123,
 			created_at_ms:  1,
 			updated_at_ms:  2,

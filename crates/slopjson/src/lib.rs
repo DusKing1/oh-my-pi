@@ -59,7 +59,7 @@ pub use de::{Deserializer, from_str, parse};
 pub use error::ParseError;
 /// String type used for object keys and string values; re-exported for
 /// constructing [`Value`]s without depending on `omp-core` directly.
-pub use omp_core::SmolStr;
+pub use omp_core::Str;
 pub use raw::RawValue;
 pub use repair::repair_json;
 pub use streaming::parse_streaming;

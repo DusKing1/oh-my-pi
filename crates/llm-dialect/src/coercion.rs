@@ -5,7 +5,7 @@ use std::{
 	sync::atomic::{AtomicU64, Ordering},
 };
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde_json::{Map, Value};
 
 use crate::types::InbandTool;
@@ -14,15 +14,15 @@ use crate::types::InbandTool;
 #[derive(Clone, Debug, Default)]
 pub struct ToolArgShape {
 	/// Properties whose schema admits only a string (optionally plus `null`).
-	pub string_args:     BTreeSet<SmolStr>,
+	pub string_args:     BTreeSet<Str>,
 	/// Property schemas used by keyed XML-family scanners.
-	pub properties:      BTreeMap<SmolStr, Value>,
+	pub properties:      BTreeMap<Str, Value>,
 	/// Source-schema property order retained for deterministic rendering.
-	pub parameter_order: Vec<SmolStr>,
+	pub parameter_order: Vec<Str>,
 }
 
 /// Tool-name lookup of owned, schema-derived argument shapes.
-pub type ArgShapes = BTreeMap<SmolStr, ToolArgShape>;
+pub type ArgShapes = BTreeMap<Str, ToolArgShape>;
 
 /// Builds the owned coercion lookup used throughout one scanner lifetime.
 #[must_use]
@@ -32,7 +32,7 @@ pub fn build_arg_shapes(tools: &[InbandTool<'_>]) -> ArgShapes {
 		let mut shape = ToolArgShape::default();
 		if let Some(properties) = tool.parameters.get("properties").and_then(Value::as_object) {
 			for (name, schema) in properties {
-				let name = SmolStr::from(name.as_str());
+				let name = Str::from(name.as_str());
 				shape.parameter_order.push(name.clone());
 				if is_string_only_schema(schema) {
 					shape.string_args.insert(name.clone());
@@ -40,7 +40,7 @@ pub fn build_arg_shapes(tools: &[InbandTool<'_>]) -> ArgShapes {
 				shape.properties.insert(name, schema.clone());
 			}
 		}
-		shapes.insert(SmolStr::from(tool.name), shape);
+		shapes.insert(Str::from(tool.name), shape);
 	}
 	shapes
 }
@@ -178,9 +178,9 @@ static TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Mints a process-unique scanner-local call identifier without random state.
 #[must_use]
-pub fn mint_tool_call_id() -> SmolStr {
+pub fn mint_tool_call_id() -> Str {
 	let id = TOOL_CALL_COUNTER.fetch_add(1, Ordering::Relaxed);
-	SmolStr::from(format!("ptc_{id:x}"))
+	Str::from(format!("ptc_{id:x}"))
 }
 
 /// Length of the longest suffix that is a proper prefix of `tag`.

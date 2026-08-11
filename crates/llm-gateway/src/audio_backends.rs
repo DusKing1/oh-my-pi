@@ -7,7 +7,7 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 use http::{Request, Response};
 use hyper::body::Body as HttpBody;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::provider::{Facet as CatalogFacet, ProviderEntry};
 use omp_llm_egress::client::Body;
 use omp_llm_tower::{
@@ -40,7 +40,7 @@ pub enum AudioRouteRegistrationError {
 	#[error("audio provider {provider} could not be assembled: {source}")]
 	Provider {
 		/// Provider catalog id with the unsupported claim.
-		provider: SmolStr,
+		provider: Str,
 		/// Concrete adapter construction failure.
 		source:   AudioAttemptBuildError,
 	},
@@ -54,7 +54,7 @@ struct RegisteredAudioRoute<S> {
 }
 
 struct ProductionAudioRouter<S> {
-	routes: BTreeMap<SmolStr, RegisteredAudioRoute<S>>,
+	routes: BTreeMap<Str, RegisteredAudioRoute<S>>,
 }
 
 /// Registers every advertised remote audio catalog row.
@@ -154,11 +154,11 @@ where
 }
 
 fn select_route<'a, S>(
-	routes: &'a BTreeMap<SmolStr, RegisteredAudioRoute<S>>,
+	routes: &'a BTreeMap<Str, RegisteredAudioRoute<S>>,
 	model: &str,
 	props: &omp_llm_types::Props,
 	supports: impl Fn(&RegisteredAudioRoute<S>) -> bool,
-) -> Result<(&'a RegisteredAudioRoute<S>, SmolStr), facet::Error> {
+) -> Result<(&'a RegisteredAudioRoute<S>, Str), facet::Error> {
 	let pinned = props
 		.get_ns("audio", "provider")
 		.or_else(|| props.get_ns("omp", "provider"))
@@ -192,7 +192,7 @@ fn select_route<'a, S>(
 	Ok((route, model.into()))
 }
 
-fn strip_provider(model: &str, provider: &str) -> SmolStr {
+fn strip_provider(model: &str, provider: &str) -> Str {
 	model
 		.strip_prefix(provider)
 		.and_then(|model| model.strip_prefix('/'))

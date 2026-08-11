@@ -33,7 +33,7 @@ use std::{
 };
 
 use futures::{Stream, StreamExt, TryFutureExt};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_proto::inference::v1::{
 	CacheHint, StopReason, TurnEvent, TurnRequest, cache_hint, turn_event, turn_request,
 };
@@ -149,17 +149,17 @@ impl CachePolicy {
 /// it is stable across the turns of one conversation and cannot collide across
 /// clients — exactly the identity a prompt cache wants. A fully stateless turn
 /// has none.
-fn conversation(request: &TurnRequest) -> Option<SmolStr> {
+fn conversation(request: &TurnRequest) -> Option<Str> {
 	let id = match request.input.as_ref()? {
 		turn_request::Input::Incremental(incremental) => {
 			incremental.context.as_ref()?.context_id.as_str()
 		},
 		turn_request::Input::Seed(seed) => seed.context_id.as_str(),
 	};
-	(!id.is_empty()).then(|| SmolStr::new(id))
+	(!id.is_empty()).then(|| Str::new(id))
 }
 
-fn apply(request: &mut TurnRequest, policy: CachePolicy) -> Option<SmolStr> {
+fn apply(request: &mut TurnRequest, policy: CachePolicy) -> Option<Str> {
 	// An inert policy must not even create the hint: its mere presence is
 	// meaningful to other dialects, and this layer is mounted on every route.
 	if !policy.active() {
@@ -185,7 +185,7 @@ fn apply(request: &mut TurnRequest, policy: CachePolicy) -> Option<SmolStr> {
 	}
 	// A stateless turn still gets its breakpoints, but nothing to key a refresh
 	// loop on — and nothing that would be worth keeping warm anyway.
-	(!hint.session_key.is_empty()).then(|| SmolStr::new(&hint.session_key))
+	(!hint.session_key.is_empty()).then(|| Str::new(&hint.session_key))
 }
 /// Whether this frame ends the turn because the model called a tool.
 fn stopped_on_tool_use(frame: &TurnEvent) -> bool {
@@ -212,7 +212,7 @@ fn provider_answered(frame: &TurnEvent) -> bool {
 }
 
 /// Keep-alive tasks in flight, keyed by conversation.
-type Registry = Arc<Mutex<FxHashMap<SmolStr, AbortHandle>>>;
+type Registry = Arc<Mutex<FxHashMap<Str, AbortHandle>>>;
 
 /// [`Layer`] producing [`Cache`] services.
 #[derive(Clone)]
@@ -300,7 +300,7 @@ where
 struct Armer<S, R> {
 	inner:    S,
 	request:  R,
-	key:      SmolStr,
+	key:      Str,
 	policy:   CachePolicy,
 	registry: Registry,
 }

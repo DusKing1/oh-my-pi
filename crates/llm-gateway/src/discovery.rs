@@ -15,7 +15,7 @@ use std::{
 };
 
 use futures::{StreamExt, future::join_all, stream::BoxStream};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{
 	discovery::{self, Account, HttpClient},
 	models::{Availability, Modality, ModelCard, PriceUnit, Source},
@@ -41,7 +41,7 @@ pub struct DiscoveryService {
 	registry:      Arc<RwLock<Registry>>,
 	providers:     Arc<ProviderCatalog>,
 	http:          Option<Arc<dyn HttpClient>>,
-	refresh_locks: Arc<Mutex<BTreeMap<SmolStr, Arc<AsyncMutex<()>>>>>,
+	refresh_locks: Arc<Mutex<BTreeMap<Str, Arc<AsyncMutex<()>>>>>,
 	_maintenance:  Arc<Maintenance>,
 }
 
@@ -315,7 +315,7 @@ impl DiscoveryService {
 		let mut locks = self.refresh_locks.lock();
 		Arc::clone(
 			locks
-				.entry(SmolStr::from(provider))
+				.entry(Str::from(provider))
 				.or_insert_with(|| Arc::new(AsyncMutex::new(()))),
 		)
 	}
@@ -328,7 +328,7 @@ struct GatheredSnapshot {
 
 struct GatheredProvider {
 	entry:       ProviderEntry,
-	accounts:    Option<BTreeSet<SmolStr>>,
+	accounts:    Option<BTreeSet<Str>>,
 	snapshots:   Vec<GatheredSnapshot>,
 	first_error: Option<discovery::Error>,
 }
@@ -563,7 +563,7 @@ mod tests {
 	use async_trait::async_trait;
 	use bytes::Bytes;
 	use futures::StreamExt;
-	use omp_core::SmolStr;
+	use omp_core::Str;
 	use omp_llm_catalog::{
 		discovery::{Error, HttpClient, HttpResponse},
 		models::{Availability, ModelCard},
@@ -577,7 +577,7 @@ mod tests {
 
 	use super::DiscoveryService;
 
-	struct Credentials(BTreeMap<SmolStr, Availability>);
+	struct Credentials(BTreeMap<Str, Availability>);
 
 	impl CredentialView for Credentials {
 		fn availability(&self, provider: &str) -> Availability {
@@ -641,8 +641,8 @@ facets = ["chat"]
 			card("beta", "locked", &["chat"]),
 		];
 		let credentials = Arc::new(Credentials(BTreeMap::from([
-			(SmolStr::new_static("alpha"), Availability::Available),
-			(SmolStr::new_static("beta"), Availability::LoginRequired),
+			(Str::new_static("alpha"), Availability::Available),
+			(Str::new_static("beta"), Availability::LoginRequired),
 		])));
 		DiscoveryService::new(Registry::from_cards(&cards, credentials), providers())
 	}
@@ -795,7 +795,7 @@ facets = ["chat"]
 		)
 		.expect("provider fixture");
 		let credentials = Arc::new(Credentials(BTreeMap::from([(
-			SmolStr::new_static("ollama"),
+			Str::new_static("ollama"),
 			Availability::Available,
 		)])));
 		let mut registry = Registry::from_cards(&[], credentials);
@@ -837,7 +837,7 @@ facets = ["chat"]
 		let mut registry = Registry::from_cards(
 			&[card("ollama", "fallback", &["chat"])],
 			Arc::new(Credentials(BTreeMap::from([(
-				SmolStr::new_static("ollama"),
+				Str::new_static("ollama"),
 				Availability::Available,
 			)]))),
 		);

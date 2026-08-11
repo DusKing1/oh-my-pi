@@ -12,7 +12,7 @@ use std::{
 	time::Duration,
 };
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use smallvec::SmallVec;
 use xutf::Text as _;
 
@@ -188,7 +188,7 @@ pub trait Component: Any {
 		let _ = out;
 	}
 	/// Replaces text content where supported.
-	fn set_text(&mut self, ctx: &UiContext, text: SmolStr) -> bool {
+	fn set_text(&mut self, ctx: &UiContext, text: Str) -> bool {
 		let _ = (ctx, text);
 		false
 	}
@@ -1467,7 +1467,7 @@ impl IntoComponent for String {
 		Box::new(Markdown::text_of(self))
 	}
 }
-impl IntoComponent for SmolStr {
+impl IntoComponent for Str {
 	fn into_component(self) -> Box<dyn Component> {
 		Box::new(Markdown::text_of(self))
 	}
@@ -1538,7 +1538,7 @@ where
 
 /// Immutable registry of custom element factories.
 #[derive(Clone, Default)]
-pub struct Elements(Arc<Vec<(SmolStr, Box<dyn ElementFactory>)>>);
+pub struct Elements(Arc<Vec<(Str, Box<dyn ElementFactory>)>>);
 
 impl fmt::Debug for Elements {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1571,12 +1571,12 @@ impl Elements {
 /// Mutable builder for an immutable [`Elements`] registry.
 #[derive(Default)]
 pub struct ElementsBuilder {
-	factories: Vec<(SmolStr, Box<dyn ElementFactory>)>,
+	factories: Vec<(Str, Box<dyn ElementFactory>)>,
 }
 
 impl ElementsBuilder {
 	/// Registers or replaces the factory for `name`.
-	pub fn with(mut self, name: impl Into<SmolStr>, factory: impl ElementFactory + 'static) -> Self {
+	pub fn with(mut self, name: impl Into<Str>, factory: impl ElementFactory + 'static) -> Self {
 		let name = name.into();
 		if let Some((_, stored)) = self
 			.factories

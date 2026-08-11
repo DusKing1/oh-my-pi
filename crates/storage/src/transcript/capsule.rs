@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, iter::FusedIterator};
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde_json::{Map, Value, json, value::RawValue};
 use smallvec::SmallVec;
 
@@ -45,7 +45,7 @@ impl JoinMode {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Markers {
 	/// Rendered-default fields which were absent from the native item.
-	pub omit: SmallVec<SmolStr, 4>,
+	pub omit: SmallVec<Str, 4>,
 	/// Number of consecutive same-kind blocks projected by this native item.
 	pub np:   Option<u32>,
 	/// Text recombination mode for a multi-block item.
@@ -119,7 +119,7 @@ pub struct Oai;
 
 impl Dialect for Oai {
 	fn id(&self) -> DialectId {
-		DialectId(SmolStr::new_static("oai"))
+		DialectId(Str::new_static("oai"))
 	}
 
 	fn default_item(&self, ctx: DefaultCtx<'_>, rev: Rev) -> Value {
@@ -179,7 +179,7 @@ pub struct Ant;
 
 impl Dialect for Ant {
 	fn id(&self) -> DialectId {
-		DialectId(SmolStr::new_static("ant"))
+		DialectId(Str::new_static("ant"))
 	}
 
 	fn default_item(&self, ctx: DefaultCtx<'_>, rev: Rev) -> Value {
@@ -209,8 +209,8 @@ impl Dialect for Ant {
 /// Every key beginning with `~` is consumed, including unknown future markers,
 /// so no reserved marker can accidentally reach provider wire output.
 pub fn split_markers(
-	f: &BTreeMap<SmolStr, Box<RawValue>>,
-) -> (Markers, impl Clone + DoubleEndedIterator<Item = (&SmolStr, &RawValue)> + FusedIterator + '_)
+	f: &BTreeMap<Str, Box<RawValue>>,
+) -> (Markers, impl Clone + DoubleEndedIterator<Item = (&Str, &RawValue)> + FusedIterator + '_)
 {
 	let omit = f
 		.get("~omit")
@@ -241,7 +241,7 @@ pub fn split_markers(
 /// Fields are replaced atomically. Default fields absent from `actual` are
 /// represented by the typed `~omit` marker.
 #[must_use]
-pub fn diff(default: &Value, actual: &Value) -> BTreeMap<SmolStr, Box<RawValue>> {
+pub fn diff(default: &Value, actual: &Value) -> BTreeMap<Str, Box<RawValue>> {
 	let mut fields = BTreeMap::new();
 	let default = default.as_object();
 	let actual = actual.as_object();
@@ -249,7 +249,7 @@ pub fn diff(default: &Value, actual: &Value) -> BTreeMap<SmolStr, Box<RawValue>>
 	if let Some(actual) = actual {
 		for (key, value) in actual {
 			if default.and_then(|object| object.get(key)) != Some(value) {
-				fields.insert(SmolStr::new(key), to_raw(value));
+				fields.insert(Str::new(key), to_raw(value));
 			}
 		}
 	}
@@ -258,10 +258,10 @@ pub fn diff(default: &Value, actual: &Value) -> BTreeMap<SmolStr, Box<RawValue>>
 		let omit = default
 			.keys()
 			.filter(|key| actual.is_none_or(|object| !object.contains_key(*key)))
-			.map(SmolStr::new)
-			.collect::<SmallVec<SmolStr, 4>>();
+			.map(Str::new)
+			.collect::<SmallVec<Str, 4>>();
 		if !omit.is_empty() {
-			fields.insert(SmolStr::new_static("~omit"), to_raw(&omit));
+			fields.insert(Str::new_static("~omit"), to_raw(&omit));
 		}
 	}
 	fields
@@ -270,7 +270,7 @@ pub fn diff(default: &Value, actual: &Value) -> BTreeMap<SmolStr, Box<RawValue>>
 /// Applies whole-field capsule replacements and omissions to a rendered
 /// default.
 #[must_use]
-pub fn overlay(default: Value, f: &BTreeMap<SmolStr, Box<RawValue>>) -> Value {
+pub fn overlay(default: Value, f: &BTreeMap<Str, Box<RawValue>>) -> Value {
 	let mut object = match default {
 		Value::Object(object) => object,
 		_ => Map::new(),
@@ -289,11 +289,11 @@ pub fn overlay(default: Value, f: &BTreeMap<SmolStr, Box<RawValue>>) -> Value {
 
 /// Inserts a writer-synthesized reconstruction marker as raw JSON.
 pub(crate) fn insert_marker<T: serde::Serialize>(
-	fields: &mut BTreeMap<SmolStr, Box<RawValue>>,
+	fields: &mut BTreeMap<Str, Box<RawValue>>,
 	key: &'static str,
 	value: &T,
 ) {
-	fields.insert(SmolStr::new_static(key), to_raw(value));
+	fields.insert(Str::new_static(key), to_raw(value));
 }
 
 fn to_raw<T: serde::Serialize + ?Sized>(value: &T) -> Box<RawValue> {

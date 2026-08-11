@@ -26,7 +26,7 @@
 
 use std::{fmt, io, time::Duration};
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use smallvec::SmallVec;
 use tokio_util::sync::CancellationToken;
 
@@ -165,7 +165,7 @@ impl ImageLoader {
 	pub(crate) fn request(
 		&self,
 		slot: Slot,
-		source: SmolStr,
+		source: Str,
 		width: u16,
 		height: Option<u16>,
 		trim: bool,
@@ -206,7 +206,7 @@ impl UiHandle {
 	}
 
 	/// Queues replacement text for the component named by `id`.
-	pub fn set_text(&self, id: impl Into<SmolStr>, text: impl Into<SmolStr>) {
+	pub fn set_text(&self, id: impl Into<Str>, text: impl Into<Str>) {
 		let id = id.into();
 		let text = text.into();
 		self.update(move |ui| {
@@ -215,7 +215,7 @@ impl UiHandle {
 	}
 
 	/// Queues invalidation of the component named by `id`.
-	pub fn invalidate(&self, id: impl Into<SmolStr>) {
+	pub fn invalidate(&self, id: impl Into<Str>) {
 		let id = id.into();
 		self.update(move |ui| {
 			ui.invalidate(&id);
@@ -419,7 +419,7 @@ pub enum AppEvent {
 	/// The focused widget submitted.
 	Submitted,
 	/// An ID-carrying button fired.
-	Pressed(SmolStr),
+	Pressed(Str),
 	/// A resize settled after [`Ui::resize`] ran.
 	Resized(Size),
 	/// The terminal background flipped between dark and light. The retained
@@ -431,25 +431,25 @@ pub enum AppEvent {
 	/// An ID-carrying select's cursor rested on a new option.
 	Highlighted {
 		/// The select's `id`.
-		id:    SmolStr,
+		id:    Str,
 		/// Value of the option under the cursor.
-		value: SmolStr,
+		value: Str,
 	},
 	/// An ID-carrying select committed an option.
 	Changed {
 		/// The select's `id`.
-		id:    SmolStr,
+		id:    Str,
 		/// Value of the committed option.
-		value: SmolStr,
+		value: Str,
 	},
 	/// An ID-carrying filterable select's query changed.
 	Filtered {
 		/// The select's `id`.
-		id:    SmolStr,
+		id:    Str,
 		/// The new filter query.
-		query: SmolStr,
+		query: Str,
 		/// Value of the option under the cursor after re-filtering.
-		value: Option<SmolStr>,
+		value: Option<Str>,
 	},
 }
 

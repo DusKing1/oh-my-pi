@@ -15,7 +15,7 @@ use std::{
 use bytes::Bytes;
 use futures::{Stream, stream::BoxStream};
 use omp_app::agent::{OwnedToolHandler, OwnedToolLoopError, OwnedToolOutput, run_owned_tool_loop};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{
 	compat::Compat,
 	identity::{Dialect, DialectSelection},
@@ -198,7 +198,7 @@ fn item(seq: u64, created_at_ms: u64, kind: ItemKind, props: Props) -> Item {
 fn image(byte: u8, mime: &str) -> BlobPart {
 	BlobPart::builder()
 		.hash([byte; 32])
-		.mime(SmolStr::new(mime))
+		.mime(Str::new(mime))
 		.size(3)
 		.inline(Bytes::from(vec![byte; 3]))
 		.detail(ImageDetail::High)

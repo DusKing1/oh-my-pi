@@ -3,7 +3,7 @@
 use std::{path::Path, sync::Arc};
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -304,7 +304,7 @@ impl PathService {
 					.copy_source_bytes(&source, follow_source, cancellation)
 					.await?;
 				let bytes_copied = u64::try_from(bytes.len()).map_err(|_| Error::InvalidContent {
-					reason: SmolStr::new_static("copy source length exceeds the protocol limit"),
+					reason: Str::new_static("copy source length exceeds the protocol limit"),
 				})?;
 				ensure_not_cancelled(cancellation, &destination_metadata.path, "copy path")?;
 				let outcome = self
@@ -691,7 +691,7 @@ fn path_io_error(
 	message: &'static str,
 ) -> Error {
 	Error::Io {
-		operation: SmolStr::new_static(operation),
+		operation: Str::new_static(operation),
 		path:      path.to_path_buf(),
 		source:    std::io::Error::new(kind, message),
 	}
@@ -714,15 +714,15 @@ fn cancelled_path_operation(path: &Path, operation: &'static str) -> Error {
 
 fn precondition_failed(path: &Path, reason: &str) -> Error {
 	Error::PreconditionFailed {
-		target: SmolStr::new(path.to_string_lossy()),
-		reason: SmolStr::new(reason),
+		target: Str::new(path.to_string_lossy()),
+		reason: Str::new(reason),
 	}
 }
 
 fn invalid_target(path: &Path, reason: &str) -> Error {
 	Error::InvalidTarget {
-		target: SmolStr::new(path.to_string_lossy()),
-		reason: SmolStr::new(reason),
+		target: Str::new(path.to_string_lossy()),
+		reason: Str::new(reason),
 	}
 }
 

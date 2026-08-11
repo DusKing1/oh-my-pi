@@ -1,7 +1,7 @@
 //! Google Generative Language and Vertex text-embedding wire codecs.
 
 use bytes::Bytes;
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use omp_llm_types::{
 	Accuracy, EmbedRequest, EmbedResponse, EmbeddingVector, Error, Props, Unsupported,
 	UnsupportedAction, Usage,
@@ -26,7 +26,7 @@ pub fn encode(request: &EmbedRequest, variant: GoogleEmbeddingVariant) -> Result
 	};
 	serde_json::to_vec(&body)
 		.map(Bytes::from)
-		.map_err(|error| Error::Provider(format_smol!("failed to encode embedding request: {error}")))
+		.map_err(|error| Error::Provider(fmts!("failed to encode embedding request: {error}")))
 }
 
 /// Decodes a Google embedding response.
@@ -40,7 +40,7 @@ pub fn decode(
 	estimated_input_tokens: u64,
 ) -> Result<EmbedResponse, Error> {
 	let value: Value = serde_json::from_slice(body)
-		.map_err(|error| Error::Provider(format_smol!("invalid embedding response JSON: {error}")))?;
+		.map_err(|error| Error::Provider(fmts!("invalid embedding response JSON: {error}")))?;
 	if let Some(message) = error_message(&value) {
 		return Err(Error::Provider(message));
 	}
@@ -52,12 +52,12 @@ pub fn decode(
 
 /// Extracts the safe message from Google's structured error envelope.
 #[must_use]
-pub fn error_message(value: &Value) -> Option<SmolStr> {
+pub fn error_message(value: &Value) -> Option<Str> {
 	let error = value.get("error")?;
 	if let Some(message) = error.get("message").and_then(Value::as_str) {
-		return Some(SmolStr::from(message));
+		return Some(Str::from(message));
 	}
-	error.as_str().map(SmolStr::from)
+	error.as_str().map(Str::from)
 }
 
 fn encode_gen_ai(request: &EmbedRequest) -> Value {
@@ -101,7 +101,7 @@ fn decode_gen_ai(value: &Value, estimated_input_tokens: u64) -> Result<EmbedResp
 		.get("embeddings")
 		.and_then(Value::as_array)
 		.ok_or_else(|| {
-			Error::Provider(SmolStr::from("Google embedding response is missing embeddings"))
+			Error::Provider(Str::from("Google embedding response is missing embeddings"))
 		})?;
 	let vectors = embeddings
 		.iter()
@@ -118,7 +118,7 @@ fn decode_vertex(value: &Value, estimated_input_tokens: u64) -> Result<EmbedResp
 		.get("predictions")
 		.and_then(Value::as_array)
 		.ok_or_else(|| {
-			Error::Provider(SmolStr::from("Vertex embedding response is missing predictions"))
+			Error::Provider(Str::from("Vertex embedding response is missing predictions"))
 		})?;
 	let mut exact_tokens = Some(0u64);
 	let vectors = predictions
@@ -150,15 +150,15 @@ fn decode_vertex(value: &Value, estimated_input_tokens: u64) -> Result<EmbedResp
 fn decode_vector(values: Option<&Value>) -> Result<EmbeddingVector, Error> {
 	let values = values
 		.and_then(Value::as_array)
-		.ok_or_else(|| Error::Provider(SmolStr::from("embedding response item has no vector")))?;
+		.ok_or_else(|| Error::Provider(Str::from("embedding response item has no vector")))?;
 	let values = values
 		.iter()
 		.map(|value| {
 			let number = value.as_f64().ok_or_else(|| {
-				Error::Provider(SmolStr::from("embedding vector contains a non-number"))
+				Error::Provider(Str::from("embedding vector contains a non-number"))
 			})? as f32;
 			if !number.is_finite() {
-				return Err(Error::Provider(SmolStr::from(
+				return Err(Error::Provider(Str::from(
 					"embedding vector contains a non-finite component",
 				)));
 			}
@@ -190,7 +190,7 @@ fn reject_props(props: &Props) -> Result<(), Error> {
 			.map(|key| {
 				Unsupported::builder()
 					.what(key.clone())
-					.detail(SmolStr::from("the Google embeddings wire has no mapping for this property"))
+					.detail(Str::from("the Google embeddings wire has no mapping for this property"))
 					.action(UnsupportedAction::Dropped)
 					.build()
 			})

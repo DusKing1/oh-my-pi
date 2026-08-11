@@ -6,7 +6,7 @@
 //! forcing a tool on Anthropic changes the request shape and costs a cache
 //! miss.
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::compat::Compat;
 use omp_llm_types::{
 	Fallback, Feature, TurnError, TurnErrorKind, TurnEvent, Unsupported, UnsupportedAction,
@@ -31,8 +31,8 @@ impl CapabilityResolver {
 		&self,
 		feature: Feature<T>,
 		is_supported: impl FnOnce(&Compat) -> bool,
-		what: impl Into<SmolStr>,
-		detail: impl Into<SmolStr>,
+		what: impl Into<Str>,
+		detail: impl Into<Str>,
 	) -> Result<(FeatureResolution<T>, Option<Unsupported>), TurnError> {
 		resolve_feature(feature, &self.compat, is_supported, what, detail)
 	}
@@ -64,8 +64,8 @@ pub fn resolve_feature<T>(
 	feature: Feature<T>,
 	compat: &Compat,
 	is_supported: impl FnOnce(&Compat) -> bool,
-	what: impl Into<SmolStr>,
-	detail: impl Into<SmolStr>,
+	what: impl Into<Str>,
+	detail: impl Into<Str>,
 ) -> Result<(FeatureResolution<T>, Option<Unsupported>), TurnError> {
 	if is_supported(compat) {
 		return Ok((FeatureResolution::Native(feature.value), None));
@@ -189,7 +189,7 @@ impl ForcedToolEscalation {
 
 	fn plan(&self, strategy: ForcedToolStrategy, reason: &'static str) -> ForcedToolAttempt {
 		ForcedToolAttempt {
-			event: TurnEvent::Attempt { number: self.attempt, reason: SmolStr::new(reason) },
+			event: TurnEvent::Attempt { number: self.attempt, reason: Str::new(reason) },
 			strategy,
 		}
 	}
@@ -197,7 +197,7 @@ impl ForcedToolEscalation {
 	fn failure(detail: &'static str) -> TurnError {
 		TurnError::builder()
 			.kind(TurnErrorKind::Unsupported)
-			.detail(SmolStr::new(detail))
+			.detail(Str::new(detail))
 			.unsupported(Vec::new())
 			.retry_after_ms(0)
 			.build()

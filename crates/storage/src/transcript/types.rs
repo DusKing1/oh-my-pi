@@ -1,6 +1,6 @@
 //! Leaf value types used by transcript events.
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use serde_json::value::RawValue;
 
@@ -14,7 +14,7 @@ macro_rules! string_id {
 		#[serde(transparent)]
 		pub struct $name(
 			/// The identifier text.
-			pub SmolStr,
+			pub Str,
 		);
 	};
 }
@@ -32,7 +32,7 @@ pub struct ModelRef {
 	/// Provider serving the request.
 	pub provider: ProviderId,
 	/// Provider API family used for the request.
-	pub api:      SmolStr,
+	pub api:      Str,
 	/// Provider model name.
 	pub model:    ModelId,
 }
@@ -98,7 +98,7 @@ impl Eq for Stop {}
 
 #[derive(Deserialize)]
 struct StopProbe {
-	reason: SmolStr,
+	reason: Str,
 }
 
 #[derive(Deserialize)]
@@ -156,18 +156,18 @@ pub struct CtxSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attribution {
 	/// Stable source kind, such as a user, hook, or imported session.
-	pub source: SmolStr,
+	pub source: Str,
 	/// Optional source-specific identifier.
-	pub id:     Option<SmolStr>,
+	pub id:     Option<Str>,
 }
 
 /// A failed inference request that produced no conversational content.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestError {
 	/// Human-readable error message.
-	pub message: SmolStr,
+	pub message: Str,
 	/// Provider or protocol error code.
-	pub code:    Option<SmolStr>,
+	pub code:    Option<Str>,
 	/// HTTP or provider-equivalent status code.
 	pub status:  Option<u16>,
 	/// Verbatim structured error details.
@@ -218,13 +218,13 @@ pub enum AmendPatch {
 		/// Original token usage.
 		usage:       Usage,
 		/// Original provider response identifier, when present.
-		response_id: Option<SmolStr>,
+		response_id: Option<Str>,
 	},
 }
 
 #[derive(Deserialize)]
 struct AmendProbe {
-	op: SmolStr,
+	op: Str,
 }
 
 #[derive(Deserialize)]
@@ -237,7 +237,7 @@ struct RetryRecoveryPayload {
 	content:     Vec<Block>,
 	stop:        Stop,
 	usage:       Usage,
-	response_id: Option<SmolStr>,
+	response_id: Option<Str>,
 }
 
 impl<'de> Deserialize<'de> for AmendPatch {
@@ -272,16 +272,16 @@ impl<'de> Deserialize<'de> for AmendPatch {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThinkingSel {
 	/// Selection actually sent to the provider.
-	pub effective:  SmolStr,
+	pub effective:  Str,
 	/// Selection configured by the user, including automatic modes.
-	pub configured: SmolStr,
+	pub configured: Str,
 }
 
 /// A role-specific model selection change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelChange {
 	/// Model role affected by the change.
-	pub role:     SmolStr,
+	pub role:     Str,
 	/// New model selection.
 	pub model:    ModelRef,
 	/// Whether this selection is a fallback rather than the primary choice.
@@ -293,7 +293,7 @@ pub struct ModelChange {
 #[serde(transparent)]
 pub struct Tier(
 	/// The provider tier name.
-	pub SmolStr,
+	pub Str,
 );
 
 /// A credential pin used to keep a session on a stable provider account.
@@ -302,5 +302,5 @@ pub struct Pin {
 	/// Provider whose credential is pinned.
 	pub provider:   ProviderId,
 	/// Provider-local credential identifier.
-	pub credential: SmolStr,
+	pub credential: Str,
 }

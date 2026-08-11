@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 
 use crate::parser::MAX_DEPTH;
 
@@ -53,11 +53,11 @@ pub enum ParseError {
 	/// Typed-deserialization mismatch surfaced through [`serde::de::Error`]
 	/// (e.g. a string where a `u32` field was expected).
 	#[error("{0}")]
-	Custom(SmolStr),
+	Custom(Str),
 }
 
 impl serde::de::Error for ParseError {
 	fn custom<T: fmt::Display>(msg: T) -> Self {
-		Self::Custom(format_smol!("{msg}"))
+		Self::Custom(fmts!("{msg}"))
 	}
 }

@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use smallvec::SmallVec;
 
 use crate::{
@@ -347,20 +347,20 @@ impl RetryBudget {
 pub struct BlockKey {
 	/// Stable credential identity (row id, account id, bearer hash — the
 	/// caller's choice, opaque here).
-	pub credential: SmolStr,
+	pub credential: Str,
 	/// Optional meter/window scope. `None` blocks the whole credential.
-	pub scope:      Option<SmolStr>,
+	pub scope:      Option<Str>,
 }
 
 impl BlockKey {
 	/// Whole-credential key.
 	pub fn credential(id: &str) -> Self {
-		Self { credential: SmolStr::new(id), scope: None }
+		Self { credential: Str::new(id), scope: None }
 	}
 
 	/// Meter-scoped key.
 	pub fn scoped(id: &str, scope: &str) -> Self {
-		Self { credential: SmolStr::new(id), scope: Some(SmolStr::new(scope)) }
+		Self { credential: Str::new(id), scope: Some(Str::new(scope)) }
 	}
 }
 

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::{stream, stream::BoxStream};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_egress::auth_inject::{CredentialLease, CredentialMetadataSource};
 use omp_llm_types::{GenerateImageRequest, ImageDone, ImageEvent, facet};
 use smallvec::SmallVec;
@@ -87,11 +87,11 @@ pub struct ImageCredential {
 	/// Opaque credential generation selected for this attempt.
 	pub lease:         Option<CredentialLease>,
 	/// Provider id supplied to the authentication injection layer.
-	pub auth_provider: SmolStr,
+	pub auth_provider: Str,
 	/// Google Cloud project for Antigravity.
-	pub project_id:    Option<SmolStr>,
+	pub project_id:    Option<Str>,
 	/// ChatGPT account id used by the Codex endpoint.
-	pub account_id:    Option<SmolStr>,
+	pub account_id:    Option<Str>,
 }
 
 /// Read-only non-secret credential lease source used to admit candidates.
@@ -149,11 +149,11 @@ pub enum ImageProviderErrorKind {
 #[error("{provider}: {message}")]
 pub struct ImageProviderError {
 	/// Provider that failed.
-	pub provider: SmolStr,
+	pub provider: Str,
 	/// Failure classification.
 	pub kind:     ImageProviderErrorKind,
 	/// Caller-safe diagnostic.
-	pub message:  SmolStr,
+	pub message:  Str,
 }
 
 impl ImageProviderError {
@@ -192,7 +192,7 @@ pub trait ImageBackend: Send + Sync {
 pub enum ImageRegistryError {
 	/// A request pinned an unknown provider.
 	#[error("unknown image provider: {0}")]
-	UnknownProvider(SmolStr),
+	UnknownProvider(Str),
 	/// No provider in the candidate chain has credentials.
 	#[error("no configured image provider")]
 	NoAvailableProvider,

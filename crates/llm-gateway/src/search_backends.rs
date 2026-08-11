@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use http::{Method, Request, header};
 use http_body_util::{BodyExt as _, Full};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_egress::{
 	auth_inject::{AuthContext, AuthInjectLayer, CredentialSource},
 	client::{Body, EgressClient},
@@ -46,14 +46,14 @@ impl<C: CredentialSource> SearchCredentials for LeaseSearchCredentials<C> {
 
 #[async_trait]
 trait SearchHttp: Send + Sync {
-	async fn send(&self, request: Request<Body>) -> Result<http::Response<Bytes>, SmolStr>;
+	async fn send(&self, request: Request<Body>) -> Result<http::Response<Bytes>, Str>;
 }
 
 struct PlainHttp(EgressClient);
 
 #[async_trait]
 impl SearchHttp for PlainHttp {
-	async fn send(&self, request: Request<Body>) -> Result<http::Response<Bytes>, SmolStr> {
+	async fn send(&self, request: Request<Body>) -> Result<http::Response<Bytes>, Str> {
 		send_buffered(self.0.clone(), request).await
 	}
 }
@@ -64,7 +64,7 @@ struct AuthenticatedHttp<C: CredentialSource>(
 
 #[async_trait]
 impl<C: CredentialSource> SearchHttp for AuthenticatedHttp<C> {
-	async fn send(&self, request: Request<Body>) -> Result<http::Response<Bytes>, SmolStr> {
+	async fn send(&self, request: Request<Body>) -> Result<http::Response<Bytes>, Str> {
 		send_buffered(self.0.clone(), request).await
 	}
 }
@@ -72,7 +72,7 @@ impl<C: CredentialSource> SearchHttp for AuthenticatedHttp<C> {
 async fn send_buffered<S>(
 	mut service: S,
 	request: Request<Body>,
-) -> Result<http::Response<Bytes>, SmolStr>
+) -> Result<http::Response<Bytes>, Str>
 where
 	S: Service<Request<Body>, Response = http::Response<hyper::body::Incoming>> + Send,
 	S::Future: Send,
@@ -81,12 +81,12 @@ where
 	let response = service
 		.call(request)
 		.await
-		.map_err(|error| SmolStr::from(error.to_string()))?;
+		.map_err(|error| Str::from(error.to_string()))?;
 	let (parts, body) = response.into_parts();
 	let bytes = body
 		.collect()
 		.await
-		.map_err(|error| SmolStr::from(error.to_string()))?
+		.map_err(|error| Str::from(error.to_string()))?
 		.to_bytes();
 	Ok(http::Response::from_parts(parts, bytes))
 }
@@ -95,7 +95,7 @@ where
 #[derive(Clone)]
 pub struct ProductionSearchBackend {
 	client:    Arc<dyn SearchHttp>,
-	endpoints: Arc<BTreeMap<SmolStr, SmolStr>>,
+	endpoints: Arc<BTreeMap<Str, Str>>,
 }
 
 impl ProductionSearchBackend {
@@ -122,8 +122,8 @@ impl ProductionSearchBackend {
 	#[must_use]
 	pub fn with_endpoint(
 		mut self,
-		provider: impl Into<SmolStr>,
-		endpoint: impl Into<SmolStr>,
+		provider: impl Into<Str>,
+		endpoint: impl Into<Str>,
 	) -> Self {
 		Arc::make_mut(&mut self.endpoints).insert(provider.into(), endpoint.into());
 		self
@@ -133,7 +133,7 @@ impl ProductionSearchBackend {
 		self
 			.endpoints
 			.get(id)
-			.map_or_else(|| default_endpoint(id), SmolStr::as_str)
+			.map_or_else(|| default_endpoint(id), Str::as_str)
 	}
 }
 
@@ -204,7 +204,7 @@ impl ProductionSearchBackend {
 			.headers()
 			.get("x-request-id")
 			.and_then(|value| value.to_str().ok())
-			.map(SmolStr::from);
+			.map(Str::from);
 		let bytes = response.into_body();
 		if bytes.len() > MAX_RESPONSE_BYTES {
 			return Err(provider_error(
@@ -439,11 +439,11 @@ fn parse_html(id: &str, bytes: &[u8], limit: u32) -> Result<EngineResult, Search
 		if (url.starts_with("https://") || url.starts_with("http://")) && !title.is_empty() {
 			sources.push(
 				SearchSource::builder()
-					.url(SmolStr::from(url))
-					.title(SmolStr::from(title))
-					.snippet(SmolStr::default())
-					.published_at(SmolStr::default())
-					.author(SmolStr::default())
+					.url(Str::from(url))
+					.title(Str::from(title))
+					.snippet(Str::default())
+					.published_at(Str::default())
+					.author(Str::default())
 					.build(),
 			);
 			if sources.len() >= limit.max(1) as usize {
@@ -483,11 +483,11 @@ fn source_from_value(value: &Value) -> Option<SearchSource> {
 	let score = value.get("score").and_then(Value::as_f64);
 	Some(
 		SearchSource::builder()
-			.url(SmolStr::from(url))
-			.title(SmolStr::from(strip_tags(title)))
-			.snippet(SmolStr::from(strip_tags(snippet)))
-			.published_at(SmolStr::from(published))
-			.author(SmolStr::from(author))
+			.url(Str::from(url))
+			.title(Str::from(strip_tags(title)))
+			.snippet(Str::from(strip_tags(snippet)))
+			.published_at(Str::from(published))
+			.author(Str::from(author))
 			.maybe_score(score)
 			.build(),
 	)
@@ -499,9 +499,9 @@ fn citation_from_value(value: &Value) -> Option<SearchCitation> {
 		.or_else(|| field_string(value, &["url", "uri"]))?;
 	Some(
 		SearchCitation::builder()
-			.url(SmolStr::from(url))
-			.title(SmolStr::from(field_string(value, &["title"]).unwrap_or("")))
-			.cited_text(SmolStr::from(field_string(value, &["text", "cited_text"]).unwrap_or("")))
+			.url(Str::from(url))
+			.title(Str::from(field_string(value, &["title"]).unwrap_or("")))
+			.cited_text(Str::from(field_string(value, &["text", "cited_text"]).unwrap_or("")))
 			.build(),
 	)
 }
@@ -559,7 +559,7 @@ fn pointer<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
 		value.pointer(path)
 	}
 }
-fn first_string(value: &Value, paths: &[&str]) -> SmolStr {
+fn first_string(value: &Value, paths: &[&str]) -> Str {
 	paths
 		.iter()
 		.find_map(|path| value.pointer(path).and_then(Value::as_str))
@@ -571,7 +571,7 @@ fn field_string<'a>(value: &'a Value, fields: &[&str]) -> Option<&'a str> {
 		.iter()
 		.find_map(|field| value.get(*field).and_then(Value::as_str))
 }
-fn nonempty(value: &SmolStr) -> Option<&str> {
+fn nonempty(value: &Str) -> Option<&str> {
 	(!value.is_empty()).then_some(value.as_str())
 }
 fn recency(value: Option<SearchRecency>) -> Option<&'static str> {

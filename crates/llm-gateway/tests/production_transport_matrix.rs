@@ -26,7 +26,7 @@ use hyper_util::{
 	client::legacy::{Client, connect::HttpConnector},
 	rt::{TokioExecutor, TokioIo},
 };
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_broker::{
 	source::{
 		BrokerCredentialSource, CredentialRefresher as BrokerCredentialRefresher,
@@ -871,8 +871,8 @@ fn provider(id: &'static str, transport: TransportId, base_url: String) -> Provi
 	let mut headers = BTreeMap::new();
 	if HTTP_TRANSPORTS.contains(&transport) {
 		headers.insert(
-			SmolStr::new_static("x-matrix-transport"),
-			SmolStr::new(transport_name_owned(transport)),
+			Str::new_static("x-matrix-transport"),
+			Str::new(transport_name_owned(transport)),
 		);
 	}
 	let auth = if matches!(transport, TransportId::AnthropicBedrock | TransportId::BedrockConverse) {
@@ -889,9 +889,9 @@ fn provider(id: &'static str, transport: TransportId, base_url: String) -> Provi
 		compat.stream_protocol = StreamProtocol::Ndjson;
 	}
 	ProviderEntry::builder()
-		.id(SmolStr::new_static(id))
+		.id(Str::new_static(id))
 		.transport(transport)
-		.base_url(SmolStr::new(base_url))
+		.base_url(Str::new(base_url))
 		.auth(auth)
 		.facets(smallvec![Facet::Chat])
 		.headers(headers)
@@ -901,11 +901,11 @@ fn provider(id: &'static str, transport: TransportId, base_url: String) -> Provi
 
 fn card(provider: &'static str) -> ModelCard {
 	ModelCard::builder()
-		.id(SmolStr::new(format!("{provider}/model")))
-		.provider(SmolStr::new_static(provider))
-		.model(SmolStr::new_static("matrix-model"))
-		.name(SmolStr::new_static("matrix-model"))
-		.family(SmolStr::new_static("matrix"))
+		.id(Str::new(format!("{provider}/model")))
+		.provider(Str::new_static(provider))
+		.model(Str::new_static("matrix-model"))
+		.name(Str::new_static("matrix-model"))
+		.family(Str::new_static("matrix"))
 		.facets(smallvec![Facet::Chat])
 		.inputs(smallvec![Modality::Text])
 		.outputs(smallvec![Modality::Text])
@@ -927,7 +927,7 @@ fn card(provider: &'static str) -> ModelCard {
 fn request(provider: &'static str) -> ChatRequest {
 	let message = Message::builder()
 		.role(Role::User)
-		.parts(vec![Part::Text(SmolStr::new_static("matrix request"))])
+		.parts(vec![Part::Text(Str::new_static("matrix request"))])
 		.build();
 	let item = Item::builder()
 		.seq(0)
@@ -935,7 +935,7 @@ fn request(provider: &'static str) -> ChatRequest {
 		.props(Props::default())
 		.build();
 	ChatRequest::builder()
-		.model(SmolStr::new(format!("{provider}/model")))
+		.model(Str::new(format!("{provider}/model")))
 		.thread(Thread::builder().items(vec![item]).build())
 		.tools(Vec::new())
 		.provider_options(Props::default())
@@ -1208,8 +1208,8 @@ async fn generated_catalog_transports_complete_through_registered_production_rou
 		},
 		SpecializedChats {
 			by_provider:         BTreeMap::from([
-				(SmolStr::new_static("cursor"), cursor),
-				(SmolStr::new_static("devin"), devin),
+				(Str::new_static("cursor"), cursor),
+				(Str::new_static("devin"), devin),
 			]),
 			cursor:              None,
 			devin:               None,

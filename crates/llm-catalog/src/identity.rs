@@ -7,7 +7,7 @@ use std::{
 	str::FromStr,
 };
 
-use omp_core::{SmolStr, smolstr::SmolStrExt};
+use omp_core::{Str, str::StrExt};
 use omp_llm_types::Effort;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -22,8 +22,8 @@ use crate::models::{ModelCard, ModelThinkingEffort, PriceUnit};
 /// introduce new model families. Unknown identifiers return an empty token so
 /// callers can fall back to their provider id.
 #[must_use]
-pub fn family_token(model_id: &str) -> SmolStr {
-	let lower = model_id.trim().to_ascii_lowercase_smol();
+pub fn family_token(model_id: &str) -> Str {
+	let lower = model_id.trim().to_ascii_lowercase_str();
 	let bare = lower.rsplit('/').next().unwrap_or(lower.as_str());
 	let family = if contains_segment(&lower, "claude") || lower.starts_with("anthropic/") {
 		"anthropic"
@@ -71,7 +71,7 @@ pub fn family_token(model_id: &str) -> SmolStr {
 	} else {
 		""
 	};
-	SmolStr::new(family)
+	Str::new(family)
 }
 /// Environment variable used to override model-prompt dialect selection.
 pub const DIALECT_ENV: &str = "OMP_DIALECT";
@@ -239,12 +239,12 @@ impl FromStr for DialectSelection {
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 #[error("unknown model-prompt dialect `{value}`")]
 pub struct ParseDialectError {
-	value: SmolStr,
+	value: Str,
 }
 
 impl ParseDialectError {
 	fn new(value: &str) -> Self {
-		Self { value: SmolStr::new(value.trim()) }
+		Self { value: Str::new(value.trim()) }
 	}
 
 	/// Returns the rejected configuration value.
@@ -287,8 +287,8 @@ fn parse_dialect(value: &str) -> Option<Dialect> {
 pub struct ModelReferenceIndex<'models> {
 	models:       &'models [ModelCard],
 	retained:     usize,
-	exact:        BTreeMap<SmolStr, usize>,
-	suffix_alias: BTreeMap<SmolStr, usize>,
+	exact:        BTreeMap<Str, usize>,
+	suffix_alias: BTreeMap<Str, usize>,
 }
 
 impl ModelReferenceIndex<'_> {
@@ -476,14 +476,14 @@ fn resolve_model_reference_position_excluding_identity(
 /// modality/facet sets are merged; routing always retains provider wire ids.
 #[must_use]
 pub fn collapse_effort_variants_across_providers(models: Vec<ModelCard>) -> Vec<ModelCard> {
-	let by_identity: BTreeMap<(SmolStr, SmolStr), usize> = models
+	let by_identity: BTreeMap<(Str, Str), usize> = models
 		.iter()
 		.enumerate()
 		.map(|(index, model)| ((model.provider.clone(), model.model.clone()), index))
 		.collect();
-	let mut thinking_variants: BTreeMap<(SmolStr, SmolStr), SmallVec<(usize, SmolStr), 2>> =
+	let mut thinking_variants: BTreeMap<(Str, Str), SmallVec<(usize, Str), 2>> =
 		BTreeMap::new();
-	type TierVariants = BTreeMap<(SmolStr, SmolStr), SmallVec<(usize, Effort, SmolStr), 6>>;
+	type TierVariants = BTreeMap<(Str, Str), SmallVec<(usize, Effort, Str), 6>>;
 	let mut tier_variants: TierVariants = BTreeMap::new();
 	for (index, model) in models.iter().enumerate() {
 		if let Some(base) = strip_thinking_variant_token(model.model.as_str()) {
@@ -594,12 +594,12 @@ pub fn collapse_effort_variants_across_providers(models: Vec<ModelCard>) -> Vec<
 fn merge_family(
 	models: &[ModelCard],
 	indices: &[usize],
-	logical: &SmolStr,
+	logical: &Str,
 	first: usize,
 ) -> ModelCard {
 	let mut card = models[first].clone();
 	card.model.clone_from(logical);
-	card.id = omp_core::format_smol!("{}/{}", card.provider, logical);
+	card.id = omp_core::fmts!("{}/{}", card.provider, logical);
 	card.reasoning = true;
 	card.context_window = indices
 		.iter()
@@ -716,17 +716,17 @@ fn model_price(model: &ModelCard, unit: PriceUnit) -> u64 {
 		.map_or(0, |price| price.nanos_usd)
 }
 
-fn normalize_reference_key(value: &str) -> SmolStr {
-	value.trim().to_ascii_lowercase_smol()
+fn normalize_reference_key(value: &str) -> Str {
+	value.trim().to_ascii_lowercase_str()
 }
 
-fn reference_candidate_ids(model_id: &str) -> SmallVec<SmolStr, 16> {
+fn reference_candidate_ids(model_id: &str) -> SmallVec<Str, 16> {
 	let mut candidates = SmallVec::new();
-	let mut queue = SmallVec::<SmolStr, 16>::new();
-	queue.push(SmolStr::new(model_id));
+	let mut queue = SmallVec::<Str, 16>::new();
+	queue.push(Str::new(model_id));
 	let mut next = 0;
 	while let Some(queued) = queue.get(next) {
-		let candidate = normalize_whitespace_smol(queued);
+		let candidate = normalize_whitespace_str(queued);
 		next += 1;
 		if candidate.is_empty() || candidates.contains(&candidate) {
 			continue;
@@ -734,7 +734,7 @@ fn reference_candidate_ids(model_id: &str) -> SmallVec<SmolStr, 16> {
 		candidates.push(candidate.clone());
 		queue.extend(bracket_stripped_candidates(&candidate));
 		queue.extend(model_like_segments(&candidate));
-		let lower = candidate.as_str().to_ascii_lowercase_smol();
+		let lower = candidate.as_str().to_ascii_lowercase_str();
 		for suffix in [":cloud", "-cloud"] {
 			if lower.ends_with(suffix) {
 				queue.push(candidate.slice(..candidate.len() - suffix.len()));
@@ -744,7 +744,7 @@ fn reference_candidate_ids(model_id: &str) -> SmallVec<SmolStr, 16> {
 			queue.push(candidate.slice_ref(suffix));
 		}
 		if candidate.contains(':') {
-			queue.push(SmolStr::new(candidate.replace(':', "-")));
+			queue.push(Str::new(candidate.replace(':', "-")));
 		}
 		if lower != candidate {
 			queue.push(lower);
@@ -756,7 +756,7 @@ fn reference_candidate_ids(model_id: &str) -> SmallVec<SmolStr, 16> {
 	candidates
 }
 
-fn bracket_stripped_candidates(value: &str) -> SmallVec<SmolStr, 3> {
+fn bracket_stripped_candidates(value: &str) -> SmallVec<Str, 3> {
 	if !value
 		.chars()
 		.any(|character| matches!(character, '[' | ']' | '【' | '】'))
@@ -769,7 +769,7 @@ fn bracket_stripped_candidates(value: &str) -> SmallVec<SmolStr, 3> {
 	let both = strip_trailing_brackets(leading);
 	let mut output = SmallVec::new();
 	for candidate in [both, leading, trailing] {
-		let candidate = SmolStr::new(normalize_whitespace(candidate));
+		let candidate = Str::new(normalize_whitespace(candidate));
 		if !candidate.is_empty()
 			&& candidate.as_str() != normalized.as_ref()
 			&& !output.contains(&candidate)
@@ -828,16 +828,16 @@ fn normalize_whitespace(value: &str) -> Cow<'_, str> {
 	Cow::Owned(normalized)
 }
 
-fn normalize_whitespace_smol(value: &SmolStr) -> SmolStr {
+fn normalize_whitespace_str(value: &Str) -> Str {
 	match normalize_whitespace(value) {
 		Cow::Borrowed(normalized) => value.slice_ref(normalized),
-		Cow::Owned(normalized) => SmolStr::new(normalized),
+		Cow::Owned(normalized) => Str::new(normalized),
 	}
 }
 
-fn model_like_segments(value: &str) -> SmallVec<SmolStr, 8> {
-	let lower = value.to_ascii_lowercase_smol();
-	let mut segments = SmallVec::<SmolStr, 8>::new();
+fn model_like_segments(value: &str) -> SmallVec<Str, 8> {
+	let lower = value.to_ascii_lowercase_str();
+	let mut segments = SmallVec::<Str, 8>::new();
 	let mut start = None;
 	for (index, character) in lower.char_indices().chain([(lower.len(), ' ')]) {
 		if character.is_ascii_alphanumeric() || matches!(character, '.' | ':' | '-') {
@@ -853,7 +853,7 @@ fn model_like_segments(value: &str) -> SmallVec<SmolStr, 8> {
 	segments
 }
 
-fn longest_model_like_segment(value: &str) -> Option<SmolStr> {
+fn longest_model_like_segment(value: &str) -> Option<Str> {
 	model_like_segments(value).into_iter().next()
 }
 
@@ -867,7 +867,7 @@ fn is_model_like_segment(value: &str) -> bool {
 		&& PREFIXES.iter().any(|prefix| value.starts_with(prefix))
 }
 
-fn strip_reference_trailing_marker(value: &SmolStr) -> Option<SmolStr> {
+fn strip_reference_trailing_marker(value: &Str) -> Option<Str> {
 	const MARKERS: &[&str] = &[
 		"thinking",
 		"customtools",
@@ -890,7 +890,7 @@ fn strip_reference_trailing_marker(value: &SmolStr) -> Option<SmolStr> {
 		"int4",
 		"search",
 	];
-	let lower = value.as_str().to_ascii_lowercase_smol();
+	let lower = value.as_str().to_ascii_lowercase_str();
 	for marker in MARKERS {
 		let Some(prefix) = lower.strip_suffix(marker) else {
 			continue;
@@ -902,8 +902,8 @@ fn strip_reference_trailing_marker(value: &SmolStr) -> Option<SmolStr> {
 	None
 }
 
-fn strip_thinking_variant_token(value: &str) -> Option<SmolStr> {
-	let lower = value.to_ascii_lowercase_smol();
+fn strip_thinking_variant_token(value: &str) -> Option<Str> {
+	let lower = value.to_ascii_lowercase_str();
 	for marker in ["-thinking", "-reasoner", "-reasoning"] {
 		let mut offset = 0;
 		while let Some(relative) = lower[offset..].find(marker) {
@@ -914,7 +914,7 @@ fn strip_thinking_variant_token(value: &str) -> Option<SmolStr> {
 				.next()
 				.is_none_or(|character| !character.is_ascii_alphanumeric())
 			{
-				return Some(omp_core::format_smol!("{}{}", &value[..start], &value[end..]));
+				return Some(omp_core::fmts!("{}{}", &value[..start], &value[end..]));
 			}
 			offset = end;
 		}
@@ -922,8 +922,8 @@ fn strip_thinking_variant_token(value: &str) -> Option<SmolStr> {
 	None
 }
 
-fn strip_effort_tier(value: &str) -> Option<(SmolStr, Effort)> {
-	let lower = value.to_ascii_lowercase_smol();
+fn strip_effort_tier(value: &str) -> Option<(Str, Effort)> {
+	let lower = value.to_ascii_lowercase_str();
 	for (suffix, effort) in [
 		("-minimal", Effort::Minimal),
 		("-medium", Effort::Medium),
@@ -933,7 +933,7 @@ fn strip_effort_tier(value: &str) -> Option<(SmolStr, Effort)> {
 		("-max", Effort::Max),
 	] {
 		if lower.ends_with(suffix) {
-			return Some((SmolStr::new(&value[..value.len() - suffix.len()]), effort));
+			return Some((Str::new(&value[..value.len() - suffix.len()]), effort));
 		}
 	}
 	None
@@ -988,10 +988,10 @@ mod tests {
 
 	fn card(provider: &str, model: &str) -> ModelCard {
 		ModelCard {
-			id:                SmolStr::new(format!("{provider}/{model}")),
-			provider:          SmolStr::new(provider),
-			model:             SmolStr::new(model),
-			name:              SmolStr::new(model),
+			id:                Str::new(format!("{provider}/{model}")),
+			provider:          Str::new(provider),
+			model:             Str::new(model),
+			name:              Str::new(model),
 			family:            family_token(model),
 			facets:            std::iter::once(Facet::Chat).collect(),
 			inputs:            std::iter::once(Modality::Text).collect(),

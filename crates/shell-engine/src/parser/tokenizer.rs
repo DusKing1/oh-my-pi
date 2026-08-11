@@ -1,7 +1,7 @@
 use std::{borrow::Cow, sync::Arc};
 
 use itertools::Itertools;
-use omp_core::SmolStr;
+use omp_core::Str;
 use xutf::BufReadCharsExt;
 
 use crate::parser::{SourcePosition, SourceSpan};
@@ -38,9 +38,9 @@ pub type TokenLocation = SourceSpan;
 #[cfg_attr(test, derive(PartialEq, Eq, serde::Serialize, serde::Deserialize))]
 pub enum Token {
 	/// An operator token.
-	Operator(SmolStr, SourceSpan),
+	Operator(Str, SourceSpan),
 	/// A word token.
-	Word(SmolStr, SourceSpan),
+	Word(Str, SourceSpan),
 }
 
 impl Token {

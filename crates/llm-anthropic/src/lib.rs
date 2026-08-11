@@ -12,7 +12,7 @@ mod tools;
 use bytes::{Bytes, BytesMut};
 use controls::OutputConfig;
 use documents::{MediaKind, MediaSource};
-use omp_core::{SmolStr, SmolStrMut};
+use omp_core::{Str, StrMut};
 use omp_llm_catalog::{
 	compat::{Compat, ReasoningWireFormat, ThinkingToolChoiceConflict, ToolStrictMode},
 	provider::TransportId,
@@ -62,7 +62,7 @@ impl AnthropicCodec {
 		compat: &Compat,
 	) -> Result<(Bytes, Vec<Unsupported>), Error> {
 		let CountInput::Thread(thread) = &request.input else {
-			return Err(Error::Provider(SmolStr::from(
+			return Err(Error::Provider(Str::from(
 				"Anthropic token counting requires an inline thread",
 			)));
 		};
@@ -144,7 +144,7 @@ impl Transport for AnthropicCodec {
 				events.push(TurnEvent::Error(
 					TurnError::builder()
 						.kind(TurnErrorKind::Upstream)
-						.detail(SmolStr::from("Anthropic stream ended before message_stop"))
+						.detail(Str::from("Anthropic stream ended before message_stop"))
 						.unsupported(Vec::new())
 						.retry_after_ms(0)
 						.build(),
@@ -259,16 +259,16 @@ enum Block<'a> {
 		cache_control: Option<CacheControl>,
 	},
 	ToolUse {
-		id:            SmolStr,
+		id:            Str,
 		name:          Cow<'a, str>,
 		input:         &'a RawValue,
 		#[serde(skip_serializing_if = "Option::is_none")]
 		cache_control: Option<CacheControl>,
 	},
 	ToolResult {
-		tool_use_id:   SmolStr,
+		tool_use_id:   Str,
 		#[serde(skip_serializing_if = "Option::is_none")]
-		id:            Option<SmolStr>,
+		id:            Option<Str>,
 		is_error:      bool,
 		content:       Vec<Self>,
 		#[serde(skip_serializing_if = "Option::is_none")]
@@ -307,7 +307,7 @@ enum Block<'a> {
 }
 
 struct RequestView<'a> {
-	model:            &'a SmolStr,
+	model:            &'a Str,
 	model_policy:     Option<&'a ResolvedModelPolicy>,
 	thread:           &'a Thread,
 	tools:            &'a Vec<ToolDef>,
@@ -810,7 +810,7 @@ fn build_body<'a>(
 						UnsupportedAction::Clamped,
 					);
 				}
-				sequences.iter().take(4).map(SmolStr::as_str).collect()
+				sequences.iter().take(4).map(Str::as_str).collect()
 			});
 			(sampling.temperature, sampling.top_p, sampling.top_k, stop)
 		} else {
@@ -1298,8 +1298,8 @@ fn feature_report(
 		Fallback::Error => {
 			return Err(Error::Unsupported(vec![
 				Unsupported::builder()
-					.what(SmolStr::from(what))
-					.detail(SmolStr::from(detail))
+					.what(Str::from(what))
+					.detail(Str::from(detail))
 					.action(UnsupportedAction::Dropped)
 					.build(),
 			]));
@@ -1314,8 +1314,8 @@ fn feature_report(
 fn report(unsupported: &mut Vec<Unsupported>, what: &str, detail: &str, action: UnsupportedAction) {
 	unsupported.push(
 		Unsupported::builder()
-			.what(SmolStr::from(what))
-			.detail(SmolStr::from(detail))
+			.what(Str::from(what))
+			.detail(Str::from(detail))
 			.action(action)
 			.build(),
 	);
@@ -1347,7 +1347,7 @@ fn serialize(value: &impl Serialize) -> Result<Bytes, Error> {
 
 #[cold]
 fn json_error(error: serde_json::Error) -> Error {
-	Error::Provider(SmolStr::from(error.to_string()))
+	Error::Provider(Str::from(error.to_string()))
 }
 
 enum Incoming<'a> {
@@ -1503,7 +1503,7 @@ fn parse_event(data: &[u8]) -> Result<Incoming<'_>, Error> {
 			Ok(Incoming::Error { error: event.error })
 		},
 		"ping" => Ok(Incoming::Ping),
-		kind => Err(Error::Provider(SmolStr::from(format!("unknown Anthropic event type `{kind}`")))),
+		kind => Err(Error::Provider(Str::from(format!("unknown Anthropic event type `{kind}`")))),
 	}
 }
 
@@ -1574,18 +1574,18 @@ fn parse_block(raw: &RawValue) -> Result<IncomingBlock<'_>, Error> {
 				to:   ModelRef<'a>,
 			}
 			let block: Block<'_> = serde_json::from_str(raw.get()).map_err(|error| {
-				Error::Provider(SmolStr::from(format!(
+				Error::Provider(Str::from(format!(
 					"malformed Anthropic fallback content block: {error}"
 				)))
 			})?;
 			if block.from.model.trim().is_empty() || block.to.model.trim().is_empty() {
-				return Err(Error::Provider(SmolStr::from(
+				return Err(Error::Provider(Str::from(
 					"malformed Anthropic fallback content block: model references must be non-empty",
 				)));
 			}
 			Ok(IncomingBlock::Server { raw })
 		},
-		kind => Err(Error::Provider(SmolStr::from(format!(
+		kind => Err(Error::Provider(Str::from(format!(
 			"unknown Anthropic content block type `{kind}`"
 		)))),
 	}
@@ -1639,14 +1639,14 @@ fn parse_delta(raw: &RawValue) -> Result<IncomingDelta<'_>, Error> {
 			let delta: Delta<'_> = serde_json::from_str(raw.get()).map_err(json_error)?;
 			Ok(IncomingDelta::Citation { citation: delta.citation })
 		},
-		kind => Err(Error::Provider(SmolStr::from(format!(
+		kind => Err(Error::Provider(Str::from(format!(
 			"unknown Anthropic content delta type `{kind}`"
 		)))),
 	}
 }
 #[derive(Default)]
 struct AnthropicState {
-	model:          SmolStr,
+	model:          Str,
 	blocks:         BTreeMap<u32, DecodedBlock>,
 	usage:          Option<Usage>,
 	stop:           Option<StopReason>,
@@ -1663,9 +1663,9 @@ impl AnthropicState {
 }
 
 enum DecodedBlock {
-	Text { text: SmolStrMut, citations: Vec<Value> },
-	Thinking { text: SmolStrMut, signature: BytesMut, redacted: bool },
-	Tool { id: CallId, name: SmolStr, args: BytesMut, initial: Bytes, streamed: bool },
+	Text { text: StrMut, citations: Vec<Value> },
+	Thinking { text: StrMut, signature: BytesMut, redacted: bool },
+	Tool { id: CallId, name: Str, args: BytesMut, initial: Bytes, streamed: bool },
 	Server(Value),
 }
 
@@ -1676,7 +1676,7 @@ fn decode_event(
 	let mut events = SmallVec::new();
 	match event {
 		Incoming::MessageStart { message } => {
-			state.model = SmolStr::from(message.model);
+			state.model = Str::from(message.model);
 			if let Some(usage) = message.usage {
 				state.usage = Some(canonical_usage(usage, state.usage.as_ref()));
 			}
@@ -1693,32 +1693,32 @@ fn decode_event(
 		Incoming::ContentBlockStart { index, content_block } => {
 			let (block, kind, id, name, initial) = match content_block {
 				IncomingBlock::Text { text, citations } => (
-					DecodedBlock::Text { text: SmolStrMut::new(text), citations },
+					DecodedBlock::Text { text: StrMut::new(text), citations },
 					StreamPartKind::Text,
-					SmolStr::default(),
-					SmolStr::default(),
+					Str::default(),
+					Str::default(),
 					Some(text.as_bytes()),
 				),
 				IncomingBlock::Thinking { thinking, signature } => (
 					DecodedBlock::Thinking {
-						text:      SmolStrMut::new(thinking),
+						text:      StrMut::new(thinking),
 						signature: BytesMut::from(signature.as_bytes()),
 						redacted:  false,
 					},
 					StreamPartKind::Thinking,
-					SmolStr::default(),
-					SmolStr::default(),
+					Str::default(),
+					Str::default(),
 					Some(thinking.as_bytes()),
 				),
 				IncomingBlock::RedactedThinking { data } => (
 					DecodedBlock::Thinking {
-						text:      SmolStrMut::default(),
+						text:      StrMut::default(),
 						signature: BytesMut::from(data.as_bytes()),
 						redacted:  true,
 					},
 					StreamPartKind::Thinking,
-					SmolStr::default(),
-					SmolStr::default(),
+					Str::default(),
+					Str::default(),
 					None,
 				),
 				IncomingBlock::ToolUse { id, name, input } => {
@@ -1731,14 +1731,14 @@ fn decode_event(
 					(
 						DecodedBlock::Tool {
 							id:       canonical,
-							name:     SmolStr::from(name),
+							name:     Str::from(name),
 							args:     BytesMut::new(),
 							initial:  Bytes::copy_from_slice(input.get().as_bytes()),
 							streamed: false,
 						},
 						StreamPartKind::ToolCall,
-						SmolStr::from(canonical.to_string()),
-						SmolStr::from(name),
+						Str::from(canonical.to_string()),
+						Str::from(name),
 						None,
 					)
 				},
@@ -1767,7 +1767,7 @@ fn decode_event(
 				let Some(DecodedBlock::Thinking { signature: target, .. }) =
 					state.blocks.get_mut(&index)
 				else {
-					return Err(Error::Provider(SmolStr::from(
+					return Err(Error::Provider(Str::from(
 						"signature delta for a non-thinking block",
 					)));
 				};
@@ -1778,7 +1778,7 @@ fn decode_event(
 			},
 			IncomingDelta::Citation { citation } => {
 				let Some(DecodedBlock::Text { citations, .. }) = state.blocks.get_mut(&index) else {
-					return Err(Error::Provider(SmolStr::from("citation delta for a non-text block")));
+					return Err(Error::Provider(Str::from("citation delta for a non-text block")));
 				};
 				citations.push(serde_json::from_str(citation.get()).map_err(json_error)?);
 			},
@@ -1818,7 +1818,7 @@ fn decode_event(
 			events.push(TurnEvent::Error(
 				TurnError::builder()
 					.kind(error_kind(error.kind))
-					.detail(SmolStr::from(error.message))
+					.detail(Str::from(error.message))
 					.unsupported(Vec::new())
 					.retry_after_ms(0)
 					.build(),
@@ -1850,7 +1850,7 @@ fn append_delta(
 			args.extend_from_slice(value.as_bytes());
 		},
 		_ => {
-			return Err(Error::Provider(SmolStr::from("content delta type did not match its block")));
+			return Err(Error::Provider(Str::from("content delta type did not match its block")));
 		},
 	}
 	events.push(TurnEvent::PartDelta { index, chunk: Bytes::copy_from_slice(value.as_bytes()) });
@@ -1920,7 +1920,7 @@ fn build_outcome(state: &mut AnthropicState) -> ChatOutcome {
 		.output(output)
 		.stop(state.stop.unwrap_or(StopReason::EndTurn))
 		.maybe_usage(state.usage.take())
-		.provider(SmolStr::from("anthropic"))
+		.provider(Str::from("anthropic"))
 		.model(std::mem::take(&mut state.model))
 		.unsupported(Vec::new())
 		.props(std::mem::take(&mut state.response_props))

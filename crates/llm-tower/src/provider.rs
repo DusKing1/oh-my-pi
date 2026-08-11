@@ -20,7 +20,7 @@ use futures::{Stream, StreamExt};
 use http::{HeaderMap, Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Body as HttpBody;
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use omp_llm_anthropic::{
 	AnthropicCodec,
 	bedrock::{self, BedrockCodec, BedrockEventStreamDecoder},
@@ -70,15 +70,15 @@ use crate::{codex_websocket::CodexWebSocketRequest, select::Routed};
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProviderRoute {
 	/// Google Cloud project for Vertex or unleased Cloud Code Assist routes.
-	pub project:    SmolStr,
+	pub project:    Str,
 	/// Region substituted into `{region}` and Vertex publisher paths.
-	pub region:     SmolStr,
+	pub region:     Str,
 	/// Deployment substituted into `{deployment}`; the model is used if empty.
-	pub deployment: SmolStr,
+	pub deployment: Str,
 	/// Account identifier substituted into gateway endpoint templates.
-	pub account:    SmolStr,
+	pub account:    Str,
 	/// Gateway identifier substituted into gateway endpoint templates.
-	pub gateway:    SmolStr,
+	pub gateway:    Str,
 }
 
 /// The statically dispatched set of HTTP provider codecs.
@@ -113,7 +113,7 @@ pub enum HttpCodec {
 	///
 	/// The immutable `CcaCodec` snapshot is constructed from canonical metadata
 	/// immediately before encoding; only its route project is retained here.
-	GoogleCcaAntigravity(SmolStr),
+	GoogleCcaAntigravity(Str),
 }
 
 impl HttpCodec {
@@ -188,7 +188,7 @@ impl HttpCodec {
 			Self::GoogleGenAi(codec) | Self::GoogleVertex(codec) => codec.encode(request, compat),
 			Self::GoogleCca(codec) => codec.encode(request, compat),
 			Self::Ollama(codec) => codec.encode(request, compat),
-			Self::GoogleCcaAntigravity(_) => Err(ChatError::Provider(SmolStr::new_static(
+			Self::GoogleCcaAntigravity(_) => Err(ChatError::Provider(Str::new_static(
 				"Antigravity codec requires canonical request metadata",
 			))),
 		}
@@ -220,13 +220,13 @@ impl HttpCodec {
 		};
 		for selected in selected {
 			let name: http::header::HeaderName = selected.name.parse().map_err(|_| {
-				ChatError::Provider(format_smol!(
+				ChatError::Provider(fmts!(
 					"provider selected an invalid HTTP header name: {}",
 					selected.name
 				))
 			})?;
 			let value: http::header::HeaderValue = selected.value.parse().map_err(|_| {
-				ChatError::Provider(format_smol!(
+				ChatError::Provider(fmts!(
 					"provider selected an invalid value for HTTP header {}",
 					selected.name
 				))
@@ -252,7 +252,7 @@ impl HttpCodec {
 			Self::GoogleGenAi(codec) | Self::GoogleVertex(codec) => codec.decode(frame, state),
 			Self::GoogleCca(codec) => codec.decode(frame, state),
 			Self::Ollama(codec) => codec.decode(frame, state),
-			Self::GoogleCcaAntigravity(_) => Err(ChatError::Provider(SmolStr::new_static(
+			Self::GoogleCcaAntigravity(_) => Err(ChatError::Provider(Str::new_static(
 				"Antigravity codec snapshot was not prepared before decode",
 			))),
 		}
@@ -271,7 +271,7 @@ pub enum ProviderBuildError {
 		/// Transport whose wire contract rejected the header.
 		transport: TransportId,
 		/// Case-preserving rejected header name.
-		name:      SmolStr,
+		name:      Str,
 	},
 }
 
@@ -296,7 +296,7 @@ pub enum ProviderAttemptError<E, B> {
 	HttpRequest(http::Error),
 	/// Catalog base-URL expansion failed.
 	#[error("invalid provider endpoint: {0}")]
-	Endpoint(SmolStr),
+	Endpoint(Str),
 	/// Egress failed before response headers arrived.
 	#[error("provider egress failed: {0}")]
 	Egress(E),
@@ -311,7 +311,7 @@ pub enum ProviderAttemptError<E, B> {
 	Decode(ChatError),
 	/// A decoded provider terminal failure arrived before any output committed.
 	#[error("provider rejected the attempt before commit: {0}")]
-	Rejected(SmolStr),
+	Rejected(Str),
 	/// A provider returned a classified terminal failure before commit.
 	#[error("provider rejected the attempt before commit: {}", .0.detail)]
 	Classified(TurnError),
@@ -464,7 +464,7 @@ where
 					let status = response.status();
 					let error = TurnError::builder()
 						.kind(google_vertex::classify_status(status.as_u16()))
-						.detail(format_smol!("Google Vertex returned HTTP status {status}"))
+						.detail(fmts!("Google Vertex returned HTTP status {status}"))
 						.unsupported(Vec::new())
 						.retry_after_ms(0)
 						.build();
@@ -499,7 +499,7 @@ where
 				};
 				let error = TurnError::builder()
 					.kind(kind)
-					.detail(format_smol!("HTTP {status} {}", String::from_utf8_lossy(&bytes)))
+					.detail(fmts!("HTTP {status} {}", String::from_utf8_lossy(&bytes)))
 					.unsupported(Vec::new())
 					.retry_after_ms(retry_after_ms)
 					.build();
@@ -536,7 +536,7 @@ where
 fn prepare_request<E, B>(
 	shared: &ProviderShared,
 	routed: Routed,
-) -> Result<(Request<Body>, Vec<Unsupported>, Arc<HttpCodec>, SmolStr), ProviderAttemptError<E, B>>
+) -> Result<(Request<Body>, Vec<Unsupported>, Arc<HttpCodec>, Str), ProviderAttemptError<E, B>>
 {
 	let Routed { request: turn_request, model_policy, lease, credential_metadata } = routed;
 	let mut native = ChatRequest::try_from(turn_request).map_err(ProviderAttemptError::Request)?;
@@ -563,7 +563,7 @@ fn prepare_request<E, B>(
 				.strip_suffix(omp_llm_google::cca::STREAM_GENERATE_PATH)
 				.unwrap_or(endpoint.as_str());
 			let mut codec = CcaCodec::antigravity(project.clone(), metadata)
-				.with_served_endpoint(SmolStr::new(served_endpoint));
+				.with_served_endpoint(Str::new(served_endpoint));
 			if model.to_ascii_lowercase().contains("flash") {
 				codec =
 					codec.with_planning_leak_filter(native.tools.iter().map(|tool| tool.name.clone()));
@@ -624,15 +624,15 @@ fn prepare_request<E, B>(
 		.as_ref()
 		.and_then(|props| props.get_ns("openai-codex", "turn_state"))
 		.and_then(serde_json::Value::as_str)
-		.map(SmolStr::new);
+		.map(Str::new);
 	let (mut body, mut unsupported) = codec
 		.encode(&native, &shared.provider.compat)
 		.map_err(ProviderAttemptError::Encode)?;
 	if proxy_computer_use_demoted {
 		unsupported.push(
 			Unsupported::builder()
-				.what(SmolStr::new_static("computer_use"))
-				.detail(SmolStr::new_static(
+				.what(Str::new_static("computer_use"))
+				.detail(Str::new_static(
 					"inferred computer-use support is not trusted through a proxy endpoint",
 				))
 				.action(UnsupportedAction::Dropped)
@@ -643,7 +643,7 @@ fn prepare_request<E, B>(
 	let mut codex_identity = None;
 	if matches!(codec.as_ref(), HttpCodec::OpenAiCodex(_)) {
 		let mut value: serde_json::Value = serde_json::from_slice(&body).map_err(|error| {
-			ProviderAttemptError::Encode(ChatError::Provider(SmolStr::from(error.to_string())))
+			ProviderAttemptError::Encode(ChatError::Provider(Str::from(error.to_string())))
 		})?;
 		let identity = codex_request_identity(&shared.provider, &native, &value);
 		apply_codex_client_metadata(
@@ -655,7 +655,7 @@ fn prepare_request<E, B>(
 		)
 		.map_err(ProviderAttemptError::Encode)?;
 		body = Bytes::from(serde_json::to_vec(&value).map_err(|error| {
-			ProviderAttemptError::Encode(ChatError::Provider(SmolStr::from(error.to_string())))
+			ProviderAttemptError::Encode(ChatError::Provider(Str::from(error.to_string())))
 		})?);
 		let websocket_preferred = native
 			.model_policy
@@ -689,12 +689,12 @@ fn prepare_request<E, B>(
 			.entries()
 		{
 			let name: http::header::HeaderName = name.parse().map_err(|_| {
-				ProviderAttemptError::Encode(ChatError::Provider(format_smol!(
+				ProviderAttemptError::Encode(ChatError::Provider(fmts!(
 					"CCA selected an invalid HTTP header name: {name}"
 				)))
 			})?;
 			let value: http::header::HeaderValue = value.parse().map_err(|_| {
-				ProviderAttemptError::Encode(ChatError::Provider(format_smol!(
+				ProviderAttemptError::Encode(ChatError::Provider(fmts!(
 					"CCA selected an invalid value for HTTP header {name}"
 				)))
 			})?;
@@ -738,12 +738,12 @@ fn prepare_request<E, B>(
 		});
 		for (name, value) in plan.iter() {
 			let header_name: http::HeaderName = name.parse().map_err(|_| {
-				ProviderAttemptError::Encode(ChatError::Provider(format_smol!(
+				ProviderAttemptError::Encode(ChatError::Provider(fmts!(
 					"Codex selected an invalid HTTP header name: {name}"
 				)))
 			})?;
 			let mut header_value = http::HeaderValue::from_bytes(value.as_bytes()).map_err(|_| {
-				ProviderAttemptError::Encode(ChatError::Provider(format_smol!(
+				ProviderAttemptError::Encode(ChatError::Provider(fmts!(
 					"Codex selected an invalid value for HTTP header {name}"
 				)))
 			})?;
@@ -791,17 +791,17 @@ fn model_headers(request: &ChatRequest) -> Result<HeaderMap, ChatError> {
 	};
 	for (raw_name, raw_value) in policy.headers.iter() {
 		let name: http::header::HeaderName = raw_name.parse().map_err(|_| {
-			ChatError::Provider(format_smol!(
+			ChatError::Provider(fmts!(
 				"model policy contains an invalid HTTP header name: {raw_name}"
 			))
 		})?;
 		if unsafe_model_header(name.as_str()) {
-			return Err(ChatError::Provider(format_smol!(
+			return Err(ChatError::Provider(fmts!(
 				"model policy forbids unsafe HTTP header: {raw_name}"
 			)));
 		}
 		let value: http::header::HeaderValue = raw_value.parse().map_err(|_| {
-			ChatError::Provider(format_smol!(
+			ChatError::Provider(fmts!(
 				"model policy contains an invalid value for HTTP header {raw_name}"
 			))
 		})?;
@@ -898,14 +898,14 @@ fn codex_session_key(
 	provider: &ProviderEntry,
 	request: &ChatRequest,
 	body: &serde_json::Value,
-) -> SmolStr {
+) -> Str {
 	if let Some(key) = request
 		.cache
 		.as_ref()
 		.map(|cache| cache.session_key.as_str())
 		.filter(|key| !key.is_empty())
 	{
-		return SmolStr::new(key);
+		return Str::new(key);
 	}
 	if let Some(key) = request
 		.meta
@@ -913,7 +913,7 @@ fn codex_session_key(
 		.map(|meta| meta.session_id.as_str())
 		.filter(|key| !key.is_empty())
 	{
-		return SmolStr::new(key);
+		return Str::new(key);
 	}
 	let mut hasher = blake3::Hasher::new();
 	hasher.update(provider.id.as_bytes());
@@ -921,7 +921,7 @@ fn codex_session_key(
 	hasher.update(request.model.as_bytes());
 	hasher.update(&[0]);
 	hasher.update(serde_json::to_string(body).unwrap_or_default().as_bytes());
-	format_smol!("codex_ephemeral_{}", hasher.finalize().to_hex())
+	fmts!("codex_ephemeral_{}", hasher.finalize().to_hex())
 }
 
 fn codex_request_identity(
@@ -936,7 +936,7 @@ fn codex_request_identity(
 	let window_id = codex_uuid("window", key.as_bytes());
 	let body_bytes = serde_json::to_vec(body).unwrap_or_default();
 	let turn_id = codex_uuid("turn", &body_bytes);
-	let turn_metadata = SmolStr::from(
+	let turn_metadata = Str::from(
 		serde_json::json!({
 			"request_kind": "turn",
 			"session_id": session_id.as_str(),
@@ -956,19 +956,19 @@ fn codex_request_identity(
 	}
 }
 
-fn codex_installation_id() -> SmolStr {
-	static INSTALLATION_ID: LazyLock<SmolStr> = LazyLock::new(|| {
+fn codex_installation_id() -> Str {
+	static INSTALLATION_ID: LazyLock<Str> = LazyLock::new(|| {
 		let created = SystemTime::now()
 			.duration_since(UNIX_EPOCH)
 			.unwrap_or_default()
 			.as_nanos();
-		let seed = format_smol!("{}:{created}", std::process::id());
+		let seed = fmts!("{}:{created}", std::process::id());
 		codex_uuid("installation", seed.as_bytes())
 	});
 	(*INSTALLATION_ID).clone()
 }
 
-fn codex_uuid(domain: &str, value: &[u8]) -> SmolStr {
+fn codex_uuid(domain: &str, value: &[u8]) -> Str {
 	let mut hasher = blake3::Hasher::new();
 	hasher.update(domain.as_bytes());
 	hasher.update(&[0]);
@@ -977,7 +977,7 @@ fn codex_uuid(domain: &str, value: &[u8]) -> SmolStr {
 	bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
 	bytes[6] = (bytes[6] & 0x0f) | 0x40;
 	bytes[8] = (bytes[8] & 0x3f) | 0x80;
-	format_smol!(
+	fmts!(
 		"{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:\
 		 02x}{:02x}",
 		bytes[0],
@@ -1000,7 +1000,7 @@ fn codex_uuid(domain: &str, value: &[u8]) -> SmolStr {
 }
 fn take_antigravity_metadata(
 	request: &mut ChatRequest,
-) -> Result<(AntigravityRequestMetadata, Option<SmolStr>), ChatError> {
+) -> Result<(AntigravityRequestMetadata, Option<Str>), ChatError> {
 	const NAMESPACE: &str = "google-antigravity";
 	const KEYS: [&str; 6] =
 		["agent_id", "request_id", "trajectory_id", "step_index", "last_execution_id", "model_enum"];
@@ -1023,7 +1023,7 @@ fn take_antigravity_metadata(
 			.get_ns(NAMESPACE, key)
 			.and_then(serde_json::Value::as_str)
 			.filter(|value| !value.is_empty())
-			.map(SmolStr::new)
+			.map(Str::new)
 			.ok_or_else(|| antigravity_metadata_error(key))
 	};
 	let agent_id = string("agent_id")?;
@@ -1038,17 +1038,17 @@ fn take_antigravity_metadata(
 		.get_ns(NAMESPACE, "last_execution_id")
 		.and_then(serde_json::Value::as_str)
 		.filter(|value| !value.is_empty())
-		.map(SmolStr::new);
+		.map(Str::new);
 	let model_enum = options
 		.get_ns(NAMESPACE, "model_enum")
 		.and_then(serde_json::Value::as_str)
 		.filter(|value| !value.is_empty())
-		.map(SmolStr::new);
+		.map(Str::new);
 	let project_override = options
 		.get_ns("antigravity", "project_id")
 		.and_then(serde_json::Value::as_str)
 		.filter(|value| !value.is_empty())
-		.map(SmolStr::new);
+		.map(Str::new);
 
 	let mut parts = request_id.as_str().split('/');
 	let valid_request_id = parts.next() == Some("agent")
@@ -1076,7 +1076,7 @@ fn take_antigravity_metadata(
 			.as_mut()
 			.expect("validated provider options above");
 		for key in KEYS {
-			options.0.remove(format_smol!("{NAMESPACE}/{key}").as_str());
+			options.0.remove(fmts!("{NAMESPACE}/{key}").as_str());
 		}
 		options.0.remove("antigravity/project_id");
 		options.is_empty()
@@ -1088,14 +1088,14 @@ fn take_antigravity_metadata(
 }
 
 fn antigravity_metadata_error(field: &'static str) -> ChatError {
-	ChatError::Provider(format_smol!("invalid Google Antigravity metadata field: {field}"))
+	ChatError::Provider(fmts!("invalid Google Antigravity metadata field: {field}"))
 }
 
 fn endpoint(
 	shared: &ProviderShared,
 	model: &str,
 	api_version_override: Option<&str>,
-) -> Result<String, SmolStr> {
+) -> Result<String, Str> {
 	let deployment = if shared.route.deployment.is_empty() {
 		model
 	} else {
@@ -1127,7 +1127,7 @@ fn endpoint(
 			.gateway(shared.route.gateway.as_str())
 			.build(),
 	)
-	.map_err(|error| format_smol!("{error}"))?;
+	.map_err(|error| fmts!("{error}"))?;
 	let base = base.trim_end_matches('/');
 	let suffix = match shared.provider.transport {
 		TransportId::OpenAiChat => "/chat/completions".to_owned(),
@@ -1137,12 +1137,12 @@ fn endpoint(
 		TransportId::AnthropicBedrock => {
 			return bedrock::endpoint(base, region, model)
 				.map(|endpoint| endpoint.to_string())
-				.map_err(|error| format_smol!("{error}"));
+				.map_err(|error| fmts!("{error}"));
 		},
 		TransportId::BedrockConverse => {
 			return bedrock::converse_endpoint(base, region, model)
 				.map(|endpoint| endpoint.to_string())
-				.map_err(|error| format_smol!("{error}"));
+				.map_err(|error| fmts!("{error}"));
 		},
 		TransportId::AnthropicVertex => {
 			return vertex::endpoint(
@@ -1152,7 +1152,7 @@ fn endpoint(
 				model,
 			)
 			.map(|endpoint| endpoint.to_string())
-			.map_err(|error| format_smol!("{error}"));
+			.map_err(|error| fmts!("{error}"));
 		},
 		TransportId::GoogleGenAi => format!("/models/{model}:streamGenerateContent?alt=sse"),
 		TransportId::GoogleVertex => {
@@ -1163,7 +1163,7 @@ fn endpoint(
 				model,
 			)
 			.map(|endpoint| endpoint.to_string())
-			.map_err(|error| format_smol!("{error}"));
+			.map_err(|error| fmts!("{error}"));
 		},
 		TransportId::GoogleCca => omp_llm_google::cca::STREAM_GENERATE_PATH.to_owned(),
 		TransportId::OllamaChat => if base.ends_with("/api") {
@@ -1192,7 +1192,7 @@ fn endpoint(
 	Ok(format!("{base}{suffix}"))
 }
 
-fn take_azure_api_version(request: &mut ChatRequest) -> Option<SmolStr> {
+fn take_azure_api_version(request: &mut ChatRequest) -> Option<Str> {
 	let options = request.provider_options.as_mut()?;
 	let value = options.0.remove("azure/api_version")?;
 	match value {
@@ -1338,8 +1338,8 @@ struct DecodeMachine<B> {
 	state:             DecodeState,
 	queue:             VecDeque<TurnEvent>,
 	unsupported:       Vec<Unsupported>,
-	selected_provider: SmolStr,
-	selected_model:    SmolStr,
+	selected_provider: Str,
+	selected_model:    Str,
 	terminal:          bool,
 }
 
@@ -1356,8 +1356,8 @@ impl<B> DecodeMachine<B> {
 		codec: Arc<HttpCodec>,
 		framing: Framing,
 		unsupported: Vec<Unsupported>,
-		selected_provider: SmolStr,
-		selected_model: SmolStr,
+		selected_provider: Str,
+		selected_model: Str,
 	) -> Self {
 		let framing = match framing {
 			Framing::Sse => FramingState::Sse(SseDecoder::new()),
@@ -1381,7 +1381,7 @@ impl<B> DecodeMachine<B> {
 	fn push_chunk(&mut self, chunk: Bytes) -> Result<(), ChatError> {
 		enum WireFrame {
 			Data(Bytes),
-			Event(Option<SmolStr>, Bytes),
+			Event(Option<Str>, Bytes),
 		}
 		let (frames, done): (SmallVec<WireFrame, 4>, bool) = match &mut self.framing {
 			FramingState::Sse(decoder) => {
@@ -1480,7 +1480,7 @@ impl<B> DecodeMachine<B> {
 		}
 		let error = TurnError::builder()
 			.kind(TurnErrorKind::Upstream)
-			.detail(format_smol!("{detail}"))
+			.detail(fmts!("{detail}"))
 			.unsupported(Vec::new())
 			.retry_after_ms(0)
 			.build();
@@ -1624,10 +1624,10 @@ where
 		let stream = service
 			.ready()
 			.await
-			.map_err(|error| ChatError::Transport(format_smol!("{error}")))?
+			.map_err(|error| ChatError::Transport(fmts!("{error}")))?
 			.call(request)
 			.await
-			.map_err(|error| ChatError::Transport(format_smol!("{error}")))?;
+			.map_err(|error| ChatError::Transport(fmts!("{error}")))?;
 		Ok(NativeTurnStream { inner: stream, ended: false }.boxed())
 	}
 }
@@ -1665,7 +1665,7 @@ where
 					Poll::Ready(Some(NativeTurnEvent::Error(
 						TurnError::builder()
 							.kind(TurnErrorKind::Upstream)
-							.detail(format_smol!("invalid canonical provider event: {error}"))
+							.detail(fmts!("invalid canonical provider event: {error}"))
 							.unsupported(Vec::new())
 							.retry_after_ms(0)
 							.build(),

@@ -9,7 +9,7 @@ use ast_grep_core::{
 };
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
-use omp_core::SmolStr;
+use omp_core::Str;
 use smallvec::SmallVec;
 
 use crate::language::SupportLang;
@@ -60,7 +60,7 @@ pub struct AstMatch {
 	/// Exclusive end byte offset.
 	pub byte_end:   usize,
 	/// Matched source text.
-	pub text:       SmolStr,
+	pub text:       Str,
 }
 
 /// A filesystem match with absolute and workspace-relative paths.
@@ -69,14 +69,14 @@ pub struct MatchedFile {
 	/// Absolute file path.
 	pub absolute_path: PathBuf,
 	/// Workspace-relative slash-separated path.
-	pub relative_path: SmolStr,
+	pub relative_path: Str,
 }
 
 /// A replacement template paired with its compiled search patterns.
 #[derive(Debug, Clone)]
 pub struct CompiledRewrite {
 	/// Replacement template.
-	pub out:      SmolStr,
+	pub out:      Str,
 	/// Compiled patterns that trigger this replacement.
 	pub patterns: SmallVec<Pattern, 2>,
 }
@@ -274,7 +274,7 @@ pub fn compile_rewrite_rules(
 		.enumerate()
 		.map(|(index, (pattern, out))| {
 			compile_search_patterns(pattern, language)
-				.map(|patterns| CompiledRewrite { out: SmolStr::new(out), patterns })
+				.map(|patterns| CompiledRewrite { out: Str::new(out), patterns })
 				.map_err(|error| (index, error))
 		})
 		.collect()
@@ -298,7 +298,7 @@ pub fn collect_matches(source: &str, language: SupportLang, patterns: &[Pattern]
 				end_column: end.column(node) + 1,
 				byte_start: range.start,
 				byte_end:   range.end,
-				text:       SmolStr::new(matched.text()),
+				text:       Str::new(matched.text()),
 			});
 		}
 	}
@@ -401,9 +401,9 @@ pub fn collect_matched_files(
 			.unwrap_or(&absolute_path)
 			.to_string_lossy();
 		let relative_path = if relative_path.contains('\\') {
-			SmolStr::from(relative_path.replace('\\', "/"))
+			Str::from(relative_path.replace('\\', "/"))
 		} else {
-			SmolStr::new(relative_path.as_ref())
+			Str::new(relative_path.as_ref())
 		};
 		if globset.is_match(relative_path.as_str())
 			|| patterns

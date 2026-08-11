@@ -45,7 +45,7 @@ const ANTHROPIC_KEYWORDS: &[&str] = &[
 	"maxProperties",
 ];
 
-fn report(what: impl Into<omp_core::SmolStr>, detail: impl Into<omp_core::SmolStr>) -> Unsupported {
+fn report(what: impl Into<omp_core::Str>, detail: impl Into<omp_core::Str>) -> Unsupported {
 	Unsupported::builder()
 		.what(what.into())
 		.detail(detail.into())
@@ -721,7 +721,7 @@ pub fn normalize_tools(
 
 #[cfg(test)]
 mod tests {
-	use omp_core::SmolStr;
+	use omp_core::Str;
 	#[test]
 	fn terminal_precedence_is_content_filter_then_tools_then_length() {
 		assert_eq!(
@@ -927,8 +927,8 @@ mod tests {
 		let tools = (0..=MAX_ANTHROPIC_STRICT_TOOLS)
 			.map(|_| {
 				ToolDef::builder()
-					.name(SmolStr::new("bash"))
-					.description(SmolStr::new(""))
+					.name(Str::new("bash"))
+					.description(Str::new(""))
 					.schema_json(Bytes::from_static(b"{\"type\":\"object\",\"properties\":{}}"))
 					.strict(true)
 					.build()

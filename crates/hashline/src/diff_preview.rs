@@ -1,6 +1,6 @@
 //! Compact current-coordinate previews for numbered exact-edit diffs.
 
-use omp_core::{SmolStr, SmolStrMut, format_smol};
+use omp_core::{Str, StrMut, fmts};
 
 const DEFAULT_ADDED_RUN_CONTEXT_LINES: usize = 2;
 const ELISION: &str = "…";
@@ -22,7 +22,7 @@ impl Default for CompactDiffOptions {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompactDiffPreview {
 	/// Numbered visible current lines with removed rows omitted.
-	pub preview:       SmolStr,
+	pub preview:       Str,
 	/// Number of added rows in the source diff.
 	pub added_lines:   usize,
 	/// Number of removed rows in the source diff.
@@ -44,12 +44,12 @@ struct ParsedLine<'a> {
 #[must_use]
 pub fn build_compact_diff_preview(diff: &str, options: CompactDiffOptions) -> CompactDiffPreview {
 	let edge_lines = options.max_added_run_context.max(1);
-	let mut formatted = Vec::<SmolStr>::new();
-	let mut added_run = Vec::<SmolStr>::new();
+	let mut formatted = Vec::<Str>::new();
+	let mut added_run = Vec::<Str>::new();
 	let mut added_lines = 0usize;
 	let mut removed_lines = 0usize;
 
-	let flush = |formatted: &mut Vec<SmolStr>, added_run: &mut Vec<SmolStr>| {
+	let flush = |formatted: &mut Vec<Str>, added_run: &mut Vec<Str>| {
 		append_added_run(formatted, added_run, edge_lines);
 		added_run.clear();
 	};
@@ -64,7 +64,7 @@ pub fn build_compact_diff_preview(diff: &str, options: CompactDiffOptions) -> Co
 			match parsed.kind {
 				b'+' => {
 					added_lines += 1;
-					added_run.push(format_smol!("{}:{}", parsed.number, parsed.content));
+					added_run.push(fmts!("{}:{}", parsed.number, parsed.content));
 				},
 				b'-' => {
 					flush(&mut formatted, &mut added_run);
@@ -76,7 +76,7 @@ pub fn build_compact_diff_preview(diff: &str, options: CompactDiffOptions) -> Co
 						- i64::try_from(removed_lines).unwrap_or(i64::MAX);
 					append_formatted_line(
 						&mut formatted,
-						format_smol!("{}:{}", parsed.number.saturating_add(offset), parsed.content),
+						fmts!("{}:{}", parsed.number.saturating_add(offset), parsed.content),
 					);
 				},
 			}
@@ -86,8 +86,8 @@ pub fn build_compact_diff_preview(diff: &str, options: CompactDiffOptions) -> Co
 	while formatted.last().is_some_and(|line| is_separator(line)) {
 		formatted.pop();
 	}
-	let mut preview = SmolStrMut::with_capacity(
-		formatted.iter().map(SmolStr::len).sum::<usize>() + formatted.len(),
+	let mut preview = StrMut::with_capacity(
+		formatted.iter().map(Str::len).sum::<usize>() + formatted.len(),
 	);
 	for (index, line) in formatted.iter().enumerate() {
 		if index > 0 {
@@ -115,7 +115,7 @@ fn parse_line(line: &str) -> Option<ParsedLine<'_>> {
 	Some(ParsedLine { kind, number, content: &body[separator + 1..] })
 }
 
-fn append_added_run(output: &mut Vec<SmolStr>, run: &[SmolStr], edge_lines: usize) {
+fn append_added_run(output: &mut Vec<Str>, run: &[Str], edge_lines: usize) {
 	if run.is_empty() {
 		return;
 	}
@@ -135,7 +135,7 @@ fn append_added_run(output: &mut Vec<SmolStr>, run: &[SmolStr], edge_lines: usiz
 	}
 }
 
-fn append_line(output: &mut Vec<SmolStr>, line: &str) {
+fn append_line(output: &mut Vec<Str>, line: &str) {
 	let normalized = if matches!(line, "..." | "…" | "+…") {
 		ELISION
 	} else {
@@ -149,7 +149,7 @@ fn append_line(output: &mut Vec<SmolStr>, line: &str) {
 	output.push(normalized.into());
 }
 
-fn append_formatted_line(output: &mut Vec<SmolStr>, line: SmolStr) {
+fn append_formatted_line(output: &mut Vec<Str>, line: Str) {
 	if is_separator(&line)
 		&& (output.is_empty() || output.last().is_some_and(|prior| is_separator(prior)))
 	{

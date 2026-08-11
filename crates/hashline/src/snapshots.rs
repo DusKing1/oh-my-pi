@@ -8,7 +8,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 
 use crate::format::normalized_file_xxh32;
 
@@ -52,9 +52,9 @@ impl fmt::Debug for RevisionToken {
 /// One immutable exact-byte file revision retained for a canonical path.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Snapshot {
-	path:        SmolStr,
+	path:        Str,
 	bytes:       Bytes,
-	tag:         SmolStr,
+	tag:         Str,
 	revision:    RevisionToken,
 	recorded_at: u64,
 	seen_lines:  Arc<BTreeSet<usize>>,
@@ -127,7 +127,7 @@ pub enum SnapshotStoreError {
 	/// One revision token was reused with different exact bytes.
 	RevisionConflict {
 		/// Canonical path whose token was reused.
-		path: SmolStr,
+		path: Str,
 	},
 }
 
@@ -150,16 +150,16 @@ pub enum SnapshotLookupError {
 	/// No retained revision matches the requested path and identity.
 	Missing {
 		/// Canonical path requested by the caller.
-		path: SmolStr,
+		path: Str,
 		/// Four-hex representation tag requested by the caller.
-		tag:  SmolStr,
+		tag:  Str,
 	},
 	/// Several exact revisions share the requested representation tag.
 	Ambiguous {
 		/// Canonical path containing the colliding revisions.
-		path:       SmolStr,
+		path:       Str,
 		/// Colliding four-hex representation tag.
-		tag:        SmolStr,
+		tag:        Str,
 		/// Number of independently retained matching revisions.
 		candidates: usize,
 	},
@@ -190,7 +190,7 @@ struct PathHistory {
 #[derive(Debug)]
 pub struct SnapshotStore {
 	options:     SnapshotStoreOptions,
-	histories:   HashMap<SmolStr, PathHistory>,
+	histories:   HashMap<Str, PathHistory>,
 	clock:       u64,
 	total_bytes: usize,
 }
@@ -217,11 +217,11 @@ impl SnapshotStore {
 	/// display tag.
 	pub fn record<I>(
 		&mut self,
-		path: impl Into<SmolStr>,
+		path: impl Into<Str>,
 		revision: RevisionToken,
 		bytes: Bytes,
 		seen_lines: I,
-	) -> Result<SmolStr, SnapshotStoreError>
+	) -> Result<Str, SnapshotStoreError>
 	where
 		I: IntoIterator<Item = usize>,
 	{
@@ -399,7 +399,7 @@ impl SnapshotStore {
 	pub fn relocate(
 		&mut self,
 		from: &str,
-		to: impl Into<SmolStr>,
+		to: impl Into<Str>,
 	) -> Result<(), SnapshotStoreError> {
 		let to = to.into();
 		if from == to.as_str() {
@@ -508,9 +508,9 @@ impl SnapshotStore {
 /// A UTF-8 BOM is excluded, and spaces, tabs, and carriage returns immediately
 /// before LF or EOF are ignored, matching hashline's textual tag normalization.
 #[must_use]
-pub fn compute_snapshot_tag(exact: &[u8]) -> SmolStr {
+pub fn compute_snapshot_tag(exact: &[u8]) -> Str {
 	let exact = exact.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(exact);
-	format_smol!("{:04X}", normalized_file_xxh32(exact) & 0xffff)
+	fmts!("{:04X}", normalized_file_xxh32(exact) & 0xffff)
 }
 
 #[cfg(test)]

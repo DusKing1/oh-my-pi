@@ -18,7 +18,7 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 use http::{Method, Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, Full};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_egress::{
 	auth_inject::{AuthContext, CredentialLease},
 	client::Body,
@@ -68,34 +68,34 @@ pub enum VideoError {
 		/// Stable canonical control name.
 		control: &'static str,
 		/// Caller-safe reason.
-		detail:  SmolStr,
+		detail:  Str,
 	},
 	/// No usable credential exists, or a job's owning credential disappeared.
 	#[error("video credential unavailable: {0}")]
-	Credential(SmolStr),
+	Credential(Str),
 	/// Provider authentication was rejected.
 	#[error("OpenAI video authentication failed")]
 	Authentication,
 	/// The provider does not know this job.
 	#[error("OpenAI video job not found: {0}")]
-	NotFound(SmolStr),
+	NotFound(Str),
 	/// Provider returned a classified HTTP failure.
 	#[error("OpenAI video request failed with HTTP {status}: {detail}")]
 	Provider {
 		/// Upstream HTTP status.
 		status: u16,
 		/// Caller-safe upstream detail.
-		detail: SmolStr,
+		detail: Str,
 	},
 	/// Egress failed before a usable provider response was obtained.
 	#[error("OpenAI video transport failed: {0}")]
-	Transport(SmolStr),
+	Transport(Str),
 	/// Provider response violated the videos protocol.
 	#[error("invalid OpenAI video response: {0}")]
-	Protocol(SmolStr),
+	Protocol(Str),
 	/// Durable job or blob persistence failed.
 	#[error("video persistence failed: {0}")]
-	Persistence(SmolStr),
+	Persistence(Str),
 }
 
 /// OpenAI Sora job adapter over the daemon-owned egress stack.
@@ -110,7 +110,7 @@ pub struct OpenAiVideoBackend<S, B = hyper::body::Incoming> {
 	jobs_dir:      Arc<PathBuf>,
 	base_url:      Arc<str>,
 	poll_interval: Duration,
-	locks:         Arc<Mutex<FxHashMap<SmolStr, Arc<AsyncMutex<()>>>>>,
+	locks:         Arc<Mutex<FxHashMap<Str, Arc<AsyncMutex<()>>>>>,
 	response_body: PhantomData<fn() -> B>,
 }
 
@@ -239,7 +239,7 @@ where
 		let wire: WireVideo = parse_json(&response.body)?;
 		validate_id(&wire.id)?;
 		validate_wire(&wire)?;
-		let gateway_id: SmolStr = ulid::Ulid::generate().to_string().into();
+		let gateway_id: Str = ulid::Ulid::generate().to_string().into();
 		let created =
 			StoredJob::from_wire(&wire, gateway_id.clone(), lease.credential_id(), &controls);
 		let lock = self.job_lock(&gateway_id);
@@ -352,7 +352,7 @@ where
 			.headers()
 			.get(header::CONTENT_TYPE)
 			.and_then(|value| value.to_str().ok())
-			.map(SmolStr::from);
+			.map(Str::from);
 		let body = response
 			.into_body()
 			.collect()
@@ -496,9 +496,9 @@ fn facet_error(error: VideoError) -> facet::Error {
 
 #[derive(Clone, Default)]
 struct Controls {
-	model:   SmolStr,
+	model:   Str,
 	seconds: u32,
-	size:    SmolStr,
+	size:    Str,
 }
 
 impl TryFrom<&GenerateVideoRequest> for Controls {
@@ -656,14 +656,14 @@ fn validate_wire(wire: &WireVideo) -> Result<(), VideoError> {
 
 struct HttpResponse {
 	body:         Bytes,
-	content_type: Option<SmolStr>,
+	content_type: Option<Str>,
 }
 
 fn parse_json<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, VideoError> {
 	serde_json::from_slice(body).map_err(|error| VideoError::Protocol(error.to_string().into()))
 }
 
-fn provider_detail(body: &[u8]) -> SmolStr {
+fn provider_detail(body: &[u8]) -> Str {
 	let code = serde_json::from_slice::<Value>(body)
 		.ok()
 		.and_then(|value| {
@@ -680,7 +680,7 @@ fn provider_detail(body: &[u8]) -> SmolStr {
 					.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
 		});
 	code.map_or_else(
-		|| SmolStr::new_static("provider rejected the video request"),
+		|| Str::new_static("provider rejected the video request"),
 		|code| format!("provider error code {code}").into(),
 	)
 }
@@ -695,19 +695,19 @@ enum WireWebhook {
 #[derive(Deserialize)]
 struct WireWebhookEvent {
 	#[serde(rename = "type")]
-	kind: SmolStr,
+	kind: Str,
 	data: WireWebhookData,
 }
 
 #[derive(Deserialize)]
 struct WireWebhookData {
-	id: SmolStr,
+	id: Str,
 }
 
 #[derive(Deserialize)]
 struct WireVideo {
-	id:           SmolStr,
-	status:       SmolStr,
+	id:           Str,
+	status:       Str,
 	#[serde(default)]
 	progress:     Option<f64>,
 	#[serde(default)]
@@ -742,29 +742,29 @@ enum StoredState {
 struct StoredArtifact {
 	hash: [u8; 32],
 	size: u64,
-	mime: SmolStr,
+	mime: Str,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
 struct StoredJob {
-	id:             SmolStr,
-	upstream_id:    SmolStr,
+	id:             Str,
+	upstream_id:    Str,
 	credential_id:  u64,
 	state:          StoredState,
 	progress:       f64,
-	detail:         SmolStr,
+	detail:         Str,
 	created_at_ms:  u64,
 	updated_at_ms:  u64,
-	model:          SmolStr,
+	model:          Str,
 	seconds:        u32,
-	size:           SmolStr,
+	size:           Str,
 	artifact:       Option<StoredArtifact>,
 	usage_seconds:  Option<u64>,
 	cost_nanos_usd: Option<u64>,
 }
 
 impl StoredJob {
-	fn from_wire(wire: &WireVideo, id: SmolStr, credential_id: u64, controls: &Controls) -> Self {
+	fn from_wire(wire: &WireVideo, id: Str, credential_id: u64, controls: &Controls) -> Self {
 		let state = match wire.status.as_str() {
 			"queued" => StoredState::Queued,
 			"in_progress" | "running" => StoredState::Running,
@@ -795,7 +795,7 @@ impl StoredJob {
 			detail: if wire.error.is_some() {
 				"video generation failed".into()
 			} else {
-				SmolStr::default()
+				Str::default()
 			},
 			created_at_ms,
 			updated_at_ms,
@@ -836,7 +836,7 @@ impl StoredJob {
 							.build(),
 					)
 					.variant("video".into())
-					.url(SmolStr::default())
+					.url(Str::default())
 					.url_expires_at_ms(0)
 					.build(),
 			]
@@ -887,7 +887,7 @@ fn is_terminal(state: GenerationState) -> bool {
 	)
 }
 
-fn failed_status(id: SmolStr, _error: VideoError) -> GenerationStatus {
+fn failed_status(id: Str, _error: VideoError) -> GenerationStatus {
 	let now = now_ms();
 	GenerationStatus::builder()
 		.generation_id(id)

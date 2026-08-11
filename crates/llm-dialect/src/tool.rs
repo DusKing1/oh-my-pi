@@ -1,11 +1,11 @@
 //! Allocation-bounded parsers for model-authored tool-call bodies.
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde_json::{Map, Number, Value};
 use smallvec::SmallVec;
 
 /// Parses every complete Python call expression in a Gemini `tool_code` body.
-pub(crate) fn parse_python_calls(body: &[u8]) -> SmallVec<(SmolStr, Map<String, Value>), 2> {
+pub(crate) fn parse_python_calls(body: &[u8]) -> SmallVec<(Str, Map<String, Value>), 2> {
 	let Ok(body) = std::str::from_utf8(body) else {
 		return SmallVec::new();
 	};
@@ -30,7 +30,7 @@ pub(crate) fn parse_python_calls(body: &[u8]) -> SmallVec<(SmolStr, Map<String, 
 					continue;
 				};
 				if let Some(arguments) = parse_python_arguments(&body[index + 1..end]) {
-					calls.push((SmolStr::from(name), arguments));
+					calls.push((Str::from(name), arguments));
 				}
 				index = end + 1;
 			},
@@ -398,7 +398,7 @@ fn is_identifier(bytes: &[u8]) -> bool {
 }
 
 /// Parses one complete Gemma token-delimited tool body.
-pub(crate) fn parse_gemma_call(body: &[u8]) -> Option<(SmolStr, Map<String, Value>)> {
+pub(crate) fn parse_gemma_call(body: &[u8]) -> Option<(Str, Map<String, Value>)> {
 	let Ok(body) = std::str::from_utf8(body) else {
 		return None;
 	};
@@ -413,7 +413,7 @@ pub(crate) fn parse_gemma_call(body: &[u8]) -> Option<(SmolStr, Map<String, Valu
 	if !body[end + 1..].trim().is_empty() {
 		return None;
 	}
-	Some((SmolStr::from(name), parse_gemma_arguments(&body[brace + 1..end])?))
+	Some((Str::from(name), parse_gemma_arguments(&body[brace + 1..end])?))
 }
 
 fn parse_gemma_arguments(text: &str) -> Option<Map<String, Value>> {

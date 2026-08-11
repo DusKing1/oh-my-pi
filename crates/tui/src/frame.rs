@@ -3,7 +3,7 @@ use std::sync::{
 	atomic::{AtomicU64, Ordering},
 };
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use parking_lot::Mutex;
 use xutf::{Text, width_char};
 
@@ -199,7 +199,7 @@ impl LinkId {
 
 #[derive(Default)]
 struct LinkRegistry {
-	urls: Vec<SmolStr>,
+	urls: Vec<Str>,
 }
 
 impl LinkRegistry {
@@ -207,13 +207,13 @@ impl LinkRegistry {
 		if let Some(index) = self.urls.iter().position(|known| known == url) {
 			return LinkId(u32::try_from(index + 1).expect("hyperlink registry exceeds u32"));
 		}
-		self.urls.push(SmolStr::new(url));
+		self.urls.push(Str::new(url));
 		LinkId(u32::try_from(self.urls.len()).expect("hyperlink registry exceeds u32"))
 	}
 
 	fn get(&self, id: LinkId) -> Option<&str> {
 		let index = usize::try_from(id.0).ok()?.checked_sub(1)?;
-		self.urls.get(index).map(SmolStr::as_str)
+		self.urls.get(index).map(Str::as_str)
 	}
 }
 
@@ -375,7 +375,7 @@ pub enum CellContent {
 	/// A one-cell space without owned text.
 	Blank,
 	Grapheme {
-		text:  SmolStr,
+		text:  Str,
 		width: u16,
 	},
 	/// A Kitty Unicode-placeholder cell, materialized only by the renderer.
@@ -856,7 +856,7 @@ impl Frame {
 			let bytes = [byte];
 			// SAFETY: `byte` came from a string already known to be ASCII.
 			let text = unsafe { str::from_utf8_unchecked(&bytes) };
-			CellContent::Grapheme { text: SmolStr::new_inline(text), width: 1 }
+			CellContent::Grapheme { text: Str::new_inline(text), width: 1 }
 		};
 		self.cells[lead] = Cell { content, style };
 	}
@@ -881,7 +881,7 @@ impl Frame {
 			let content = if grapheme == " " {
 				CellContent::Blank
 			} else {
-				CellContent::Grapheme { text: SmolStr::new(grapheme), width }
+				CellContent::Grapheme { text: Str::new(grapheme), width }
 			};
 			self.cells[lead] = Cell { content, style };
 			return;
@@ -893,7 +893,7 @@ impl Frame {
 
 		let lead = self.index(x, y);
 		self.cells[lead] =
-			Cell { content: CellContent::Grapheme { text: SmolStr::new(grapheme), width }, style };
+			Cell { content: CellContent::Grapheme { text: Str::new(grapheme), width }, style };
 		for column in x + 1..x + width {
 			let index = self.index(column, y);
 			self.cells[index] = Cell { content: CellContent::Continuation, style };

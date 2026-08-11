@@ -17,7 +17,7 @@ use hyper_util::{
 	client::legacy::connect::{Connected, Connection},
 	rt::TokioIo,
 };
-use omp_core::{SmolStr, base64};
+use omp_core::{Str, base64};
 use thiserror::Error;
 use tokio::{
 	io::{AsyncReadExt, AsyncWriteExt},
@@ -54,9 +54,9 @@ const ALWAYS_DIRECT_NETWORKS: &[&str] = &[
 #[non_exhaustive]
 pub struct ProxyAuth {
 	/// Proxy user name.
-	pub username: SmolStr,
+	pub username: Str,
 	/// Proxy password.
-	pub password: SmolStr,
+	pub password: Str,
 }
 
 impl fmt::Debug for ProxyAuth {
@@ -98,7 +98,7 @@ pub enum ProxyDecision {
 /// non-alphanumeric characters replaced by `_`). No legacy prefix is read.
 #[derive(Clone, Default)]
 pub struct ProxyResolver {
-	environment: BTreeMap<SmolStr, SmolStr>,
+	environment: BTreeMap<Str, Str>,
 }
 
 impl ProxyResolver {
@@ -121,7 +121,7 @@ impl ProxyResolver {
 	{
 		let environment = pairs
 			.into_iter()
-			.map(|(key, value)| (SmolStr::new(key), SmolStr::new(value)))
+			.map(|(key, value)| (Str::new(key), Str::new(value)))
 			.collect();
 		Self { environment }
 	}
@@ -172,7 +172,7 @@ impl ProxyResolver {
 			self
 				.environment
 				.get(*key)
-				.map(SmolStr::as_str)
+				.map(Str::as_str)
 				.filter(|value| !value.is_empty())
 		})
 	}
@@ -237,7 +237,7 @@ impl From<io::Error> for ProxyError {
 #[derive(Clone)]
 pub struct ProxyConnector {
 	resolver: Arc<ProxyResolver>,
-	provider: Option<SmolStr>,
+	provider: Option<Str>,
 }
 
 impl ProxyConnector {
@@ -250,7 +250,7 @@ impl ProxyConnector {
 	/// Constructs a connector whose requests use one provider override.
 	#[must_use]
 	pub fn for_provider(resolver: ProxyResolver, provider: impl AsRef<str>) -> Self {
-		Self { resolver: Arc::new(resolver), provider: Some(SmolStr::new(provider)) }
+		Self { resolver: Arc::new(resolver), provider: Some(Str::new(provider)) }
 	}
 
 	pub(crate) fn inject_proxy_auth<B>(&self, request: &mut Request<B>) {
@@ -260,7 +260,7 @@ impl ProxyConnector {
 		let Ok(target) = url_from_uri_origin(request.uri()) else {
 			return;
 		};
-		let provider = self.provider.as_ref().map(SmolStr::as_str);
+		let provider = self.provider.as_ref().map(Str::as_str);
 		let ProxyDecision::Http { auth: Some(auth), .. } = self.resolver.resolve(&target, provider)
 		else {
 			return;
@@ -326,7 +326,7 @@ impl Service<Uri> for ProxyConnector {
 		let connector = self.clone();
 		Box::pin(async move {
 			let target = url_from_uri_origin(&uri)?;
-			let provider = connector.provider.as_ref().map(SmolStr::as_str);
+			let provider = connector.provider.as_ref().map(Str::as_str);
 			connector.connect(&target, provider).await
 		})
 	}
@@ -564,7 +564,7 @@ fn parse_proxy(value: &str) -> Option<ProxyDecision> {
 	}
 }
 
-fn decode_url_component(value: &str) -> SmolStr {
+fn decode_url_component(value: &str) -> Str {
 	let source = value.as_bytes();
 	let mut decoded = Zeroizing::new(Vec::with_capacity(source.len()));
 	let mut cursor = 0;
@@ -581,7 +581,7 @@ fn decode_url_component(value: &str) -> SmolStr {
 			cursor += 1;
 		}
 	}
-	SmolStr::new(String::from_utf8_lossy(&decoded))
+	Str::new(String::from_utf8_lossy(&decoded))
 }
 
 const fn hex_digit(value: u8) -> Option<u8> {

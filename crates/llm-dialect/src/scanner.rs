@@ -1,7 +1,7 @@
 //! Concrete, allocation-disciplined scanners for every owned prompt dialect.
 
 use bytes::{Buf, Bytes, BytesMut};
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde_json::{Map, Value};
 
 use crate::{
@@ -237,8 +237,8 @@ fn trim_ascii(mut value: &[u8]) -> &[u8] {
 	value
 }
 
-fn smol(raw: &[u8]) -> SmolStr {
-	SmolStr::from(String::from_utf8_lossy(raw).trim())
+fn decode_text(raw: &[u8]) -> Str {
+	Str::from(String::from_utf8_lossy(raw).trim())
 }
 
 // ---- Anthropic / XML / MiniMax
@@ -277,21 +277,21 @@ enum XmlState {
 	Parameter {
 		call:            XmlCall,
 		return_to:       XmlReturn,
-		name:            SmolStr,
+		name:            Str,
 		value:           BytesMut,
 		explicit_string: Option<bool>,
 		truncated:       bool,
 	},
 	Thinking {
-		local:     SmolStr,
+		local:     Str,
 		return_to: XmlReturn,
 	},
 }
 
 #[derive(Debug)]
 struct XmlCall {
-	id:   SmolStr,
-	name: SmolStr,
+	id:   Str,
+	name: Str,
 	args: Map<String, Value>,
 	raw:  RawBlock,
 }
@@ -723,14 +723,14 @@ fn append_capped(target: &mut BytesMut, delta: &[u8], truncated: &mut bool) {
 
 #[derive(Debug)]
 struct ParsedXmlTag {
-	local:        SmolStr,
+	local:        Str,
 	closing:      bool,
 	self_closing: bool,
-	attrs:        Vec<(SmolStr, SmolStr)>,
+	attrs:        Vec<(Str, Str)>,
 }
 
 impl ParsedXmlTag {
-	fn attr(&self, key: &str) -> Option<SmolStr> {
+	fn attr(&self, key: &str) -> Option<Str> {
 		self
 			.attrs
 			.iter()
@@ -785,11 +785,11 @@ fn parse_xml_tag(raw: &[u8]) -> Option<ParsedXmlTag> {
 			.next()
 			.unwrap_or(raw_name)
 			.to_ascii_lowercase();
-		attrs.push((SmolStr::from(name), SmolStr::from(value)));
+		attrs.push((Str::from(name), Str::from(value)));
 		rest = tail;
 	}
 	Some(ParsedXmlTag {
-		local: SmolStr::from(local.to_ascii_lowercase()),
+		local: Str::from(local.to_ascii_lowercase()),
 		closing,
 		self_closing,
 		attrs,
@@ -933,10 +933,10 @@ impl JsonTagScanner {
 	}
 }
 
-fn parse_named_json_call(body: &[u8]) -> Option<(SmolStr, Map<String, Value>)> {
+fn parse_named_json_call(body: &[u8]) -> Option<(Str, Map<String, Value>)> {
 	let value: Value = serde_json::from_slice(trim_ascii(body)).ok()?;
 	let object = value.as_object()?;
-	let name = SmolStr::from(object.get("name")?.as_str()?.trim());
+	let name = Str::from(object.get("name")?.as_str()?.trim());
 	if name.is_empty() {
 		return None;
 	}
@@ -976,10 +976,10 @@ enum GlmState {
 }
 #[derive(Debug)]
 struct GlmCall {
-	id:    SmolStr,
-	name:  SmolStr,
+	id:    Str,
+	name:  Str,
 	args:  Map<String, Value>,
-	key:   SmolStr,
+	key:   Str,
 	value: BytesMut,
 	raw:   RawBlock,
 }
@@ -1078,7 +1078,7 @@ impl GlmScanner {
 						break;
 					};
 					let raw_name = self.buffer.take(end);
-					let name = smol(&raw_name);
+					let name = decode_text(&raw_name);
 					if name.is_empty() {
 						self.state = GlmState::Outside;
 						continue;
@@ -1092,7 +1092,7 @@ impl GlmScanner {
 						id,
 						name,
 						args: Map::new(),
-						key: SmolStr::default(),
+						key: Str::default(),
 						value: BytesMut::new(),
 						raw: RawBlock(self.include_raw_tool.then_some(raw)),
 					};
@@ -1160,7 +1160,7 @@ impl GlmScanner {
 						break;
 					};
 					let raw = self.buffer.take(end);
-					call.key = smol(&raw);
+					call.key = decode_text(&raw);
 					call.raw.push(&raw);
 					self.buffer.discard(KEY_CLOSE.len());
 					call.raw.push(KEY_CLOSE);
@@ -1246,7 +1246,7 @@ fn finish_glm_value(shapes: &ArgShapes, call: &mut GlmCall, raw: &str) {
 			.args
 			.insert(call.key.to_string(), coerce_named_value(shapes.get(&call.name), &call.key, raw));
 	}
-	call.key = SmolStr::default();
+	call.key = Str::default();
 	call.value.clear();
 }
 fn end_glm(call: GlmCall, out: &mut ScanBatch) {
@@ -1439,20 +1439,20 @@ impl DeepSeekScanner {
 	}
 }
 
-fn parse_deepseek_call(body: &[u8]) -> Option<(SmolStr, Map<String, Value>)> {
+fn parse_deepseek_call(body: &[u8]) -> Option<(Str, Map<String, Value>)> {
 	let separator = find(body, DS_SEP)?;
 	let head = trim_ascii(&body[..separator]);
 	let tail = trim_ascii(&body[separator + DS_SEP.len()..]);
 	let (name, arguments) = if head == b"function" {
 		let fence = find(tail, b"```json")?;
-		let name = smol(&tail[..fence]);
+		let name = decode_text(&tail[..fence]);
 		let arguments = tail[fence + 7..]
 			.strip_prefix(b"\n")
 			.unwrap_or(&tail[fence + 7..]);
 		let arguments = arguments.strip_suffix(b"```").unwrap_or(arguments);
 		(name, strict_json_object(arguments)?)
 	} else {
-		(smol(head), strict_json_object(tail)?)
+		(decode_text(head), strict_json_object(tail)?)
 	};
 	(!name.is_empty()).then_some((name, arguments))
 }
@@ -1513,7 +1513,7 @@ fn parse_dsml_parameters(
 	start: usize,
 	end: usize,
 	wide: bool,
-	id: &SmolStr,
+	id: &Str,
 	args: &mut Map<String, Value>,
 	out: &mut ScanBatch,
 ) {
@@ -1565,7 +1565,7 @@ fn parse_dsml_parameters(
 	}
 }
 
-fn pseudo_xml_attr(raw: &[u8], wanted: &str) -> Option<SmolStr> {
+fn pseudo_xml_attr(raw: &[u8], wanted: &str) -> Option<Str> {
 	let text = std::str::from_utf8(raw).ok()?;
 	let body = text.trim().strip_prefix('<')?.strip_suffix('>')?.trim();
 	let head_end = body.find(char::is_whitespace)?;
@@ -1588,7 +1588,7 @@ fn pseudo_xml_attr(raw: &[u8], wanted: &str) -> Option<SmolStr> {
 			.filter(|byte| matches!(*byte, b'\'' | b'"'))?;
 		let end = rest[1..].find(quote as char)? + 1;
 		if name == wanted {
-			return Some(SmolStr::from(&rest[1..end]));
+			return Some(Str::from(&rest[1..end]));
 		}
 		rest = &rest[end + 1..];
 	}
@@ -1742,8 +1742,8 @@ impl KimiScanner {
 					};
 					let body = self.buffer.take(end);
 					self.buffer.discard(K_CALL_CLOSE.len());
-					let id = smol(trim_ascii(&header));
-					let name = SmolStr::from(normalize_kimi_function_name(&id));
+					let id = decode_text(trim_ascii(&header));
+					let name = Str::from(normalize_kimi_function_name(&id));
 					if !id.is_empty() && !name.is_empty() {
 						if let Some(arguments) = strict_json_object(&body) {
 							out.push(ScanEvent::ToolStart { id: id.clone(), name: name.clone() });
@@ -1803,8 +1803,8 @@ enum HarmonyState {
 	},
 	Body {
 		mode: HarmonyMode,
-		id:   SmolStr,
-		name: SmolStr,
+		id:   Str,
+		name: Str,
 		body: BytesMut,
 		raw:  RawBlock,
 	},
@@ -1885,18 +1885,18 @@ impl HarmonyScanner {
 					let (role, channel, recipient) = parse_harmony_header(&header);
 					let assistant = role.is_empty() || role == "assistant";
 					let (mode, id, name) = if !assistant {
-						(HarmonyMode::Skip, SmolStr::default(), SmolStr::default())
+						(HarmonyMode::Skip, Str::default(), Str::default())
 					} else if !recipient.is_empty() && recipient != "assistant" {
 						let name =
-							SmolStr::from(recipient.strip_prefix("functions.").unwrap_or(&recipient));
+							Str::from(recipient.strip_prefix("functions.").unwrap_or(&recipient));
 						let id = mint_tool_call_id();
 						out.push(ScanEvent::ToolStart { id: id.clone(), name: name.clone() });
 						(HarmonyMode::Tool, id, name)
 					} else if channel == "analysis" {
 						out.push(ScanEvent::ThinkingStart);
-						(HarmonyMode::Thinking, SmolStr::default(), SmolStr::default())
+						(HarmonyMode::Thinking, Str::default(), Str::default())
 					} else {
-						(HarmonyMode::Text, SmolStr::default(), SmolStr::default())
+						(HarmonyMode::Text, Str::default(), Str::default())
 					};
 					self.state = HarmonyState::Body { mode, id, name, body: BytesMut::new(), raw };
 				},
@@ -2003,8 +2003,8 @@ fn emit_harmony(
 
 fn finish_harmony(
 	mode: HarmonyMode,
-	id: SmolStr,
-	name: SmolStr,
+	id: Str,
+	name: Str,
 	body: BytesMut,
 	raw: RawBlock,
 	out: &mut ScanBatch,
@@ -2296,7 +2296,7 @@ mod tests {
 	use super::*;
 	use crate::{Dialect, factory::create_scanner, types::InbandTool};
 
-	fn tool_end(events: impl IntoIterator<Item = ScanEvent>) -> Option<(SmolStr, Value, Bytes)> {
+	fn tool_end(events: impl IntoIterator<Item = ScanEvent>) -> Option<(Str, Value, Bytes)> {
 		events.into_iter().find_map(|event| match event {
 			ScanEvent::ToolEnd { name, args_json, raw_block, .. } => {
 				Some((name, serde_json::from_slice(&args_json).unwrap(), raw_block.unwrap()))

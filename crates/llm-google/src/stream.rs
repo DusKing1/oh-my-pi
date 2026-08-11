@@ -1,6 +1,6 @@
 //! Gemini stream terminal, metadata, and semantic retry rules.
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{Props, StopReason, TurnError, TurnErrorKind};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -90,7 +90,7 @@ pub(crate) struct CandidateMetadata {
 	pub(crate) grounding_metadata: Option<Value>,
 	pub(crate) citation_metadata:  Option<Value>,
 	pub(crate) safety_ratings:     Option<Value>,
-	pub(crate) finish_message:     Option<SmolStr>,
+	pub(crate) finish_message:     Option<Str>,
 }
 
 pub(crate) fn retain_candidate_metadata(props: &mut Props, metadata: CandidateMetadata) {
@@ -110,18 +110,18 @@ pub(crate) fn retain_candidate_metadata(props: &mut Props, metadata: CandidateMe
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct ExecutableCode {
-	pub(crate) language: Option<SmolStr>,
-	pub(crate) code:     Option<SmolStr>,
+	pub(crate) language: Option<Str>,
+	pub(crate) code:     Option<Str>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct CodeExecutionResult {
-	pub(crate) outcome: Option<SmolStr>,
-	pub(crate) output:  Option<SmolStr>,
+	pub(crate) outcome: Option<Str>,
+	pub(crate) output:  Option<Str>,
 }
 
 pub(crate) struct AuxiliaryText {
-	pub(crate) text:  SmolStr,
+	pub(crate) text:  Str,
 	pub(crate) kind:  &'static str,
 	pub(crate) props: Value,
 }
@@ -153,7 +153,7 @@ pub(crate) fn code_execution_result(value: CodeExecutionResult) -> Option<Auxili
 	})
 }
 
-pub(crate) fn finish_reason(reason: &str) -> Result<StopReason, SmolStr> {
+pub(crate) fn finish_reason(reason: &str) -> Result<StopReason, Str> {
 	match reason {
 		"STOP" => Ok(StopReason::EndTurn),
 		"MAX_TOKENS" => Ok(StopReason::MaxTokens),
@@ -172,9 +172,9 @@ pub(crate) fn finish_reason(reason: &str) -> Result<StopReason, SmolStr> {
 		| "LANGUAGE"
 		| "MALFORMED_FUNCTION_CALL"
 		| "UNEXPECTED_TOOL_CALL" => {
-			Err(SmolStr::from(format!("Google generation failed with finish reason: {reason}")))
+			Err(Str::from(format!("Google generation failed with finish reason: {reason}")))
 		},
-		other => Err(SmolStr::from(format!("unknown Google finish reason: {other}"))),
+		other => Err(Str::from(format!("unknown Google finish reason: {other}"))),
 	}
 }
 
@@ -201,7 +201,7 @@ pub(crate) fn stream_error(
 	};
 	TurnError::builder()
 		.kind(kind)
-		.detail(SmolStr::from(detail))
+		.detail(Str::from(detail))
 		.unsupported(Vec::new())
 		.retry_after_ms(retry_after_ms)
 		.build()

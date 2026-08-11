@@ -1,7 +1,7 @@
 //! Owned stream projection and accumulation regression fixtures.
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_dialect::{
 	Dialect, InbandTool, ScannerOptions,
 	projector::{Projection, ProjectionBatch, StreamProjector},
@@ -82,8 +82,8 @@ fn feed_native_call(
 ) {
 	trace.extend(projector.native_tool_start(
 		source_index,
-		SmolStr::new(id.to_string()),
-		SmolStr::new_static("echo"),
+		Str::new(id.to_string()),
+		Str::new_static("echo"),
 	));
 	trace.extend(projector.native_tool_delta(source_index, Bytes::from_static(b"{\"msg\":")));
 	trace.extend(projector.native_tool_delta(source_index, Bytes::from_static(message)));
@@ -119,8 +119,8 @@ fn native_finish_canonicalizes_wire_id_and_closes_the_live_call() {
 
 	trace.extend(projector.native_tool_start(
 		7,
-		SmolStr::new_static("provider-call-7"),
-		SmolStr::new_static("echo"),
+		Str::new_static("provider-call-7"),
+		Str::new_static("echo"),
 	));
 	trace.extend(projector.native_tool_delta(7, Bytes::from_static(br#"{"msg":"native"}"#)));
 	trace.extend(projector.finish());
@@ -160,8 +160,8 @@ fn simultaneous_channels_are_decided_by_the_first_complete_named_start() {
 	assert!(trace.events.is_empty(), "an incomplete owned delimiter cannot claim the channel");
 	trace.extend(projector.native_tool_start(
 		3,
-		SmolStr::new(native_id.to_string()),
-		SmolStr::new_static("echo"),
+		Str::new(native_id.to_string()),
+		Str::new_static("echo"),
 	));
 	trace.extend(projector.feed_text(Bytes::from_static(
 		b"call>\n{\"name\":\"echo\",\"arguments\":{\"msg\":\"owned\"}}\n</tool_call>",
@@ -211,7 +211,7 @@ fn fabricated_boundary_requests_one_abort_drops_the_tail_and_hands_off_the_real_
 	);
 	assert!(
 		projector
-			.native_tool_start(9, SmolStr::new(CallId::new().to_string()), SmolStr::new_static("echo"),)
+			.native_tool_start(9, Str::new(CallId::new().to_string()), Str::new_static("echo"),)
 			.is_empty()
 	);
 	assert!(
@@ -233,8 +233,8 @@ fn malformed_native_order_and_nameless_ghosts_cannot_create_or_end_a_call() {
 	trace.extend(projector.native_tool_end(11));
 	trace.extend(projector.native_tool_start(
 		12,
-		SmolStr::new(CallId::new().to_string()),
-		SmolStr::default(),
+		Str::new(CallId::new().to_string()),
+		Str::default(),
 	));
 	trace.extend(projector.native_tool_delta(12, Bytes::from_static(b"ghost")));
 	trace.extend(projector.native_tool_end(12));

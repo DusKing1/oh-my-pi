@@ -17,7 +17,7 @@ use std::{
 	sync::OnceLock,
 };
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{
 	ApplyPatchShape, Effort, Props, ResolvedModelCapabilities, ResolvedModelHeaders,
 	ResolvedModelPolicy, ResolvedReasoningMode, ResolvedThinkingMode, ResolvedThinkingPolicy,
@@ -125,7 +125,7 @@ pub struct ModelWire {
 	/// Concrete codec/transport used by this model.
 	pub transport: TransportId,
 	/// Per-model endpoint override. `None` inherits the provider endpoint.
-	pub base_url:  Option<SmolStr>,
+	pub base_url:  Option<Str>,
 }
 
 /// Native reasoning effort spelling retained by the model catalog.
@@ -197,10 +197,10 @@ pub struct ModelThinking {
 	pub default_level:     Option<ModelThinkingEffort>,
 	/// Per-effort native value overrides.
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-	pub effort_map:        BTreeMap<ModelThinkingEffort, SmolStr>,
+	pub effort_map:        BTreeMap<ModelThinkingEffort, Str>,
 	/// Per-effort wire model routing.
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-	pub effort_routing:    BTreeMap<ModelThinkingEffort, SmolStr>,
+	pub effort_routing:    BTreeMap<ModelThinkingEffort, Str>,
 	/// Per-effort thinking token budgets.
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
 	pub effort_budgets:    BTreeMap<ModelThinkingEffort, u64>,
@@ -322,15 +322,15 @@ pub struct ModelRemoteCompaction {
 	/// Transport used by the native compaction endpoint.
 	pub transport:            Option<TransportId>,
 	/// Absolute V1 compaction endpoint override.
-	pub endpoint:             Option<SmolStr>,
+	pub endpoint:             Option<Str>,
 	/// Enables Responses-stream V2 compaction.
 	pub v2_streaming_enabled: Option<bool>,
 	/// Absolute V2 endpoint override.
-	pub v2_endpoint:          Option<SmolStr>,
+	pub v2_endpoint:          Option<Str>,
 	/// Absolute streaming endpoint used by V2 compaction.
-	pub streaming_endpoint:   Option<SmolStr>,
+	pub streaming_endpoint:   Option<Str>,
 	/// Model id sent to the compaction endpoint.
-	pub model:                Option<SmolStr>,
+	pub model:                Option<Str>,
 }
 
 /// Inference-relevant metadata retained exclusively on the server.
@@ -357,9 +357,9 @@ pub struct ModelBehavior {
 	/// OpenAI apply-patch encoding.
 	pub apply_patch_tool_type: Option<ApplyPatchToolType>,
 	/// Preferred logical model after context promotion.
-	pub context_promotion_target: Option<SmolStr>,
+	pub context_promotion_target: Option<Str>,
 	/// Model id sent on the wire when it differs from the logical id.
-	pub request_model_id: Option<SmolStr>,
+	pub request_model_id: Option<Str>,
 	/// Provider-native compaction routing.
 	pub remote_compaction: Option<ModelRemoteCompaction>,
 	/// Exact Copilot premium request multiplier.
@@ -374,7 +374,7 @@ pub struct ModelBehavior {
 	pub priority: Option<u32>,
 	/// Per-model request headers. Import retains these until provider metadata
 	/// is available to prove an entry redundant.
-	pub headers: BTreeMap<SmolStr, SmolStr>,
+	pub headers: BTreeMap<Str, Str>,
 	/// Sparse canonical wire compatibility metadata.
 	pub compat: Props,
 }
@@ -481,15 +481,15 @@ fn safe_model_header(name: &str) -> bool {
 #[non_exhaustive]
 pub struct ModelCard {
 	/// Canonical `provider/model` selector.
-	pub id:                SmolStr,
+	pub id:                Str,
 	/// Provider identifier.
-	pub provider:          SmolStr,
+	pub provider:          Str,
 	/// Provider-local logical model identifier.
-	pub model:             SmolStr,
+	pub model:             Str,
 	/// Display name.
-	pub name:              SmolStr,
+	pub name:              Str,
 	/// Coarse vendor-lineage token.
-	pub family:            SmolStr,
+	pub family:            Str,
 	/// Inference capabilities served by this model.
 	pub facets:            SmallVec<Facet, 4>,
 	/// Accepted input modalities.
@@ -521,7 +521,7 @@ pub struct ModelCard {
 	/// Gateway-internal effort-to-wire-model routing produced by variant
 	/// collapse.
 	#[serde(skip)]
-	pub effort_routing:    BTreeMap<Effort, SmolStr>,
+	pub effort_routing:    BTreeMap<Effort, Str>,
 	/// Server-only inference behavior retained from the native model row.
 	#[builder(default)]
 	#[serde(skip)]
@@ -641,14 +641,14 @@ pub enum CatalogError {
 #[non_exhaustive]
 pub struct ModelCatalog {
 	models: Vec<ModelCard>,
-	by_key: BTreeMap<SmolStr, BTreeMap<SmolStr, usize>>,
+	by_key: BTreeMap<Str, BTreeMap<Str, usize>>,
 }
 
 impl ModelCatalog {
 	/// Constructs a catalog and its provider/model index.
 	#[must_use]
 	pub fn new(models: Vec<ModelCard>) -> Self {
-		let mut by_key: BTreeMap<SmolStr, BTreeMap<SmolStr, usize>> = BTreeMap::new();
+		let mut by_key: BTreeMap<Str, BTreeMap<Str, usize>> = BTreeMap::new();
 		for (index, model) in models.iter().enumerate() {
 			by_key
 				.entry(model.provider.clone())
@@ -863,7 +863,7 @@ struct RawModel {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	api: Option<RawApi>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	base_url: Option<SmolStr>,
+	base_url: Option<Str>,
 	#[serde(default)]
 	reasoning: bool,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -895,9 +895,9 @@ struct RawModel {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	apply_patch_tool_type: Option<ApplyPatchToolType>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	context_promotion_target: Option<SmolStr>,
+	context_promotion_target: Option<Str>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	request_model_id: Option<SmolStr>,
+	request_model_id: Option<Str>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	remote_compaction: Option<RawRemoteCompaction>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -911,7 +911,7 @@ struct RawModel {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	priority: Option<u32>,
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-	headers: BTreeMap<SmolStr, SmolStr>,
+	headers: BTreeMap<Str, Str>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	compat: Option<RawCompat>,
 }
@@ -1016,15 +1016,15 @@ struct RawRemoteCompaction {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	api:                  Option<RawApi>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	endpoint:             Option<SmolStr>,
+	endpoint:             Option<Str>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	v2_streaming_enabled: Option<bool>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	v2_endpoint:          Option<SmolStr>,
+	v2_endpoint:          Option<Str>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	streaming_endpoint:   Option<SmolStr>,
+	streaming_endpoint:   Option<Str>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	model:                Option<SmolStr>,
+	model:                Option<Str>,
 }
 
 impl From<RawRemoteCompaction> for ModelRemoteCompaction {
@@ -1102,12 +1102,12 @@ fn canonical_compat_key(key: &str) -> Option<&'static str> {
 
 #[derive(Default)]
 struct Interner {
-	values: BTreeMap<SmolStr, SmolStr>,
+	values: BTreeMap<Str, Str>,
 }
 
 impl Interner {
-	fn intern(&mut self, value: &str) -> SmolStr {
-		match self.values.entry(SmolStr::new(value)) {
+	fn intern(&mut self, value: &str) -> Str {
+		match self.values.entry(Str::new(value)) {
 			Entry::Occupied(entry) => entry.get().clone(),
 			Entry::Vacant(entry) => {
 				let value = entry.key().clone();
@@ -1376,11 +1376,11 @@ mod tests {
 
 	fn priced_model() -> ModelCard {
 		ModelCard {
-			id:                SmolStr::new("test/model"),
-			provider:          SmolStr::new("test"),
-			model:             SmolStr::new("model"),
-			name:              SmolStr::new("Model"),
-			family:            SmolStr::new("test"),
+			id:                Str::new("test/model"),
+			provider:          Str::new("test"),
+			model:             Str::new("model"),
+			name:              Str::new("Model"),
+			family:            Str::new("test"),
 			facets:            SmallVec::new(),
 			inputs:            SmallVec::new(),
 			outputs:           SmallVec::new(),

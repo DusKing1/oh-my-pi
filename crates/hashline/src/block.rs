@@ -3,7 +3,7 @@
 use std::{error::Error, fmt};
 
 use omp_ast::block::{BlockRangeOptions, block_range_at};
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use crate::types::{
 	Anchor, BlockMode, BlockResolution, Cursor, Edit, InsertMode, ParsedRange, PasteTarget,
@@ -24,7 +24,7 @@ pub struct BlockError {
 	/// Patch-language source line associated with the failure.
 	pub line_num: usize,
 	/// Human-readable failure description.
-	pub message:  SmolStr,
+	pub message:  Str,
 }
 impl fmt::Display for BlockError {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -41,7 +41,7 @@ pub struct BlockLowering {
 	/// Successfully resolved original-coordinate spans.
 	pub resolutions: Vec<BlockResolution>,
 	/// Non-fatal fallback diagnostics.
-	pub warnings:    Vec<SmolStr>,
+	pub warnings:    Vec<Str>,
 }
 
 /// Returns whether any edit still requires block resolution.
@@ -95,7 +95,7 @@ pub fn resolve_block_edits(
 				let closer = lines
 					.get(anchor.line.saturating_sub(1))
 					.is_some_and(|line| structural_closer(line));
-				warnings.push(SmolStr::new(format!(
+				warnings.push(Str::new(format!(
 					"line {line_num}: block at line {} could not be resolved{}; lowered to after-line \
 					 insertion",
 					anchor.line,
@@ -135,7 +135,7 @@ pub fn resolve_block_edits(
 			}
 			return Err(BlockError {
 				line_num: *line_num,
-				message:  SmolStr::new(format!(
+				message:  Str::new(format!(
 					"no multi-line syntactic block begins on line {}",
 					anchor.line
 				)),
@@ -149,7 +149,7 @@ pub fn resolve_block_edits(
 			}
 			return Err(BlockError {
 				line_num: *line_num,
-				message:  SmolStr::new(format!(
+				message:  Str::new(format!(
 					"line {} is a single-line statement, not a multi-line block",
 					anchor.line
 				)),

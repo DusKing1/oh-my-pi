@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, future::Future, sync::Arc};
 
 use bytes::Bytes;
 use futures::{StreamExt, stream, stream::BoxStream};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{
 	compat::Compat,
 	models::{Availability, Modality, ModelCard, ModelCatalog, Source},
@@ -32,7 +32,7 @@ impl LocalEngine for Fixture {
 			.kind(ItemKind::Message(
 				Message::builder()
 					.role(Role::Assistant)
-					.parts(vec![Part::Text(SmolStr::new("fixture reply"))])
+					.parts(vec![Part::Text(Str::new("fixture reply"))])
 					.build(),
 			))
 			.props(Props::default())
@@ -42,8 +42,8 @@ impl LocalEngine for Fixture {
 			TurnEvent::PartStart {
 				index:        0,
 				kind:         StreamPartKind::Text,
-				tool_call_id: SmolStr::new(""),
-				tool_name:    SmolStr::new(""),
+				tool_call_id: Str::new(""),
+				tool_name:    Str::new(""),
 			},
 			TurnEvent::PartDelta { index: 0, chunk: Bytes::from_static(b"fixture reply") },
 			TurnEvent::PartEnd { index: 0, signature: Bytes::new() },
@@ -52,7 +52,7 @@ impl LocalEngine for Fixture {
 					.output(vec![output])
 					.stop(StopReason::EndTurn)
 					.unsupported(Vec::new())
-					.provider(SmolStr::new("local"))
+					.provider(Str::new("local"))
 					.model(request.model)
 					.props(Props::default())
 					.build(),
@@ -81,25 +81,25 @@ impl LocalEngine for Fixture {
 		&self,
 		_request: SpeakRequest,
 	) -> impl Future<Output = Result<BoxStream<'static, SpeakEvent>, Error>> + Send + '_ {
-		std::future::ready(Err(Error::Provider(SmolStr::new("unused fixture facet"))))
+		std::future::ready(Err(Error::Provider(Str::new("unused fixture facet"))))
 	}
 
 	fn transcribe(
 		&self,
 		_request: TranscribeRequest,
 	) -> impl Future<Output = Result<TranscribeResponse, Error>> + Send + '_ {
-		std::future::ready(Err(Error::Provider(SmolStr::new("unused fixture facet"))))
+		std::future::ready(Err(Error::Provider(Str::new("unused fixture facet"))))
 	}
 }
 
 fn router() -> ProviderRouter {
 	let facets = smallvec![CatalogFacet::Chat, CatalogFacet::Embeddings];
 	let model = ModelCard::builder()
-		.id(SmolStr::new("local/fixture"))
-		.provider(SmolStr::new("local"))
-		.model(SmolStr::new("fixture"))
-		.name(SmolStr::new("Deterministic fixture"))
-		.family(SmolStr::new("fixture"))
+		.id(Str::new("local/fixture"))
+		.provider(Str::new("local"))
+		.model(Str::new("fixture"))
+		.name(Str::new("Deterministic fixture"))
+		.family(Str::new("fixture"))
 		.facets(facets.clone())
 		.inputs(smallvec![Modality::Text])
 		.outputs(smallvec![Modality::Text])
@@ -117,9 +117,9 @@ fn router() -> ProviderRouter {
 		.effort_routing(BTreeMap::new())
 		.build();
 	let provider = ProviderEntry::builder()
-		.id(SmolStr::new("local"))
+		.id(Str::new("local"))
 		.transport(TransportId::Embedded)
-		.base_url(SmolStr::new(""))
+		.base_url(Str::new(""))
 		.fallback_base_urls(SmallVec::new())
 		.auth(AuthSpec::default())
 		.facets(facets)
@@ -138,7 +138,7 @@ fn router() -> ProviderRouter {
 async fn embedded_candidate_streams_chat_and_routes_unary_embedding() {
 	let router = router();
 	let request = ChatRequest::builder()
-		.model(SmolStr::new("local/fixture"))
+		.model(Str::new("local/fixture"))
 		.thread(Thread::default())
 		.tools(Vec::new())
 		.build();
@@ -163,8 +163,8 @@ async fn embedded_candidate_streams_chat_and_routes_unary_embedding() {
 	let response = router
 		.embed(
 			EmbedRequest::builder()
-				.model(SmolStr::new("local/fixture"))
-				.texts(vec![SmolStr::new("four")])
+				.model(Str::new("local/fixture"))
+				.texts(vec![Str::new("four")])
 				.props(Props::default())
 				.build(),
 		)

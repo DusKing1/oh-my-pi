@@ -1,7 +1,7 @@
 //! Gemini request projection helpers shared by public GenAI and Vertex codecs.
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::compat::{Compat, ToolSchemaFlavor};
 use omp_llm_transport::normalize;
 use omp_llm_types::{
@@ -78,7 +78,7 @@ pub(crate) fn project_provider_options(
 			.filter(|key| body.contains_key(*key))
 			.collect::<Vec<_>>();
 		if !incompatible.is_empty() {
-			return Err(Error::Provider(SmolStr::from(format!(
+			return Err(Error::Provider(Str::from(format!(
 				"google/cached_content cannot be combined with request-level {}",
 				incompatible.join(", ")
 			))));
@@ -107,7 +107,7 @@ pub(crate) fn project_provider_options(
 			continue;
 		};
 		let enabled = enabled.as_bool().ok_or_else(|| {
-			Error::Provider(SmolStr::from(format!("google/{name} must be a boolean")))
+			Error::Provider(Str::from(format!("google/{name} must be a boolean")))
 		})?;
 		if enabled {
 			body
@@ -242,8 +242,8 @@ fn generation_config(body: &mut Map<String, Value>) -> &mut Map<String, Value> {
 
 fn report(
 	unsupported: &mut Vec<Unsupported>,
-	what: impl Into<SmolStr>,
-	detail: impl Into<SmolStr>,
+	what: impl Into<Str>,
+	detail: impl Into<Str>,
 	fallback: Fallback,
 ) -> Result<(), Error> {
 	let action = match fallback {
@@ -272,7 +272,7 @@ fn report(
 
 #[cold]
 fn provider_error(error: impl std::fmt::Display) -> Error {
-	Error::Provider(SmolStr::from(error.to_string()))
+	Error::Provider(Str::from(error.to_string()))
 }
 
 fn base64(input: &Bytes) -> String {

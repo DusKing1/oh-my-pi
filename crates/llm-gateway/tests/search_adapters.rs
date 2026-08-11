@@ -3,7 +3,7 @@
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_egress::client::EgressClient;
 use omp_llm_gateway::{
 	search::{
@@ -48,15 +48,15 @@ impl SearchEngineBackend for ScriptedBackend {
 
 fn request(engine: &str) -> SearchRequest {
 	SearchRequest::builder()
-		.query(SmolStr::new_static("rust async"))
+		.query(Str::new_static("rust async"))
 		.limit(10)
-		.after(SmolStr::default())
-		.before(SmolStr::default())
+		.after(Str::default())
+		.before(Str::default())
 		.allowed_domains(Vec::new())
 		.excluded_domains(Vec::new())
-		.country(SmolStr::default())
-		.language(SmolStr::default())
-		.engine(SmolStr::from(engine))
+		.country(Str::default())
+		.language(Str::default())
+		.engine(Str::from(engine))
 		.timeout_ms(0)
 		.props(Props::default())
 		.build()
@@ -66,11 +66,11 @@ fn successful_result() -> EngineResult {
 	EngineResult::new(EnginePayload::Raw {
 		sources: vec![
 			SearchSource::builder()
-				.url(SmolStr::new_static("https://example.test"))
-				.title(SmolStr::new_static("Example"))
-				.snippet(SmolStr::default())
-				.published_at(SmolStr::default())
-				.author(SmolStr::default())
+				.url(Str::new_static("https://example.test"))
+				.title(Str::new_static("Example"))
+				.snippet(Str::default())
+				.published_at(Str::default())
+				.author(Str::default())
 				.build(),
 		],
 	})

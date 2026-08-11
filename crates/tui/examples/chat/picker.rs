@@ -15,7 +15,7 @@
 //! quick roles; `Enter` (or a click) applies the selected model for this
 //! session only.
 
-use omp_core::{SmolStr, SmolStrMut, format_smol};
+use omp_core::{Str, StrMut, fmts};
 use omp_tui::{
 	Charset, Color, Dim, Icon, Key, Layer, Mouse, OverlayAnchor, OverlayOptions, Prop, Size, Ui,
 	UiContext, UiEvent, dom,
@@ -226,11 +226,11 @@ impl PerfTier {
 		}
 	}
 
-	fn cell(self, model: &ModelSpec) -> SmolStr {
+	fn cell(self, model: &ModelSpec) -> Str {
 		match self {
-			Self::Full => format_smol!("{} {}", model.ttft, model.tps),
-			Self::Tps => SmolStr::new_static(model.tps),
-			Self::None => SmolStr::new_static(""),
+			Self::Full => fmts!("{} {}", model.ttft, model.tps),
+			Self::Tps => Str::new_static(model.tps),
+			Self::None => Str::new_static(""),
 		}
 	}
 }
@@ -245,7 +245,7 @@ pub struct ModelPicker {
 	ctx:     UiContext,
 	options: OverlayOptions,
 	/// Query carried across catalog swaps (the `@` mode toggle).
-	query:   SmolStr,
+	query:   Str,
 	/// List rows granted by the last viewport.
 	rows:    u16,
 }
@@ -269,7 +269,7 @@ impl ModelPicker {
 			current,
 			ctx: ctx.clone(),
 			options,
-			query: SmolStr::default(),
+			query: Str::default(),
 			rows: 5,
 		};
 		picker.show_detail(Some(current));
@@ -370,58 +370,58 @@ impl ModelPicker {
 	/// Points the facts line and role chips at `model`; `None` (no match)
 	/// blanks the details while keeping the frame height stable.
 	fn show_detail(&mut self, model: Option<usize>) {
-		let facts = model.map_or_else(|| SmolStr::new_static(" "), |index| facts(&MODELS[index]));
+		let facts = model.map_or_else(|| Str::new_static(" "), |index| facts(&MODELS[index]));
 		self.ui.set_text("facts", facts);
 		// Hide before show: the document must never transiently exceed its
 		// steady height — a raw-frame layer's retained frame keeps the
 		// high-water mark, which would leave a stale extra row.
 		for index in (0..MODELS.len()).filter(|&index| model != Some(index)) {
-			self.ui.set_visible(&format_smol!("chips-{index}"), false);
+			self.ui.set_visible(&fmts!("chips-{index}"), false);
 		}
 		if let Some(index) = model {
-			self.ui.set_visible(&format_smol!("chips-{index}"), true);
+			self.ui.set_visible(&fmts!("chips-{index}"), true);
 		}
 	}
 }
 
 /// The facts line under the list (name, limits, price, capabilities).
-fn facts(model: &ModelSpec) -> SmolStr {
-	fn part(facts: &mut SmolStrMut, text: &str) {
+fn facts(model: &ModelSpec) -> Str {
+	fn part(facts: &mut StrMut, text: &str) {
 		if !facts.is_empty() {
 			facts.push_str(" · ");
 		}
 		facts.push_str(text);
 	}
-	let mut line = SmolStrMut::with_capacity(96);
+	let mut line = StrMut::with_capacity(96);
 	part(&mut line, model.name);
-	part(&mut line, &format_smol!("{} ctx", model.ctx));
-	part(&mut line, &format_smol!("{} out", model.out));
-	part(&mut line, &format_smol!("{} per M", model.cost));
+	part(&mut line, &fmts!("{} ctx", model.ctx));
+	part(&mut line, &fmts!("{} out", model.out));
+	part(&mut line, &fmts!("{} per M", model.cost));
 	if model.reasoning {
 		part(&mut line, "reasoning");
 	}
 	if model.vision {
 		part(&mut line, "vision");
 	}
-	part(&mut line, &format_smol!("~{}", model.tps));
-	part(&mut line, &format_smol!("{} ttft", model.ttft));
+	part(&mut line, &fmts!("~{}", model.tps));
+	part(&mut line, &fmts!("{} ttft", model.ttft));
 	line.freeze()
 }
 
 /// One option row's static content, shared by both catalogs.
 struct RowSpec {
-	value:       SmolStr,
-	label:       SmolStr,
-	logo:        SmolStr,
-	prefix:      SmolStr,
+	value:       Str,
+	label:       Str,
+	logo:        Str,
+	prefix:      Str,
 	prefix_fg:   Color,
-	name:        SmolStr,
+	name:        Str,
 	name_fg:     Color,
 	current:     bool,
 	recommended: bool,
-	perf:        SmolStr,
-	ctx:         SmolStr,
-	cost:        SmolStr,
+	perf:        Str,
+	ctx:         Str,
+	cost:        Str,
 }
 
 fn model_rows(tier: PerfTier, current: usize, charset: Charset) -> Vec<RowSpec> {
@@ -429,18 +429,18 @@ fn model_rows(tier: PerfTier, current: usize, charset: Charset) -> Vec<RowSpec> 
 		.iter()
 		.enumerate()
 		.map(|(index, model)| RowSpec {
-			value:       format_smol!("{index}"),
-			label:       format_smol!("{}/{}", model.provider, model.id),
-			logo:        format_smol!("{LOGO_DIR}/{}.png", model.provider),
-			prefix:      format_smol!("{}/", model.provider),
+			value:       fmts!("{index}"),
+			label:       fmts!("{}/{}", model.provider, model.id),
+			logo:        fmts!("{LOGO_DIR}/{}.png", model.provider),
+			prefix:      fmts!("{}/", model.provider),
 			prefix_fg:   DIM,
-			name:        SmolStr::new_static(model.id),
+			name:        Str::new_static(model.id),
 			name_fg:     TEXT,
 			current:     index == current,
 			recommended: index == current,
 			perf:        tier.cell(model),
-			ctx:         format_smol!("{} {}", model.ctx, charset.icon(Icon::Context)),
-			cost:        SmolStr::new_static(model.cost),
+			ctx:         fmts!("{} {}", model.ctx, charset.icon(Icon::Context)),
+			cost:        Str::new_static(model.cost),
 		})
 		.collect()
 }
@@ -452,24 +452,24 @@ fn role_rows(tier: PerfTier, current: usize, charset: Charset) -> Vec<RowSpec> {
 		.map(|(index, role)| {
 			let model = &MODELS[role.model];
 			let name = match role.thinking {
-				Some(glyph) => format_smol!("{} {glyph}", role.name),
-				None => SmolStr::new_static(role.name),
+				Some(glyph) => fmts!("{} {glyph}", role.name),
+				None => Str::new_static(role.name),
 			};
 			RowSpec {
-				value: format_smol!("{}", role.model),
+				value: fmts!("{}", role.model),
 				// The `@` stays in the haystack so `@arc` matches and the
 				// bare `@` keeps every role visible.
-				label: format_smol!("@{}", role.name),
-				logo: format_smol!("{LOGO_DIR}/{}.png", model.provider),
-				prefix: SmolStr::default(),
+				label: fmts!("@{}", role.name),
+				logo: fmts!("{LOGO_DIR}/{}.png", model.provider),
+				prefix: Str::default(),
 				prefix_fg: DIM,
 				name,
 				name_fg: role.color,
 				current: role.model == current,
 				recommended: index == 0,
 				perf: tier.cell(model),
-				ctx: format_smol!("{} {}", model.ctx, charset.icon(Icon::Context)),
-				cost: SmolStr::new_static(model.cost),
+				ctx: fmts!("{} {}", model.ctx, charset.icon(Icon::Context)),
+				cost: Str::new_static(model.cost),
 			}
 		})
 		.collect()
@@ -477,7 +477,7 @@ fn role_rows(tier: PerfTier, current: usize, charset: Charset) -> Vec<RowSpec> {
 
 /// One role chip (`● default`, `○ plan ◑`) under the facts line.
 struct Chip {
-	text:  SmolStr,
+	text:  Str,
 	color: Color,
 }
 
@@ -488,7 +488,7 @@ fn chips(model: usize, current: usize, charset: Charset) -> Vec<Chip> {
 	let mut chips = Vec::new();
 	if model == current {
 		chips.push(Chip {
-			text:  format_smol!("{} current", charset.icon(Icon::Enabled)),
+			text:  fmts!("{} current", charset.icon(Icon::Enabled)),
 			color: GREEN,
 		});
 	}
@@ -499,7 +499,7 @@ fn chips(model: usize, current: usize, charset: Charset) -> Vec<Chip> {
 			charset.icon(Icon::Shadowed)
 		};
 		let color = if role.configured { role.color } else { DIM };
-		let mut text = SmolStrMut::with_capacity(16);
+		let mut text = StrMut::with_capacity(16);
 		text.push_str(dot);
 		text.push_str(" ");
 		text.push_str(role.name);
@@ -510,7 +510,7 @@ fn chips(model: usize, current: usize, charset: Charset) -> Vec<Chip> {
 		chips.push(Chip { text: text.freeze(), color });
 	}
 	if chips.is_empty() {
-		chips.push(Chip { text: SmolStr::new_static(" "), color: DIM });
+		chips.push(Chip { text: Str::new_static(" "), color: DIM });
 	}
 	chips
 }
@@ -538,8 +538,8 @@ fn build(
 		Mode::Models => HINT_MODELS,
 		Mode::Roles => HINT_ROLES,
 	};
-	let current_dot = format_smol!(" {}", charset.icon(Icon::Enabled));
-	let seed = SmolStr::from(query);
+	let current_dot = fmts!(" {}", charset.icon(Icon::Enabled));
+	let seed = Str::from(query);
 	let height = rows.saturating_add(1);
 	Ui::from_root(
 		dom! {
@@ -570,7 +570,7 @@ fn build(
 					<spacer h=1/>
 					<text id="facts" fg=muted truncate>{" "}</text>
 					for model in 0..MODELS.len() {
-						<row id={format_smol!("chips-{model}")}>
+						<row id={fmts!("chips-{model}")}>
 							for (index, chip) in chips(model, current, charset).into_iter().enumerate() {
 								if index > 0 {
 									<pre fg={DIM}>{" · "}</pre>

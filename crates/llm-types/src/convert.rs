@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_proto::{inference::v1 as pb, thread::v1 as pb_thread};
 use serde_json::{Map, Number, Value};
 use thiserror::Error;
@@ -70,7 +70,7 @@ impl TryFrom<pb::ValueMap> for Props {
 		value
 			.fields
 			.into_iter()
-			.map(|(key, value)| Ok((SmolStr::from(key), proto_to_json(value)?)))
+			.map(|(key, value)| Ok((Str::from(key), proto_to_json(value)?)))
 			.collect::<Result<BTreeMap<_, _>, _>>()
 			.map(Self)
 	}
@@ -529,9 +529,9 @@ impl From<pb::ToolDef> for ToolDef {
 impl From<Feature<ToolChoice>> for pb::ToolChoice {
 	fn from(value: Feature<ToolChoice>) -> Self {
 		let (mode, name) = match value.value {
-			ToolChoice::Auto => (pb::tool_choice::Mode::Auto, SmolStr::default()),
-			ToolChoice::None => (pb::tool_choice::Mode::None, SmolStr::default()),
-			ToolChoice::Required => (pb::tool_choice::Mode::Required, SmolStr::default()),
+			ToolChoice::Auto => (pb::tool_choice::Mode::Auto, Str::default()),
+			ToolChoice::None => (pb::tool_choice::Mode::None, Str::default()),
+			ToolChoice::Required => (pb::tool_choice::Mode::Required, Str::default()),
 			ToolChoice::Named(name) => (pb::tool_choice::Mode::Named, name),
 		};
 		Self {
@@ -2719,11 +2719,11 @@ mod tests {
 				last_message_timestamp_ms:      Some(1_726_000_000_000),
 			}),
 			diagnostics:       vec![diagnostic(Retryability::AfterDelay), Diagnostic {
-				provider:     SmolStr::new_static(""),
-				model:        SmolStr::new_static(""),
+				provider:     Str::new_static(""),
+				model:        Str::new_static(""),
 				attempt:      0,
-				code:         SmolStr::new_static(""),
-				detail:       SmolStr::new_static(""),
+				code:         Str::new_static(""),
+				detail:       Str::new_static(""),
 				retryability: Retryability::Unspecified,
 			}],
 			props:             props(),

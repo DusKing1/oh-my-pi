@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde_json::{Map, Value};
 use smallvec::SmallVec;
 
@@ -27,22 +27,22 @@ enum FieldKind {
 enum FieldValue {
 	Bool(bool),
 	Text(String),
-	Choice(SmolStr),
-	Many(SmallVec<SmolStr, 4>),
+	Choice(Str),
+	Many(SmallVec<Str, 4>),
 	Number(i64),
 }
 
 /// Declarative input metadata backing the `<field>` markup tag.
 pub struct Field {
 	props:    Props,
-	label:    SmolStr,
+	label:    Str,
 	children: Vec<crate::component::Cached>,
 }
 
 impl Field {
 	/// Creates an empty field definition.
 	pub fn new() -> Self {
-		Self { props: Props::new(), label: SmolStr::new(""), children: Vec::new() }
+		Self { props: Props::new(), label: Str::new(""), children: Vec::new() }
 	}
 
 	/// Sets one field property.
@@ -58,7 +58,7 @@ impl Field {
 	}
 
 	/// Sets the field's visible label.
-	pub fn label(mut self, label: impl Into<SmolStr>) -> Self {
+	pub fn label(mut self, label: impl Into<Str>) -> Self {
 		self.label = label.into();
 		self
 	}
@@ -79,13 +79,13 @@ impl Default for Field {
 #[derive(Clone, Debug)]
 struct FieldData {
 	kind:     FieldKind,
-	id:       SmolStr,
-	label:    SmolStr,
-	desc:     Option<SmolStr>,
-	options:  SmallVec<SmolStr, 8>,
+	id:       Str,
+	label:    Str,
+	desc:     Option<Str>,
+	options:  SmallVec<Str, 8>,
 	value:    FieldValue,
 	required: bool,
-	pattern:  Option<SmolStr>,
+	pattern:  Option<Str>,
 	min:      i64,
 	max:      i64,
 	step:     i64,
@@ -93,7 +93,7 @@ struct FieldData {
 
 impl FieldData {
 	fn from_field(field: Field) -> Self {
-		let kind = match field.props.str_of(Prop::Kind).map(SmolStr::as_str) {
+		let kind = match field.props.str_of(Prop::Kind).map(Str::as_str) {
 			Some("bool") => FieldKind::Bool,
 			Some("enum") => FieldKind::Enum,
 			Some("select") => FieldKind::Select,
@@ -101,10 +101,10 @@ impl FieldData {
 			Some("number") => FieldKind::Number,
 			_ => FieldKind::Text,
 		};
-		let options: SmallVec<SmolStr, 8> = field
+		let options: SmallVec<Str, 8> = field
 			.props
 			.str_of(Prop::Options)
-			.map(|options| options.split_whitespace().map(SmolStr::new).collect())
+			.map(|options| options.split_whitespace().map(Str::new).collect())
 			.unwrap_or_default();
 		let raw = field.props.str_of(Prop::Value);
 		let value = match kind {

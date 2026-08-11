@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde_json::value::RawValue;
 
 use super::{
@@ -33,9 +33,9 @@ pub enum Kind {
 		/// Content-addressed system prompt.
 		system_prompt: BlobRef,
 		/// Tool names available to the session.
-		tools:         Vec<SmolStr>,
+		tools:         Vec<Str>,
 		/// Optional spawning agent identifier.
-		agent:         Option<SmolStr>,
+		agent:         Option<Str>,
 		/// Optional response schema, preserved verbatim.
 		output_schema: Option<Box<RawValue>>,
 	},
@@ -69,29 +69,29 @@ pub enum Kind {
 	/// Replace an old context prefix with a neutral summary.
 	Compact {
 		/// Full summary used for model context.
-		summary:       SmolStr,
+		summary:       Str,
 		/// Optional shorter display summary.
-		short:         Option<SmolStr>,
+		short:         Option<Str>,
 		/// First pre-compaction event retained after the summary.
 		first_kept:    u64,
 		/// Token count before compaction.
 		tokens_before: u64,
 		/// Optional compaction warning.
-		warning:       Option<SmolStr>,
+		warning:       Option<Str>,
 	},
 	/// Summarize a branch before returning to another chain point.
 	Branch {
 		/// Event index from which the summarized branch began.
 		from:    u64,
 		/// Branch summary.
-		summary: SmolStr,
+		summary: Str,
 	},
 	/// Start a fresh chain boundary, as for `/clear`.
 	Reset,
 	/// Assign a session title.
 	Title {
 		/// New title.
-		title:  SmolStr,
+		title:  Str,
 		/// Source that assigned the title.
 		source: TitleSource,
 	},
@@ -133,12 +133,12 @@ pub enum Kind {
 		/// Event index receiving the label.
 		target: u64,
 		/// New label, or `None` to clear it.
-		label:  Option<SmolStr>,
+		label:  Option<Str>,
 	},
 	/// Store an extension event.
 	Custom {
 		/// Extension-defined kind name.
-		kind:    SmolStr,
+		kind:    Str,
 		/// Verbatim extension data.
 		data:    Option<Box<RawValue>>,
 		/// Optional content participating in model context.

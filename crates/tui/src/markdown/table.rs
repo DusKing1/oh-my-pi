@@ -1,4 +1,4 @@
-use omp_core::{SmolStr, SmolStrMut};
+use omp_core::{Str, StrMut};
 use smallvec::SmallVec;
 use xutf::Text;
 
@@ -116,14 +116,14 @@ fn allocate_columns(natural: &[u16], minimum_words: &[u16], available: u16) -> C
 	widths
 }
 
-fn border(widths: &[u16], (left, junction, right): (char, char, char), fill: char) -> SmolStr {
+fn border(widths: &[u16], (left, junction, right): (char, char, char), fill: char) -> Str {
 	let characters = widths
 		.iter()
 		.copied()
 		.fold(widths.len().saturating_add(1), |total, width| {
 			total.saturating_add(usize::from(width.saturating_add(2)))
 		});
-	let mut output = SmolStrMut::with_capacity(characters.saturating_mul(3));
+	let mut output = StrMut::with_capacity(characters.saturating_mul(3));
 	output.push(left);
 	for (index, width) in widths.iter().enumerate() {
 		for _ in 0..width.saturating_add(2) {
@@ -146,8 +146,8 @@ fn push_spaces(sink: &mut dyn RichSink, style: Style, mut count: u16) {
 	}
 }
 
-fn raw_row(cells: &[&str]) -> SmolStr {
-	let mut output = SmolStrMut::new("| ");
+fn raw_row(cells: &[&str]) -> Str {
+	let mut output = StrMut::new("| ");
 	for (index, cell) in cells.iter().enumerate() {
 		if index != 0 {
 			output.push_str(" | ");
@@ -158,7 +158,7 @@ fn raw_row(cells: &[&str]) -> SmolStr {
 	output.freeze()
 }
 
-fn push_fallback(sink: &mut dyn RichSink, raw: SmolStr, width: u16, theme: &MdTheme) {
+fn push_fallback(sink: &mut dyn RichSink, raw: Str, width: u16, theme: &MdTheme) {
 	let mut wrap = (&mut *sink).wrap(width);
 	wrap.run(theme.base, raw.as_str());
 	wrap.finish();
@@ -174,7 +174,7 @@ fn fallback_table(
 ) {
 	if let Some(header) = rows.first() {
 		push_fallback(sink, raw_row(header), width, theme);
-		let mut separator = SmolStrMut::new("| ");
+		let mut separator = StrMut::new("| ");
 		for (index, alignment) in alignments.iter().enumerate() {
 			if index != 0 {
 				separator.push_str(" | ");

@@ -1,7 +1,7 @@
 use std::fmt;
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -30,7 +30,7 @@ pub struct TextEdit {
 	/// Range replaced by `new_text`.
 	pub range:    PositionRange,
 	/// UTF-8 replacement text.
-	pub new_text: SmolStr,
+	pub new_text: Str,
 }
 
 /// Position encodings supported by LSP 3.18.
@@ -371,14 +371,14 @@ mod tests {
 					start: Position { line: 0, character: 1 },
 					end:   Position { line: 0, character: 3 },
 				},
-				new_text: SmolStr::new("X"),
+				new_text: Str::new("X"),
 			},
 			TextEdit {
 				range:    PositionRange {
 					start: Position { line: 1, character: 0 },
 					end:   Position { line: 1, character: 1 },
 				},
-				new_text: SmolStr::new("Y"),
+				new_text: Str::new("Y"),
 			},
 		];
 		assert_eq!(
@@ -397,7 +397,7 @@ mod tests {
 					start: Position { line: 0, character: 1 },
 					end:   Position { line: 0, character: end_character },
 				},
-				new_text: SmolStr::new("!"),
+				new_text: Str::new("!"),
 			};
 			assert_eq!(
 				apply_text_edits("a😀z", &[edit], encoding).unwrap(),

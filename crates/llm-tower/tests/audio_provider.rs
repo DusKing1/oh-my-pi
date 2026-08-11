@@ -16,7 +16,7 @@ use futures::StreamExt;
 use http::{Request, Response, header};
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Body, Frame, SizeHint};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::provider::load_builtin;
 use omp_llm_egress::{auth_inject::AuthContext, client};
 use omp_llm_openai::OpenAiAudioError;
@@ -323,8 +323,8 @@ async fn invalid_recording_media_is_rejected_before_egress() {
 				.inline(audio)
 				.build(),
 		)
-		.language(SmolStr::default())
-		.prompt(SmolStr::default())
+		.language(Str::default())
+		.prompt(Str::default())
 		.translate(false)
 		.granularities(Vec::new())
 		.diarize(false)
@@ -368,7 +368,7 @@ async fn azure_audio_version_is_selected_by_catalog_data() {
 	route.region = "eastus".into();
 	let attempt = AudioProviderAttempt::new(provider, route, service).expect("Azure audio route");
 	let mut request = speech();
-	request.instructions = SmolStr::default();
+	request.instructions = Str::default();
 	let _: Vec<_> = attempt
 		.speak(request)
 		.await

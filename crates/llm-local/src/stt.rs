@@ -1,6 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use tokio_util::sync::CancellationToken;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
@@ -35,14 +35,14 @@ pub enum SttModel {
 		/// Repository containing a GGML whisper.cpp checkpoint.
 		repo:     ModelRepo,
 		/// Repository-relative GGML filename.
-		filename: SmolStr,
+		filename: Str,
 	},
 	/// A GGML whisper.cpp checkpoint already on disk.
 	Local(PathBuf),
 }
 
 impl SttModel {
-	fn remote(&self) -> Option<(ModelRepo, SmolStr)> {
+	fn remote(&self) -> Option<(ModelRepo, Str)> {
 		let filename = match self {
 			Self::TinyEnglish => "ggml-tiny.en.bin",
 			Self::BaseEnglish => "ggml-base.en.bin",
@@ -62,13 +62,13 @@ impl SttModel {
 #[derive(Clone, Debug)]
 pub struct TranscriptionOptions {
 	/// ISO-639-1 language code; `None` enables automatic detection.
-	pub language:       Option<SmolStr>,
+	pub language:       Option<Str>,
 	/// Translate recognized speech to English instead of transcribing it.
 	pub translate:      bool,
 	/// Preserve per-segment timestamps in the result.
 	pub timestamps:     bool,
 	/// Prompt that biases names, vocabulary, or continuity from earlier audio.
-	pub initial_prompt: Option<SmolStr>,
+	pub initial_prompt: Option<Str>,
 	/// Decoding temperature; `None` uses the recognizer's default greedy
 	/// decoding. Whisper accepts values in `[0, 1]`; Parakeet rejects any
 	/// value.
@@ -91,7 +91,7 @@ impl Default for TranscriptionOptions {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TranscriptionSegment {
 	/// Recognized text for this segment.
-	pub text:                  SmolStr,
+	pub text:                  Str,
 	/// Offset from the start of the submitted audio.
 	pub start:                 Duration,
 	/// End offset from the start of the submitted audio.
@@ -105,11 +105,11 @@ pub struct TranscriptionSegment {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Transcription {
 	/// Concatenated, trimmed transcript.
-	pub text:     SmolStr,
+	pub text:     Str,
 	/// Timestamped model segments, empty when timestamps were disabled.
 	pub segments: Vec<TranscriptionSegment>,
 	/// ISO-639-1 language code selected by the recognizer, when reported.
-	pub language: Option<SmolStr>,
+	pub language: Option<Str>,
 }
 
 /// Configures a Whisper recognizer hosted on a dedicated native thread.

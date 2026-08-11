@@ -12,7 +12,7 @@ use std::{
 	time::{Duration, Instant},
 };
 
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use smallvec::SmallVec;
 #[cfg(windows)]
 use windows_sys::Win32::System::Console::{GetConsoleOutputCP, SetConsoleOutputCP};
@@ -1936,14 +1936,14 @@ impl Terminal {
 	/// reports would flood input mid-drag. Teardown and emergency restore
 	/// treat the alternate screen as active immediately, so the sequence
 	/// must reach the terminal promptly.
-	pub fn stage_alt_enter(&mut self, purpose: AltScreenUse) -> Option<SmolStr> {
+	pub fn stage_alt_enter(&mut self, purpose: AltScreenUse) -> Option<Str> {
 		if self.alt_screen {
 			// Ownership transfer on the active screen: upgrading a passive
 			// borrow to an interactive hold — an overlay opening mid-drag —
 			// enables the mouse capture the hold contract promises.
 			if purpose == AltScreenUse::Interactive && !self.alt_mouse && !self.mouse {
 				self.alt_mouse = true;
-				return Some(SmolStr::new_static(esc!(mouse_vt200, mouse_any_event, mouse_sgr)));
+				return Some(Str::new_static(esc!(mouse_vt200, mouse_any_event, mouse_sgr)));
 			}
 			return None;
 		}
@@ -1957,8 +1957,8 @@ impl Terminal {
 			""
 		};
 		Some(match self.keyboard {
-			KeyboardMode::Kitty(push) => format_smol!("{}{}{}", esc!(alt_screen), push, tracking),
-			KeyboardMode::ModifyOtherKeys => format_smol!("{}{}", esc!(alt_screen), tracking),
+			KeyboardMode::Kitty(push) => fmts!("{}{}{}", esc!(alt_screen), push, tracking),
+			KeyboardMode::ModifyOtherKeys => fmts!("{}{}", esc!(alt_screen), tracking),
 		})
 	}
 

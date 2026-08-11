@@ -10,7 +10,7 @@ use bytes::{Bytes, BytesMut};
 use http::{Method, Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, StreamBody};
 use hyper::body::{Body, Frame};
-use omp_core::{SmolStr, base64};
+use omp_core::{Str, base64};
 use omp_llm_types::{
 	AspectRatio, BlobPart, GenerateVideoRequest, GenerationState, GenerationStatus, Props,
 	VideoResolution, facet::GenerationHandle,
@@ -25,16 +25,16 @@ use super::{
 
 #[derive(Deserialize)]
 struct VideoRequest {
-	model:        SmolStr,
-	prompt:       SmolStr,
+	model:        Str,
+	prompt:       Str,
 	#[serde(default, alias = "seconds")]
 	duration:     Option<VideoDuration>,
 	#[serde(default)]
-	aspect_ratio: Option<SmolStr>,
+	aspect_ratio: Option<Str>,
 	#[serde(default)]
-	resolution:   Option<SmolStr>,
+	resolution:   Option<Str>,
 	#[serde(default)]
-	size:         Option<SmolStr>,
+	size:         Option<Str>,
 	#[serde(default)]
 	seed:         Option<u64>,
 	#[serde(default)]
@@ -51,7 +51,7 @@ struct VideoRequest {
 #[serde(untagged)]
 enum VideoDuration {
 	Number(u32),
-	Text(SmolStr),
+	Text(Str),
 }
 
 impl VideoDuration {
@@ -72,21 +72,21 @@ impl VideoDuration {
 
 #[derive(Deserialize)]
 struct EncodedBlob {
-	data:      SmolStr,
+	data:      Str,
 	#[serde(default = "default_image_mime")]
-	mime_type: SmolStr,
+	mime_type: Str,
 }
 
 #[derive(Serialize)]
 struct SubmittedVideo {
-	id:     SmolStr,
+	id:     Str,
 	object: &'static str,
 	status: &'static str,
 }
 
 #[derive(Serialize)]
 struct VideoStatus {
-	id:         SmolStr,
+	id:         Str,
 	object:     &'static str,
 	status:     &'static str,
 	progress:   f64,
@@ -98,11 +98,11 @@ struct VideoStatus {
 
 #[derive(Serialize)]
 struct VideoError {
-	message: SmolStr,
+	message: Str,
 }
 
-fn default_image_mime() -> SmolStr {
-	SmolStr::new("image/png")
+fn default_image_mime() -> Str {
+	Str::new("image/png")
 }
 
 pub(crate) async fn handle<B>(request: Request<B>, state: Arc<FacadeState>) -> FacadeResponse
@@ -257,7 +257,7 @@ async fn cancel(state: &FacadeState, id: &str) -> FacadeResponse {
 	let Some(video_gen) = &state.facets.video_gen else {
 		return invalid("video generation is not available");
 	};
-	let handle = GenerationHandle::builder().id(SmolStr::new(id)).build();
+	let handle = GenerationHandle::builder().id(Str::new(id)).build();
 	match video_gen.cancel(handle).await {
 		Ok(status) => json_response(StatusCode::OK, &wire_status(status)),
 		Err(error) => error_response(Vendor::OpenAi, FacadeError::Facet(error)),
@@ -343,7 +343,7 @@ async fn get_status(state: &FacadeState, id: &str) -> Result<GenerationStatus, F
 		return Err(invalid_error("video generation is not available"));
 	};
 	video_gen
-		.get(GenerationHandle::builder().id(SmolStr::from(id)).build())
+		.get(GenerationHandle::builder().id(Str::from(id)).build())
 		.await
 		.map_err(FacadeError::Facet)
 }
@@ -355,7 +355,7 @@ fn wire_status(status: GenerationStatus) -> VideoStatus {
 		GenerationState::Completed => ("completed", None),
 		GenerationState::Cancelled => ("cancelled", None),
 		GenerationState::Failed => ("failed", Some(VideoError { message: status.detail.clone() })),
-		_ => ("failed", Some(VideoError { message: SmolStr::new("unknown generation state") })),
+		_ => ("failed", Some(VideoError { message: Str::new("unknown generation state") })),
 	};
 	VideoStatus {
 		id: status.generation_id,
@@ -367,11 +367,11 @@ fn wire_status(status: GenerationStatus) -> VideoStatus {
 		error,
 	}
 }
-fn invalid_error(detail: impl Into<SmolStr>) -> FacadeError {
+fn invalid_error(detail: impl Into<Str>) -> FacadeError {
 	FacadeError::Invalid(detail.into())
 }
 
-fn invalid(detail: impl Into<SmolStr>) -> FacadeResponse {
+fn invalid(detail: impl Into<Str>) -> FacadeResponse {
 	error_response(Vendor::OpenAi, FacadeError::Invalid(detail.into()))
 }
 
@@ -409,7 +409,7 @@ mod tests {
 		async fn submit(&self, request: GenerateVideoRequest) -> Result<GenerationHandle, Error> {
 			assert_eq!(request.prompt, "ocean");
 			Ok(GenerationHandle::builder()
-				.id(SmolStr::new("video-1"))
+				.id(Str::new("video-1"))
 				.build())
 		}
 
@@ -435,21 +435,21 @@ mod tests {
 		let reference = blobs.put(b"video bytes").expect("store video");
 		let blob = BlobPart::builder()
 			.hash(reference.hash)
-			.mime(SmolStr::new("video/mp4"))
+			.mime(Str::new("video/mp4"))
 			.size(reference.size)
 			.inline(Bytes::new())
 			.build();
 		let artifact = GenerationArtifact::builder()
 			.blob(blob)
-			.variant(SmolStr::new("video"))
-			.url(SmolStr::new(""))
+			.variant(Str::new("video"))
+			.url(Str::new(""))
 			.url_expires_at_ms(0)
 			.build();
 		let status = GenerationStatus::builder()
-			.generation_id(SmolStr::new("video-1"))
+			.generation_id(Str::new("video-1"))
 			.state(GenerationState::Completed)
 			.progress_percent(100.0)
-			.detail(SmolStr::new(""))
+			.detail(Str::new(""))
 			.artifacts(vec![artifact])
 			.unsupported(Vec::new())
 			.created_at_ms(1000)
@@ -474,10 +474,10 @@ mod tests {
 	#[test]
 	fn maps_completed_job_status() {
 		let status = GenerationStatus::builder()
-			.generation_id(SmolStr::new("video-1"))
+			.generation_id(Str::new("video-1"))
 			.state(GenerationState::Completed)
 			.progress_percent(100.0)
-			.detail(SmolStr::new(""))
+			.detail(Str::new(""))
 			.artifacts(Vec::new())
 			.unsupported(Vec::new())
 			.created_at_ms(1000)

@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 
 use bytes::{Bytes, BytesMut};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::compat::{Compat, ReasoningWireFormat};
 use omp_llm_types::{
 	ChatRequest, Effort, Feature, Item, ItemKind, Part, Props, Reasoning, ResolvedModelPolicy,
@@ -28,10 +28,10 @@ const BILLING_MARKER: &[u8] =
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnthropicHeader {
 	/// Header field name with the canonical casing used by Anthropic's clients.
-	pub name:  SmolStr,
+	pub name:  Str,
 	/// Public protocol or client-fingerprint value; credentials are never
 	/// returned.
-	pub value: SmolStr,
+	pub value: Str,
 }
 
 /// Computes non-secret request headers and negotiated beta features.
@@ -424,7 +424,7 @@ fn mapped_effort(policy: Option<&ResolvedThinkingPolicy>, effort: Effort) -> &st
 					legacy_effort_name(effort)
 				}
 			},
-			SmolStr::as_str,
+			Str::as_str,
 		)
 }
 

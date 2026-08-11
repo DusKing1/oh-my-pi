@@ -99,11 +99,11 @@ other.
     before reading → plain Vec is fine.
   - Unbounded, built once, moved once (scratch buffers, collect-and-return,
     channel payloads) → plain `Vec` is correct; none of the above apply.
-- Strings: default to `omp_core::SmolStr` — the in-repo type
-  (`crates/core/src/smolstr.rs`), NOT the smol_str crate. Inline ≤23
+- Strings: default to `omp_core::Str` — the in-repo type
+  (`crates/core/src/str.rs`), NOT the smol_str crate. Inline ≤23
   bytes; heap side is `Bytes`-backed: O(1) clone, zero-copy
-  slice/split/trim. Build with `SmolStrMut` + `freeze()` or
-  `format_smol!`; convert via `IntoSmolStr` (`.to_smolstr()`). It pays off
+  slice/split/trim. Build with `StrMut` + `freeze()` or
+  `fmts!`; convert via `IntoStr` (`.to_str()`). It pays off
   for stored, cloned, or sliced strings (ids, names, tokens, messages).
   `String` remains fine as a transient build buffer that is consumed
   immediately, and for APIs that require it (`fmt::Write`, FFI, serde
@@ -183,7 +183,7 @@ House rules, proven in a sibling codebase (tetra). Not suggestions.
   `-> impl Iterator<Item = …> + '_`, declaring every capability the chain
   actually has (`+ Clone`, `+ DoubleEndedIterator`, `+ FusedIterator`,
   `+ ExactSizeIterator`) so callers keep it. Yield borrows (`&T`) or O(1)-clone
-  items (`SmolStr`, `Bytes` slices), never freshly allocated ones. NEVER
+  items (`Str`, `Bytes` slices), never freshly allocated ones. NEVER
   `.collect()` into an intermediate `Vec` just to iterate again — chain
   adaptors end to end and collect only at the final owner, if at all. When the
   iterator type must be nameable (an `IntoIterator::IntoIter`, a stored
@@ -247,7 +247,7 @@ House rules, proven in a sibling codebase (tetra). Not suggestions.
      knowingly; don't claim the capacity survived.
   Derived views (headers, sub-ranges) come from `slice(..)` on the frozen
   `Bytes`, never a copy. This composes with the Allocation Discipline list
-  above: `CowBytes`/`SmolStr` for storage, `BytesMut` for assembly.
+  above: `CowBytes`/`Str` for storage, `BytesMut` for assembly.
 - **Locks: `parking_lot::{Mutex, RwLock}`, never `std::sync`.** Reach for
   `tokio::sync::Mutex` ONLY when the guard is genuinely held across an
   `.await`; if it isn't, a `parking_lot` lock is smaller and faster.
@@ -285,7 +285,7 @@ negotiable:
   optional specific alias, mapped across charsets, degrading inline). Border
   defaults are themed and dim, not `#fff`.
 - **`dom!`/`layout!` is the canonical construction path** (typed props, loops,
-  `if`/`match`, `IntoComponent` for `&str`/`String`/`SmolStr`/`()`/Vec).
+  `if`/`match`, `IntoComponent` for `&str`/`String`/`Str`/`()`/Vec).
   Building markup by `write!`/`format!` into a `String` and parsing it back is
   the discouraged path.
 - **Effects are props, not one-offs.** Shimmer, hover gradient + eased lift,

@@ -6,7 +6,7 @@
 //! remain in their provider modules.
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::compat::Compat;
 use omp_llm_types::{ChatRequest, Error};
 use serde_json::Value;
@@ -46,7 +46,7 @@ pub(crate) fn cloud_betas(
 	request: &ChatRequest,
 	compat: &Compat,
 	namespace: &str,
-) -> Result<SmallVec<SmolStr, 12>, Error> {
+) -> Result<SmallVec<Str, 12>, Error> {
 	let mut betas = SmallVec::new();
 	for header in request_headers(request, compat)
 		.into_iter()
@@ -88,7 +88,7 @@ pub(crate) fn cloud_betas(
 pub fn project_cloud_request(
 	body: &[u8],
 	family: CloudMessages,
-	betas: &[SmolStr],
+	betas: &[Str],
 ) -> Result<Bytes, Error> {
 	let mut value: Value = serde_json::from_slice(body).map_err(json_error)?;
 	let object = value
@@ -102,7 +102,7 @@ pub fn project_cloud_request(
 
 	let has_cache_control = contains_key(&value, "cache_control");
 	let mut projected_betas =
-		SmallVec::<SmolStr, 12>::with_capacity(betas.len() + usize::from(has_cache_control));
+		SmallVec::<Str, 12>::with_capacity(betas.len() + usize::from(has_cache_control));
 	for beta in betas {
 		push_unique(&mut projected_betas, beta.as_str());
 	}
@@ -127,10 +127,10 @@ pub fn project_cloud_request(
 		.map_err(json_error)
 }
 
-fn push_unique(values: &mut SmallVec<SmolStr, 12>, value: &str) {
+fn push_unique(values: &mut SmallVec<Str, 12>, value: &str) {
 	let value = value.trim();
 	if !value.is_empty() && !values.iter().any(|candidate| candidate.as_str() == value) {
-		values.push(SmolStr::new(value));
+		values.push(Str::new(value));
 	}
 }
 
@@ -148,7 +148,7 @@ fn json_error(error: serde_json::Error) -> Error {
 	provider_error(error.to_string())
 }
 
-fn provider_error(detail: impl Into<SmolStr>) -> Error {
+fn provider_error(detail: impl Into<Str>) -> Error {
 	Error::Provider(detail.into())
 }
 
@@ -169,7 +169,7 @@ mod tests {
 	#[test]
 	fn projection_moves_cloud_controls_into_body_and_preserves_cache_points() {
 		let body = br#"{"model":"claude","stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}]}"#;
-		let projected = project_cloud_request(body, CloudMessages::Vertex, &[SmolStr::new_static(
+		let projected = project_cloud_request(body, CloudMessages::Vertex, &[Str::new_static(
 			"interleaved-thinking-2025-05-14",
 		)])
 		.expect("project request");

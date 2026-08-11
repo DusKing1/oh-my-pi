@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use futures::{StreamExt as _, stream::BoxStream};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{
 	CountInput, CountRequest,
 	facet::{Error as FacetError, Facet, Facets},
@@ -64,12 +64,12 @@ impl InferenceService {
 	/// Core turn, context, and discovery RPCs are always present. Optional facet
 	/// identifiers appear only when their implementation is installed.
 	#[must_use]
-	pub fn capabilities(&self) -> Vec<SmolStr> {
+	pub fn capabilities(&self) -> Vec<Str> {
 		let mut capabilities = vec![
-			SmolStr::new_static("inference.turn"),
-			SmolStr::new_static("inference.invoke"),
-			SmolStr::new_static("inference.contexts"),
-			SmolStr::new_static("inference.models"),
+			Str::new_static("inference.turn"),
+			Str::new_static("inference.invoke"),
+			Str::new_static("inference.contexts"),
+			Str::new_static("inference.models"),
 		];
 		for (facet, name) in [
 			(Facet::CountTokens, "inference.count-tokens"),
@@ -88,7 +88,7 @@ impl InferenceService {
 			.into_iter()
 			.any(|facet| self.facets.supports(facet))
 		{
-			capabilities.push(SmolStr::new_static("media"));
+			capabilities.push(Str::new_static("media"));
 		}
 		capabilities
 	}

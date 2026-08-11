@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use bytes::{Bytes, BytesMut};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{
 	Accuracy, AudioEncoding, BlobPart, Props, SpeakRequest, TranscribeRequest, TranscribeResponse,
 	TranscriptSegment, TranscriptWord, TranscriptionGranularity, Usage,
@@ -20,7 +20,7 @@ pub struct EncodedAudioRequest {
 	/// Provider endpoint suffix relative to the catalog base URL.
 	pub path:         &'static str,
 	/// Request `Content-Type`, including the multipart boundary when applicable.
-	pub content_type: SmolStr,
+	pub content_type: Str,
 	/// Requested response media type.
 	pub accept:       &'static str,
 	/// Fully encoded request body.
@@ -33,13 +33,13 @@ pub struct EncodedAudioRequest {
 pub enum OpenAiAudioError {
 	/// A required request value was absent or outside provider limits.
 	#[error("invalid audio request: {0}")]
-	Invalid(SmolStr),
+	Invalid(Str),
 	/// A canonical control has no faithful OpenAI wire representation.
 	#[error("unsupported audio control: {0}")]
-	Unsupported(SmolStr),
+	Unsupported(Str),
 	/// The provider response was not valid for the selected operation.
 	#[error("invalid audio response: {0}")]
-	Decode(SmolStr),
+	Decode(Str),
 }
 
 /// Data-selected request differences within OpenAI-compatible audio APIs.

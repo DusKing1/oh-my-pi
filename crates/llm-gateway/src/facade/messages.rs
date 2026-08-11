@@ -7,7 +7,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use http::{Request, StatusCode};
 use hyper::body::Body;
-use omp_core::{SmolStr, encoding::base64};
+use omp_core::{Str, encoding::base64};
 use omp_llm_types::{
 	BlobPart, ChatOutcome, ChatRequest, CountInput, CountRequest, Effort, Fallback, Feature,
 	ItemKind, Message, ModelFallback, Part, Props, Reasoning, ResponseFormat, Role, Sampling,
@@ -26,7 +26,7 @@ use super::{
 
 #[derive(Default, Deserialize)]
 struct WireRequest {
-	model:          SmolStr,
+	model:          Str,
 	#[serde(default)]
 	system:         Value,
 	#[serde(default)]
@@ -38,14 +38,14 @@ struct WireRequest {
 	temperature:    Option<f64>,
 	top_p:          Option<f64>,
 	top_k:          Option<u32>,
-	stop_sequences: Option<Vec<SmolStr>>,
+	stop_sequences: Option<Vec<Str>>,
 	thinking:       Option<Value>,
 	output_config:  Option<Value>,
 	metadata:       Option<Value>,
 	#[serde(default)]
 	stream:         bool,
 	#[serde(flatten)]
-	extra:          BTreeMap<SmolStr, Value>,
+	extra:          BTreeMap<Str, Value>,
 }
 
 /// Handles Anthropic message generation and exact token-count routes.
@@ -163,7 +163,7 @@ fn canonical_input(wire: &WireRequest) -> Result<CanonicalInput, FacadeError> {
 					items.push(item(ItemKind::ToolCall(
 						ToolCall::builder()
 							.id(canonical_call_id(id))
-							.name(SmolStr::from(string_at(&block, "name")?))
+							.name(Str::from(string_at(&block, "name")?))
 							.args_json(Bytes::from(
 								serde_json::to_vec(&input).expect("JSON values serialize"),
 							))
@@ -228,8 +228,8 @@ fn canonical_input(wire: &WireRequest) -> Result<CanonicalInput, FacadeError> {
 			.unwrap_or_else(|| json!({}));
 		tools.push(
 			ToolDef::builder()
-				.name(SmolStr::from(string_at(tool, "name")?))
-				.description(SmolStr::from(
+				.name(Str::from(string_at(tool, "name")?))
+				.description(Str::from(
 					tool
 						.get("description")
 						.and_then(Value::as_str)
@@ -264,7 +264,7 @@ fn canonical_input(wire: &WireRequest) -> Result<CanonicalInput, FacadeError> {
 		.as_ref()
 		.and_then(|metadata| metadata.get("user_id"))
 		.and_then(Value::as_str)
-		.map(SmolStr::from);
+		.map(Str::from);
 	let mut options = provider_options("anthropic", &wire.extra);
 	if let Some(metadata) = residual_object(wire.metadata.as_ref(), &["user_id"]) {
 		options.insert_ns("anthropic", "metadata", metadata);
@@ -326,7 +326,7 @@ fn anthropic_tool_choice(
 		Some("auto") => ToolChoice::Auto,
 		Some("none") => ToolChoice::None,
 		Some("any") => ToolChoice::Required,
-		Some("tool") => ToolChoice::Named(SmolStr::from(string_at(value, "name")?)),
+		Some("tool") => ToolChoice::Named(Str::from(string_at(value, "name")?)),
 		_ => return Err(invalid("unsupported Anthropic tool_choice")),
 	};
 	Ok(Some(
@@ -469,18 +469,18 @@ fn anthropic_parts(value: &Value) -> Result<(Vec<Part>, Vec<Value>), FacadeError
 	for block in &blocks {
 		let kind = block.get("type").and_then(Value::as_str).unwrap_or("text");
 		let part = match kind {
-			"text" => Part::Text(SmolStr::from(string_at(block, "text")?)),
+			"text" => Part::Text(Str::from(string_at(block, "text")?)),
 			"image" | "document" => Part::Blob(anthropic_blob(block, kind)?),
 			"thinking" => Part::Thinking(
 				Thinking::builder()
-					.text(SmolStr::from(string_at(block, "thinking")?))
+					.text(Str::from(string_at(block, "thinking")?))
 					.signature(Bytes::copy_from_slice(string_at(block, "signature")?.as_bytes()))
 					.redacted(false)
 					.build(),
 			),
 			"redacted_thinking" => Part::Thinking(
 				Thinking::builder()
-					.text(SmolStr::new_static(""))
+					.text(Str::new_static(""))
 					.signature(Bytes::copy_from_slice(string_at(block, "data")?.as_bytes()))
 					.redacted(true)
 					.build(),
@@ -495,8 +495,8 @@ fn anthropic_parts(value: &Value) -> Result<(Vec<Part>, Vec<Value>), FacadeError
 			},
 			"fallback" => Part::Fallback(
 				ModelFallback::builder()
-					.from_model(SmolStr::from(fallback_model(block, "from")?))
-					.to_model(SmolStr::from(fallback_model(block, "to")?))
+					.from_model(Str::from(fallback_model(block, "from")?))
+					.to_model(Str::from(fallback_model(block, "to")?))
 					.build(),
 			),
 			_ => return Err(invalid("unsupported Anthropic content block")),
@@ -581,7 +581,7 @@ fn anthropic_blob(block: &Value, kind: &str) -> Result<BlobPart, FacadeError> {
 	};
 	Ok(BlobPart::builder()
 		.hash(*blake3::hash(&identity).as_bytes())
-		.mime(SmolStr::from(mime))
+		.mime(Str::from(mime))
 		.size(inline.len() as u64)
 		.inline(Bytes::from(inline))
 		.build())
@@ -609,10 +609,10 @@ fn server_tool(block: &Value, kind: ServerToolKind) -> Result<ServerTool, Facade
 	let mut metadata = Props::default();
 	metadata.insert_ns("anthropic", "content_block", block.clone());
 	Ok(ServerTool::builder()
-		.provider(SmolStr::from("anthropic"))
+		.provider(Str::from("anthropic"))
 		.kind(kind)
-		.id(SmolStr::from(string_at(block, id_field)?))
-		.name(SmolStr::from(name))
+		.id(Str::from(string_at(block, id_field)?))
+		.name(Str::from(name))
 		.payload_json(Bytes::from(serde_json::to_vec(&payload).expect("JSON values serialize")))
 		.provider_metadata(metadata)
 		.build())
@@ -620,7 +620,7 @@ fn server_tool(block: &Value, kind: ServerToolKind) -> Result<ServerTool, Facade
 
 async fn non_streaming(
 	mut events: futures::stream::BoxStream<'static, TurnEvent>,
-	model: SmolStr,
+	model: Str,
 ) -> FacadeResponse {
 	let mut outcome = None;
 	while let Some(event) = events.next().await {
@@ -643,7 +643,7 @@ async fn non_streaming(
 
 fn streaming(
 	mut events: futures::stream::BoxStream<'static, TurnEvent>,
-	model: SmolStr,
+	model: Str,
 ) -> FacadeResponse {
 	let output = stream! {
 		let id = format!("msg_{}", ulid::Ulid::generate());
@@ -895,7 +895,7 @@ const fn anthropic_stop(reason: StopReason) -> &'static str {
 }
 
 fn invalid(detail: &str) -> FacadeError {
-	FacadeError::Invalid(SmolStr::from(detail))
+	FacadeError::Invalid(Str::from(detail))
 }
 
 #[cfg(test)]
@@ -905,7 +905,7 @@ mod tests {
 	#[test]
 	fn projects_anthropic_tool_blocks() {
 		let wire = WireRequest {
-			model: SmolStr::from("test"),
+			model: Str::from("test"),
 			system: Value::String("be terse".into()),
 			messages: vec![json!({"role":"assistant","content":[
 				{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"q":"omp"}}
@@ -955,7 +955,7 @@ mod tests {
 			json!({"type":"fallback","from":{"model":"claude-opus-4-1"},"to":{"model":"claude-sonnet-4-5"}}),
 		];
 		let wire = WireRequest {
-			model: SmolStr::from("test"),
+			model: Str::from("test"),
 			messages: vec![json!({"role":"assistant","content":blocks})],
 			max_tokens: Some(128),
 			..WireRequest::default()
@@ -996,7 +996,7 @@ mod tests {
 			"cache_control":{"type":"ephemeral","ttl":"1h"}
 		});
 		let wire = WireRequest {
-			model: SmolStr::from("test"),
+			model: Str::from("test"),
 			messages: vec![
 				json!({"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"q":"omp"},"cache_control":{"type":"ephemeral"}}]}),
 				json!({"role":"user","content":[outer.clone()]}),
@@ -1042,7 +1042,7 @@ mod tests {
 	#[test]
 	fn rejects_unknown_top_level_and_nested_blocks() {
 		let unknown = WireRequest {
-			model: SmolStr::from("test"),
+			model: Str::from("test"),
 			messages: vec![json!({"role":"user","content":[{"type":"future_block","value":1}]})],
 			max_tokens: Some(1),
 			..WireRequest::default()
@@ -1050,7 +1050,7 @@ mod tests {
 		assert!(canonical_input(&unknown).is_err());
 
 		let nested = WireRequest {
-			model: SmolStr::from("test"),
+			model: Str::from("test"),
 			messages: vec![json!({"role":"user","content":[{
 				"type":"tool_result",
 				"tool_use_id":"toolu_missing",

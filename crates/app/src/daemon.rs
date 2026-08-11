@@ -9,7 +9,7 @@ use std::{
 };
 
 use futures::{StreamExt as _, future::join_all, stream::FuturesUnordered};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_broker::{
 	BrokerCliBackend,
 	oauth::{OAuthEngine, OAuthError},
@@ -260,7 +260,7 @@ pub enum DaemonError {
 	#[error("chat provider `{provider}` has an invalid specialized endpoint: {source}")]
 	SpecializedEndpoint {
 		/// Catalog provider identifier.
-		provider: SmolStr,
+		provider: Str,
 		/// Endpoint parsing failure.
 		#[source]
 		source:   tonic::transport::Error,
@@ -716,7 +716,7 @@ fn prepare_dir(path: &Path) -> Result<(), DaemonError> {
 fn usable_providers<'a>(
 	providers: &'a ProviderCatalog,
 	store: &Store,
-	adc_routes: &BTreeMap<SmolStr, AdcRoute>,
+	adc_routes: &BTreeMap<Str, AdcRoute>,
 	apple_fm_available: bool,
 ) -> Vec<&'a ProviderEntry> {
 	providers
@@ -758,7 +758,7 @@ fn provider_is_configured(provider: &ProviderEntry, store: &Store) -> bool {
 fn provider_is_routable(
 	provider: &ProviderEntry,
 	store: &Store,
-	adc_routes: &BTreeMap<SmolStr, AdcRoute>,
+	adc_routes: &BTreeMap<Str, AdcRoute>,
 ) -> bool {
 	provider_is_configured(provider, store)
 		&& provider_route_is_complete(provider, &provider_route(provider, adc_routes))
@@ -839,7 +839,7 @@ fn bootstrap_catalog_credentials(
 	Ok(())
 }
 
-fn first_catalog_env(names: &[SmolStr]) -> Option<String> {
+fn first_catalog_env(names: &[Str]) -> Option<String> {
 	names.iter().find_map(|name| {
 		std::env::var(name.as_str())
 			.ok()
@@ -851,7 +851,7 @@ async fn bootstrap_adc(
 	engine: &Arc<AdcEngine<EgressClient>>,
 	store: &Arc<Store>,
 	providers: &ProviderCatalog,
-) -> Result<BTreeMap<SmolStr, AdcRoute>, DaemonError> {
+) -> Result<BTreeMap<Str, AdcRoute>, DaemonError> {
 	let mut routes = BTreeMap::new();
 	if !adc_source_configured() {
 		return Ok(routes);
@@ -913,7 +913,7 @@ fn adc_source_configured() -> bool {
 #[derive(Clone)]
 struct BrokerAdcSink {
 	store:    Arc<Store>,
-	provider: SmolStr,
+	provider: Str,
 	project:  Option<String>,
 }
 
@@ -959,7 +959,7 @@ fn route_dependencies(
 	adc_project: Option<String>,
 	blocks: Arc<Mutex<BlockTable>>,
 	observer: BrokerObserver,
-	premium_multipliers: Arc<BTreeMap<(SmolStr, SmolStr), u64>>,
+	premium_multipliers: Arc<BTreeMap<(Str, Str), u64>>,
 ) -> RouteDependencies {
 	let provider_id = provider.id.clone();
 	let anonymous = matches!(&provider.auth, AuthSpec::None | AuthSpec::OptionalBearer { .. });
@@ -998,43 +998,43 @@ fn route_dependencies(
 
 fn provider_route(
 	provider: &ProviderEntry,
-	adc_routes: &BTreeMap<SmolStr, AdcRoute>,
+	adc_routes: &BTreeMap<Str, AdcRoute>,
 ) -> ProviderRoute {
 	let mut route = ProviderRoute {
-		project:    env_smol(&["GOOGLE_CLOUD_PROJECT", "CLOUDSDK_CORE_PROJECT"]),
-		region:     env_smol(&[
+		project:    env_str(&["GOOGLE_CLOUD_PROJECT", "CLOUDSDK_CORE_PROJECT"]),
+		region:     env_str(&[
 			"GOOGLE_CLOUD_LOCATION",
 			"AZURE_OPENAI_REGION",
 			"AWS_REGION",
 			"AWS_DEFAULT_REGION",
 		]),
-		deployment: env_smol(&["AZURE_OPENAI_DEPLOYMENT"]),
-		account:    env_smol(&["CLOUDFLARE_ACCOUNT_ID"]),
-		gateway:    env_smol(&["CLOUDFLARE_AI_GATEWAY_ID"]),
+		deployment: env_str(&["AZURE_OPENAI_DEPLOYMENT"]),
+		account:    env_str(&["CLOUDFLARE_ACCOUNT_ID"]),
+		gateway:    env_str(&["CLOUDFLARE_AI_GATEWAY_ID"]),
 	};
 	if matches!(&provider.auth, AuthSpec::AwsSigV4) {
-		route.region = env_smol(&["AWS_REGION", "AWS_DEFAULT_REGION"]);
+		route.region = env_str(&["AWS_REGION", "AWS_DEFAULT_REGION"]);
 	}
 	if let AuthSpec::GoogleAdc { project_env, location_env, .. } = &provider.auth {
 		if let Some(project) = first_catalog_env(project_env) {
-			route.project = SmolStr::from(project);
+			route.project = Str::from(project);
 		}
 		if let Some(location) = first_catalog_env(location_env) {
-			route.region = SmolStr::from(location);
+			route.region = Str::from(location);
 		}
 	}
 	if let Some(adc) = adc_routes.get(provider.id.as_str()) {
-		route.project = SmolStr::from(adc.project.as_str());
-		route.region = SmolStr::from(adc.location.as_str());
+		route.project = Str::from(adc.project.as_str());
+		route.region = Str::from(adc.location.as_str());
 	}
 	route
 }
 
-fn env_smol(names: &[&str]) -> SmolStr {
+fn env_str(names: &[&str]) -> Str {
 	names
 		.iter()
 		.find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
-		.map_or_else(|| SmolStr::new_static(""), SmolStr::from)
+		.map_or_else(|| Str::new_static(""), Str::from)
 }
 
 struct BrokerAvailability {
@@ -1110,7 +1110,7 @@ impl CredentialView for BrokerAvailability {
 
 struct BrokerCredentialPool {
 	store:    Arc<Store>,
-	provider: SmolStr,
+	provider: Str,
 }
 
 impl CredentialPool for BrokerCredentialPool {
@@ -1168,7 +1168,7 @@ impl VideoCredentialLeases for BrokerVideoLeases {
 
 struct BrokerUsageOracle {
 	store:     Arc<Store>,
-	provider:  SmolStr,
+	provider:  Str,
 	anonymous: bool,
 }
 
@@ -1221,7 +1221,7 @@ enum RouteRefresh {
 
 struct BrokerRouteRefresher {
 	store:    Arc<Store>,
-	provider: SmolStr,
+	provider: Str,
 	refresh:  RouteRefresh,
 }
 
@@ -1302,7 +1302,7 @@ impl FrameSink for NoopFrameSink {
 
 struct BrokerTerminalUsage {
 	observer:            BrokerObserver,
-	premium_multipliers: Arc<BTreeMap<(SmolStr, SmolStr), u64>>,
+	premium_multipliers: Arc<BTreeMap<(Str, Str), u64>>,
 }
 
 impl UsageObserver for BrokerTerminalUsage {
@@ -1332,7 +1332,7 @@ impl UsageObserver for BrokerTerminalUsage {
 		let premium_multiplier_millionths = premium_multiplier_millionths.or_else(|| {
 			self
 				.premium_multipliers
-				.get(&(SmolStr::new(lease.provider()), SmolStr::new(model)))
+				.get(&(Str::new(lease.provider()), Str::new(model)))
 				.copied()
 		});
 		if let Err(error) = self.observer.record_terminal_observation(

@@ -1,6 +1,6 @@
 //! Small string optimization with stack allocation for short strings.
 //!
-//! `SmolStr` stores strings up to 23 bytes inline, avoiding heap allocation for
+//! `Str` stores strings up to 23 bytes inline, avoiding heap allocation for
 //! typical short strings. Longer strings use reference-counted heap storage
 //! with O(1) cloning.
 
@@ -20,21 +20,21 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use bytes_utils::{Str, StrMut, string::StorageMut};
+use bytes_utils::{Str as BytesStr, StrMut as BytesStrMut, string::StorageMut};
 
-/// A `SmolStr` is a string type that has the following properties:
+/// A `Str` is a string type that has the following properties:
 ///
-/// * `size_of::<SmolStr>() == 32`
+/// * `size_of::<Str>() == 32`
 /// * `Clone` is `O(1)`
 /// * Strings are stack-allocated if they are:
 ///     * Up to 23 bytes long
-/// * Additionally, a `SmolStr` can be explicitly created from a `&'static str`
+/// * Additionally, a `Str` can be explicitly created from a `&'static str`
 ///   without allocation
 ///
-/// Unlike `String`, however, `SmolStr` is immutable. The primary use case for
+/// Unlike `String`, however, `Str` is immutable. The primary use case for
 #[derive(Default, Clone)]
 #[repr(transparent)]
-pub struct SmolStr(Repr<Str>);
+pub struct Str(Repr<BytesStr>);
 
 /// An error type for UTF-8 validation.
 pub type Utf8Error = bytes_utils::string::Utf8Error<Bytes>;
@@ -42,8 +42,8 @@ pub type Utf8Error = bytes_utils::string::Utf8Error<Bytes>;
 /// An error type for UTF-8 validation.
 pub type Utf8ErrorMut = bytes_utils::string::Utf8Error<BytesMut>;
 
-impl SmolStr {
-	/// Constructs a `SmolStr` from a `Bytes` object without checking for UTF-8
+impl Str {
+	/// Constructs a `Str` from a `Bytes` object without checking for UTF-8
 	/// validity.
 	///
 	/// # Safety
@@ -53,15 +53,15 @@ impl SmolStr {
 	#[inline]
 	pub unsafe fn from_utf8_unchecked_owned(u: impl Into<Bytes>) -> Self {
 		// SAFETY: The caller guarantees that the bytes are valid UTF-8.
-		Self(Repr::Heap(unsafe { Str::from_inner_unchecked(u.into()) }))
+		Self(Repr::Heap(unsafe { BytesStr::from_inner_unchecked(u.into()) }))
 	}
 
 	/// Promotes an inline representation to a heap representation in place.
 	///
-	/// This function converts the internal representation of the `SmolStr` from
-	/// inline to heap and returns a reference to the [`Str`].
+	/// This function converts the internal representation of the `Str` from
+	/// inline to heap and returns a reference to the [`BytesStr`].
 	#[inline]
-	pub fn promote(&mut self) -> &mut Str {
+	pub fn promote(&mut self) -> &mut BytesStr {
 		if let Repr::Inline(buf) = &mut self.0 {
 			self.0 = Repr::Heap(buf.as_str().into());
 		}
@@ -71,7 +71,7 @@ impl SmolStr {
 		data
 	}
 
-	/// Constructs a `SmolStr` from a byte slice without checking for UTF-8
+	/// Constructs a `Str` from a byte slice without checking for UTF-8
 	/// validity.
 	///
 	/// # Safety
@@ -84,16 +84,16 @@ impl SmolStr {
 		Self::new(unsafe { str::from_utf8_unchecked(u) })
 	}
 
-	/// Constructs a `SmolStr` from a `Bytes` object, checking for UTF-8
+	/// Constructs a `Str` from a `Bytes` object, checking for UTF-8
 	/// validity.
 	///
 	/// Returns an error if the bytes are not valid UTF-8.
 	#[inline]
 	pub fn from_utf8_owned(u: impl Into<Bytes>) -> Result<Self, Utf8Error> {
-		Ok(Self(Repr::Heap(Str::from_inner(u.into())?)))
+		Ok(Self(Repr::Heap(BytesStr::from_inner(u.into())?)))
 	}
 
-	/// Constructs a `SmolStr` from a byte slice, checking for UTF-8 validity.
+	/// Constructs a `Str` from a byte slice, checking for UTF-8 validity.
 	///
 	/// Returns an error if the bytes are not valid UTF-8.
 	#[inline]
@@ -101,7 +101,7 @@ impl SmolStr {
 		Ok(Self::new(str::from_utf8(u)?))
 	}
 
-	/// Constructs an inline variant of `SmolStr`.
+	/// Constructs an inline variant of `Str`.
 	///
 	/// This never allocates.
 	///
@@ -113,7 +113,7 @@ impl SmolStr {
 		Self(Repr::new_inline(text).expect("len <= INLINE_CAP"))
 	}
 
-	/// Constructs a `SmolStr` from a statically allocated string.
+	/// Constructs a `Str` from a statically allocated string.
 	///
 	/// This never allocates.
 	#[inline(always)]
@@ -121,16 +121,16 @@ impl SmolStr {
 		// NOTE: this never uses the inline storage; if a canonical
 		// representation is needed, we could check for `len() < INLINE_CAP`
 		// and call `new_inline`, but this would mean an extra branch.
-		Self(Repr::Heap(Str::from_static(text)))
+		Self(Repr::Heap(BytesStr::from_static(text)))
 	}
 
-	/// Constructs a `SmolStr` from a `str`, heap-allocating if necessary.
+	/// Constructs a `Str` from a `str`, heap-allocating if necessary.
 	#[inline(always)]
 	pub fn new(text: impl AsRef<str>) -> Self {
 		Self(Repr::copy_from_str(text.as_ref()))
 	}
 
-	/// Returns a `&str` slice of this `SmolStr`.
+	/// Returns a `&str` slice of this `Str`.
 	#[inline(always)]
 	pub fn as_str(&self) -> &str {
 		self.0.as_str()
@@ -164,7 +164,7 @@ impl SmolStr {
 	}
 
 	/// Strips a prefix from the string, returning the remainder as a new
-	/// `SmolStr`. Returns `None` if the string doesn't start with the prefix.
+	/// `Str`. Returns `None` if the string doesn't start with the prefix.
 	#[inline]
 	pub fn strip_prefix(&self, prefix: &str) -> Option<Self> {
 		let s = self.as_str();
@@ -172,14 +172,14 @@ impl SmolStr {
 	}
 
 	/// Strips a suffix from the string, returning the remainder as a new
-	/// `SmolStr`. Returns `None` if the string doesn't end with the suffix.
+	/// `Str`. Returns `None` if the string doesn't end with the suffix.
 	#[inline]
 	pub fn strip_suffix(&self, suffix: &str) -> Option<Self> {
 		let s = self.as_str();
 		s.strip_suffix(suffix).map(|r| self.slice_ref(r))
 	}
 
-	/// Returns a substring as a new `SmolStr`.
+	/// Returns a substring as a new `Str`.
 	/// For heap-allocated strings, this is a zero-copy operation.
 	///
 	/// # Panics
@@ -205,7 +205,7 @@ impl SmolStr {
 		}
 	}
 
-	/// Splits the string at the given byte index and returns two `SmolStr`s.
+	/// Splits the string at the given byte index and returns two `Str`s.
 	/// For heap-allocated strings, this creates two zero-copy references.
 	///
 	/// # Panics
@@ -248,13 +248,13 @@ impl SmolStr {
 		self.slice_ref(trimmed)
 	}
 
-	/// Truncates the `SmolStr` to the specified length.
+	/// Truncates the `Str` to the specified length.
 	///
 	/// If `len` is greater than the current length, this has no effect.
 	///
 	/// # Panics
 	///
-	/// Panics if `len` is greater than the current length of the `SmolStr` or if
+	/// Panics if `len` is greater than the current length of the `Str` or if
 	/// `len` is not on a valid UTF-8 character boundary.
 	#[inline]
 	pub fn truncate(&mut self, len: usize) {
@@ -270,13 +270,13 @@ impl SmolStr {
 				unsafe {
 					let mut bytes = mem::take(heap).into_inner();
 					bytes.truncate(len);
-					*heap = Str::from_inner_unchecked(bytes);
+					*heap = BytesStr::from_inner_unchecked(bytes);
 				}
 			},
 		}
 	}
 
-	/// Splits on the given separator and returns an iterator of `SmolStr`s.
+	/// Splits on the given separator and returns an iterator of `Str`s.
 	/// For heap strings, the splits are zero-copy references.
 	pub fn split<'s>(
 		&'s self,
@@ -292,7 +292,7 @@ impl SmolStr {
 	///
 	/// Reuses the allocation when uniquely owned; otherwise copies.
 	pub fn into_ascii_lowercase(self) -> Self {
-		let mut buf = SmolStrMut::from(self);
+		let mut buf = StrMut::from(self);
 		buf.make_ascii_lowercase();
 		buf.freeze()
 	}
@@ -301,79 +301,79 @@ impl SmolStr {
 	///
 	/// Reuses the allocation when uniquely owned; otherwise copies.
 	pub fn into_ascii_uppercase(self) -> Self {
-		let mut buf = SmolStrMut::from(self);
+		let mut buf = StrMut::from(self);
 		buf.make_ascii_uppercase();
 		buf.freeze()
 	}
 
-	/// Returns a byte slice of this `SmolStr`.
+	/// Returns a byte slice of this `Str`.
 	#[inline(always)]
 	pub fn as_bytes(&self) -> &[u8] {
 		self.as_str().as_bytes()
 	}
 
-	/// Tries to convert this `SmolStr` into a `SmolStrMut`.
+	/// Tries to convert this `Str` into a `StrMut`.
 	#[inline]
-	pub fn try_into_mut(self) -> Result<SmolStrMut, Self> {
+	pub fn try_into_mut(self) -> Result<StrMut, Self> {
 		match self.0 {
 			Repr::Heap(data) => match data.into_inner().try_into_mut() {
-				// SAFETY: The data is valid UTF-8 because it came from a Str,
+				// SAFETY: The data is valid UTF-8 because it came from a BytesStr,
 				// and BytesMut preserves the UTF-8 bytes when converted.
-				Ok(data) => Ok(SmolStrMut(Repr::Heap(unsafe { StrMut::from_inner_unchecked(data) }))),
-				// SAFETY: If try_into_mut fails, we reconstruct the original Str from
+				Ok(data) => Ok(StrMut(Repr::Heap(unsafe { BytesStrMut::from_inner_unchecked(data) }))),
+				// SAFETY: If try_into_mut fails, we reconstruct the original BytesStr from
 				// the returned Bytes. The bytes are still valid UTF-8.
-				Err(e) => Err(Self(Repr::Heap(unsafe { Str::from_inner_unchecked(e) }))),
+				Err(e) => Err(Self(Repr::Heap(unsafe { BytesStr::from_inner_unchecked(e) }))),
 			},
-			Repr::Inline(buf) => Ok(SmolStrMut(Repr::Inline(buf))),
+			Repr::Inline(buf) => Ok(StrMut(Repr::Inline(buf))),
 		}
 	}
 }
 
-/// Extension trait for `str` to provide `_smol` versions of methods that
+/// Extension trait for `str` to provide `_str` versions of methods that
 /// return an allocated `String`.
-pub trait SmolStrExt {
+pub trait StrExt {
 	/// Converts the string to lowercase using ASCII rules and returns a
-	/// `SmolStr`.
+	/// `Str`.
 	///
-	/// This is a `_smol` version of [`str::to_ascii_lowercase`].
+	/// This is a `_str` version of [`str::to_ascii_lowercase`].
 	///
 	/// # Examples
 	///
 	/// ```
-	/// use omp_core::smolstr::SmolStrExt;
+	/// use omp_core::str::StrExt;
 	///
 	/// let s = "HELLO";
-	/// let smol_str = s.to_ascii_lowercase_smol();
-	/// assert_eq!(smol_str, "hello");
+	/// let string = s.to_ascii_lowercase_str();
+	/// assert_eq!(string, "hello");
 	/// ```
-	fn to_ascii_lowercase_smol(&self) -> SmolStr;
+	fn to_ascii_lowercase_str(&self) -> Str;
 
 	/// Converts the string to uppercase using ASCII rules and returns a
-	/// `SmolStr`.
+	/// `Str`.
 	///
-	/// This is a `_smol` version of [`str::to_ascii_uppercase`].
+	/// This is a `_str` version of [`str::to_ascii_uppercase`].
 	///
 	/// # Examples
 	///
 	/// ```
-	/// use omp_core::smolstr::SmolStrExt;
+	/// use omp_core::str::StrExt;
 	///
 	/// let s = "hello";
-	/// let smol_str = s.to_ascii_uppercase_smol();
-	/// assert_eq!(smol_str, "HELLO");
+	/// let string = s.to_ascii_uppercase_str();
+	/// assert_eq!(string, "HELLO");
 	/// ```
-	fn to_ascii_uppercase_smol(&self) -> SmolStr;
+	fn to_ascii_uppercase_str(&self) -> Str;
 }
 
-impl SmolStrExt for str {
-	fn to_ascii_lowercase_smol(&self) -> SmolStr {
-		let mut s = SmolStrMut::new(self);
+impl StrExt for str {
+	fn to_ascii_lowercase_str(&self) -> Str {
+		let mut s = StrMut::new(self);
 		s.make_ascii_lowercase();
 		s.freeze()
 	}
 
-	fn to_ascii_uppercase_smol(&self) -> SmolStr {
-		let mut s = SmolStrMut::new(self);
+	fn to_ascii_uppercase_str(&self) -> Str {
+		let mut s = StrMut::new(self);
 		s.make_ascii_uppercase();
 		s.freeze()
 	}
@@ -383,110 +383,110 @@ impl SmolStrExt for str {
 // Comparison
 // ============================
 
-impl Eq for SmolStr {}
-impl PartialEq<Self> for SmolStr {
+impl Eq for Str {}
+impl PartialEq<Self> for Str {
 	fn eq(&self, other: &Self) -> bool {
 		self.0.ptr_eq(&other.0) || self.as_str() == other.as_str()
 	}
 }
 
-impl PartialEq<str> for SmolStr {
+impl PartialEq<str> for Str {
 	#[inline(always)]
 	fn eq(&self, other: &str) -> bool {
 		self.as_str() == other
 	}
 }
 
-impl PartialEq<SmolStr> for str {
+impl PartialEq<Str> for str {
 	#[inline(always)]
-	fn eq(&self, other: &SmolStr) -> bool {
+	fn eq(&self, other: &Str) -> bool {
 		other == self
 	}
 }
 
-impl<'a> PartialEq<&'a str> for SmolStr {
+impl<'a> PartialEq<&'a str> for Str {
 	#[inline(always)]
 	fn eq(&self, other: &&'a str) -> bool {
 		self == *other
 	}
 }
 
-impl PartialEq<SmolStr> for &str {
+impl PartialEq<Str> for &str {
 	#[inline(always)]
-	fn eq(&self, other: &SmolStr) -> bool {
+	fn eq(&self, other: &Str) -> bool {
 		*self == other
 	}
 }
 
-impl PartialEq<String> for SmolStr {
+impl PartialEq<String> for Str {
 	#[inline(always)]
 	fn eq(&self, other: &String) -> bool {
 		self.as_str() == other
 	}
 }
 
-impl PartialEq<SmolStr> for String {
+impl PartialEq<Str> for String {
 	#[inline(always)]
-	fn eq(&self, other: &SmolStr) -> bool {
+	fn eq(&self, other: &Str) -> bool {
 		other == self
 	}
 }
 
-impl<'a> PartialEq<&'a String> for SmolStr {
+impl<'a> PartialEq<&'a String> for Str {
 	#[inline(always)]
 	fn eq(&self, other: &&'a String) -> bool {
 		self == *other
 	}
 }
 
-impl PartialEq<SmolStr> for &String {
+impl PartialEq<Str> for &String {
 	#[inline(always)]
-	fn eq(&self, other: &SmolStr) -> bool {
+	fn eq(&self, other: &Str) -> bool {
 		*self == other
 	}
 }
 
-impl Ord for SmolStr {
+impl Ord for Str {
 	fn cmp(&self, other: &Self) -> Ordering {
 		self.as_str().cmp(other.as_str())
 	}
 }
 
-impl PartialOrd for SmolStr {
+impl PartialOrd for Str {
 	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
 		Some(self.cmp(other))
 	}
 }
 
-impl PartialOrd<str> for SmolStr {
+impl PartialOrd<str> for Str {
 	#[inline(always)]
 	fn partial_cmp(&self, other: &str) -> Option<Ordering> {
 		self.as_str().partial_cmp(other)
 	}
 }
 
-impl PartialOrd<SmolStr> for str {
+impl PartialOrd<Str> for str {
 	#[inline(always)]
-	fn partial_cmp(&self, other: &SmolStr) -> Option<Ordering> {
+	fn partial_cmp(&self, other: &Str) -> Option<Ordering> {
 		self.partial_cmp(other.as_str())
 	}
 }
 
-impl<'a> PartialOrd<&'a str> for SmolStr {
+impl<'a> PartialOrd<&'a str> for Str {
 	#[inline(always)]
 	fn partial_cmp(&self, other: &&'a str) -> Option<Ordering> {
 		self.partial_cmp(*other)
 	}
 }
 
-impl PartialOrd<SmolStr> for &str {
+impl PartialOrd<Str> for &str {
 	#[inline(always)]
-	fn partial_cmp(&self, other: &SmolStr) -> Option<Ordering> {
+	fn partial_cmp(&self, other: &Str) -> Option<Ordering> {
 		(*self).partial_cmp(other)
 	}
 }
 
-impl hash::Hash for SmolStr {
+impl hash::Hash for Str {
 	fn hash<H: hash::Hasher>(&self, hasher: &mut H) {
 		self.as_str().hash(hasher);
 	}
@@ -496,138 +496,138 @@ impl hash::Hash for SmolStr {
 // Formatting
 // ============================
 
-impl fmt::Debug for SmolStr {
+impl fmt::Debug for Str {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		fmt::Debug::fmt(self.as_str(), f)
 	}
 }
 
-impl fmt::Display for SmolStr {
+impl fmt::Display for Str {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		fmt::Display::fmt(self.as_str(), f)
 	}
 }
 
-impl fmt::Debug for SmolStrMut {
+impl fmt::Debug for StrMut {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		fmt::Debug::fmt(self.as_str(), f)
 	}
 }
 
-impl fmt::Display for SmolStrMut {
+impl fmt::Display for StrMut {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		fmt::Display::fmt(self.as_str(), f)
 	}
 }
 
 // ============================
-// SmolStrMut Comparison
+// StrMut Comparison
 // ============================
 
-impl Eq for SmolStrMut {}
-impl PartialEq<Self> for SmolStrMut {
+impl Eq for StrMut {}
+impl PartialEq<Self> for StrMut {
 	fn eq(&self, other: &Self) -> bool {
 		self.0.ptr_eq(&other.0) || self.as_str() == other.as_str()
 	}
 }
 
-impl PartialEq<str> for SmolStrMut {
+impl PartialEq<str> for StrMut {
 	#[inline(always)]
 	fn eq(&self, other: &str) -> bool {
 		self.as_str() == other
 	}
 }
 
-impl PartialEq<SmolStrMut> for str {
+impl PartialEq<StrMut> for str {
 	#[inline(always)]
-	fn eq(&self, other: &SmolStrMut) -> bool {
+	fn eq(&self, other: &StrMut) -> bool {
 		other == self
 	}
 }
 
-impl<'a> PartialEq<&'a str> for SmolStrMut {
+impl<'a> PartialEq<&'a str> for StrMut {
 	#[inline(always)]
 	fn eq(&self, other: &&'a str) -> bool {
 		self == *other
 	}
 }
 
-impl PartialEq<SmolStrMut> for &str {
+impl PartialEq<StrMut> for &str {
 	#[inline(always)]
-	fn eq(&self, other: &SmolStrMut) -> bool {
+	fn eq(&self, other: &StrMut) -> bool {
 		*self == other
 	}
 }
 
-impl PartialEq<String> for SmolStrMut {
+impl PartialEq<String> for StrMut {
 	#[inline(always)]
 	fn eq(&self, other: &String) -> bool {
 		self.as_str() == other
 	}
 }
 
-impl PartialEq<SmolStrMut> for String {
+impl PartialEq<StrMut> for String {
 	#[inline(always)]
-	fn eq(&self, other: &SmolStrMut) -> bool {
+	fn eq(&self, other: &StrMut) -> bool {
 		other == self
 	}
 }
 
-impl<'a> PartialEq<&'a String> for SmolStrMut {
+impl<'a> PartialEq<&'a String> for StrMut {
 	#[inline(always)]
 	fn eq(&self, other: &&'a String) -> bool {
 		self == *other
 	}
 }
 
-impl PartialEq<SmolStrMut> for &String {
+impl PartialEq<StrMut> for &String {
 	#[inline(always)]
-	fn eq(&self, other: &SmolStrMut) -> bool {
+	fn eq(&self, other: &StrMut) -> bool {
 		*self == other
 	}
 }
 
-impl Ord for SmolStrMut {
+impl Ord for StrMut {
 	fn cmp(&self, other: &Self) -> Ordering {
 		self.as_str().cmp(other.as_str())
 	}
 }
 
-impl PartialOrd for SmolStrMut {
+impl PartialOrd for StrMut {
 	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
 		Some(self.cmp(other))
 	}
 }
 
-impl PartialOrd<str> for SmolStrMut {
+impl PartialOrd<str> for StrMut {
 	#[inline(always)]
 	fn partial_cmp(&self, other: &str) -> Option<Ordering> {
 		self.as_str().partial_cmp(other)
 	}
 }
 
-impl PartialOrd<SmolStrMut> for str {
+impl PartialOrd<StrMut> for str {
 	#[inline(always)]
-	fn partial_cmp(&self, other: &SmolStrMut) -> Option<Ordering> {
+	fn partial_cmp(&self, other: &StrMut) -> Option<Ordering> {
 		self.partial_cmp(other.as_str())
 	}
 }
 
-impl<'a> PartialOrd<&'a str> for SmolStrMut {
+impl<'a> PartialOrd<&'a str> for StrMut {
 	#[inline(always)]
 	fn partial_cmp(&self, other: &&'a str) -> Option<Ordering> {
 		self.partial_cmp(*other)
 	}
 }
 
-impl PartialOrd<SmolStrMut> for &str {
+impl PartialOrd<StrMut> for &str {
 	#[inline(always)]
-	fn partial_cmp(&self, other: &SmolStrMut) -> Option<Ordering> {
+	fn partial_cmp(&self, other: &StrMut) -> Option<Ordering> {
 		(*self).partial_cmp(other)
 	}
 }
 
-impl hash::Hash for SmolStrMut {
+impl hash::Hash for StrMut {
 	fn hash<H: hash::Hasher>(&self, hasher: &mut H) {
 		self.as_str().hash(hasher);
 	}
@@ -637,42 +637,42 @@ impl hash::Hash for SmolStrMut {
 // Borrows
 // ============================
 
-impl AsRef<str> for SmolStr {
+impl AsRef<str> for Str {
 	#[inline(always)]
 	fn as_ref(&self) -> &str {
 		self.as_str()
 	}
 }
 
-impl AsRef<[u8]> for SmolStr {
+impl AsRef<[u8]> for Str {
 	#[inline(always)]
 	fn as_ref(&self) -> &[u8] {
 		self.as_str().as_bytes()
 	}
 }
 
-impl AsRef<std::ffi::OsStr> for SmolStr {
+impl AsRef<std::ffi::OsStr> for Str {
 	#[inline(always)]
 	fn as_ref(&self) -> &std::ffi::OsStr {
 		AsRef::<std::ffi::OsStr>::as_ref(self.as_str())
 	}
 }
 
-impl AsRef<std::path::Path> for SmolStr {
+impl AsRef<std::path::Path> for Str {
 	#[inline(always)]
 	fn as_ref(&self) -> &std::path::Path {
 		AsRef::<std::path::Path>::as_ref(self.as_str())
 	}
 }
 
-impl Borrow<str> for SmolStr {
+impl Borrow<str> for Str {
 	#[inline(always)]
 	fn borrow(&self) -> &str {
 		self.as_str()
 	}
 }
 
-impl Deref for SmolStr {
+impl Deref for Str {
 	type Target = str;
 
 	#[inline(always)]
@@ -681,56 +681,56 @@ impl Deref for SmolStr {
 	}
 }
 
-impl AsRef<str> for SmolStrMut {
+impl AsRef<str> for StrMut {
 	#[inline(always)]
 	fn as_ref(&self) -> &str {
 		self.as_str()
 	}
 }
 
-impl AsMut<str> for SmolStrMut {
+impl AsMut<str> for StrMut {
 	#[inline(always)]
 	fn as_mut(&mut self) -> &mut str {
 		self.as_str_mut()
 	}
 }
 
-impl AsRef<[u8]> for SmolStrMut {
+impl AsRef<[u8]> for StrMut {
 	#[inline(always)]
 	fn as_ref(&self) -> &[u8] {
 		self.as_str().as_bytes()
 	}
 }
 
-impl AsRef<std::ffi::OsStr> for SmolStrMut {
+impl AsRef<std::ffi::OsStr> for StrMut {
 	#[inline(always)]
 	fn as_ref(&self) -> &std::ffi::OsStr {
 		AsRef::<std::ffi::OsStr>::as_ref(self.as_str())
 	}
 }
 
-impl AsRef<std::path::Path> for SmolStrMut {
+impl AsRef<std::path::Path> for StrMut {
 	#[inline(always)]
 	fn as_ref(&self) -> &std::path::Path {
 		AsRef::<std::path::Path>::as_ref(self.as_str())
 	}
 }
 
-impl Borrow<str> for SmolStrMut {
+impl Borrow<str> for StrMut {
 	#[inline(always)]
 	fn borrow(&self) -> &str {
 		self.as_str()
 	}
 }
 
-impl BorrowMut<str> for SmolStrMut {
+impl BorrowMut<str> for StrMut {
 	#[inline(always)]
 	fn borrow_mut(&mut self) -> &mut str {
 		self.as_str_mut()
 	}
 }
 
-impl Deref for SmolStrMut {
+impl Deref for StrMut {
 	type Target = str;
 
 	#[inline(always)]
@@ -739,7 +739,7 @@ impl Deref for SmolStrMut {
 	}
 }
 
-impl DerefMut for SmolStrMut {
+impl DerefMut for StrMut {
 	#[inline(always)]
 	fn deref_mut(&mut self) -> &mut str {
 		self.as_str_mut()
@@ -750,7 +750,7 @@ impl DerefMut for SmolStrMut {
 // Add implementations
 // ============================
 
-impl Add<&str> for SmolStr {
+impl Add<&str> for Str {
 	type Output = Self;
 
 	#[inline]
@@ -761,7 +761,7 @@ impl Add<&str> for SmolStr {
 				lhs.freeze()
 			},
 			Err(this) => {
-				let mut lhs = SmolStrMut::with_capacity(this.len() + rhs.len());
+				let mut lhs = StrMut::with_capacity(this.len() + rhs.len());
 				lhs.push_str(&this);
 				lhs.push_str(rhs);
 				lhs.freeze()
@@ -770,18 +770,18 @@ impl Add<&str> for SmolStr {
 	}
 }
 
-impl Add<SmolStr> for &str {
-	type Output = SmolStr;
+impl Add<Str> for &str {
+	type Output = Str;
 
 	#[inline]
-	fn add(self, rhs: SmolStr) -> Self::Output {
+	fn add(self, rhs: Str) -> Self::Output {
 		match rhs.try_into_mut() {
 			Ok(mut rhs) => {
 				rhs.insert(0, self);
 				rhs.freeze()
 			},
 			Err(rhs) => {
-				let mut result = SmolStrMut::with_capacity(self.len() + rhs.len());
+				let mut result = StrMut::with_capacity(self.len() + rhs.len());
 				result.push_str(self);
 				result.push_str(rhs.as_str());
 				result.freeze()
@@ -790,31 +790,31 @@ impl Add<SmolStr> for &str {
 	}
 }
 
-impl Add<&str> for &SmolStr {
-	type Output = SmolStr;
+impl Add<&str> for &Str {
+	type Output = Str;
 
 	#[inline]
 	fn add(self, rhs: &str) -> Self::Output {
-		let mut result = SmolStrMut::with_capacity(self.len() + rhs.len());
+		let mut result = StrMut::with_capacity(self.len() + rhs.len());
 		result.push_str(self);
 		result.push_str(rhs);
 		result.freeze()
 	}
 }
 
-impl Add<&SmolStr> for &str {
-	type Output = SmolStr;
+impl Add<&Str> for &str {
+	type Output = Str;
 
 	#[inline]
-	fn add(self, rhs: &SmolStr) -> Self::Output {
-		let mut result = SmolStrMut::with_capacity(self.len() + rhs.len());
+	fn add(self, rhs: &Str) -> Self::Output {
+		let mut result = StrMut::with_capacity(self.len() + rhs.len());
 		result.push_str(self);
 		result.push_str(rhs.as_str());
 		result.freeze()
 	}
 }
 
-impl Add<&str> for SmolStrMut {
+impl Add<&str> for StrMut {
 	type Output = Self;
 
 	#[inline]
@@ -824,43 +824,43 @@ impl Add<&str> for SmolStrMut {
 	}
 }
 
-impl Add<SmolStrMut> for &str {
-	type Output = SmolStrMut;
+impl Add<StrMut> for &str {
+	type Output = StrMut;
 
 	#[inline]
-	fn add(self, mut rhs: SmolStrMut) -> Self::Output {
+	fn add(self, mut rhs: StrMut) -> Self::Output {
 		// Optimize by inserting at the beginning if we own the rhs
 		rhs.insert(0, self);
 		rhs
 	}
 }
 
-impl Add<&str> for &SmolStrMut {
-	type Output = SmolStrMut;
+impl Add<&str> for &StrMut {
+	type Output = StrMut;
 
 	#[inline]
 	fn add(self, rhs: &str) -> Self::Output {
-		let mut result = SmolStrMut::with_capacity(self.len() + rhs.len());
+		let mut result = StrMut::with_capacity(self.len() + rhs.len());
 		result.push_str(self.as_str());
 		result.push_str(rhs);
 		result
 	}
 }
 
-impl Add<&SmolStrMut> for &str {
-	type Output = SmolStrMut;
+impl Add<&StrMut> for &str {
+	type Output = StrMut;
 
 	#[inline]
-	fn add(self, rhs: &SmolStrMut) -> Self::Output {
-		let mut result = SmolStrMut::with_capacity(self.len() + rhs.len());
+	fn add(self, rhs: &StrMut) -> Self::Output {
+		let mut result = StrMut::with_capacity(self.len() + rhs.len());
 		result.push_str(self);
 		result.push_str(rhs.as_str());
 		result
 	}
 }
 
-// SmolStr + SmolStr combinations
-impl Add<Self> for SmolStr {
+// Str + Str combinations
+impl Add<Self> for Str {
 	type Output = Self;
 
 	#[inline]
@@ -876,7 +876,7 @@ impl Add<Self> for SmolStr {
 					rhs.freeze()
 				},
 				Err(rhs) => {
-					let mut result = SmolStrMut::with_capacity(lhs.len() + rhs.len());
+					let mut result = StrMut::with_capacity(lhs.len() + rhs.len());
 					result.push_str(&lhs);
 					result.push_str(&rhs);
 					result.freeze()
@@ -886,7 +886,7 @@ impl Add<Self> for SmolStr {
 	}
 }
 
-impl Add<&Self> for SmolStr {
+impl Add<&Self> for Str {
 	type Output = Self;
 
 	#[inline]
@@ -897,7 +897,7 @@ impl Add<&Self> for SmolStr {
 				lhs.freeze()
 			},
 			Err(lhs) => {
-				let mut result = SmolStrMut::with_capacity(lhs.len() + rhs.len());
+				let mut result = StrMut::with_capacity(lhs.len() + rhs.len());
 				result.push_str(&lhs);
 				result.push_str(rhs);
 				result.freeze()
@@ -906,18 +906,18 @@ impl Add<&Self> for SmolStr {
 	}
 }
 
-impl Add<SmolStr> for &SmolStr {
-	type Output = SmolStr;
+impl Add<Str> for &Str {
+	type Output = Str;
 
 	#[inline]
-	fn add(self, rhs: SmolStr) -> Self::Output {
+	fn add(self, rhs: Str) -> Self::Output {
 		match rhs.try_into_mut() {
 			Ok(mut rhs) => {
 				rhs.insert(0, self);
 				rhs.freeze()
 			},
 			Err(rhs) => {
-				let mut result = SmolStrMut::with_capacity(self.len() + rhs.len());
+				let mut result = StrMut::with_capacity(self.len() + rhs.len());
 				result.push_str(self);
 				result.push_str(&rhs);
 				result.freeze()
@@ -926,20 +926,20 @@ impl Add<SmolStr> for &SmolStr {
 	}
 }
 
-impl Add<&SmolStr> for &SmolStr {
-	type Output = SmolStr;
+impl Add<&Str> for &Str {
+	type Output = Str;
 
 	#[inline]
-	fn add(self, rhs: &SmolStr) -> Self::Output {
-		let mut result = SmolStrMut::with_capacity(self.len() + rhs.len());
+	fn add(self, rhs: &Str) -> Self::Output {
+		let mut result = StrMut::with_capacity(self.len() + rhs.len());
 		result.push_str(self);
 		result.push_str(rhs);
 		result.freeze()
 	}
 }
 
-// SmolStrMut + SmolStrMut combinations
-impl Add<Self> for SmolStrMut {
+// StrMut + StrMut combinations
+impl Add<Self> for StrMut {
 	type Output = Self;
 
 	#[inline]
@@ -949,7 +949,7 @@ impl Add<Self> for SmolStrMut {
 	}
 }
 
-impl Add<&Self> for SmolStrMut {
+impl Add<&Self> for StrMut {
 	type Output = Self;
 
 	#[inline]
@@ -959,22 +959,22 @@ impl Add<&Self> for SmolStrMut {
 	}
 }
 
-impl Add<SmolStrMut> for &SmolStrMut {
-	type Output = SmolStrMut;
+impl Add<StrMut> for &StrMut {
+	type Output = StrMut;
 
 	#[inline]
-	fn add(self, mut rhs: SmolStrMut) -> Self::Output {
+	fn add(self, mut rhs: StrMut) -> Self::Output {
 		rhs.insert(0, self.as_str());
 		rhs
 	}
 }
 
-impl Add<&SmolStrMut> for &SmolStrMut {
-	type Output = SmolStrMut;
+impl Add<&StrMut> for &StrMut {
+	type Output = StrMut;
 
 	#[inline]
-	fn add(self, rhs: &SmolStrMut) -> Self::Output {
-		let mut result = SmolStrMut::with_capacity(self.len() + rhs.len());
+	fn add(self, rhs: &StrMut) -> Self::Output {
+		let mut result = StrMut::with_capacity(self.len() + rhs.len());
 		result.push_str(self.as_str());
 		result.push_str(rhs.as_str());
 		result
@@ -1076,26 +1076,26 @@ where
 // Extend / Format
 // ============================
 
-/// Formats arguments to a [`SmolStr`], potentially without allocating.
+/// Formats arguments to a [`Str`], potentially without allocating.
 ///
 /// See [`std::format!`] or [`format_args!`] for syntax documentation.
 #[macro_export]
-macro_rules! format_smol {
+macro_rules! fmts {
     ($($tt:tt)*) => {{
-        let mut w = $crate::smolstr::SmolStrMut::default();
+        let mut w = $crate::str::StrMut::default();
         ::std::fmt::Write::write_fmt(&mut w, format_args!($($tt)*))
          .expect("a formatting trait implementation returned an error");
         w.freeze()
     }};
 }
 
-/// Formats arguments to a [`SmolStrMut`], potentially without allocating.
+/// Formats arguments to a [`StrMut`], potentially without allocating.
 ///
 /// See [`std::format!`] or [`format_args!`] for syntax documentation.
 #[macro_export]
-macro_rules! format_smolmut {
+macro_rules! fmts_mut {
     ($($tt:tt)*) => {{
-        let mut w = $crate::smolstr::SmolStrMut::default();
+        let mut w = $crate::str::StrMut::default();
         ::std::fmt::Write::write_fmt(&mut w, format_args!($($tt)*))
          .expect("a formatting trait implementation returned an error");
         w
@@ -1105,24 +1105,24 @@ macro_rules! format_smolmut {
 macro_rules! impl_extend {
     // Case with explicit lifetime
     (for<$lt:lifetime> $type:ty, ($this:ident, $item:ident) => $($body:tt)*) => {
-        impl<$lt> Extend<$type> for SmolStrMut {
+        impl<$lt> Extend<$type> for StrMut {
             fn extend<T: IntoIterator<Item = $type>>(&mut self, iter: T) {
-                let $this: &mut SmolStrMut = self;
+                let $this: &mut StrMut = self;
                 for $item in iter {
                     $($body)*
                 }
             }
         }
-        impl<$lt> FromIterator<$type> for SmolStrMut {
+        impl<$lt> FromIterator<$type> for StrMut {
             fn from_iter<T: IntoIterator<Item = $type>>(iter: T) -> Self {
-                let mut $this = SmolStrMut::default();
+                let mut $this = StrMut::default();
                 $this.extend(iter);
                 $this
             }
         }
-        impl<$lt> FromIterator<$type> for SmolStr {
+        impl<$lt> FromIterator<$type> for Str {
             fn from_iter<T: IntoIterator<Item = $type>>(iter: T) -> Self {
-                let mut $this = SmolStrMut::default();
+                let mut $this = StrMut::default();
                 $this.extend(iter);
                 $this.freeze()
             }
@@ -1130,24 +1130,24 @@ macro_rules! impl_extend {
     };
     // Case without lifetimes
     ($type:ty, ($this:ident, $item:ident) => $($body:tt)*) => {
-        impl Extend<$type> for SmolStrMut {
+        impl Extend<$type> for StrMut {
             fn extend<T: IntoIterator<Item = $type>>(&mut self, iter: T) {
-                let $this: &mut SmolStrMut = self;
+                let $this: &mut StrMut = self;
                 for $item in iter {
                     $($body)*
                 }
             }
         }
-        impl FromIterator<$type> for SmolStrMut {
+        impl FromIterator<$type> for StrMut {
             fn from_iter<T: IntoIterator<Item = $type>>(iter: T) -> Self {
-                let mut $this = SmolStrMut::default();
+                let mut $this = StrMut::default();
                 $this.extend(iter);
                 $this
             }
         }
-        impl FromIterator<$type> for SmolStr {
+        impl FromIterator<$type> for Str {
             fn from_iter<T: IntoIterator<Item = $type>>(iter: T) -> Self {
-                let mut $this = SmolStrMut::default();
+                let mut $this = StrMut::default();
                 $this.extend(iter);
                 $this.freeze()
             }
@@ -1161,21 +1161,21 @@ impl_extend!(for<'a> &'a String, (s, rhs) => s.push_str(rhs.as_str()));
 impl_extend!(for<'a> &'a str, (s, rhs) => s.push_str(rhs));
 
 // ============================
-// SmolStrMut
+// StrMut
 // ============================
 
-/// Mutable, growable counterpart of [`SmolStr`]: same inline layout for
+/// Mutable, growable counterpart of [`Str`]: same inline layout for
 /// strings up to 23 bytes, heap-backed above.
 ///
 /// Build with `push`/`push_str` (or
-/// [`format_smolmut!`](crate::format_smolmut)), then [`freeze`](Self::freeze)
-/// into an immutable [`SmolStr`] without copying.
+/// [`fmts_mut!`](crate::fmts_mut)), then [`freeze`](Self::freeze)
+/// into an immutable [`Str`] without copying.
 #[derive(Default, Clone)]
 #[repr(transparent)]
-pub struct SmolStrMut(Repr<StrMut>);
+pub struct StrMut(Repr<BytesStrMut>);
 
-impl SmolStrMut {
-	/// Constructs a `SmolStrMut` from a `BytesMut` object without checking for
+impl StrMut {
+	/// Constructs a `StrMut` from a `BytesMut` object without checking for
 	/// UTF-8 validity.
 	///
 	/// # Safety
@@ -1185,10 +1185,10 @@ impl SmolStrMut {
 	#[inline]
 	pub unsafe fn from_utf8_unchecked_owned(u: impl Into<BytesMut>) -> Self {
 		// SAFETY: The caller guarantees that the bytes are valid UTF-8.
-		Self(Repr::Heap(unsafe { StrMut::from_inner_unchecked(u.into()) }))
+		Self(Repr::Heap(unsafe { BytesStrMut::from_inner_unchecked(u.into()) }))
 	}
 
-	/// Constructs a `SmolStrMut` from a byte slice without checking for UTF-8
+	/// Constructs a `StrMut` from a byte slice without checking for UTF-8
 	/// validity.
 	///
 	/// # Safety
@@ -1201,17 +1201,17 @@ impl SmolStrMut {
 		Self::new(unsafe { str::from_utf8_unchecked(u) })
 	}
 
-	/// Constructs a `SmolStrMut` from a `BytesMut` object, checking for UTF-8
+	/// Constructs a `StrMut` from a `BytesMut` object, checking for UTF-8
 	/// validity.
 	///
 	/// Returns an error if the bytes are not valid UTF-8.
 	#[inline]
 	pub fn from_utf8_owned(u: impl Into<BytesMut>) -> Result<Self, Utf8ErrorMut> {
 		let u: BytesMut = u.into();
-		Ok(Self(Repr::Heap(StrMut::from_inner(u)?)))
+		Ok(Self(Repr::Heap(BytesStrMut::from_inner(u)?)))
 	}
 
-	/// Constructs a `SmolStrMut` from a byte slice, checking for UTF-8 validity.
+	/// Constructs a `StrMut` from a byte slice, checking for UTF-8 validity.
 	///
 	/// Returns an error if the bytes are not valid UTF-8.
 	#[inline]
@@ -1219,7 +1219,7 @@ impl SmolStrMut {
 		Ok(Self::new(str::from_utf8(u)?))
 	}
 
-	/// Constructs an inline variant of `SmolStrMut`.
+	/// Constructs an inline variant of `StrMut`.
 	///
 	/// This never allocates.
 	///
@@ -1231,37 +1231,37 @@ impl SmolStrMut {
 		Self(Repr::new_inline(text).expect("len <= INLINE_CAP"))
 	}
 
-	/// Constructs a `SmolStr` from a `str`, heap-allocating if necessary.
+	/// Constructs a `Str` from a `str`, heap-allocating if necessary.
 	#[inline(always)]
 	pub fn new(text: impl AsRef<str>) -> Self {
 		Self(Repr::copy_from_str(text.as_ref()))
 	}
 
-	/// Constructs a `SmolStrMut` with the given capacity.
+	/// Constructs a `StrMut` with the given capacity.
 	#[inline]
 	pub fn with_capacity(capacity: usize) -> Self {
 		if capacity > INLINE_CAP {
 			// SAFETY: A newly allocated BytesMut with capacity is empty, and an
 			// empty byte buffer is trivially valid UTF-8.
 			Self(Repr::Heap(unsafe {
-				StrMut::from_inner_unchecked(BytesMut::with_capacity(capacity))
+				BytesStrMut::from_inner_unchecked(BytesMut::with_capacity(capacity))
 			}))
 		} else {
 			Self(Repr::new())
 		}
 	}
 
-	/// Returns a `&str` slice of this `SmolStr`.
+	/// Returns a `&str` slice of this `Str`.
 	#[inline(always)]
 	pub fn as_str(&self) -> &str {
 		self.0.as_str()
 	}
 
-	/// Returns a mutable `&str` slice of this `SmolStr`.
+	/// Returns a mutable `&str` slice of this `Str`.
 	#[inline(always)]
 	pub fn as_str_mut(&mut self) -> &mut str {
 		match &mut self.0 {
-			// SAFETY: StrMut guarantees that its inner BytesMut contains valid UTF-8.
+			// SAFETY: BytesStrMut guarantees that its inner BytesMut contains valid UTF-8.
 			Repr::Heap(data) => unsafe { str::from_utf8_unchecked_mut(data.as_bytes_mut()) },
 			Repr::Inline(buf) => buf.as_mut_str(),
 		}
@@ -1279,13 +1279,13 @@ impl SmolStrMut {
 		self.0.is_empty()
 	}
 
-	/// Truncates the `SmolStr` to the specified length.
+	/// Truncates the `Str` to the specified length.
 	///
 	/// If `len` is greater than the current length, this has no effect.
 	///
 	/// # Panics
 	///
-	/// Panics if `len` is greater than the current length of the `SmolStr` or if
+	/// Panics if `len` is greater than the current length of the `Str` or if
 	/// `len` is not on a valid UTF-8 character boundary.
 	#[inline]
 	pub fn truncate(&mut self, len: usize) {
@@ -1311,7 +1311,7 @@ impl SmolStrMut {
 	}
 
 	/// Reserves capacity for at least `additional` more bytes to be inserted in
-	/// the given `SmolStrMut`.
+	/// the given `StrMut`.
 	#[inline]
 	pub fn reserve(&mut self, additional: usize) {
 		match &mut self.0 {
@@ -1321,7 +1321,7 @@ impl SmolStrMut {
 					let cap = cap.next_power_of_two();
 					// SAFETY: A newly allocated BytesMut with capacity is empty, and an
 					// empty byte buffer is trivially valid UTF-8.
-					let mut heap = unsafe { StrMut::from_inner_unchecked(BytesMut::with_capacity(cap)) };
+					let mut heap = unsafe { BytesStrMut::from_inner_unchecked(BytesMut::with_capacity(cap)) };
 					heap.push_str(buf.as_str());
 					*self = Self(Repr::Heap(heap));
 				}
@@ -1336,11 +1336,11 @@ impl SmolStrMut {
 		}
 	}
 
-	/// Builds a [`SmolStr`] from `self`.
+	/// Builds a [`Str`] from `self`.
 	#[must_use]
 	#[inline]
-	pub fn freeze(self) -> SmolStr {
-		SmolStr(match self.0 {
+	pub fn freeze(self) -> Str {
+		Str(match self.0 {
 			Repr::Inline(buf) => Repr::Inline(buf),
 			Repr::Heap(heap) => Repr::Heap(heap.freeze()),
 		})
@@ -1365,7 +1365,7 @@ impl SmolStrMut {
 					heap.extend_from_slice(s.as_bytes());
 					// SAFETY: We copy valid UTF-8 bytes from buf and s into heap.
 					// Both sources are valid UTF-8, so the result is valid UTF-8.
-					*self = Self(Repr::Heap(unsafe { StrMut::from_inner_unchecked(heap) }));
+					*self = Self(Repr::Heap(unsafe { BytesStrMut::from_inner_unchecked(heap) }));
 				}
 			},
 			Repr::Heap(heap) => heap.push_str(s),
@@ -1391,7 +1391,7 @@ impl SmolStrMut {
 					heap.extend_from_slice(s);
 					// SAFETY: buf contains valid UTF-8 and the caller guarantees s
 					// contains valid UTF-8, so heap contains valid UTF-8.
-					*self = Self(Repr::Heap(unsafe { StrMut::from_inner_unchecked(heap) }));
+					*self = Self(Repr::Heap(unsafe { BytesStrMut::from_inner_unchecked(heap) }));
 				}
 			},
 			// SAFETY: The caller guarantees that s contains valid UTF-8 bytes.
@@ -1432,7 +1432,7 @@ impl SmolStrMut {
 					// SAFETY: We copy valid UTF-8 bytes from buf (before and after index)
 					// and valid UTF-8 bytes from s. The result is valid UTF-8 because we
 					// insert at a valid char boundary (verified by the assert above).
-					*self = Self(Repr::Heap(unsafe { StrMut::from_inner_unchecked(heap) }));
+					*self = Self(Repr::Heap(unsafe { BytesStrMut::from_inner_unchecked(heap) }));
 				}
 			},
 			Repr::Heap(heap) => {
@@ -1440,7 +1440,7 @@ impl SmolStrMut {
 					heap.is_char_boundary(index),
 					"index is not on a valid UTF-8 character boundary"
 				);
-				// SAFETY: We have mutable access to the SmolStrMut, so we can get
+				// SAFETY: We have mutable access to the StrMut, so we can get
 				// mutable access to the inner BytesMut.
 				let inner = unsafe { heap.inner_mut() };
 
@@ -1480,7 +1480,7 @@ impl SmolStrMut {
 	}
 }
 
-impl fmt::Write for SmolStrMut {
+impl fmt::Write for StrMut {
 	#[inline]
 	fn write_str(&mut self, s: &str) -> fmt::Result {
 		self.push_str(s);
@@ -1489,314 +1489,314 @@ impl fmt::Write for SmolStrMut {
 }
 
 // ============================
-// IntoSmolStr
+// IntoStr
 // ============================
 
-/// Convert value to [`SmolStr`]/[`SmolStrMut`] using [`fmt::Display`],
+/// Convert value to [`Str`]/[`StrMut`] using [`fmt::Display`],
 /// potentially without allocating.
 ///
-/// Almost identical to [`ToString`], but converts to [`SmolStr`]/[`SmolStrMut`]
+/// Almost identical to [`ToString`], but converts to [`Str`]/[`StrMut`]
 /// instead.
-pub trait IntoSmolStr: fmt::Display {
-	/// Convert value to [`SmolStr`].
-	fn into_smolstr(self) -> SmolStr
+pub trait IntoStr: fmt::Display {
+	/// Convert value to [`Str`].
+	fn into_str(self) -> Str
 	where
 		Self: Sized,
 	{
-		self.to_smolstr()
+		self.to_str()
 	}
 
-	/// Convert value to [`SmolStrMut`].
-	fn into_smolmut(self) -> SmolStrMut
+	/// Convert value to [`StrMut`].
+	fn into_str_mut(self) -> StrMut
 	where
 		Self: Sized,
 	{
-		self.into_smolstr().into()
+		self.into_str().into()
 	}
 
-	/// Convert value to [`SmolStr`].
-	fn to_smolstr(&self) -> SmolStr {
-		format_smol!("{self}")
+	/// Convert value to [`Str`].
+	fn to_str(&self) -> Str {
+		fmts!("{self}")
 	}
 
-	/// Convert value to [`SmolStrMut`].
-	fn to_smolmut(&self) -> SmolStrMut {
-		self.to_smolstr().into()
-	}
-}
-
-impl IntoSmolStr for &str {
-	#[inline]
-	fn into_smolstr(self) -> SmolStr {
-		SmolStr::new(self)
-	}
-
-	#[inline]
-	fn into_smolmut(self) -> SmolStrMut {
-		SmolStrMut::new(self)
-	}
-
-	#[inline]
-	fn to_smolstr(&self) -> SmolStr {
-		SmolStr::new(self)
-	}
-
-	#[inline]
-	fn to_smolmut(&self) -> SmolStrMut {
-		SmolStrMut::new(self)
+	/// Convert value to [`StrMut`].
+	fn to_str_mut(&self) -> StrMut {
+		self.to_str().into()
 	}
 }
 
-impl IntoSmolStr for &mut str {
+impl IntoStr for &str {
 	#[inline]
-	fn into_smolstr(self) -> SmolStr {
-		SmolStr::new(self)
+	fn into_str(self) -> Str {
+		Str::new(self)
 	}
 
 	#[inline]
-	fn into_smolmut(self) -> SmolStrMut {
-		SmolStrMut::new(self)
+	fn into_str_mut(self) -> StrMut {
+		StrMut::new(self)
 	}
 
 	#[inline]
-	fn to_smolstr(&self) -> SmolStr {
-		SmolStr::new(self)
+	fn to_str(&self) -> Str {
+		Str::new(self)
 	}
 
 	#[inline]
-	fn to_smolmut(&self) -> SmolStrMut {
-		SmolStrMut::new(self)
+	fn to_str_mut(&self) -> StrMut {
+		StrMut::new(self)
 	}
 }
 
-impl IntoSmolStr for SmolStr {
+impl IntoStr for &mut str {
 	#[inline]
-	fn into_smolstr(self) -> SmolStr {
+	fn into_str(self) -> Str {
+		Str::new(self)
+	}
+
+	#[inline]
+	fn into_str_mut(self) -> StrMut {
+		StrMut::new(self)
+	}
+
+	#[inline]
+	fn to_str(&self) -> Str {
+		Str::new(self)
+	}
+
+	#[inline]
+	fn to_str_mut(&self) -> StrMut {
+		StrMut::new(self)
+	}
+}
+
+impl IntoStr for Str {
+	#[inline]
+	fn into_str(self) -> Str {
 		self
 	}
 
 	#[inline]
-	fn into_smolmut(self) -> SmolStrMut {
+	fn into_str_mut(self) -> StrMut {
 		self.into()
 	}
 
 	#[inline]
-	fn to_smolstr(&self) -> SmolStr {
+	fn to_str(&self) -> Str {
 		self.clone()
 	}
 
 	#[inline]
-	fn to_smolmut(&self) -> SmolStrMut {
-		SmolStrMut::new(self.as_str())
+	fn to_str_mut(&self) -> StrMut {
+		StrMut::new(self.as_str())
 	}
 }
 
-impl IntoSmolStr for SmolStrMut {
+impl IntoStr for StrMut {
 	#[inline]
-	fn into_smolstr(self) -> SmolStr {
+	fn into_str(self) -> Str {
 		self.freeze()
 	}
 
 	#[inline]
-	fn into_smolmut(self) -> SmolStrMut {
+	fn into_str_mut(self) -> StrMut {
 		self
 	}
 
 	#[inline]
-	fn to_smolstr(&self) -> SmolStr {
-		SmolStr::new(self.as_str())
+	fn to_str(&self) -> Str {
+		Str::new(self.as_str())
 	}
 
 	#[inline]
-	fn to_smolmut(&self) -> SmolStrMut {
+	fn to_str_mut(&self) -> StrMut {
 		self.clone()
 	}
 }
 
-impl IntoSmolStr for SmolCow<'_> {
+impl IntoStr for CowStr {
 	#[inline]
-	fn into_smolstr(self) -> SmolStr {
+	fn into_str(self) -> Str {
 		match self {
-			SmolCow::Borrowed(s) => SmolStr::new(s),
-			SmolCow::Owned(s) => s.freeze(),
+			CowStr::Borrowed(s) => Str::new(s),
+			CowStr::Owned(s) => s.freeze(),
 		}
 	}
 
 	#[inline]
-	fn into_smolmut(self) -> SmolStrMut {
+	fn into_str_mut(self) -> StrMut {
 		match self {
-			SmolCow::Borrowed(s) => SmolStrMut::new(s),
-			SmolCow::Owned(s) => s,
+			CowStr::Borrowed(s) => StrMut::new(s),
+			CowStr::Owned(s) => s,
 		}
 	}
 
 	#[inline]
-	fn to_smolstr(&self) -> SmolStr {
-		SmolStr::new(self.as_str())
+	fn to_str(&self) -> Str {
+		Str::new(self.as_str())
 	}
 
 	#[inline]
-	fn to_smolmut(&self) -> SmolStrMut {
-		SmolStrMut::new(self.as_str())
+	fn to_str_mut(&self) -> StrMut {
+		StrMut::new(self.as_str())
 	}
 }
 
-impl IntoSmolStr for String {
+impl IntoStr for String {
 	#[inline]
-	fn into_smolstr(self) -> SmolStr {
-		SmolStr(Repr::Heap(self.into()))
+	fn into_str(self) -> Str {
+		Str(Repr::Heap(self.into()))
 	}
 
 	#[inline]
-	fn into_smolmut(self) -> SmolStrMut {
+	fn into_str_mut(self) -> StrMut {
 		// SAFETY: String guarantees its contents are valid UTF-8. We convert
-		// into bytes and then wrap in StrMut, preserving UTF-8 validity.
-		SmolStrMut(Repr::Heap(unsafe {
-			StrMut::from_inner_unchecked(Bytes::from(self.into_bytes()).into())
+		// into bytes and then wrap in BytesStrMut, preserving UTF-8 validity.
+		StrMut(Repr::Heap(unsafe {
+			BytesStrMut::from_inner_unchecked(Bytes::from(self.into_bytes()).into())
 		}))
 	}
 
 	#[inline]
-	fn to_smolstr(&self) -> SmolStr {
+	fn to_str(&self) -> Str {
 		self.as_str().into()
 	}
 
 	#[inline]
-	fn to_smolmut(&self) -> SmolStrMut {
+	fn to_str_mut(&self) -> StrMut {
 		self.as_str().into()
 	}
 }
 
-impl IntoSmolStr for Str {
+impl IntoStr for BytesStr {
 	#[inline]
-	fn into_smolstr(self) -> SmolStr {
-		SmolStr(Repr::Heap(self))
+	fn into_str(self) -> Str {
+		Str(Repr::Heap(self))
 	}
 
 	#[inline]
-	fn into_smolmut(self) -> SmolStrMut {
-		// SAFETY: Str guarantees its contents are valid UTF-8. Converting
+	fn into_str_mut(self) -> StrMut {
+		// SAFETY: BytesStr guarantees its contents are valid UTF-8. Converting
 		// to BytesMut preserves the UTF-8 bytes.
-		SmolStrMut(Repr::Heap(unsafe { StrMut::from_inner_unchecked(self.into_inner().into()) }))
+		StrMut(Repr::Heap(unsafe { BytesStrMut::from_inner_unchecked(self.into_inner().into()) }))
 	}
 
 	#[inline]
-	fn to_smolstr(&self) -> SmolStr {
-		SmolStr(Repr::Heap(self.clone()))
+	fn to_str(&self) -> Str {
+		Str(Repr::Heap(self.clone()))
 	}
 
 	#[inline]
-	fn to_smolmut(&self) -> SmolStrMut {
+	fn to_str_mut(&self) -> StrMut {
 		self.deref().into()
 	}
 }
 
-impl IntoSmolStr for Cow<'_, str> {
+impl IntoStr for Cow<'_, str> {
 	#[inline]
-	fn into_smolstr(self) -> SmolStr {
+	fn into_str(self) -> Str {
 		match self {
-			Cow::Borrowed(s) => SmolStr::new(s),
-			Cow::Owned(s) => SmolStr(Repr::Heap(s.into())),
+			Cow::Borrowed(s) => Str::new(s),
+			Cow::Owned(s) => Str(Repr::Heap(s.into())),
 		}
 	}
 
 	#[inline]
-	fn into_smolmut(self) -> SmolStrMut {
+	fn into_str_mut(self) -> StrMut {
 		match self {
-			Cow::Borrowed(s) => SmolStrMut::new(s),
-			Cow::Owned(s) => s.into_smolmut(),
+			Cow::Borrowed(s) => StrMut::new(s),
+			Cow::Owned(s) => s.into_str_mut(),
 		}
 	}
 
 	#[inline]
-	fn to_smolstr(&self) -> SmolStr {
+	fn to_str(&self) -> Str {
 		match self {
-			Cow::Borrowed(s) => SmolStr::new(s),
-			Cow::Owned(s) => s.into_smolstr(),
+			Cow::Borrowed(s) => Str::new(s),
+			Cow::Owned(s) => s.into_str(),
 		}
 	}
 
 	#[inline]
-	fn to_smolmut(&self) -> SmolStrMut {
+	fn to_str_mut(&self) -> StrMut {
 		match self {
-			Cow::Borrowed(s) => SmolStrMut::new(s),
-			Cow::Owned(s) => s.into_smolmut(),
+			Cow::Borrowed(s) => StrMut::new(s),
+			Cow::Owned(s) => s.into_str_mut(),
 		}
 	}
 }
 
-impl IntoSmolStr for Box<str> {
+impl IntoStr for Box<str> {
 	#[inline]
-	fn into_smolstr(self) -> SmolStr {
-		SmolStr(Repr::Heap(self.into()))
+	fn into_str(self) -> Str {
+		Str(Repr::Heap(self.into()))
 	}
 
 	#[inline]
-	fn into_smolmut(self) -> SmolStrMut {
+	fn into_str_mut(self) -> StrMut {
 		// SAFETY: Box<str> guarantees its contents are valid UTF-8. Converting
 		// to boxed bytes and then to BytesMut preserves the UTF-8 bytes.
-		SmolStrMut(Repr::Heap(unsafe {
-			StrMut::from_inner_unchecked(Bytes::from(self.into_boxed_bytes()).into())
+		StrMut(Repr::Heap(unsafe {
+			BytesStrMut::from_inner_unchecked(Bytes::from(self.into_boxed_bytes()).into())
 		}))
 	}
 
 	#[inline]
-	fn to_smolstr(&self) -> SmolStr {
-		SmolStr::new(self.as_ref())
+	fn to_str(&self) -> Str {
+		Str::new(self.as_ref())
 	}
 
 	#[inline]
-	fn to_smolmut(&self) -> SmolStrMut {
-		SmolStrMut::new(self.as_ref())
+	fn to_str_mut(&self) -> StrMut {
+		StrMut::new(self.as_ref())
 	}
 }
 
-impl IntoSmolStr for Arc<str> {
+impl IntoStr for Arc<str> {
 	#[inline]
-	fn into_smolstr(self) -> SmolStr {
+	fn into_str(self) -> Str {
 		let bytes: Arc<[u8]> = self.into();
 		// SAFETY: Arc<str> guarantees its contents are valid UTF-8. Converting
 		// to Arc<[u8]> preserves the bytes without modification.
-		SmolStr(Repr::Heap(unsafe { Str::from_inner_unchecked(Bytes::from_owner(bytes)) }))
+		Str(Repr::Heap(unsafe { BytesStr::from_inner_unchecked(Bytes::from_owner(bytes)) }))
 	}
 
 	#[inline]
-	fn into_smolmut(self) -> SmolStrMut {
-		SmolStrMut::new(self.as_ref())
+	fn into_str_mut(self) -> StrMut {
+		StrMut::new(self.as_ref())
 	}
 
 	#[inline]
-	fn to_smolstr(&self) -> SmolStr {
-		SmolStr::new(self.as_ref())
+	fn to_str(&self) -> Str {
+		Str::new(self.as_ref())
 	}
 
 	#[inline]
-	fn to_smolmut(&self) -> SmolStrMut {
-		SmolStrMut::new(self.as_ref())
+	fn to_str_mut(&self) -> StrMut {
+		StrMut::new(self.as_ref())
 	}
 }
 
-impl<T> IntoSmolStr for &T
+impl<T> IntoStr for &T
 where
 	T: fmt::Display + ?Sized,
 {
-	default fn into_smolstr(self) -> SmolStr {
-		format_smol!("{}", self)
+	default fn into_str(self) -> Str {
+		fmts!("{}", self)
 	}
 
 	#[inline]
-	default fn into_smolmut(self) -> SmolStrMut {
-		format_smolmut!("{}", self)
+	default fn into_str_mut(self) -> StrMut {
+		fmts_mut!("{}", self)
 	}
 
 	#[inline]
-	default fn to_smolstr(&self) -> SmolStr {
-		format_smol!("{}", *self)
+	default fn to_str(&self) -> Str {
+		fmts!("{}", *self)
 	}
 
 	#[inline]
-	default fn to_smolmut(&self) -> SmolStrMut {
-		format_smolmut!("{}", *self)
+	default fn to_str_mut(&self) -> StrMut {
+		fmts_mut!("{}", *self)
 	}
 }
 
@@ -1804,7 +1804,7 @@ where
 // From
 // ============================
 
-impl str::FromStr for SmolStr {
+impl str::FromStr for Str {
 	type Err = Infallible;
 
 	#[inline]
@@ -1813,118 +1813,118 @@ impl str::FromStr for SmolStr {
 	}
 }
 
-impl From<fmt::Arguments<'_>> for SmolStr {
+impl From<fmt::Arguments<'_>> for Str {
 	#[inline]
 	fn from(args: fmt::Arguments<'_>) -> Self {
-		args.into_smolstr()
+		args.into_str()
 	}
 }
 
-impl From<&str> for SmolStr {
+impl From<&str> for Str {
 	#[inline]
 	fn from(s: &str) -> Self {
 		Self::new(s)
 	}
 }
 
-impl From<&mut str> for SmolStr {
+impl From<&mut str> for Str {
 	#[inline]
 	fn from(s: &mut str) -> Self {
 		Self::new(s)
 	}
 }
 
-impl From<&str> for SmolStrMut {
+impl From<&str> for StrMut {
 	#[inline]
 	fn from(s: &str) -> Self {
 		Self::new(s)
 	}
 }
 
-impl From<&mut str> for SmolStrMut {
+impl From<&mut str> for StrMut {
 	#[inline]
 	fn from(s: &mut str) -> Self {
 		Self::new(s)
 	}
 }
 
-impl From<&String> for SmolStr {
+impl From<&String> for Str {
 	#[inline]
 	fn from(s: &String) -> Self {
 		Self::new(s)
 	}
 }
 
-impl From<&String> for SmolStrMut {
+impl From<&String> for StrMut {
 	#[inline]
 	fn from(s: &String) -> Self {
 		Self::new(s)
 	}
 }
 
-impl From<String> for SmolStr {
+impl From<String> for Str {
 	#[inline(always)]
 	fn from(text: String) -> Self {
 		Self(Repr::Heap(text.into()))
 	}
 }
 
-impl From<String> for SmolStrMut {
+impl From<String> for StrMut {
 	#[inline(always)]
 	fn from(text: String) -> Self {
 		// SAFETY: String guarantees its contents are valid UTF-8. Converting
 		// into bytes preserves those UTF-8 bytes.
 		Self(Repr::Heap(unsafe {
-			StrMut::from_inner_unchecked(Bytes::from(text.into_bytes()).into())
+			BytesStrMut::from_inner_unchecked(Bytes::from(text.into_bytes()).into())
 		}))
 	}
 }
 
-impl From<&Str> for SmolStr {
+impl From<&BytesStr>StrolStr {
 	#[inline]
-	fn from(s: &Str) -> Self {
+	fn from(s: &BytesStr) -> Self {
 		Self(Repr::Heap(s.clone()))
 	}
 }
 
-impl From<&Str> for SmolStrMut {
+impl From<&BytesStr>StrMuttrMut {
 	#[inline]
-	fn from(s: &Str) -> Self {
+	fn from(s: &BytesStr) -> Self {
 		Self::new(&**s)
 	}
 }
 
-impl From<Str> for SmolStr {
+impl From<BytesStr>StrolStr {
 	#[inline(always)]
-	fn from(text: Str) -> Self {
+	fn from(text: BytesStr) -> Self {
 		Self(Repr::Heap(text))
 	}
 }
 
-impl From<Str> for SmolStrMut {
+impl From<BytesStr>StrMuttrMut {
 	#[inline(always)]
-	fn from(text: Str) -> Self {
-		// SAFETY: Str guarantees its contents are valid UTF-8. Converting
+	fn from(text: BytesStr) -> Self {
+		// SAFETY: BytesStr guarantees its contents are valid UTF-8. Converting
 		// to BytesMut preserves the UTF-8 bytes.
-		Self(Repr::Heap(unsafe { StrMut::from_inner_unchecked(BytesMut::from(text.into_inner())) }))
+		Self(Repr::Heap(unsafe { BytesStrMut::from_inner_unchecked(BytesMut::from(text.into_inner())) }))
 	}
 }
 
-impl From<StrMut> for SmolStr {
+impl From<BytesStrMut>StrolStr {
 	#[inline]
-	fn from(value: StrMut) -> Self {
+	fn from(value: BytesStrMut) -> Self {
 		Self(Repr::Heap(value.freeze()))
 	}
 }
 
-impl From<StrMut> for SmolStrMut {
+impl From<BytesStrMut>StrMuttrMut {
 	#[inline]
-	fn from(value: StrMut) -> Self {
+	fn from(value: BytesStrMut) -> Self {
 		Self(Repr::Heap(value))
 	}
 }
 
-impl<'a> From<Cow<'a, str>> for SmolStr {
+impl<'a> From<Cow<'a, str>> for Str {
 	#[inline]
 	fn from(s: Cow<'a, str>) -> Self {
 		match s {
@@ -1934,7 +1934,7 @@ impl<'a> From<Cow<'a, str>> for SmolStr {
 	}
 }
 
-impl<'a> From<Cow<'a, str>> for SmolStrMut {
+impl<'a> From<Cow<'a, str>> for StrMut {
 	#[inline]
 	fn from(s: Cow<'a, str>) -> Self {
 		match s {
@@ -1944,9 +1944,9 @@ impl<'a> From<Cow<'a, str>> for SmolStrMut {
 	}
 }
 
-impl From<SmolStr> for Str {
+impl From<Str> for BytesStr {
 	#[inline(always)]
-	fn from(text: SmolStr) -> Self {
+	fn from(text: Str) -> Self {
 		match text.0 {
 			Repr::Heap(data) => data,
 			_ => text.as_str().into(),
@@ -1954,9 +1954,9 @@ impl From<SmolStr> for Str {
 	}
 }
 
-impl From<SmolStrMut> for Str {
+impl From<StrMut> for BytesStr {
 	#[inline(always)]
-	fn from(text: SmolStrMut) -> Self {
+	fn from(text: StrMut) -> Self {
 		match text.0 {
 			Repr::Heap(data) => data.freeze(),
 			_ => text.as_str().into(),
@@ -1964,23 +1964,23 @@ impl From<SmolStrMut> for Str {
 	}
 }
 
-impl From<SmolStr> for String {
+impl From<Str> for String {
 	#[inline(always)]
-	fn from(text: SmolStr) -> Self {
+	fn from(text: Str) -> Self {
 		text.as_str().into()
 	}
 }
 
-impl From<SmolStrMut> for String {
+impl From<StrMut> for String {
 	#[inline(always)]
-	fn from(text: SmolStrMut) -> Self {
+	fn from(text: StrMut) -> Self {
 		text.as_str().into()
 	}
 }
 
-impl From<SmolStr> for Bytes {
+impl From<Str> for Bytes {
 	#[inline(always)]
-	fn from(text: SmolStr) -> Self {
+	fn from(text: Str) -> Self {
 		match text.0 {
 			Repr::Heap(data) => data.into(),
 			Repr::Inline(buf) => Self::copy_from_slice(buf.as_bytes()),
@@ -1988,9 +1988,9 @@ impl From<SmolStr> for Bytes {
 	}
 }
 
-impl From<SmolStrMut> for Bytes {
+impl From<StrMut> for Bytes {
 	#[inline(always)]
-	fn from(text: SmolStrMut) -> Self {
+	fn from(text: StrMut) -> Self {
 		match text.0 {
 			Repr::Heap(data) => data.into_inner().into(),
 			Repr::Inline(buf) => Self::copy_from_slice(buf.as_bytes()),
@@ -1998,9 +1998,9 @@ impl From<SmolStrMut> for Bytes {
 	}
 }
 
-impl From<SmolStr> for BytesMut {
+impl From<Str> for BytesMut {
 	#[inline(always)]
-	fn from(value: SmolStr) -> Self {
+	fn from(value: Str) -> Self {
 		match value.0 {
 			Repr::Heap(data) => data.into_inner().into(),
 			Repr::Inline(buf) => Self::from(buf.as_bytes()),
@@ -2008,9 +2008,9 @@ impl From<SmolStr> for BytesMut {
 	}
 }
 
-impl From<SmolStrMut> for BytesMut {
+impl From<StrMut> for BytesMut {
 	#[inline(always)]
-	fn from(text: SmolStrMut) -> Self {
+	fn from(text: StrMut) -> Self {
 		match text.0 {
 			Repr::Heap(data) => data.into_inner(),
 			Repr::Inline(buf) => Self::from(buf.as_bytes()),
@@ -2018,69 +2018,69 @@ impl From<SmolStrMut> for BytesMut {
 	}
 }
 
-impl From<SmolStr> for StrMut {
+impl From<Str> for BytesStrMut {
 	#[inline(always)]
-	fn from(value: SmolStr) -> Self {
-		// SAFETY: SmolStr is guaranteed to contain valid UTF-8, so converting it to
-		// BytesMut and then to StrMut preserves UTF-8 validity.
+	fn from(value: Str) -> Self {
+		// SAFETY: Str is guaranteed to contain valid UTF-8, so converting it to
+		// BytesMut and then to BytesStrMut preserves UTF-8 validity.
 		unsafe { Self::from_inner_unchecked(BytesMut::from(value)) }
 	}
 }
 
-impl From<SmolStrMut> for StrMut {
+impl From<StrMut> for BytesStrMut {
 	#[inline(always)]
-	fn from(value: SmolStrMut) -> Self {
+	fn from(value: StrMut) -> Self {
 		match value.0 {
 			Repr::Heap(data) => data,
-			// SAFETY: buf contains valid UTF-8 (guaranteed by SmolStrMut invariants).
+			// SAFETY: buf contains valid UTF-8 (guaranteed by StrMut invariants).
 			// Converting to BytesMut preserves the UTF-8 bytes.
 			Repr::Inline(buf) => unsafe { Self::from_inner_unchecked(BytesMut::from(buf.as_bytes())) },
 		}
 	}
 }
 
-impl From<SmolStrMut> for SmolStr {
+impl From<StrMut> for Str {
 	#[inline]
-	fn from(value: SmolStrMut) -> Self {
+	fn from(value: StrMut) -> Self {
 		value.freeze()
 	}
 }
 
-impl From<SmolStr> for SmolStrMut {
+impl From<Str> for StrMut
 	#[inline]
-	fn from(value: SmolStr) -> Self {
+	fn from(value: Str) -> Self {
 		match value.0 {
 			Repr::Inline(buf) => Self(Repr::Inline(buf)),
-			// SAFETY: heap contains valid UTF-8 (guaranteed by SmolStr invariants).
+			// SAFETY: heap contains valid UTF-8 (guaranteed by Str invariants).
 			Repr::Heap(heap) => unsafe { Self::from_utf8_unchecked_owned(heap.into_inner()) },
 		}
 	}
 }
 
-impl From<Arc<str>> for SmolStr {
+impl From<Arc<str>> for Str {
 	#[inline]
 	fn from(value: Arc<str>) -> Self {
 		let bytes: Arc<[u8]> = value.into();
 		// SAFETY: Arc<str> guarantees its contents are valid UTF-8. Converting
 		// to Arc<[u8]> preserves the bytes without modification.
-		Self(Repr::Heap(unsafe { Str::from_inner_unchecked(Bytes::from_owner(bytes)) }))
+		Self(Repr::Heap(unsafe { BytesStr::from_inner_unchecked(Bytes::from_owner(bytes)) }))
 	}
 }
 
-impl From<Box<str>> for SmolStr {
+impl From<Box<str>> for Str {
 	#[inline]
 	fn from(value: Box<str>) -> Self {
 		Self(Repr::Heap(value.into()))
 	}
 }
 
-impl From<Box<str>> for SmolStrMut {
+impl From<Box<str>> for StrMut {
 	#[inline]
 	fn from(value: Box<str>) -> Self {
 		// SAFETY: Box<str> guarantees its contents are valid UTF-8. Converting
 		// to boxed bytes and then to BytesMut preserves the UTF-8 bytes.
 		Self(Repr::Heap(unsafe {
-			StrMut::from_inner_unchecked(Bytes::from(value.into_boxed_bytes()).into())
+			BytesStrMut::from_inner_unchecked(Bytes::from(value.into_boxed_bytes()).into())
 		}))
 	}
 }
@@ -2089,7 +2089,7 @@ impl From<Box<str>> for SmolStrMut {
 // Serde
 // ============================
 
-impl serde::Serialize for SmolStr {
+impl serde::Serialize for Str {
 	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
 	where
 		S: serde::Serializer,
@@ -2098,49 +2098,49 @@ impl serde::Serialize for SmolStr {
 	}
 }
 
-impl<'de> serde::Deserialize<'de> for SmolStr {
+impl<'de> serde::Deserialize<'de> for Str {
 	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
 	where
 		D: serde::Deserializer<'de>,
 	{
 		use serde::de::{Error, Unexpected};
-		struct SmolStrVisitor;
+		struct StrVisitor;
 
-		impl serde::de::Visitor<'_> for SmolStrVisitor {
-			type Value = SmolStr;
+		impl serde::de::Visitor<'_> for StrVisitor {
+			type Value = Str;
 
 			fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
 				formatter.write_str("a string")
 			}
 
 			fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
-				Ok(SmolStr::from(v))
+				Ok(Str::from(v))
 			}
 
 			fn visit_string<E: Error>(self, v: String) -> Result<Self::Value, E> {
-				Ok(SmolStr::from(v))
+				Ok(Str::from(v))
 			}
 
 			fn visit_bytes<E: Error>(self, v: &[u8]) -> Result<Self::Value, E> {
 				match str::from_utf8(v) {
-					Ok(s) => Ok(SmolStr::from(s)),
+					Ok(s) => Ok(Str::from(s)),
 					Err(_) => Err(Error::invalid_value(Unexpected::Bytes(v), &self)),
 				}
 			}
 
 			fn visit_byte_buf<E: Error>(self, v: Vec<u8>) -> Result<Self::Value, E> {
 				match String::from_utf8(v) {
-					Ok(s) => Ok(SmolStr::from(s)),
+					Ok(s) => Ok(Str::from(s)),
 					Err(e) => Err(Error::invalid_value(Unexpected::Bytes(&e.into_bytes()), &self)),
 				}
 			}
 		}
 
-		deserializer.deserialize_str(SmolStrVisitor)
+		deserializer.deserialize_str(StrVisitor)
 	}
 }
 
-impl serde::Serialize for SmolCow<'_> {
+impl serde::Serialize for CowStr<'_> {
 	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
 	where
 		S: serde::Serializer,
@@ -2149,37 +2149,37 @@ impl serde::Serialize for SmolCow<'_> {
 	}
 }
 
-impl<'de: 'a, 'a> serde::Deserialize<'de> for SmolCow<'a> {
+impl<'de: 'a, 'a> serde::Deserialize<'de> for CowStr<'a> {
 	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
 	where
 		D: serde::Deserializer<'de>,
 	{
 		use serde::de::{Error, Unexpected};
 
-		struct SmolCowVisitor;
+		struct CowStrVisitor;
 
-		impl<'de> serde::de::Visitor<'de> for SmolCowVisitor {
-			type Value = SmolCow<'de>;
+		impl<'de> serde::de::Visitor<'de> for CowStrVisitor {
+			type Value = CowStr<'de>;
 
 			fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
 				formatter.write_str("a string")
 			}
 
 			fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
-				Ok(SmolCow::Owned(SmolStrMut::from(v)))
+				Ok(CowStr::Owned(StrMut::from(v)))
 			}
 
 			fn visit_borrowed_str<E: Error>(self, v: &'de str) -> Result<Self::Value, E> {
-				Ok(SmolCow::Borrowed(v))
+				Ok(CowStr::Borrowed(v))
 			}
 
 			fn visit_string<E: Error>(self, v: String) -> Result<Self::Value, E> {
-				Ok(SmolCow::Owned(SmolStrMut::from(v)))
+				Ok(CowStr::Owned(StrMut::from(v)))
 			}
 
 			fn visit_bytes<E: Error>(self, v: &[u8]) -> Result<Self::Value, E> {
 				match str::from_utf8(v) {
-					Ok(s) => Ok(SmolCow::Owned(SmolStrMut::from(s))),
+					Ok(s) => Ok(CowStr::Owned(StrMut::from(s))),
 					Err(_) => Err(Error::invalid_value(Unexpected::Bytes(v), &self)),
 				}
 			}
@@ -2189,58 +2189,58 @@ impl<'de: 'a, 'a> serde::Deserialize<'de> for SmolCow<'a> {
 				E: serde::de::Error,
 			{
 				match str::from_utf8(v) {
-					Ok(s) => Ok(SmolCow::Borrowed(s)),
+					Ok(s) => Ok(CowStr::Borrowed(s)),
 					Err(_) => Err(Error::invalid_value(Unexpected::Bytes(v), &self)),
 				}
 			}
 
 			fn visit_byte_buf<E: Error>(self, v: Vec<u8>) -> Result<Self::Value, E> {
 				match String::from_utf8(v) {
-					Ok(s) => Ok(SmolCow::Owned(SmolStrMut::from(s))),
+					Ok(s) => Ok(CowStr::Owned(StrMut::from(s))),
 					Err(e) => Err(Error::invalid_value(Unexpected::Bytes(&e.into_bytes()), &self)),
 				}
 			}
 		}
 
-		deserializer.deserialize_str(SmolCowVisitor)
+		deserializer.deserialize_str(CowStrVisitor)
 	}
 }
 
 /// A clone-on-write smart pointer for strings with small string optimization.
 ///
-/// The type `SmolCow` is a smart pointer providing clone-on-write
+/// The type `CowStr` is a smart pointer providing clone-on-write
 /// functionality: it can enclose and provide immutable access to borrowed data,
 /// and clone the data lazily when mutation or ownership is required.
 ///
-/// `SmolCow` implements `Deref`, which means that you can call non-mutating
+/// `CowStr` implements `Deref`, which means that you can call non-mutating
 /// methods directly on the data it encloses.
 #[derive(Clone)]
-pub enum SmolCow<'a> {
+pub enum CowStr<'a> {
 	/// Borrowed data.
 	Borrowed(&'a str),
 	/// Owned data.
-	Owned(SmolStrMut),
+	Owned(StrMut),
 }
 
-impl<'a> SmolCow<'a> {
-	/// Creates a new `SmolCow` from a string slice.
+impl<'a> CowStr<'a> {
+	/// Creates a new `CowStr` from a string slice.
 	#[inline]
 	pub const fn from_str(s: &'a str) -> Self {
-		SmolCow::Borrowed(s)
+		CowStr::Borrowed(s)
 	}
 
-	/// Creates a new `SmolCow` from an owned `SmolStrMut`.
+	/// Creates a new `CowStr` from an owned `StrMut`.
 	#[inline]
-	pub const fn from_owned(s: SmolStrMut) -> Self {
-		SmolCow::Owned(s)
+	pub const fn from_owned(s: StrMut) -> Self {
+		CowStr::Owned(s)
 	}
 
-	/// Returns a `&str` slice of this `SmolCow`.
+	/// Returns a `&str` slice of this `CowStr`.
 	#[inline]
 	pub fn as_str(&self) -> &str {
 		match self {
-			SmolCow::Borrowed(s) => s,
-			SmolCow::Owned(s) => s.as_str(),
+			CowStr::Borrowed(s) => s,
+			CowStr::Owned(s) => s.as_str(),
 		}
 	}
 
@@ -2259,20 +2259,20 @@ impl<'a> SmolCow<'a> {
 	/// Returns true if the data is borrowed.
 	#[inline]
 	pub const fn is_borrowed(&self) -> bool {
-		matches!(self, SmolCow::Borrowed(_))
+		matches!(self, CowStr::Borrowed(_))
 	}
 
 	/// Returns true if the data is owned.
 	#[inline]
 	pub const fn is_owned(&self) -> bool {
-		matches!(self, SmolCow::Owned(_))
+		matches!(self, CowStr::Owned(_))
 	}
 
-	/// Assigns the slice passed to the `SmolCow`.
+	/// Assigns the slice passed to the `CowStr`.
 	#[inline]
 	pub fn assign_slice_ref(&mut self, subset: &'a str) {
 		match self {
-			SmolCow::Owned(owned) => {
+			CowStr::Owned(owned) => {
 				// SAFETY: We copy valid UTF-8 bytes from `subset` to the beginning of
 				// `owned`, then truncate to the copied length. The source is valid UTF-8,
 				// so the result is valid UTF-8. The memory regions do not overlap
@@ -2282,16 +2282,16 @@ impl<'a> SmolCow<'a> {
 					owned.truncate(subset.len());
 				}
 			},
-			SmolCow::Borrowed(_) => *self = SmolCow::Borrowed(subset),
+			CowStr::Borrowed(_) => *self = CowStr::Borrowed(subset),
 		}
 	}
 
-	/// Assigns self to be equal to the range given within the `SmolCow` itself.
+	/// Assigns self to be equal to the range given within the `CowStr` itself.
 	#[inline]
 	pub fn assign_range(&mut self, range: impl Into<std::ops::Range<usize>>) {
 		let range = range.into();
 		match self {
-			SmolCow::Owned(owned) => {
+			CowStr::Owned(owned) => {
 				let len = range.end - range.start;
 				// SAFETY: We copy a substring of valid UTF-8 bytes within `owned` to the
 				// beginning, then truncate. The range is validated by the caller (or will
@@ -2306,13 +2306,13 @@ impl<'a> SmolCow<'a> {
 					owned.truncate(len);
 				}
 			},
-			SmolCow::Borrowed(s) => {
-				*self = SmolCow::Borrowed(&s[range]);
+			CowStr::Borrowed(s) => {
+				*self = CowStr::Borrowed(&s[range]);
 			},
 		}
 	}
 
-	/// Converts the `SmolCow` into a `SmolCow` that represents the specified
+	/// Converts the `CowStr` into a `CowStr` that represents the specified
 	/// range.
 	///
 	/// Clones the data if it is not already owned.
@@ -2324,8 +2324,8 @@ impl<'a> SmolCow<'a> {
 	pub fn into_range(self, range: impl Into<std::ops::Range<usize>>) -> Self {
 		let range = range.into();
 		match self {
-			SmolCow::Borrowed(s) => SmolCow::Borrowed(&s[range]),
-			SmolCow::Owned(mut owned) => {
+			CowStr::Borrowed(s) => CowStr::Borrowed(&s[range]),
+			CowStr::Owned(mut owned) => {
 				let len = range.end - range.start;
 				// SAFETY: We copy a substring of valid UTF-8 bytes within `owned` to the
 				// beginning, then truncate. The range is validated by the caller (or will
@@ -2339,12 +2339,12 @@ impl<'a> SmolCow<'a> {
 					}
 					owned.truncate(len);
 				}
-				SmolCow::Owned(owned)
+				CowStr::Owned(owned)
 			},
 		}
 	}
 
-	/// Converts the `SmolCow` into a `SmolCow` that represents the specified
+	/// Converts the `CowStr` into a `CowStr` that represents the specified
 	/// slice reference.
 	///
 	/// Clones the data if it is not already owned.
@@ -2355,8 +2355,8 @@ impl<'a> SmolCow<'a> {
 	#[inline]
 	pub fn into_slice_ref(self, subset: &'a str) -> Self {
 		match self {
-			SmolCow::Borrowed(_) => SmolCow::Borrowed(subset),
-			SmolCow::Owned(mut owned) => {
+			CowStr::Borrowed(_) => CowStr::Borrowed(subset),
+			CowStr::Owned(mut owned) => {
 				// SAFETY: We copy valid UTF-8 bytes from `subset` to the beginning of
 				// `owned`, then truncate to the copied length. The source is valid UTF-8,
 				// so the result is valid UTF-8. The memory regions do not overlap
@@ -2365,36 +2365,36 @@ impl<'a> SmolCow<'a> {
 					std::ptr::copy(subset.as_ptr(), owned.as_mut_ptr(), subset.len());
 					owned.truncate(subset.len());
 				}
-				SmolCow::Owned(owned)
+				CowStr::Owned(owned)
 			},
 		}
 	}
 
-	/// Converts the `SmolCow` into an owned `SmolCow`.
+	/// Converts the `CowStr` into an owned `CowStr`.
 	#[inline]
-	pub fn into_owned(self) -> SmolCow<'static> {
+	pub fn into_owned(self) -> CowStr<'static> {
 		match self {
-			SmolCow::Borrowed(s) => SmolCow::Owned(s.into()),
-			SmolCow::Owned(owned) => SmolCow::Owned(owned),
+			CowStr::Borrowed(s) => CowStr::Owned(s.into()),
+			CowStr::Owned(owned) => CowStr::Owned(owned),
 		}
 	}
 
-	/// Borrows the `SmolCow` with a new lifetime.
+	/// Borrows the `CowStr` with a new lifetime.
 	#[inline]
-	pub fn borrow(&self) -> SmolCow<'_> {
+	pub fn borrow(&self) -> CowStr<'_> {
 		match self {
-			SmolCow::Borrowed(s) => SmolCow::Borrowed(s),
-			SmolCow::Owned(o) => SmolCow::Borrowed(o.as_str()),
+			CowStr::Borrowed(s) => CowStr::Borrowed(s),
+			CowStr::Owned(o) => CowStr::Borrowed(o.as_str()),
 		}
 	}
 
-	/// Returns a new `SmolCow` with the given string appended.
+	/// Returns a new `CowStr` with the given string appended.
 	#[inline]
 	pub fn push_str(&mut self, s: &str) {
 		self.as_mut().push_str(s);
 	}
 
-	/// Returns a new `SmolCow` with the given character appended.
+	/// Returns a new `CowStr` with the given character appended.
 	#[inline]
 	pub fn push(&mut self, c: char) {
 		self.as_mut().push(c);
@@ -2405,10 +2405,10 @@ impl<'a> SmolCow<'a> {
 	pub fn truncate(&mut self, len: usize) {
 		if self.len() > len {
 			match self {
-				SmolCow::Borrowed(s) => {
-					*self = SmolCow::Borrowed(s.split_at(len).0);
+				CowStr::Borrowed(s) => {
+					*self = CowStr::Borrowed(s.split_at(len).0);
 				},
-				SmolCow::Owned(s) => {
+				CowStr::Owned(s) => {
 					s.truncate(len);
 				},
 			}
@@ -2417,14 +2417,14 @@ impl<'a> SmolCow<'a> {
 
 	/// Trims the string in place, removing leading and trailing whitespace.
 	///
-	/// This method does not allocate if the `SmolCow` is a borrowed `&str`.
+	/// This method does not allocate if the `CowStr` is a borrowed `&str`.
 	#[inline]
 	pub fn trim(&mut self) {
 		match self {
-			SmolCow::Borrowed(s) => {
-				*self = SmolCow::Borrowed(s.trim());
+			CowStr::Borrowed(s) => {
+				*self = CowStr::Borrowed(s.trim());
 			},
-			SmolCow::Owned(s) => {
+			CowStr::Owned(s) => {
 				let range = s
 					.substr_range(s.trim())
 					.expect("substr_range should not fail");
@@ -2435,14 +2435,14 @@ impl<'a> SmolCow<'a> {
 
 	/// Trims the end of the string in place, removing trailing whitespace.
 	///
-	/// This method does not allocate if the `SmolCow` is a borrowed `&str`.
+	/// This method does not allocate if the `CowStr` is a borrowed `&str`.
 	#[inline]
 	pub fn trim_end(&mut self) {
 		match self {
-			SmolCow::Borrowed(s) => {
-				*self = SmolCow::Borrowed(s.trim_end());
+			CowStr::Borrowed(s) => {
+				*self = CowStr::Borrowed(s.trim_end());
 			},
-			SmolCow::Owned(s) => {
+			CowStr::Owned(s) => {
 				let range = s
 					.substr_range(s.trim_end())
 					.expect("substr_range should not fail");
@@ -2453,14 +2453,14 @@ impl<'a> SmolCow<'a> {
 
 	/// Trims the start of the string in place, removing leading whitespace.
 	///
-	/// This method does not allocate if the `SmolCow` is a borrowed `&str`.
+	/// This method does not allocate if the `CowStr` is a borrowed `&str`.
 	#[inline]
 	pub fn trim_start(&mut self) {
 		match self {
-			SmolCow::Borrowed(s) => {
-				*self = SmolCow::Borrowed(s.trim_start());
+			CowStr::Borrowed(s) => {
+				*self = CowStr::Borrowed(s.trim_start());
 			},
-			SmolCow::Owned(s) => {
+			CowStr::Owned(s) => {
 				let range = s
 					.substr_range(s.trim_start())
 					.expect("substr_range should not fail");
@@ -2488,17 +2488,17 @@ impl<'a> SmolCow<'a> {
 	}
 }
 
-impl AsMut<SmolStrMut> for SmolCow<'_> {
-	fn as_mut(&mut self) -> &mut SmolStrMut {
+impl AsMut<StrMut> for CowStr {
+	fn as_mut(&mut self) -> &mut StrMut {
 		match self {
-			SmolCow::Borrowed(s) => {
-				*self = SmolCow::Owned(SmolStrMut::new(s));
+			CowStr::Borrowed(s) => {
+				*self = CowStr::Owned(StrMut::new(s));
 				match self {
-					SmolCow::Owned(owned) => owned,
+					CowStr::Owned(owned) => owned,
 					_ => unreachable!(),
 				}
 			},
-			SmolCow::Owned(owned) => owned,
+			CowStr::Owned(owned) => owned,
 		}
 	}
 }
@@ -2507,70 +2507,70 @@ impl AsMut<SmolStrMut> for SmolCow<'_> {
 // Conversions
 // ============================
 
-impl<'a> From<&'a str> for SmolCow<'a> {
+impl<'a> From<&'a str> for CowStr<'a> {
 	#[inline]
 	fn from(s: &'a str) -> Self {
-		SmolCow::Borrowed(s)
+		CowStr::Borrowed(s)
 	}
 }
 
-impl From<SmolStrMut> for SmolCow<'_> {
+impl From<StrMut> for CowStr {
 	#[inline]
-	fn from(s: SmolStrMut) -> Self {
-		SmolCow::Owned(s)
+	fn from(s: StrMut) -> Self {
+		CowStr::Owned(s)
 	}
 }
 
-impl From<SmolStr> for SmolCow<'_> {
+impl From<Str> for CowStr {
 	#[inline]
-	fn from(s: SmolStr) -> Self {
-		SmolCow::Owned(SmolStrMut::from(s))
+	fn from(s: Str) -> Self {
+		CowStr::Owned(StrMut::from(s))
 	}
 }
 
-impl From<String> for SmolCow<'_> {
+impl From<String> for CowStr<'_> {
 	#[inline]
 	fn from(s: String) -> Self {
-		SmolCow::Owned(SmolStrMut::from(s))
+		CowStr::Owned(StrMut::from(s))
 	}
 }
 
-impl<'a> From<Cow<'a, str>> for SmolCow<'a> {
+impl<'a> From<Cow<'a, str>> for CowStr<'a> {
 	#[inline]
 	fn from(cow: Cow<'a, str>) -> Self {
 		match cow {
-			Cow::Borrowed(s) => SmolCow::Borrowed(s),
-			Cow::Owned(s) => SmolCow::Owned(SmolStrMut::from(s)),
+			Cow::Borrowed(s) => CowStr::Borrowed(s),
+			Cow::Owned(s) => CowStr::Owned(StrMut::from(s)),
 		}
 	}
 }
 
-impl<'a> From<SmolCow<'a>> for Cow<'a, str> {
+impl<'a> From<CowStr<'a>> for Cow<'a, str> {
 	#[inline]
-	fn from(smol: SmolCow<'a>) -> Self {
-		match smol {
-			SmolCow::Borrowed(s) => Cow::Borrowed(s),
-			SmolCow::Owned(s) => Cow::Owned(s.as_str().to_string()),
+	fn from(cow: CowStr<'a>) -> Self {
+		match cow {
+			CowStr::Borrowed(s) => Cow::Borrowed(s),
+			CowStr::Owned(s) => Cow::Owned(s.as_str().to_string()),
 		}
 	}
 }
 
-impl<'a> From<SmolCow<'a>> for SmolStr {
+impl<'a> From<CowStr<'a>> for Str {
 	#[inline]
-	fn from(smol: SmolCow<'a>) -> Self {
-		match smol {
-			SmolCow::Borrowed(s) => Self::from(s),
-			SmolCow::Owned(s) => Self::from(s),
+	fn from(cow: CowStr<'a>) -> Self {
+		match cow {
+			CowStr::Borrowed(s) => Self::from(s),
+			CowStr::Owned(s) => Self::from(s),
 		}
 	}
 }
 
-impl<'a> From<SmolCow<'a>> for SmolStrMut {
+impl<'a> From<CowStr<'a>> for StrMut {
 	#[inline]
-	fn from(smol: SmolCow<'a>) -> Self {
-		match smol {
-			SmolCow::Borrowed(s) => Self::from(s),
-			SmolCow::Owned(s) => s,
+	fn from(cow: CowStr<'a>) -> Self {
+		match cow {
+			CowStr::Borrowed(s) => Self::from(s),
+			CowStr::Owned(s) => s,
 		}
 	}
 }
@@ -2579,7 +2579,7 @@ impl<'a> From<SmolCow<'a>> for SmolStrMut {
 // Deref and AsRef
 // ============================
 
-impl Deref for SmolCow<'_> {
+impl Deref for CowStr<'_> {
 	type Target = str;
 
 	#[inline]
@@ -2588,21 +2588,21 @@ impl Deref for SmolCow<'_> {
 	}
 }
 
-impl AsRef<str> for SmolCow<'_> {
+impl AsRef<str> for CowStr<'_> {
 	#[inline]
 	fn as_ref(&self) -> &str {
 		self.as_str()
 	}
 }
 
-impl AsRef<[u8]> for SmolCow<'_> {
+impl AsRef<[u8]> for CowStr<'_> {
 	#[inline]
 	fn as_ref(&self) -> &[u8] {
 		self.as_str().as_bytes()
 	}
 }
 
-impl Borrow<str> for SmolCow<'_> {
+impl Borrow<str> for CowStr<'_> {
 	#[inline]
 	fn borrow(&self) -> &str {
 		self.as_str()
@@ -2613,13 +2613,13 @@ impl Borrow<str> for SmolCow<'_> {
 // Display and Debug
 // ============================
 
-impl fmt::Display for SmolCow<'_> {
+impl fmt::Display for CowStr<'_> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		fmt::Display::fmt(self.as_str(), f)
 	}
 }
 
-impl fmt::Debug for SmolCow<'_> {
+impl fmt::Debug for CowStr<'_> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		fmt::Debug::fmt(self.as_str(), f)
 	}
@@ -2629,81 +2629,81 @@ impl fmt::Debug for SmolCow<'_> {
 // Equality
 // ============================
 
-impl PartialEq for SmolCow<'_> {
+impl PartialEq for CowStr<'_> {
 	#[inline]
 	fn eq(&self, other: &Self) -> bool {
 		self.as_str() == other.as_str()
 	}
 }
 
-impl Eq for SmolCow<'_> {}
+impl Eq for CowStr<'_> {}
 
-impl PartialEq<str> for SmolCow<'_> {
+impl PartialEq<str> for CowStr<'_> {
 	#[inline]
 	fn eq(&self, other: &str) -> bool {
 		self.as_str() == other
 	}
 }
 
-impl PartialEq<SmolCow<'_>> for str {
+impl PartialEq<CowStr<'_>> for str {
 	#[inline]
-	fn eq(&self, other: &SmolCow<'_>) -> bool {
+	fn eq(&self, other: &CowStr<'_>) -> bool {
 		self == other.as_str()
 	}
 }
 
-impl PartialEq<&str> for SmolCow<'_> {
+impl PartialEq<&str> for CowStr<'_> {
 	#[inline]
 	fn eq(&self, other: &&str) -> bool {
 		self.as_str() == *other
 	}
 }
 
-impl PartialEq<SmolCow<'_>> for &str {
+impl PartialEq<CowStr<'_>> for &str {
 	#[inline]
-	fn eq(&self, other: &SmolCow<'_>) -> bool {
+	fn eq(&self, other: &CowStr<'_>) -> bool {
 		*self == other.as_str()
 	}
 }
 
-impl PartialEq<String> for SmolCow<'_> {
+impl PartialEq<String> for CowStr<'_> {
 	#[inline]
 	fn eq(&self, other: &String) -> bool {
 		self.as_str() == other.as_str()
 	}
 }
 
-impl PartialEq<SmolCow<'_>> for String {
+impl PartialEq<CowStr<'_>> for String {
 	#[inline]
-	fn eq(&self, other: &SmolCow<'_>) -> bool {
+	fn eq(&self, other: &CowStr<'_>) -> bool {
 		self.as_str() == other.as_str()
 	}
 }
 
-impl PartialEq<SmolStr> for SmolCow<'_> {
+impl PartialEq<Str> for CowStr {
 	#[inline]
-	fn eq(&self, other: &SmolStr) -> bool {
+	fn eq(&self, other: &Str) -> bool {
 		self.as_str() == other.as_str()
 	}
 }
 
-impl PartialEq<SmolCow<'_>> for SmolStr {
+impl PartialEq<CowStr<'_>> for Str {
 	#[inline]
-	fn eq(&self, other: &SmolCow<'_>) -> bool {
+	fn eq(&self, other: &CowStr<'_>) -> bool {
 		self.as_str() == other.as_str()
 	}
 }
 
-impl PartialEq<SmolStrMut> for SmolCow<'_> {
+impl PartialEq<StrMut> for CowStr {
 	#[inline]
-	fn eq(&self, other: &SmolStrMut) -> bool {
+	fn eq(&self, other: &StrMut) -> bool {
 		self.as_str() == other.as_str()
 	}
 }
 
-impl PartialEq<SmolCow<'_>> for SmolStrMut {
+impl PartialEq<CowStr<'_>> for StrMut {
 	#[inline]
-	fn eq(&self, other: &SmolCow<'_>) -> bool {
+	fn eq(&self, other: &CowStr<'_>) -> bool {
 		self.as_str() == other.as_str()
 	}
 }
@@ -2712,44 +2712,44 @@ impl PartialEq<SmolCow<'_>> for SmolStrMut {
 // Ordering
 // ============================
 
-impl PartialOrd for SmolCow<'_> {
+impl PartialOrd for CowStr<'_> {
 	#[inline]
 	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
 		Some(self.cmp(other))
 	}
 }
 
-impl Ord for SmolCow<'_> {
+impl Ord for CowStr<'_> {
 	#[inline]
 	fn cmp(&self, other: &Self) -> Ordering {
 		self.as_str().cmp(other.as_str())
 	}
 }
 
-impl PartialOrd<str> for SmolCow<'_> {
+impl PartialOrd<str> for CowStr<'_> {
 	#[inline(always)]
 	fn partial_cmp(&self, other: &str) -> Option<Ordering> {
 		self.as_str().partial_cmp(other)
 	}
 }
 
-impl PartialOrd<SmolCow<'_>> for str {
+impl PartialOrd<CowStr<'_>> for str {
 	#[inline(always)]
-	fn partial_cmp(&self, other: &SmolCow<'_>) -> Option<Ordering> {
+	fn partial_cmp(&self, other: &CowStr<'_>) -> Option<Ordering> {
 		self.partial_cmp(other.as_str())
 	}
 }
 
-impl PartialOrd<&str> for SmolCow<'_> {
+impl PartialOrd<&str> for CowStr<'_> {
 	#[inline(always)]
 	fn partial_cmp(&self, other: &&str) -> Option<Ordering> {
 		self.partial_cmp(*other)
 	}
 }
 
-impl PartialOrd<SmolCow<'_>> for &str {
+impl PartialOrd<CowStr<'_>> for &str {
 	#[inline(always)]
-	fn partial_cmp(&self, other: &SmolCow<'_>) -> Option<Ordering> {
+	fn partial_cmp(&self, other: &CowStr<'_>) -> Option<Ordering> {
 		(*self).partial_cmp(other)
 	}
 }
@@ -2758,7 +2758,7 @@ impl PartialOrd<SmolCow<'_>> for &str {
 // Hash
 // ============================
 
-impl Hash for SmolCow<'_> {
+impl Hash for CowStr<'_> {
 	#[inline]
 	fn hash<H: Hasher>(&self, state: &mut H) {
 		self.as_str().hash(state);
@@ -2769,10 +2769,10 @@ impl Hash for SmolCow<'_> {
 // Default
 // ============================
 
-impl Default for SmolCow<'_> {
+impl Default for CowStr<'_> {
 	#[inline]
 	fn default() -> Self {
-		SmolCow::Owned(SmolStrMut::default())
+		CowStr::Owned(StrMut::default())
 	}
 }
 
@@ -2791,7 +2791,7 @@ mod tests {
 	const LONG_TEXT: &str = "prefix__abcdefghijklmnopjklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 	const SPACED: &str = "   prefix__abcdefghijklmnopjklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
-	fn heap_ptr(s: &SmolStr) -> (*const u8, usize) {
+	fn heap_ptr(s: &Str) -> (*const u8, usize) {
 		match &s.0 {
 			Repr::Heap(data) => (data.inner().as_ptr(), data.len()),
 			_ => panic!("expected heap representation"),
@@ -2800,20 +2800,20 @@ mod tests {
 
 	#[test]
 	fn shared_buffer_prefix_slice_is_not_equal_to_parent() {
-		let parent = SmolStr::new(LONG_TEXT);
+		let parent = Str::new(LONG_TEXT);
 		let prefix = parent.slice(..PREFIX.len());
 		// Both share the parent's start pointer; equality must still compare
 		// lengths, not just pointer identity.
 		assert_eq!(heap_ptr(&prefix).0, heap_ptr(&parent).0);
 		assert_ne!(prefix, parent);
 		assert_ne!(parent, prefix);
-		assert_eq!(prefix, SmolStr::new(PREFIX));
+		assert_eq!(prefix, Str::new(PREFIX));
 		assert_eq!(parent, parent.slice(..));
 	}
 
 	#[test]
 	fn strip_prefix_reuses_heap_storage() {
-		let value = SmolStr::new(LONG_TEXT);
+		let value = Str::new(LONG_TEXT);
 		assert!(value.is_spilled());
 
 		let (orig_ptr, orig_len) = heap_ptr(&value);
@@ -2834,7 +2834,7 @@ mod tests {
 
 	#[test]
 	fn split_at_reuses_heap_storage() {
-		let value = SmolStr::new(LONG_TEXT);
+		let value = Str::new(LONG_TEXT);
 		assert!(value.is_spilled());
 
 		let split_at = PREFIX.len();
@@ -2860,7 +2860,7 @@ mod tests {
 
 	#[test]
 	fn trim_start_reuses_heap_storage() {
-		let value = SmolStr::new(SPACED);
+		let value = Str::new(SPACED);
 		assert!(value.is_spilled());
 
 		let trimmed = value.trim_start();
@@ -2878,48 +2878,48 @@ mod tests {
 
 	#[test]
 	fn test_add_operations() {
-		// Test SmolStr + &str
-		let s1 = SmolStr::new("hello");
+		// Test Str + &str
+		let s1 = Str::new("hello");
 		let result = s1 + " world";
 		assert_eq!(result.as_str(), "hello world");
 
-		// Test &str + SmolStr
-		let s2 = SmolStr::new("world");
+		// Test &str + Str
+		let s2 = Str::new("world");
 		let result = "hello " + s2;
 		assert_eq!(result.as_str(), "hello world");
 
-		// Test &SmolStr + &str
-		let s3 = SmolStr::new("hello");
+		// Test &Str + &str
+		let s3 = Str::new("hello");
 		let result = &s3 + " world";
 		assert_eq!(result.as_str(), "hello world");
 
-		// Test &str + &SmolStr
-		let s4 = SmolStr::new("world");
+		// Test &str + &Str
+		let s4 = Str::new("world");
 		let result = "hello " + &s4;
 		assert_eq!(result.as_str(), "hello world");
 
-		// Test SmolStrMut + &str
-		let m1 = SmolStrMut::new("hello");
+		// Test StrMut + &str
+		let m1 = StrMut::new("hello");
 		let result = m1 + " world";
 		assert_eq!(result.as_str(), "hello world");
 
-		// Test &str + SmolStrMut
-		let m2 = SmolStrMut::new("world");
+		// Test &str + StrMut
+		let m2 = StrMut::new("world");
 		let result = "hello " + m2;
 		assert_eq!(result.as_str(), "hello world");
 
-		// Test &SmolStrMut + &str
-		let m3 = SmolStrMut::new("hello");
+		// Test &StrMut + &str
+		let m3 = StrMut::new("hello");
 		let result = &m3 + " world";
 		assert_eq!(result.as_str(), "hello world");
 
-		// Test &str + &SmolStrMut
-		let m4 = SmolStrMut::new("world");
+		// Test &str + &StrMut
+		let m4 = StrMut::new("world");
 		let result = "hello " + &m4;
 		assert_eq!(result.as_str(), "hello world");
 
 		// Test with heap-allocated strings
-		let long = SmolStr::new("this is a very long string that will be heap allocated");
+		let long = Str::new("this is a very long string that will be heap allocated");
 		let result = &long + " and more";
 		assert_eq!(
 			result.as_str(),
@@ -2930,7 +2930,7 @@ mod tests {
 	#[test]
 	fn test_insert_inline_to_heap_promotion() {
 		// Test that insert properly promotes from inline to heap when needed
-		let mut s = SmolStrMut::new("hello world");
+		let mut s = StrMut::new("hello world");
 		assert!(!s.is_spilled()); // Should be inline
 
 		// Insert something that will exceed inline capacity
@@ -2939,17 +2939,17 @@ mod tests {
 		assert!(s.is_spilled()); // Should now be on heap
 
 		// Test insert at the beginning
-		let mut s = SmolStrMut::new("world");
+		let mut s = StrMut::new("world");
 		s.insert(0, "hello ");
 		assert_eq!(s.as_str(), "hello world");
 
 		// Test insert at the end
-		let mut s = SmolStrMut::new("hello");
+		let mut s = StrMut::new("hello");
 		s.insert(5, " world");
 		assert_eq!(s.as_str(), "hello world");
 
 		// Test insert that triggers promotion with more text
-		let mut s = SmolStrMut::new("12345678901234567890"); // 20 chars, near limit
+		let mut s = StrMut::new("12345678901234567890"); // 20 chars, near limit
 		s.insert(10, "ABCDE"); // This will exceed inline capacity
 		assert_eq!(s.as_str(), "1234567890ABCDE1234567890");
 		assert!(s.is_spilled());
@@ -2959,7 +2959,7 @@ mod tests {
 	fn test_cow_basic_operations() {
 		// Test borrowed variant
 		let s = "hello world";
-		let cow = SmolCow::from(s);
+		let cow = CowStr::from(s);
 		assert!(cow.is_borrowed());
 		assert!(!cow.is_owned());
 		assert_eq!(cow.as_str(), "hello world");
@@ -2967,8 +2967,8 @@ mod tests {
 		assert!(!cow.is_empty());
 
 		// Test owned variant
-		let mut_str = SmolStrMut::new("hello");
-		let cow = SmolCow::from(mut_str);
+		let mut_str = StrMut::new("hello");
+		let cow = CowStr::from(mut_str);
 		assert!(!cow.is_borrowed());
 		assert!(cow.is_owned());
 		assert_eq!(cow.as_str(), "hello");
@@ -2978,7 +2978,7 @@ mod tests {
 	fn test_cow_to_mut() {
 		// Start with borrowed
 		let s = "hello";
-		let mut cow = SmolCow::from(s);
+		let mut cow = CowStr::from(s);
 		assert!(cow.is_borrowed());
 
 		// Convert to owned via as_mut
@@ -2998,13 +2998,13 @@ mod tests {
 		let original = "hello world";
 
 		// Test with borrowed
-		let mut cow = SmolCow::from(original);
+		let mut cow = CowStr::from(original);
 		cow.assign_slice_ref("goodbye");
 		assert!(cow.is_borrowed());
 		assert_eq!(cow.as_str(), "goodbye");
 
 		// Test with owned
-		let mut cow = SmolCow::from(SmolStrMut::new("hello world"));
+		let mut cow = CowStr::from(StrMut::new("hello world"));
 		cow.assign_slice_ref("bye");
 		assert!(cow.is_owned());
 		assert_eq!(cow.as_str(), "bye");
@@ -3013,19 +3013,19 @@ mod tests {
 	#[test]
 	fn test_cow_assign_range() {
 		// Test with borrowed
-		let mut cow = SmolCow::from("hello world");
+		let mut cow = CowStr::from("hello world");
 		cow.assign_range(0..5);
 		assert!(cow.is_borrowed());
 		assert_eq!(cow.as_str(), "hello");
 
 		// Test with owned
-		let mut cow = SmolCow::from(SmolStrMut::new("hello world"));
+		let mut cow = CowStr::from(StrMut::new("hello world"));
 		cow.assign_range(6..11);
 		assert!(cow.is_owned());
 		assert_eq!(cow.as_str(), "world");
 
 		// Test range in middle
-		let mut cow = SmolCow::from(SmolStrMut::new("hello world"));
+		let mut cow = CowStr::from(StrMut::new("hello world"));
 		cow.assign_range(3..8);
 		assert_eq!(cow.as_str(), "lo wo");
 	}
@@ -3033,13 +3033,13 @@ mod tests {
 	#[test]
 	fn test_cow_into_range() {
 		// Test with borrowed
-		let cow = SmolCow::from("hello world");
+		let cow = CowStr::from("hello world");
 		let new_cow = cow.into_range(0..5);
 		assert!(new_cow.is_borrowed());
 		assert_eq!(new_cow.as_str(), "hello");
 
 		// Test with owned
-		let cow = SmolCow::from(SmolStrMut::new("hello world"));
+		let cow = CowStr::from(StrMut::new("hello world"));
 		let new_cow = cow.into_range(6..11);
 		assert!(new_cow.is_owned());
 		assert_eq!(new_cow.as_str(), "world");
@@ -3050,14 +3050,14 @@ mod tests {
 		let original = "hello world";
 
 		// Test with borrowed
-		let cow = SmolCow::from(original);
+		let cow = CowStr::from(original);
 		let subset = &original[6..11];
 		let new_cow = cow.into_slice_ref(subset);
 		assert!(new_cow.is_borrowed());
 		assert_eq!(new_cow.as_str(), "world");
 
 		// Test with owned
-		let cow = SmolCow::from(SmolStrMut::new("hello world"));
+		let cow = CowStr::from(StrMut::new("hello world"));
 		let new_cow = cow.into_slice_ref("new");
 		assert!(new_cow.is_owned());
 		assert_eq!(new_cow.as_str(), "new");
@@ -3066,24 +3066,24 @@ mod tests {
 	#[test]
 	fn test_cow_mutating_operations() {
 		// Test push_str
-		let mut cow = SmolCow::from("hello");
+		let mut cow = CowStr::from("hello");
 		cow.push_str(" world");
 		assert!(cow.is_owned());
 		assert_eq!(cow.as_str(), "hello world");
 
 		// Test push
-		let mut cow = SmolCow::from("hello");
+		let mut cow = CowStr::from("hello");
 		cow.push('!');
 		assert_eq!(cow.as_str(), "hello!");
 
 		// Test truncate with borrowed
-		let mut cow = SmolCow::from("hello world");
+		let mut cow = CowStr::from("hello world");
 		cow.truncate(5);
 		assert!(cow.is_borrowed());
 		assert_eq!(cow.as_str(), "hello");
 
 		// Test truncate with owned
-		let mut cow = SmolCow::from(SmolStrMut::new("hello world"));
+		let mut cow = CowStr::from(StrMut::new("hello world"));
 		cow.truncate(5);
 		assert!(cow.is_owned());
 		assert_eq!(cow.as_str(), "hello");
@@ -3092,37 +3092,37 @@ mod tests {
 	#[test]
 	fn test_cow_trim_operations() {
 		// Test trim with borrowed
-		let mut cow = SmolCow::from("  hello world  ");
+		let mut cow = CowStr::from("  hello world  ");
 		cow.trim();
 		assert!(cow.is_borrowed());
 		assert_eq!(cow.as_str(), "hello world");
 
 		// Test trim with owned
-		let mut cow = SmolCow::from(SmolStrMut::new("  hello world  "));
+		let mut cow = CowStr::from(StrMut::new("  hello world  "));
 		cow.trim();
 		assert!(cow.is_owned());
 		assert_eq!(cow.as_str(), "hello world");
 
 		// Test trim_start with borrowed
-		let mut cow = SmolCow::from("  hello");
+		let mut cow = CowStr::from("  hello");
 		cow.trim_start();
 		assert!(cow.is_borrowed());
 		assert_eq!(cow.as_str(), "hello");
 
 		// Test trim_start with owned
-		let mut cow = SmolCow::from(SmolStrMut::new("  hello"));
+		let mut cow = CowStr::from(StrMut::new("  hello"));
 		cow.trim_start();
 		assert!(cow.is_owned());
 		assert_eq!(cow.as_str(), "hello");
 
 		// Test trim_end with borrowed
-		let mut cow = SmolCow::from("hello  ");
+		let mut cow = CowStr::from("hello  ");
 		cow.trim_end();
 		assert!(cow.is_borrowed());
 		assert_eq!(cow.as_str(), "hello");
 
 		// Test trim_end with owned
-		let mut cow = SmolCow::from(SmolStrMut::new("hello  "));
+		let mut cow = CowStr::from(StrMut::new("hello  "));
 		cow.trim_end();
 		assert!(cow.is_owned());
 		assert_eq!(cow.as_str(), "hello");
@@ -3131,21 +3131,21 @@ mod tests {
 	#[test]
 	fn test_cow_ascii_case_conversion() {
 		// Test lowercase - should not convert to owned if no changes needed
-		let mut cow = SmolCow::from("hello");
+		let mut cow = CowStr::from("hello");
 		cow.make_ascii_lowercase();
 		assert!(cow.is_borrowed()); // Still borrowed since no uppercase letters
 
-		let mut cow = SmolCow::from("HELLO");
+		let mut cow = CowStr::from("HELLO");
 		cow.make_ascii_lowercase();
 		assert!(cow.is_owned());
 		assert_eq!(cow.as_str(), "hello");
 
 		// Test uppercase
-		let mut cow = SmolCow::from("HELLO");
+		let mut cow = CowStr::from("HELLO");
 		cow.make_ascii_uppercase();
 		assert!(cow.is_borrowed()); // Still borrowed since no lowercase letters
 
-		let mut cow = SmolCow::from("hello");
+		let mut cow = CowStr::from("hello");
 		cow.make_ascii_uppercase();
 		assert!(cow.is_owned());
 		assert_eq!(cow.as_str(), "HELLO");
@@ -3153,22 +3153,22 @@ mod tests {
 
 	#[test]
 	fn test_cow_equality() {
-		let cow1 = SmolCow::from("hello");
-		let cow2 = SmolCow::from(SmolStrMut::new("hello"));
+		let cow1 = CowStr::from("hello");
+		let cow2 = CowStr::from(StrMut::new("hello"));
 
 		assert_eq!(cow1, cow2);
 		assert_eq!(cow1, "hello");
 		assert_eq!("hello", cow1);
 		assert_eq!(cow1, String::from("hello"));
-		assert_eq!(cow1, SmolStr::new("hello"));
-		assert_eq!(cow1, SmolStrMut::new("hello"));
+		assert_eq!(cow1, Str::new("hello"));
+		assert_eq!(cow1, StrMut::new("hello"));
 	}
 
 	#[test]
 	fn test_cow_ordering() {
-		let cow1 = SmolCow::from("apple");
-		let cow2 = SmolCow::from("banana");
-		let cow3 = SmolCow::from(SmolStrMut::new("apple"));
+		let cow1 = CowStr::from("apple");
+		let cow2 = CowStr::from("banana");
+		let cow3 = CowStr::from(StrMut::new("apple"));
 
 		assert!(cow1 < cow2);
 		assert!(cow2 > cow1);
@@ -3182,8 +3182,8 @@ mod tests {
 			hash::{Hash, Hasher},
 		};
 
-		let cow1 = SmolCow::from("hello");
-		let cow2 = SmolCow::from(SmolStrMut::new("hello"));
+		let cow1 = CowStr::from("hello");
+		let cow2 = CowStr::from(StrMut::new("hello"));
 
 		let mut hasher1 = DefaultHasher::new();
 		cow1.hash(&mut hasher1);
@@ -3199,68 +3199,68 @@ mod tests {
 	#[test]
 	fn test_cow_into_owned() {
 		// From borrowed
-		let cow = SmolCow::from("hello");
-		let owned = cow.into_smolmut();
+		let cow = CowStr::from("hello");
+		let owned = cow.into_str_mut();
 		assert_eq!(owned.as_str(), "hello");
 
 		// From already owned
-		let cow = SmolCow::from(SmolStrMut::new("world"));
-		let owned = cow.into_smolmut();
+		let cow = CowStr::from(StrMut::new("world"));
+		let owned = cow.into_str_mut();
 		assert_eq!(owned.as_str(), "world");
 	}
 
 	#[test]
-	fn test_cow_into_smolstr() {
-		let cow = SmolCow::from("hello");
-		let smol_str = cow.into_smolstr();
-		assert_eq!(smol_str.as_str(), "hello");
+	fn test_cow_into_str() {
+		let cow = CowStr::from("hello");
+		let string = cow.into_str();
+		assert_eq!(string.as_str(), "hello");
 	}
 
 	#[test]
 	fn test_cow_cow_conversion() {
-		// From Cow to SmolCow
+		// From Cow to CowStr
 		let std_cow = Cow::Borrowed("hello");
-		let smol_cow: SmolCow = std_cow.into();
-		assert!(smol_cow.is_borrowed());
+		let cow: CowStr = std_cow.into();
+		assert!(cow.is_borrowed());
 
 		let std_cow = Cow::<str>::Owned(String::from("world"));
-		let smol_cow: SmolCow = std_cow.into();
-		assert!(smol_cow.is_owned());
+		let cow: CowStr = std_cow.into();
+		assert!(cow.is_owned());
 
-		// From SmolCow to Cow
-		let smol_cow = SmolCow::from("hello");
-		let std_cow: Cow<str> = smol_cow.into();
+		// From CowStr to Cow
+		let cow = CowStr::from("hello");
+		let std_cow: Cow<str> = cow.into();
 		assert!(matches!(std_cow, Cow::Borrowed(_)));
 	}
 
 	#[test]
 	fn test_cow_from_conversions() {
-		// From SmolStr
-		let smol_str = SmolStr::new("hello");
-		let cow: SmolCow = smol_str.into();
+		// From Str
+		let string = Str::new("hello");
+		let cow: CowStr = string.into();
 		assert!(cow.is_owned());
 		assert_eq!(cow.as_str(), "hello");
 
 		// From String
 		let string = String::from("world");
-		let cow: SmolCow = string.into();
+		let cow: CowStr = string.into();
 		assert!(cow.is_owned());
 		assert_eq!(cow.as_str(), "world");
 
-		// Into SmolStr
-		let cow = SmolCow::from("test");
-		let smol_str: SmolStr = cow.into();
-		assert_eq!(smol_str.as_str(), "test");
+		// Into Str
+		let cow = CowStr::from("test");
+		let string: Str = cow.into();
+		assert_eq!(string.as_str(), "test");
 
-		// Into SmolStrMut
-		let cow = SmolCow::from("test");
-		let smol_str_mut: SmolStrMut = cow.into();
-		assert_eq!(smol_str_mut.as_str(), "test");
+		// Into StrMut
+		let cow = CowStr::from("test");
+		let string_mut: StrMut = cow.into();
+		assert_eq!(string_mut.as_str(), "test");
 	}
 
 	#[test]
 	fn test_cow_default() {
-		let cow: SmolCow = Default::default();
+		let cow: CowStr = Default::default();
 		assert!(cow.is_owned());
 		assert_eq!(cow.as_str(), "");
 		assert!(cow.is_empty());
@@ -3268,7 +3268,7 @@ mod tests {
 
 	#[test]
 	fn test_cow_deref_and_borrow() {
-		let cow = SmolCow::from("hello world");
+		let cow = CowStr::from("hello world");
 
 		// Test Deref
 		assert_eq!(&*cow, "hello world");
@@ -3285,36 +3285,36 @@ mod tests {
 	#[test]
 	fn test_cow_serde() {
 		// Test serialization
-		let cow = SmolCow::from("hello world");
+		let cow = CowStr::from("hello world");
 		let json = json::to_string(&cow).unwrap();
 		assert_eq!(json, r#""hello world""#);
 
 		// Test deserialization - will succesfully borrow!
-		let deserialized: SmolCow = json::from_str(&json).unwrap();
+		let deserialized: CowStr = json::from_str(&json).unwrap();
 		assert!(!deserialized.is_owned());
 		assert_eq!(deserialized.as_str(), "hello world");
 
 		// Test with owned variant
-		let cow = SmolCow::from(SmolStrMut::new("test"));
+		let cow = CowStr::from(StrMut::new("test"));
 		let json = json::to_string(&cow).unwrap();
 		assert_eq!(json, r#""test""#);
 	}
 
 	// ============================
-	// Empty and Boundary Tests (from lib/core/tests/smol_str.rs)
+	// Empty and Boundary Tests (from lib/core/tests/string.rs)
 	// ============================
 
 	#[test]
 	fn test_empty_strings() {
-		// Empty SmolStr
-		let s = SmolStr::new("");
+		// Empty Str
+		let s = Str::new("");
 		assert!(s.is_empty());
 		assert_eq!(s.len(), 0);
 		assert!(!s.is_spilled());
 		assert_eq!(s.as_str(), "");
 
-		// Empty SmolStrMut
-		let mut m = SmolStrMut::new("");
+		// Empty StrMut
+		let mut m = StrMut::new("");
 		assert!(m.is_empty());
 		assert_eq!(m.len(), 0);
 		assert!(!m.is_spilled());
@@ -3344,12 +3344,12 @@ mod tests {
 		let text = "12345678901234567890123"; // exactly 23 bytes
 		assert_eq!(text.len(), 23);
 
-		let s = SmolStr::new(text);
+		let s = Str::new(text);
 		assert!(!s.is_spilled());
 		assert_eq!(s.len(), 23);
 		assert_eq!(s.as_str(), text);
 
-		let m = SmolStrMut::new(text);
+		let m = StrMut::new(text);
 		assert!(!m.is_spilled());
 		assert_eq!(m.len(), 23);
 	}
@@ -3360,12 +3360,12 @@ mod tests {
 		let text = "123456789012345678901234"; // 24 bytes
 		assert_eq!(text.len(), 24);
 
-		let s = SmolStr::new(text);
+		let s = Str::new(text);
 		assert!(s.is_spilled());
 		assert_eq!(s.len(), 24);
 		assert_eq!(s.as_str(), text);
 
-		let m = SmolStrMut::new(text);
+		let m = StrMut::new(text);
 		assert!(m.is_spilled());
 		assert_eq!(m.len(), 24);
 	}
@@ -3373,7 +3373,7 @@ mod tests {
 	#[test]
 	fn test_slice_boundaries() {
 		let text = "0123456789";
-		let s = SmolStr::new(text);
+		let s = Str::new(text);
 
 		// Full range
 		assert_eq!(s.slice(..), text);
@@ -3396,14 +3396,14 @@ mod tests {
 	#[test]
 	#[should_panic(expected = "self.is_char_boundary(new_len)")]
 	fn test_truncate_non_char_boundary_inline() {
-		let mut s = SmolStr::new("hello world 世界");
+		let mut s = Str::new("hello world 世界");
 		s.truncate(13); // Middle of '世' (3 bytes)
 	}
 
 	#[test]
 	#[should_panic(expected = "Index is not on a char boundary")]
 	fn test_truncate_non_char_boundary_heap() {
-		let mut s = SmolStr::new("hello world hello world 世界");
+		let mut s = Str::new("hello world hello world 世界");
 		s.truncate(26); // Middle of '世'
 	}
 
@@ -3414,27 +3414,27 @@ mod tests {
 	#[test]
 	fn test_from_utf8_valid() {
 		let valid = b"hello world";
-		let s = SmolStr::from_utf8(valid).unwrap();
+		let s = Str::from_utf8(valid).unwrap();
 		assert_eq!(s.as_str(), "hello world");
 
 		let valid_utf8 = "hello 世界 🌍".as_bytes();
-		let s = SmolStr::from_utf8(valid_utf8).unwrap();
+		let s = Str::from_utf8(valid_utf8).unwrap();
 		assert_eq!(s.as_str(), "hello 世界 🌍");
 	}
 
 	#[test]
 	fn test_from_utf8_invalid() {
 		let invalid = &[0xff, 0xfe, 0xfd];
-		assert!(SmolStr::from_utf8(invalid).is_err());
+		assert!(Str::from_utf8(invalid).is_err());
 
 		let invalid = &[0xc0, 0x80]; // Overlong encoding
-		assert!(SmolStr::from_utf8(invalid).is_err());
+		assert!(Str::from_utf8(invalid).is_err());
 	}
 
 	#[test]
 	fn test_from_utf8_owned_valid() {
 		let valid = bytes::Bytes::from("hello world");
-		let s = SmolStr::from_utf8_owned(valid).unwrap();
+		let s = Str::from_utf8_owned(valid).unwrap();
 		assert_eq!(s.as_str(), "hello world");
 		assert!(s.is_spilled());
 	}
@@ -3442,27 +3442,27 @@ mod tests {
 	#[test]
 	fn test_from_utf8_owned_invalid() {
 		let invalid = bytes::Bytes::from_static(&[0xff, 0xfe, 0xfd]);
-		assert!(SmolStr::from_utf8_owned(invalid).is_err());
+		assert!(Str::from_utf8_owned(invalid).is_err());
 	}
 
 	#[test]
 	fn test_from_utf8_mut_valid() {
 		let valid = b"hello";
-		let m = SmolStrMut::from_utf8(valid).unwrap();
+		let m = StrMut::from_utf8(valid).unwrap();
 		assert_eq!(m.as_str(), "hello");
 	}
 
 	#[test]
 	fn test_from_utf8_mut_invalid() {
 		let invalid = &[0xff, 0xfe];
-		assert!(SmolStrMut::from_utf8(invalid).is_err());
+		assert!(StrMut::from_utf8(invalid).is_err());
 	}
 
 	#[test]
 	fn test_multibyte_char_boundaries() {
 		// Emoji (4 bytes) + Chinese (3 bytes each)
 		let text = "🌍世界";
-		let s = SmolStr::new(text);
+		let s = Str::new(text);
 		assert_eq!(s.len(), 10); // 4 + 3 + 3
 
 		// Split at valid boundaries
@@ -3471,7 +3471,7 @@ mod tests {
 		assert_eq!(r.as_str(), "世界");
 
 		// Truncate at valid boundary
-		let mut s2 = SmolStr::new(text);
+		let mut s2 = Str::new(text);
 		s2.truncate(4);
 		assert_eq!(s2.as_str(), "🌍");
 	}
@@ -3479,7 +3479,7 @@ mod tests {
 	#[test]
 	#[should_panic(expected = "byte index 1 is not a char boundary")]
 	fn test_split_at_invalid_boundary() {
-		let s = SmolStr::new("世界");
+		let s = Str::new("世界");
 		let _ = s.split_at(1); // Middle of '世' (3 bytes)
 	}
 
@@ -3491,33 +3491,33 @@ mod tests {
 	#[should_panic(expected = "len <= INLINE_CAP")]
 	fn test_new_inline_panic() {
 		let too_long = "123456789012345678901234"; // 24 bytes
-		let _ = SmolStr::new_inline(too_long);
+		let _ = Str::new_inline(too_long);
 	}
 
 	#[test]
 	#[should_panic(expected = "len <= INLINE_CAP")]
 	fn test_new_inline_mut_panic() {
 		let too_long = "123456789012345678901234";
-		let _ = SmolStrMut::new_inline(too_long);
+		let _ = StrMut::new_inline(too_long);
 	}
 
 	#[test]
 	#[should_panic(expected = "index is not on a valid UTF-8 character boundary")]
 	fn test_insert_non_char_boundary_inline() {
-		let mut m = SmolStrMut::new("世界");
+		let mut m = StrMut::new("世界");
 		m.insert(1, "x"); // Middle of '世'
 	}
 
 	#[test]
 	#[should_panic(expected = "index is not on a valid UTF-8 character boundary")]
 	fn test_insert_non_char_boundary_heap() {
-		let mut m = SmolStrMut::new("hello world hello world 世界");
+		let mut m = StrMut::new("hello world hello world 世界");
 		m.insert(25, "x"); // Middle of '世'
 	}
 
 	#[test]
 	fn test_try_into_mut_success_inline() {
-		let s = SmolStr::new("hello");
+		let s = Str::new("hello");
 		let m = s.try_into_mut().unwrap();
 		assert_eq!(m.as_str(), "hello");
 		assert!(!m.is_spilled());
@@ -3525,7 +3525,7 @@ mod tests {
 
 	#[test]
 	fn test_try_into_mut_success_heap_unique() {
-		let s = SmolStr::new("hello world hello world!!");
+		let s = Str::new("hello world hello world!!");
 		let m = s.try_into_mut().unwrap();
 		assert_eq!(m.as_str(), "hello world hello world!!");
 		assert!(m.is_spilled());
@@ -3533,7 +3533,7 @@ mod tests {
 
 	#[test]
 	fn test_try_into_mut_failure_shared() {
-		let s = SmolStr::new("hello world hello world!!");
+		let s = Str::new("hello world hello world!!");
 		let s2 = s.clone();
 
 		// Should fail because Bytes is shared
@@ -3552,7 +3552,7 @@ mod tests {
 
 	#[test]
 	fn test_push_str_inline_to_heap() {
-		let mut m = SmolStrMut::new("12345678901234567890"); // 20 bytes
+		let mut m = StrMut::new("12345678901234567890"); // 20 bytes
 		assert!(!m.is_spilled());
 
 		m.push_str("1234"); // Total 24 bytes
@@ -3562,7 +3562,7 @@ mod tests {
 
 	#[test]
 	fn test_push_char_inline_to_heap() {
-		let mut m = SmolStrMut::new("1234567890123456789012"); // 22 bytes
+		let mut m = StrMut::new("1234567890123456789012"); // 22 bytes
 		assert!(!m.is_spilled());
 
 		m.push('x');
@@ -3575,7 +3575,7 @@ mod tests {
 
 	#[test]
 	fn test_push_multibyte_char_promotion() {
-		let mut m = SmolStrMut::new("12345678901234567890"); // 20 bytes
+		let mut m = StrMut::new("12345678901234567890"); // 20 bytes
 		assert!(!m.is_spilled());
 
 		m.push('🌍'); // 4 bytes emoji
@@ -3585,7 +3585,7 @@ mod tests {
 
 	#[test]
 	fn test_reserve_triggers_promotion() {
-		let mut m = SmolStrMut::new("hello"); // 5 bytes inline
+		let mut m = StrMut::new("hello"); // 5 bytes inline
 		assert!(!m.is_spilled());
 
 		m.reserve(20); // Reserve 20 more, total capacity 25
@@ -3599,7 +3599,7 @@ mod tests {
 
 	#[test]
 	fn test_sequential_operations_promotion() {
-		let mut m = SmolStrMut::new("abc");
+		let mut m = StrMut::new("abc");
 		assert!(!m.is_spilled());
 
 		for _ in 0..5 {
@@ -3618,14 +3618,14 @@ mod tests {
 
 	#[test]
 	fn test_strip_prefix_none() {
-		let s = SmolStr::new("hello world");
+		let s = Str::new("hello world");
 		assert_eq!(s.strip_prefix("goodbye"), None);
 		assert_eq!(s.strip_prefix("hello world!"), None);
 	}
 
 	#[test]
 	fn test_strip_suffix_none() {
-		let s = SmolStr::new("hello world");
+		let s = Str::new("hello world");
 		assert_eq!(s.strip_suffix("goodbye"), None);
 		assert_eq!(s.strip_suffix("!hello world"), None);
 	}
@@ -3633,7 +3633,7 @@ mod tests {
 	#[test]
 	fn test_slice_ref_inline() {
 		let text = "hello world";
-		let s = SmolStr::new(text);
+		let s = Str::new(text);
 		assert!(!s.is_spilled());
 
 		let subset = &text[6..11]; // "world"
@@ -3645,7 +3645,7 @@ mod tests {
 	#[test]
 	fn test_trim_end_zero_copy_heap() {
 		let text = "hello world hello world hello   ";
-		let s = SmolStr::new(text);
+		let s = Str::new(text);
 		assert!(s.is_spilled());
 
 		let trimmed = s.trim_end();
@@ -3655,7 +3655,7 @@ mod tests {
 
 	#[test]
 	fn test_split_iterator_complete() {
-		let s = SmolStr::new("a,b,c,d,e");
+		let s = Str::new("a,b,c,d,e");
 		let parts: Vec<_> = s.split(",").collect();
 		assert_eq!(parts.len(), 5);
 		assert_eq!(parts[0], "a");
@@ -3663,7 +3663,7 @@ mod tests {
 		assert_eq!(parts[4], "e");
 
 		// Multiple separators
-		let s2 = SmolStr::new("a,,b");
+		let s2 = Str::new("a,,b");
 		let parts2: Vec<_> = s2.split(",").collect();
 		assert_eq!(parts2.len(), 3);
 		assert_eq!(parts2[1], ""); // Empty between ,,
@@ -3671,7 +3671,7 @@ mod tests {
 
 	#[test]
 	fn test_split_no_separator() {
-		let s = SmolStr::new("hello");
+		let s = Str::new("hello");
 		let parts: Vec<_> = s.split(",").collect();
 		assert_eq!(parts.len(), 1);
 		assert_eq!(parts[0], "hello");
@@ -3683,19 +3683,19 @@ mod tests {
 
 	#[test]
 	fn test_is_unique_inline() {
-		let s = SmolStr::new("hello");
+		let s = Str::new("hello");
 		assert!(s.is_unique()); // Inline always unique
 	}
 
 	#[test]
 	fn test_is_unique_heap_unshared() {
-		let s = SmolStr::new("hello world hello world!!");
+		let s = Str::new("hello world hello world!!");
 		assert!(s.is_unique()); // Newly created heap string is unique
 	}
 
 	#[test]
 	fn test_is_unique_heap_shared() {
-		let s1 = SmolStr::new("hello world hello world!!");
+		let s1 = Str::new("hello world hello world!!");
 		let s2 = s1.clone();
 
 		assert!(!s1.is_unique()); // Now shared
@@ -3704,7 +3704,7 @@ mod tests {
 
 	#[test]
 	fn test_into_ascii_uppercase_leaves_shared_clone_untouched() {
-		let s1 = SmolStr::new("hello world hello world!!");
+		let s1 = Str::new("hello world hello world!!");
 		let s2 = s1.clone();
 
 		// Shared storage: the conversion must copy, not mutate in place.
@@ -3716,7 +3716,7 @@ mod tests {
 
 	#[test]
 	fn test_promote_inline_to_heap() {
-		let mut s = SmolStr::new("hello");
+		let mut s = Str::new("hello");
 		assert!(!s.is_spilled());
 
 		let heap_str = s.promote();
@@ -3731,7 +3731,7 @@ mod tests {
 	#[test]
 	fn test_from_arc_str() {
 		let arc: std::sync::Arc<str> = "hello world hello world".into();
-		let s = SmolStr::from(arc);
+		let s = Str::from(arc);
 		assert!(s.is_spilled());
 		assert_eq!(s.as_str(), "hello world hello world");
 	}
@@ -3739,41 +3739,41 @@ mod tests {
 	#[test]
 	fn test_from_box_str() {
 		let boxed: Box<str> = "hello world".into();
-		let s = SmolStr::from(boxed);
+		let s = Str::from(boxed);
 		assert_eq!(s.as_str(), "hello world");
 	}
 
 	#[test]
 	fn test_from_cow_borrowed() {
 		let cow = std::borrow::Cow::Borrowed("hello");
-		let s = SmolStr::from(cow);
+		let s = Str::from(cow);
 		assert_eq!(s.as_str(), "hello");
 	}
 
 	#[test]
 	fn test_from_cow_owned() {
 		let cow = std::borrow::Cow::<str>::Owned(String::from("hello world hello world"));
-		let s = SmolStr::from(cow);
+		let s = Str::from(cow);
 		assert_eq!(s.as_str(), "hello world hello world");
 	}
 
 	#[test]
 	fn test_into_string() {
-		let s = SmolStr::new("hello world");
+		let s = Str::new("hello world");
 		let string: String = s.into();
 		assert_eq!(string, "hello world");
 	}
 
 	#[test]
 	fn test_into_bytes() {
-		let s = SmolStr::new("hello world hello world");
+		let s = Str::new("hello world hello world");
 		let bytes: bytes::Bytes = s.into();
 		assert_eq!(&bytes[..], b"hello world hello world");
 	}
 
 	#[test]
 	fn test_into_bytes_inline() {
-		let s = SmolStr::new("hello");
+		let s = Str::new("hello");
 		let bytes: bytes::Bytes = s.into();
 		assert_eq!(&bytes[..], b"hello");
 	}
@@ -3781,69 +3781,69 @@ mod tests {
 	#[test]
 	fn test_from_iterator_char() {
 		let chars = vec!['h', 'e', 'l', 'l', 'o'];
-		let s: SmolStr = chars.into_iter().collect();
+		let s: Str = chars.into_iter().collect();
 		assert_eq!(s.as_str(), "hello");
 	}
 
 	#[test]
 	fn test_from_iterator_str_ref() {
 		let strs = vec!["hello", " ", "world"];
-		let s: SmolStr = strs.into_iter().collect();
+		let s: Str = strs.into_iter().collect();
 		assert_eq!(s.as_str(), "hello world");
 	}
 
 	#[test]
 	fn test_from_iterator_string() {
 		let strings = vec![String::from("hello"), String::from(" "), String::from("world")];
-		let s: SmolStr = strings.into_iter().collect();
+		let s: Str = strings.into_iter().collect();
 		assert_eq!(s.as_str(), "hello world");
 	}
 
 	#[test]
 	fn test_from_iterator_triggers_heap() {
-		let s: SmolStr = "123456789012345678901234".chars().collect();
+		let s: Str = "123456789012345678901234".chars().collect();
 		assert!(s.is_spilled());
 		assert_eq!(s.as_str(), "123456789012345678901234");
 	}
 
 	// ============================
-	// SmolStrExt Tests
+	// StrExt Tests
 	// ============================
 
 	#[test]
-	fn test_to_ascii_lowercase_smol() {
+	fn test_to_ascii_lowercase_str() {
 		let s = "HELLO WORLD";
-		let lower = s.to_ascii_lowercase_smol();
+		let lower = s.to_ascii_lowercase_str();
 		assert_eq!(lower.as_str(), "hello world");
 		assert!(!lower.is_spilled());
 
 		let long = "HELLO WORLD HELLO WORLD!!";
-		let lower_long = long.to_ascii_lowercase_smol();
+		let lower_long = long.to_ascii_lowercase_str();
 		assert_eq!(lower_long.as_str(), "hello world hello world!!");
 		assert!(lower_long.is_spilled());
 	}
 
 	#[test]
-	fn test_to_ascii_uppercase_smol() {
+	fn test_to_ascii_uppercase_str() {
 		let s = "hello world";
-		let upper = s.to_ascii_uppercase_smol();
+		let upper = s.to_ascii_uppercase_str();
 		assert_eq!(upper.as_str(), "HELLO WORLD");
 
 		let already_upper = "HELLO";
-		let upper2 = already_upper.to_ascii_uppercase_smol();
+		let upper2 = already_upper.to_ascii_uppercase_str();
 		assert_eq!(upper2.as_str(), "HELLO");
 	}
 
 	#[test]
 	fn test_into_ascii_lowercase() {
-		let s = SmolStr::new("HELLO");
+		let s = Str::new("HELLO");
 		let lower = s.into_ascii_lowercase();
 		assert_eq!(lower.as_str(), "hello");
 	}
 
 	#[test]
 	fn test_into_ascii_uppercase() {
-		let s = SmolStr::new("hello");
+		let s = Str::new("hello");
 		let upper = s.into_ascii_uppercase();
 		assert_eq!(upper.as_str(), "HELLO");
 	}
@@ -3853,34 +3853,34 @@ mod tests {
 	// ============================
 
 	#[test]
-	fn test_format_smol_basic() {
-		let s = format_smol!("hello {}", "world");
+	fn test_fmts_basic() {
+		let s = fmts!("hello {}", "world");
 		assert_eq!(s.as_str(), "hello world");
 	}
 
 	#[test]
-	fn test_format_smol_numbers() {
-		let s = format_smol!("count: {}, pi: {:.2}", 42, std::f64::consts::PI);
+	fn test_fmts_numbers() {
+		let s = fmts!("count: {}, pi: {:.2}", 42, std::f64::consts::PI);
 		assert_eq!(s.as_str(), "count: 42, pi: 3.14");
 	}
 
 	#[test]
-	fn test_format_smol_no_args() {
-		let s = format_smol!("static text");
+	fn test_fmts_no_args() {
+		let s = fmts!("static text");
 		assert_eq!(s.as_str(), "static text");
 	}
 
 	#[test]
-	fn test_format_smolmut_basic() {
-		let mut s = format_smolmut!("hello {}", "world");
+	fn test_fmts_mut_basic() {
+		let mut s = fmts_mut!("hello {}", "world");
 		assert_eq!(s.as_str(), "hello world");
 		s.push('!');
 		assert_eq!(s.as_str(), "hello world!");
 	}
 
 	#[test]
-	fn test_format_smol_heap_allocation() {
-		let s = format_smol!("{}", "123456789012345678901234");
+	fn test_fmts_heap_allocation() {
+		let s = fmts!("{}", "123456789012345678901234");
 		assert!(s.is_spilled());
 		assert_eq!(s.as_str(), "123456789012345678901234");
 	}
@@ -3892,7 +3892,7 @@ mod tests {
 	#[test]
 	fn test_new_static() {
 		const STATIC: &str = "hello world hello world";
-		let s = SmolStr::new_static(STATIC);
+		let s = Str::new_static(STATIC);
 
 		// Static strings always use heap representation (never inline)
 		assert!(s.is_spilled());
@@ -3900,7 +3900,7 @@ mod tests {
 
 		// Even short strings
 		const SHORT: &str = "hi";
-		let s2 = SmolStr::new_static(SHORT);
+		let s2 = Str::new_static(SHORT);
 		assert!(s2.is_spilled()); // Still heap due to static
 	}
 
@@ -3909,31 +3909,31 @@ mod tests {
 	// ============================
 
 	#[test]
-	fn test_smolstr_serde_roundtrip() {
-		let s = SmolStr::new("hello world");
+	fn test_str_serde_roundtrip() {
+		let s = Str::new("hello world");
 		let json = json::to_string(&s).unwrap();
 		assert_eq!(json, r#""hello world""#);
 
-		let deserialized: SmolStr = json::from_str(&json).unwrap();
+		let deserialized: Str = json::from_str(&json).unwrap();
 		assert_eq!(deserialized.as_str(), "hello world");
 	}
 
 	#[test]
-	fn test_smolstr_serde_empty() {
-		let s = SmolStr::new("");
+	fn test_str_serde_empty() {
+		let s = Str::new("");
 		let json = json::to_string(&s).unwrap();
 		assert_eq!(json, r#""""#);
 
-		let deserialized: SmolStr = json::from_str(&json).unwrap();
+		let deserialized: Str = json::from_str(&json).unwrap();
 		assert!(deserialized.is_empty());
 	}
 
 	#[test]
-	fn test_smolstr_serde_multibyte() {
-		let s = SmolStr::new("世界 🌍");
+	fn test_str_serde_multibyte() {
+		let s = Str::new("世界 🌍");
 		let json = json::to_string(&s).unwrap();
 
-		let deserialized: SmolStr = json::from_str(&json).unwrap();
+		let deserialized: Str = json::from_str(&json).unwrap();
 		assert_eq!(deserialized.as_str(), "世界 🌍");
 	}
 
@@ -3943,7 +3943,7 @@ mod tests {
 
 	#[test]
 	fn test_clone_inline() {
-		let s1 = SmolStr::new("hello");
+		let s1 = Str::new("hello");
 		let s2 = s1.clone();
 		assert_eq!(s1, s2);
 		assert!(!s1.is_spilled());
@@ -3952,7 +3952,7 @@ mod tests {
 
 	#[test]
 	fn test_clone_heap() {
-		let s1 = SmolStr::new("hello world hello world!!");
+		let s1 = Str::new("hello world hello world!!");
 		let s2 = s1.clone();
 		assert_eq!(s1, s2);
 
@@ -3962,36 +3962,36 @@ mod tests {
 	}
 
 	#[test]
-	fn test_default_smolstr() {
-		let s = SmolStr::default();
+	fn test_default_str() {
+		let s = Str::default();
 		assert!(s.is_empty());
 		assert!(!s.is_spilled());
 	}
 
 	#[test]
-	fn test_default_smolstrmut() {
-		let m = SmolStrMut::default();
+	fn test_default_strmut() {
+		let m = StrMut::default();
 		assert!(m.is_empty());
 		assert!(!m.is_spilled());
 	}
 
 	#[test]
 	fn test_with_capacity_inline() {
-		let m = SmolStrMut::with_capacity(10);
+		let m = StrMut::with_capacity(10);
 		assert!(!m.is_spilled());
 		assert!(m.is_empty());
 	}
 
 	#[test]
 	fn test_with_capacity_heap() {
-		let m = SmolStrMut::with_capacity(100);
+		let m = StrMut::with_capacity(100);
 		assert!(m.is_spilled());
 		assert!(m.is_empty());
 	}
 
 	#[test]
 	fn test_freeze_inline() {
-		let m = SmolStrMut::new("hello");
+		let m = StrMut::new("hello");
 		let s = m.freeze();
 		assert_eq!(s.as_str(), "hello");
 		assert!(!s.is_spilled());
@@ -3999,7 +3999,7 @@ mod tests {
 
 	#[test]
 	fn test_freeze_heap() {
-		let m = SmolStrMut::new("hello world hello world!!");
+		let m = StrMut::new("hello world hello world!!");
 		let s = m.freeze();
 		assert_eq!(s.as_str(), "hello world hello world!!");
 		assert!(s.is_spilled());
@@ -4007,7 +4007,7 @@ mod tests {
 
 	#[test]
 	fn test_extend_empty_iterator() {
-		let mut m = SmolStrMut::new("hello");
+		let mut m = StrMut::new("hello");
 		let empty: Vec<&str> = vec![];
 		m.extend(empty);
 		assert_eq!(m.as_str(), "hello");
@@ -4016,8 +4016,8 @@ mod tests {
 	#[test]
 	fn test_equality_different_repr() {
 		// Same content, different representations
-		let inline = SmolStr::new("hello");
-		let heap = SmolStr::new("hello world hello world!!").slice(0..5);
+		let inline = Str::new("hello");
+		let heap = Str::new("hello world hello world!!").slice(0..5);
 
 		assert_eq!(inline, heap);
 		assert!(!inline.is_spilled());
@@ -4026,9 +4026,9 @@ mod tests {
 
 	#[test]
 	fn test_ordering() {
-		let a = SmolStr::new("apple");
-		let b = SmolStr::new("banana");
-		let c = SmolStr::new("cherry");
+		let a = Str::new("apple");
+		let b = Str::new("banana");
+		let c = Str::new("cherry");
 
 		assert!(a < b);
 		assert!(b < c);
@@ -4043,8 +4043,8 @@ mod tests {
 			hash::{Hash, Hasher},
 		};
 
-		let s1 = SmolStr::new("hello world");
-		let s2 = SmolStr::new("hello world hello world").slice(0..11);
+		let s1 = Str::new("hello world");
+		let s2 = Str::new("hello world hello world").slice(0..11);
 
 		let mut h1 = DefaultHasher::new();
 		s1.hash(&mut h1);
@@ -4057,28 +4057,28 @@ mod tests {
 
 	#[test]
 	fn test_as_bytes() {
-		let s = SmolStr::new("hello 🌍");
+		let s = Str::new("hello 🌍");
 		let bytes = s.as_bytes();
 		assert_eq!(bytes, "hello 🌍".as_bytes());
 	}
 
 	#[test]
 	fn test_insert_at_end() {
-		let mut m = SmolStrMut::new("hello");
+		let mut m = StrMut::new("hello");
 		m.insert(5, " world");
 		assert_eq!(m.as_str(), "hello world");
 	}
 
 	#[test]
 	fn test_insert_at_start() {
-		let mut m = SmolStrMut::new("world");
+		let mut m = StrMut::new("world");
 		m.insert(0, "hello ");
 		assert_eq!(m.as_str(), "hello world");
 	}
 
 	#[test]
 	fn test_truncate_noop() {
-		let mut s = SmolStr::new("hello");
+		let mut s = Str::new("hello");
 		s.truncate(100); // Greater than length
 		assert_eq!(s.as_str(), "hello");
 
@@ -4088,14 +4088,14 @@ mod tests {
 
 	#[test]
 	fn test_truncate_mut_noop() {
-		let mut m = SmolStrMut::new("hello");
+		let mut m = StrMut::new("hello");
 		m.truncate(100);
 		assert_eq!(m.as_str(), "hello");
 	}
 
 	#[test]
 	fn test_deref_coercion() {
-		let s = SmolStr::new("hello");
+		let s = Str::new("hello");
 		let len = s.len(); // Should work via Deref
 		assert_eq!(len, 5);
 
@@ -4110,28 +4110,28 @@ mod tests {
 	fn test_borrow_trait() {
 		use std::borrow::Borrow;
 
-		let s = SmolStr::new("hello");
+		let s = Str::new("hello");
 		let borrowed: &str = s.borrow();
 		assert_eq!(borrowed, "hello");
 	}
 
 	#[test]
 	fn test_as_ref_os_str() {
-		let s = SmolStr::new("hello");
+		let s = Str::new("hello");
 		let os_str: &std::ffi::OsStr = s.as_ref();
 		assert_eq!(os_str, "hello");
 	}
 
 	#[test]
 	fn test_as_ref_path() {
-		let s = SmolStr::new("/tmp/file.txt");
+		let s = Str::new("/tmp/file.txt");
 		let path: &std::path::Path = s.as_ref();
 		assert_eq!(path.to_str().unwrap(), "/tmp/file.txt");
 	}
 
 	#[test]
 	fn test_partial_eq_str() {
-		let s = SmolStr::new("hello");
+		let s = Str::new("hello");
 		assert_eq!(s, "hello");
 		assert_eq!("hello", s);
 		assert_ne!(s, "world");
@@ -4139,15 +4139,15 @@ mod tests {
 
 	#[test]
 	fn test_partial_eq_string() {
-		let s = SmolStr::new("hello");
+		let s = Str::new("hello");
 		let string = String::from("hello");
 		assert_eq!(s, string);
 		assert_eq!(string, s);
 	}
 
 	#[test]
-	fn test_smolstrmut_deref_mut() {
-		let mut m = SmolStrMut::new("hello");
+	fn test_strmut_deref_mut() {
+		let mut m = StrMut::new("hello");
 		let str_mut: &mut str = &mut m;
 		str_mut.make_ascii_uppercase();
 		assert_eq!(m.as_str(), "HELLO");
@@ -4155,19 +4155,19 @@ mod tests {
 
 	#[test]
 	fn test_from_str_parse() {
-		let s: SmolStr = "hello world".parse().unwrap();
+		let s: Str = "hello world".parse().unwrap();
 		assert_eq!(s.as_str(), "hello world");
 	}
 
 	#[test]
-	fn test_into_smolstr_trait() {
-		use super::IntoSmolStr;
+	fn test_into_str_trait() {
+		use super::IntoStr;
 
-		let s: SmolStr = "hello".into_smolstr();
+		let s: Str = "hello".into_str();
 		assert_eq!(s.as_str(), "hello");
 
 		let num: i32 = 42;
-		let s2 = (&num).to_smolstr();
+		let s2 = (&num).to_str();
 		assert_eq!(s2.as_str(), "42");
 	}
 
@@ -4175,28 +4175,28 @@ mod tests {
 	fn test_write_trait() {
 		use std::fmt::Write;
 
-		let mut m = SmolStrMut::new("hello");
+		let mut m = StrMut::new("hello");
 		write!(&mut m, " {}", 42).unwrap();
 		assert_eq!(m.as_str(), "hello 42");
 	}
 
 	#[test]
 	fn test_display_format() {
-		let s = SmolStr::new("hello");
+		let s = Str::new("hello");
 		let formatted = format!("{s}");
 		assert_eq!(formatted, "hello");
 	}
 
 	#[test]
 	fn test_debug_format() {
-		let s = SmolStr::new("hello");
+		let s = Str::new("hello");
 		let formatted = format!("{s:?}");
 		assert_eq!(formatted, "\"hello\"");
 	}
 
 	#[test]
 	fn test_slice_heap_zero_copy() {
-		let s = SmolStr::new("hello world hello world!!");
+		let s = Str::new("hello world hello world!!");
 		let sliced = s.slice(6..11);
 		assert_eq!(sliced.as_str(), "world");
 		assert!(sliced.is_spilled());
@@ -4204,7 +4204,7 @@ mod tests {
 
 	#[test]
 	fn test_slice_inline_creates_inline() {
-		let s = SmolStr::new("hello world");
+		let s = Str::new("hello world");
 		let sliced = s.slice(0..5);
 		assert_eq!(sliced.as_str(), "hello");
 		assert!(!sliced.is_spilled());
@@ -4212,7 +4212,7 @@ mod tests {
 
 	#[test]
 	fn test_reserve_heap_noop() {
-		let mut m = SmolStrMut::new("hello world hello world!!");
+		let mut m = StrMut::new("hello world hello world!!");
 		assert!(m.is_spilled());
 
 		let initial_len = m.len();
@@ -4224,14 +4224,14 @@ mod tests {
 
 	#[test]
 	fn test_push_empty_string() {
-		let mut m = SmolStrMut::new("hello");
+		let mut m = StrMut::new("hello");
 		m.push_str("");
 		assert_eq!(m.as_str(), "hello");
 	}
 
 	#[test]
 	fn test_split_empty_separator() {
-		let s = SmolStr::new("hello");
+		let s = Str::new("hello");
 		let parts = s.split("").filter(|s| !s.is_empty()).count();
 		assert_eq!(parts, 5);
 	}
@@ -4239,7 +4239,7 @@ mod tests {
 	#[test]
 	fn test_from_bytes_mut() {
 		let bytes_mut = bytes::BytesMut::from("hello world hello world");
-		let result = SmolStrMut::from_utf8_owned(bytes_mut);
+		let result = StrMut::from_utf8_owned(bytes_mut);
 		assert!(result.is_ok());
 		let m = result.unwrap();
 		assert_eq!(m.as_str(), "hello world hello world");
@@ -4248,22 +4248,22 @@ mod tests {
 
 	#[test]
 	fn test_into_bytes_mut() {
-		let m = SmolStrMut::new("hello world hello world");
+		let m = StrMut::new("hello world hello world");
 		let bytes_mut: bytes::BytesMut = m.into();
 		assert_eq!(&bytes_mut[..], b"hello world hello world");
 	}
 
 	#[test]
-	fn test_smolstr_to_str() {
-		let s = SmolStr::new("hello");
-		let str_ref: bytes_utils::Str = s.into();
+	fn test_str_to_str() {
+		let s = Str::new("hello");
+		let str_ref: bytes_utils::BytesStr = s.into();
 		assert_eq!(&*str_ref, "hello");
 	}
 
 	#[test]
-	fn test_smolstrmut_to_strmut() {
-		let m = SmolStrMut::new("hello world hello world");
-		let str_mut: bytes_utils::StrMut = m.into();
+	fn test_strmut_to_strmut() {
+		let m = StrMut::new("hello world hello world");
+		let str_mut: bytes_utils::BytesStrMut = m.into();
 		assert_eq!(&*str_mut, "hello world hello world");
 	}
 }

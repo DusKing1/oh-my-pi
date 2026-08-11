@@ -7,7 +7,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_dialect::{
 	Dialect, ScannerOptions,
 	projector::{Projection, StreamProjector},
@@ -265,8 +265,8 @@ fn native_tool_argument_growth_is_exactly_8_allocations_and_signature_closure_is
 		.push(&TurnEvent::PartStart {
 			index:        0,
 			kind:         StreamPartKind::ToolCall,
-			tool_call_id: SmolStr::from(CallId::new().to_string()),
-			tool_name:    SmolStr::new("lookup"),
+			tool_call_id: Str::from(CallId::new().to_string()),
+			tool_name:    Str::new("lookup"),
 		})
 		.expect("start native tool");
 	let fragment = Bytes::from_static(b"12345678");
@@ -289,8 +289,8 @@ fn native_tool_argument_growth_is_exactly_8_allocations_and_signature_closure_is
 		.push(&TurnEvent::PartStart {
 			index:        1,
 			kind:         StreamPartKind::Thinking,
-			tool_call_id: SmolStr::default(),
-			tool_name:    SmolStr::default(),
+			tool_call_id: Str::default(),
+			tool_name:    Str::default(),
 		})
 		.expect("start signed thinking");
 	thinking

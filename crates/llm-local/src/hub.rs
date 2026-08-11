@@ -2,25 +2,25 @@ use std::path::{Path, PathBuf};
 
 use futures::future::try_join_all;
 use hf_hub::{HFClient, split_id};
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use crate::Result;
 
 /// A Hugging Face model repository pinned to a branch, tag, or commit.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ModelRepo {
-	id:       SmolStr,
-	revision: SmolStr,
+	id:       Str,
+	revision: Str,
 }
 
 impl ModelRepo {
 	/// Targets the repository's `main` revision.
-	pub fn new(id: impl Into<SmolStr>) -> Self {
+	pub fn new(id: impl Into<Str>) -> Self {
 		Self { id: id.into(), revision: "main".into() }
 	}
 
 	/// Pins the repository to a branch, tag, or immutable commit.
-	pub fn at_revision(mut self, revision: impl Into<SmolStr>) -> Self {
+	pub fn at_revision(mut self, revision: impl Into<Str>) -> Self {
 		self.revision = revision.into();
 		self
 	}
@@ -61,9 +61,9 @@ pub struct FetchOptions {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SnapshotOptions {
 	/// Glob patterns selecting repository-relative paths to fetch.
-	pub allow_patterns:   Vec<SmolStr>,
+	pub allow_patterns:   Vec<Str>,
 	/// Glob patterns excluding repository-relative paths.
-	pub ignore_patterns:  Vec<SmolStr>,
+	pub ignore_patterns:  Vec<Str>,
 	/// Avoid network access and resolve only an existing cached snapshot.
 	pub local_files_only: bool,
 	/// Revalidate and replace cached objects.
@@ -77,8 +77,8 @@ pub struct SnapshotOptions {
 #[derive(Clone, Debug, Default)]
 pub struct HubBuilder {
 	cache_dir: Option<PathBuf>,
-	token:     Option<SmolStr>,
-	endpoint:  Option<SmolStr>,
+	token:     Option<Str>,
+	endpoint:  Option<Str>,
 	offline:   bool,
 }
 
@@ -91,13 +91,13 @@ impl HubBuilder {
 	}
 
 	/// Uses an explicit Hugging Face access token, including for gated models.
-	pub fn token(mut self, token: impl Into<SmolStr>) -> Self {
+	pub fn token(mut self, token: impl Into<Str>) -> Self {
 		self.token = Some(token.into());
 		self
 	}
 
 	/// Uses a Hugging Face-compatible endpoint instead of `https://huggingface.co`.
-	pub fn endpoint(mut self, endpoint: impl Into<SmolStr>) -> Self {
+	pub fn endpoint(mut self, endpoint: impl Into<Str>) -> Self {
 		self.endpoint = Some(endpoint.into());
 		self
 	}
@@ -184,9 +184,9 @@ impl Hub {
 	pub async fn files<I, S>(&self, repo: &ModelRepo, filenames: I) -> Result<Vec<PathBuf>>
 	where
 		I: IntoIterator<Item = S>,
-		S: Into<SmolStr>,
+		S: Into<Str>,
 	{
-		let filenames: Vec<SmolStr> = filenames.into_iter().map(Into::into).collect();
+		let filenames: Vec<Str> = filenames.into_iter().map(Into::into).collect();
 		try_join_all(
 			filenames
 				.iter()

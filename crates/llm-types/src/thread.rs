@@ -1,6 +1,6 @@
 use bon::Builder;
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use super::{Props, ids::CallId};
 
@@ -74,7 +74,7 @@ pub struct Message {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Part {
 	/// Visible UTF-8 content.
-	Text(SmolStr),
+	Text(Str),
 	/// Replayable model reasoning, which may be opaque or redacted.
 	Thinking(Thinking),
 	/// Content-addressed binary media.
@@ -91,7 +91,7 @@ pub enum Part {
 #[derive(Builder, Clone, Debug, Eq, PartialEq)]
 pub struct Thinking {
 	/// Visible reasoning text, empty for an opaque redacted payload.
-	pub text:      SmolStr,
+	pub text:      Str,
 	/// Provider replay signature preserved verbatim across turns.
 	pub signature: Bytes,
 	/// Whether the signature contains an opaque redacted payload rather than
@@ -104,9 +104,9 @@ pub struct Thinking {
 #[derive(Builder, Clone, Debug, Eq, PartialEq)]
 pub struct ModelFallback {
 	/// Model that began serving the response.
-	pub from_model: SmolStr,
+	pub from_model: Str,
 	/// Model that continued serving after fallback.
-	pub to_model:   SmolStr,
+	pub to_model:   Str,
 }
 
 /// Provider-hosted tool block retained as native history.
@@ -114,13 +114,13 @@ pub struct ModelFallback {
 #[derive(Builder, Clone, Debug, PartialEq)]
 pub struct ServerTool {
 	/// Provider namespace that owns the hosted tool semantics.
-	pub provider:          SmolStr,
+	pub provider:          Str,
 	/// Whether this block invokes the hosted tool or reports its result.
 	pub kind:              ServerToolKind,
 	/// Provider call identity used to pair call and result blocks.
-	pub id:                SmolStr,
+	pub id:                Str,
 	/// Provider wire tool name.
-	pub name:              SmolStr,
+	pub name:              Str,
 	/// UTF-8 JSON input or result content retained verbatim.
 	pub payload_json:      Bytes,
 	/// Namespaced provider metadata needed for faithful replay.
@@ -150,7 +150,7 @@ pub struct BlobPart {
 	/// BLAKE3-256 digest used to resolve the payload in the daemon blob store.
 	pub hash:   [u8; 32],
 	/// Media type used when projecting the payload into a provider request.
-	pub mime:   SmolStr,
+	pub mime:   Str,
 	/// Original payload length, retained even when only the hash is sent.
 	pub size:   u64,
 	/// Small inline payload for peers that cannot access the shared blob store.
@@ -182,7 +182,7 @@ pub struct ToolCall {
 	/// provider ids.
 	pub id:                CallId,
 	/// Portable tool dispatch name.
-	pub name:              SmolStr,
+	pub name:              Str,
 	/// UTF-8 JSON arguments retained as bytes for tolerant parsing and zero-copy
 	/// transport.
 	pub args_json:         Bytes,
@@ -190,11 +190,11 @@ pub struct ToolCall {
 	/// verbatim.
 	pub thought_signature: Bytes,
 	/// Harness-level intent extracted from traced tool arguments.
-	pub intent:            Option<SmolStr>,
+	pub intent:            Option<Str>,
 	/// Verbatim in-band syntax that produced a synthetic call.
 	pub raw:               Option<Bytes>,
 	/// Original provider custom-tool wire name.
-	pub custom_wire_name:  Option<SmolStr>,
+	pub custom_wire_name:  Option<Str>,
 	/// Namespaced provider metadata needed for execution and replay.
 	pub provider_metadata: Option<Props>,
 }
@@ -208,7 +208,7 @@ pub struct ToolResult {
 	/// Harness tool name carried independently because some transports require
 	/// it on the result wire and the matching call may no longer be in the
 	/// thread.
-	pub name:              SmolStr,
+	pub name:              Str,
 	/// Ordered text or media returned by the tool.
 	pub parts:             Vec<Part>,
 	/// Whether the tool reported failure rather than a normal result.

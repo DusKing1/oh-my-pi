@@ -14,7 +14,7 @@ use std::{
 };
 
 use futures::{Stream, StreamExt};
-use omp_core::{SmolStr, SmolStrMut};
+use omp_core::{Str, StrMut};
 use omp_llm_catalog::compat::{Compat, ThinkingToolChoiceConflict};
 use omp_llm_dialect::{
 	DialectRenderOptions, DialectSelection, InbandTool, ScannerOptions,
@@ -42,7 +42,7 @@ pub struct OwnedDialectConfig {
 	pub selection:   DialectSelection,
 	/// Captured `OMP_DIALECT` value. When present it overrides `selection` using
 	/// the canonical dialect parser.
-	pub omp_dialect: Option<SmolStr>,
+	pub omp_dialect: Option<Str>,
 	/// Catalog compatibility axes used for reasoning/tool-choice conflict
 	/// policy.
 	pub compat:      Compat,
@@ -57,7 +57,7 @@ impl OwnedDialectConfig {
 
 	/// Adds a captured `OMP_DIALECT` override.
 	#[must_use]
-	pub fn with_override(mut self, value: Option<SmolStr>) -> Self {
+	pub fn with_override(mut self, value: Option<Str>) -> Self {
 		self.omp_dialect = value;
 		self
 	}
@@ -144,7 +144,7 @@ impl Chat for OwnedDialectChat {
 		let prepared = prepare_owned_request(&mut proto, &self.config, dialect)
 			.map_err(|error| ChatError::Provider(error.0))?;
 		let mut projected = ChatRequest::try_from(proto)
-			.map_err(|error| ChatError::Provider(SmolStr::from(error.to_string())))?;
+			.map_err(|error| ChatError::Provider(Str::from(error.to_string())))?;
 		if self.latest_user_only {
 			flatten_to_latest_user(&mut projected);
 		}
@@ -156,7 +156,7 @@ impl Chat for OwnedDialectChat {
 					NativeTurnEvent::Error(
 						TurnError::builder()
 							.kind(TurnErrorKind::Upstream)
-							.detail(SmolStr::from(error.to_string()))
+							.detail(Str::from(error.to_string()))
 							.unsupported(Vec::new())
 							.retry_after_ms(0)
 							.build(),
@@ -254,7 +254,7 @@ where
 
 struct PreparedDialect {
 	projector: StreamProjector,
-	model:     SmolStr,
+	model:     Str,
 }
 fn flatten_to_latest_user(request: &mut ChatRequest) {
 	let mut prompt = String::new();
@@ -275,7 +275,7 @@ fn flatten_to_latest_user(request: &mut ChatRequest) {
 		}
 	}
 	let mut parts = Vec::with_capacity(1 + non_text.len());
-	parts.push(Part::Text(SmolStr::from(prompt)));
+	parts.push(Part::Text(Str::from(prompt)));
 	parts.extend(non_text);
 	request.thread.items.clear();
 	request.thread.items.push(
@@ -303,7 +303,7 @@ pin_project! {
 		accumulator: StreamAccumulator,
 		source_parts: SmallVec<(u32, SourcePart), 8>,
 		pending: SmallVec<ProtoTurnEvent, 8>,
-		model: SmolStr,
+		model: Str,
 		done: bool,
 	}
 }
@@ -391,7 +391,7 @@ fn process_event(
 	projector: &mut StreamProjector,
 	accumulator: &mut StreamAccumulator,
 	source_parts: &mut SmallVec<(u32, SourcePart), 8>,
-	model: &SmolStr,
+	model: &Str,
 	pending: &mut SmallVec<ProtoTurnEvent, 8>,
 ) -> bool {
 	match event {
@@ -459,7 +459,7 @@ fn process_event(
 fn abort_if_fabricated(
 	batch: ProjectionBatch,
 	accumulator: &mut StreamAccumulator,
-	model: &SmolStr,
+	model: &Str,
 	pending: &mut SmallVec<ProtoTurnEvent, 8>,
 ) -> bool {
 	if enqueue_projection(batch, accumulator, pending) {
@@ -497,7 +497,7 @@ fn enqueue_projection(
 
 fn finish_fabricated(
 	accumulator: &mut StreamAccumulator,
-	model: &SmolStr,
+	model: &Str,
 	pending: &mut SmallVec<ProtoTurnEvent, 8>,
 ) {
 	match canonical_output(std::mem::take(accumulator)) {
@@ -505,7 +505,7 @@ fn finish_fabricated(
 			let outcome = ChatOutcome::builder()
 				.output(output)
 				.stop(StopReason::ToolUse)
-				.provider(SmolStr::default())
+				.provider(Str::default())
 				.model(model.clone())
 				.unsupported(Vec::new())
 				.props(Props::default())
@@ -552,7 +552,7 @@ fn enqueue_terminal_error(detail: impl AsRef<str>, pending: &mut SmallVec<ProtoT
 		NativeTurnEvent::Error(
 			TurnError::builder()
 				.kind(TurnErrorKind::Upstream)
-				.detail(SmolStr::new(detail.as_ref()))
+				.detail(Str::new(detail.as_ref()))
 				.unsupported(Vec::new())
 				.retry_after_ms(0)
 				.build(),
@@ -615,7 +615,7 @@ fn prepare_owned_request(
 		.params
 		.as_mut()
 		.ok_or_else(|| PrepareError::new("missing TurnRequest.params"))?;
-	let model = SmolStr::new(&params.model);
+	let model = Str::new(&params.model);
 	apply_reasoning_policy(params, config.compat);
 	params.tool_choice = None;
 	let tools: Vec<ToolDef> = std::mem::take(&mut params.tools)
@@ -658,7 +658,7 @@ fn prepare_owned_request(
 	let mut projected = project_inband_history(&thread, dialect, DialectRenderOptions::new(&views))
 		.map_err(|error| PrepareError::new(error.to_string()))?;
 	if !views.is_empty() {
-		let mut prompt = SmolStrMut::default();
+		let mut prompt = StrMut::default();
 		write_inband_tool_prompt(&mut prompt, &views, dialect)
 			.map_err(|_| PrepareError::new("dialect prompt rendering failed"))?;
 		let at = projected
@@ -715,11 +715,11 @@ fn apply_reasoning_policy(params: &mut omp_proto::inference::v1::ChatParams, com
 }
 
 #[derive(Debug)]
-struct PrepareError(SmolStr);
+struct PrepareError(Str);
 
 impl PrepareError {
 	fn new(detail: impl AsRef<str>) -> Self {
-		Self(SmolStr::new(detail.as_ref()))
+		Self(Str::new(detail.as_ref()))
 	}
 }
 

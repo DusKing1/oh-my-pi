@@ -3,7 +3,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{TransportId, compat::Compat};
 use omp_llm_ollama::OllamaChatCodec;
 use omp_llm_transport::{DecodeState, Frame, Transport, ndjson::NdjsonDecoder};
@@ -31,7 +31,7 @@ fn message(role: Role, parts: Vec<Part>) -> Item {
 fn fixture_request() -> ChatRequest {
 	let call_id: CallId = "01ARZ3NDEKTSV4RRFFQ69G5FAV".parse().unwrap();
 	ChatRequest::builder()
-		.model(SmolStr::new_static("qwen3.5-cloud"))
+		.model(Str::new_static("qwen3.5-cloud"))
 		.thread(
 			Thread::builder()
 				.items(vec![
@@ -107,7 +107,7 @@ fn fixture_request() -> ChatRequest {
 }
 
 fn effort_policy(
-	effort_map: BTreeMap<Effort, SmolStr>,
+	effort_map: BTreeMap<Effort, Str>,
 	omit_max_output_tokens: bool,
 ) -> Arc<ResolvedModelPolicy> {
 	Arc::new(ResolvedModelPolicy {
@@ -190,9 +190,9 @@ fn model_policy_controls_native_effort_spelling_and_num_predict_omission() {
 	let mut request = fixture_request();
 	request.model_policy = Some(effort_policy(
 		BTreeMap::from([
-			(Effort::High, SmolStr::new_static("turbo")),
-			(Effort::XHigh, SmolStr::new_static("extra-high")),
-			(Effort::Max, SmolStr::new_static("maximum")),
+			(Effort::High, Str::new_static("turbo")),
+			(Effort::XHigh, Str::new_static("extra-high")),
+			(Effort::Max, Str::new_static("maximum")),
 		]),
 		true,
 	));
@@ -205,9 +205,9 @@ fn model_policy_controls_native_effort_spelling_and_num_predict_omission() {
 
 	request.model_policy = Some(effort_policy(
 		BTreeMap::from([
-			(Effort::High, SmolStr::new_static("careful")),
-			(Effort::XHigh, SmolStr::new_static("extra-high")),
-			(Effort::Max, SmolStr::new_static("maximum")),
+			(Effort::High, Str::new_static("careful")),
+			(Effort::XHigh, Str::new_static("extra-high")),
+			(Effort::Max, Str::new_static("maximum")),
 		]),
 		false,
 	));

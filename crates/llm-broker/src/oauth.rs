@@ -17,7 +17,7 @@ use http::{
 	Method,
 	header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT},
 };
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::oauth_params::{self, CustomExchange, FlowKind, OAuthParams};
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
@@ -56,7 +56,7 @@ pub struct HttpRequest {
 	/// HTTP method.
 	pub method:  Method,
 	/// Absolute destination URL.
-	pub url:     SmolStr,
+	pub url:     Str,
 	/// Request headers.
 	pub headers: HeaderMap,
 	/// Complete request body.
@@ -76,7 +76,7 @@ pub struct HttpResponse {
 #[error("OAuth transport failed: {detail}")]
 pub struct HttpError {
 	/// Client-safe failure detail.
-	pub detail:    SmolStr,
+	pub detail:    Str,
 	/// Whether retrying the same operation may succeed.
 	pub transient: bool,
 }
@@ -90,7 +90,7 @@ pub trait HttpClient: Send + Sync {
 /// Optional desktop browser integration.
 pub trait BrowserOpener: Send + Sync {
 	/// Opens the authorization URL in the user's browser.
-	fn open(&self, url: &str) -> Result<(), SmolStr>;
+	fn open(&self, url: &str) -> Result<(), Str>;
 }
 
 /// Injectable time and sleeping used by device-code polling.
@@ -122,9 +122,9 @@ impl TimeSource for SystemTimeSource {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LoginStart {
 	/// Opaque id used for `submit_code` or `wait_login`.
-	pub flow_id:       SmolStr,
+	pub flow_id:       Str,
 	/// Provider catalog id.
-	pub provider:      SmolStr,
+	pub provider:      Str,
 	/// Interaction the client should present.
 	pub prompt:        LoginPrompt,
 	/// Absolute flow expiry in Unix epoch milliseconds, or zero when
@@ -138,16 +138,16 @@ pub enum LoginPrompt {
 	/// Open a browser and complete an authorization redirect.
 	Browse {
 		/// Fully parameterized authorization URL.
-		url:      SmolStr,
+		url:      Str,
 		/// Whether the broker successfully bound the configured loopback port.
 		loopback: bool,
 	},
 	/// Enter a device code at the provider's verification page.
 	Device {
 		/// Short code shown to the user.
-		user_code:        SmolStr,
+		user_code:        Str,
 		/// Browser verification URL.
-		verification_url: SmolStr,
+		verification_url: Str,
 		/// Initial provider-requested polling interval.
 		interval_secs:    u64,
 	},
@@ -155,7 +155,7 @@ pub enum LoginPrompt {
 	/// value.
 	Paste {
 		/// Page at which the value is acquired.
-		url: SmolStr,
+		url: Str,
 	},
 }
 
@@ -170,16 +170,16 @@ pub enum OAuthError {
 	UnknownProvider,
 	/// The flow id is unknown or has already completed.
 	#[error("OAuth flow `{0}` is not pending")]
-	UnknownFlow(SmolStr),
+	UnknownFlow(Str),
 	/// A method was used with the wrong flow kind.
 	#[error("OAuth flow `{0}` does not support this operation")]
-	WrongFlow(SmolStr),
+	WrongFlow(Str),
 	/// A URL in the parameter table or callback is invalid.
 	#[error("invalid OAuth URL: {0}")]
-	InvalidUrl(SmolStr),
+	InvalidUrl(Str),
 	/// The loopback callback was malformed.
 	#[error("invalid OAuth callback: {0}")]
-	InvalidCallback(SmolStr),
+	InvalidCallback(Str),
 	/// The callback state did not match the initiating request.
 	#[error("OAuth state mismatch")]
 	StateMismatch,
@@ -188,7 +188,7 @@ pub enum OAuthError {
 	Provider {
 		/// OAuth error code, without provider response details that may contain
 		/// secrets.
-		code:      SmolStr,
+		code:      Str,
 		/// HTTP status, or 200 for an OAuth error in a success response.
 		status:    u16,
 		/// Whether retrying may succeed.
@@ -199,7 +199,7 @@ pub enum OAuthError {
 	Transport(#[from] HttpError),
 	/// A provider response was not valid for the selected flow.
 	#[error("invalid OAuth response: {0}")]
-	InvalidResponse(SmolStr),
+	InvalidResponse(Str),
 	/// A bounded interactive or polling exchange expired.
 	#[error("OAuth login expired")]
 	LoginExpired,
@@ -225,7 +225,7 @@ pub struct OAuthEngine {
 	time:    Arc<dyn TimeSource>,
 	browser: Option<Arc<dyn BrowserOpener>>,
 	params:  Box<[OAuthParams]>,
-	pending: Mutex<HashMap<SmolStr, PendingFlow>>,
+	pending: Mutex<HashMap<Str, PendingFlow>>,
 }
 
 impl OAuthEngine {
@@ -1326,8 +1326,8 @@ impl OAuthEngine {
 struct PkcePending {
 	params:        OAuthParams,
 	verifier:      Secret,
-	state:         SmolStr,
-	redirect_uri:  SmolStr,
+	state:         Str,
+	redirect_uri:  Str,
 	listener:      Option<Arc<TcpListener>>,
 	expires_at_ms: u64,
 }
@@ -1341,7 +1341,7 @@ struct DevicePending {
 struct CursorPending {
 	params:             OAuthParams,
 	verifier:           Secret,
-	uuid:               SmolStr,
+	uuid:               Str,
 	interval_ms:        u64,
 	attempts:           u16,
 	consecutive_errors: u8,
@@ -1361,7 +1361,7 @@ struct TokenSet {
 	id_token:              Option<Secret>,
 	expires_in_secs:       u64,
 	expires_at_epoch_secs: u64,
-	identity:              Option<SmolStr>,
+	identity:              Option<Str>,
 }
 
 impl TokenSet {
@@ -1398,7 +1398,7 @@ fn extra_param<'a>(params: &'a OAuthParams, key: &str) -> Result<&'a str, OAuthE
 	params
 		.extra_auth_params
 		.get(key)
-		.map(SmolStr::as_str)
+		.map(Str::as_str)
 		.filter(|value| !value.is_empty())
 		.ok_or_else(|| OAuthError::InvalidResponse(format!("missing custom parameter {key}").into()))
 }
@@ -1406,7 +1406,7 @@ fn optional_extra_param<'a>(params: &'a OAuthParams, key: &str) -> Option<&'a st
 	params
 		.extra_auth_params
 		.get(key)
-		.map(SmolStr::as_str)
+		.map(Str::as_str)
 		.filter(|value| !value.is_empty())
 }
 fn internal_param(key: &str) -> bool {
@@ -1441,7 +1441,7 @@ fn bearer_headers(token: &str) -> Result<HeaderMap, OAuthError> {
 	Ok(headers)
 }
 
-fn parse_email_otp(input: &str) -> Result<(SmolStr, Secret), OAuthError> {
+fn parse_email_otp(input: &str) -> Result<(Str, Secret), OAuthError> {
 	let input = input.trim();
 	let parsed = serde_json::from_str::<Value>(input).ok();
 	let pair = parsed.as_ref().and_then(|value| {
@@ -1458,7 +1458,7 @@ fn parse_email_otp(input: &str) -> Result<(SmolStr, Secret), OAuthError> {
 	Ok((email.into(), Secret::new(otp.as_bytes())))
 }
 
-fn random_uuid() -> SmolStr {
+fn random_uuid() -> Str {
 	let mut bytes: [u8; 16] = rand::random();
 	bytes[6] = (bytes[6] & 0x0f) | 0x40;
 	bytes[8] = (bytes[8] & 0x3f) | 0x80;
@@ -1492,7 +1492,7 @@ fn jwt_payload(token: &Secret) -> Option<Value> {
 	serde_json::from_slice(&decoded).ok()
 }
 
-fn jwt_subject(token: &Secret) -> Option<SmolStr> {
+fn jwt_subject(token: &Secret) -> Option<Str> {
 	let payload = jwt_payload(token)?;
 	let subject = payload.get("sub")?.as_str()?.trim();
 	let subject = subject.rsplit('|').next()?.trim();
@@ -1532,7 +1532,7 @@ fn unwrap_zai(value: Value) -> Result<Value, OAuthError> {
 	Ok(object.get("data").cloned().unwrap_or(value))
 }
 
-fn value_string(value: &Value) -> Option<SmolStr> {
+fn value_string(value: &Value) -> Option<Str> {
 	match value {
 		Value::String(value) if !value.is_empty() => Some(value.as_str().into()),
 		Value::Number(value) => Some(value.to_string().into()),
@@ -1540,7 +1540,7 @@ fn value_string(value: &Value) -> Option<SmolStr> {
 	}
 }
 
-fn zai_default_scope(value: &Value) -> Result<(SmolStr, SmolStr), OAuthError> {
+fn zai_default_scope(value: &Value) -> Result<(Str, Str), OAuthError> {
 	let organizations = value
 		.get("organizations")
 		.and_then(Value::as_array)
@@ -1627,7 +1627,7 @@ fn scope(params: &OAuthParams) -> String {
 	params
 		.scopes
 		.iter()
-		.map(SmolStr::as_str)
+		.map(Str::as_str)
 		.collect::<Vec<_>>()
 		.join(" ")
 }
@@ -1643,7 +1643,7 @@ fn form(pairs: &[(&str, &str)]) -> Bytes {
 async fn receive_callback(
 	listener: &TcpListener,
 	expected_state: &str,
-) -> Result<(SmolStr, SmolStr), OAuthError> {
+) -> Result<(Str, Str), OAuthError> {
 	let (mut stream, _) = listener
 		.accept()
 		.await
@@ -1684,7 +1684,7 @@ async fn receive_callback(
 fn parse_callback_request(
 	request: &[u8],
 	expected_state: &str,
-) -> Result<(SmolStr, SmolStr), OAuthError> {
+) -> Result<(Str, Str), OAuthError> {
 	let request = std::str::from_utf8(request)
 		.map_err(|_| OAuthError::InvalidCallback("callback is not UTF-8".into()))?;
 	let target = request
@@ -1700,7 +1700,7 @@ fn parse_callback_request(
 fn parse_pasted_code(
 	input: &str,
 	expected_state: &str,
-) -> Result<(SmolStr, Option<SmolStr>), OAuthError> {
+) -> Result<(Str, Option<Str>), OAuthError> {
 	if let Ok(url) = Url::parse(input) {
 		let (code, state) = callback_values(&url, expected_state)?;
 		Ok((code, Some(state)))
@@ -1709,7 +1709,7 @@ fn parse_pasted_code(
 	}
 }
 
-fn callback_values(url: &Url, expected_state: &str) -> Result<(SmolStr, SmolStr), OAuthError> {
+fn callback_values(url: &Url, expected_state: &str) -> Result<(Str, Str), OAuthError> {
 	let values: HashMap<_, _> = url.query_pairs().collect();
 	let state = values
 		.get("state")
@@ -1784,7 +1784,7 @@ fn parse_tokens(value: Value) -> Result<TokenSet, OAuthError> {
 	})
 }
 
-fn token_identity(tokens: &TokenSet) -> Option<SmolStr> {
+fn token_identity(tokens: &TokenSet) -> Option<Str> {
 	tokens.identity.clone()
 }
 
@@ -1857,7 +1857,7 @@ fn secret_str(secret: &Secret) -> Result<&str, OAuthError> {
 		.map_err(|_| OAuthError::InvalidResponse("OAuth secret is not UTF-8".into()))
 }
 
-fn codex_account_id(id_token: &Secret) -> Result<SmolStr, OAuthError> {
+fn codex_account_id(id_token: &Secret) -> Result<Str, OAuthError> {
 	let token = secret_str(id_token)?;
 	let payload = token
 		.split('.')
@@ -1875,7 +1875,7 @@ fn codex_account_id(id_token: &Secret) -> Result<SmolStr, OAuthError> {
 		.ok_or_else(|| OAuthError::InvalidResponse("id_token missing ChatGPT account id".into()))
 }
 
-fn random_urlsafe(bytes: usize) -> SmolStr {
+fn random_urlsafe(bytes: usize) -> Str {
 	let mut random = vec![0_u8; bytes];
 	for chunk in random.chunks_mut(32) {
 		let value: [u8; 32] = rand::random();

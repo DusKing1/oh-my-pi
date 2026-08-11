@@ -11,7 +11,7 @@ use std::{fmt::Display, sync::Arc};
 use bytes::Bytes;
 use http::{HeaderMap, Request, StatusCode};
 use hyper::body::Body;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{models::ModelCard, provider::Facet as CatalogFacet, registry::ListFilter};
 use serde::Serialize;
 
@@ -25,24 +25,24 @@ struct OpenAiList {
 
 #[derive(Serialize)]
 struct OpenAiModel {
-	id:       SmolStr,
+	id:       Str,
 	object:   &'static str,
 	created:  u64,
-	owned_by: SmolStr,
+	owned_by: Str,
 }
 
 #[derive(Serialize)]
 struct AnthropicList {
 	data:     Vec<AnthropicModel>,
 	has_more: bool,
-	first_id: Option<SmolStr>,
-	last_id:  Option<SmolStr>,
+	first_id: Option<Str>,
+	last_id:  Option<Str>,
 }
 
 #[derive(Serialize)]
 struct AnthropicModel {
-	id:           SmolStr,
-	display_name: SmolStr,
+	id:           Str,
+	display_name: Str,
 	created_at:   String,
 	#[serde(rename = "type")]
 	kind:         &'static str,

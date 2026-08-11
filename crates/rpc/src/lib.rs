@@ -28,7 +28,7 @@ pub enum Error {
 	/// A gRPC request failed after the transport was established.
 	Rpc(tonic::Status),
 	/// TLS material was invalid or could not be configured.
-	Tls(omp_core::SmolStr),
+	Tls(omp_core::Str),
 	/// The server schema is older than the client schema.
 	SchemaTooOld {
 		/// Revision advertised by the server.

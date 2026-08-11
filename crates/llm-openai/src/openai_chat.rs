@@ -6,7 +6,7 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{
 	TransportId,
 	compat::{
@@ -238,14 +238,14 @@ impl Transport for OpenAiChatCodec {
 				ResponseFormatKind::JsonSchema(schema) => {
 					let mut schema_value: serde_json::Value =
 						serde_json::from_slice(&schema.schema_json).map_err(|error| {
-							Error::Provider(SmolStr::from(format!("invalid response schema: {error}")))
+							Error::Provider(Str::from(format!("invalid response schema: {error}")))
 						})?;
 					let (normalized, reports) =
 						normalize_schema(compat.tool_schema_flavor, &schema_value);
 					schema_value = normalized;
 					unsupported.extend(reports.into_iter().map(|report| {
 						Unsupported::builder()
-							.what(SmolStr::from("response_format.schema"))
+							.what(Str::from("response_format.schema"))
 							.detail(report.detail)
 							.action(report.action)
 							.build()
@@ -259,7 +259,7 @@ impl Transport for OpenAiChatCodec {
 							strict = Some(false);
 							unsupported.extend(reports.into_iter().map(|report| {
 								Unsupported::builder()
-									.what(SmolStr::from("response_format.schema.strict"))
+									.what(Str::from("response_format.schema.strict"))
 									.detail(report.detail)
 									.action(report.action)
 									.build()
@@ -331,7 +331,7 @@ impl Transport for OpenAiChatCodec {
 		let bytes = serde_json::to_vec(&body)
 			.map(Bytes::from)
 			.map_err(|error| {
-				Error::Provider(SmolStr::from(format!("request serialization failed: {error}")))
+				Error::Provider(Str::from(format!("request serialization failed: {error}")))
 			})?;
 		Ok((bytes, unsupported))
 	}
@@ -354,7 +354,7 @@ impl Transport for OpenAiChatCodec {
 			return Ok(finish_stream(state));
 		}
 		let chunk: Value = serde_json::from_slice(data).map_err(|error| {
-			Error::Provider(SmolStr::from(format!("invalid Chat Completions chunk: {error}")))
+			Error::Provider(Str::from(format!("invalid Chat Completions chunk: {error}")))
 		})?;
 		if chunk.get("error").is_some() || chunk.get("type").and_then(Value::as_str) == Some("error")
 		{
@@ -415,7 +415,7 @@ fn encode_messages(
 			ItemKind::ToolCall(call) => {
 				let wire_id = mapper.to_wire(&call.id, profile);
 				let arguments = std::str::from_utf8(&call.args_json)
-					.map_err(|_| Error::Provider(SmolStr::from("tool arguments are not UTF-8")))?;
+					.map_err(|_| Error::Provider(Str::from("tool arguments are not UTF-8")))?;
 				let tool = json!({"id":wire_id.as_str(),"type":"function","function":{"name":call.name.as_str(),"arguments":arguments}});
 				let reasoning_detail = if call.thought_signature.is_empty() {
 					None
@@ -492,7 +492,7 @@ fn encode_message(
 		Role::User => "user",
 		Role::Assistant => "assistant",
 		_ => {
-			return Err(Error::Provider(SmolStr::new_static("unsupported message role")));
+			return Err(Error::Provider(Str::new_static("unsupported message role")));
 		},
 	};
 	let mut object = Map::new();
@@ -590,7 +590,7 @@ fn encode_tools(
 		.iter()
 		.map(|tool| {
 			let mut schema: Value = serde_json::from_slice(&tool.schema_json).map_err(|error| {
-				Error::Provider(SmolStr::from(format!(
+				Error::Provider(Str::from(format!(
 					"invalid tool schema for {}: {error}",
 					tool.name
 				)))
@@ -603,8 +603,8 @@ fn encode_tools(
 					if tool.strict != Some(true) {
 						unsupported.push(
 							Unsupported::builder()
-								.what(SmolStr::from("tools.strict"))
-								.detail(SmolStr::from("endpoint requires every tool to be strict"))
+								.what(Str::from("tools.strict"))
+								.detail(Str::from("endpoint requires every tool to be strict"))
 								.action(UnsupportedAction::Clamped)
 								.build(),
 						);
@@ -807,8 +807,8 @@ struct ChatDecodeState {
 	usage:          Option<Usage>,
 	usage_raw:      Map<String, Value>,
 	response_props: Props,
-	provider:       SmolStr,
-	model:          SmolStr,
+	provider:       Str,
+	model:          Str,
 	done:           bool,
 }
 
@@ -817,7 +817,7 @@ struct ChoiceDecodeState {
 	text_index:         Option<u32>,
 	thinking_index:     Option<u32>,
 	tools:              BTreeMap<u32, PendingTool>,
-	tool_signatures:    BTreeMap<SmolStr, Bytes>,
+	tool_signatures:    BTreeMap<Str, Bytes>,
 	text:               BytesMut,
 	thinking:           BytesMut,
 	thinking_signature: Bytes,
@@ -840,8 +840,8 @@ enum ContentMode {
 struct PendingTool {
 	stream_index: u32,
 	id:           CallId,
-	wire_id:      SmolStr,
-	name:         SmolStr,
+	wire_id:      Str,
+	name:         Str,
 	args:         BytesMut,
 	object_args:  Option<Value>,
 	started:      bool,
@@ -919,7 +919,7 @@ fn decode_choice_payload(
 					let signature = signature.clone();
 					choice
 						.tool_signatures
-						.insert(SmolStr::from(id), signature.clone());
+						.insert(Str::from(id), signature.clone());
 					for tool in choice.tools.values_mut().filter(|tool| tool.wire_id == id) {
 						tool.signature = signature.clone();
 					}
@@ -971,8 +971,8 @@ fn decode_choice_payload(
 			choice.tools.insert(wire_index, PendingTool {
 				stream_index,
 				id,
-				wire_id: SmolStr::from(wire_id),
-				name: SmolStr::from(name.unwrap_or_default()),
+				wire_id: Str::from(wire_id),
+				name: Str::from(name.unwrap_or_default()),
 				args: BytesMut::new(),
 				object_args: None,
 				started: false,
@@ -987,7 +987,7 @@ fn decode_choice_payload(
 			&& let Some(wire_id) = call.get("id").and_then(Value::as_str)
 		{
 			tool.id = state.call_ids.observe(wire_id);
-			tool.wire_id = SmolStr::from(wire_id);
+			tool.wire_id = Str::from(wire_id);
 			if let Some(signature) = choice.tool_signatures.get(wire_id) {
 				tool.signature = signature.clone();
 			}
@@ -995,7 +995,7 @@ fn decode_choice_payload(
 		if tool.name.is_empty()
 			&& let Some(name) = name
 		{
-			tool.name = SmolStr::from(name);
+			tool.name = Str::from(name);
 		}
 		start_tool(tool, events);
 		if let Some(arguments) = call.pointer("/function/arguments") {
@@ -1033,7 +1033,7 @@ fn start_tool(tool: &mut PendingTool, events: &mut SmallVec<TurnEvent, 2>) {
 	events.push(TurnEvent::PartStart {
 		index:        tool.stream_index,
 		kind:         StreamPartKind::ToolCall,
-		tool_call_id: SmolStr::from(tool.id.to_string()),
+		tool_call_id: Str::from(tool.id.to_string()),
 		tool_name:    tool.name.clone(),
 	});
 	if !tool.args.is_empty() {
@@ -1125,8 +1125,8 @@ fn process_tool_markup(
 		let mut tool = PendingTool {
 			stream_index,
 			id: CallId::new(),
-			wire_id: SmolStr::default(),
-			name: SmolStr::from(name),
+			wire_id: Str::default(),
+			name: Str::from(name),
 			args: BytesMut::from(arguments.as_bytes()),
 			object_args: None,
 			started: false,
@@ -1181,8 +1181,8 @@ fn emit_part(
 			} else {
 				StreamPartKind::Text
 			},
-			tool_call_id: SmolStr::default(),
-			tool_name: SmolStr::default(),
+			tool_call_id: Str::default(),
+			tool_name: Str::default(),
 		});
 		index
 	});
@@ -1257,7 +1257,7 @@ fn finish_stream(state: &mut ChatDecodeState) -> SmallVec<TurnEvent, 2> {
 			let text = std::mem::take(&mut choice.thinking).freeze();
 			parts.push(Part::Thinking(
 				Thinking::builder()
-					.text(SmolStr::from_utf8_owned(text).expect("JSON thinking deltas are UTF-8"))
+					.text(Str::from_utf8_owned(text).expect("JSON thinking deltas are UTF-8"))
 					.signature(choice.thinking_signature.clone())
 					.redacted(false)
 					.build(),
@@ -1266,7 +1266,7 @@ fn finish_stream(state: &mut ChatDecodeState) -> SmallVec<TurnEvent, 2> {
 		if !choice.text.is_empty() {
 			let text = std::mem::take(&mut choice.text).freeze();
 			parts.push(Part::Text(
-				SmolStr::from_utf8_owned(text).expect("JSON content deltas are UTF-8"),
+				Str::from_utf8_owned(text).expect("JSON content deltas are UTF-8"),
 			));
 		}
 		if !parts.is_empty() || has_message_metadata {
@@ -1458,16 +1458,16 @@ fn normalized_content(value: Option<&Value>) -> Option<Cow<'_, str>> {
 	}
 }
 
-fn normalize_finish_reason(value: &str) -> Result<StopReason, SmolStr> {
+fn normalize_finish_reason(value: &str) -> Result<StopReason, Str> {
 	match value {
 		"stop" | "end" | "end_turn" => Ok(StopReason::EndTurn),
 		"tool_calls" | "function_call" | "tool_use" => Ok(StopReason::ToolUse),
 		"length" | "max_tokens" | "max_output_tokens" => Ok(StopReason::MaxTokens),
 		"content_filter" | "safety" => Ok(StopReason::ContentFilter),
 		"error" | "network_error" => {
-			Err(SmolStr::from(format!("provider returned `{value}` finish_reason")))
+			Err(Str::from(format!("provider returned `{value}` finish_reason")))
 		},
-		other => Err(SmolStr::from(format!("unknown provider finish_reason `{other}`"))),
+		other => Err(Str::from(format!("unknown provider finish_reason `{other}`"))),
 	}
 }
 
@@ -1482,7 +1482,7 @@ fn capture_response_metadata(chunk: &Value, state: &mut ChatDecodeState) {
 		}
 	}
 	if !metadata.is_empty() {
-		let key = SmolStr::new("openai/response");
+		let key = Str::new("openai/response");
 		match state.response_props.0.entry(key) {
 			std::collections::btree_map::Entry::Vacant(entry) => {
 				entry.insert(Value::Object(metadata));
@@ -1501,14 +1501,14 @@ fn capture_response_metadata(chunk: &Value, state: &mut ChatDecodeState) {
 		.and_then(Value::as_str)
 		.filter(|v| !v.is_empty())
 	{
-		state.provider = SmolStr::from(provider);
+		state.provider = Str::from(provider);
 	}
 	if let Some(model) = object
 		.get("model")
 		.and_then(Value::as_str)
 		.filter(|v| !v.is_empty())
 	{
-		state.model = SmolStr::from(model);
+		state.model = Str::from(model);
 	}
 }
 
@@ -1521,7 +1521,7 @@ fn capture_choice_metadata(choice: &Value, state: &mut ChoiceDecodeState) {
 }
 
 fn append_prop_value(props: &mut Props, name: &str, value: Value) {
-	let key = SmolStr::from(format!("openai/{name}"));
+	let key = Str::from(format!("openai/{name}"));
 	match props.0.get_mut(key.as_str()) {
 		Some(Value::Array(existing)) => match value {
 			Value::Array(mut values) => existing.append(&mut values),
@@ -1550,7 +1550,7 @@ fn trailing_prefix_len(value: &[u8], delimiter: &[u8]) -> usize {
 		.unwrap_or(0)
 }
 
-fn upstream_error(detail: impl Into<SmolStr>) -> TurnError {
+fn upstream_error(detail: impl Into<Str>) -> TurnError {
 	TurnError::builder()
 		.kind(TurnErrorKind::Upstream)
 		.detail(detail.into())
@@ -1602,7 +1602,7 @@ fn classify_error_body(body: &str) -> TurnError {
 	};
 	TurnError::builder()
 		.kind(kind)
-		.detail(SmolStr::from(detail))
+		.detail(Str::from(detail))
 		.maybe_actual(None)
 		.unsupported(Vec::new())
 		.retry_after_ms(classification.retry.map_or(0, |hint| hint.delay_ms))
@@ -1631,8 +1631,8 @@ fn parts_text(parts: &[Part]) -> String {
 
 fn feature_unsupported(what: &str, detail: &str, fallback: Fallback) -> Unsupported {
 	Unsupported::builder()
-		.what(SmolStr::from(what))
-		.detail(SmolStr::from(detail))
+		.what(Str::from(what))
+		.detail(Str::from(detail))
 		.action(match fallback {
 			Fallback::Emulate => UnsupportedAction::Emulated,
 			_ => UnsupportedAction::Dropped,
@@ -1641,8 +1641,8 @@ fn feature_unsupported(what: &str, detail: &str, fallback: Fallback) -> Unsuppor
 }
 fn dropped(what: impl AsRef<str>, detail: &str) -> Unsupported {
 	Unsupported::builder()
-		.what(SmolStr::from(what.as_ref()))
-		.detail(SmolStr::from(detail))
+		.what(Str::from(what.as_ref()))
+		.detail(Str::from(detail))
 		.action(UnsupportedAction::Dropped)
 		.build()
 }
@@ -1708,7 +1708,7 @@ mod tests {
 	use std::sync::Arc;
 
 	use bytes::Bytes;
-	use omp_core::SmolStr;
+	use omp_core::Str;
 	use omp_llm_transport::sse::SseDecoder;
 	use omp_llm_types::{
 		BlobPart, ChatRequest, Feature, JsonSchema, Reasoning, ResolvedModelPolicy,
@@ -1721,7 +1721,7 @@ mod tests {
 
 	fn request() -> ChatRequest {
 		ChatRequest::builder()
-			.model(SmolStr::from("gpt-4.1"))
+			.model(Str::from("gpt-4.1"))
 			.thread(
 				Thread::builder()
 					.items(vec![
@@ -1730,7 +1730,7 @@ mod tests {
 							.kind(ItemKind::Message(
 								Message::builder()
 									.role(Role::User)
-									.parts(vec![Part::Text(SmolStr::from("Say hello."))])
+									.parts(vec![Part::Text(Str::from("Say hello."))])
 									.build(),
 							))
 							.props(Props::default())
@@ -1764,7 +1764,7 @@ mod tests {
 			message.parts.push(Part::Blob(
 				BlobPart::builder()
 					.hash([7; 32])
-					.mime(SmolStr::from("audio/wav"))
+					.mime(Str::from("audio/wav"))
 					.size(4)
 					.inline(Bytes::from_static(b"RIFF"))
 					.build(),
@@ -1781,7 +1781,7 @@ mod tests {
 
 	fn model_policy(
 		compat: Props,
-		effort_map: BTreeMap<Effort, SmolStr>,
+		effort_map: BTreeMap<Effort, Str>,
 	) -> Arc<ResolvedModelPolicy> {
 		Arc::new(ResolvedModelPolicy {
 			thinking: Some(ResolvedThinkingPolicy {
@@ -1816,7 +1816,7 @@ mod tests {
 				.build(),
 		);
 		let mut fireworks = BTreeMap::new();
-		fireworks.insert(Effort::XHigh, SmolStr::new_static("high"));
+		fireworks.insert(Effort::XHigh, Str::new_static("high"));
 		let mut fireworks_compat = Props::default();
 		fireworks_compat.insert_ns("wire", "max_tokens_field", json!("max_tokens"));
 		fireworks_compat.insert_ns("wire", "supports_sampling_params", json!(false));
@@ -1881,7 +1881,7 @@ mod tests {
 				.kind(ItemKind::Message(
 					Message::builder()
 						.role(Role::System)
-						.parts(vec![Part::Text(SmolStr::new_static("policy"))])
+						.parts(vec![Part::Text(Str::new_static("policy"))])
 						.build(),
 				))
 				.props(Props::default())
@@ -1905,7 +1905,7 @@ mod tests {
 				.kind(ItemKind::ToolCall(
 					ToolCall::builder()
 						.id("01ARZ3NDEKTSV4RRFFQ69G5FAV".parse().unwrap())
-						.name(SmolStr::new_static("inspect"))
+						.name(Str::new_static("inspect"))
 						.args_json(Bytes::from_static(b"{}"))
 						.thought_signature(Bytes::new())
 						.build(),
@@ -1994,7 +1994,7 @@ mod tests {
 				.kind(ItemKind::Message(
 					Message::builder()
 						.role(Role::System)
-						.parts(vec![Part::Text(SmolStr::from("one"))])
+						.parts(vec![Part::Text(Str::from("one"))])
 						.build(),
 				))
 				.props(Props::default())
@@ -2007,7 +2007,7 @@ mod tests {
 				.kind(ItemKind::Message(
 					Message::builder()
 						.role(Role::System)
-						.parts(vec![Part::Text(SmolStr::from("two"))])
+						.parts(vec![Part::Text(Str::from("two"))])
 						.build(),
 				))
 				.props(Props::default())
@@ -2017,7 +2017,7 @@ mod tests {
 			message.parts.push(Part::Blob(
 				BlobPart::builder()
 					.hash([0; 32])
-					.mime(SmolStr::from("image/png"))
+					.mime(Str::from("image/png"))
 					.size(1)
 					.inline(Bytes::from_static(b"x"))
 					.build(),
@@ -2027,8 +2027,8 @@ mod tests {
 			.into_iter()
 			.map(|name| {
 				ToolDef::builder()
-					.name(SmolStr::from(name))
-					.description(SmolStr::default())
+					.name(Str::from(name))
+					.description(Str::default())
 					.schema_json(Bytes::from_static(b"{\"type\":\"object\",\"properties\":{}}"))
 					.strict(name == "one")
 					.build()
@@ -2036,7 +2036,7 @@ mod tests {
 			.collect();
 		req.tool_choice = Some(
 			Feature::builder()
-				.value(ToolChoice::Named(SmolStr::from("two")))
+				.value(ToolChoice::Named(Str::from("two")))
 				.on_unsupported(Fallback::Ignore)
 				.build(),
 		);
@@ -2056,7 +2056,7 @@ mod tests {
 				.temperature(0.2)
 				.top_p(0.9)
 				.frequency_penalty(0.1)
-				.stop(vec![SmolStr::from("END")])
+				.stop(vec![Str::from("END")])
 				.max_output_tokens(42)
 				.build(),
 		);
@@ -2125,7 +2125,7 @@ mod tests {
 				.kind(ItemKind::ToolCall(
 					ToolCall::builder()
 						.id(id)
-						.name(SmolStr::from("lookup"))
+						.name(Str::from("lookup"))
 						.args_json(Bytes::from_static(b"{}"))
 						.thought_signature(Bytes::new())
 						.build(),
@@ -2224,7 +2224,7 @@ mod tests {
 				.kind(ItemKind::Message(
 					Message::builder()
 						.role(Role::System)
-						.parts(vec![Part::Text(SmolStr::from("one"))])
+						.parts(vec![Part::Text(Str::from("one"))])
 						.build(),
 				))
 				.props(Props::default())
@@ -2237,7 +2237,7 @@ mod tests {
 				.kind(ItemKind::Message(
 					Message::builder()
 						.role(Role::System)
-						.parts(vec![Part::Text(SmolStr::from("two"))])
+						.parts(vec![Part::Text(Str::from("two"))])
 						.build(),
 				))
 				.props(Props::default())
@@ -2257,8 +2257,8 @@ mod tests {
 			.into_iter()
 			.map(|name| {
 				ToolDef::builder()
-					.name(SmolStr::from(name))
-					.description(SmolStr::default())
+					.name(Str::from(name))
+					.description(Str::default())
 					.schema_json(Bytes::from_static(b"{}"))
 					.strict(false)
 					.build()
@@ -2266,7 +2266,7 @@ mod tests {
 			.collect();
 		req.tool_choice = Some(
 			Feature::builder()
-				.value(ToolChoice::Named(SmolStr::from("two")))
+				.value(ToolChoice::Named(Str::from("two")))
 				.on_unsupported(Fallback::Ignore)
 				.build(),
 		);
@@ -2343,7 +2343,7 @@ mod tests {
 				.kind(ItemKind::Message(
 					Message::builder()
 						.role(Role::System)
-						.parts(vec![Part::Text(SmolStr::from("policy"))])
+						.parts(vec![Part::Text(Str::from("policy"))])
 						.build(),
 				))
 				.props(Props::default())
@@ -2353,7 +2353,7 @@ mod tests {
 			message.parts.push(Part::Blob(
 				BlobPart::builder()
 					.hash([0; 32])
-					.mime(SmolStr::from("image/png"))
+					.mime(Str::from("image/png"))
 					.size(1)
 					.inline(Bytes::from_static(b"x"))
 					.build(),
@@ -2366,8 +2366,8 @@ mod tests {
 		);
 		req.tools = vec![
 			ToolDef::builder()
-				.name(SmolStr::from("lookup"))
-				.description(SmolStr::from("Lookup"))
+				.name(Str::from("lookup"))
+				.description(Str::from("Lookup"))
 				.schema_json(Bytes::from_static(
 					br#"{"type":"object","properties":{"q":{"type":"string"}}}"#,
 				))
@@ -2380,7 +2380,7 @@ mod tests {
 					ResponseFormat::builder()
 						.kind(ResponseFormatKind::JsonSchema(
 							JsonSchema::builder()
-								.name(SmolStr::from("answer"))
+								.name(Str::from("answer"))
 								.schema_json(Bytes::from_static(
 									br#"{"type":"object","properties":{"ok":{"type":"boolean"}}}"#,
 								))
@@ -2397,7 +2397,7 @@ mod tests {
 			(ToolChoice::None, Value::from("none")),
 			(ToolChoice::Required, Value::from("required")),
 			(
-				ToolChoice::Named(SmolStr::from("lookup")),
+				ToolChoice::Named(Str::from("lookup")),
 				json!({"type":"function","function":{"name":"lookup"}}),
 			),
 		] {
@@ -2614,7 +2614,7 @@ mod tests {
 		assert!(matches!(
 			&outcome.output[0].kind,
 			ItemKind::Message(message)
-				if message.parts == vec![Part::Text(SmolStr::from("Café"))]
+				if message.parts == vec![Part::Text(Str::from("Café"))]
 		));
 
 		let mut state = DecodeState::default();
@@ -2634,7 +2634,7 @@ mod tests {
 		let ItemKind::Message(message) = &outcome.output[0].kind else {
 			panic!("expected assistant message")
 		};
-		assert_eq!(message.parts, vec![Part::Text(SmolStr::from("<think>private</think>public"))]);
+		assert_eq!(message.parts, vec![Part::Text(Str::from("<think>private</think>public"))]);
 	}
 
 	#[test]
@@ -2646,7 +2646,7 @@ mod tests {
 					ResponseFormat::builder()
 						.kind(ResponseFormatKind::JsonSchema(
 							JsonSchema::builder()
-								.name(SmolStr::from("nested"))
+								.name(Str::from("nested"))
 								.schema_json(Bytes::from_static(
 									br#"{"type":"object","properties":{"outer":{"type":"object","properties":{"leaf":{"type":"string"}}}}}"#,
 								))

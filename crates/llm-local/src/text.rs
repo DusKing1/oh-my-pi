@@ -17,7 +17,7 @@ use llama_cpp_2::{
 	sampling::LlamaSampler,
 	token::LlamaToken,
 };
-use omp_core::SmolStr;
+use omp_core::Str;
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
 use tokio_util::sync::CancellationToken;
@@ -57,7 +57,7 @@ pub enum TextModel {
 		/// Repository containing the GGUF file or shards.
 		repo:  ModelRepo,
 		/// Repository-relative GGUF filenames in shard order.
-		files: Vec<SmolStr>,
+		files: Vec<Str>,
 	},
 	/// A GGUF file already present on disk; split shards are discovered beside
 	/// it.
@@ -71,7 +71,7 @@ impl From<SmallModel> for TextModel {
 }
 
 impl SmallModel {
-	fn source(self) -> (ModelRepo, SmolStr) {
+	fn source(self) -> (ModelRepo, Str) {
 		match self {
 			Self::Lfm2_350M => {
 				(ModelRepo::new("LiquidAI/LFM2-350M-GGUF"), "LFM2-350M-Q4_K_M.gguf".into())
@@ -110,22 +110,22 @@ pub struct ChatMessage {
 	/// Message role used by the model's embedded chat template.
 	pub role:    ChatRole,
 	/// Message text.
-	pub content: SmolStr,
+	pub content: Str,
 }
 
 impl ChatMessage {
 	/// Creates a system instruction.
-	pub fn system(content: impl Into<SmolStr>) -> Self {
+	pub fn system(content: impl Into<Str>) -> Self {
 		Self { role: ChatRole::System, content: content.into() }
 	}
 
 	/// Creates a user message.
-	pub fn user(content: impl Into<SmolStr>) -> Self {
+	pub fn user(content: impl Into<Str>) -> Self {
 		Self { role: ChatRole::User, content: content.into() }
 	}
 
 	/// Creates an assistant-history message.
-	pub fn assistant(content: impl Into<SmolStr>) -> Self {
+	pub fn assistant(content: impl Into<Str>) -> Self {
 		Self { role: ChatRole::Assistant, content: content.into() }
 	}
 }
@@ -153,7 +153,7 @@ pub struct GenerationOptions {
 	/// Seed used by non-greedy sampling.
 	pub seed:               u32,
 	/// Text sequences that stop generation and are withheld from the result.
-	pub stop:               Vec<SmolStr>,
+	pub stop:               Vec<Str>,
 }
 
 impl Default for GenerationOptions {
@@ -320,7 +320,7 @@ impl TextGenerator {
 		messages: &[ChatMessage],
 		options: GenerationOptions,
 		cancel: CancellationToken,
-	) -> Result<SmolStr> {
+	) -> Result<Str> {
 		validate_request(messages, &options)?;
 		let messages = messages.to_vec();
 		let id = self.handle.id;
@@ -386,7 +386,7 @@ impl TextGenerator {
 	}
 
 	/// Generates from one user prompt with greedy default sampling.
-	pub async fn complete(&self, prompt: impl Into<SmolStr>) -> Result<SmolStr> {
+	pub async fn complete(&self, prompt: impl Into<Str>) -> Result<Str> {
 		self
 			.generate(
 				&[ChatMessage::user(prompt)],
@@ -475,7 +475,7 @@ pub struct GenerationSummary {
 
 /// Token stream produced by [`TextGenerator::stream`].
 pub struct GenerationStream {
-	rx:      mpsc::UnboundedReceiver<Result<SmolStr>>,
+	rx:      mpsc::UnboundedReceiver<Result<Str>>,
 	cancel:  CancellationToken,
 	summary: Arc<Mutex<Option<GenerationSummary>>>,
 }
@@ -495,7 +495,7 @@ impl GenerationStream {
 }
 
 impl Stream for GenerationStream {
-	type Item = Result<SmolStr>;
+	type Item = Result<Str>;
 
 	fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
 		Pin::new(&mut self.rx).poll_next(context)
@@ -719,7 +719,7 @@ fn generate(
 	messages: &[ChatMessage],
 	options: GenerationOptions,
 	cancel: &CancellationToken,
-	emit: &mut dyn FnMut(SmolStr) -> bool,
+	emit: &mut dyn FnMut(Str) -> bool,
 ) -> Result<GenerationSummary> {
 	let tokens = chat_tokens(loaded, messages)?;
 	if tokens.len().saturating_add(options.max_tokens) > loaded.context_size.get() as usize {
@@ -893,16 +893,16 @@ fn validate_request(messages: &[ChatMessage], options: &GenerationOptions) -> Re
 
 struct StopFilter {
 	pending: String,
-	stops:   Vec<SmolStr>,
+	stops:   Vec<Str>,
 	stopped: bool,
 }
 
 impl StopFilter {
-	const fn new(stops: Vec<SmolStr>) -> Self {
+	const fn new(stops: Vec<Str>) -> Self {
 		Self { pending: String::new(), stops, stopped: false }
 	}
 
-	fn push(&mut self, piece: &str) -> Option<SmolStr> {
+	fn push(&mut self, piece: &str) -> Option<Str> {
 		self.pending.push_str(piece);
 		let earliest = self
 			.stops
@@ -911,7 +911,7 @@ impl StopFilter {
 			.min();
 		if let Some(index) = earliest {
 			self.stopped = true;
-			let output: SmolStr = self.pending[..index].into();
+			let output: Str = self.pending[..index].into();
 			self.pending.clear();
 			return Some(output);
 		}
@@ -927,7 +927,7 @@ impl StopFilter {
 		if emit_len == 0 {
 			return None;
 		}
-		let output: SmolStr = self.pending[..emit_len].into();
+		let output: Str = self.pending[..emit_len].into();
 		self.pending.drain(..emit_len);
 		Some(output)
 	}
@@ -936,7 +936,7 @@ impl StopFilter {
 		self.stopped
 	}
 
-	fn finish(&mut self) -> Option<SmolStr> {
+	fn finish(&mut self) -> Option<Str> {
 		(!self.pending.is_empty()).then(|| std::mem::take(&mut self.pending).into())
 	}
 }

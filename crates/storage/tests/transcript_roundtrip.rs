@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, fs::OpenOptions, io::Write as _, path::PathBuf};
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_storage::{
 	blob::BlobRef,
 	transcript::{
@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use tempfile::tempdir;
 
-fn text(value: &str) -> SmolStr {
-	SmolStr::new(value)
+fn text(value: &str) -> Str {
+	Str::new(value)
 }
 
 fn raw(value: &str) -> Box<RawValue> {

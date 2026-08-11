@@ -1,4 +1,4 @@
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use super::radio::pill;
 use crate::{
@@ -20,7 +20,7 @@ pub struct Button {
 	props: Props,
 	slot:  Slot,
 	state: ButtonState,
-	label: SmolStr,
+	label: Str,
 }
 
 impl Button {
@@ -30,7 +30,7 @@ impl Button {
 			props: Props::new(),
 			slot:  next_slot(),
 			state: ButtonState::default(),
-			label: SmolStr::default(),
+			label: Str::default(),
 		}
 	}
 
@@ -47,12 +47,12 @@ impl Button {
 	}
 
 	/// Sets the button's text child.
-	pub fn child(mut self, label: impl Into<SmolStr>) -> Self {
+	pub fn child(mut self, label: impl Into<Str>) -> Self {
 		let label = label.into();
 		if self.label.is_empty() {
 			self.label = label;
 		} else {
-			self.label = SmolStr::from(format!("{}{}", self.label, label));
+			self.label = Str::from(format!("{}{}", self.label, label));
 		}
 		self
 	}
@@ -198,7 +198,7 @@ mod tests {
 		let mut plain = Button::new().with(Prop::Id, "again").child("Again");
 		assert_eq!(
 			plain.key(&mut event_ctx(&ctx), Key::Enter),
-			Flow::Event(UiEvent::Pressed(SmolStr::from("again")))
+			Flow::Event(UiEvent::Pressed(Str::from("again")))
 		);
 	}
 

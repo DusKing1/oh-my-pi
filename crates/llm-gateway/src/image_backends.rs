@@ -12,7 +12,7 @@ use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Body as HyperBody;
-use omp_core::{SmolStr, base64};
+use omp_core::{Str, base64};
 use omp_llm_catalog::{
 	codex::{CODEX_CLIENT_VERSION, CODEX_ORIGINATOR},
 	provider::ProviderCatalog,
@@ -39,7 +39,7 @@ const IMAGE_SYSTEM_INSTRUCTION: &str = "You are an AI image generator. Generate 
 
 #[async_trait]
 trait ImageHttpClient: Send + Sync {
-	async fn execute(&self, request: Request<Body>) -> Result<Response<Bytes>, SmolStr>;
+	async fn execute(&self, request: Request<Body>) -> Result<Response<Bytes>, Str>;
 }
 
 #[async_trait]
@@ -51,7 +51,7 @@ where
 	R: HyperBody<Data = Bytes> + Send + 'static,
 	R::Error: Display + Send,
 {
-	async fn execute(&self, request: Request<Body>) -> Result<Response<Bytes>, SmolStr> {
+	async fn execute(&self, request: Request<Body>) -> Result<Response<Bytes>, Str> {
 		let response = (*self)
 			.clone()
 			.oneshot(request)
@@ -265,7 +265,7 @@ impl EgressImageBackend {
 			serde_json::from_slice(&payload.body).map_err(|error| parse_error(provider, error))?
 		};
 		let mut images = Vec::new();
-		let mut revised = SmolStr::default();
+		let mut revised = Str::default();
 		let mut text = Vec::new();
 		for output in value
 			.get("output")
@@ -356,7 +356,7 @@ impl EgressImageBackend {
 				collect_gemini_parts(provider, response, &mut images, &mut texts)?;
 			}
 		}
-		finish(provider, request, images, SmolStr::default(), texts.join(" ").into(), model)
+		finish(provider, request, images, Str::default(), texts.join(" ").into(), model)
 	}
 
 	async fn xai(
@@ -401,7 +401,7 @@ impl EgressImageBackend {
 		let value: Value =
 			serde_json::from_slice(&payload.body).map_err(|error| parse_error(provider, error))?;
 		let (images, revised) = self.openai_data(provider, &value).await?;
-		finish(provider, request, images, revised, SmolStr::default(), model)
+		finish(provider, request, images, revised, Str::default(), model)
 	}
 
 	async fn openrouter(
@@ -474,7 +474,7 @@ impl EgressImageBackend {
 			images.push(self.download(provider, url).await?);
 		}
 		let text = texts.join("\n");
-		finish(provider, request, images, SmolStr::default(), text.into(), model)
+		finish(provider, request, images, Str::default(), text.into(), model)
 	}
 
 	async fn gemini(
@@ -503,16 +503,16 @@ impl EgressImageBackend {
 		let mut images = Vec::new();
 		let mut texts = Vec::new();
 		collect_gemini_parts(provider, &value, &mut images, &mut texts)?;
-		finish(provider, request, images, SmolStr::default(), texts.join(" ").into(), model)
+		finish(provider, request, images, Str::default(), texts.join(" ").into(), model)
 	}
 
 	async fn openai_data(
 		&self,
 		provider: ImageProvider,
 		value: &Value,
-	) -> Result<(Vec<BlobPart>, SmolStr), ImageAttemptError> {
+	) -> Result<(Vec<BlobPart>, Str), ImageAttemptError> {
 		let mut images = Vec::new();
-		let mut revised = SmolStr::default();
+		let mut revised = Str::default();
 		for entry in value
 			.get("data")
 			.and_then(Value::as_array)
@@ -579,12 +579,12 @@ fn endpoint(
 		.unwrap_or_else(|| default.to_owned())
 }
 
-fn model(request: &GenerateImageRequest, provider: ImageProvider, default: &str) -> SmolStr {
+fn model(request: &GenerateImageRequest, provider: ImageProvider, default: &str) -> Str {
 	request
 		.props
 		.get_ns(provider.id(), "model")
 		.and_then(Value::as_str)
-		.map(SmolStr::from)
+		.map(Str::from)
 		.or_else(|| (!request.model.is_empty()).then(|| request.model.clone()))
 		.unwrap_or_else(|| default.into())
 }
@@ -682,7 +682,7 @@ fn decode_blob(
 fn blob(bytes: Bytes, mime: &str) -> BlobPart {
 	BlobPart::builder()
 		.hash(*blake3::hash(&bytes).as_bytes())
-		.mime(SmolStr::from(mime))
+		.mime(Str::from(mime))
 		.size(bytes.len() as u64)
 		.inline(bytes)
 		.build()
@@ -692,9 +692,9 @@ fn finish(
 	provider: ImageProvider,
 	request: &GenerateImageRequest,
 	images: Vec<BlobPart>,
-	revised_prompt: SmolStr,
-	text: SmolStr,
-	model: SmolStr,
+	revised_prompt: Str,
+	text: Str,
+	model: Str,
 ) -> Result<ImageDone, ImageAttemptError> {
 	if images.is_empty() {
 		return Err(parse_message(provider, "provider returned no image data"));
@@ -780,14 +780,14 @@ fn last_sse_response(provider: ImageProvider, body: &[u8]) -> Result<Value, Imag
 	Ok(json!({"output":Value::Array(output)}))
 }
 
-fn provider_message(body: &[u8]) -> SmolStr {
+fn provider_message(body: &[u8]) -> Str {
 	serde_json::from_slice::<Value>(body)
 		.ok()
 		.and_then(|value| {
 			value
 				.pointer("/error/message")
 				.and_then(Value::as_str)
-				.map(SmolStr::from)
+				.map(Str::from)
 		})
 		.unwrap_or_else(|| String::from_utf8_lossy(body).into_owned().into())
 }
@@ -795,7 +795,7 @@ fn provider_message(body: &[u8]) -> SmolStr {
 fn status_error(
 	provider: ImageProvider,
 	status: StatusCode,
-	message: SmolStr,
+	message: Str,
 ) -> ImageAttemptError {
 	ImageProviderError {
 		provider: provider.id().into(),
@@ -808,7 +808,7 @@ fn status_error(
 fn parse_error(provider: ImageProvider, error: impl std::fmt::Display) -> ImageAttemptError {
 	parse_message(provider, error.to_string())
 }
-fn parse_message(provider: ImageProvider, message: impl Into<SmolStr>) -> ImageAttemptError {
+fn parse_message(provider: ImageProvider, message: impl Into<Str>) -> ImageAttemptError {
 	ImageProviderError {
 		provider: provider.id().into(),
 		kind:     ImageProviderErrorKind::Parse,

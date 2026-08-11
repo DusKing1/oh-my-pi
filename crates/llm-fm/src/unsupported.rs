@@ -1,4 +1,4 @@
-use omp_core::SmolStr;
+use omp_core::Str;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -14,7 +14,7 @@ pub(super) fn availability() -> AppleFmAvailability {
 
 pub(super) fn generate(
 	_options: AppleFmOptions,
-	_on_delta: impl FnMut(SmolStr) -> bool,
+	_on_delta: impl FnMut(Str) -> bool,
 	_cancel: &CancellationToken,
 ) -> Result<AppleFmGeneration> {
 	Err(AppleFmError::new(AppleFmErrorCode::ModelUnavailable, PLATFORM_MESSAGE))

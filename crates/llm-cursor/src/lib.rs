@@ -19,7 +19,7 @@ use http_body_util::{BodyExt, StreamBody};
 use hyper::body::Frame as BodyFrame;
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::rt::TokioExecutor;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{
 	Accuracy, CallId, Chat, ChatOutcome, ChatRequest, Error, ExecOutcome, ExecStatus, Executor,
 	Invoke, InvokeChannel, InvokeComplete, InvokeInput, InvokePayload, ItemKind, Part, Props, Role,
@@ -44,11 +44,11 @@ const CURSOR_CLIENT_VERSION: &str = "cli-2026.07.23-e383d2b";
 /// replayed without a connection.
 #[derive(Default)]
 pub struct CursorDecodeState {
-	calls:             BTreeMap<SmolStr, CallId>,
+	calls:             BTreeMap<Str, CallId>,
 	open_part:         Option<(u32, StreamPartKind)>,
-	open_tool_call_id: SmolStr,
+	open_tool_call_id: Str,
 	next_part:         u32,
-	model:             SmolStr,
+	model:             Str,
 	unsupported:       Vec<Unsupported>,
 	output_tokens:     u64,
 	saw_usage:         bool,
@@ -76,14 +76,14 @@ pub trait CursorAuth: Send + Sync + 'static {
 /// responses are written to the request body while server frames are decoded.
 #[derive(Clone)]
 pub struct CursorChat<A> {
-	base_url: SmolStr,
+	base_url: Str,
 	auth:     A,
 }
 
 impl<A> CursorChat<A> {
 	/// Constructs a Cursor chat transport with a sealed authentication applier.
 	#[must_use]
-	pub fn new(base_url: impl Into<SmolStr>, auth: A) -> Self {
+	pub fn new(base_url: impl Into<Str>, auth: A) -> Self {
 		Self { base_url: base_url.into(), auth }
 	}
 }
@@ -103,20 +103,20 @@ where
 		let uri: Uri = format!("{}/agent.v1.AgentService/Run", self.base_url.trim_end_matches('/'))
 			.parse()
 			.map_err(|error| {
-				Error::Transport(SmolStr::from(format!("invalid Cursor endpoint: {error}")))
+				Error::Transport(Str::from(format!("invalid Cursor endpoint: {error}")))
 			})?;
 		let mut auth_headers = HeaderMap::new();
 		self
 			.auth
 			.apply(&mut auth_headers)
-			.map_err(|_| Error::Transport(SmolStr::new_static("Cursor authentication failed")))?;
+			.map_err(|_| Error::Transport(Str::new_static("Cursor authentication failed")))?;
 
 		let stream = async_stream::try_stream! {
 			yield TurnEvent::Accepted { replay: false };
 
 			let (client_tx, client_rx) = flume::bounded::<Bytes>(32);
 			client_tx.send_async(connect_frame(&run)).await
-				.map_err(|_| Error::Transport(SmolStr::new_static("Cursor request stream closed")))?;
+				.map_err(|_| Error::Transport(Str::new_static("Cursor request stream closed")))?;
 			let request_stream = futures::stream::unfold(client_rx, |receiver| async move {
 				receiver.recv_async().await.ok().map(|bytes| {
 					(Ok::<BodyFrame<Bytes>, Infallible>(BodyFrame::data(bytes)), receiver)
@@ -130,7 +130,7 @@ where
 				.header("x-cursor-client-version", CURSOR_CLIENT_VERSION)
 				.header("x-cursor-client-type", "cli")
 				.body(body)
-				.map_err(|error| Error::Transport(SmolStr::from(error.to_string())))?;
+				.map_err(|error| Error::Transport(Str::from(error.to_string())))?;
 			outbound.headers_mut().extend(auth_headers);
 
 			omp_llm_egress::client::ensure_crypto_provider();
@@ -140,20 +140,20 @@ where
 				.enable_http2()
 				.build();
 			let io = connector.call(uri).await
-				.map_err(|error| Error::Transport(SmolStr::from(error.to_string())))?;
+				.map_err(|error| Error::Transport(Str::from(error.to_string())))?;
 			let (mut sender, connection) = hyper::client::conn::http2::handshake(
 				TokioExecutor::new(),
 				io,
 			)
 			.await
-			.map_err(|error| Error::Transport(SmolStr::from(error.to_string())))?;
+			.map_err(|error| Error::Transport(Str::from(error.to_string())))?;
 			let _connection = AbortOnDrop(tokio::spawn(async move {
 				let _ = connection.await;
 			}));
 			let mut response = sender.send_request(outbound).await
-				.map_err(|error| Error::Transport(SmolStr::from(error.to_string())))?;
+				.map_err(|error| Error::Transport(Str::from(error.to_string())))?;
 			if !response.status().is_success() {
-				Err(Error::Transport(SmolStr::from(format!(
+				Err(Error::Transport(Str::from(format!(
 					"Cursor Connect returned HTTP {}",
 					response.status()
 				))))?;
@@ -165,7 +165,7 @@ where
 				unsupported: _unsupported,
 				..CursorDecodeState::default()
 			};
-			let mut cancels = BTreeMap::<u32, (SmolStr, oneshot::Sender<()>)>::new();
+			let mut cancels = BTreeMap::<u32, (Str, oneshot::Sender<()>)>::new();
 			let mut invocations = Vec::<AbortOnDrop>::new();
 			let (terminal_tx, terminal_rx) = flume::bounded::<TurnError>(1);
 			loop {
@@ -179,13 +179,13 @@ where
 						break;
 					}
 					Ok(Some(frame)) => frame
-						.map_err(|error| Error::Transport(SmolStr::from(error.to_string())))?,
+						.map_err(|error| Error::Transport(Str::from(error.to_string())))?,
 					Ok(None) => break,
 				};
 				let Ok(data) = frame.into_data() else { continue };
 				for payload in decoder.push_bytes(data)? {
 					let server = wire::AgentServerMessage::decode(payload).map_err(|error| {
-						Error::Transport(SmolStr::from(error.to_string()))
+						Error::Transport(Str::from(error.to_string()))
 					})?;
 					match server.message {
 						Some(wire::agent_server_message::Message::ExecServerMessage(exec)) => {
@@ -216,7 +216,7 @@ where
 									let _ = cancel.send(());
 									invocation_id
 								} else {
-									SmolStr::from(abort.id.to_string())
+									Str::from(abort.id.to_string())
 								};
 								yield TurnEvent::InvokeCancel { invocation_id };
 							}
@@ -244,13 +244,13 @@ fn cursor_turn_error(error: Error) -> TurnEvent {
 	let (kind, detail, unsupported) = match error {
 		Error::Unsupported(unsupported) => (
 			TurnErrorKind::Unsupported,
-			SmolStr::new_static("Cursor request became unsupported"),
+			Str::new_static("Cursor request became unsupported"),
 			unsupported,
 		),
 		Error::Provider(detail) | Error::Transport(detail) => {
 			(TurnErrorKind::Upstream, detail, Vec::new())
 		},
-		_ => (TurnErrorKind::Upstream, SmolStr::new_static("Cursor request failed"), Vec::new()),
+		_ => (TurnErrorKind::Upstream, Str::new_static("Cursor request failed"), Vec::new()),
 	};
 	TurnEvent::Error(
 		TurnError::builder()
@@ -273,9 +273,9 @@ impl Drop for AbortOnDrop {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiscoveredModel {
 	/// Provider-local model id.
-	pub id:        SmolStr,
+	pub id:        Str,
 	/// Cursor display label.
-	pub name:      SmolStr,
+	pub name:      Str,
 	/// Whether Cursor exposes thinking controls.
 	pub reasoning: bool,
 	/// Whether this entry advertises Cursor max mode.
@@ -296,7 +296,7 @@ pub fn model_discovery_request() -> Bytes {
 pub fn decode_model_discovery(payload: &[u8]) -> Result<Vec<DiscoveredModel>, Error> {
 	let message = first_connect_message(payload)?;
 	let response = wire::GetUsableModelsResponse::decode(message)
-		.map_err(|error| Error::Transport(SmolStr::from(error.to_string())))?;
+		.map_err(|error| Error::Transport(Str::from(error.to_string())))?;
 	let mut models = BTreeMap::new();
 	for model in response.models {
 		let reasoning = model.thinking_details.is_some();
@@ -314,9 +314,9 @@ pub fn decode_model_discovery(payload: &[u8]) -> Result<Vec<DiscoveredModel>, Er
 		.into_iter()
 		.find(|value| !value.trim().is_empty())
 		.unwrap_or(id);
-		models.insert(SmolStr::from(id), DiscoveredModel {
-			id: SmolStr::from(id),
-			name: SmolStr::from(name),
+		models.insert(Str::from(id), DiscoveredModel {
+			id: Str::from(id),
+			name: Str::from(name),
 			reasoning,
 			max_mode,
 		});
@@ -330,13 +330,13 @@ fn first_connect_message(payload: &[u8]) -> Result<&[u8], Error> {
 	}
 	let length = u32::from_be_bytes([payload[1], payload[2], payload[3], payload[4]]) as usize;
 	let Some(end) = 5usize.checked_add(length) else {
-		return Err(Error::Transport(SmolStr::new_static("Cursor discovery frame length overflow")));
+		return Err(Error::Transport(Str::new_static("Cursor discovery frame length overflow")));
 	};
 	if end > payload.len() {
 		return Ok(payload);
 	}
 	if payload[0] & CONNECT_END_STREAM != 0 {
-		return Err(Error::Transport(SmolStr::new_static(
+		return Err(Error::Transport(Str::new_static(
 			"Cursor discovery returned only an end-stream frame",
 		)));
 	}
@@ -349,8 +349,8 @@ pub fn require_executor(executor: Option<Arc<dyn Executor>>) -> Result<Arc<dyn E
 	executor.ok_or_else(|| {
 		Error::Unsupported(vec![
 			Unsupported::builder()
-				.what(SmolStr::new_static("cursor/executor"))
-				.detail(SmolStr::new_static("Cursor requires an in-turn executor"))
+				.what(Str::new_static("cursor/executor"))
+				.detail(Str::new_static("Cursor requires an in-turn executor"))
 				.action(UnsupportedAction::Dropped)
 				.build(),
 		])
@@ -484,7 +484,7 @@ async fn drive_invocation_to(
 fn invocation_timeout_error(invocation: &Invoke) -> TurnError {
 	TurnError::builder()
 		.kind(TurnErrorKind::InvokeTimeout)
-		.detail(SmolStr::from(format!(
+		.detail(Str::from(format!(
 			"Cursor invocation {} exceeded its {}ms deadline",
 			invocation.invocation_id, invocation.timeout_ms
 		)))
@@ -499,11 +499,11 @@ pub struct ShellContext {
 	/// Numeric correlation id on Cursor's exec channel.
 	pub id:      u32,
 	/// Optional attachable execution id.
-	pub exec_id: SmolStr,
+	pub exec_id: Str,
 	/// Command echoed by every structured result variant.
-	pub command: SmolStr,
+	pub command: Str,
 	/// Normalized working directory echoed by exit and result frames.
-	pub cwd:     SmolStr,
+	pub cwd:     Str,
 }
 
 /// Stateful ANSI-safe conversion of canonical invocation inputs to Cursor
@@ -810,7 +810,7 @@ pub fn decode_server_message(
 			match control.message {
 				Some(wire::exec_server_control_message::Message::Abort(abort)) => {
 					Ok(smallvec![TurnEvent::InvokeCancel {
-						invocation_id: SmolStr::from(abort.id.to_string()),
+						invocation_id: Str::from(abort.id.to_string()),
 					},])
 				},
 				None => Ok(SmallVec::new()),
@@ -863,7 +863,7 @@ fn decode_interaction(
 				&& (call_id.is_empty() || state.open_tool_call_id == call_id)
 			{
 				state.open_part = None;
-				state.open_tool_call_id = SmolStr::default();
+				state.open_tool_call_id = Str::default();
 				events.push(TurnEvent::PartEnd { index, signature: Default::default() });
 			}
 		},
@@ -877,7 +877,7 @@ fn decode_interaction(
 			if let Some((index, _)) = state.open_part.take() {
 				events.push(TurnEvent::PartEnd { index, signature: Default::default() });
 			}
-			state.open_tool_call_id = SmolStr::default();
+			state.open_tool_call_id = Str::default();
 			let stop = if state.saw_tool_call {
 				StopReason::ToolUse
 			} else {
@@ -902,7 +902,7 @@ fn decode_interaction(
 					.stop(stop)
 					.maybe_usage(usage)
 					.unsupported(std::mem::take(&mut state.unsupported))
-					.provider(SmolStr::new_static("cursor"))
+					.provider(Str::new_static("cursor"))
 					.model(state.model.clone())
 					.props(Props::default())
 					.build(),
@@ -914,7 +914,7 @@ fn decode_interaction(
 }
 fn start_tool_part(
 	state: &mut CursorDecodeState,
-	call_id: SmolStr,
+	call_id: Str,
 	tool_call: Option<&wire::ToolCall>,
 	events: &mut SmallVec<TurnEvent, 2>,
 ) {
@@ -924,7 +924,7 @@ fn start_tool_part(
 	let call_id = if call_id.is_empty() {
 		tool_call
 			.and_then(|tool_call| tool_call.tool_call_id.as_deref())
-			.map_or_else(SmolStr::default, SmolStr::from)
+			.map_or_else(Str::default, Str::from)
 	} else {
 		call_id
 	};
@@ -941,21 +941,21 @@ fn start_tool_part(
 	});
 }
 
-fn tool_call_id(call_id: String, tool_call: Option<&wire::ToolCall>) -> SmolStr {
+fn tool_call_id(call_id: String, tool_call: Option<&wire::ToolCall>) -> Str {
 	if call_id.is_empty() {
 		tool_call
 			.and_then(|tool_call| tool_call.tool_call_id.as_deref())
-			.map_or_else(SmolStr::default, SmolStr::from)
+			.map_or_else(Str::default, Str::from)
 	} else {
-		SmolStr::from(call_id)
+		Str::from(call_id)
 	}
 }
 
-fn cursor_tool_name(tool_call: Option<&wire::ToolCall>) -> SmolStr {
+fn cursor_tool_name(tool_call: Option<&wire::ToolCall>) -> Str {
 	use wire::tool_call::Tool;
 
 	let Some(tool) = tool_call.and_then(|tool_call| tool_call.tool.as_ref()) else {
-		return SmolStr::default();
+		return Str::default();
 	};
 	let name = match tool {
 		Tool::ShellToolCall(_) => "bash",
@@ -969,8 +969,8 @@ fn cursor_tool_name(tool_call: Option<&wire::ToolCall>) -> SmolStr {
 		Tool::LsToolCall(_) => "ls",
 		Tool::ReadLintsToolCall(_) => "read_lints",
 		Tool::McpToolCall(call) => {
-			return call.args.as_ref().map_or_else(SmolStr::default, |args| {
-				SmolStr::from(if args.tool_name.is_empty() {
+			return call.args.as_ref().map_or_else(Str::default, |args| {
+				Str::from(if args.tool_name.is_empty() {
 					args.name.as_str()
 				} else {
 					args.tool_name.as_str()
@@ -1008,7 +1008,7 @@ fn cursor_tool_name(tool_call: Option<&wire::ToolCall>) -> SmolStr {
 		Tool::ConnectScmToolCall(_) => "connect_scm",
 		Tool::SearchConversationsToolCall(_) => "search_conversations",
 	};
-	SmolStr::new_static(name)
+	Str::new_static(name)
 }
 
 fn push_part_delta(
@@ -1021,15 +1021,15 @@ fn push_part_delta(
 		Some((index, open_kind)) if open_kind == kind => index,
 		Some((index, _)) => {
 			events.push(TurnEvent::PartEnd { index, signature: Default::default() });
-			state.open_tool_call_id = SmolStr::default();
+			state.open_tool_call_id = Str::default();
 			let next = state.next_part;
 			state.next_part += 1;
 			state.open_part = Some((next, kind));
 			events.push(TurnEvent::PartStart {
 				index: next,
 				kind,
-				tool_call_id: SmolStr::default(),
-				tool_name: SmolStr::default(),
+				tool_call_id: Str::default(),
+				tool_name: Str::default(),
 			});
 			next
 		},
@@ -1037,12 +1037,12 @@ fn push_part_delta(
 			let next = state.next_part;
 			state.next_part += 1;
 			state.open_part = Some((next, kind));
-			state.open_tool_call_id = SmolStr::default();
+			state.open_tool_call_id = Str::default();
 			events.push(TurnEvent::PartStart {
 				index: next,
 				kind,
-				tool_call_id: SmolStr::default(),
-				tool_name: SmolStr::default(),
+				tool_call_id: Str::default(),
+				tool_name: Str::default(),
 			});
 			next
 		},
@@ -1061,22 +1061,22 @@ fn invoke_and_context_from_exec(
 			wire::exec_server_message::Message::ShellStreamArgs(args)
 			| wire::exec_server_message::Message::ShellArgs(args),
 		) => (
-			SmolStr::from(args.command.as_str()),
+			Str::from(args.command.as_str()),
 			if args.working_directory.is_empty() {
-				SmolStr::from(
+				Str::from(
 					std::env::current_dir()
 						.ok()
 						.and_then(|path| path.to_str().map(str::to_owned))
 						.unwrap_or_default(),
 				)
 			} else {
-				SmolStr::from(args.working_directory.as_str())
+				Str::from(args.working_directory.as_str())
 			},
 		),
-		_ => (SmolStr::default(), SmolStr::default()),
+		_ => (Str::default(), Str::default()),
 	};
 	let context =
-		ShellContext { id: exec.id, exec_id: SmolStr::from(exec.exec_id.as_str()), command, cwd };
+		ShellContext { id: exec.id, exec_id: Str::from(exec.exec_id.as_str()), command, cwd };
 	invoke_from_exec(exec, state).map(|invoke| (invoke, context))
 }
 
@@ -1085,9 +1085,9 @@ fn invoke_from_exec(
 	state: &mut CursorDecodeState,
 ) -> Result<Invoke, Error> {
 	let invocation_id = if exec.exec_id.is_empty() {
-		SmolStr::from(exec.id.to_string())
+		Str::from(exec.id.to_string())
 	} else {
-		SmolStr::from(exec.exec_id.as_str())
+		Str::from(exec.exec_id.as_str())
 	};
 	let mut props = Props::default();
 	props.insert_ns("cursor", "exec_id", serde_json::Value::String(exec.exec_id.clone()));
@@ -1101,21 +1101,21 @@ fn invoke_from_exec(
 			let call_id = args.tool_call_id.parse().unwrap_or_else(|_| CallId::new());
 			state
 				.calls
-				.insert(SmolStr::from(args.tool_call_id.as_str()), call_id);
+				.insert(Str::from(args.tool_call_id.as_str()), call_id);
 			let args_json = serde_json::to_vec(&serde_json::json!({
 				"command": args.command,
 				"working_directory": args.working_directory,
 				"timeout": args.timeout,
 				"tool_call_id": args.tool_call_id,
 			}))
-			.map_err(|error| Error::Provider(SmolStr::from(error.to_string())))?;
+			.map_err(|error| Error::Provider(Str::from(error.to_string())))?;
 			Ok(Invoke::builder()
 				.invocation_id(invocation_id)
-				.name(SmolStr::new_static("bash"))
+				.name(Str::new_static("bash"))
 				.tool_call(
 					ToolCall::builder()
 						.id(call_id)
-						.name(SmolStr::new_static("bash"))
+						.name(Str::new_static("bash"))
 						.args_json(args_json.into())
 						.thought_signature(Bytes::new())
 						.build(),
@@ -1131,7 +1131,7 @@ fn invoke_from_exec(
 		},
 		_ => Ok(Invoke::builder()
 			.invocation_id(invocation_id)
-			.name(SmolStr::new_static("cursor/control"))
+			.name(Str::new_static("cursor/control"))
 			.vendor(encoded.into())
 			.timeout_ms(DEFAULT_INVOKE_TIMEOUT_MS)
 			.props(props)
@@ -1260,7 +1260,7 @@ fn assemble_request(
 	} else {
 		vec![
 			serde_json::to_vec(&serde_json::json!({ "role": "system", "content": system }))
-				.map_err(|error| Error::Provider(SmolStr::from(error.to_string())))?,
+				.map_err(|error| Error::Provider(Str::from(error.to_string())))?,
 		]
 	};
 	let max_mode = req
@@ -1341,7 +1341,7 @@ impl ConnectDecoder {
 				u32::from_be_bytes([self.buffer[1], self.buffer[2], self.buffer[3], self.buffer[4]])
 					as usize;
 			let Some(frame_len) = len.checked_add(5) else {
-				return Err(Error::Transport(SmolStr::new_static("Cursor frame length overflow")));
+				return Err(Error::Transport(Str::new_static("Cursor frame length overflow")));
 			};
 			if self.buffer.len() < frame_len {
 				let needed = frame_len - self.buffer.len();
@@ -1359,7 +1359,7 @@ impl ConnectDecoder {
 			let flags = bytes[0];
 			let len = u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
 			let Some(frame_len) = len.checked_add(5) else {
-				return Err(Error::Transport(SmolStr::new_static("Cursor frame length overflow")));
+				return Err(Error::Transport(Str::new_static("Cursor frame length overflow")));
 			};
 			if bytes.len() < frame_len {
 				break;
@@ -1368,7 +1368,7 @@ impl ConnectDecoder {
 			let payload = bytes.split_to(len);
 			if flags & CONNECT_END_STREAM != 0 {
 				if payload.windows(7).any(|window| window == b"\"error\"") {
-					return Err(Error::Transport(SmolStr::new_static(
+					return Err(Error::Transport(Str::new_static(
 						"Cursor Connect end-stream error",
 					)));
 				}
@@ -1389,7 +1389,7 @@ impl ConnectDecoder {
 				u32::from_be_bytes([self.buffer[1], self.buffer[2], self.buffer[3], self.buffer[4]])
 					as usize;
 			let Some(frame_len) = len.checked_add(5) else {
-				return Err(Error::Transport(SmolStr::new_static("Cursor frame length overflow")));
+				return Err(Error::Transport(Str::new_static("Cursor frame length overflow")));
 			};
 			if self.buffer.len() < frame_len {
 				break;
@@ -1398,7 +1398,7 @@ impl ConnectDecoder {
 			let payload = self.buffer.split_to(len).freeze();
 			if flags & CONNECT_END_STREAM != 0 {
 				if payload.windows(7).any(|window| window == b"\"error\"") {
-					return Err(Error::Transport(SmolStr::new_static(
+					return Err(Error::Transport(Str::new_static(
 						"Cursor Connect end-stream error",
 					)));
 				}
@@ -1436,9 +1436,9 @@ const fn client_control(
 	}
 }
 
-fn invocation_id(context: &ShellContext) -> SmolStr {
+fn invocation_id(context: &ShellContext) -> Str {
 	if context.exec_id.is_empty() {
-		SmolStr::from(context.id.to_string())
+		Str::from(context.id.to_string())
 	} else {
 		context.exec_id.clone()
 	}
@@ -1474,7 +1474,7 @@ mod tests {
 	use std::{sync::Arc, time::Duration};
 
 	use bytes::Bytes;
-	use omp_core::SmolStr;
+	use omp_core::Str;
 	use omp_llm_types::{
 		ChatRequest, ExecOutcome, ExecStatus, Invoke, InvokeChannel, InvokeChunk, InvokeComplete,
 		InvokeInput, InvokePayload, Props, ResolvedModelPolicy, StopReason, StreamPartKind, Thread,
@@ -1490,9 +1490,9 @@ mod tests {
 	fn context() -> ShellContext {
 		ShellContext {
 			id:      7,
-			exec_id: SmolStr::new_static("exec-7"),
-			command: SmolStr::new_static("printf test"),
-			cwd:     SmolStr::new_static("/work"),
+			exec_id: Str::new_static("exec-7"),
+			command: Str::new_static("printf test"),
+			cwd:     Str::new_static("/work"),
 		}
 	}
 
@@ -1504,11 +1504,11 @@ mod tests {
 			} else {
 				2
 			})
-			.signal(SmolStr::default())
-			.reason(SmolStr::new_static("policy"))
-			.cwd(SmolStr::new_static("/work"))
+			.signal(Str::default())
+			.reason(Str::new_static("policy"))
+			.cwd(Str::new_static("/work"))
 			.aborted(matches!(outcome, ExecOutcome::Timeout))
-			.output_location(SmolStr::default())
+			.output_location(Str::default())
 			.local_execution_time_ms(12)
 			.is_readonly(true)
 			.command_timeout_ms(500)
@@ -1517,7 +1517,7 @@ mod tests {
 
 	fn complete(outcome: ExecOutcome) -> InvokeComplete {
 		InvokeComplete::builder()
-			.invocation_id(SmolStr::new_static("exec-7"))
+			.invocation_id(Str::new_static("exec-7"))
 			.status(status(outcome))
 			.vendor(Bytes::new())
 			.props(Props::default())
@@ -1532,7 +1532,7 @@ mod tests {
 				..ResolvedModelPolicy::default()
 			});
 			let request = ChatRequest::builder()
-				.model(SmolStr::new_static("cursor/model"))
+				.model(Str::new_static("cursor/model"))
 				.thread(Thread::builder().items(Vec::new()).build())
 				.tools(Vec::new())
 				.provider_options(Props::default())
@@ -1632,7 +1632,7 @@ mod tests {
 	fn shell_stream_round_trip_preserves_channels_and_completion_order() {
 		let mut framer = InvocationFramer::new(context());
 		let stdout = InvokeInput::builder()
-			.invocation_id(SmolStr::new_static("exec-7"))
+			.invocation_id(Str::new_static("exec-7"))
 			.payload(InvokePayload::Chunk(
 				InvokeChunk::builder()
 					.channel(InvokeChannel::Stdout)
@@ -1641,7 +1641,7 @@ mod tests {
 			))
 			.build();
 		let stderr = InvokeInput::builder()
-			.invocation_id(SmolStr::new_static("exec-7"))
+			.invocation_id(Str::new_static("exec-7"))
 			.payload(InvokePayload::Chunk(
 				InvokeChunk::builder()
 					.channel(InvokeChannel::Stderr)
@@ -1705,7 +1705,7 @@ mod tests {
 	fn missing_status_uses_throw_then_close() {
 		let mut framer = InvocationFramer::new(context());
 		let completion = InvokeComplete::builder()
-			.invocation_id(SmolStr::new_static("exec-7"))
+			.invocation_id(Str::new_static("exec-7"))
 			.vendor(Bytes::new())
 			.props(Props::default())
 			.build();
@@ -1802,8 +1802,8 @@ mod tests {
 	#[tokio::test]
 	async fn invocation_deadline_emits_canonical_timeout() {
 		let invocation = Invoke::builder()
-			.invocation_id(SmolStr::new_static("exec-7"))
-			.name(SmolStr::new_static("cursor/control"))
+			.invocation_id(Str::new_static("exec-7"))
+			.name(Str::new_static("cursor/control"))
 			.vendor(Bytes::new())
 			.timeout_ms(1)
 			.props(Props::default())

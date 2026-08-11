@@ -1,6 +1,6 @@
 use std::mem;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use super::layout::{stack_height, stack_measure, stack_place};
 use crate::{
@@ -18,7 +18,7 @@ use crate::{
 pub struct CustomElement {
 	props:    Props,
 	slot:     Slot,
-	name:     SmolStr,
+	name:     Str,
 	children: Vec<Cached>,
 	resolved: Option<Cached>,
 	tried:    bool,
@@ -26,7 +26,7 @@ pub struct CustomElement {
 
 impl CustomElement {
 	/// Creates an unresolved custom element for the supplied tag name.
-	pub fn new(name: impl Into<SmolStr>) -> Self {
+	pub fn new(name: impl Into<Str>) -> Self {
 		Self {
 			props:    Props::new(),
 			slot:     next_slot(),
@@ -211,7 +211,7 @@ impl Component for CustomElement {
 		}
 	}
 
-	fn set_text(&mut self, ctx: &UiContext, text: SmolStr) -> bool {
+	fn set_text(&mut self, ctx: &UiContext, text: Str) -> bool {
 		self.resolve(ctx);
 		self
 			.resolved

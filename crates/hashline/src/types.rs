@@ -2,7 +2,7 @@
 
 use std::{error::Error, fmt};
 
-use omp_core::SmolStr;
+use omp_core::Str;
 
 /// A one-indexed source line anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -102,9 +102,9 @@ pub struct BlockResolution {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SplitOptions {
 	/// A working directory used to shorten absolute paths within it.
-	pub cwd:  Option<SmolStr>,
+	pub cwd:  Option<Str>,
 	/// A fallback path for headerless input containing recognizable operations.
-	pub path: Option<SmolStr>,
+	pub path: Option<Str>,
 }
 
 /// A low-level edit emitted in authored order by the parser.
@@ -115,7 +115,7 @@ pub enum Edit {
 		/// The pre-edit insertion cursor.
 		cursor:      Cursor,
 		/// The row text without a line terminator.
-		text:        SmolStr,
+		text:        Str,
 		/// The authored patch-language line.
 		line_num:    usize,
 		/// The authored edit sequence index.
@@ -139,7 +139,7 @@ pub enum Edit {
 		/// The span captured before deletion.
 		range:    ParsedRange,
 		/// A named register, or the anonymous register when absent.
-		register: Option<SmolStr>,
+		register: Option<Str>,
 		/// The authored patch-language line.
 		line_num: usize,
 		/// The authored edit sequence index.
@@ -150,7 +150,7 @@ pub enum Edit {
 		/// The paste destination.
 		at:          PasteTarget,
 		/// A named register, or the anonymous register when absent.
-		register:    Option<SmolStr>,
+		register:    Option<Str>,
 		/// The authored patch-language line.
 		line_num:    usize,
 		/// The authored edit sequence index.
@@ -163,11 +163,11 @@ pub enum Edit {
 		/// The authored block opener line.
 		anchor:   Anchor,
 		/// Literal replacement or insertion rows.
-		payloads: Vec<SmolStr>,
+		payloads: Vec<Str>,
 		/// The block operation.
 		mode:     BlockMode,
 		/// A named register, or the anonymous register when absent.
-		register: Option<SmolStr>,
+		register: Option<Str>,
 		/// The authored patch-language line.
 		line_num: usize,
 		/// The authored edit sequence index.
@@ -207,7 +207,7 @@ pub enum FileOp {
 	/// Move the section's file to a destination path.
 	Move {
 		/// The authored destination path.
-		dest: SmolStr,
+		dest: Str,
 	},
 }
 
@@ -289,7 +289,7 @@ pub struct Diagnostic {
 	/// The authored hunk/edit index, when available.
 	pub authored_index: Option<usize>,
 	/// The human-readable explanation and repair guidance.
-	pub message:        SmolStr,
+	pub message:        Str,
 }
 
 impl Diagnostic {
@@ -298,7 +298,7 @@ impl Diagnostic {
 		code: DiagnosticCode,
 		patch_line: Option<usize>,
 		authored_index: Option<usize>,
-		message: impl Into<SmolStr>,
+		message: impl Into<Str>,
 	) -> Self {
 		Self {
 			code,
@@ -314,7 +314,7 @@ impl Diagnostic {
 		code: DiagnosticCode,
 		patch_line: Option<usize>,
 		authored_index: Option<usize>,
-		message: impl Into<SmolStr>,
+		message: impl Into<Str>,
 	) -> Self {
 		Self {
 			code,

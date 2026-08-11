@@ -1,6 +1,6 @@
 //! Conversation messages stored by transcript events.
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use serde_json::value::RawValue;
 
@@ -47,9 +47,9 @@ pub enum Msg {
 		/// Token usage for the turn.
 		usage:       Usage,
 		/// Provider response identifier, when supplied.
-		response_id: Option<SmolStr>,
+		response_id: Option<Str>,
 		/// Aggregator-reported upstream route, when supplied.
-		upstream:    Option<SmolStr>,
+		upstream:    Option<Str>,
 		/// Context-window snapshot at request time.
 		ctx:         Option<CtxSnapshot>,
 		/// Request timing measurements.
@@ -62,7 +62,7 @@ pub enum Msg {
 		/// Bare call identifier paired with the assistant tool block.
 		call:          CallId,
 		/// Harness-visible tool name.
-		tool:          SmolStr,
+		tool:          Str,
 		/// Ordered result content.
 		content:       Vec<UserBlock>,
 		/// Verbatim renderer-specific details.
@@ -174,7 +174,7 @@ impl Eq for Msg {}
 
 #[derive(Deserialize)]
 struct RoleProbe {
-	role: SmolStr,
+	role: Str,
 }
 
 #[derive(Deserialize)]
@@ -197,8 +197,8 @@ struct AssistantPayload {
 	model:       ModelRef,
 	stop:        Stop,
 	usage:       Usage,
-	response_id: Option<SmolStr>,
-	upstream:    Option<SmolStr>,
+	response_id: Option<Str>,
+	upstream:    Option<Str>,
 	ctx:         Option<CtxSnapshot>,
 	timing:      Timing,
 	disabled:    Vec<FeatureId>,
@@ -207,7 +207,7 @@ struct AssistantPayload {
 #[derive(Deserialize)]
 struct ToolResultPayload {
 	call:          CallId,
-	tool:          SmolStr,
+	tool:          Str,
 	content:       Vec<UserBlock>,
 	details:       Option<Box<RawValue>>,
 	error:         bool,
@@ -277,7 +277,7 @@ pub enum UserBlock {
 	/// Text content.
 	Text {
 		/// Text exactly as supplied.
-		text: SmolStr,
+		text: Str,
 	},
 	/// Image content.
 	Image {

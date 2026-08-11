@@ -1,4 +1,4 @@
-use omp_core::SmolStr;
+use omp_core::Str;
 use smallvec::SmallVec;
 
 use super::Col;
@@ -15,7 +15,7 @@ use crate::{
 
 #[derive(Default)]
 struct TabsState {
-	titles: SmallVec<SmolStr, 6>,
+	titles: SmallVec<Str, 6>,
 	panes:  Vec<Cached>,
 	idx:    u16,
 	spans:  SmallVec<(u16, u16), 6>,
@@ -53,7 +53,7 @@ impl Tabs {
 	}
 
 	/// Appends a pane with the supplied title.
-	pub fn pane(mut self, title: impl Into<SmolStr>, children: impl IntoChildren) -> Self {
+	pub fn pane(mut self, title: impl Into<Str>, children: impl IntoChildren) -> Self {
 		let mut pane = Vec::new();
 		children.extend_children(&mut pane);
 		let pane = if pane.len() == 1 {

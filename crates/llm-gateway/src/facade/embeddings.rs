@@ -5,7 +5,7 @@ use std::{fmt::Display, sync::Arc};
 use bytes::Bytes;
 use http::{Request, StatusCode};
 use hyper::body::Body;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{EmbedRequest, Props};
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +15,7 @@ use super::{
 
 #[derive(Deserialize)]
 struct EmbeddingsRequest {
-	model:      SmolStr,
+	model:      Str,
 	input:      EmbeddingInput,
 	#[serde(default)]
 	dimensions: Option<u32>,
@@ -24,15 +24,15 @@ struct EmbeddingsRequest {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum EmbeddingInput {
-	One(SmolStr),
-	Many(Vec<SmolStr>),
+	One(Str),
+	Many(Vec<Str>),
 }
 
 #[derive(Serialize)]
 struct EmbeddingsResponse {
 	object: &'static str,
 	data:   Vec<EmbeddingData>,
-	model:  SmolStr,
+	model:  Str,
 	usage:  EmbeddingUsage,
 }
 
@@ -63,7 +63,7 @@ where
 		EmbeddingInput::Many(texts) if texts.is_empty() => {
 			return error_response(
 				Vendor::OpenAi,
-				FacadeError::Invalid(SmolStr::new("input must contain at least one string")),
+				FacadeError::Invalid(Str::new("input must contain at least one string")),
 			);
 		},
 		EmbeddingInput::Many(texts) => texts,
@@ -71,7 +71,7 @@ where
 	let Some(embed) = &state.facets.embed else {
 		return error_response(
 			Vendor::OpenAi,
-			FacadeError::Invalid(SmolStr::new("embedding is not available")),
+			FacadeError::Invalid(Str::new("embedding is not available")),
 		);
 	};
 	let request = EmbedRequest::builder()

@@ -22,7 +22,7 @@ use std::{
 	time::{Duration, Instant},
 };
 
-use omp_core::{SmolStr, base64, format_smol, hex};
+use omp_core::{Str, base64, fmts, hex};
 use smallvec::SmallVec;
 
 use crate::{Key, imagefmt::ImageFormat};
@@ -36,7 +36,7 @@ const IMAGE_MIMES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Pasted {
 	/// Pasted UTF-8 text, with invalid sequences replaced.
-	Text(SmolStr),
+	Text(Str),
 	/// Pasted image bytes.
 	Image(PastedImage),
 }
@@ -102,14 +102,14 @@ const READ_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug)]
 enum PastePhase {
 	Listing {
-		mimes:     SmallVec<SmolStr, 5>,
+		mimes:     SmallVec<Str, 5>,
 		kitty_dot: bool,
-		pw:        Option<SmolStr>,
-		loc:       Option<SmolStr>,
+		pw:        Option<Str>,
+		loc:       Option<Str>,
 	},
 	Reading {
-		mime:   SmolStr,
-		chunks: SmallVec<SmolStr, 4>,
+		mime:   Str,
+		chunks: SmallVec<Str, 4>,
 		/// Aggregate encoded length across `chunks`.
 		bytes:  usize,
 	},
@@ -169,9 +169,9 @@ impl PasteEvents {
 					self.phase = Some(PastePhase::Listing {
 						mimes:     SmallVec::new(),
 						kitty_dot: false,
-						pw:        metadata_value(&metadata, "pw").map(SmolStr::from),
+						pw:        metadata_value(&metadata, "pw").map(Str::from),
 						loc:       (metadata_value(&metadata, "loc") == Some("primary"))
-							.then(|| SmolStr::from("primary")),
+							.then(|| Str::from("primary")),
 					});
 				}
 				PasteProgress::Consumed
@@ -195,7 +195,7 @@ impl PasteEvents {
 		self.last_packet = None;
 	}
 
-	fn handle_data(&mut self, metadata: &[(SmolStr, SmolStr)], payload: &str) {
+	fn handle_data(&mut self, metadata: &[(Str, Str)], payload: &str) {
 		let Some(encoded_mime) = metadata_value(metadata, "mime") else {
 			return;
 		};
@@ -216,13 +216,13 @@ impl PasteEvents {
 						.split_ascii_whitespace()
 						.filter(|candidate| !candidate.is_empty() && *candidate != ".")
 						.take(MAX_LISTED_MIMES.saturating_sub(mimes.len()))
-						.map(SmolStr::from),
+						.map(Str::from),
 				);
 				false
 			},
 			Some(PastePhase::Listing { mimes, .. }) => {
 				if mimes.len() < MAX_LISTED_MIMES {
-					mimes.push(SmolStr::from(mime));
+					mimes.push(Str::from(mime));
 				}
 				false
 			},
@@ -233,7 +233,7 @@ impl PasteEvents {
 				if *bytes > MAX_READ_PAYLOAD_BYTES {
 					true
 				} else {
-					chunks.push(SmolStr::from(payload));
+					chunks.push(Str::from(payload));
 					false
 				}
 			},
@@ -288,7 +288,7 @@ impl PasteEvents {
 					return PasteProgress::Consumed;
 				}
 				if mime == "text/plain" {
-					return PasteProgress::Done(Pasted::Text(SmolStr::from(
+					return PasteProgress::Done(Pasted::Text(Str::from(
 						String::from_utf8_lossy(&bytes).as_ref(),
 					)));
 				}
@@ -301,16 +301,16 @@ impl PasteEvents {
 	}
 }
 
-fn parse_metadata(raw: &str) -> SmallVec<(SmolStr, SmolStr), 6> {
+fn parse_metadata(raw: &str) -> SmallVec<(Str, Str), 6> {
 	raw.split(':')
 		.filter_map(|part| {
 			let (key, value) = part.split_once('=')?;
-			(!key.is_empty()).then(|| (SmolStr::from(key), SmolStr::from(value)))
+			(!key.is_empty()).then(|| (Str::from(key), Str::from(value)))
 		})
 		.collect()
 }
 
-fn metadata_value<'a>(metadata: &'a [(SmolStr, SmolStr)], key: &str) -> Option<&'a str> {
+fn metadata_value<'a>(metadata: &'a [(Str, Str)], key: &str) -> Option<&'a str> {
 	metadata
 		.iter()
 		.rev()
@@ -322,12 +322,12 @@ fn decode_base64_text(encoded: &str) -> Option<String> {
 	String::from_utf8(bytes).ok()
 }
 
-fn choose_mime(mimes: &[SmolStr]) -> Option<SmolStr> {
+fn choose_mime(mimes: &[Str]) -> Option<Str> {
 	IMAGE_MIMES
 		.into_iter()
 		.chain(["text/plain"])
 		.find(|candidate| mimes.iter().any(|mime| mime == candidate))
-		.map(SmolStr::from)
+		.map(Str::from)
 }
 
 fn mime_format(mime: &str) -> Option<ImageFormat> {
@@ -341,7 +341,7 @@ fn mime_format(mime: &str) -> Option<ImageFormat> {
 }
 
 /// Classifies a dropped string as one or more absolute local paths.
-pub fn dropped_paths(text: &str) -> SmallVec<SmolStr, 2> {
+pub fn dropped_paths(text: &str) -> SmallVec<Str, 2> {
 	let trimmed = text.trim();
 	if trimmed.is_empty() {
 		return SmallVec::new();
@@ -364,7 +364,7 @@ pub fn dropped_paths(text: &str) -> SmallVec<SmolStr, 2> {
 	}
 	whole_text_image_path(trimmed)
 		.into_iter()
-		.collect::<SmallVec<SmolStr, 2>>()
+		.collect::<SmallVec<Str, 2>>()
 }
 
 /// Returns whether a path has a supported image extension.
@@ -377,7 +377,7 @@ pub fn is_image_path(path: &str) -> bool {
 		.any(|candidate| extension.eq_ignore_ascii_case(candidate))
 }
 
-fn split_path_tokens(text: &str) -> Option<Vec<SmolStr>> {
+fn split_path_tokens(text: &str) -> Option<Vec<Str>> {
 	let mut tokens = Vec::new();
 	let mut token = String::new();
 	let mut quote = None;
@@ -407,7 +407,7 @@ fn split_path_tokens(text: &str) -> Option<Vec<SmolStr>> {
 		}
 		if is_ascii_path_whitespace(ch) {
 			if !token.is_empty() {
-				tokens.push(SmolStr::from(std::mem::take(&mut token)));
+				tokens.push(Str::from(std::mem::take(&mut token)));
 			}
 			continue;
 		}
@@ -417,7 +417,7 @@ fn split_path_tokens(text: &str) -> Option<Vec<SmolStr>> {
 		return None;
 	}
 	if !token.is_empty() {
-		tokens.push(SmolStr::from(token));
+		tokens.push(Str::from(token));
 	}
 	(!tokens.is_empty()).then_some(tokens)
 }
@@ -426,7 +426,7 @@ const fn is_ascii_path_whitespace(ch: char) -> bool {
 	matches!(ch, ' ' | '\t' | '\r' | '\n')
 }
 
-fn normalize_path(raw: &str) -> Option<SmolStr> {
+fn normalize_path(raw: &str) -> Option<Str> {
 	let trimmed = raw.trim();
 	let unquoted = match (trimmed.chars().next(), trimmed.chars().last()) {
 		(Some(first @ ('\'' | '"')), Some(last)) if first == last && trimmed.len() > 1 => {
@@ -444,12 +444,12 @@ fn normalize_path(raw: &str) -> Option<SmolStr> {
 	if let Some(rest) = unescaped.strip_prefix("~/") {
 		#[allow(deprecated, reason = "the standard-library home lookup matches shell path expansion")]
 		let home = std::env::home_dir()?;
-		return Some(format_smol!("{}/{}", home.display(), rest));
+		return Some(fmts!("{}/{}", home.display(), rest));
 	}
 	Some(unescaped)
 }
 
-fn normalize_file_url(url: &str) -> Option<SmolStr> {
+fn normalize_file_url(url: &str) -> Option<Str> {
 	let rest = &url[7..];
 	let path = if rest.starts_with('/') {
 		rest
@@ -467,7 +467,7 @@ fn normalize_file_url(url: &str) -> Option<SmolStr> {
 	Some(percent_decode(path))
 }
 
-fn percent_decode(text: &str) -> SmolStr {
+fn percent_decode(text: &str) -> Str {
 	let bytes = text.as_bytes();
 	let mut output = Vec::with_capacity(bytes.len());
 	let mut index = 0;
@@ -484,10 +484,10 @@ fn percent_decode(text: &str) -> SmolStr {
 			index += 1;
 		}
 	}
-	SmolStr::from(String::from_utf8_lossy(&output).as_ref())
+	Str::from(String::from_utf8_lossy(&output).as_ref())
 }
 
-fn shell_unescape(text: &str) -> SmolStr {
+fn shell_unescape(text: &str) -> Str {
 	let (mut output, text) = if let Some(rest) = text.strip_prefix("\\\\") {
 		(String::from("\\\\"), rest)
 	} else {
@@ -505,7 +505,7 @@ fn shell_unescape(text: &str) -> SmolStr {
 			output.push(ch);
 		}
 	}
-	SmolStr::from(output)
+	Str::from(output)
 }
 
 fn has_absolute_anchor(path: &str) -> bool {
@@ -523,7 +523,7 @@ const fn is_windows_drive_path(path: &str) -> bool {
 		&& matches!(bytes[2], b'/' | b'\\')
 }
 
-fn whole_text_image_path(text: &str) -> Option<SmolStr> {
+fn whole_text_image_path(text: &str) -> Option<Str> {
 	if text.contains('\r')
 		|| text.contains('\n')
 		|| !has_raw_anchor(text)
@@ -588,7 +588,7 @@ pub enum Clipboard {
 	/// Encoded clipboard image.
 	Image(PastedImage),
 	/// Local paths copied by a file manager.
-	Paths(Vec<SmolStr>),
+	Paths(Vec<Str>),
 }
 
 /// Reads smart clipboard content, preferring image data, then file paths, then
@@ -945,7 +945,7 @@ fn is_wsl() -> bool {
 			|| std::env::var_os("WSL_INTEROP").is_some())
 }
 
-fn read_file_urls() -> Option<Vec<SmolStr>> {
+fn read_file_urls() -> Option<Vec<Str>> {
 	if !cfg!(target_os = "macos") {
 		return None;
 	}
@@ -956,7 +956,7 @@ fn read_file_urls() -> Option<Vec<SmolStr>> {
 		.lines()
 		.map(str::trim)
 		.filter(|line| !line.is_empty())
-		.map(SmolStr::from)
+		.map(Str::from)
 		.collect();
 	(!paths.is_empty()).then_some(paths)
 }
@@ -1062,7 +1062,7 @@ mod tests {
 		);
 		assert_eq!(
 			events.handle_osc_at("5522;type=read:status=DONE", later),
-			PasteProgress::Done(Pasted::Text(SmolStr::from("back")))
+			PasteProgress::Done(Pasted::Text(Str::from("back")))
 		);
 	}
 
@@ -1081,7 +1081,7 @@ mod tests {
 		);
 		assert_eq!(
 			complete_text_read(&mut events, "next"),
-			PasteProgress::Done(Pasted::Text(SmolStr::from("next")))
+			PasteProgress::Done(Pasted::Text(Str::from("next")))
 		);
 	}
 
@@ -1146,7 +1146,7 @@ mod tests {
 		));
 		assert_eq!(
 			events.handle_osc("5522;type=read:status=DONE"),
-			PasteProgress::Done(Pasted::Text(SmolStr::from("hello")))
+			PasteProgress::Done(Pasted::Text(Str::from("hello")))
 		);
 
 		events.handle_osc("5522;type=read:status=OK");
@@ -1171,7 +1171,7 @@ mod tests {
 		}
 		assert_eq!(
 			events.handle_osc("5522;type=read:status=DONE"),
-			PasteProgress::Done(Pasted::Text(SmolStr::from("ab")))
+			PasteProgress::Done(Pasted::Text(Str::from("ab")))
 		);
 	}
 
@@ -1226,7 +1226,7 @@ mod tests {
 	fn expands_home_path_when_available() {
 		#[allow(deprecated, reason = "the production path expansion uses the same standard lookup")]
 		if let Some(home) = std::env::home_dir() {
-			assert_eq!(dropped_paths("~/image.png").as_slice(), [format_smol!(
+			assert_eq!(dropped_paths("~/image.png").as_slice(), [fmts!(
 				"{}/image.png",
 				home.display()
 			)]);

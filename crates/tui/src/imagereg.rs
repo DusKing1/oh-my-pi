@@ -12,7 +12,7 @@
 
 use std::{collections::HashMap, sync::LazyLock};
 
-use omp_core::{CowBytes, SmolStr};
+use omp_core::{CowBytes, Str};
 use parking_lot::Mutex;
 
 use crate::imagefmt::{self, ImageDimensions};
@@ -29,7 +29,7 @@ pub struct InternedImage {
 struct Registry {
 	/// Source path → interned entry; failures cache as `None` so missing
 	/// files are probed once, not every rebuild.
-	by_source: HashMap<SmolStr, Option<InternedImage>>,
+	by_source: HashMap<Str, Option<InternedImage>>,
 	by_id:     HashMap<u32, CowBytes<'static>>,
 	allocated: u32,
 }
@@ -50,7 +50,7 @@ pub fn intern(source: &str) -> Option<InternedImage> {
 	}
 	registry
 		.by_source
-		.insert(SmolStr::from(source), interned.clone());
+		.insert(Str::from(source), interned.clone());
 	if let Some(entry) = &interned {
 		registry.by_id.insert(entry.id, entry.png.clone());
 	}

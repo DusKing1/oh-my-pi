@@ -1,4 +1,4 @@
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use super::text::{append, put_clipped, truncate_rich};
 use crate::{
@@ -13,7 +13,7 @@ use crate::{
 pub struct Callout {
 	props:        Props,
 	slot:         Slot,
-	text:         SmolStr,
+	text:         Str,
 	rich:         RichText,
 	version:      u64,
 	cached_width: u16,
@@ -26,7 +26,7 @@ impl Callout {
 		Self {
 			props:        Props::new(),
 			slot:         next_slot(),
-			text:         SmolStr::default(),
+			text:         Str::default(),
 			rich:         RichText::default(),
 			version:      1,
 			cached_width: 0,
@@ -47,7 +47,7 @@ impl Callout {
 	}
 
 	/// Appends Markdown source text.
-	pub fn text(mut self, text: impl Into<SmolStr>) -> Self {
+	pub fn text(mut self, text: impl Into<Str>) -> Self {
 		append(&mut self.text, text.into());
 		self.version = self.version.wrapping_add(1);
 		self
@@ -183,7 +183,7 @@ impl Component for Callout {
 		}
 	}
 
-	fn set_text(&mut self, _ctx: &crate::UiContext, text: SmolStr) -> bool {
+	fn set_text(&mut self, _ctx: &crate::UiContext, text: Str) -> bool {
 		if self.text == text {
 			return false;
 		}

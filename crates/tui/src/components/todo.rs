@@ -1,4 +1,4 @@
-use omp_core::SmolStr;
+use omp_core::Str;
 use smallvec::SmallVec;
 
 use crate::{
@@ -49,14 +49,14 @@ impl TaskStatus {
 /// the blocker note shown by [`TaskStatus::Blocked`].
 pub struct TodoTask {
 	props:    Props,
-	label:    SmolStr,
+	label:    Str,
 	children: Vec<Self>,
 }
 
 impl TodoTask {
 	/// Creates a pending, empty task.
 	pub fn new() -> Self {
-		Self { props: Props::new(), label: SmolStr::default(), children: Vec::new() }
+		Self { props: Props::new(), label: Str::default(), children: Vec::new() }
 	}
 
 	/// Sets one task property.
@@ -66,12 +66,12 @@ impl TodoTask {
 	}
 
 	/// Appends label text.
-	pub fn label(mut self, label: impl Into<SmolStr>) -> Self {
+	pub fn label(mut self, label: impl Into<Str>) -> Self {
 		let suffix = label.into();
 		if self.label.is_empty() {
 			self.label = suffix;
 		} else {
-			self.label = omp_core::format_smol!("{}{}", self.label, suffix);
+			self.label = omp_core::fmts!("{}{}", self.label, suffix);
 		}
 		self
 	}
@@ -97,7 +97,7 @@ impl TodoTask {
 
 	fn effective_label(&self) -> &str {
 		if self.label.is_empty() {
-			self.props.str_of(Prop::Label).map_or("", SmolStr::as_str)
+			self.props.str_of(Prop::Label).map_or("", Str::as_str)
 		} else {
 			&self.label
 		}
@@ -297,8 +297,8 @@ fn paint_tasks(
 			x = pc.frame.put(x, *y, label, label_style);
 			if status == TaskStatus::Blocked {
 				let note = task.props.str_of(Prop::Desc).map_or_else(
-					|| SmolStr::new_static(" (blocked)"),
-					|reason| omp_core::format_smol!(" (blocked: {reason})"),
+					|| Str::new_static(" (blocked)"),
+					|reason| omp_core::fmts!(" (blocked: {reason})"),
 				);
 				pc.frame.put(x, *y, &note, Style::new().dim());
 			}
@@ -309,7 +309,7 @@ fn paint_tasks(
 			x = pc
 				.frame
 				.put(x, *y, label, Style::new().fg(pc.ctx.theme.fg).bold());
-			let counter = omp_core::format_smol!(" {done}/{total}");
+			let counter = omp_core::fmts!(" {done}/{total}");
 			pc.frame.put(x, *y, &counter, Style::new().dim());
 		}
 		*y = y.saturating_add(1);

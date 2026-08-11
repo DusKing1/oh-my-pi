@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use bytes::{Bytes, BytesMut};
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use crate::{Message, Part, Role, StreamPartKind, Thinking, ToolCall, TurnEvent, ids::CallId};
 
@@ -60,7 +60,7 @@ struct PendingPart {
 enum PendingBody {
 	Text(BytesMut),
 	Thinking { text: BytesMut, signature: Bytes },
-	ToolCall { id: CallId, name: SmolStr, args: BytesMut },
+	ToolCall { id: CallId, name: Str, args: BytesMut },
 }
 
 impl StreamAccumulator {
@@ -98,13 +98,13 @@ impl StreamAccumulator {
 				PendingBody::Text(bytes) => {
 					let text =
 						std::str::from_utf8(bytes).map_err(|_| AccumulatorError::InvalidUtf8(index))?;
-					parts.push(Part::Text(SmolStr::from(text)));
+					parts.push(Part::Text(Str::from(text)));
 				},
 				PendingBody::Thinking { text: bytes, signature } => {
 					let text =
 						std::str::from_utf8(bytes).map_err(|_| AccumulatorError::InvalidUtf8(index))?;
 					parts.push(Part::Thinking(Thinking {
-						text:      SmolStr::from(text),
+						text:      Str::from(text),
 						signature: signature.clone(),
 						redacted:  false,
 					}));
@@ -175,7 +175,7 @@ impl StreamAccumulator {
 		index: u32,
 		kind: StreamPartKind,
 		tool_call_id: &str,
-		tool_name: SmolStr,
+		tool_name: Str,
 	) -> Result<(), AccumulatorError> {
 		if self.parts.contains_key(&index) {
 			return Err(AccumulatorError::DuplicateStart(index));
@@ -247,7 +247,7 @@ impl StreamAccumulator {
 #[cfg(test)]
 mod tests {
 	use bytes::Bytes;
-	use omp_core::SmolStr;
+	use omp_core::Str;
 
 	use super::{AccumulatorError, StreamAccumulator};
 	use crate::{Part, StreamPartKind, TurnEvent, ids::CallId};
@@ -256,8 +256,8 @@ mod tests {
 		TurnEvent::PartStart {
 			index,
 			kind,
-			tool_call_id: SmolStr::from(""),
-			tool_name: SmolStr::from(""),
+			tool_call_id: Str::from(""),
+			tool_name: Str::from(""),
 		}
 	}
 
@@ -275,8 +275,8 @@ mod tests {
 			TurnEvent::PartStart {
 				index:        2,
 				kind:         StreamPartKind::ToolCall,
-				tool_call_id: SmolStr::from(call_id.to_string()),
-				tool_name:    SmolStr::from("lookup"),
+				tool_call_id: Str::from(call_id.to_string()),
+				tool_name:    Str::from("lookup"),
 			},
 			delta(0, b"hello "),
 			delta(1, b"rea"),
@@ -310,8 +310,8 @@ mod tests {
 			.push(&TurnEvent::PartStart {
 				index:        0,
 				kind:         StreamPartKind::ToolCall,
-				tool_call_id: SmolStr::from(call_id.to_string()),
-				tool_name:    SmolStr::from("raw"),
+				tool_call_id: Str::from(call_id.to_string()),
+				tool_name:    Str::from("raw"),
 			})
 			.unwrap();
 		for chunk in [b"{ \"n\" : 1".as_slice(), b".00, \"x\":\"\\u0061\" }".as_slice()] {
@@ -349,8 +349,8 @@ mod tests {
 		let event = TurnEvent::PartStart {
 			index:        0,
 			kind:         StreamPartKind::ToolCall,
-			tool_call_id: SmolStr::new_static("00000000000000000000000000"),
-			tool_name:    SmolStr::new_static("lookup"),
+			tool_call_id: Str::new_static("00000000000000000000000000"),
+			tool_name:    Str::new_static("lookup"),
 		};
 		assert_eq!(accumulator.push(&event), Err(AccumulatorError::InvalidCallId(0)));
 	}

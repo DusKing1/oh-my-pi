@@ -12,7 +12,7 @@ use std::{
 use bytes::Bytes;
 use futures::StreamExt;
 use http::{Request, header};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_egress::{
 	auth_inject::{AuthInjectLayer, CredentialLease, CredentialSource},
 	client::{Body, EgressClient},
@@ -104,15 +104,15 @@ impl CredentialSource for TestCredentials {
 fn request(duration: u32) -> GenerateVideoRequest {
 	let frame = Bytes::from_static(b"reference-frame");
 	GenerateVideoRequest::builder()
-		.model(SmolStr::new_static("sora-2-pro"))
-		.prompt(SmolStr::new_static("a paper boat crossing a moonlit lake"))
+		.model(Str::new_static("sora-2-pro"))
+		.prompt(Str::new_static("a paper boat crossing a moonlit lake"))
 		.duration_seconds(duration)
 		.aspect_ratio(AspectRatio::Wide16x9)
 		.resolution(VideoResolution::P1080)
 		.start_frame(
 			BlobPart::builder()
 				.hash(*blake3::hash(&frame).as_bytes())
-				.mime(SmolStr::new_static("image/png"))
+				.mime(Str::new_static("image/png"))
 				.size(frame.len() as u64)
 				.inline(frame)
 				.build(),

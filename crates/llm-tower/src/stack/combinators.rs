@@ -15,7 +15,7 @@ use std::{
 use async_stream::stream;
 use bytes::{Buf, Bytes, BytesMut};
 use futures::{Stream, StreamExt, TryFutureExt, pin_mut};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::compat::{Compat, LeakedThinkingHealer};
 use omp_llm_types::{StreamPartKind, TurnError, TurnErrorKind, TurnEvent, ids::CallId};
 use omp_proto::{
@@ -90,7 +90,7 @@ where
 					yield TurnEvent::Error(
 						TurnError::builder()
 							.kind(TurnErrorKind::Upstream)
-							.detail(SmolStr::new(format!(
+							.detail(Str::new(format!(
 								"invalid canonical stream event: {error}"
 							)))
 							.unsupported(Vec::new())
@@ -578,7 +578,7 @@ where
 			let next_number = guarded_attempt + 1;
 			yield TurnEvent::Attempt {
 				number: next_number,
-				reason: SmolStr::new(format!("thinking loop: {detail}")),
+				reason: Str::new(format!("thinking loop: {detail}")),
 			};
 			if next_is_guarded {
 				let shift = guarded_attempt.saturating_sub(1).min(31);
@@ -646,7 +646,7 @@ fn timeout_error(detail: &'static str) -> TurnEvent {
 	TurnEvent::Error(
 		TurnError::builder()
 			.kind(TurnErrorKind::Upstream)
-			.detail(SmolStr::new_static(detail))
+			.detail(Str::new_static(detail))
 			.unsupported(Vec::new())
 			.retry_after_ms(0)
 			.build(),
@@ -657,7 +657,7 @@ fn loop_error(detail: &str) -> TurnEvent {
 	TurnEvent::Error(
 		TurnError::builder()
 			.kind(TurnErrorKind::Upstream)
-			.detail(SmolStr::new(format!(
+			.detail(Str::new(format!(
 				"thinking loop detected: {detail}; treating as a stream stall"
 			)))
 			.unsupported(Vec::new())
@@ -785,8 +785,8 @@ impl TextProjection {
 					self.close(out);
 					self.start(
 						StreamPartKind::Thinking,
-						SmolStr::default(),
-						SmolStr::default(),
+						Str::default(),
+						Str::default(),
 						next,
 						out,
 					);
@@ -795,7 +795,7 @@ impl TextProjection {
 				MarkupEvent::ThinkingEnd => self.close(out),
 				MarkupEvent::Tool { name, arguments } => {
 					self.close(out);
-					let id = SmolStr::new(CallId::new().to_string());
+					let id = Str::new(CallId::new().to_string());
 					self.start(StreamPartKind::ToolCall, id, name, next, out);
 					if !arguments.is_empty() {
 						let index = self.open.expect("tool part was just opened").0;
@@ -819,7 +819,7 @@ impl TextProjection {
 		}
 		if self.open.is_none_or(|(_, current)| current != kind) {
 			self.close(out);
-			self.start(kind, SmolStr::default(), SmolStr::default(), next, out);
+			self.start(kind, Str::default(), Str::default(), next, out);
 		}
 		let index = self.open.expect("part was just opened").0;
 		out.push(TurnEvent::PartDelta { index, chunk });
@@ -828,8 +828,8 @@ impl TextProjection {
 	fn start(
 		&mut self,
 		kind: StreamPartKind,
-		tool_call_id: SmolStr,
-		tool_name: SmolStr,
+		tool_call_id: Str,
+		tool_name: Str,
 		next: &mut u32,
 		out: &mut SmallVec<TurnEvent, 8>,
 	) {
@@ -877,7 +877,7 @@ enum MarkupEvent {
 	ThinkingStart,
 	Thinking(Bytes),
 	ThinkingEnd,
-	Tool { name: SmolStr, arguments: Bytes },
+	Tool { name: Str, arguments: Bytes },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1195,7 +1195,7 @@ fn tag_open_len(rest: &[u8], minimum: usize) -> Option<usize> {
 		.map(|offset| minimum + offset + 1)
 }
 
-fn parse_tool(flavor: ToolFlavor, open: &Bytes, body: &Bytes) -> Option<(SmolStr, Bytes)> {
+fn parse_tool(flavor: ToolFlavor, open: &Bytes, body: &Bytes) -> Option<(Str, Bytes)> {
 	match flavor {
 		ToolFlavor::Json => parse_json_call(body),
 		ToolFlavor::XmlToolCall => parse_json_call(body).or_else(|| parse_xml_tool_call(body)),
@@ -1216,7 +1216,7 @@ fn parse_tool(flavor: ToolFlavor, open: &Bytes, body: &Bytes) -> Option<(SmolStr
 			}
 			let args = body.slice(split + ARGUMENT.len()..);
 			let range = trim_range(&args);
-			Some((SmolStr::new(name), args.slice(range)))
+			Some((Str::new(name), args.slice(range)))
 		},
 		ToolFlavor::DeepSeek => {
 			const SEPARATOR: &[u8] = "<｜tool▁sep｜>".as_bytes();
@@ -1227,7 +1227,7 @@ fn parse_tool(flavor: ToolFlavor, open: &Bytes, body: &Bytes) -> Option<(SmolStr
 			}
 			let args = body.slice(split + SEPARATOR.len()..);
 			let range = trim_range(&args);
-			Some((SmolStr::new(name), args.slice(range)))
+			Some((Str::new(name), args.slice(range)))
 		},
 		ToolFlavor::Gemma => {
 			let range = trim_range(body);
@@ -1240,12 +1240,12 @@ fn parse_tool(flavor: ToolFlavor, open: &Bytes, body: &Bytes) -> Option<(SmolStr
 			}
 			let args_start = range.start + b"call:".len() + brace;
 			let args_end = range.end;
-			Some((SmolStr::new(name), body.slice(args_start..args_end)))
+			Some((Str::new(name), body.slice(args_start..args_end)))
 		},
 	}
 }
 
-fn parse_xml_tool_call(body: &Bytes) -> Option<(SmolStr, Bytes)> {
+fn parse_xml_tool_call(body: &Bytes) -> Option<(Str, Bytes)> {
 	const NAME_OPEN: &[u8] = b"<name>";
 	const NAME_CLOSE: &[u8] = b"</name>";
 	const ARGUMENTS_OPEN: &[u8] = b"<arguments>";
@@ -1265,10 +1265,10 @@ fn parse_xml_tool_call(body: &Bytes) -> Option<(SmolStr, Bytes)> {
 		+ ARGUMENTS_OPEN.len();
 	let arguments_end = arguments_start + find_bytes(&body[arguments_start..], ARGUMENTS_CLOSE)?;
 	serde_json::from_slice::<serde_json::Value>(&body[arguments_start..arguments_end]).ok()?;
-	Some((SmolStr::new(name), body.slice(arguments_start..arguments_end)))
+	Some((Str::new(name), body.slice(arguments_start..arguments_end)))
 }
 
-fn parse_json_call(body: &Bytes) -> Option<(SmolStr, Bytes)> {
+fn parse_json_call(body: &Bytes) -> Option<(Str, Bytes)> {
 	let trimmed = trim_range(body);
 	let value: serde_json::Value = serde_json::from_slice(&body[trimmed.clone()]).ok()?;
 	let name = value.get("name")?.as_str()?;
@@ -1277,7 +1277,7 @@ fn parse_json_call(body: &Bytes) -> Option<(SmolStr, Bytes)> {
 	}
 	let arguments = find_json_member_value(&body[trimmed.clone()], b"arguments")?;
 	Some((
-		SmolStr::new(name),
+		Str::new(name),
 		body.slice(trimmed.start + arguments.start..trimmed.start + arguments.end),
 	))
 }
@@ -1295,7 +1295,7 @@ fn find_json_member_value(object: &[u8], wanted: &[u8]) -> Option<std::ops::Rang
 		}
 		let key_start = at;
 		let key_end = scan_json_string(object, key_start)?;
-		let key: SmolStr = serde_json::from_slice(&object[key_start..key_end]).ok()?;
+		let key: Str = serde_json::from_slice(&object[key_start..key_end]).ok()?;
 		at = skip_ws(object, key_end);
 		if object.get(at)? != &b':' {
 			return None;
@@ -1373,7 +1373,7 @@ fn scan_json_string(input: &[u8], start: usize) -> Option<usize> {
 	None
 }
 
-fn parse_name_attribute(open: &[u8]) -> Option<SmolStr> {
+fn parse_name_attribute(open: &[u8]) -> Option<Str> {
 	let text = std::str::from_utf8(open).ok()?;
 	let name = text.find("name=")? + "name=".len();
 	let quote = *text.as_bytes().get(name)?;
@@ -1386,7 +1386,7 @@ fn parse_name_attribute(open: &[u8]) -> Option<SmolStr> {
 		.position(|byte| *byte == quote)?
 		+ value_start;
 	let value = &text[value_start..value_end];
-	(!value.is_empty()).then(|| SmolStr::new(value))
+	(!value.is_empty()).then(|| Str::new(value))
 }
 
 fn trim_range(bytes: &[u8]) -> std::ops::Range<usize> {
@@ -1450,7 +1450,7 @@ struct EventLoopDetector {
 }
 
 impl EventLoopDetector {
-	fn push(&mut self, event: &TurnEvent) -> Option<SmolStr> {
+	fn push(&mut self, event: &TurnEvent) -> Option<Str> {
 		match event {
 			TurnEvent::PartStart { index, kind, .. } => {
 				self.parts.push((*index, *kind));
@@ -1511,14 +1511,14 @@ impl EventLoopDetector {
 struct LoopDetector {
 	tail:          String,
 	pending:       String,
-	recent:        SmallVec<FxHashSet<SmolStr>, 16>,
-	vocab:         SmallVec<FxHashSet<SmolStr>, 8>,
+	recent:        SmallVec<FxHashSet<Str>, 16>,
+	vocab:         SmallVec<FxHashSet<Str>, 8>,
 	segment_count: usize,
 	stall_run:     usize,
 }
 
 impl LoopDetector {
-	fn push(&mut self, delta: &[u8]) -> Option<SmolStr> {
+	fn push(&mut self, delta: &[u8]) -> Option<Str> {
 		let delta = std::str::from_utf8(delta).ok()?;
 		if delta.is_empty() {
 			return None;
@@ -1532,7 +1532,7 @@ impl LoopDetector {
 			self.tail.drain(..start);
 		}
 		if let Some((unit, count)) = detect_verbatim_repetition(self.tail.as_bytes()) {
-			return Some(SmolStr::new(format!(
+			return Some(Str::new(format!(
 				"repeated {:?} {count} times back-to-back",
 				String::from_utf8_lossy(unit).trim()
 			)));
@@ -1560,7 +1560,7 @@ impl LoopDetector {
 		}
 	}
 
-	fn flush(&mut self) -> Option<SmolStr> {
+	fn flush(&mut self) -> Option<Str> {
 		if self.pending.is_empty() {
 			return None;
 		}
@@ -1574,7 +1574,7 @@ impl LoopDetector {
 		None
 	}
 
-	fn consume_segment(&mut self, raw: &str) -> Option<SmolStr> {
+	fn consume_segment(&mut self, raw: &str) -> Option<Str> {
 		let normalized = normalize_segment(raw);
 		if normalized.len() < SEGMENT_MIN_NORMALIZED_BYTES {
 			return None;
@@ -1582,10 +1582,10 @@ impl LoopDetector {
 		let words: SmallVec<&str, 96> = normalized.split_ascii_whitespace().collect();
 		let mut fingerprint = FxHashSet::default();
 		if words.len() < 3 {
-			fingerprint.insert(SmolStr::new(normalized.as_str()));
+			fingerprint.insert(Str::new(normalized.as_str()));
 		} else {
 			for triple in words.windows(3) {
-				fingerprint.insert(SmolStr::new(format!("{} {} {}", triple[0], triple[1], triple[2])));
+				fingerprint.insert(Str::new(format!("{} {} {}", triple[0], triple[1], triple[2])));
 			}
 		}
 		let cluster = 1
@@ -1595,7 +1595,7 @@ impl LoopDetector {
 				.filter(|prior| jaccard(&fingerprint, prior) >= SEGMENT_SIMILARITY)
 				.count();
 
-		let word_set: FxHashSet<SmolStr> = words.iter().map(SmolStr::new).collect();
+		let word_set: FxHashSet<Str> = words.iter().map(Str::new).collect();
 		let mut prior_vocab = FxHashSet::default();
 		for prior in &self.vocab {
 			prior_vocab.extend(prior.iter().cloned());
@@ -1626,12 +1626,12 @@ impl LoopDetector {
 		self.segment_count += 1;
 		if self.segment_count >= SEGMENT_MIN_COUNT {
 			if cluster >= SEGMENT_MIN_CLUSTER {
-				return Some(SmolStr::new(format!(
+				return Some(Str::new(format!(
 					"{cluster} near-identical segments within the last {SEGMENT_WINDOW}"
 				)));
 			}
 			if self.stall_run >= NOVELTY_STALL_RUN {
-				return Some(SmolStr::new(format!(
+				return Some(Str::new(format!(
 					"{} low-information segments recycling recent wording",
 					self.stall_run
 				)));
@@ -1709,7 +1709,7 @@ fn normalize_segment(segment: &str) -> String {
 	normalized
 }
 
-fn jaccard(left: &FxHashSet<SmolStr>, right: &FxHashSet<SmolStr>) -> f32 {
+fn jaccard(left: &FxHashSet<Str>, right: &FxHashSet<Str>) -> f32 {
 	if left.is_empty() || right.is_empty() {
 		return 0.0;
 	}
@@ -1734,8 +1734,8 @@ mod tests {
 		events.push(TurnEvent::PartStart {
 			index:        7,
 			kind:         StreamPartKind::Text,
-			tool_call_id: SmolStr::default(),
-			tool_name:    SmolStr::default(),
+			tool_call_id: Str::default(),
+			tool_name:    Str::default(),
 		});
 		for chunk in chunks {
 			events.push(TurnEvent::PartDelta { index: 7, chunk: Bytes::from_static(chunk) });
@@ -1858,8 +1858,8 @@ mod tests {
 			TurnEvent::PartStart {
 				index:        0,
 				kind:         StreamPartKind::Thinking,
-				tool_call_id: SmolStr::default(),
-				tool_name:    SmolStr::default(),
+				tool_call_id: Str::default(),
+				tool_name:    Str::default(),
 			},
 			TurnEvent::PartDelta { index: 0, chunk: Bytes::from(repeated) },
 		]);
@@ -1879,8 +1879,8 @@ mod tests {
 				TurnEvent::PartStart {
 					index:        0,
 					kind:         StreamPartKind::Thinking,
-					tool_call_id: SmolStr::default(),
-					tool_name:    SmolStr::default(),
+					tool_call_id: Str::default(),
+					tool_name:    Str::default(),
 				},
 				TurnEvent::PartDelta { index: 0, chunk: Bytes::from("thinking-loop-unit-".repeat(12)) },
 			])
@@ -1928,8 +1928,8 @@ mod tests {
 			TurnEvent::PartStart {
 				index:        7,
 				kind:         StreamPartKind::Text,
-				tool_call_id: SmolStr::default(),
-				tool_name:    SmolStr::default(),
+				tool_call_id: Str::default(),
+				tool_name:    Str::default(),
 			},
 			TurnEvent::PartDelta { index: 7, chunk: Bytes::from_static(b"<think>visible</think>") },
 			TurnEvent::PartEnd { index: 7, signature: Default::default() },

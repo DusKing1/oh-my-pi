@@ -7,7 +7,7 @@
 - `append_vec` implements the thread-safe, segmented `AppendVec` and its borrowed `AppendSlice` views.
 - `cow_bytes` provides `CowBytes`, a borrowed-or-`Bytes` byte container with cheap owned clones and zero-copy slicing.
 - `encoding` contains generic base-N machinery and the public hex, Base32, Base32-Hex, Base32-DNS, Base64, and URL-safe Base64 interfaces.
-- `smolstr` provides immutable and mutable small-string types, clone-on-write strings, formatting helpers, and conversions.
+- `str` provides immutable and mutable small-string types, clone-on-write strings, formatting helpers, and conversions.
 - `sparse_index`, `sparse_map`, and `sparse_set` implement the indexing machinery and public sparse map and set collections.
 
 The crate root re-exports the principal collection, string, byte, and encoding types so callers usually do not need to depend on module layout.

@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{Error, Unsupported};
 use serde_json::{Map, Value, json};
 
@@ -33,7 +33,7 @@ pub fn transform_codex_request(
 ) -> Result<Vec<Unsupported>, Error> {
 	let object = body
 		.as_object_mut()
-		.ok_or_else(|| Error::Provider(SmolStr::new("Codex request body must be a JSON object")))?;
+		.ok_or_else(|| Error::Provider(Str::new("Codex request body must be a JSON object")))?;
 	object.insert("store".into(), Value::Bool(false));
 	object.insert("stream".into(), Value::Bool(true));
 	include_encrypted_reasoning(object);

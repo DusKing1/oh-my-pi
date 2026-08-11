@@ -8,7 +8,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_cursor::{
 	ConnectDecoder, CursorDecodeState, InvocationFramer, ShellContext, connect_frame,
 	decode_server_message, drive_invocation, require_executor, wire as cursor_wire,
@@ -27,20 +27,20 @@ use tokio::sync::oneshot;
 const fn shell_context() -> ShellContext {
 	ShellContext {
 		id:      17,
-		exec_id: SmolStr::new_static("exec-17"),
-		command: SmolStr::new_static("printf colours"),
-		cwd:     SmolStr::new_static("/work/project"),
+		exec_id: Str::new_static("exec-17"),
+		command: Str::new_static("printf colours"),
+		cwd:     Str::new_static("/work/project"),
 	}
 }
 
 fn invocation(call_id: CallId) -> Invoke {
 	Invoke::builder()
-		.invocation_id(SmolStr::new_static("exec-17"))
-		.name(SmolStr::new_static("bash"))
+		.invocation_id(Str::new_static("exec-17"))
+		.name(Str::new_static("bash"))
 		.tool_call(
 			ToolCall::builder()
 				.id(call_id)
-				.name(SmolStr::new_static("bash"))
+				.name(Str::new_static("bash"))
 				.args_json(Bytes::from_static(br#"{"command":"printf colours"}"#))
 				.thought_signature(Bytes::new())
 				.build(),
@@ -59,11 +59,11 @@ fn status(outcome: ExecOutcome) -> ExecStatus {
 		} else {
 			23
 		})
-		.signal(SmolStr::default())
-		.reason(SmolStr::new_static("policy detail"))
-		.cwd(SmolStr::new_static("/work/project"))
+		.signal(Str::default())
+		.reason(Str::new_static("policy detail"))
+		.cwd(Str::new_static("/work/project"))
 		.aborted(outcome == ExecOutcome::Timeout)
-		.output_location(SmolStr::default())
+		.output_location(Str::default())
 		.local_execution_time_ms(41)
 		.is_readonly(true)
 		.command_timeout_ms(750)
@@ -72,12 +72,12 @@ fn status(outcome: ExecOutcome) -> ExecStatus {
 
 fn completion(call_id: CallId, outcome: ExecOutcome) -> InvokeComplete {
 	InvokeComplete::builder()
-		.invocation_id(SmolStr::new_static("exec-17"))
+		.invocation_id(Str::new_static("exec-17"))
 		.tool_result(
 			ToolResult::builder()
 				.call_id(call_id)
-				.name(SmolStr::new_static("shell"))
-				.parts(vec![Part::Text(SmolStr::new_static("committed output"))])
+				.name(Str::new_static("shell"))
+				.parts(vec![Part::Text(Str::new_static("committed output"))])
 				.is_error(outcome != ExecOutcome::Exited)
 				.build(),
 		)
@@ -349,7 +349,7 @@ impl Executor for ScriptedExecutor {
 			inputs
 				.send_async(
 					InvokeInput::builder()
-						.invocation_id(SmolStr::new_static("exec-17"))
+						.invocation_id(Str::new_static("exec-17"))
 						.payload(InvokePayload::Chunk(
 							InvokeChunk::builder().channel(channel).data(data).build(),
 						))

@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use smallvec::SmallVec;
 
 use super::{
@@ -261,7 +261,7 @@ impl TableCell {
 
 	/// The `(text, style)` run of a flattenable child; `None` for children
 	/// that cannot join a single-line flatten (images, containers).
-	fn flatten_run<'a>(child: &'a mut Cached, ctx: &UiContext) -> Option<(&'a SmolStr, Style)> {
+	fn flatten_run<'a>(child: &'a mut Cached, ctx: &UiContext) -> Option<(&'a Str, Style)> {
 		let style = child.comp().props().style(&ctx.theme);
 		let comp = child.comp_mut();
 		if let Some(pre) = comp.downcast_mut::<Pre>() {
@@ -281,14 +281,14 @@ impl TableCell {
 		};
 		// Cells are single-line: any hard break renders as a space, and
 		// every child keeps its own style through the shared clip.
-		let mut runs: SmallVec<(Style, SmolStr), 8> = SmallVec::new();
+		let mut runs: SmallVec<(Style, Str), 8> = SmallVec::new();
 		for child in self.children.iter_mut().filter(|child| child.visible) {
 			let Some((text, style)) = Self::flatten_run(child, ctx) else {
 				return false;
 			};
 			for (index, line) in text.as_str().split('\n').enumerate() {
 				if index > 0 {
-					runs.push((style, SmolStr::new_static(" ")));
+					runs.push((style, Str::new_static(" ")));
 				}
 				runs.push((style, text.slice_ref(line)));
 			}

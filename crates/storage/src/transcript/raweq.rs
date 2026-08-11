@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde_json::value::RawValue;
 
 pub fn raw_eq(a: &RawValue, b: &RawValue) -> bool {
@@ -18,8 +18,8 @@ pub fn opt_raw_eq(a: Option<&RawValue>, b: Option<&RawValue>) -> bool {
 }
 
 pub fn map_raw_eq(
-	a: &BTreeMap<SmolStr, Box<RawValue>>,
-	b: &BTreeMap<SmolStr, Box<RawValue>>,
+	a: &BTreeMap<Str, Box<RawValue>>,
+	b: &BTreeMap<Str, Box<RawValue>>,
 ) -> bool {
 	a.len() == b.len()
 		&& a
@@ -48,11 +48,11 @@ mod tests {
 		assert!(!opt_raw_eq(Some(&*compact), None));
 
 		let mut compact_map = BTreeMap::new();
-		compact_map.insert(SmolStr::new("field"), compact);
+		compact_map.insert(Str::new("field"), compact);
 		let mut same_map = BTreeMap::new();
-		same_map.insert(SmolStr::new("field"), same);
+		same_map.insert(Str::new("field"), same);
 		let mut spaced_map = BTreeMap::new();
-		spaced_map.insert(SmolStr::new("field"), spaced);
+		spaced_map.insert(Str::new("field"), spaced);
 		assert!(map_raw_eq(&compact_map, &same_map));
 		assert!(!map_raw_eq(&compact_map, &spaced_map));
 	}

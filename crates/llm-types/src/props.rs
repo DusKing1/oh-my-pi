@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use omp_core::{SmolStr, SmolStrMut};
+use omp_core::{Str, StrMut};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -20,14 +20,14 @@ use serde_json::Value;
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Props(
 	/// Deterministically ordered namespaced keys and their JSON values.
-	pub BTreeMap<SmolStr, Value>,
+	pub BTreeMap<Str, Value>,
 );
 
 impl Props {
 	/// Returns a property addressed by its namespace and local name.
 	#[must_use]
 	pub fn get_ns(&self, namespace: &str, name: &str) -> Option<&Value> {
-		let mut key = SmolStrMut::with_capacity(namespace.len() + name.len() + 1);
+		let mut key = StrMut::with_capacity(namespace.len() + name.len() + 1);
 		key.push_str(namespace);
 		key.push_str("/");
 		key.push_str(name);
@@ -37,7 +37,7 @@ impl Props {
 	/// Inserts a property under a namespaced key, returning the value previously
 	/// stored there.
 	pub fn insert_ns(&mut self, namespace: &str, name: &str, value: Value) -> Option<Value> {
-		let mut key = SmolStrMut::with_capacity(namespace.len() + name.len() + 1);
+		let mut key = StrMut::with_capacity(namespace.len() + name.len() + 1);
 		key.push_str(namespace);
 		key.push_str("/");
 		key.push_str(name);

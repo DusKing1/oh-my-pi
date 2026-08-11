@@ -4,7 +4,7 @@
 use std::{collections::HashMap, path::Path, sync::Arc};
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_hashline::{
 	ApplyMode, ApplyOptions, Clipboard, Patch, RecoveryEdit, ReplaceOptions, RevisionToken,
 	SnapshotStore, apply_parsed_patch, apply_replace, loop_guard::NoopLoopGuard, recover_exact,
@@ -92,7 +92,7 @@ impl Adapter {
 /// registry would also share hashline read provenance, retained snapshots,
 /// clipboard registers, and no-op counters.
 pub struct EditAdapterRegistry {
-	adapters: RwLock<HashMap<SmolStr, Adapter>>,
+	adapters: RwLock<HashMap<Str, Adapter>>,
 }
 
 impl Default for EditAdapterRegistry {
@@ -131,21 +131,21 @@ impl EditAdapterRegistry {
 	/// names.
 	pub fn register(
 		&self,
-		format: impl Into<SmolStr>,
+		format: impl Into<Str>,
 		adapter: Arc<dyn TextEditAdapter>,
 	) -> Result<()> {
 		let format = format.into();
 		if format.is_empty() {
 			return Err(Error::InvalidTarget {
 				target: format,
-				reason: SmolStr::new_static("edit format must not be empty"),
+				reason: Str::new_static("edit format must not be empty"),
 			});
 		}
 		let mut adapters = self.adapters.write();
 		if adapters.contains_key(&format) {
 			return Err(Error::InvalidTarget {
 				target: format,
-				reason: SmolStr::new_static("edit format is already registered in this session"),
+				reason: Str::new_static("edit format is already registered in this session"),
 			});
 		}
 		adapters.insert(format, Adapter::Boxed(adapter));
@@ -188,12 +188,12 @@ impl EditAdapterRegistry {
 				.get(format)
 				.cloned()
 				.ok_or_else(|| Error::InvalidTarget {
-					target: SmolStr::new(format),
-					reason: SmolStr::new_static("unknown edit format"),
+					target: Str::new(format),
+					reason: Str::new_static("unknown edit format"),
 				})?;
 		let base_len =
 			u64::try_from(base_snapshot.content().len()).map_err(|_| Error::InvalidContent {
-				reason: SmolStr::new_static("base snapshot is too large for byte coordinates"),
+				reason: Str::new_static("base snapshot is too large for byte coordinates"),
 			})?;
 		let edits = adapter.lower(path, base_snapshot, payload, options_json)?;
 		validate_edits(base_len, &edits)?;
@@ -233,7 +233,7 @@ impl TextEditAdapter for HashlineAdapter {
 			.snapshots
 			.record(path, revision, snapshot.content().clone(), seen_lines)
 			.map_err(|error| Error::Protocol {
-				reason: SmolStr::new(format!("could not retain hashline read snapshot: {error}")),
+				reason: Str::new(format!("could not retain hashline read snapshot: {error}")),
 			})?;
 		Ok(())
 	}
@@ -248,12 +248,12 @@ impl TextEditAdapter for HashlineAdapter {
 		parse_hashline_options(&options_json)?;
 		let path = path_key(path)?;
 		let text = std::str::from_utf8(&payload).map_err(|error| Error::Protocol {
-			reason: SmolStr::new(format!("omp.hashline payload is not UTF-8: {error}")),
+			reason: Str::new(format!("omp.hashline payload is not UTF-8: {error}")),
 		})?;
 		let patch = Patch::parse_default(text).map_err(hashline_content_error)?;
 		if patch.sections.len() != 1 {
 			return Err(Error::InvalidContent {
-				reason: SmolStr::new_static(
+				reason: Str::new_static(
 					"omp.hashline payload must contain exactly one file section",
 				),
 			});
@@ -262,7 +262,7 @@ impl TextEditAdapter for HashlineAdapter {
 		if section.path != path {
 			return Err(Error::InvalidTarget {
 				target: section.path.clone(),
-				reason: SmolStr::new(format!(
+				reason: Str::new(format!(
 					"hashline section path does not match transaction path {path}"
 				)),
 			});
@@ -271,12 +271,12 @@ impl TextEditAdapter for HashlineAdapter {
 			.file_hash
 			.as_deref()
 			.ok_or_else(|| Error::InvalidContent {
-				reason: SmolStr::new_static("omp.hashline section must include an exact snapshot tag"),
+				reason: Str::new_static("omp.hashline section must include an exact snapshot tag"),
 			})?;
 		let parsed = section.parse().map_err(hashline_content_error)?;
 		if parsed.file_op.is_some() {
 			return Err(Error::InvalidContent {
-				reason: SmolStr::new_static(
+				reason: Str::new_static(
 					"omp.hashline text intents cannot contain filesystem operations",
 				),
 			});
@@ -296,7 +296,7 @@ impl TextEditAdapter for HashlineAdapter {
 		{
 			return Err(Error::InvalidTarget {
 				target: path.clone(),
-				reason: SmolStr::new(format!(
+				reason: Str::new(format!(
 					"hashline line {unseen} was not present in this session's read of {path}#{tag}"
 				)),
 			});
@@ -314,10 +314,10 @@ impl TextEditAdapter for HashlineAdapter {
 			.iter()
 			.map(|edit| {
 				let start = u64::try_from(edit.start).map_err(|_| Error::InvalidContent {
-					reason: SmolStr::new_static("hashline edit start exceeds byte coordinates"),
+					reason: Str::new_static("hashline edit start exceeds byte coordinates"),
 				})?;
 				let end = u64::try_from(edit.end).map_err(|_| Error::InvalidContent {
-					reason: SmolStr::new_static("hashline edit end exceeds byte coordinates"),
+					reason: Str::new_static("hashline edit end exceeds byte coordinates"),
 				})?;
 				let range = RecoveryByteRange::new(start, end).map_err(hashline_content_error)?;
 				Ok(RecoveryEdit::new(range, edit.replacement.clone()))
@@ -338,7 +338,7 @@ impl TextEditAdapter for HashlineAdapter {
 		if edits.is_empty() {
 			let noop = state.noops.record_noop(path, payload);
 			if noop.should_escalate() {
-				return Err(Error::InvalidContent { reason: SmolStr::new(noop.diagnostic()) });
+				return Err(Error::InvalidContent { reason: Str::new(noop.diagnostic()) });
 			}
 		} else {
 			state.noops.reset(&path);
@@ -389,13 +389,13 @@ impl TextEditAdapter for ReplaceAdapter {
 	) -> Result<Vec<ByteEdit>> {
 		let payload: ReplacePayload =
 			serde_json::from_slice(&payload).map_err(|error| Error::Protocol {
-				reason: SmolStr::new(format!("malformed omp.replace payload JSON: {error}")),
+				reason: Str::new(format!("malformed omp.replace payload JSON: {error}")),
 			})?;
 		let options = if options_json.is_empty() {
 			ReplaceAdapterOptions::default()
 		} else {
 			serde_json::from_slice(&options_json).map_err(|error| Error::Protocol {
-				reason: SmolStr::new(format!("malformed omp.replace options JSON: {error}")),
+				reason: Str::new(format!("malformed omp.replace options JSON: {error}")),
 			})?
 		};
 		let result = apply_replace(
@@ -409,17 +409,17 @@ impl TextEditAdapter for ReplaceAdapter {
 			},
 		)
 		.map_err(|error| Error::InvalidContent {
-			reason: SmolStr::new(format!("omp.replace could not be applied: {error}")),
+			reason: Str::new(format!("omp.replace could not be applied: {error}")),
 		})?;
 		result
 			.edits
 			.into_iter()
 			.map(|edit| {
 				let start = u64::try_from(edit.start).map_err(|_| Error::InvalidContent {
-					reason: SmolStr::new_static("replace edit start exceeds byte coordinates"),
+					reason: Str::new_static("replace edit start exceeds byte coordinates"),
 				})?;
 				let end = u64::try_from(edit.end).map_err(|_| Error::InvalidContent {
-					reason: SmolStr::new_static("replace edit end exceeds byte coordinates"),
+					reason: Str::new_static("replace edit end exceeds byte coordinates"),
 				})?;
 				Ok(ByteEdit::new(ByteRange::new(start, end)?, edit.replacement))
 			})
@@ -434,17 +434,17 @@ fn parse_hashline_options(options: &[u8]) -> Result<()> {
 	serde_json::from_slice::<HashlineOptions>(options)
 		.map(|_| ())
 		.map_err(|error| Error::Protocol {
-			reason: SmolStr::new(format!("malformed omp.hashline options JSON: {error}")),
+			reason: Str::new(format!("malformed omp.hashline options JSON: {error}")),
 		})
 }
 
-fn path_key(path: &Path) -> Result<SmolStr> {
+fn path_key(path: &Path) -> Result<Str> {
 	path
 		.to_str()
-		.map(SmolStr::new)
+		.map(Str::new)
 		.ok_or_else(|| Error::InvalidTarget {
-			target: SmolStr::new(path.to_string_lossy()),
-			reason: SmolStr::new_static("edit paths must be valid UTF-8"),
+			target: Str::new(path.to_string_lossy()),
+			reason: Str::new_static("edit paths must be valid UTF-8"),
 		})
 }
 
@@ -467,7 +467,7 @@ fn selected_lines(content: &Bytes, selection: &ReadSelection) -> Result<Vec<usiz
 		ReadSelection::Bytes(_) => Ok(Vec::new()),
 		ReadSelection::Lines(ranges) => {
 			let upper_bound = u64::try_from(line_count).map_err(|_| Error::InvalidContent {
-				reason: SmolStr::new_static("snapshot has too many lines"),
+				reason: Str::new_static("snapshot has too many lines"),
 			})?;
 			let mut lines = Vec::new();
 			for range in ranges {
@@ -483,7 +483,7 @@ fn selected_lines(content: &Bytes, selection: &ReadSelection) -> Result<Vec<usiz
 
 fn hashline_content_error(error: impl std::fmt::Display) -> Error {
 	Error::InvalidContent {
-		reason: SmolStr::new(format!("omp.hashline could not be applied: {error}")),
+		reason: Str::new(format!("omp.hashline could not be applied: {error}")),
 	}
 }
 

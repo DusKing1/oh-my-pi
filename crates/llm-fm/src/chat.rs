@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::{StreamExt as _, stream::BoxStream};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{
 	Accuracy, Chat, ChatOutcome, ChatRequest, Diagnostic, Error, Executor, Fallback, Item, ItemKind,
 	Message, Part, Props, Retryability, Role, StopReason, StreamPartKind, TurnError, TurnErrorKind,
@@ -69,7 +69,7 @@ impl<E: AppleFmEngine> Chat for AppleFmChat<E> {
 
 struct Projected {
 	options:     AppleFmOptions,
-	model:       SmolStr,
+	model:       Str,
 	unsupported: Vec<Unsupported>,
 }
 
@@ -102,7 +102,7 @@ fn project(request: ChatRequest) -> std::result::Result<Projected, Error> {
 		}
 	}
 	let prompt = selected.ok_or_else(|| {
-		Error::Provider(SmolStr::new_static("Apple Intelligence requires a non-empty text prompt."))
+		Error::Provider(Str::new_static("Apple Intelligence requires a non-empty text prompt."))
 	})?;
 	let model = request.model.clone();
 	let mut unsupported = Vec::new();
@@ -179,8 +179,8 @@ fn project(request: ChatRequest) -> std::result::Result<Projected, Error> {
 			options.max_tokens = Some(u32::try_from(max).unwrap_or_else(|_| {
 				unsupported.push(
 					Unsupported::builder()
-						.what(SmolStr::new_static("sampling.max_output_tokens"))
-						.detail(SmolStr::new_static("clamped to the Foundation Models u32 limit"))
+						.what(Str::new_static("sampling.max_output_tokens"))
+						.detail(Str::new_static("clamped to the Foundation Models u32 limit"))
 						.action(UnsupportedAction::Clamped)
 						.build(),
 				);
@@ -212,7 +212,7 @@ fn project(request: ChatRequest) -> std::result::Result<Projected, Error> {
 
 fn drive(
 	mut native: BoxStream<'static, Result<AppleFmEvent>>,
-	model: SmolStr,
+	model: Str,
 	unsupported: Vec<Unsupported>,
 ) -> BoxStream<'static, TurnEvent> {
 	Box::pin(async_stream::stream! {
@@ -255,14 +255,14 @@ fn part_start() -> TurnEvent {
 	TurnEvent::PartStart {
 		index:        0,
 		kind:         StreamPartKind::Text,
-		tool_call_id: SmolStr::new_static(""),
-		tool_name:    SmolStr::new_static(""),
+		tool_call_id: Str::new_static(""),
+		tool_name:    Str::new_static(""),
 	}
 }
 
 fn outcome(
 	generation: crate::AppleFmGeneration,
-	model: SmolStr,
+	model: Str,
 	unsupported: Vec<Unsupported>,
 ) -> TurnEvent {
 	let total = u64::from(generation.prompt_tokens_estimated)
@@ -292,14 +292,14 @@ fn outcome(
 			.stop(StopReason::EndTurn)
 			.usage(usage)
 			.unsupported(unsupported)
-			.provider(SmolStr::new_static(PROVIDER_ID))
+			.provider(Str::new_static(PROVIDER_ID))
 			.model(model)
 			.props(Props::default())
 			.build(),
 	)
 }
 
-fn terminal_error(error: AppleFmError, model: SmolStr) -> TurnEvent {
+fn terminal_error(error: AppleFmError, model: Str) -> TurnEvent {
 	let code = error.code();
 	let detail = actionable_message(&error);
 	let (kind, retryability) = match code {
@@ -325,10 +325,10 @@ fn terminal_error(error: AppleFmError, model: SmolStr) -> TurnEvent {
 		.then(|| vec![dropped("request", detail.as_str())])
 		.unwrap_or_default();
 	let diagnostic = Diagnostic::builder()
-		.provider(SmolStr::new_static(PROVIDER_ID))
+		.provider(Str::new_static(PROVIDER_ID))
 		.model(model)
 		.attempt(1)
-		.code(SmolStr::from(code.to_string()))
+		.code(Str::from(code.to_string()))
 		.detail(detail.clone())
 		.retryability(retryability)
 		.build();
@@ -343,8 +343,8 @@ fn terminal_error(error: AppleFmError, model: SmolStr) -> TurnEvent {
 	)
 }
 
-fn actionable_message(error: &AppleFmError) -> SmolStr {
-	SmolStr::new_static(match error.code() {
+fn actionable_message(error: &AppleFmError) -> Str {
+	Str::new_static(match error.code() {
 		AppleFmErrorCode::Cancelled => "Apple Intelligence request aborted",
 		AppleFmErrorCode::GuardrailBlocked => {
 			"Apple's safety guardrails blocked this request. Try rephrasing it."
@@ -376,7 +376,7 @@ fn actionable_message(error: &AppleFmError) -> SmolStr {
 		| AppleFmErrorCode::TimedOut
 		| AppleFmErrorCode::UnsupportedGuide
 		| AppleFmErrorCode::DecodingFailure
-		| AppleFmErrorCode::Runtime => return SmolStr::from(error.message()),
+		| AppleFmErrorCode::Runtime => return Str::from(error.message()),
 	})
 }
 
@@ -395,8 +395,8 @@ fn admit_drop(
 
 fn dropped(what: &'static str, detail: &str) -> Unsupported {
 	Unsupported::builder()
-		.what(SmolStr::new_static(what))
-		.detail(SmolStr::from(detail))
+		.what(Str::new_static(what))
+		.detail(Str::from(detail))
 		.action(UnsupportedAction::Dropped)
 		.build()
 }
@@ -482,7 +482,7 @@ mod tests {
 
 	fn request(items: Vec<Item>) -> ChatRequest {
 		ChatRequest::builder()
-			.model(SmolStr::new_static("apple-on-device"))
+			.model(Str::new_static("apple-on-device"))
 			.thread(Thread::builder().items(items).build())
 			.tools(Vec::new())
 			.build()

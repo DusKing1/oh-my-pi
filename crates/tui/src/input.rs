@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use xutf::{IntoUnicodeNormalized, Text};
 
 use crate::rich::cell_width;
@@ -90,7 +90,7 @@ const PASTE_END: &[u8] = b"\x1b[201~";
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TerminalResponse {
 	/// Primary or secondary device attributes (`DA`).
-	DeviceAttributes(SmolStr),
+	DeviceAttributes(Str),
 	/// DEC private-mode report (`DECRPM`).
 	ModeReport {
 		/// Queried DEC mode.
@@ -99,15 +99,15 @@ pub enum TerminalResponse {
 		status: u8,
 	},
 	/// Device-status report (`DSR`), including cursor position.
-	DeviceStatus(SmolStr),
+	DeviceStatus(Str),
 	/// Kitty keyboard protocol flags.
 	KittyKeyboardFlags(u8),
 	/// Operating-system command reply, without its framing bytes.
-	Osc(SmolStr),
+	Osc(Str),
 	/// Kitty graphics APC reply, without its framing bytes.
-	KittyGraphics(SmolStr),
+	KittyGraphics(Str),
 	/// Device-control string reply, without its framing bytes.
-	DeviceControlString(SmolStr),
+	DeviceControlString(Str),
 	/// OSC 11 terminal background-color report.
 	OscColor {
 		/// OSC color-table index (11 for the terminal background).
@@ -133,7 +133,7 @@ pub enum TerminalResponse {
 		y_px: u16,
 	},
 	/// Non-kitty application-program command reply, without its framing bytes.
-	ApplicationProgramCommand(SmolStr),
+	ApplicationProgramCommand(Str),
 }
 /// Physical button encoded by an SGR mouse report.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -198,7 +198,7 @@ pub enum InputEvent {
 	/// Lossless SGR mouse input.
 	Mouse(MouseReport),
 	/// Sanitized bracketed-paste text.
-	Paste(SmolStr),
+	Paste(Str),
 	/// Focus gained (`true`) or lost (`false`).
 	Focus(bool),
 	/// A terminal-generated capability or status reply.
@@ -368,7 +368,7 @@ impl InputDecoder {
 	fn finish_paste(&mut self, out: &mut Vec<InputEvent>) {
 		let bytes = std::mem::take(&mut self.paste);
 		let decoded = decode_reencoded_paste_controls(&bytes);
-		out.push(InputEvent::Paste(SmolStr::from(sanitize_paste(&decoded))));
+		out.push(InputEvent::Paste(Str::from(sanitize_paste(&decoded))));
 		self.paste_active = false;
 		self.paste_last_input = None;
 		self.paste_scan_from = 0;
@@ -592,12 +592,12 @@ fn decode_frame(bytes: &[u8]) -> Decoded {
 			if let Some((index, r, g, b)) = parse_osc_color(payload) {
 				Decoded::Event(InputEvent::Response(TerminalResponse::OscColor { index, r, g, b }))
 			} else {
-				Decoded::Event(InputEvent::Response(TerminalResponse::Osc(smol(payload))))
+				Decoded::Event(InputEvent::Response(TerminalResponse::Osc(decode_text(payload))))
 			}
 		},
 		Some(b'P') => {
 			let end = sequence.len().saturating_sub(2);
-			Decoded::Event(InputEvent::Response(TerminalResponse::DeviceControlString(smol(
+			Decoded::Event(InputEvent::Response(TerminalResponse::DeviceControlString(decode_text(
 				&sequence[2..end],
 			))))
 		},
@@ -605,9 +605,9 @@ fn decode_frame(bytes: &[u8]) -> Decoded {
 			let end = sequence.len().saturating_sub(2);
 			let payload = &sequence[2..end];
 			if let Some(payload) = payload.strip_prefix(b"G") {
-				Decoded::Event(InputEvent::Response(TerminalResponse::KittyGraphics(smol(payload))))
+				Decoded::Event(InputEvent::Response(TerminalResponse::KittyGraphics(decode_text(payload))))
 			} else {
-				Decoded::Event(InputEvent::Response(TerminalResponse::ApplicationProgramCommand(smol(
+				Decoded::Event(InputEvent::Response(TerminalResponse::ApplicationProgramCommand(decode_text(
 					payload,
 				))))
 			}
@@ -618,7 +618,7 @@ fn decode_frame(bytes: &[u8]) -> Decoded {
 
 fn decode_csi(body: &[u8], final_byte: u8, meta: bool) -> Decoded {
 	if final_byte == b'c' && matches!(body.first(), Some(b'?' | b'>')) {
-		return Decoded::Event(InputEvent::Response(TerminalResponse::DeviceAttributes(smol(body))));
+		return Decoded::Event(InputEvent::Response(TerminalResponse::DeviceAttributes(decode_text(body))));
 	}
 	if final_byte == b'y'
 		&& let Some(fields) = body
@@ -656,7 +656,7 @@ fn decode_csi(body: &[u8], final_byte: u8, meta: bool) -> Decoded {
 		}));
 	}
 	if matches!(final_byte, b'n' | b'R') {
-		return Decoded::Event(InputEvent::Response(TerminalResponse::DeviceStatus(smol(body))));
+		return Decoded::Event(InputEvent::Response(TerminalResponse::DeviceStatus(decode_text(body))));
 	}
 	if body.is_empty() && matches!(final_byte, b'I' | b'O') {
 		return Decoded::Event(InputEvent::Focus(final_byte == b'I'));
@@ -923,8 +923,8 @@ fn parse_decimal_u8(bytes: &[u8]) -> Option<u8> {
 	parse_decimal(bytes).and_then(|number| u8::try_from(number).ok())
 }
 
-fn smol(bytes: &[u8]) -> SmolStr {
-	SmolStr::from(String::from_utf8_lossy(bytes).as_ref())
+fn decode_text(bytes: &[u8]) -> Str {
+	Str::from(String::from_utf8_lossy(bytes).as_ref())
 }
 fn parse_appearance_response(body: &[u8]) -> Option<u8> {
 	let mut fields = body.strip_prefix(b"?997;")?.split(|byte| *byte == b';');
@@ -979,13 +979,13 @@ fn parse_hex_component(bytes: &[u8]) -> Option<u16> {
 
 fn emit_unterminated_response(bytes: &[u8], out: &mut Vec<InputEvent>) -> bool {
 	let response = if let Some(payload) = bytes.strip_prefix(b"\x1b]") {
-		TerminalResponse::Osc(smol(payload))
+		TerminalResponse::Osc(decode_text(payload))
 	} else if let Some(payload) = bytes.strip_prefix(b"\x1b_G") {
-		TerminalResponse::KittyGraphics(smol(payload))
+		TerminalResponse::KittyGraphics(decode_text(payload))
 	} else if let Some(payload) = bytes.strip_prefix(b"\x1b_") {
-		TerminalResponse::ApplicationProgramCommand(smol(payload))
+		TerminalResponse::ApplicationProgramCommand(decode_text(payload))
 	} else if let Some(payload) = bytes.strip_prefix(b"\x1bP") {
-		TerminalResponse::DeviceControlString(smol(payload))
+		TerminalResponse::DeviceControlString(decode_text(payload))
 	} else {
 		return false;
 	};
@@ -1307,30 +1307,30 @@ pub enum UiEvent {
 	/// Esc at the top level or a `cancel` button fired.
 	Cancel,
 	/// A plain `id`-carrying button fired.
-	Pressed(SmolStr),
+	Pressed(Str),
 	/// An `id`-carrying select's cursor rested on a new option.
 	Highlighted {
 		/// The select's `id`.
-		id:    SmolStr,
+		id:    Str,
 		/// Value of the option under the cursor.
-		value: SmolStr,
+		value: Str,
 	},
 	/// An `id`-carrying select committed the option under its cursor.
 	Changed {
 		/// The select's `id`.
-		id:    SmolStr,
+		id:    Str,
 		/// Value of the committed option.
-		value: SmolStr,
+		value: Str,
 	},
 	/// An `id`-carrying filterable select's query changed.
 	Filtered {
 		/// The select's `id`.
-		id:    SmolStr,
+		id:    Str,
 		/// The new filter query.
-		query: SmolStr,
+		query: Str,
 		/// Value of the option under the cursor after re-filtering;
 		/// `None` when nothing matches.
-		value: Option<SmolStr>,
+		value: Option<Str>,
 	},
 }
 

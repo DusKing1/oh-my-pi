@@ -11,7 +11,7 @@ use futures::{StreamExt, stream::BoxStream};
 use http::{Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Body as HttpBody;
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use omp_llm_catalog::{
 	compat::AudioApiVersion,
 	provider::{BaseUrlVars, ProviderEntry, TransportId, expand_base_url},
@@ -43,22 +43,22 @@ pub enum AudioAttemptError {
 	Encode(OpenAiAudioError),
 	/// Catalog endpoint template expansion failed.
 	#[error("invalid audio provider endpoint: {0}")]
-	Endpoint(SmolStr),
+	Endpoint(Str),
 	/// The encoded request could not form an HTTP request.
 	#[error("invalid audio provider request: {0}")]
-	HttpRequest(SmolStr),
+	HttpRequest(Str),
 	/// The authenticated egress stack failed before response headers.
 	#[error("audio provider egress failed: {0}")]
-	Egress(SmolStr),
+	Egress(Str),
 	/// The upstream rejected the request with an HTTP status.
 	#[error("audio provider returned HTTP status {0}")]
 	HttpStatus(StatusCode),
 	/// The upstream response media type did not match the operation.
 	#[error("audio provider returned invalid Content-Type: {0}")]
-	ContentType(SmolStr),
+	ContentType(Str),
 	/// The upstream response body failed or was empty.
 	#[error("audio provider response body failed: {0}")]
-	Body(SmolStr),
+	Body(Str),
 	/// The codec rejected a complete transcription response.
 	#[error("audio provider response decoding failed: {0}")]
 	Decode(OpenAiAudioError),
@@ -135,7 +135,7 @@ impl<S> AudioProviderAttempt<S> {
 			utterance.extend_from_slice(&first);
 			yield SpeakEvent::Chunk(SpeakChunk::builder()
 				.audio(first)
-				.transcript_delta(SmolStr::default())
+				.transcript_delta(Str::default())
 				.build());
 			while let Some(frame) = body.frame().await {
 				let Ok(frame) = frame else { return };
@@ -144,7 +144,7 @@ impl<S> AudioProviderAttempt<S> {
 				utterance.extend_from_slice(&chunk);
 				yield SpeakEvent::Chunk(SpeakChunk::builder()
 					.audio(chunk)
-					.transcript_delta(SmolStr::default())
+					.transcript_delta(Str::default())
 					.build());
 			}
 			let utterance = utterance.freeze();
@@ -270,7 +270,7 @@ fn endpoint(
 			.gateway(route.gateway.as_str())
 			.build(),
 	)
-	.map_err(|error| AudioAttemptError::Endpoint(format_smol!("{error}")))?;
+	.map_err(|error| AudioAttemptError::Endpoint(fmts!("{error}")))?;
 	let separator = match provider.compat.audio_api_version {
 		AudioApiVersion::None => "",
 		AudioApiVersion::V2025_04_01Preview => "?api-version=2025-04-01-preview",
@@ -298,7 +298,7 @@ fn response_mime(
 	headers: &http::HeaderMap,
 	fallback: &'static str,
 	audio: bool,
-) -> Result<SmolStr, AudioAttemptError> {
+) -> Result<Str, AudioAttemptError> {
 	let value = headers
 		.get(header::CONTENT_TYPE)
 		.and_then(|value| value.to_str().ok())

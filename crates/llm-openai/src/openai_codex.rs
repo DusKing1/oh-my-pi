@@ -7,7 +7,7 @@
 use std::{collections::BTreeMap, fmt};
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{
 	TransportId,
 	codex::{CODEX_CLIENT_VERSION, CODEX_ORIGINATOR},
@@ -126,7 +126,7 @@ impl fmt::Debug for CodexHeaderValue {
 /// The plan contains subscription fingerprint and session headers, but never an
 /// `authorization`, `cookie`, or API-key value.
 #[derive(Clone, Default, Eq, PartialEq)]
-pub struct CodexHeaderPlan(BTreeMap<SmolStr, CodexHeaderValue>);
+pub struct CodexHeaderPlan(BTreeMap<Str, CodexHeaderValue>);
 
 impl CodexHeaderPlan {
 	/// Iterates deterministic header names and values for egress application.
@@ -146,13 +146,13 @@ impl CodexHeaderPlan {
 	fn insert_plain(&mut self, name: &'static str, value: impl Into<Bytes>) {
 		self
 			.0
-			.insert(SmolStr::new(name), CodexHeaderValue::plain(value));
+			.insert(Str::new(name), CodexHeaderValue::plain(value));
 	}
 
 	fn insert_sensitive(&mut self, name: &'static str, value: impl Into<Bytes>) {
 		self
 			.0
-			.insert(SmolStr::new(name), CodexHeaderValue::sensitive(value));
+			.insert(Str::new(name), CodexHeaderValue::sensitive(value));
 	}
 }
 
@@ -169,17 +169,17 @@ impl fmt::Debug for CodexHeaderPlan {
 #[derive(Clone, Eq, PartialEq)]
 pub struct CodexRequestIdentity {
 	/// Installation id shared across sessions.
-	pub installation_id: SmolStr,
+	pub installation_id: Str,
 	/// Normalized conversation/session id.
-	pub session_id:      SmolStr,
+	pub session_id:      Str,
 	/// Stable thread id for the session.
-	pub thread_id:       SmolStr,
+	pub thread_id:       Str,
 	/// Window id rotated by history compaction.
-	pub window_id:       SmolStr,
+	pub window_id:       Str,
 	/// Turn id retained across tool-result continuations.
-	pub turn_id:         SmolStr,
+	pub turn_id:         Str,
 	/// Canonical ASCII JSON `x-codex-turn-metadata` value.
-	pub turn_metadata:   SmolStr,
+	pub turn_metadata:   Str,
 }
 
 impl fmt::Debug for CodexRequestIdentity {
@@ -192,7 +192,7 @@ impl fmt::Debug for CodexRequestIdentity {
 #[derive(Clone, Default, Eq, PartialEq)]
 pub struct CodexCredentialMetadata {
 	/// ChatGPT account/workspace id recovered from broker-held OAuth claims.
-	pub account_id: Option<SmolStr>,
+	pub account_id: Option<Str>,
 }
 
 impl fmt::Debug for CodexCredentialMetadata {
@@ -299,7 +299,7 @@ pub fn apply_codex_client_metadata(
 ) -> Result<(), Error> {
 	let body = body
 		.as_object_mut()
-		.ok_or_else(|| Error::Provider(SmolStr::new("Codex request body must be a JSON object")))?;
+		.ok_or_else(|| Error::Provider(Str::new("Codex request body must be a JSON object")))?;
 	let metadata = body
 		.entry("client_metadata")
 		.or_insert_with(|| Value::Object(Default::default()));
@@ -364,7 +364,7 @@ impl OpenAiCodexCodec {
 		{
 			Some(Value::Bool(value)) => Ok(*value),
 			Some(_) => {
-				Err(Error::Provider(SmolStr::new("openai-codex/responses_lite must be a boolean")))
+				Err(Error::Provider(Str::new("openai-codex/responses_lite must be a boolean")))
 			},
 			None => Ok(req
 				.model_policy
@@ -389,7 +389,7 @@ impl OpenAiCodexCodec {
 		}
 		let (body, mut unsupported) = self.responses.encode(&delegated, compat)?;
 		let mut body: Value = serde_json::from_slice(&body)
-			.map_err(|error| Error::Provider(SmolStr::from(error.to_string())))?;
+			.map_err(|error| Error::Provider(Str::from(error.to_string())))?;
 		unsupported.extend(transform_codex_request(&mut body, responses_lite)?);
 		let mut ignored = Vec::new();
 		let policy = OpenAiModelPolicy::resolve(req, compat, &mut ignored);
@@ -419,7 +419,7 @@ impl OpenAiCodexCodec {
 		}
 		serde_json::to_vec(&body)
 			.map(|body| (Bytes::from(body), unsupported))
-			.map_err(|error| Error::Provider(SmolStr::from(error.to_string())))
+			.map_err(|error| Error::Provider(Str::from(error.to_string())))
 	}
 }
 
@@ -456,7 +456,7 @@ impl Transport for OpenAiCodexCodec {
 mod tests {
 	use std::sync::Arc;
 
-	use omp_core::SmolStr;
+	use omp_core::Str;
 	use omp_llm_types::{ChatRequest, Props, ResolvedModelPolicy, Thread};
 	use serde_json::json;
 
@@ -465,7 +465,7 @@ mod tests {
 
 	fn request() -> ChatRequest {
 		ChatRequest::builder()
-			.model(SmolStr::new_static("gpt-5.6-sol"))
+			.model(Str::new_static("gpt-5.6-sol"))
 			.thread(Thread::builder().items(Vec::new()).build())
 			.tools(Vec::new())
 			.build()

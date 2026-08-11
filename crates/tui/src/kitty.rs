@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 
 use crate::{Color, Style, escape::esc};
 
@@ -326,7 +326,7 @@ pub const fn placement_id(rows: u16, cols: u16) -> u32 {
 
 /// Builds one Kitty Unicode-placeholder grapheme and its style: the image ID
 /// rides the foreground color, the placement ID the underline color.
-pub fn placeholder_cell(id: u32, row: u16, col: u16, rows: u16, cols: u16) -> (SmolStr, Style) {
+pub fn placeholder_cell(id: u32, row: u16, col: u16, rows: u16, cols: u16) -> (Str, Style) {
 	let row_mark = DIACRITICS
 		.get(usize::from(row))
 		.copied()
@@ -335,7 +335,7 @@ pub fn placeholder_cell(id: u32, row: u16, col: u16, rows: u16, cols: u16) -> (S
 		.get(usize::from(col))
 		.copied()
 		.unwrap_or(DIACRITICS[0]);
-	let text = format_smol!("\u{10eeee}{row_mark}{col_mark}");
+	let text = fmts!("\u{10eeee}{row_mark}{col_mark}");
 	let placement = placement_id(rows, cols);
 	let style = Style::new()
 		.fg(Color::Rgb((id >> 16) as u8, (id >> 8) as u8, id as u8))

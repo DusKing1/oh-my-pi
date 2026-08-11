@@ -28,7 +28,7 @@ use std::{
 };
 
 use futures::{Stream, channel::mpsc};
-use omp_core::SmolStr;
+use omp_core::Str;
 use tokio::task::JoinError;
 use tokio_util::sync::CancellationToken;
 
@@ -110,7 +110,7 @@ impl fmt::Display for AppleFmErrorCode {
 #[error("{message}")]
 pub struct AppleFmError {
 	code:    AppleFmErrorCode,
-	message: SmolStr,
+	message: Str,
 }
 
 impl AppleFmError {
@@ -124,7 +124,7 @@ impl AppleFmError {
 		self.message.as_str()
 	}
 
-	fn new(code: AppleFmErrorCode, message: impl Into<SmolStr>) -> Self {
+	fn new(code: AppleFmErrorCode, message: impl Into<Str>) -> Self {
 		Self { code, message: message.into() }
 	}
 
@@ -139,7 +139,7 @@ impl AppleFmError {
 		)
 	}
 
-	fn runtime(message: impl Into<SmolStr>) -> Self {
+	fn runtime(message: impl Into<Str>) -> Self {
 		Self::new(AppleFmErrorCode::Runtime, message)
 	}
 }
@@ -153,16 +153,16 @@ pub struct AppleFmAvailability {
 	/// Whether the system model can generate responses now.
 	pub available: bool,
 	/// Stable unavailability reason or native loading diagnostic.
-	pub reason:    Option<SmolStr>,
+	pub reason:    Option<Str>,
 }
 
 /// Controls one Apple Foundation Models request.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppleFmOptions {
 	/// User prompt sent to the on-device model.
-	pub prompt:        SmolStr,
+	pub prompt:        Str,
 	/// Optional instructions applied to the model session.
-	pub system_prompt: Option<SmolStr>,
+	pub system_prompt: Option<Str>,
 	/// Enables Apple's permissive content-transformations guardrail mode.
 	pub permissive:    bool,
 	/// Optional sampling temperature.
@@ -173,7 +173,7 @@ pub struct AppleFmOptions {
 
 impl AppleFmOptions {
 	/// Creates a request with the framework's default guardrails and sampling.
-	pub fn new(prompt: impl Into<SmolStr>) -> Self {
+	pub fn new(prompt: impl Into<Str>) -> Self {
 		Self {
 			prompt:        prompt.into(),
 			system_prompt: None,
@@ -184,7 +184,7 @@ impl AppleFmOptions {
 	}
 
 	/// Applies instructions to the model session.
-	pub fn system_prompt(mut self, prompt: impl Into<SmolStr>) -> Self {
+	pub fn system_prompt(mut self, prompt: impl Into<Str>) -> Self {
 		self.system_prompt = Some(prompt.into());
 		self
 	}
@@ -212,7 +212,7 @@ impl AppleFmOptions {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppleFmGeneration {
 	/// Complete generated response.
-	pub content:                     SmolStr,
+	pub content:                     Str,
 	/// Approximate prompt token count because the framework exposes no
 	/// tokenizer.
 	pub prompt_tokens_estimated:     u32,
@@ -227,7 +227,7 @@ pub struct AppleFmGeneration {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AppleFmEvent {
 	/// Newly generated text not present in the prior snapshot.
-	Delta(SmolStr),
+	Delta(Str),
 	/// Canonical completed response and usage estimates.
 	Finished(AppleFmGeneration),
 }
@@ -268,7 +268,7 @@ impl AppleFm {
 
 	/// Generates one complete response with the framework's default request
 	/// settings.
-	pub async fn complete(&self, prompt: impl Into<SmolStr>) -> Result<SmolStr> {
+	pub async fn complete(&self, prompt: impl Into<Str>) -> Result<Str> {
 		self
 			.generate(AppleFmOptions::new(prompt), CancellationToken::new())
 			.await
@@ -334,7 +334,7 @@ impl Drop for AppleFmStream {
 async fn run_generation(
 	options: AppleFmOptions,
 	cancel: CancellationToken,
-	on_delta: impl FnMut(SmolStr) -> bool + Send + 'static,
+	on_delta: impl FnMut(Str) -> bool + Send + 'static,
 ) -> Result<AppleFmGeneration> {
 	validate_options(&options)?;
 	if cancel.is_cancelled() {

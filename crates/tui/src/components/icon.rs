@@ -1,4 +1,4 @@
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use crate::{
 	component::{Component, PaintCtx, Slot, next_slot},
@@ -11,17 +11,17 @@ use crate::{
 pub struct Icon {
 	props: Props,
 	slot:  Slot,
-	name:  SmolStr,
+	name:  Str,
 }
 
 impl Icon {
 	/// Creates an icon with no assigned name.
 	pub fn new() -> Self {
-		Self { props: Props::new(), slot: next_slot(), name: SmolStr::default() }
+		Self { props: Props::new(), slot: next_slot(), name: Str::default() }
 	}
 
 	/// Creates an icon with the requested theme glyph name.
-	pub fn named(name: impl Into<SmolStr>) -> Self {
+	pub fn named(name: impl Into<Str>) -> Self {
 		Self { name: name.into(), ..Self::new() }
 	}
 

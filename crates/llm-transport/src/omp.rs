@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::{StreamExt, stream::BoxStream};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::TransportId;
 use omp_llm_types::{
 	Chat, ChatRequest, CountRequest, CountResponse, CountTokens, Embed, EmbedRequest, EmbedResponse,
@@ -60,7 +60,7 @@ fn transport(_error: impl std::fmt::Display) -> Error {
 	// Upstream status messages and conversion diagnostics are untrusted text.
 	// They may echo provider headers, query parameters, or response bodies, so
 	// only the stable transport classification crosses the federation boundary.
-	Error::Transport(SmolStr::new_static("upstream transport failed"))
+	Error::Transport(Str::new_static("upstream transport failed"))
 }
 
 fn request_stream(
@@ -97,7 +97,7 @@ impl Chat for OmpFederation {
 		frames_tx
 			.send_async(pb::TurnFrame { frame: Some(pb::turn_frame::Frame::Open(open)) })
 			.await
-			.map_err(|_| Error::Transport(SmolStr::new("failed to open upstream turn stream")))?;
+			.map_err(|_| Error::Transport(Str::new("failed to open upstream turn stream")))?;
 		let interactive_tx = executor.as_ref().map(|_| frames_tx.clone());
 		drop(frames_tx); // Half-close before awaiting response headers when non-interactive.
 
@@ -248,7 +248,7 @@ mod tests {
 	#[test]
 	fn stateless_turn_round_trips_through_canonical_conversions() {
 		let original = ChatRequest::builder()
-			.model(SmolStr::new("slow"))
+			.model(Str::new("slow"))
 			.thread(Thread::default())
 			.tools(Vec::new())
 			.provider_options(Props::default())
@@ -263,7 +263,7 @@ mod tests {
 		let original = TurnEvent::Error(
 			TurnError::builder()
 				.kind(TurnErrorKind::NeedFull)
-				.detail(SmolStr::new("terminal gateway needs a seed"))
+				.detail(Str::new("terminal gateway needs a seed"))
 				.unsupported(Vec::new())
 				.retry_after_ms(0)
 				.build(),

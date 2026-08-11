@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use rustc_hash::FxHashMap;
 
 use crate::semconv::ToolStatus;
@@ -13,11 +13,11 @@ pub struct ChatRecord {
 	/// Agent-loop step number, or `-1` when the matching start was absent.
 	pub step_number:             i64,
 	/// Model identifier.
-	pub model:                   SmolStr,
+	pub model:                   Str,
 	/// Provider identifier.
-	pub provider:                SmolStr,
+	pub provider:                Str,
 	/// Raw stop reason, when supplied by the provider.
-	pub stop_reason:             Option<SmolStr>,
+	pub stop_reason:             Option<Str>,
 	/// Elapsed wall-clock time in milliseconds.
 	pub latency_ms:              f64,
 	/// Total cost-bearing input, including cache reads and writes.
@@ -35,24 +35,24 @@ pub struct ChatRecord {
 	/// Estimated cost, when pricing was available.
 	pub cost_usd:                Option<f64>,
 	/// Reason pricing was unavailable.
-	pub cost_unavailable_reason: Option<SmolStr>,
+	pub cost_unavailable_reason: Option<Str>,
 	/// Error type attributed to this chat.
-	pub error_type:              Option<SmolStr>,
+	pub error_type:              Option<Str>,
 }
 
 /// Raw record for one completed tool invocation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolRecord {
 	/// Provider tool-call identifier.
-	pub tool_call_id: SmolStr,
+	pub tool_call_id: Str,
 	/// Tool name.
-	pub tool_name:    SmolStr,
+	pub tool_name:    Str,
 	/// Terminal tool status.
 	pub status:       ToolStatus,
 	/// Elapsed wall-clock time in milliseconds.
 	pub latency_ms:   f64,
 	/// Error type attributed to this call.
-	pub error_type:   Option<SmolStr>,
+	pub error_type:   Option<Str>,
 }
 
 /// Per-tool counters included in a run summary.
@@ -82,7 +82,7 @@ pub struct ChatSummary {
 	/// Number of chat calls.
 	pub total:            u64,
 	/// Calls bucketed by raw stop reason, with sorted keys.
-	pub by_stop_reason:   BTreeMap<SmolStr, u64>,
+	pub by_stop_reason:   BTreeMap<Str, u64>,
 	/// Sum of chat latency in milliseconds.
 	pub total_latency_ms: f64,
 }
@@ -107,7 +107,7 @@ pub struct ToolSummary {
 	/// Sum of tool latency in milliseconds.
 	pub total_latency_ms: f64,
 	/// Counters bucketed by tool name, with sorted keys.
-	pub by_name:          BTreeMap<SmolStr, ToolCounters>,
+	pub by_name:          BTreeMap<Str, ToolCounters>,
 }
 
 /// Token usage accumulated over a run.
@@ -133,7 +133,7 @@ pub struct CostSummary {
 	/// Sum of all available chat cost estimates.
 	pub estimated_usd:       f64,
 	/// Sorted, deduplicated reasons that estimates were unavailable.
-	pub unavailable_reasons: Vec<SmolStr>,
+	pub unavailable_reasons: Vec<Str>,
 }
 
 /// Error portion of a run summary.
@@ -142,7 +142,7 @@ pub struct ErrorSummary {
 	/// Total chat and tool errors.
 	pub total:   u64,
 	/// Errors bucketed by type, with sorted keys.
-	pub by_type: BTreeMap<SmolStr, u64>,
+	pub by_type: BTreeMap<Str, u64>,
 }
 
 /// Stable, persistence-safe rollup of one agent invocation.
@@ -166,26 +166,26 @@ pub struct RunSummary {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RunCoverage {
 	/// Sorted, deduplicated tool names exposed to the model.
-	pub tools_available: Vec<SmolStr>,
+	pub tools_available: Vec<Str>,
 	/// Sorted, deduplicated tool names requested by the model.
-	pub tools_invoked:   Vec<SmolStr>,
+	pub tools_invoked:   Vec<Str>,
 	/// Available tools never requested by the model.
-	pub tools_unused:    Vec<SmolStr>,
+	pub tools_unused:    Vec<Str>,
 	/// Sorted, deduplicated model identifiers used.
-	pub models_used:     Vec<SmolStr>,
+	pub models_used:     Vec<Str>,
 	/// Sorted, deduplicated provider identifiers used.
-	pub providers_used:  Vec<SmolStr>,
+	pub providers_used:  Vec<Str>,
 }
 
 /// Data supplied when a chat completes successfully.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChatOutcome {
 	/// Model identifier from the finalized assistant message.
-	pub model:                   SmolStr,
+	pub model:                   Str,
 	/// Provider identifier from the finalized assistant message.
-	pub provider:                SmolStr,
+	pub provider:                Str,
 	/// Raw stop reason.
-	pub stop_reason:             Option<SmolStr>,
+	pub stop_reason:             Option<Str>,
 	/// Input tokens excluding cache-read and cache-write buckets.
 	pub input_tokens:            u64,
 	/// Output tokens.
@@ -201,19 +201,19 @@ pub struct ChatOutcome {
 	/// Estimated USD cost.
 	pub cost_usd:                Option<f64>,
 	/// Reason cost could not be estimated.
-	pub cost_unavailable_reason: Option<SmolStr>,
+	pub cost_unavailable_reason: Option<Str>,
 }
 
 #[derive(Clone, Debug)]
 struct ChatStart {
 	started_at_ms: f64,
-	model:         SmolStr,
-	provider:      SmolStr,
+	model:         Str,
+	provider:      Str,
 }
 
 #[derive(Clone, Debug)]
 struct ToolStart {
-	tool_name:     SmolStr,
+	tool_name:     Str,
 	started_at_ms: f64,
 }
 
@@ -222,12 +222,12 @@ struct ToolStart {
 pub struct RunCollector {
 	chats:           Vec<ChatRecord>,
 	tools:           Vec<ToolRecord>,
-	available_tools: BTreeSet<SmolStr>,
-	invoked_tools:   BTreeSet<SmolStr>,
-	models_used:     BTreeSet<SmolStr>,
-	providers_used:  BTreeSet<SmolStr>,
+	available_tools: BTreeSet<Str>,
+	invoked_tools:   BTreeSet<Str>,
+	models_used:     BTreeSet<Str>,
+	providers_used:  BTreeSet<Str>,
 	chat_starts:     FxHashMap<i64, ChatStart>,
-	tool_starts:     FxHashMap<SmolStr, ToolStart>,
+	tool_starts:     FxHashMap<Str, ToolStart>,
 	run_ended:       bool,
 }
 
@@ -257,7 +257,7 @@ impl RunCollector {
 	pub fn note_available_tools<I, S>(&mut self, tools: I)
 	where
 		I: IntoIterator<Item = S>,
-		S: Into<SmolStr>,
+		S: Into<Str>,
 	{
 		self
 			.available_tools
@@ -268,8 +268,8 @@ impl RunCollector {
 	pub fn begin_chat(
 		&mut self,
 		step_number: i64,
-		model: impl Into<SmolStr>,
-		provider: impl Into<SmolStr>,
+		model: impl Into<Str>,
+		provider: impl Into<Str>,
 		started_at_ms: f64,
 	) {
 		let model = model.into();
@@ -321,17 +321,17 @@ impl RunCollector {
 	}
 
 	/// Completes an unfinalized chat as an error.
-	pub fn fail_chat(&mut self, step_number: i64, ended_at_ms: f64, error_type: impl Into<SmolStr>) {
+	pub fn fail_chat(&mut self, step_number: i64, ended_at_ms: f64, error_type: impl Into<Str>) {
 		let start = self.chat_starts.remove(&step_number);
 		self.chats.push(ChatRecord {
 			step_number:             start.as_ref().map_or(-1, |_| step_number),
 			model:                   start
 				.as_ref()
-				.map_or_else(SmolStr::default, |value| value.model.clone()),
+				.map_or_else(Str::default, |value| value.model.clone()),
 			provider:                start
 				.as_ref()
-				.map_or_else(SmolStr::default, |value| value.provider.clone()),
-			stop_reason:             Some(SmolStr::new("error")),
+				.map_or_else(Str::default, |value| value.provider.clone()),
+			stop_reason:             Some(Str::new("error")),
 			latency_ms:              start
 				.as_ref()
 				.map_or(0.0, |value| (ended_at_ms - value.started_at_ms).max(0.0)),
@@ -350,8 +350,8 @@ impl RunCollector {
 	/// Starts tracking one tool call by its call identifier.
 	pub fn begin_tool(
 		&mut self,
-		tool_call_id: impl Into<SmolStr>,
-		tool_name: impl Into<SmolStr>,
+		tool_call_id: impl Into<Str>,
+		tool_name: impl Into<Str>,
 		started_at_ms: f64,
 	) {
 		let tool_call_id = tool_call_id.into();
@@ -365,10 +365,10 @@ impl RunCollector {
 	/// Completes a tool; a missing start still emits a zero-latency record.
 	pub fn end_tool(
 		&mut self,
-		tool_call_id: impl Into<SmolStr>,
+		tool_call_id: impl Into<Str>,
 		ended_at_ms: f64,
 		status: ToolStatus,
-		error_type: Option<SmolStr>,
+		error_type: Option<Str>,
 	) {
 		let tool_call_id = tool_call_id.into();
 		let start = self.tool_starts.remove(&tool_call_id);
@@ -376,7 +376,7 @@ impl RunCollector {
 			tool_call_id,
 			tool_name: start
 				.as_ref()
-				.map_or_else(SmolStr::default, |value| value.tool_name.clone()),
+				.map_or_else(Str::default, |value| value.tool_name.clone()),
 			status,
 			latency_ms: start
 				.as_ref()
@@ -388,8 +388,8 @@ impl RunCollector {
 	/// Records a requested tool that never acquired a tracked start.
 	pub fn record_orphan_tool(
 		&mut self,
-		tool_call_id: impl Into<SmolStr>,
-		tool_name: impl Into<SmolStr>,
+		tool_call_id: impl Into<Str>,
+		tool_name: impl Into<Str>,
 		status: ToolStatus,
 	) {
 		let tool_name = tool_name.into();
@@ -546,7 +546,7 @@ pub fn aggregate_summaries(summaries: &[RunSummary]) -> RunSummary {
 	out
 }
 
-fn merge_counts(target: &mut BTreeMap<SmolStr, u64>, source: &BTreeMap<SmolStr, u64>) {
+fn merge_counts(target: &mut BTreeMap<Str, u64>, source: &BTreeMap<Str, u64>) {
 	for (key, value) in source {
 		*target.entry(key.clone()).or_default() += value;
 	}
@@ -677,8 +677,8 @@ pub fn cache_write_cost(rates: CostRates, usage: CostUsage) -> f64 {
 mod tests {
 	use super::*;
 
-	fn s(value: &str) -> SmolStr {
-		SmolStr::new(value)
+	fn s(value: &str) -> Str {
+		Str::new(value)
 	}
 
 	#[test]

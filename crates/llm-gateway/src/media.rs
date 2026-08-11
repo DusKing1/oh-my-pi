@@ -14,7 +14,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::{StreamExt, stream::BoxStream};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{
 	BlobPart, GenerateImageRequest, GenerateVideoRequest, GenerationArtifact, GenerationState,
 	GenerationStatus, ImageEvent, SpeakEvent, SpeakRequest, TranscribeRequest, TranscribeResponse,
@@ -66,7 +66,7 @@ pub struct MediaFacets {
 	transcribe:    Option<Arc<dyn Transcribe>>,
 	video:         Option<Arc<dyn VideoGen>>,
 	downloader:    Arc<dyn ArtifactDownloader>,
-	jobs:          Arc<RwLock<FxHashMap<SmolStr, Arc<Job>>>>,
+	jobs:          Arc<RwLock<FxHashMap<Str, Arc<Job>>>>,
 	poll_interval: Duration,
 }
 
@@ -245,13 +245,13 @@ impl MediaFacets {
 			.unwrap_or(false);
 		let video = self.video.as_ref().ok_or_else(unsupported_media)?;
 		let provider_handle = video.submit(request).await?;
-		let generation_id: SmolStr = ulid::Ulid::generate().to_string().into();
+		let generation_id: Str = ulid::Ulid::generate().to_string().into();
 		let now = now_ms();
 		let queued = GenerationStatus::builder()
 			.generation_id(generation_id.clone())
 			.state(GenerationState::Queued)
 			.progress_percent(0.0)
-			.detail(SmolStr::default())
+			.detail(Str::default())
 			.artifacts(Vec::new())
 			.unsupported(Vec::new())
 			.created_at_ms(now)
@@ -426,7 +426,7 @@ impl MediaFacets {
 			self.ingest_blob(
 				BlobPart::builder()
 					.hash([0; 32])
-					.mime(SmolStr::new_static("application/octet-stream"))
+					.mime(Str::new_static("application/octet-stream"))
 					.size(bytes.len() as u64)
 					.inline(bytes)
 					.build(),
@@ -483,8 +483,8 @@ fn fail_job(job: &Job, error: FacetError) {
 	job.status.send_replace(failed);
 }
 
-fn public_failure_detail(_error: &FacetError) -> SmolStr {
-	SmolStr::new_static("media generation failed")
+fn public_failure_detail(_error: &FacetError) -> Str {
+	Str::new_static("media generation failed")
 }
 
 fn storage_error(error: omp_storage::blob::Error) -> FacetError {

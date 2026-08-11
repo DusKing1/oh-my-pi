@@ -10,7 +10,7 @@ use std::{
 use bytes::Bytes;
 use futures::Stream;
 use http::{Method, Request as HttpRequest, header::CONTENT_TYPE};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_proto::{
 	auth::v1::{self as proto, auth_server::Auth, credential_event},
 	inference::v1::{
@@ -512,7 +512,7 @@ impl Auth for AuthService {
 	) -> Result<Response<proto::CredentialMeta>, Status> {
 		let request = request.into_inner();
 		require_id(request.id)?;
-		let scopes: SmallVec<SmolStr, 4> = request.scopes.into_iter().map(Into::into).collect();
+		let scopes: SmallVec<Str, 4> = request.scopes.into_iter().map(Into::into).collect();
 		let _gate = self.mutation_gate.lock().await;
 		let meta = self
 			.store

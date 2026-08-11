@@ -3,7 +3,7 @@
 use std::str::Utf8Error;
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde_json::Value;
 use smallvec::SmallVec;
 
@@ -16,14 +16,14 @@ use smallvec::SmallVec;
 pub struct PlanningLeakFilter {
 	utf8_tail:  Vec<u8>,
 	probe:      String,
-	tool_names: SmallVec<SmolStr, 8>,
+	tool_names: SmallVec<Str, 8>,
 }
 
 impl PlanningLeakFilter {
 	/// Creates a filter whose leak detector recognizes the supplied active
 	/// tools.
 	#[must_use]
-	pub fn new(tool_names: impl IntoIterator<Item = SmolStr>) -> Self {
+	pub fn new(tool_names: impl IntoIterator<Item = Str>) -> Self {
 		Self {
 			utf8_tail:  Vec::new(),
 			probe:      String::new(),
@@ -119,7 +119,7 @@ fn push_visible(text: &str, output: &mut SmallVec<Bytes, 2>) {
 
 fn consume_planning_buffer<'a>(
 	text: &'a str,
-	tool_names: &[SmolStr],
+	tool_names: &[Str],
 	final_: bool,
 ) -> PlanningResult<'a> {
 	if !is_planning_leak_prefix(text) {
@@ -233,7 +233,7 @@ fn split_leading_object_ignoring_quotes(text: &str) -> Option<(&str, &str)> {
 	None
 }
 
-fn is_planning_object(value: &Value, tool_names: &[SmolStr]) -> bool {
+fn is_planning_object(value: &Value, tool_names: &[Str]) -> bool {
 	let Some(object) = value.as_object() else {
 		return false;
 	};
@@ -248,7 +248,7 @@ fn is_planning_object(value: &Value, tool_names: &[SmolStr]) -> bool {
 		|| object.contains_key("path") && object.contains_key("content")
 }
 
-fn contains_leak_signature(text: &str, tool_names: &[SmolStr]) -> bool {
+fn contains_leak_signature(text: &str, tool_names: &[Str]) -> bool {
 	text.contains("\"thought\"")
 		|| text.contains("\"_i\"")
 		|| text.contains("\"paths\"")
@@ -374,7 +374,7 @@ mod tests {
 	use super::*;
 
 	fn collect(chunks: &[&[u8]], final_: bool) -> String {
-		let mut filter = PlanningLeakFilter::new([SmolStr::from("read")]);
+		let mut filter = PlanningLeakFilter::new([Str::from("read")]);
 		let mut output = Vec::new();
 		for chunk in chunks {
 			for visible in filter.feed(chunk).unwrap() {

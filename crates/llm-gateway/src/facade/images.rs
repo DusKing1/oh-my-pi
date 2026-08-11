@@ -12,7 +12,7 @@ use futures::{StreamExt, stream};
 use http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use hyper::body::Body;
-use omp_core::{SmolStr, base64};
+use omp_core::{Str, base64};
 use omp_llm_types::{
 	BlobPart, GenerateImageRequest, ImageBackground, ImageDone, ImageEvent, ImageFormat,
 	ImageQuality, ImageSize, Props,
@@ -27,20 +27,20 @@ use super::{
 
 #[derive(Deserialize)]
 struct ImageRequest {
-	model:           SmolStr,
-	prompt:          SmolStr,
+	model:           Str,
+	prompt:          Str,
 	#[serde(default = "one")]
 	n:               u32,
 	#[serde(default)]
-	size:            Option<SmolStr>,
+	size:            Option<Str>,
 	#[serde(default)]
-	quality:         Option<SmolStr>,
+	quality:         Option<Str>,
 	#[serde(default, alias = "output_format")]
-	format:          Option<SmolStr>,
+	format:          Option<Str>,
 	#[serde(default)]
-	background:      Option<SmolStr>,
+	background:      Option<Str>,
 	#[serde(default = "default_response_format")]
-	response_format: SmolStr,
+	response_format: Str,
 }
 
 struct ParsedEdit {
@@ -60,16 +60,16 @@ struct ImageData {
 	b64_json:       Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	url:            Option<String>,
-	#[serde(skip_serializing_if = "SmolStr::is_empty")]
-	revised_prompt: SmolStr,
+	#[serde(skip_serializing_if = "Str::is_empty")]
+	revised_prompt: Str,
 }
 
 const fn one() -> u32 {
 	1
 }
 
-fn default_response_format() -> SmolStr {
-	SmolStr::new("url")
+fn default_response_format() -> Str {
+	Str::new("url")
 }
 
 pub(crate) async fn handle<B>(request: Request<B>, state: Arc<FacadeState>) -> FacadeResponse
@@ -262,16 +262,16 @@ where
 	})
 }
 
-fn text_field(bytes: Bytes, name: &str) -> Result<SmolStr, FacadeError> {
+fn text_field(bytes: Bytes, name: &str) -> Result<Str, FacadeError> {
 	let text =
 		std::str::from_utf8(&bytes).map_err(|_| invalid_error(format!("{name} must be UTF-8")))?;
-	Ok(SmolStr::from(text))
+	Ok(Str::from(text))
 }
 
 fn blob_part(bytes: Bytes, mime: &str) -> BlobPart {
 	BlobPart::builder()
 		.hash(*blake3::hash(&bytes).as_bytes())
-		.mime(SmolStr::from(mime))
+		.mime(Str::from(mime))
 		.size(bytes.len() as u64)
 		.inline(bytes)
 		.build()
@@ -310,11 +310,11 @@ fn image_response(state: &FacadeState, done: ImageDone, response_format: &str) -
 		});
 	json_response(StatusCode::OK, &ImageResponse { created, data })
 }
-fn invalid_error(detail: impl Into<SmolStr>) -> FacadeError {
+fn invalid_error(detail: impl Into<Str>) -> FacadeError {
 	FacadeError::Invalid(detail.into())
 }
 
-fn unavailable(detail: impl Into<SmolStr>) -> FacadeResponse {
+fn unavailable(detail: impl Into<Str>) -> FacadeResponse {
 	error_response(Vendor::OpenAi, FacadeError::Invalid(detail.into()))
 }
 
@@ -365,8 +365,8 @@ mod tests {
 			let image = blob_part(bytes, "image/png");
 			let done = ImageDone::builder()
 				.images(vec![image])
-				.revised_prompt(SmolStr::new("paint vividly"))
-				.text(SmolStr::new(""))
+				.revised_prompt(Str::new("paint vividly"))
+				.text(Str::new(""))
 				.unsupported(Vec::new())
 				.props(Props::default())
 				.build();

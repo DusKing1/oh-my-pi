@@ -1,6 +1,6 @@
 //! Stateful line tokenization.
 
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use crate::{
 	format::{
@@ -20,72 +20,72 @@ pub enum BlockTarget {
 		/// The source range.
 		range:    ParsedRange,
 		/// A named register when this is a bodyless paste.
-		register: Option<SmolStr>,
+		register: Option<Str>,
 	},
 	/// Replace a syntactic block, optionally from a register.
 	Block {
 		/// The block opener.
 		anchor:   Anchor,
 		/// A named register when this is a bodyless paste.
-		register: Option<SmolStr>,
+		register: Option<Str>,
 	},
 	/// Insert or paste before an anchor.
 	InsertBefore {
 		/// The source anchor.
 		anchor:   Anchor,
 		/// An optional named register.
-		register: Option<SmolStr>,
+		register: Option<Str>,
 	},
 	/// Insert or paste after an anchor.
 	InsertAfter {
 		/// The source anchor.
 		anchor:   Anchor,
 		/// An optional named register.
-		register: Option<SmolStr>,
+		register: Option<Str>,
 	},
 	/// Insert or paste after a resolved syntactic block.
 	InsertAfterBlock {
 		/// The block opener.
 		anchor:   Anchor,
 		/// An optional named register.
-		register: Option<SmolStr>,
+		register: Option<Str>,
 	},
 	/// Capture and remove an inclusive range.
 	Cut {
 		/// The captured range.
 		range:    ParsedRange,
 		/// An optional named register.
-		register: Option<SmolStr>,
+		register: Option<Str>,
 	},
 	/// Capture and remove a resolved syntactic block.
 	CutBlock {
 		/// The block opener.
 		anchor:   Anchor,
 		/// An optional named register.
-		register: Option<SmolStr>,
+		register: Option<Str>,
 	},
 	/// Insert or paste at the beginning of the file.
 	Bof {
 		/// An optional named register.
-		register: Option<SmolStr>,
+		register: Option<Str>,
 	},
 	/// Insert or paste at the end of the file.
 	Eof {
 		/// An optional named register.
-		register: Option<SmolStr>,
+		register: Option<Str>,
 	},
 	/// Remove the whole file.
 	Rem,
 	/// Move the whole file.
 	Move {
 		/// The destination path.
-		dest: SmolStr,
+		dest: Str,
 	},
 }
 
 impl BlockTarget {
 	/// Returns the target's register when it supports one.
-	pub const fn register(&self) -> Option<&SmolStr> {
+	pub const fn register(&self) -> Option<&Str> {
 		match self {
 			Self::Replace { register, .. }
 			| Self::Block { register, .. }
@@ -134,9 +134,9 @@ pub enum Token {
 		/// Authored patch line.
 		line_num:  usize,
 		/// Header path.
-		path:      SmolStr,
+		path:      Str,
 		/// Optional uppercase four-hex snapshot tag.
-		file_hash: Option<SmolStr>,
+		file_hash: Option<Str>,
 	},
 	/// A parsed hunk or file-operation header.
 	Operation {
@@ -152,14 +152,14 @@ pub enum Token {
 		/// Authored patch line.
 		line_num: usize,
 		/// Literal row text.
-		text:     SmolStr,
+		text:     Str,
 	},
 	/// Any otherwise unclassified row.
 	Raw {
 		/// Authored patch line.
 		line_num: usize,
 		/// Unclassified row text.
-		text:     SmolStr,
+		text:     Str,
 	},
 }
 
@@ -352,7 +352,7 @@ fn classify_line(line: &str, line_num: usize) -> Token {
 	Token::Raw { line_num, text: line.into() }
 }
 
-fn try_parse_header(line: &str) -> Option<(SmolStr, Option<SmolStr>)> {
+fn try_parse_header(line: &str) -> Option<(Str, Option<Str>)> {
 	let trimmed = line.trim_end();
 	let body = trimmed.strip_prefix('[')?.strip_suffix(']')?;
 	if body.is_empty() {
@@ -366,7 +366,7 @@ fn try_parse_header(line: &str) -> Option<(SmolStr, Option<SmolStr>)> {
 		{
 			return None;
 		}
-		let mut uppercase = omp_core::SmolStrMut::with_capacity(HL_FILE_HASH_LENGTH);
+		let mut uppercase = omp_core::StrMut::with_capacity(HL_FILE_HASH_LENGTH);
 		for byte in tag.bytes() {
 			uppercase.push(char::from(byte.to_ascii_uppercase()));
 		}
@@ -402,7 +402,7 @@ fn keyword_rest<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
 	Some(rest.trim_start())
 }
 
-fn split_colon_register(rest: &str) -> Option<(&str, Option<SmolStr>, bool)> {
+fn split_colon_register(rest: &str) -> Option<(&str, Option<Str>, bool)> {
 	let trimmed = rest.trim_end();
 	let (without_colon, had_colon) = match trimmed.strip_suffix(':') {
 		Some(prefix) => (prefix.trim_end(), true),

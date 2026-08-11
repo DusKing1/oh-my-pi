@@ -1,4 +1,4 @@
-use omp_core::SmolStr;
+use omp_core::Str;
 
 /// Error returned by local model acquisition or inference.
 #[derive(Debug, thiserror::Error)]
@@ -12,14 +12,14 @@ pub enum Error {
 		/// Runtime that produced the error.
 		backend: &'static str,
 		/// Runtime error message.
-		message: SmolStr,
+		message: Str,
 	},
 	/// An input violated a model contract.
 	#[error("invalid input: {0}")]
-	InvalidInput(SmolStr),
+	InvalidInput(Str),
 	/// The requested accelerator is unavailable in this build or on this host.
 	#[error("accelerator unavailable: {0}")]
-	Unavailable(SmolStr),
+	Unavailable(Str),
 	/// A Hugging Face operation failed.
 	#[error(transparent)]
 	Hub(#[from] hf_hub::HFError),
@@ -52,12 +52,12 @@ impl Error {
 	}
 
 	#[cold]
-	pub(crate) fn invalid(message: impl Into<SmolStr>) -> Self {
+	pub(crate) fn invalid(message: impl Into<Str>) -> Self {
 		Self::InvalidInput(message.into())
 	}
 
 	#[cold]
-	pub(crate) fn unavailable(message: impl Into<SmolStr>) -> Self {
+	pub(crate) fn unavailable(message: impl Into<Str>) -> Self {
 		Self::Unavailable(message.into())
 	}
 }

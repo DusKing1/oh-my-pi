@@ -19,7 +19,7 @@ use futures::{SinkExt as _, StreamExt as _};
 use http::{Request, Response, StatusCode, header};
 use http_body_util::Full;
 use hyper::body::{Body as HttpBody, Frame as HttpFrame};
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use omp_llm_egress::{
 	auth_inject::{CredentialLease, CredentialSource},
 	client::Body,
@@ -47,11 +47,11 @@ const MAX_CODEX_SESSIONS: usize = 1_024;
 #[derive(Clone, Debug)]
 pub struct CodexWebSocketRequest {
 	/// Stable key for continuation state.
-	pub session_key:    SmolStr,
+	pub session_key:    Str,
 	/// Dynamic Codex session/window/turn identity.
 	pub identity:       CodexRequestIdentity,
 	/// Broker-released ChatGPT account id.
-	pub account_id:     Option<SmolStr>,
+	pub account_id:     Option<Str>,
 	/// Whether the transformed body is Responses Lite compatible.
 	pub responses_lite: bool,
 }
@@ -62,7 +62,7 @@ pub struct CodexWebSocketRequest {
 pub struct CodexWebSocketEgress<S, C> {
 	inner:        S,
 	credentials:  C,
-	sessions:     Arc<Mutex<HashMap<SmolStr, Arc<Mutex<CodexContinuationState>>>>>,
+	sessions:     Arc<Mutex<HashMap<Str, Arc<Mutex<CodexContinuationState>>>>>,
 	retry_budget: u32,
 }
 
@@ -91,7 +91,7 @@ pub enum CodexWebSocketEgressError<E, C> {
 	Credential(C),
 	/// WebSocket request construction or execution failed without a replay-safe
 	/// fallback.
-	WebSocket(SmolStr),
+	WebSocket(Str),
 }
 
 impl<E: fmt::Display, C: fmt::Display> fmt::Display for CodexWebSocketEgressError<E, C> {
@@ -149,7 +149,7 @@ where
 			let state_key = request.extensions().get::<CredentialLease>().map_or_else(
 				|| marker.session_key.clone(),
 				|lease| {
-					format_smol!(
+					fmts!(
 						"{}:{}:{}:{}",
 						lease.provider(),
 						lease.credential_id(),
@@ -194,17 +194,17 @@ where
 {
 	let body = request.body().clone().into_inner().unwrap_or_default();
 	let full_request: Value = serde_json::from_slice(body.as_ref())
-		.map_err(|error| CodexWebSocketEgressError::WebSocket(SmolStr::from(error.to_string())))?;
+		.map_err(|error| CodexWebSocketEgressError::WebSocket(Str::from(error.to_string())))?;
 	let (wire_request, turn_state, models_etag) = {
 		let mut state = session.lock();
 		if !is_within_turn_continuation(&full_request) {
 			state.start_new_turn();
 		}
-		let turn_state = state.turn_state().map(SmolStr::new);
-		let models_etag = state.models_etag().map(SmolStr::new);
+		let turn_state = state.turn_state().map(Str::new);
+		let models_etag = state.models_etag().map(Str::new);
 		let mut wire = state
 			.response_create(&full_request)
-			.map_err(|error| CodexWebSocketEgressError::WebSocket(SmolStr::from(error.to_string())))?;
+			.map_err(|error| CodexWebSocketEgressError::WebSocket(Str::from(error.to_string())))?;
 		apply_codex_client_metadata(
 			&mut wire,
 			&marker.identity,
@@ -212,7 +212,7 @@ where
 			marker.responses_lite,
 			turn_state.as_deref(),
 		)
-		.map_err(|error| CodexWebSocketEgressError::WebSocket(SmolStr::from(error.to_string())))?;
+		.map_err(|error| CodexWebSocketEgressError::WebSocket(Str::from(error.to_string())))?;
 		(wire, turn_state, models_etag)
 	};
 	let mut retries = 0;
@@ -264,21 +264,21 @@ struct OpenedSocket {
 	socket:            Socket,
 	router:            CodexFrameRouter,
 	buffered:          Vec<Value>,
-	turn_state:        Option<SmolStr>,
-	models_etag:       Option<SmolStr>,
+	turn_state:        Option<Str>,
+	models_etag:       Option<Str>,
 	terminal:          Option<TerminalResponse>,
 	protocol_terminal: bool,
 }
 
 #[derive(Clone)]
 struct TerminalResponse {
-	id:    SmolStr,
+	id:    Str,
 	items: Vec<Value>,
 }
 
 struct AttemptFailure {
 	failure: CodexWebSocketFailure,
-	message: SmolStr,
+	message: Str,
 }
 
 async fn open_until_observable<C: CredentialSource>(
@@ -296,7 +296,7 @@ async fn open_until_observable<C: CredentialSource>(
 		.get::<CredentialLease>()
 		.ok_or_else(|| AttemptFailure {
 			failure: CodexWebSocketFailure::Provider,
-			message: SmolStr::new_static("Codex WebSocket request has no selected credential lease"),
+			message: Str::new_static("Codex WebSocket request has no selected credential lease"),
 		})?;
 	let url = codex_websocket_url(&request.uri().to_string()).map_err(protocol_failure)?;
 	let mut upgrade = url
@@ -304,7 +304,7 @@ async fn open_until_observable<C: CredentialSource>(
 		.into_client_request()
 		.map_err(|error| AttemptFailure {
 			failure: CodexWebSocketFailure::ConnectionFatal,
-			message: SmolStr::from(format!("websocket error: {error}")),
+			message: Str::from(format!("websocket error: {error}")),
 		})?;
 	for (name, value) in handshake.headers() {
 		if !is_upgrade_owned_header(name.as_str()) {
@@ -315,31 +315,31 @@ async fn open_until_observable<C: CredentialSource>(
 		.apply_headers(lease, upgrade.headers_mut())
 		.map_err(|error| AttemptFailure {
 			failure: CodexWebSocketFailure::Provider,
-			message: SmolStr::from(error.to_string()),
+			message: Str::from(error.to_string()),
 		})?;
 	let (mut socket, response) = connect_async(upgrade)
 		.await
 		.map_err(|error| AttemptFailure {
 			failure: CodexWebSocketFailure::ConnectionFatal,
-			message: SmolStr::from(format!("websocket error: {error}")),
+			message: Str::from(format!("websocket error: {error}")),
 		})?;
 	let mut learned_turn_state = response
 		.headers()
 		.get("x-codex-turn-state")
 		.and_then(|value| value.to_str().ok())
-		.map(SmolStr::new);
+		.map(Str::new);
 	let mut learned_models_etag = response
 		.headers()
 		.get("x-models-etag")
 		.and_then(|value| value.to_str().ok())
-		.map(SmolStr::new);
+		.map(Str::new);
 	let payload = serde_json::to_string(wire_request).map_err(protocol_failure)?;
 	socket
 		.send(Message::Text(payload.into()))
 		.await
 		.map_err(|error| AttemptFailure {
 			failure: CodexWebSocketFailure::RetryableTransport,
-			message: SmolStr::from(format!("websocket send failed: {error}")),
+			message: Str::from(format!("websocket send failed: {error}")),
 		})?;
 	let mut router = CodexFrameRouter::default();
 	let mut buffered = Vec::new();
@@ -350,7 +350,7 @@ async fn open_until_observable<C: CredentialSource>(
 		}
 		let disposition = router.route(&value).map_err(|error| AttemptFailure {
 			failure: CodexWebSocketFailure::RetryableTransport,
-			message: SmolStr::from(error.to_string()),
+			message: Str::from(error.to_string()),
 		})?;
 		if disposition == CodexFrameDisposition::Drop {
 			continue;
@@ -362,7 +362,7 @@ async fn open_until_observable<C: CredentialSource>(
 		if buffered.len() > 64 {
 			return Err(AttemptFailure {
 				failure: CodexWebSocketFailure::RetryableTransport,
-				message: SmolStr::new_static("websocket message queue exceeded 64 items"),
+				message: Str::new_static("websocket message queue exceeded 64 items"),
 			});
 		}
 		if observable {
@@ -384,7 +384,7 @@ fn handshake_request(
 	marker: &CodexWebSocketRequest,
 	turn_state: Option<&str>,
 	models_etag: Option<&str>,
-) -> Result<Request<Body>, SmolStr> {
+) -> Result<Request<Body>, Str> {
 	let credential =
 		omp_llm_openai::CodexCredentialMetadata { account_id: marker.account_id.clone() };
 	let plan = build_codex_header_plan(&CodexHeaderContext {
@@ -398,7 +398,7 @@ fn handshake_request(
 	});
 	let mut handshake = Request::get(request.uri().clone())
 		.body(Full::new(Bytes::new()))
-		.map_err(|error| SmolStr::from(error.to_string()))?;
+		.map_err(|error| Str::from(error.to_string()))?;
 	*handshake.headers_mut() = request.headers().clone();
 	for name in [header::ACCEPT, header::CONTENT_TYPE, header::CONTENT_LENGTH] {
 		handshake.headers_mut().remove(name);
@@ -406,9 +406,9 @@ fn handshake_request(
 	for (name, planned) in plan.iter() {
 		let name: header::HeaderName = name
 			.parse()
-			.map_err(|_| SmolStr::new_static("invalid Codex header name"))?;
+			.map_err(|_| Str::new_static("invalid Codex header name"))?;
 		let mut value = header::HeaderValue::from_bytes(planned.as_bytes())
-			.map_err(|_| SmolStr::new_static("invalid Codex header value"))?;
+			.map_err(|_| Str::new_static("invalid Codex header value"))?;
 		value.set_sensitive(planned.is_sensitive());
 		handshake.headers_mut().insert(name, value);
 	}
@@ -418,7 +418,7 @@ fn handshake_request(
 fn protocol_failure(error: impl fmt::Display) -> AttemptFailure {
 	AttemptFailure {
 		failure: CodexWebSocketFailure::Provider,
-		message: SmolStr::from(error.to_string()),
+		message: Str::from(error.to_string()),
 	}
 }
 
@@ -441,13 +441,13 @@ async fn next_json(socket: &mut Socket) -> Result<Value, AttemptFailure> {
 			Some(Ok(Message::Text(text))) => {
 				return serde_json::from_str(&text).map_err(|error| AttemptFailure {
 					failure: CodexWebSocketFailure::RetryableTransport,
-					message: SmolStr::from(format!("json decode failed: {error}")),
+					message: Str::from(format!("json decode failed: {error}")),
 				});
 			},
 			Some(Ok(Message::Binary(bytes))) => {
 				return serde_json::from_slice(&bytes).map_err(|error| AttemptFailure {
 					failure: CodexWebSocketFailure::RetryableTransport,
-					message: SmolStr::from(format!("json decode failed: {error}")),
+					message: Str::from(format!("json decode failed: {error}")),
 				});
 			},
 			Some(Ok(Message::Ping(payload))) => {
@@ -456,14 +456,14 @@ async fn next_json(socket: &mut Socket) -> Result<Value, AttemptFailure> {
 					.await
 					.map_err(|error| AttemptFailure {
 						failure: CodexWebSocketFailure::RetryableTransport,
-						message: SmolStr::from(format!("websocket ping failed: {error}")),
+						message: Str::from(format!("websocket ping failed: {error}")),
 					})?;
 			},
 			Some(Ok(Message::Pong(_) | Message::Frame(_))) => {},
 			Some(Ok(Message::Close(frame))) => {
 				return Err(AttemptFailure {
 					failure: CodexWebSocketFailure::RetryableTransport,
-					message: SmolStr::from(format!(
+					message: Str::from(format!(
 						"websocket closed before response completion: {frame:?}"
 					)),
 				});
@@ -472,13 +472,13 @@ async fn next_json(socket: &mut Socket) -> Result<Value, AttemptFailure> {
 				let message = format!("websocket error: {error}");
 				return Err(AttemptFailure {
 					failure: classify_codex_websocket_failure(None, &message, false),
-					message: SmolStr::from(message),
+					message: Str::from(message),
 				});
 			},
 			None => {
 				return Err(AttemptFailure {
 					failure: CodexWebSocketFailure::RetryableTransport,
-					message: SmolStr::new_static("websocket closed before response completion"),
+					message: Str::new_static("websocket closed before response completion"),
 				});
 			},
 		}
@@ -507,7 +507,7 @@ fn in_band_failure(value: &Value) -> Option<AttemptFailure> {
 		} else {
 			classify_codex_websocket_failure(code, message, false)
 		},
-		message: SmolStr::new(message),
+		message: Str::new(message),
 	})
 }
 
@@ -530,8 +530,8 @@ fn is_observable(value: &Value) -> bool {
 
 fn update_metadata(
 	value: &Value,
-	turn_state: &mut Option<SmolStr>,
-	models_etag: &mut Option<SmolStr>,
+	turn_state: &mut Option<Str>,
+	models_etag: &mut Option<Str>,
 ) {
 	if value.get("type").and_then(Value::as_str) != Some("response.metadata") {
 		return;
@@ -540,10 +540,10 @@ fn update_metadata(
 		return;
 	};
 	if let Some(value) = headers.get("x-codex-turn-state").and_then(Value::as_str) {
-		*turn_state = Some(SmolStr::new(value));
+		*turn_state = Some(Str::new(value));
 	}
 	if let Some(value) = headers.get("x-models-etag").and_then(Value::as_str) {
-		*models_etag = Some(SmolStr::new(value));
+		*models_etag = Some(Str::new(value));
 	}
 }
 
@@ -571,7 +571,7 @@ fn terminal_response(value: &Value) -> Option<TerminalResponse> {
 		return None;
 	}
 	let response = value.get("response")?.as_object()?;
-	let id = SmolStr::new(response.get("id")?.as_str()?);
+	let id = Str::new(response.get("id")?.as_str()?);
 	let items = response
 		.get("output")
 		.and_then(Value::as_array)
@@ -624,8 +624,8 @@ async fn pump_socket(
 	tx: mpsc::Sender<Result<Bytes, CodexBodyError>>,
 	session: Arc<Mutex<CodexContinuationState>>,
 	full_request: Value,
-	mut turn_state: Option<SmolStr>,
-	mut models_etag: Option<SmolStr>,
+	mut turn_state: Option<Str>,
+	mut models_etag: Option<Str>,
 ) {
 	loop {
 		tokio::select! {
@@ -651,7 +651,7 @@ async fn pump_socket(
 				let disposition = match router.route(&value) {
 					Ok(disposition) => disposition,
 					Err(error) => {
-						let _ = tx.send(Err(CodexBodyError(SmolStr::from(error.to_string())))).await;
+						let _ = tx.send(Err(CodexBodyError(Str::from(error.to_string())))).await;
 						return;
 					},
 				};
@@ -781,7 +781,7 @@ impl HttpBody for CodexChannelBody {
 
 /// WebSocket body failure, intentionally free of request and credential data.
 #[derive(Clone, Debug)]
-pub struct CodexBodyError(SmolStr);
+pub struct CodexBodyError(Str);
 
 impl fmt::Display for CodexBodyError {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use serde_json::Value;
 use smallvec::SmallVec;
 use xutf::Text;
@@ -313,7 +313,7 @@ impl Component for EditInput {
 		}
 	}
 
-	fn set_text(&mut self, _ctx: &UiContext, text: SmolStr) -> bool {
+	fn set_text(&mut self, _ctx: &UiContext, text: Str) -> bool {
 		if self.buffer.text() == text {
 			return false;
 		}
@@ -354,12 +354,12 @@ pub const fn attachment_color(marker: usize) -> Color {
 /// Hosts insert it as an atomic reference (see
 /// [`crate::EditBuffer::insert_reference`]); [`EditInput`] does so
 /// automatically for staged image path drops and large paste cards.
-pub fn chip_label(attachment: &Attachment, charset: Charset) -> SmolStr {
+pub fn chip_label(attachment: &Attachment, charset: Charset) -> Str {
 	let icon = charset.icon(match attachment.content {
 		AttachmentContent::Image { .. } => crate::Icon::Image,
 		AttachmentContent::Text { .. } => crate::Icon::TextFile,
 	});
-	format_smol!("{icon} #{}", attachment.marker)
+	fmts!("{icon} #{}", attachment.marker)
 }
 
 /// Chip style for an atomic marker: a trailing `#N` selects the marker's
@@ -448,14 +448,14 @@ pub enum AttachmentContent {
 	/// An image staged from a file source.
 	Image {
 		/// Image source path.
-		source:     SmolStr,
+		source:     Str,
 		/// Pixel dimensions probed from the source header, when recognized.
 		dimensions: Option<(u32, u32)>,
 	},
 	/// Pasted text collapsed out of the composer.
 	Text {
 		/// Leading rows previewed inside the card, pre-clipped to the frame.
-		snippet: SmolStr,
+		snippet: Str,
 		/// Logical line count of the paste.
 		lines:   usize,
 		/// Character count of the paste.
@@ -505,7 +505,7 @@ impl Attachments {
 
 	/// Stages an image source, probing its pixel dimensions from the file
 	/// header, and returns the staged descriptor.
-	pub fn push_image(&self, source: impl Into<SmolStr>) -> Attachment {
+	pub fn push_image(&self, source: impl Into<Str>) -> Attachment {
 		let source = source.into();
 		let dimensions = probe_dimensions(source.as_str());
 		self.stage(AttachmentContent::Image { source, dimensions })
@@ -523,7 +523,7 @@ impl Attachments {
 			}
 			snippet.push_str(&line[..byte_at_column(line, PREVIEW_COLS)]);
 		}
-		self.stage(AttachmentContent::Text { snippet: SmolStr::from(snippet), lines, chars })
+		self.stage(AttachmentContent::Text { snippet: Str::from(snippet), lines, chars })
 	}
 
 	fn stage(&self, content: AttachmentContent) -> Attachment {
@@ -720,18 +720,18 @@ impl EditorPane {
 			let (icon, size) = match &attachment.content {
 				AttachmentContent::Image { dimensions, .. } => (
 					pc.ctx.charset.icon(crate::Icon::Image),
-					dimensions.map(|(width, height)| format_smol!("{width}x{height}")),
+					dimensions.map(|(width, height)| fmts!("{width}x{height}")),
 				),
 				AttachmentContent::Text { lines, chars, .. } => (
 					pc.ctx.charset.icon(crate::Icon::TextFile),
 					Some(if *lines > 1 {
-						format_smol!("+{lines} lines")
+						fmts!("+{lines} lines")
 					} else {
-						format_smol!("{chars} chars")
+						fmts!("{chars} chars")
 					}),
 				),
 			};
-			let name = format_smol!("{icon} #{}", attachment.marker);
+			let name = fmts!("{icon} #{}", attachment.marker);
 			frame_caption_row(pc, x, top, PREVIEW_BOX_COLS, (tl, tr, horizontal), &name, line, label);
 			frame_caption_row(
 				pc,
@@ -947,7 +947,7 @@ impl Component for EditorPane {
 		self.children[0].comp().value(out);
 	}
 
-	fn set_text(&mut self, ctx: &UiContext, text: SmolStr) -> bool {
+	fn set_text(&mut self, ctx: &UiContext, text: Str) -> bool {
 		self.children[0].comp_mut().set_text(ctx, text)
 	}
 }

@@ -1,6 +1,6 @@
 //! Never-failing parses for mid-stream tool-call argument buffers.
 
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use crate::{
 	parser::{MAX_DEPTH, Parser},
@@ -51,7 +51,7 @@ impl PartialParser<'_> {
 			b'[' => Some(Value::Array(self.array(depth + 1))),
 			quote @ (b'"' | b'\'') => {
 				let text = self.p.string(quote).expect("lenient string never fails");
-				Some(Value::String(SmolStr::from(text)))
+				Some(Value::String(Str::from(text)))
 			},
 			b'-' | b'+' | b'.' | b'0'..=b'9' => {
 				let number = self.p.number().expect("lenient number never errors")?;
@@ -89,9 +89,9 @@ impl PartialParser<'_> {
 			}
 			let key = match self.p.peek() {
 				Some(quote @ (b'"' | b'\'')) => {
-					SmolStr::from(self.p.string(quote).expect("lenient string never fails"))
+					Str::from(self.p.string(quote).expect("lenient string never fails"))
 				},
-				_ => SmolStr::from(self.p.unquoted_key()),
+				_ => Str::from(self.p.unquoted_key()),
 			};
 			self.p.ws();
 			if self.p.peek() == Some(b':') {

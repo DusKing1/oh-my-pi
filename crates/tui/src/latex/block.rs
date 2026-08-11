@@ -4,7 +4,7 @@
 //! TeX Math — by @thatmagicalcat (<https://github.com/thatmagicalcat/txm>,
 //! MIT/Apache-2.0), reimplemented for styled terminal segments.
 
-use omp_core::{SmolStr, SmolStrMut, format_smol};
+use omp_core::{Str, StrMut, fmts};
 use smallvec::SmallVec;
 
 use super::unicode::{MathFont, Row, apply_math_font, latex_row, math_font, resolve_color};
@@ -55,7 +55,7 @@ struct DelimPieces {
 	axis:   Option<&'static str>,
 }
 
-fn owned_line(style: Style, text: impl Into<SmolStr>) -> Row {
+fn owned_line(style: Style, text: impl Into<Str>) -> Row {
 	let text = text.into();
 	if text.is_empty() {
 		Row::new()
@@ -67,7 +67,7 @@ fn owned_line(style: Style, text: impl Into<SmolStr>) -> Row {
 }
 
 fn spaces(style: Style, width: u16) -> Row {
-	let mut text = SmolStrMut::with_capacity(usize::from(width));
+	let mut text = StrMut::with_capacity(usize::from(width));
 	for _ in 0..width {
 		text.push(' ');
 	}
@@ -76,7 +76,7 @@ fn spaces(style: Style, width: u16) -> Row {
 
 fn repeated(style: Style, glyph: &str, count: u16) -> Row {
 	let capacity = usize::from(count).saturating_mul(glyph.len());
-	let mut text = SmolStrMut::with_capacity(capacity);
+	let mut text = StrMut::with_capacity(capacity);
 	for _ in 0..count {
 		text.push_str(glyph);
 	}
@@ -120,7 +120,7 @@ fn flat_box(src: &str, ctx: Context) -> MathBox {
 	let mut line = latex_row(src, ctx.style);
 	if let Some(font) = ctx.font {
 		for (_, text) in &mut line {
-			*text = SmolStr::from(apply_math_font(font, text.as_str()));
+			*text = Str::from(apply_math_font(font, text.as_str()));
 		}
 	}
 	text_box(line)
@@ -322,7 +322,7 @@ fn radical_box(inner: MathBox, degree: Option<&str>, ctx: Context) -> MathBox {
 	}
 	let radical = MathBox { lines, baseline: inner.baseline + 1, width };
 	let Some(degree) = degree else { return radical };
-	let degree = format_smol!("^{{{degree}}}");
+	let degree = fmts!("^{{{degree}}}");
 	let rendered = flat_box(degree.as_str(), ctx);
 	let mut degree_lines = rendered.lines;
 	degree_lines.push(spaces(ctx.style, rendered.width));
@@ -383,7 +383,7 @@ fn hbrace_box(content: MathBox, spec: HBraceSpec, label: Option<MathBox>, style:
 	let brace_width = content.width.max(3);
 	let width = brace_width.max(label.as_ref().map_or(0, |item| item.width));
 	let lead = (brace_width - 3) / 2;
-	let mut brace = SmolStrMut::new(spec.left);
+	let mut brace = StrMut::new(spec.left);
 	for _ in 0..lead {
 		brace.push_str(spec.mid);
 	}
@@ -643,27 +643,27 @@ fn read_delim_token(src: &str, start: usize) -> Option<Span<'_>> {
 	Some(Span { text: &src[start..end], end })
 }
 
-fn delim_key(token: &str, ctx: Context) -> SmolStr {
+fn delim_key(token: &str, ctx: Context) -> Str {
 	match token {
-		"<" => SmolStr::new("⟨"),
-		">" => SmolStr::new("⟩"),
-		"." => SmolStr::new(""),
-		"(" | ")" | "[" | "]" | "|" => SmolStr::new(token),
-		"\\{" | "\\lbrace" => SmolStr::new("{"),
-		"\\}" | "\\rbrace" => SmolStr::new("}"),
-		"\\vert" | "\\lvert" | "\\rvert" => SmolStr::new("|"),
-		"\\|" | "\\Vert" | "\\lVert" | "\\rVert" => SmolStr::new("‖"),
-		"\\langle" => SmolStr::new("⟨"),
-		"\\rangle" => SmolStr::new("⟩"),
-		"\\lceil" => SmolStr::new("⌈"),
-		"\\rceil" => SmolStr::new("⌉"),
-		"\\lfloor" => SmolStr::new("⌊"),
-		"\\rfloor" => SmolStr::new("⌋"),
-		"\\lbrack" => SmolStr::new("["),
-		"\\rbrack" => SmolStr::new("]"),
+		"<" => Str::new("⟨"),
+		">" => Str::new("⟩"),
+		"." => Str::new(""),
+		"(" | ")" | "[" | "]" | "|" => Str::new(token),
+		"\\{" | "\\lbrace" => Str::new("{"),
+		"\\}" | "\\rbrace" => Str::new("}"),
+		"\\vert" | "\\lvert" | "\\rvert" => Str::new("|"),
+		"\\|" | "\\Vert" | "\\lVert" | "\\rVert" => Str::new("‖"),
+		"\\langle" => Str::new("⟨"),
+		"\\rangle" => Str::new("⟩"),
+		"\\lceil" => Str::new("⌈"),
+		"\\rceil" => Str::new("⌉"),
+		"\\lfloor" => Str::new("⌊"),
+		"\\rfloor" => Str::new("⌋"),
+		"\\lbrack" => Str::new("["),
+		"\\rbrack" => Str::new("]"),
 		_ => {
 			let line = flat_box(token, ctx).lines.pop().unwrap_or_default();
-			let mut text = SmolStrMut::default();
+			let mut text = StrMut::default();
 			for (_, segment) in line {
 				text.push_str(segment.as_str());
 			}
@@ -1120,24 +1120,24 @@ fn command_name(src: &str, start: usize) -> (&str, usize) {
 }
 
 fn apply_color(ctx: Context, model: Option<&str>, spec: &str) -> Context {
-	let key = model.map_or_else(|| SmolStr::new(spec), |model| format_smol!("{model}:{spec}"));
+	let key = model.map_or_else(|| Str::new(spec), |model| fmts!("{model}:{spec}"));
 	resolve_color(key.as_str()).map_or(ctx, |color| Context { style: ctx.style.fg(color), ..ctx })
 }
 
 fn apply_background(ctx: Context, model: Option<&str>, spec: &str) -> Context {
-	let key = model.map_or_else(|| SmolStr::new(spec), |model| format_smol!("{model}:{spec}"));
+	let key = model.map_or_else(|| Str::new(spec), |model| fmts!("{model}:{spec}"));
 	resolve_color(key.as_str()).map_or(ctx, |color| Context { style: ctx.style.bg(color), ..ctx })
 }
 
 fn parse_expr(src: &str, initial: Context) -> MathBox {
 	let mut boxes: SmallVec<MathBox, 8> = SmallVec::new();
-	let mut inline = SmolStrMut::default();
+	let mut inline = StrMut::default();
 	let mut ctx = initial;
 	let mut at = 0;
-	let flush = |inline: &mut SmolStrMut, boxes: &mut SmallVec<MathBox, 8>, ctx: Context| {
+	let flush = |inline: &mut StrMut, boxes: &mut SmallVec<MathBox, 8>, ctx: Context| {
 		if !inline.is_empty() {
 			boxes.push(flat_box(inline.as_str(), ctx));
-			*inline = SmolStrMut::default();
+			*inline = StrMut::default();
 		}
 	};
 	while at < src.len() {
@@ -1340,7 +1340,7 @@ fn parse_expr(src: &str, initial: Context) -> MathBox {
 					}
 					if sub.is_some() || sup.is_some() {
 						flush(&mut inline, &mut boxes, ctx);
-						let command = format_smol!("\\{name}");
+						let command = fmts!("\\{name}");
 						boxes.push(limits_box(
 							flat_box(command.as_str(), ctx),
 							sub.map(|text| parse_expr(text, ctx)),

@@ -7,7 +7,7 @@ use bytes::{Bytes, BytesMut};
 use http::{Request, Response, header};
 use http_body_util::BodyExt;
 use hyper::body::Body as HttpBody;
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use omp_llm_anthropic::AnthropicCodec;
 use omp_llm_catalog::{
 	models::{ModelCard, ModelCatalog, PriceUnit},
@@ -53,7 +53,7 @@ pub struct ProviderCandidate {
 pub struct ProviderRouter {
 	models:     Arc<ModelCatalog>,
 	providers:  Arc<ProviderCatalog>,
-	candidates: BTreeMap<SmolStr, SmallVec<ProviderCandidate, 2>>,
+	candidates: BTreeMap<Str, SmallVec<ProviderCandidate, 2>>,
 }
 
 impl ProviderRouter {
@@ -64,7 +64,7 @@ impl ProviderRouter {
 	}
 
 	/// Appends one already-built provider candidate.
-	pub fn register(&mut self, provider: impl Into<SmolStr>, candidate: ProviderCandidate) {
+	pub fn register(&mut self, provider: impl Into<Str>, candidate: ProviderCandidate) {
 		self
 			.candidates
 			.entry(provider.into())
@@ -74,7 +74,7 @@ impl ProviderRouter {
 
 	/// Registers one embedded local engine for chat, embeddings, speech, and
 	/// transcription.
-	pub fn register_local<E: LocalEngine>(&mut self, provider: impl Into<SmolStr>, engine: Arc<E>) {
+	pub fn register_local<E: LocalEngine>(&mut self, provider: impl Into<Str>, engine: Arc<E>) {
 		let transport = Arc::new(Embedded::new(engine));
 		self.register(provider, ProviderCandidate {
 			facets: Facets {
@@ -94,13 +94,13 @@ impl ProviderRouter {
 	) -> Result<(&ModelCard, &ProviderEntry, &[ProviderCandidate]), Error> {
 		let (provider_id, model_id) = selector
 			.split_once('/')
-			.ok_or_else(|| Error::Provider(SmolStr::from("model selector must be provider/model")))?;
+			.ok_or_else(|| Error::Provider(Str::from("model selector must be provider/model")))?;
 		let model = self
 			.models
 			.get(provider_id, model_id)
-			.ok_or_else(|| Error::Provider(format_smol!("unknown catalog model {selector}")))?;
+			.ok_or_else(|| Error::Provider(fmts!("unknown catalog model {selector}")))?;
 		let provider = self.providers.get(model.provider.as_str()).ok_or_else(|| {
-			Error::Provider(format_smol!("unknown catalog provider {}", model.provider))
+			Error::Provider(fmts!("unknown catalog provider {}", model.provider))
 		})?;
 		if !model.facets.contains(&facet) || !provider.facets.contains(&facet) {
 			return Err(Error::Unsupported(vec![unsupported(
@@ -109,7 +109,7 @@ impl ProviderRouter {
 			)]));
 		}
 		let candidates = self.candidates.get(provider.id.as_str()).ok_or_else(|| {
-			Error::Provider(format_smol!("provider route unavailable for {}", provider.id))
+			Error::Provider(fmts!("provider route unavailable for {}", provider.id))
 		})?;
 		Ok((model, provider, candidates))
 	}
@@ -127,7 +127,7 @@ impl Chat for ProviderRouter {
 		let backend = candidates
 			.iter()
 			.find_map(|candidate| candidate.facets.chat.clone())
-			.ok_or_else(|| Error::Provider(SmolStr::from("chat candidate unavailable")))?;
+			.ok_or_else(|| Error::Provider(Str::from("chat candidate unavailable")))?;
 		backend.turn(request, executor).await
 	}
 }
@@ -141,7 +141,7 @@ impl Embed for ProviderRouter {
 		let backend = candidates
 			.iter()
 			.find_map(|candidate| candidate.facets.embed.clone())
-			.ok_or_else(|| Error::Provider(SmolStr::from("embedding candidate unavailable")))?;
+			.ok_or_else(|| Error::Provider(Str::from("embedding candidate unavailable")))?;
 		backend.embed(request).await
 	}
 }
@@ -158,7 +158,7 @@ impl Speak for ProviderRouter {
 		let backend = candidates
 			.iter()
 			.find_map(|candidate| candidate.facets.speak.clone())
-			.ok_or_else(|| Error::Provider(SmolStr::from("speech candidate unavailable")))?;
+			.ok_or_else(|| Error::Provider(Str::from("speech candidate unavailable")))?;
 		backend.speak(request).await
 	}
 }
@@ -172,7 +172,7 @@ impl Transcribe for ProviderRouter {
 		let backend = candidates
 			.iter()
 			.find_map(|candidate| candidate.facets.transcribe.clone())
-			.ok_or_else(|| Error::Provider(SmolStr::from("transcription candidate unavailable")))?;
+			.ok_or_else(|| Error::Provider(Str::from("transcription candidate unavailable")))?;
 		backend.transcribe(request).await
 	}
 }
@@ -185,8 +185,8 @@ impl Transcribe for ProviderRouter {
 pub struct CountRouter {
 	models:             Arc<ModelCatalog>,
 	providers:          Arc<ProviderCatalog>,
-	provider_endpoints: BTreeMap<SmolStr, Arc<dyn CountTokens>>,
-	tokenizers:         BTreeMap<SmolStr, Arc<dyn Tokenizer>>,
+	provider_endpoints: BTreeMap<Str, Arc<dyn CountTokens>>,
+	tokenizers:         BTreeMap<Str, Arc<dyn Tokenizer>>,
 }
 
 impl CountRouter {
@@ -199,27 +199,27 @@ impl CountRouter {
 	/// Installs the exact count endpoint belonging to `provider`.
 	pub fn insert_provider_endpoint(
 		&mut self,
-		provider: impl Into<SmolStr>,
+		provider: impl Into<Str>,
 		endpoint: Arc<dyn CountTokens>,
 	) {
 		self.provider_endpoints.insert(provider.into(), endpoint);
 	}
 
 	/// Installs an exact custom tokenizer keyed by [`ModelCard::family`].
-	pub fn insert_tokenizer(&mut self, family: impl Into<SmolStr>, tokenizer: Arc<dyn Tokenizer>) {
+	pub fn insert_tokenizer(&mut self, family: impl Into<Str>, tokenizer: Arc<dyn Tokenizer>) {
 		self.tokenizers.insert(family.into(), tokenizer);
 	}
 
 	fn model_and_provider(&self, selector: &str) -> Result<(&ModelCard, &ProviderEntry), Error> {
 		let (provider_id, model_id) = selector
 			.split_once('/')
-			.ok_or_else(|| Error::Provider(SmolStr::from("model selector must be provider/model")))?;
+			.ok_or_else(|| Error::Provider(Str::from("model selector must be provider/model")))?;
 		let model = self
 			.models
 			.get(provider_id, model_id)
-			.ok_or_else(|| Error::Provider(format_smol!("unknown catalog model {selector}")))?;
+			.ok_or_else(|| Error::Provider(fmts!("unknown catalog model {selector}")))?;
 		let provider = self.providers.get(model.provider.as_str()).ok_or_else(|| {
-			Error::Provider(format_smol!("unknown catalog provider {}", model.provider))
+			Error::Provider(fmts!("unknown catalog provider {}", model.provider))
 		})?;
 		Ok((model, provider))
 	}
@@ -268,7 +268,7 @@ impl CountTokens for CountRouter {
 pub enum RemoteCountBuildError {
 	/// The catalog row does not advertise chat prompts that can be counted.
 	#[error("provider {0} does not advertise chat")]
-	FacetNotAdvertised(SmolStr),
+	FacetNotAdvertised(Str),
 	/// The provider transport has no native count endpoint owned by this stack.
 	#[error("transport {0:?} has no production token-count adapter")]
 	UnsupportedTransport(TransportId),
@@ -276,7 +276,7 @@ pub enum RemoteCountBuildError {
 	#[error("provider {provider} requires route field {field}")]
 	MissingRouteField {
 		/// Catalog provider identifier.
-		provider: SmolStr,
+		provider: Str,
 		/// Missing non-secret route field.
 		field:    &'static str,
 	},
@@ -364,7 +364,7 @@ where
 			builder = builder.header(name.as_str(), value.as_str());
 		}
 		let mut outbound = builder.body(Body::new(encoded)).map_err(|error| {
-			Error::Provider(format_smol!("invalid token-count HTTP request: {error}"))
+			Error::Provider(fmts!("invalid token-count HTTP request: {error}"))
 		})?;
 		outbound
 			.extensions_mut()
@@ -376,24 +376,24 @@ where
 				.ready()
 				.await
 				.map_err(|error| {
-					Error::Transport(format_smol!("token-count egress not ready: {error}"))
+					Error::Transport(fmts!("token-count egress not ready: {error}"))
 				})?
 				.call(outbound)
 				.await
-				.map_err(|error| Error::Transport(format_smol!("token-count egress failed: {error}")))?
+				.map_err(|error| Error::Transport(fmts!("token-count egress failed: {error}")))?
 		};
 		let status = response.status();
 		let mut response_body = response.into_body();
 		let mut body = BytesMut::new();
 		while let Some(frame) = response_body.frame().await {
 			let frame = frame.map_err(|error| {
-				Error::Transport(format_smol!("token-count response body failed: {error}"))
+				Error::Transport(fmts!("token-count response body failed: {error}"))
 			})?;
 			let Some(data) = frame.data_ref() else {
 				continue;
 			};
 			if body.len().saturating_add(data.len()) > MAX_COUNT_RESPONSE_BYTES {
-				return Err(Error::Transport(SmolStr::from("token-count response exceeded 64 KiB")));
+				return Err(Error::Transport(Str::from("token-count response exceeded 64 KiB")));
 			}
 			body.extend_from_slice(data);
 		}
@@ -404,10 +404,10 @@ where
 					value
 						.pointer("/error/message")
 						.and_then(Value::as_str)
-						.map(SmolStr::from)
+						.map(Str::from)
 				})
-				.unwrap_or_else(|| SmolStr::from("provider returned an error response"));
-			return Err(Error::Provider(format_smol!(
+				.unwrap_or_else(|| Str::from("provider returned an error response"));
+			return Err(Error::Provider(fmts!(
 				"token-count provider returned HTTP {}: {message}",
 				status.as_u16()
 			)));
@@ -434,7 +434,7 @@ fn remote_count_endpoint(shared: &RemoteCountShared, model: &str) -> Result<Stri
 			.gateway(shared.route.gateway.as_str())
 			.build(),
 	)
-	.map_err(|error| Error::Provider(format_smol!("invalid token-count endpoint: {error}")))?;
+	.map_err(|error| Error::Provider(fmts!("invalid token-count endpoint: {error}")))?;
 	Ok(format!("{}/v1/messages/count_tokens", base.trim_end_matches('/')))
 }
 
@@ -452,18 +452,18 @@ pub struct RemoteEmbedPolicy {
 pub enum RemoteEmbedBuildError {
 	/// The catalog row does not advertise embeddings.
 	#[error("provider {0} does not advertise embeddings")]
-	FacetNotAdvertised(SmolStr),
+	FacetNotAdvertised(Str),
 	/// The provider transport has no verified embedding wire.
 	#[error("transport {0:?} has no production embedding adapter")]
 	UnsupportedTransport(TransportId),
 	/// The transport is compatible, but this provider has no verified limits.
 	#[error("provider {0} has no verified embedding policy")]
-	UnverifiedProvider(SmolStr),
+	UnverifiedProvider(Str),
 	/// A URL-template or Vertex route field is unavailable.
 	#[error("provider {provider} requires route field {field}")]
 	MissingRouteField {
 		/// Catalog provider identifier.
-		provider: SmolStr,
+		provider: Str,
 		/// Missing non-secret route field.
 		field:    &'static str,
 	},
@@ -490,7 +490,7 @@ impl RemoteEmbedCodec {
 		}
 	}
 
-	fn error_message(self, body: &[u8]) -> Option<SmolStr> {
+	fn error_message(self, body: &[u8]) -> Option<Str> {
 		let value: Value = serde_json::from_slice(body).ok()?;
 		match self {
 			Self::OpenAi => openai_embeddings::error_message(&value),
@@ -581,7 +581,7 @@ where
 {
 	async fn embed(&self, request: EmbedRequest) -> Result<EmbedResponse, Error> {
 		if request.texts.len() > self.shared.policy.max_batch_size {
-			return Err(Error::Provider(format_smol!(
+			return Err(Error::Provider(fmts!(
 				"embedding batch exceeds provider limit of {} inputs",
 				self.shared.policy.max_batch_size
 			)));
@@ -611,7 +611,7 @@ where
 			builder = builder.header(name.as_str(), value.as_str());
 		}
 		let mut outbound = builder.body(Body::new(encoded)).map_err(|error| {
-			Error::Provider(format_smol!("invalid embedding HTTP request: {error}"))
+			Error::Provider(fmts!("invalid embedding HTTP request: {error}"))
 		})?;
 		outbound
 			.extensions_mut()
@@ -622,10 +622,10 @@ where
 			egress
 				.ready()
 				.await
-				.map_err(|error| Error::Transport(format_smol!("embedding egress not ready: {error}")))?
+				.map_err(|error| Error::Transport(fmts!("embedding egress not ready: {error}")))?
 				.call(outbound)
 				.await
-				.map_err(|error| Error::Transport(format_smol!("embedding egress failed: {error}")))?
+				.map_err(|error| Error::Transport(fmts!("embedding egress failed: {error}")))?
 		};
 		let status = response.status();
 		let body = response
@@ -633,7 +633,7 @@ where
 			.collect()
 			.await
 			.map_err(|error| {
-				Error::Transport(format_smol!("embedding response body failed: {error}"))
+				Error::Transport(fmts!("embedding response body failed: {error}"))
 			})?
 			.to_bytes();
 		if !status.is_success() {
@@ -641,8 +641,8 @@ where
 				.shared
 				.codec
 				.error_message(&body)
-				.unwrap_or_else(|| SmolStr::from("provider returned an error response"));
-			return Err(Error::Provider(format_smol!(
+				.unwrap_or_else(|| Str::from("provider returned an error response"));
+			return Err(Error::Provider(fmts!(
 				"embedding provider returned HTTP {}: {message}",
 				status.as_u16()
 			)));
@@ -742,7 +742,7 @@ fn remote_embed_endpoint(shared: &RemoteEmbedShared, model: &str) -> Result<Stri
 			.gateway(shared.route.gateway.as_str())
 			.build(),
 	)
-	.map_err(|error| Error::Provider(format_smol!("invalid embedding endpoint: {error}")))?;
+	.map_err(|error| Error::Provider(fmts!("invalid embedding endpoint: {error}")))?;
 	let base = base.trim_end_matches('/');
 	let suffix = match shared.codec {
 		RemoteEmbedCodec::OpenAi => "/embeddings".to_owned(),
@@ -757,7 +757,7 @@ fn remote_embed_endpoint(shared: &RemoteEmbedShared, model: &str) -> Result<Stri
 	Ok(format!("{base}{suffix}"))
 }
 
-fn estimate_embedding_tokens(texts: &[SmolStr]) -> u64 {
+fn estimate_embedding_tokens(texts: &[Str]) -> u64 {
 	texts.iter().fold(0u64, |total, text| {
 		let chars = u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
 		total.saturating_add(chars.saturating_add(3) / 4)
@@ -786,7 +786,7 @@ pub struct EmbedRoute {
 pub struct EmbedRouter {
 	models:    Arc<ModelCatalog>,
 	providers: Arc<ProviderCatalog>,
-	routes:    BTreeMap<SmolStr, EmbedRoute>,
+	routes:    BTreeMap<Str, EmbedRoute>,
 }
 
 impl EmbedRouter {
@@ -797,20 +797,20 @@ impl EmbedRouter {
 	}
 
 	/// Installs an HTTP provider or embedded local-engine route.
-	pub fn insert_route(&mut self, provider: impl Into<SmolStr>, route: EmbedRoute) {
+	pub fn insert_route(&mut self, provider: impl Into<Str>, route: EmbedRoute) {
 		self.routes.insert(provider.into(), route);
 	}
 
 	fn resolve(&self, selector: &str) -> Result<(&ModelCard, &ProviderEntry, &EmbedRoute), Error> {
 		let (provider_id, model_id) = selector
 			.split_once('/')
-			.ok_or_else(|| Error::Provider(SmolStr::from("model selector must be provider/model")))?;
+			.ok_or_else(|| Error::Provider(Str::from("model selector must be provider/model")))?;
 		let model = self
 			.models
 			.get(provider_id, model_id)
-			.ok_or_else(|| Error::Provider(format_smol!("unknown catalog model {selector}")))?;
+			.ok_or_else(|| Error::Provider(fmts!("unknown catalog model {selector}")))?;
 		let provider = self.providers.get(model.provider.as_str()).ok_or_else(|| {
-			Error::Provider(format_smol!("unknown catalog provider {}", model.provider))
+			Error::Provider(fmts!("unknown catalog provider {}", model.provider))
 		})?;
 		if !model.facets.contains(&CatalogFacet::Embeddings)
 			|| !provider.facets.contains(&CatalogFacet::Embeddings)
@@ -821,7 +821,7 @@ impl EmbedRouter {
 			)]));
 		}
 		let route = self.routes.get(provider.id.as_str()).ok_or_else(|| {
-			Error::Provider(format_smol!("embedding route unavailable for {}", provider.id))
+			Error::Provider(fmts!("embedding route unavailable for {}", provider.id))
 		})?;
 		Ok((model, provider, route))
 	}
@@ -866,7 +866,7 @@ impl Embed for EmbedRouter {
 				)
 				.await?;
 			if response.vectors.len() != expected {
-				return Err(Error::Provider(SmolStr::from(
+				return Err(Error::Provider(Str::from(
 					"embedding provider returned a vector count different from its input count",
 				)));
 			}
@@ -891,15 +891,15 @@ fn validate_vector_dimensions(
 	for vector in vectors {
 		let width = vector.values.len();
 		if width == 0 {
-			return Err(Error::Provider(SmolStr::from("embedding provider returned an empty vector")));
+			return Err(Error::Provider(Str::from("embedding provider returned an empty vector")));
 		}
 		if requested.is_some_and(|requested| requested != width) {
-			return Err(Error::Provider(SmolStr::from(
+			return Err(Error::Provider(Str::from(
 				"embedding provider returned a vector with the wrong requested dimensions",
 			)));
 		}
 		if observed.is_some_and(|observed| observed != width) {
-			return Err(Error::Provider(SmolStr::from(
+			return Err(Error::Provider(Str::from(
 				"embedding provider returned inconsistent native dimensions",
 			)));
 		}
@@ -910,7 +910,7 @@ fn validate_vector_dimensions(
 
 fn attach_embedding_cost(
 	model: &ModelCard,
-	texts: &[SmolStr],
+	texts: &[Str],
 	request_count: u64,
 	usage: &mut Option<Usage>,
 ) {
@@ -958,8 +958,8 @@ fn attach_embedding_cost(
 
 fn unsupported(what: &str, detail: &str) -> Unsupported {
 	Unsupported::builder()
-		.what(SmolStr::from(what))
-		.detail(SmolStr::from(detail))
+		.what(Str::from(what))
+		.detail(Str::from(detail))
 		.action(UnsupportedAction::Dropped)
 		.build()
 }
@@ -1071,11 +1071,11 @@ mod tests {
 		family: &str,
 	) -> (Arc<ModelCatalog>, Arc<ProviderCatalog>) {
 		let model = ModelCard::builder()
-			.id(SmolStr::new(format!("vendor/{model_id}")))
-			.provider(SmolStr::from("vendor"))
-			.model(SmolStr::new(model_id))
-			.name(SmolStr::new(model_id))
-			.family(SmolStr::new(family))
+			.id(Str::new(format!("vendor/{model_id}")))
+			.provider(Str::from("vendor"))
+			.model(Str::new(model_id))
+			.name(Str::new(model_id))
+			.family(Str::new(family))
 			.facets(smallvec![facet])
 			.inputs(smallvec![Modality::Text])
 			.outputs(SmallVec::new())
@@ -1093,9 +1093,9 @@ mod tests {
 			.effort_routing(BTreeMap::new())
 			.build();
 		let provider = ProviderEntry::builder()
-			.id(SmolStr::from("vendor"))
+			.id(Str::from("vendor"))
 			.transport(transport)
-			.base_url(SmolStr::from("https://example.test"))
+			.base_url(Str::from("https://example.test"))
 			.fallback_base_urls(SmallVec::new())
 			.auth(AuthSpec::default())
 			.facets(smallvec![facet])
@@ -1113,7 +1113,7 @@ mod tests {
 
 	fn count_request_for_model(model_id: &str) -> CountRequest {
 		CountRequest::builder()
-			.model(SmolStr::new(format!("vendor/{model_id}")))
+			.model(Str::new(format!("vendor/{model_id}")))
 			.input(CountInput::Thread(
 				Thread::builder()
 					.items(vec![
@@ -1122,7 +1122,7 @@ mod tests {
 							.kind(ItemKind::Message(
 								Message::builder()
 									.role(Role::User)
-									.parts(vec![Part::Text(SmolStr::from("hello world"))])
+									.parts(vec![Part::Text(Str::from("hello world"))])
 									.build(),
 							))
 							.props(Props::default())
@@ -1239,7 +1239,7 @@ mod tests {
 		let mut provider = providers.get("vendor").unwrap().clone();
 		provider
 			.headers
-			.insert(SmolStr::from("anthropic-version"), SmolStr::from("2023-06-01"));
+			.insert(Str::from("anthropic-version"), Str::from("2023-06-01"));
 		let observed = Arc::new(Mutex::new(None));
 		let observed_request = Arc::clone(&observed);
 		let egress = service_fn(move |request: Request<Body>| {
@@ -1279,7 +1279,7 @@ mod tests {
 
 	#[derive(Default)]
 	struct RecordingEmbed {
-		batches: Mutex<Vec<Vec<SmolStr>>>,
+		batches: Mutex<Vec<Vec<Str>>>,
 	}
 	#[async_trait]
 	impl Embed for RecordingEmbed {
@@ -1314,8 +1314,8 @@ mod tests {
 		let response = router
 			.embed(
 				EmbedRequest::builder()
-					.model(SmolStr::from("vendor/model"))
-					.texts(["0", "1", "2", "3", "4"].map(SmolStr::from).to_vec())
+					.model(Str::from("vendor/model"))
+					.texts(["0", "1", "2", "3", "4"].map(Str::from).to_vec())
 					.dimensions(1)
 					.props(Props::default())
 					.build(),
@@ -1354,8 +1354,8 @@ mod tests {
 		let error = router
 			.embed(
 				EmbedRequest::builder()
-					.model(SmolStr::from("vendor/model"))
-					.texts(vec![SmolStr::from("1")])
+					.model(Str::from("vendor/model"))
+					.texts(vec![Str::from("1")])
 					.dimensions(8)
 					.props(Props::default())
 					.build(),

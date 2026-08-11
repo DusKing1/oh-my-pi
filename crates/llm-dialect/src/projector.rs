@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use bytes::{Bytes, BytesMut};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{StreamPartKind, TurnEvent, ids::CallId};
 use smallvec::SmallVec;
 
@@ -58,7 +58,7 @@ pub struct StreamProjector {
 	channel:         Option<ToolChannel>,
 	next_index:      u32,
 	open:            Option<OpenPart>,
-	inband_tools:    BTreeMap<SmolStr, u32>,
+	inband_tools:    BTreeMap<Str, u32>,
 	native_tools:    BTreeMap<u32, u32>,
 }
 
@@ -110,8 +110,8 @@ impl StreamProjector {
 			{
 				let index = self.open_part(
 					StreamPartKind::Text,
-					SmolStr::default(),
-					SmolStr::default(),
+					Str::default(),
+					Str::default(),
 					&mut out,
 				);
 				out.push(Projection::Event(TurnEvent::PartDelta { index, chunk }));
@@ -156,8 +156,8 @@ impl StreamProjector {
 	pub fn native_tool_start(
 		&mut self,
 		source_index: u32,
-		id: SmolStr,
-		name: SmolStr,
+		id: Str,
+		name: Str,
 	) -> ProjectionBatch {
 		let mut out = ProjectionBatch::new();
 		if self.stopped || name.trim().is_empty() || self.channel == Some(ToolChannel::Inband) {
@@ -231,22 +231,22 @@ impl StreamProjector {
 			match event {
 				ScanEvent::Text(chunk) => {
 					let index =
-						self.open_part(StreamPartKind::Text, SmolStr::default(), SmolStr::default(), out);
+						self.open_part(StreamPartKind::Text, Str::default(), Str::default(), out);
 					out.push(Projection::Event(TurnEvent::PartDelta { index, chunk }));
 				},
 				ScanEvent::ThinkingStart => {
 					self.open_part(
 						StreamPartKind::Thinking,
-						SmolStr::default(),
-						SmolStr::default(),
+						Str::default(),
+						Str::default(),
 						out,
 					);
 				},
 				ScanEvent::ThinkingDelta(chunk) => {
 					let index = self.open_part(
 						StreamPartKind::Thinking,
-						SmolStr::default(),
-						SmolStr::default(),
+						Str::default(),
+						Str::default(),
 						out,
 					);
 					out.push(Projection::Event(TurnEvent::PartDelta { index, chunk }));
@@ -299,8 +299,8 @@ impl StreamProjector {
 	fn open_part(
 		&mut self,
 		kind: StreamPartKind,
-		id: SmolStr,
-		name: SmolStr,
+		id: Str,
+		name: Str,
 		out: &mut ProjectionBatch,
 	) -> u32 {
 		if let Some(open) = self.open.filter(|open| open.kind == kind) {
@@ -346,7 +346,7 @@ impl StreamProjector {
 	}
 }
 
-fn canonical_call_id(id: SmolStr) -> SmolStr {
+fn canonical_call_id(id: Str) -> Str {
 	let valid = id
 		.parse::<CallId>()
 		.ok()
@@ -354,7 +354,7 @@ fn canonical_call_id(id: SmolStr) -> SmolStr {
 	if valid {
 		id
 	} else {
-		SmolStr::from(CallId::new().to_string())
+		Str::from(CallId::new().to_string())
 	}
 }
 

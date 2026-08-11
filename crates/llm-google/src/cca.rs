@@ -3,7 +3,7 @@
 use std::iter::FusedIterator;
 
 use bytes::Bytes;
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use omp_llm_catalog::{
 	compat::{Compat, ToolSchemaFlavor},
 	provider::{ProviderEntry, TransportId},
@@ -49,21 +49,21 @@ pub enum CcaFlavor {
 /// Retries therefore serialize the exact same request identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AntigravityRequestMetadata {
-	session_id:        SmolStr,
-	request_id:        SmolStr,
-	trajectory_id:     SmolStr,
+	session_id:        Str,
+	request_id:        Str,
+	trajectory_id:     Str,
 	step_index:        u64,
-	last_execution_id: Option<SmolStr>,
-	model_enum:        Option<SmolStr>,
+	last_execution_id: Option<Str>,
+	model_enum:        Option<Str>,
 }
 
 impl AntigravityRequestMetadata {
 	/// Creates required metadata for one Antigravity trajectory step.
 	#[must_use]
 	pub const fn new(
-		session_id: SmolStr,
-		request_id: SmolStr,
-		trajectory_id: SmolStr,
+		session_id: Str,
+		request_id: Str,
+		trajectory_id: Str,
 		step_index: u64,
 	) -> Self {
 		Self {
@@ -78,14 +78,14 @@ impl AntigravityRequestMetadata {
 
 	/// Echoes the preceding successful CCA `responseId`.
 	#[must_use]
-	pub fn with_last_execution_id(mut self, execution_id: SmolStr) -> Self {
+	pub fn with_last_execution_id(mut self, execution_id: Str) -> Self {
 		self.last_execution_id = Some(execution_id);
 		self
 	}
 
 	/// Adds the captured Antigravity model telemetry enum.
 	#[must_use]
-	pub fn with_model_enum(mut self, model_enum: SmolStr) -> Self {
+	pub fn with_model_enum(mut self, model_enum: Str) -> Self {
 		self.model_enum = Some(model_enum);
 		self
 	}
@@ -107,26 +107,26 @@ impl AntigravityRequestMetadata {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CcaHeaders {
 	/// Exact user-agent string.
-	pub user_agent:      SmolStr,
+	pub user_agent:      Str,
 	/// Gemini CLI client metadata; absent for Antigravity.
 	pub client_metadata: Option<&'static str>,
 	/// Claude interleaved-thinking beta; absent otherwise.
 	pub anthropic_beta:  Option<&'static str>,
 	/// Billing project forwarded as `X-Goog-User-Project`.
-	pub quota_project:   Option<SmolStr>,
+	pub quota_project:   Option<Str>,
 }
 
 impl CcaHeaders {
 	/// Returns concrete HTTP header pairs for the production egress request.
 	#[must_use]
-	pub fn entries(&self) -> SmallVec<(&'static str, SmolStr), 4> {
+	pub fn entries(&self) -> SmallVec<(&'static str, Str), 4> {
 		let mut entries = SmallVec::new();
 		entries.push(("User-Agent", self.user_agent.clone()));
 		if let Some(metadata) = self.client_metadata {
-			entries.push(("Client-Metadata", SmolStr::from(metadata)));
+			entries.push(("Client-Metadata", Str::from(metadata)));
 		}
 		if let Some(beta) = self.anthropic_beta {
-			entries.push(("anthropic-beta", SmolStr::from(beta)));
+			entries.push(("anthropic-beta", Str::from(beta)));
 		}
 		if let Some(project) = &self.quota_project {
 			entries.push(("X-Goog-User-Project", project.clone()));
@@ -141,16 +141,16 @@ impl CcaHeaders {
 /// construction. This layer performs no credential I/O or direct HTTP dispatch.
 #[derive(Clone)]
 pub struct CcaCodec {
-	project:             SmolStr,
+	project:             Str,
 	flavor:              CcaFlavor,
 	antigravity:         Option<AntigravityRequestMetadata>,
-	identity:            Option<SmolStr>,
-	account_id:          Option<SmolStr>,
-	organization_id:     Option<SmolStr>,
-	quota_project:       Option<SmolStr>,
-	served_endpoint:     Option<SmolStr>,
+	identity:            Option<Str>,
+	account_id:          Option<Str>,
+	organization_id:     Option<Str>,
+	quota_project:       Option<Str>,
+	served_endpoint:     Option<Str>,
 	leak_filter_enabled: bool,
-	tool_names:          SmallVec<SmolStr, 8>,
+	tool_names:          SmallVec<Str, 8>,
 }
 
 impl std::fmt::Debug for CcaCodec {
@@ -174,7 +174,7 @@ impl std::fmt::Debug for CcaCodec {
 impl CcaCodec {
 	/// Creates a Gemini CLI codec using the credential's resolved project id.
 	#[must_use]
-	pub fn new(project: SmolStr) -> Self {
+	pub fn new(project: Str) -> Self {
 		Self {
 			project,
 			flavor: CcaFlavor::GeminiCli,
@@ -191,7 +191,7 @@ impl CcaCodec {
 
 	/// Creates an Antigravity codec for one immutable trajectory step.
 	#[must_use]
-	pub fn antigravity(project: SmolStr, metadata: AntigravityRequestMetadata) -> Self {
+	pub fn antigravity(project: Str, metadata: AntigravityRequestMetadata) -> Self {
 		Self {
 			project,
 			flavor: CcaFlavor::Antigravity,
@@ -208,21 +208,21 @@ impl CcaCodec {
 
 	/// Records the broker-selected non-secret account identity on the outcome.
 	#[must_use]
-	pub fn with_identity(mut self, identity: SmolStr) -> Self {
+	pub fn with_identity(mut self, identity: Str) -> Self {
 		self.identity = Some(identity);
 		self
 	}
 
 	/// Records the broker-selected non-secret account id on the outcome.
 	#[must_use]
-	pub fn with_account_id(mut self, account_id: SmolStr) -> Self {
+	pub fn with_account_id(mut self, account_id: Str) -> Self {
 		self.account_id = Some(account_id);
 		self
 	}
 
 	/// Records the broker-selected non-secret organization id on the outcome.
 	#[must_use]
-	pub fn with_organization_id(mut self, organization_id: SmolStr) -> Self {
+	pub fn with_organization_id(mut self, organization_id: Str) -> Self {
 		self.organization_id = Some(organization_id);
 		self
 	}
@@ -234,7 +234,7 @@ impl CcaCodec {
 	/// The same validated project becomes the default Google quota project; a
 	/// later [`Self::with_quota_project`] call may select a distinct billing id.
 	#[must_use]
-	pub fn with_project_id(mut self, project_id: SmolStr) -> Self {
+	pub fn with_project_id(mut self, project_id: Str) -> Self {
 		self.project = project_id.clone();
 		self.quota_project = Some(project_id);
 		self
@@ -242,14 +242,14 @@ impl CcaCodec {
 
 	/// Selects the project billed by Google and emitted in egress headers.
 	#[must_use]
-	pub fn with_quota_project(mut self, project: SmolStr) -> Self {
+	pub fn with_quota_project(mut self, project: Str) -> Self {
 		self.quota_project = Some(project);
 		self
 	}
 
 	/// Associates this attempt with the provider endpoint that will serve it.
 	#[must_use]
-	pub fn with_served_endpoint(mut self, endpoint: SmolStr) -> Self {
+	pub fn with_served_endpoint(mut self, endpoint: Str) -> Self {
 		self.served_endpoint = Some(endpoint);
 		self
 	}
@@ -258,7 +258,7 @@ impl CcaCodec {
 	#[must_use]
 	pub fn with_planning_leak_filter(
 		mut self,
-		tool_names: impl IntoIterator<Item = SmolStr>,
+		tool_names: impl IntoIterator<Item = Str>,
 	) -> Self {
 		self.leak_filter_enabled = true;
 		self.tool_names = tool_names.into_iter().collect();
@@ -316,7 +316,7 @@ impl Transport for CcaCodec {
 			_ => wrap_request(request, req.model.as_str(), self.project.as_str()),
 		};
 		let body = serde_json::to_vec(&envelope)
-			.map_err(|error| Error::Provider(format_smol!("cannot encode CCA request: {error}")))?;
+			.map_err(|error| Error::Provider(fmts!("cannot encode CCA request: {error}")))?;
 		Ok((Bytes::from(body), unsupported))
 	}
 
@@ -340,7 +340,7 @@ impl Transport for CcaCodec {
 			},
 			Frame::Data(data) | Frame::Event { data, .. } => {
 				let value: Value = serde_json::from_slice(data).map_err(|error| {
-					Error::Provider(format_smol!("invalid CCA response JSON: {error}"))
+					Error::Provider(fmts!("invalid CCA response JSON: {error}"))
 				})?;
 				let mut response = response_or_error(value)?;
 				filter_visible_parts(
@@ -367,7 +367,7 @@ struct CcaDecodeState {
 	google:            DecodeState,
 	leak_filter:       Option<PlanningLeakFilter>,
 	thinking_filter:   ThinkingLeakFilter,
-	pending_signature: Option<SmolStr>,
+	pending_signature: Option<Str>,
 }
 
 /// Wraps a public `GenAI` request body in the Gemini CLI CCA envelope.
@@ -405,17 +405,17 @@ pub fn unwrap_response(envelope: Value) -> Result<Value, Error> {
 		.cloned()
 		.ok_or_else(|| Error::Provider("CCA stream event is not an object".into()))?;
 	if let Some(error) = object.get("error") {
-		return Err(Error::Provider(format_smol!("CCA in-band error: {error}")));
+		return Err(Error::Provider(fmts!("CCA in-band error: {error}")));
 	}
 	object
 		.remove("response")
 		.ok_or_else(|| Error::Provider("CCA stream event has no response".into()))
 }
 /// Converts a canonical opaque thought signature to CCA's JSON string form.
-pub fn thought_signature_to_wire(signature: &Bytes) -> Result<SmolStr, Error> {
+pub fn thought_signature_to_wire(signature: &Bytes) -> Result<Str, Error> {
 	std::str::from_utf8(signature)
-		.map(SmolStr::from)
-		.map_err(|error| Error::Provider(format_smol!("CCA thought signature is not UTF-8: {error}")))
+		.map(Str::from)
+		.map_err(|error| Error::Provider(fmts!("CCA thought signature is not UTF-8: {error}")))
 }
 
 /// Converts a CCA thought-signature string to canonical opaque bytes.
@@ -523,7 +523,7 @@ fn response_or_error(envelope: Value) -> Result<Value, Error> {
 fn filter_visible_parts(
 	response: &mut Value,
 	filter: Option<&mut PlanningLeakFilter>,
-	pending_signature: &mut Option<SmolStr>,
+	pending_signature: &mut Option<Str>,
 ) -> Result<(), Error> {
 	let Some(filter) = filter else {
 		return Ok(());
@@ -555,10 +555,10 @@ fn filter_visible_parts(
 				continue;
 			}
 			if let Some(signature) = part.get("thoughtSignature").and_then(Value::as_str) {
-				*pending_signature = Some(SmolStr::from(signature));
+				*pending_signature = Some(Str::from(signature));
 			}
 			let chunks = filter.feed(text.as_bytes()).map_err(|error| {
-				Error::Provider(format_smol!("invalid UTF-8 in CCA visible text: {error}"))
+				Error::Provider(fmts!("invalid UTF-8 in CCA visible text: {error}"))
 			})?;
 			let visible = join_chunks(chunks);
 			if let Some(object) = part.as_object_mut() {
@@ -578,7 +578,7 @@ fn filter_visible_parts(
 		}
 		if finished {
 			let chunks = filter.finish().map_err(|error| {
-				Error::Provider(format_smol!("truncated UTF-8 in CCA visible text: {error}"))
+				Error::Provider(fmts!("truncated UTF-8 in CCA visible text: {error}"))
 			})?;
 			let visible = join_chunks(chunks);
 			if !visible.is_empty() {
@@ -619,7 +619,7 @@ fn candidate_parts(candidate: &mut Value, create: bool) -> Option<&mut Vec<Value
 fn heal_thinking_parts(
 	response: &mut Value,
 	filter: &mut ThinkingLeakFilter,
-	pending_signature: &mut Option<SmolStr>,
+	pending_signature: &mut Option<Str>,
 ) {
 	let Some(candidates) = response.get_mut("candidates").and_then(Value::as_array_mut) else {
 		return;
@@ -649,7 +649,7 @@ fn heal_thinking_parts(
 				continue;
 			}
 			if let Some(signature) = part.get("thoughtSignature").and_then(Value::as_str) {
-				*pending_signature = Some(SmolStr::from(signature));
+				*pending_signature = Some(Str::from(signature));
 			}
 			let mut base = part.as_object().cloned().unwrap_or_default();
 			base.remove("text");
@@ -667,7 +667,7 @@ fn append_healed_parts(
 	parts: &mut Vec<Value>,
 	base: Map<String, Value>,
 	fragments: SmallVec<HealedFragment, 2>,
-	pending_signature: &mut Option<SmolStr>,
+	pending_signature: &mut Option<Str>,
 ) {
 	let mut fragments = fragments.into_iter().peekable();
 	while let Some(fragment) = fragments.next() {
@@ -697,7 +697,7 @@ fn finish_cca_stream(state: &mut CcaDecodeState) -> Result<SmallVec<TurnEvent, 2
 	let mut parts = Vec::new();
 	if let Some(filter) = &mut state.leak_filter {
 		let visible = join_chunks(filter.finish().map_err(|error| {
-			Error::Provider(format_smol!("truncated UTF-8 in CCA visible text: {error}"))
+			Error::Provider(fmts!("truncated UTF-8 in CCA visible text: {error}"))
 		})?);
 		if !visible.is_empty() {
 			let text = std::str::from_utf8(&visible).expect("planning filter returns UTF-8");
@@ -740,7 +740,7 @@ fn join_chunks(chunks: SmallVec<Bytes, 2>) -> Bytes {
 	}
 }
 
-fn gemini_cli_user_agent(model: &str) -> SmolStr {
+fn gemini_cli_user_agent(model: &str) -> Str {
 	let platform = match std::env::consts::OS {
 		"macos" => "darwin",
 		"windows" => "win32",
@@ -752,10 +752,10 @@ fn gemini_cli_user_agent(model: &str) -> SmolStr {
 		"aarch64" => "arm64",
 		other => other,
 	};
-	format_smol!("GeminiCLI/0.46.0/{model} ({platform}; {arch}; terminal)")
+	fmts!("GeminiCLI/0.46.0/{model} ({platform}; {arch}; terminal)")
 }
 
-fn antigravity_user_agent() -> SmolStr {
+fn antigravity_user_agent() -> Str {
 	let os = match std::env::consts::OS {
 		"macos" => "darwin",
 		"windows" => "windows",
@@ -767,7 +767,7 @@ fn antigravity_user_agent() -> SmolStr {
 		"aarch64" => "arm64",
 		other => other,
 	};
-	format_smol!("antigravity/hub/2.1.4 {os}/{arch}")
+	fmts!("antigravity/hub/2.1.4 {os}/{arch}")
 }
 
 /// Antigravity host selection policy applied to catalog endpoint data.
@@ -788,7 +788,7 @@ pub enum CcaEndpointMode {
 /// policy in catalog data rather than embedding host names in retry logic.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CcaEndpointPlan {
-	endpoints: SmallVec<SmolStr, 2>,
+	endpoints: SmallVec<Str, 2>,
 }
 
 impl CcaEndpointPlan {
@@ -841,7 +841,7 @@ impl CcaEndpointPlan {
 	pub fn endpoints(
 		&self,
 	) -> impl Clone + DoubleEndedIterator<Item = &str> + ExactSizeIterator + FusedIterator + '_ {
-		self.endpoints.iter().map(SmolStr::as_str)
+		self.endpoints.iter().map(Str::as_str)
 	}
 
 	/// Returns the next endpoint when the completed attempt is eligible for host
@@ -860,13 +860,13 @@ impl CcaEndpointPlan {
 			.endpoints
 			.iter()
 			.position(|endpoint| endpoint == attempted)?;
-		self.endpoints.get(index + 1).map(SmolStr::as_str)
+		self.endpoints.get(index + 1).map(Str::as_str)
 	}
 
 	/// Builds the streaming URL for an endpoint without changing its host.
 	#[must_use]
-	pub fn stream_url(endpoint: &str) -> SmolStr {
-		format_smol!("{}{}", endpoint.trim_end_matches('/'), STREAM_GENERATE_PATH)
+	pub fn stream_url(endpoint: &str) -> Str {
+		fmts!("{}{}", endpoint.trim_end_matches('/'), STREAM_GENERATE_PATH)
 	}
 }
 
@@ -959,7 +959,7 @@ mod tests {
 	use std::{collections::BTreeMap, sync::Arc};
 
 	use bytes::Bytes;
-	use omp_core::SmolStr;
+	use omp_core::Str;
 	use omp_llm_catalog::provider::{AuthSpec, Facet};
 	use omp_llm_types::{
 		ChatOutcome, Effort, Fallback, Feature, Reasoning, ResolvedModelPolicy, ResolvedThinkingMode,
@@ -972,9 +972,9 @@ mod tests {
 
 	fn entry(id: &str, endpoint: &str) -> ProviderEntry {
 		ProviderEntry::builder()
-			.id(SmolStr::from(id))
+			.id(Str::from(id))
 			.transport(TransportId::GoogleCca)
-			.base_url(SmolStr::from(endpoint))
+			.base_url(Str::from(endpoint))
 			.fallback_base_urls(SmallVec::new())
 			.auth(AuthSpec::None)
 			.facets([Facet::Chat].into())
@@ -994,16 +994,16 @@ mod tests {
 	}
 	fn antigravity_metadata() -> AntigravityRequestMetadata {
 		AntigravityRequestMetadata::new(
-			SmolStr::from("-8392019482710394817"),
-			SmolStr::from(
+			Str::from("-8392019482710394817"),
+			Str::from(
 				"agent/11111111-1111-1111-1111-111111111111/1700000000000/\
 				 22222222-2222-2222-2222-222222222222/2",
 			),
-			SmolStr::from("22222222-2222-2222-2222-222222222222"),
+			Str::from("22222222-2222-2222-2222-222222222222"),
 			2,
 		)
-		.with_last_execution_id(SmolStr::from("execution-before"))
-		.with_model_enum(SmolStr::from("MODEL_PLACEHOLDER_M20"))
+		.with_last_execution_id(Str::from("execution-before"))
+		.with_model_enum(Str::from("MODEL_PLACEHOLDER_M20"))
 	}
 
 	#[test]
@@ -1026,15 +1026,15 @@ mod tests {
 		assert_eq!(envelope, expected);
 
 		let leased =
-			CcaCodec::antigravity(SmolStr::from("catalog-placeholder"), antigravity_metadata())
-				.with_project_id(SmolStr::from("project-a"));
+			CcaCodec::antigravity(Str::from("catalog-placeholder"), antigravity_metadata())
+				.with_project_id(Str::from("project-a"));
 		assert!(
 			leased
 				.request_headers("gemini-3.5-flash", false)
 				.entries()
-				.contains(&("X-Goog-User-Project", SmolStr::from("project-a")))
+				.contains(&("X-Goog-User-Project", Str::from("project-a")))
 		);
-		let codec = leased.with_quota_project(SmolStr::from("billing-project"));
+		let codec = leased.with_quota_project(Str::from("billing-project"));
 		assert_eq!(codec.project(), "project-a");
 		let headers = codec.request_headers("claude-sonnet-4-6", true);
 		assert!(headers.user_agent.starts_with("antigravity/hub/2.1.4 "));
@@ -1043,11 +1043,11 @@ mod tests {
 		assert!(
 			headers
 				.entries()
-				.contains(&("X-Goog-User-Project", SmolStr::from("billing-project")))
+				.contains(&("X-Goog-User-Project", Str::from("billing-project")))
 		);
 
 		let cli =
-			CcaCodec::new(SmolStr::from("project-a")).request_headers("gemini-3.5-flash", false);
+			CcaCodec::new(Str::from("project-a")).request_headers("gemini-3.5-flash", false);
 		assert!(
 			cli.user_agent
 				.starts_with("GeminiCLI/0.46.0/gemini-3.5-flash (")
@@ -1059,13 +1059,13 @@ mod tests {
 	#[test]
 	fn split_planning_leak_is_suppressed_while_content_signatures_usage_and_route_survive() {
 		let fixture = include_str!("../tests/fixtures/google_cca/stream.antigravity_leak.sse");
-		let codec = CcaCodec::antigravity(SmolStr::from("project-a"), antigravity_metadata())
-			.with_planning_leak_filter([SmolStr::from("read")])
-			.with_identity(SmolStr::from("developer@example.com"))
-			.with_account_id(SmolStr::from("account-123"))
-			.with_organization_id(SmolStr::from("organization-456"))
-			.with_quota_project(SmolStr::from("billing-project"))
-			.with_served_endpoint(SmolStr::from("https://daily-cloudcode-pa.googleapis.com"));
+		let codec = CcaCodec::antigravity(Str::from("project-a"), antigravity_metadata())
+			.with_planning_leak_filter([Str::from("read")])
+			.with_identity(Str::from("developer@example.com"))
+			.with_account_id(Str::from("account-123"))
+			.with_organization_id(Str::from("organization-456"))
+			.with_quota_project(Str::from("billing-project"))
+			.with_served_endpoint(Str::from("https://daily-cloudcode-pa.googleapis.com"));
 		let debug = format!("{codec:?}");
 		assert!(!debug.contains("project-a"));
 		assert!(!debug.contains("developer@example.com"));
@@ -1168,7 +1168,7 @@ mod tests {
 	#[test]
 	fn in_band_error_is_the_only_terminal_and_later_deltas_are_ignored() {
 		let fixture = include_str!("../tests/fixtures/google_cca/stream.error.sse");
-		let codec = CcaCodec::new(SmolStr::from("project-a"));
+		let codec = CcaCodec::new(Str::from("project-a"));
 		let mut state = DecodeState::default();
 		let mut events = Vec::new();
 		for line in fixture.lines().filter(|line| !line.is_empty()) {
@@ -1203,7 +1203,7 @@ mod tests {
 
 	#[test]
 	fn cancelled_body_end_emits_one_terminal_and_accepts_no_later_delta() {
-		let codec = CcaCodec::new(SmolStr::from("project-a"));
+		let codec = CcaCodec::new(Str::from("project-a"));
 		let mut state = DecodeState::default();
 		let first = br#"{"response":{"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}}"#;
 		let mut events = codec
@@ -1230,7 +1230,7 @@ mod tests {
 	#[test]
 	fn unwraps_recorded_cca_sse_chunks_before_google_projection() {
 		let fixture = include_str!("../tests/fixtures/google_cca/stream.signature_tool.sse");
-		let codec = CcaCodec::new(SmolStr::from("project-a"));
+		let codec = CcaCodec::new(Str::from("project-a"));
 		let mut state = DecodeState::default();
 		let mut events = Vec::new();
 		for line in fixture.lines().filter(|line| !line.is_empty()) {
@@ -1256,7 +1256,7 @@ mod tests {
 		let mut production = entry("production", "https://production.example");
 		production
 			.fallback_base_urls
-			.push(SmolStr::from("https://sandbox.example"));
+			.push(Str::from("https://sandbox.example"));
 		let plan = CcaEndpointPlan::from_provider_entries([&production]);
 		assert_eq!(plan.endpoints().collect::<Vec<_>>(), [
 			"https://production.example",
@@ -1296,7 +1296,7 @@ mod tests {
 		let mut production = entry("production", "https://production.example");
 		production
 			.fallback_base_urls
-			.push(SmolStr::from("https://sandbox.example"));
+			.push(Str::from("https://sandbox.example"));
 		let plan = CcaEndpointPlan::from_provider_entries([&production]);
 		let served = plan
 			.next_after_failure(
@@ -1311,8 +1311,8 @@ mod tests {
 				.output(Vec::new())
 				.stop(StopReason::EndTurn)
 				.unsupported(Vec::new())
-				.provider(SmolStr::from("google-antigravity"))
-				.model(SmolStr::from("gemini-3.5-flash"))
+				.provider(Str::from("google-antigravity"))
+				.model(Str::from("gemini-3.5-flash"))
 				.props(Default::default())
 				.build(),
 		));
@@ -1342,8 +1342,8 @@ mod tests {
 			"x-extra": true
 		});
 		let tool = ToolDef::builder()
-			.name(SmolStr::from("weather"))
-			.description(SmolStr::from("Weather"))
+			.name(Str::from("weather"))
+			.description(Str::from("Weather"))
 			.schema_json(Bytes::from(serde_json::to_vec(&schema).unwrap()))
 			.strict(true)
 			.build();
@@ -1361,9 +1361,9 @@ mod tests {
 	}
 	#[test]
 	fn cca_off_suppression_emits_the_policy_mode_floor_without_enabling_thoughts() {
-		let codec = CcaCodec::new(SmolStr::from("project-a"));
+		let codec = CcaCodec::new(Str::from("project-a"));
 		let mut request = ChatRequest::builder()
-			.model(SmolStr::from("resolved-wire-model"))
+			.model(Str::from("resolved-wire-model"))
 			.thread(Thread::default())
 			.tools(Vec::new())
 			.thinking(

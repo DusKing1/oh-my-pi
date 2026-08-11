@@ -9,7 +9,7 @@ use std::fmt;
 use std::sync::LazyLock;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use omp_core::SmolStr;
+use omp_core::Str;
 use zeroize::Zeroizing;
 
 use crate::CodexAttestation;
@@ -110,12 +110,12 @@ impl CodexAttestor {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn process_session_id() -> &'static str {
-	static SESSION_ID: LazyLock<SmolStr> = LazyLock::new(random_uuid);
+	static SESSION_ID: LazyLock<Str> = LazyLock::new(random_uuid);
 	SESSION_ID.as_str()
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn random_uuid() -> SmolStr {
+fn random_uuid() -> Str {
 	let mut bytes: [u8; 16] = rand::random();
 	bytes[6] = (bytes[6] & 0x0f) | 0x40;
 	bytes[8] = (bytes[8] & 0x3f) | 0x80;
@@ -286,11 +286,11 @@ pub fn build_codex_attestation(
 	CodexAttestation::new(envelope.as_bytes()).ok_or(CodexAttestationError::FieldTooLarge)
 }
 
-fn truncate_scalars(value: &str, maximum: usize) -> SmolStr {
+fn truncate_scalars(value: &str, maximum: usize) -> Str {
 	if value.chars().count() <= maximum {
-		return SmolStr::new(value);
+		return Str::new(value);
 	}
-	SmolStr::from(value.chars().take(maximum).collect::<String>())
+	Str::from(value.chars().take(maximum).collect::<String>())
 }
 
 fn cbor_unsigned(value: u32) -> Vec<u8> {

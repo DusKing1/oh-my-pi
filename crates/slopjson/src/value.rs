@@ -6,7 +6,7 @@ use std::{
 	ops,
 };
 
-use omp_core::SmolStr;
+use omp_core::Str;
 
 /// A parsed JSON value. `Display` serializes back to compact JSON.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -18,8 +18,8 @@ pub enum Value {
 	Bool(bool),
 	/// A finite number; see [`Number`].
 	Number(Number),
-	/// A string; inline-allocated up to 23 bytes via [`SmolStr`].
-	String(SmolStr),
+	/// A string; inline-allocated up to 23 bytes via [`Str`].
+	String(Str),
 	/// An ordered array of values.
 	Array(Vec<Self>),
 	/// An insertion-ordered object; see [`Object`].
@@ -270,16 +270,16 @@ impl From<i64> for Number {
 /// Insertion-ordered JSON object. Duplicate inserts overwrite in place (last
 /// value wins); equality is order-insensitive like JSON object semantics.
 #[derive(Debug, Clone, Default)]
-pub struct Object(Vec<(SmolStr, Value)>);
+pub struct Object(Vec<(Str, Value)>);
 
 /// Borrowed iterator over an [`Object`]'s members in insertion order.
-pub type ObjectIter<'a> = impl DoubleEndedIterator<Item = (&'a SmolStr, &'a Value)>
+pub type ObjectIter<'a> = impl DoubleEndedIterator<Item = (&'a Str, &'a Value)>
 	+ ExactSizeIterator
 	+ std::iter::FusedIterator
 	+ Clone;
 
 /// Mutable iterator over an [`Object`]'s members in insertion order.
-pub type ObjectIterMut<'a> = impl DoubleEndedIterator<Item = (&'a SmolStr, &'a mut Value)>
+pub type ObjectIterMut<'a> = impl DoubleEndedIterator<Item = (&'a Str, &'a mut Value)>
 	+ ExactSizeIterator
 	+ std::iter::FusedIterator;
 
@@ -310,7 +310,7 @@ impl Object {
 	}
 
 	/// Insert or overwrite `key`, returning the previous value if any.
-	pub fn insert(&mut self, key: SmolStr, value: Value) -> Option<Value> {
+	pub fn insert(&mut self, key: Str, value: Value) -> Option<Value> {
 		if let Some(slot) = self.0.iter_mut().find(|(k, _)| *k == key) {
 			Some(std::mem::replace(&mut slot.1, value))
 		} else {
@@ -359,7 +359,7 @@ impl fmt::Display for Object {
 
 impl<'a> IntoIterator for &'a Object {
 	type IntoIter = ObjectIter<'a>;
-	type Item = (&'a SmolStr, &'a Value);
+	type Item = (&'a Str, &'a Value);
 
 	fn into_iter(self) -> Self::IntoIter {
 		self.iter()
@@ -368,7 +368,7 @@ impl<'a> IntoIterator for &'a Object {
 
 impl<'a> IntoIterator for &'a mut Object {
 	type IntoIter = ObjectIterMut<'a>;
-	type Item = (&'a SmolStr, &'a mut Value);
+	type Item = (&'a Str, &'a mut Value);
 
 	fn into_iter(self) -> Self::IntoIter {
 		self.iter_mut()
@@ -376,16 +376,16 @@ impl<'a> IntoIterator for &'a mut Object {
 }
 
 impl IntoIterator for Object {
-	type IntoIter = std::vec::IntoIter<(SmolStr, Value)>;
-	type Item = (SmolStr, Value);
+	type IntoIter = std::vec::IntoIter<(Str, Value)>;
+	type Item = (Str, Value);
 
 	fn into_iter(self) -> Self::IntoIter {
 		self.0.into_iter()
 	}
 }
 
-impl FromIterator<(SmolStr, Value)> for Object {
-	fn from_iter<I: IntoIterator<Item = (SmolStr, Value)>>(iter: I) -> Self {
+impl FromIterator<(Str, Value)> for Object {
+	fn from_iter<I: IntoIterator<Item = (Str, Value)>>(iter: I) -> Self {
 		let mut object = Self::new();
 		for (key, value) in iter {
 			object.insert(key, value);
@@ -404,18 +404,18 @@ impl From<bool> for Value {
 
 impl From<&str> for Value {
 	fn from(value: &str) -> Self {
-		Self::String(SmolStr::from(value))
+		Self::String(Str::from(value))
 	}
 }
 
 impl From<String> for Value {
 	fn from(value: String) -> Self {
-		Self::String(SmolStr::from(value))
+		Self::String(Str::from(value))
 	}
 }
 
-impl From<SmolStr> for Value {
-	fn from(value: SmolStr) -> Self {
+impl From<Str> for Value {
+	fn from(value: Str) -> Self {
 		Self::String(value)
 	}
 }
@@ -555,11 +555,11 @@ impl<'de> serde::Deserialize<'de> for Value {
 			}
 
 			fn visit_str<E>(self, v: &str) -> Result<Value, E> {
-				Ok(Value::String(SmolStr::from(v)))
+				Ok(Value::String(Str::from(v)))
 			}
 
 			fn visit_string<E>(self, v: String) -> Result<Value, E> {
-				Ok(Value::String(SmolStr::from(v)))
+				Ok(Value::String(Str::from(v)))
 			}
 
 			fn visit_none<E>(self) -> Result<Value, E> {
@@ -587,7 +587,7 @@ impl<'de> serde::Deserialize<'de> for Value {
 
 			fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
 				let mut object = Object::with_capacity(map.size_hint().unwrap_or(0).min(64));
-				while let Some((key, value)) = map.next_entry::<SmolStr, Value>()? {
+				while let Some((key, value)) = map.next_entry::<Str, Value>()? {
 					object.insert(key, value);
 				}
 				Ok(Value::Object(object))

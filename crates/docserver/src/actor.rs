@@ -9,7 +9,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use parking_lot::{Mutex, MutexGuard};
 use rand::RngExt as _;
 use tokio::sync::{Mutex as AsyncMutex, broadcast, oneshot};
@@ -400,8 +400,8 @@ impl DocumentStore {
 		let mut maps = self.inner.lock_maps();
 		if maps.rebind_reservations.contains_key(&canonical) {
 			return Err(Error::InvalidTarget {
-				target: SmolStr::new(canonical.to_string_lossy()),
-				reason: SmolStr::new_static("document path is reserved by an in-flight move"),
+				target: Str::new(canonical.to_string_lossy()),
+				reason: Str::new_static("document path is reserved by an in-flight move"),
 			});
 		}
 		if let Some(document_id) = maps.by_path.get(&canonical).copied() {
@@ -436,8 +436,8 @@ impl DocumentStore {
 						.get(&path)
 						.copied()
 						.ok_or_else(|| Error::InvalidTarget {
-							target: SmolStr::new(path.to_string_lossy()),
-							reason: SmolStr::new_static(
+							target: Str::new(path.to_string_lossy()),
+							reason: Str::new_static(
 								"path reads require an already-canonical active document path",
 							),
 						})?;
@@ -482,8 +482,8 @@ impl DocumentStore {
 	) -> Result<PathReservation> {
 		if !new_path.is_absolute() || !new_path.starts_with(self.inner.config.environment_root()) {
 			return Err(Error::InvalidTarget {
-				target: SmolStr::new(new_path.to_string_lossy()),
-				reason: SmolStr::new_static("rebind path must be canonical and confined"),
+				target: Str::new(new_path.to_string_lossy()),
+				reason: Str::new_static("rebind path must be canonical and confined"),
 			});
 		}
 		let mut maps = self.inner.lock_maps();
@@ -494,8 +494,8 @@ impl DocumentStore {
 			|| maps.rebind_reservations.contains_key(&new_path)
 		{
 			return Err(Error::InvalidTarget {
-				target: SmolStr::new(new_path.to_string_lossy()),
-				reason: SmolStr::new_static("rebind destination is already active or reserved"),
+				target: Str::new(new_path.to_string_lossy()),
+				reason: Str::new_static("rebind destination is already active or reserved"),
 			});
 		}
 		maps
@@ -532,8 +532,8 @@ impl DocumentStore {
 		}
 		if matches!(expectation, DestinationExpectation::Revision(_)) {
 			return Err(Error::InvalidTarget {
-				target: SmolStr::new(path.to_string_lossy()),
-				reason: SmolStr::new_static("move destination revision is not active"),
+				target: Str::new(path.to_string_lossy()),
+				reason: Str::new_static("move destination revision is not active"),
 			});
 		}
 		self.reserve_rebind_path(document_id, path)
@@ -655,8 +655,8 @@ impl RegistryInner {
 			|| maps.rebind_reservations.contains_key(path)
 		{
 			return Err(Error::InvalidTarget {
-				target: SmolStr::new(path.to_string_lossy()),
-				reason: SmolStr::new_static("move destination became active or changed"),
+				target: Str::new(path.to_string_lossy()),
+				reason: Str::new_static("move destination became active or changed"),
 			});
 		}
 		maps.by_id.remove(&incumbent);
@@ -1655,8 +1655,8 @@ impl DocumentActor {
 		}
 		if current.head().presence() != DocumentPresence::Present {
 			let _ = reply.send(Err(Error::InvalidTarget {
-				target: SmolStr::new(self.path.to_string_lossy()),
-				reason: SmolStr::new_static("cannot set permissions on a missing document"),
+				target: Str::new(self.path.to_string_lossy()),
+				reason: Str::new_static("cannot set permissions on a missing document"),
 			}));
 			return;
 		}
@@ -1748,7 +1748,7 @@ impl DocumentActor {
 				.sequence()
 				.checked_add(1)
 				.ok_or_else(|| Error::InvalidContent {
-					reason: SmolStr::new_static("document revision sequence exhausted"),
+					reason: Str::new_static("document revision sequence exhausted"),
 				})?;
 		let (snapshot, fingerprint) = snapshot_from_disk(self.document_id, sequence, disk, None)?;
 		let presence = snapshot.head().presence();
@@ -2040,8 +2040,8 @@ impl DocumentActor {
 			|| !self.reservations.is_empty()
 		{
 			return Err(Error::InvalidTarget {
-				target: SmolStr::new(path.to_string_lossy()),
-				reason: SmolStr::new_static(
+				target: Str::new(path.to_string_lossy()),
+				reason: Str::new_static(
 					"move destination is active or does not match its precondition",
 				),
 			});
@@ -2359,7 +2359,7 @@ impl DocumentActor {
 				.sequence()
 				.checked_add(1)
 				.ok_or_else(|| Error::InvalidContent {
-					reason: SmolStr::new_static("document revision sequence exhausted"),
+					reason: Str::new_static("document revision sequence exhausted"),
 				})?;
 		let (snapshot, fingerprint) =
 			snapshot_from_disk(self.document_id, sequence, disk, Some(metadata.kind))?;
@@ -2485,11 +2485,11 @@ fn random_id_bytes() -> [u8; 16] {
 }
 
 fn join_error(error: tokio::task::JoinError) -> Error {
-	Error::Protocol { reason: SmolStr::new(format!("document worker failed: {error}")) }
+	Error::Protocol { reason: Str::new(format!("document worker failed: {error}")) }
 }
 
 const fn actor_unavailable() -> Error {
-	Error::Protocol { reason: SmolStr::new_static("document actor is unavailable") }
+	Error::Protocol { reason: Str::new_static("document actor is unavailable") }
 }
 
 #[cfg(test)]

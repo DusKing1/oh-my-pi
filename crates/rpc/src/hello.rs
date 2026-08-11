@@ -1,6 +1,6 @@
 //! Gateway schema and capability negotiation.
 
-use omp_core::{SmolStr, smolstr::IntoSmolStr};
+use omp_core::{Str, str::IntoStr};
 use omp_proto::gateway::v1::{
 	HelloRequest, HelloResponse, gateway_client::GatewayClient, gateway_server::Gateway,
 };
@@ -14,15 +14,15 @@ pub const MIN_SCHEMA_REV: u32 = 1;
 /// Gateway Hello endpoint advertising this server's protocol surface.
 #[derive(Clone, Debug)]
 pub struct HelloService {
-	server_version: SmolStr,
-	capabilities:   Vec<SmolStr>,
+	server_version: Str,
+	capabilities:   Vec<Str>,
 }
 
 impl HelloService {
 	/// Create a Hello endpoint with a server version and advertised
 	/// capabilities.
-	pub fn new(server_version: impl IntoSmolStr, capabilities: Vec<SmolStr>) -> Self {
-		Self { server_version: server_version.into_smolstr(), capabilities }
+	pub fn new(server_version: impl IntoStr, capabilities: Vec<Str>) -> Self {
+		Self { server_version: server_version.into_str(), capabilities }
 	}
 }
 
@@ -47,9 +47,9 @@ pub struct Peer {
 	/// Schema revision implemented by the server.
 	pub schema_rev:     u32,
 	/// Capabilities advertised by the server.
-	pub capabilities:   Vec<SmolStr>,
+	pub capabilities:   Vec<Str>,
 	/// Human-readable server build version.
-	pub server_version: SmolStr,
+	pub server_version: Str,
 }
 
 impl Peer {
@@ -103,9 +103,9 @@ async fn handshake_at(
 		capabilities:   response
 			.capabilities
 			.into_iter()
-			.map(IntoSmolStr::into_smolstr)
+			.map(IntoStr::into_str)
 			.collect(),
-		server_version: response.server_version.into_smolstr(),
+		server_version: response.server_version.into_str(),
 	})
 }
 
@@ -113,7 +113,7 @@ async fn handshake_at(
 mod tests {
 	use std::path::Path;
 
-	use omp_core::IntoSmolStr;
+	use omp_core::IntoStr;
 	use omp_proto::gateway::v1::gateway_server::GatewayServer;
 	use tempfile::TempDir;
 	use tonic::transport::Server;
@@ -127,8 +127,8 @@ mod tests {
 		let (reporter, health) = health_service();
 		reporter.set_serving::<GatewayServer<HelloService>>().await;
 		let hello = HelloService::new("test-server", vec![
-			"inference.turn".into_smolstr(),
-			"blob.v1".into_smolstr(),
+			"inference.turn".into_str(),
+			"blob.v1".into_str(),
 		]);
 		tokio::spawn(async move {
 			Server::builder()

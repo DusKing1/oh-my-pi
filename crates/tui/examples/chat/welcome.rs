@@ -141,7 +141,7 @@ type LogoGrid = [[Option<(char, Color)>; LOGO_COLS]; LOGO_ROWS];
 /// drives it until the user resumes into the chat demo.
 pub struct Welcome {
 	frame:          Frame,
-	title:          omp_core::SmolStr,
+	title:          omp_core::Str,
 	/// Detected glyph tier for the card chrome.
 	charset:        Charset,
 	camera:         (f32, f32),
@@ -167,7 +167,7 @@ impl Welcome {
 		Self {
 			charset,
 			frame: Frame::new(Size::new(0, 0)),
-			title: omp_core::format_smol!(
+			title: omp_core::fmts!(
 				" {} omp v{} ",
 				charset.icon(Icon::Omp),
 				env!("CARGO_PKG_VERSION")
@@ -358,7 +358,7 @@ impl Welcome {
 		frame.fill(Rect::new(left + 1, footer, cols - 2, 1), on_footer(TEXT));
 		if full {
 			frame.put(left + 3, divider, " SHORTCUTS ", on_card(FAINT));
-			let dot = omp_core::format_smol!(" {} ", self.charset.icon(Icon::Enabled));
+			let dot = omp_core::fmts!(" {} ", self.charset.icon(Icon::Enabled));
 			let x = frame.put(left + cols - 21, top, &dot, on_card(GREEN));
 			frame.put(x, top, "rust-analyzer ", on_card(MUTED));
 			draw_full_hints(frame, left, footer);

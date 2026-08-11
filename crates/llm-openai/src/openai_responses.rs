@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bytes::{Bytes, BytesMut};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{
 	TransportId,
 	compat::{Compat, ReasoningWireFormat, ToolStrictMode},
@@ -37,7 +37,7 @@ use crate::{
 /// committed boundary are encoded into `input`.
 #[derive(Debug, Default)]
 pub struct OpenAiResponsesCodec {
-	previous_response_id: Option<SmolStr>,
+	previous_response_id: Option<Str>,
 	call_ids:             CallIdMapper,
 }
 
@@ -50,7 +50,7 @@ impl OpenAiResponsesCodec {
 
 	/// Creates a codec whose next turn chains from a gateway-held response.
 	#[must_use]
-	pub fn with_previous_response_id(response_id: impl Into<SmolStr>) -> Self {
+	pub fn with_previous_response_id(response_id: impl Into<Str>) -> Self {
 		Self {
 			previous_response_id: Some(response_id.into()),
 			call_ids:             CallIdMapper::new(),
@@ -281,7 +281,7 @@ impl Transport for OpenAiResponsesCodec {
 		}
 		serde_json::to_vec(&Value::Object(body))
 			.map(|bytes| (Bytes::from(bytes), unsupported))
-			.map_err(|error| Error::Provider(SmolStr::from(error.to_string())))
+			.map_err(|error| Error::Provider(Str::from(error.to_string())))
 	}
 
 	fn decode(
@@ -334,19 +334,19 @@ impl Transport for OpenAiResponsesCodec {
 #[derive(Debug)]
 enum OutputSlot {
 	Text {
-		wire_id: SmolStr,
+		wire_id: Str,
 		text:    BytesMut,
 	},
 	Thinking {
-		wire_id:   SmolStr,
+		wire_id:   Str,
 		text:      BytesMut,
 		encrypted: Bytes,
 	},
 	Tool {
 		id:        CallId,
-		item_id:   SmolStr,
-		wire_id:   SmolStr,
-		name:      SmolStr,
+		item_id:   Str,
+		wire_id:   Str,
+		name:      Str,
 		arguments: BytesMut,
 		custom:    bool,
 	},
@@ -361,8 +361,8 @@ enum OutputSlot {
 
 #[derive(Debug, Default)]
 struct ResponsesDecodeState {
-	response_id:  SmolStr,
-	model:        SmolStr,
+	response_id:  Str,
+	model:        Str,
 	outputs:      BTreeMap<u32, OutputSlot>,
 	item_options: BTreeMap<u32, Props>,
 	ended:        BTreeSet<u32>,
@@ -579,12 +579,12 @@ fn slot_matches_wire_id(slot: &OutputSlot, wire_id: &str) -> bool {
 
 fn part_start(index: u32, slot: &OutputSlot) -> Option<TurnEvent> {
 	let (kind, tool_call_id, tool_name) = match slot {
-		OutputSlot::Text { .. } => (StreamPartKind::Text, SmolStr::default(), SmolStr::default()),
+		OutputSlot::Text { .. } => (StreamPartKind::Text, Str::default(), Str::default()),
 		OutputSlot::Thinking { .. } => {
-			(StreamPartKind::Thinking, SmolStr::default(), SmolStr::default())
+			(StreamPartKind::Thinking, Str::default(), Str::default())
 		},
 		OutputSlot::Tool { id, name, .. } => {
-			(StreamPartKind::ToolCall, SmolStr::from(id.to_string()), name.clone())
+			(StreamPartKind::ToolCall, Str::from(id.to_string()), name.clone())
 		},
 		OutputSlot::Image { .. } | OutputSlot::Server { .. } => return None,
 	};
@@ -709,7 +709,7 @@ fn response_error(response: Option<&Value>, fallback: &str) -> TurnError {
 fn upstream_error(detail: &str) -> TurnError {
 	TurnError::builder()
 		.kind(TurnErrorKind::Upstream)
-		.detail(SmolStr::from(detail))
+		.detail(Str::from(detail))
 		.maybe_actual(None)
 		.unsupported(Vec::new())
 		.retry_after_ms(0)
@@ -748,7 +748,7 @@ fn classify_error_body(body: &str) -> TurnError {
 	};
 	TurnError::builder()
 		.kind(kind)
-		.detail(SmolStr::from(detail))
+		.detail(Str::from(detail))
 		.maybe_actual(None)
 		.unsupported(Vec::new())
 		.retry_after_ms(classification.retry.map_or(0, |hint| hint.delay_ms))
@@ -795,7 +795,7 @@ fn complete_slot(item: &Value, slot: Option<&mut OutputSlot>) {
 	match slot {
 		Some(OutputSlot::Thinking { wire_id, text, encrypted }) => {
 			if let Some(id) = item.get("id").and_then(Value::as_str) {
-				*wire_id = SmolStr::from(id);
+				*wire_id = Str::from(id);
 			}
 			if let Some(value) = item.get("encrypted_content").and_then(Value::as_str) {
 				*encrypted = Bytes::copy_from_slice(value.as_bytes());
@@ -824,7 +824,7 @@ fn complete_slot(item: &Value, slot: Option<&mut OutputSlot>) {
 		},
 		Some(OutputSlot::Text { wire_id, text }) => {
 			if let Some(id) = item.get("id").and_then(Value::as_str) {
-				*wire_id = SmolStr::from(id);
+				*wire_id = Str::from(id);
 			}
 			if let Some(content) = item.get("content").and_then(Value::as_array) {
 				text.clear();
@@ -841,10 +841,10 @@ fn complete_slot(item: &Value, slot: Option<&mut OutputSlot>) {
 		},
 		Some(OutputSlot::Tool { item_id, wire_id, arguments, .. }) => {
 			if let Some(id) = item.get("id").and_then(Value::as_str) {
-				*item_id = SmolStr::from(id);
+				*item_id = Str::from(id);
 			}
 			if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
-				*wire_id = SmolStr::from(call_id);
+				*wire_id = Str::from(call_id);
 			}
 			let key = if item.get("type").and_then(Value::as_str) == Some("custom_tool_call") {
 				"input"
@@ -872,10 +872,10 @@ fn capture_response(response: Option<&Value>, state: &mut ResponsesDecodeState) 
 		return;
 	};
 	if let Some(id) = response.get("id").and_then(Value::as_str) {
-		state.response_id = SmolStr::from(id);
+		state.response_id = Str::from(id);
 	}
 	if let Some(model) = response.get("model").and_then(Value::as_str) {
-		state.model = SmolStr::from(model);
+		state.model = Str::from(model);
 	}
 }
 
@@ -894,7 +894,7 @@ fn build_outcome(
 					Message::builder()
 						.role(Role::Assistant)
 						.parts(vec![Part::Text(
-							SmolStr::from_utf8_owned(text).expect("JSON text deltas are UTF-8"),
+							Str::from_utf8_owned(text).expect("JSON text deltas are UTF-8"),
 						)])
 						.build(),
 				)
@@ -908,7 +908,7 @@ fn build_outcome(
 						.parts(vec![Part::Thinking(
 							Thinking::builder()
 								.text(
-									SmolStr::from_utf8_owned(text).expect("JSON reasoning deltas are UTF-8"),
+									Str::from_utf8_owned(text).expect("JSON reasoning deltas are UTF-8"),
 								)
 								.signature(std::mem::take(encrypted))
 								.redacted(redacted)
@@ -936,7 +936,7 @@ fn build_outcome(
 						.parts(vec![Part::Blob(
 							BlobPart::builder()
 								.hash([0; 32])
-								.mime(SmolStr::from(image_mime(&inline)))
+								.mime(Str::from(image_mime(&inline)))
 								.size(size)
 								.inline(inline)
 								.build(),
@@ -1031,7 +1031,7 @@ fn build_outcome(
 				.and_then(|value| value.get("usage"))
 				.and_then(|usage| usage.get("cost")),
 		))
-		.provider(SmolStr::from("openai"))
+		.provider(Str::from("openai"))
 		.model(std::mem::take(&mut state.model))
 		.unsupported(Vec::new())
 		.props(props)
@@ -1097,7 +1097,7 @@ fn encode_input(
 	let mut input = Vec::new();
 	let mut deferred_media = Vec::new();
 	let custom_names = custom_tool_names(req);
-	let mut replay_calls: BTreeMap<CallId, (SmolStr, bool)> = BTreeMap::new();
+	let mut replay_calls: BTreeMap<CallId, (Str, bool)> = BTreeMap::new();
 	let sent_calls = seed_sent_calls(req, start, mapper, &custom_names, &mut replay_calls);
 	for item in req.thread.items.iter().skip(start) {
 		if matches!(&item.kind, ItemKind::Message(_)) {
@@ -1113,7 +1113,7 @@ fn encode_input(
 					.props
 					.get_ns("openai", "call_id")
 					.and_then(Value::as_str)
-					.map_or_else(|| mapper.to_wire(&call.id, ToolCallIdProfile::OpenAi), SmolStr::from);
+					.map_or_else(|| mapper.to_wire(&call.id, ToolCallIdProfile::OpenAi), Str::from);
 				let custom = is_custom(&item.props) || custom_names.contains(&call.name);
 				let mut value = Map::new();
 				value.insert(
@@ -1167,7 +1167,7 @@ fn encode_input(
 							.props
 							.get_ns("openai", "call_id")
 							.and_then(Value::as_str)
-							.map(SmolStr::from)
+							.map(Str::from)
 					})
 					.unwrap_or_else(|| mapper.to_wire(&result.call_id, ToolCallIdProfile::OpenAi));
 				let output = Value::String(tool_result_text(&result.parts, unsupported));
@@ -1220,8 +1220,8 @@ fn seed_sent_calls(
 	req: &ChatRequest,
 	start: usize,
 	mapper: &CallIdMapper,
-	custom_names: &BTreeSet<SmolStr>,
-	replay_calls: &mut BTreeMap<CallId, (SmolStr, bool)>,
+	custom_names: &BTreeSet<Str>,
+	replay_calls: &mut BTreeMap<CallId, (Str, bool)>,
 ) -> BTreeSet<SentCall> {
 	let mut sent = BTreeSet::new();
 	for item in req.thread.items.iter().take(start) {
@@ -1229,7 +1229,7 @@ fn seed_sent_calls(
 			.props
 			.get_ns("openai", "call_id")
 			.and_then(Value::as_str)
-			.map(SmolStr::from);
+			.map(Str::from);
 		match &item.kind {
 			ItemKind::ToolCall(call) => {
 				let call_id =
@@ -1255,7 +1255,7 @@ fn seed_sent_calls(
 					continue;
 				};
 				if let Some(call_id) = native.get("call_id").and_then(Value::as_str) {
-					sent.insert((kind, SmolStr::from(call_id)));
+					sent.insert((kind, Str::from(call_id)));
 				}
 			},
 			_ => {},
@@ -1668,8 +1668,8 @@ fn encode_tools(
 				if tool.strict != Some(true) {
 					unsupported.push(
 						Unsupported::builder()
-							.what(SmolStr::from("tools.strict"))
-							.detail(SmolStr::from("endpoint requires every tool to be strict"))
+							.what(Str::from("tools.strict"))
+							.detail(Str::from("endpoint requires every tool to be strict"))
 							.action(UnsupportedAction::Clamped)
 							.build(),
 					);
@@ -1836,7 +1836,7 @@ fn encode_format(
 			parsed = normalized;
 			unsupported.extend(reports.into_iter().map(|report| {
 				Unsupported::builder()
-					.what(SmolStr::from("response_format.schema"))
+					.what(Str::from("response_format.schema"))
 					.detail(report.detail)
 					.action(report.action)
 					.build()
@@ -1850,7 +1850,7 @@ fn encode_format(
 					strict = Some(false);
 					unsupported.extend(reports.into_iter().map(|report| {
 						Unsupported::builder()
-							.what(SmolStr::from("response_format.schema.strict"))
+							.what(Str::from("response_format.schema.strict"))
 							.detail(report.detail)
 							.action(report.action)
 							.build()
@@ -1971,8 +1971,8 @@ fn is_custom(props: &Props) -> bool {
 		|| props.get_ns("openai", "type").and_then(Value::as_str) == Some("custom_tool_call")
 }
 
-fn custom_tool_names(req: &ChatRequest) -> BTreeSet<SmolStr> {
-	let mut names: BTreeSet<SmolStr> = req
+fn custom_tool_names(req: &ChatRequest) -> BTreeSet<Str> {
+	let mut names: BTreeSet<Str> = req
 		.provider_options
 		.as_ref()
 		.and_then(|props| props.get_ns("openai", "custom_tools"))
@@ -1980,7 +1980,7 @@ fn custom_tool_names(req: &ChatRequest) -> BTreeSet<SmolStr> {
 		.into_iter()
 		.flatten()
 		.filter_map(Value::as_str)
-		.map(SmolStr::from)
+		.map(Str::from)
 		.collect();
 	if matches!(
 		req.model_policy
@@ -1988,7 +1988,7 @@ fn custom_tool_names(req: &ChatRequest) -> BTreeSet<SmolStr> {
 			.and_then(|policy| policy.apply_patch_shape),
 		Some(omp_llm_types::ApplyPatchShape::Freeform)
 	) {
-		names.insert(SmolStr::new_static("apply_patch"));
+		names.insert(Str::new_static("apply_patch"));
 	} else if matches!(
 		req.model_policy
 			.as_deref()
@@ -2018,8 +2018,8 @@ fn report(
 	}
 	unsupported.push(
 		Unsupported::builder()
-			.what(SmolStr::from(what))
-			.detail(SmolStr::from(detail))
+			.what(Str::from(what))
+			.detail(Str::from(detail))
 			.action(match fallback {
 				Fallback::Emulate => UnsupportedAction::Emulated,
 				_ => UnsupportedAction::Dropped,
@@ -2030,30 +2030,30 @@ fn report(
 
 fn dropped(what: &str, detail: &str) -> Unsupported {
 	Unsupported::builder()
-		.what(SmolStr::from(what))
-		.detail(SmolStr::from(detail))
+		.what(Str::from(what))
+		.detail(Str::from(detail))
 		.action(UnsupportedAction::Dropped)
 		.build()
 }
 
 fn clamped(what: &str, detail: &str) -> Unsupported {
 	Unsupported::builder()
-		.what(SmolStr::from(what))
-		.detail(SmolStr::from(detail))
+		.what(Str::from(what))
+		.detail(Str::from(detail))
 		.action(UnsupportedAction::Clamped)
 		.build()
 }
 
 fn emulated(what: &str, detail: &str) -> Unsupported {
 	Unsupported::builder()
-		.what(SmolStr::from(what))
-		.detail(SmolStr::from(detail))
+		.what(Str::from(what))
+		.detail(Str::from(detail))
 		.action(UnsupportedAction::Emulated)
 		.build()
 }
 
-fn str_field(value: &Value, key: &str) -> SmolStr {
-	SmolStr::from(value.get(key).and_then(Value::as_str).unwrap_or_default())
+fn str_field(value: &Value, key: &str) -> Str {
+	Str::from(value.get(key).and_then(Value::as_str).unwrap_or_default())
 }
 
 fn encode_base64(bytes: &[u8]) -> String {
@@ -2138,7 +2138,7 @@ mod tests {
 	use std::sync::Arc;
 
 	use bytes::Bytes;
-	use omp_core::SmolStr;
+	use omp_core::Str;
 	use omp_llm_catalog::compat::{Compat, ReasoningWireFormat};
 	use omp_llm_transport::{DecodeState, Frame, Transport};
 	use omp_llm_types::{
@@ -2154,7 +2154,7 @@ mod tests {
 
 	fn request(items: Vec<Item>) -> ChatRequest {
 		ChatRequest::builder()
-			.model(SmolStr::from("gpt-5"))
+			.model(Str::from("gpt-5"))
 			.thread(Thread::builder().items(items).build())
 			.tools(Vec::new())
 			.build()
@@ -2170,8 +2170,8 @@ mod tests {
 			.kind(ItemKind::ToolResult(
 				ToolResult::builder()
 					.call_id(call_id)
-					.name(SmolStr::new_static("lookup"))
-					.parts(vec![Part::Text(SmolStr::new_static("not found"))])
+					.name(Str::new_static("lookup"))
+					.parts(vec![Part::Text(Str::new_static("not found"))])
 					.is_error(false)
 					.build(),
 			))
@@ -2201,7 +2201,7 @@ mod tests {
 			.kind(ItemKind::ToolCall(
 				ToolCall::builder()
 					.id(CallId::new())
-					.name(SmolStr::new_static("lookup"))
+					.name(Str::new_static("lookup"))
 					.args_json(Bytes::from_static(b"{}"))
 					.thought_signature(Bytes::new())
 					.build(),
@@ -2247,7 +2247,7 @@ mod tests {
 					.parts(vec![Part::Blob(
 						BlobPart::builder()
 							.hash([9; 32])
-							.mime(SmolStr::from("audio/wav"))
+							.mime(Str::from("audio/wav"))
 							.size(4)
 							.inline(Bytes::from_static(b"RIFF"))
 							.build(),
@@ -2275,7 +2275,7 @@ mod tests {
 			.kind(ItemKind::Message(
 				Message::builder()
 					.role(Role::User)
-					.parts(vec![Part::Text(SmolStr::new_static("patch it"))])
+					.parts(vec![Part::Text(Str::new_static("patch it"))])
 					.build(),
 			))
 			.props(Props::default())
@@ -2289,8 +2289,8 @@ mod tests {
 		);
 		req.tools = vec![
 			ToolDef::builder()
-				.name(SmolStr::new_static("apply_patch"))
-				.description(SmolStr::new_static("Apply a patch"))
+				.name(Str::new_static("apply_patch"))
+				.description(Str::new_static("Apply a patch"))
 				.schema_json(Bytes::from_static(b"{\"type\":\"object\",\"properties\":{}}"))
 				.build(),
 		];
@@ -2402,7 +2402,7 @@ mod tests {
 	#[test]
 	fn model_policy_filters_reasoning_and_controls_encryption_image_detail_and_store() {
 		let thinking = Thinking::builder()
-			.text(SmolStr::new_static("private"))
+			.text(Str::new_static("private"))
 			.signature(Bytes::from_static(b"encrypted"))
 			.redacted(true)
 			.build();
@@ -2427,7 +2427,7 @@ mod tests {
 						.parts(vec![Part::Blob(
 							BlobPart::builder()
 								.hash([0; 32])
-								.mime(SmolStr::new_static("image/png"))
+								.mime(Str::new_static("image/png"))
 								.size(1)
 								.inline(Bytes::from_static(b"x"))
 								.build(),
@@ -2472,7 +2472,7 @@ mod tests {
 	#[test]
 	fn chaining_and_encrypted_reasoning_are_gateway_supplied_and_verbatim() {
 		let thinking = Thinking::builder()
-			.text(SmolStr::default())
+			.text(Str::default())
 			.signature(Bytes::from_static(b"enc_REDACTED"))
 			.redacted(true)
 			.build();
@@ -2492,7 +2492,7 @@ mod tests {
 				.kind(ItemKind::Message(
 					Message::builder()
 						.role(Role::User)
-						.parts(vec![Part::Text(SmolStr::from("Continue."))])
+						.parts(vec![Part::Text(Str::from("Continue."))])
 						.build(),
 				))
 				.props(Props::default())
@@ -2523,7 +2523,7 @@ mod tests {
 			.kind(ItemKind::Message(
 				Message::builder()
 					.role(Role::User)
-					.parts(vec![Part::Text(SmolStr::from("Continue."))])
+					.parts(vec![Part::Text(Str::from("Continue."))])
 					.build(),
 			))
 			.props(Props::default())
@@ -2548,7 +2548,7 @@ mod tests {
 			.kind(ItemKind::Message(
 				Message::builder()
 					.role(Role::User)
-					.parts(vec![Part::Text(SmolStr::from("Continue."))])
+					.parts(vec![Part::Text(Str::from("Continue."))])
 					.build(),
 			))
 			.props(Props::default())
@@ -2590,7 +2590,7 @@ mod tests {
 				.kind(ItemKind::Message(
 					Message::builder()
 						.role(role)
-						.parts(vec![Part::Text(SmolStr::from(text))])
+						.parts(vec![Part::Text(Str::from(text))])
 						.build(),
 				))
 				.props(Props::default())
@@ -2632,7 +2632,7 @@ mod tests {
 			.kind(ItemKind::ToolCall(
 				ToolCall::builder()
 					.id(call_id)
-					.name(SmolStr::from("shell"))
+					.name(Str::from("shell"))
 					.args_json(Bytes::from_static(b"ls"))
 					.thought_signature(Bytes::new())
 					.build(),
@@ -2644,8 +2644,8 @@ mod tests {
 			.kind(ItemKind::ToolResult(
 				ToolResult::builder()
 					.call_id(call_id)
-					.name(SmolStr::from("shell"))
-					.parts(vec![Part::Text(SmolStr::new_static("README.md"))])
+					.name(Str::from("shell"))
+					.parts(vec![Part::Text(Str::new_static("README.md"))])
 					.is_error(false)
 					.build(),
 			))
@@ -2683,7 +2683,7 @@ mod tests {
 			.kind(ItemKind::ToolCall(
 				ToolCall::builder()
 					.id(CallId::new())
-					.name(SmolStr::from("shell"))
+					.name(Str::from("shell"))
 					.args_json(Bytes::from_static(b""))
 					.thought_signature(Bytes::new())
 					.build(),
@@ -2813,7 +2813,7 @@ mod tests {
 					.parts(vec![Part::Blob(
 						BlobPart::builder()
 							.hash([1; 32])
-							.mime(SmolStr::from("image/png"))
+							.mime(Str::from("image/png"))
 							.size(3)
 							.inline(Bytes::from_static(b"img"))
 							.build(),
@@ -2832,7 +2832,7 @@ mod tests {
 					.parts(vec![Part::Blob(
 						BlobPart::builder()
 							.hash([2; 32])
-							.mime(SmolStr::from("application/pdf"))
+							.mime(Str::from("application/pdf"))
 							.size(3)
 							.inline(Bytes::from_static(b"pdf"))
 							.build(),
@@ -2862,7 +2862,7 @@ mod tests {
 		let mut req = request(vec![image, file]);
 		req.cache = Some(
 			CacheHint::builder()
-				.session_key(SmolStr::from("session-redacted"))
+				.session_key(Str::from("session-redacted"))
 				.retention(CacheRetention::Long)
 				.build(),
 		);
@@ -2920,7 +2920,7 @@ mod tests {
 		assert!(matches!(
 			&outcome.output[1].kind,
 			ItemKind::Message(message)
-				if message.parts == vec![Part::Text(SmolStr::from("Found it."))]
+				if message.parts == vec![Part::Text(Str::from("Found it."))]
 		));
 		assert_eq!(
 			outcome
@@ -3069,7 +3069,7 @@ mod tests {
 			.kind(ItemKind::Message(
 				Message::builder()
 					.role(Role::User)
-					.parts(vec![Part::Text(SmolStr::from("nested"))])
+					.parts(vec![Part::Text(Str::from("nested"))])
 					.build(),
 			))
 			.props(Props::default())
@@ -3080,8 +3080,8 @@ mod tests {
 		);
 		req.tools = vec![
 			ToolDef::builder()
-				.name(SmolStr::from("lookup"))
-				.description(SmolStr::default())
+				.name(Str::from("lookup"))
+				.description(Str::default())
 				.schema_json(nested.clone())
 				.strict(true)
 				.build(),
@@ -3092,7 +3092,7 @@ mod tests {
 					ResponseFormat::builder()
 						.kind(ResponseFormatKind::JsonSchema(
 							JsonSchema::builder()
-								.name(SmolStr::from("nested"))
+								.name(Str::from("nested"))
 								.schema_json(nested)
 								.strict(true)
 								.build(),

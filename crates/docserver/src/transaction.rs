@@ -7,7 +7,7 @@
 use std::{collections::HashMap, future::Future, path::PathBuf, sync::Arc};
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -696,7 +696,7 @@ pub enum TransactionOutcome {
 		/// Stable rejection classification.
 		reason:         TransactionRejectReason,
 		/// Human-readable failure detail.
-		message:        SmolStr,
+		message:        Str,
 		/// Structured stale or overlap conflicts.
 		conflicts:      Vec<DocumentConflict>,
 	},
@@ -711,7 +711,7 @@ pub enum TransactionOutcome {
 		/// Stable failure classification.
 		reason:                 TransactionRejectReason,
 		/// Human-readable failure detail.
-		message:                SmolStr,
+		message:                Str,
 	},
 }
 
@@ -732,13 +732,13 @@ impl TransactionOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransactionBuildError {
 	reason:  TransactionRejectReason,
-	message: SmolStr,
+	message: Str,
 }
 
 impl TransactionBuildError {
 	/// Creates a lowering failure with its wire-level rejection classification.
 	pub fn new(reason: TransactionRejectReason, message: impl AsRef<str>) -> Self {
-		Self { reason, message: SmolStr::new(message.as_ref()) }
+		Self { reason, message: Str::new(message.as_ref()) }
 	}
 
 	/// Returns the stable rejection classification.
@@ -1828,7 +1828,7 @@ enum PreparedAction {
 struct PlanningFailure {
 	operation_index: u32,
 	reason:          TransactionRejectReason,
-	message:         SmolStr,
+	message:         Str,
 	conflicts:       Vec<DocumentConflict>,
 }
 
@@ -1837,7 +1837,7 @@ impl PlanningFailure {
 		Self {
 			operation_index,
 			reason: TransactionRejectReason::InvalidContent,
-			message: SmolStr::new(message.as_ref()),
+			message: Str::new(message.as_ref()),
 			conflicts: Vec::new(),
 		}
 	}
@@ -1846,7 +1846,7 @@ impl PlanningFailure {
 		Self {
 			operation_index,
 			reason: TransactionRejectReason::Cancelled,
-			message: SmolStr::new(message.as_ref()),
+			message: Str::new(message.as_ref()),
 			conflicts: Vec::new(),
 		}
 	}
@@ -1855,7 +1855,7 @@ impl PlanningFailure {
 		Self {
 			operation_index,
 			reason: TransactionRejectReason::PreconditionFailed,
-			message: SmolStr::new(message.as_ref()),
+			message: Str::new(message.as_ref()),
 			conflicts: Vec::new(),
 		}
 	}
@@ -1864,7 +1864,7 @@ impl PlanningFailure {
 		Self {
 			operation_index,
 			reason: TransactionRejectReason::FormatFailed,
-			message: SmolStr::new(message.as_ref()),
+			message: Str::new(message.as_ref()),
 			conflicts: Vec::new(),
 		}
 	}
@@ -1881,7 +1881,7 @@ impl PlanningFailure {
 		Self {
 			operation_index,
 			reason,
-			message: SmolStr::new(message.as_ref()),
+			message: Str::new(message.as_ref()),
 			conflicts: vec![DocumentConflict {
 				operation_index,
 				expected,
@@ -1937,11 +1937,11 @@ fn validate_text(content: &Bytes) -> Result<()> {
 	std::str::from_utf8(content)
 		.map(|_| ())
 		.map_err(|_| Error::InvalidContent {
-			reason: SmolStr::new_static("text content is not valid UTF-8"),
+			reason: Str::new_static("text content is not valid UTF-8"),
 		})
 }
 
-fn classify_error(error: &Error) -> (TransactionRejectReason, SmolStr) {
+fn classify_error(error: &Error) -> (TransactionRejectReason, Str) {
 	let reason = match error {
 		Error::StaleTransaction { .. } => TransactionRejectReason::ExternalModification,
 		Error::ContentModified { .. } => TransactionRejectReason::StaleBase,
@@ -1964,7 +1964,7 @@ fn classify_error(error: &Error) -> (TransactionRejectReason, SmolStr) {
 		| Error::LeaseExpired { .. }
 		| Error::Protocol { .. } => TransactionRejectReason::PreconditionFailed,
 	};
-	(reason, SmolStr::new(error.to_string()))
+	(reason, Str::new(error.to_string()))
 }
 
 fn rejected(
@@ -1975,7 +1975,7 @@ fn rejected(
 	TransactionOutcome::Rejected {
 		transaction_id,
 		reason,
-		message: SmolStr::new(message.as_ref()),
+		message: Str::new(message.as_ref()),
 		conflicts: Vec::new(),
 	}
 }
@@ -2250,7 +2250,7 @@ mod tests {
 		) -> impl Future<Output = Result<FormatResult>> + Send + '_ {
 			self.calls.fetch_add(1, Ordering::SeqCst);
 			let result = if self.fail {
-				Err(Error::Protocol { reason: SmolStr::new_static("formatter failed") })
+				Err(Error::Protocol { reason: Str::new_static("formatter failed") })
 			} else {
 				if self.cancel_after_format {
 					cancel.cancel();

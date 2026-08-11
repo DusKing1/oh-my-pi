@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_local::{Embedded, Inference, SmallModel, TextSelection, types};
 use types::{Chat, Embed};
 
@@ -31,14 +31,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 			.kind(types::ItemKind::Message(
 				types::Message::builder()
 					.role(role)
-					.parts(vec![types::Part::Text(SmolStr::new(text))])
+					.parts(vec![types::Part::Text(Str::new(text))])
 					.build(),
 			))
 			.props(types::Props::default())
 			.build()
 	};
 	let request = types::ChatRequest::builder()
-		.model(SmolStr::new("local/default"))
+		.model(Str::new("local/default"))
 		.thread(
 			types::Thread::builder()
 				.items(vec![
@@ -60,8 +60,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 	let response = embedded
 		.embed(
 			types::EmbedRequest::builder()
-				.model(SmolStr::new("local/default"))
-				.texts(vec![SmolStr::new("local inference")])
+				.model(Str::new("local/default"))
+				.texts(vec![Str::new("local inference")])
 				.props(types::Props::default())
 				.build(),
 		)

@@ -13,7 +13,7 @@ use futures::future::BoxFuture;
 use http::{Method, Request, Response, header::ACCEPT};
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::Incoming;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_broker::{
 	BrokerCliBackend,
 	oauth::{
@@ -327,7 +327,7 @@ where
 			"google-antigravity" | "google-gemini-cli" => {
 				let mut endpoints = Vec::with_capacity(1 + provider.fallback_base_urls.len());
 				endpoints.push(provider.base_url.as_str());
-				endpoints.extend(provider.fallback_base_urls.iter().map(SmolStr::as_str));
+				endpoints.extend(provider.fallback_base_urls.iter().map(Str::as_str));
 				let mut last_error = None;
 				for endpoint in endpoints {
 					match self
@@ -637,17 +637,17 @@ fn credential_provider(provider: &ProviderEntry) -> &str {
 }
 
 fn discovery_transport(error: impl Display) -> DiscoveryError {
-	DiscoveryError::Transport(SmolStr::from(error.to_string()))
+	DiscoveryError::Transport(Str::from(error.to_string()))
 }
 
 fn oauth_error(error: String, transient: bool) -> HttpError {
-	HttpError { detail: SmolStr::from(error), transient }
+	HttpError { detail: Str::from(error), transient }
 }
 
 fn usage_transport_error(error: impl std::fmt::Display) -> UsageError {
 	UsageError::InvalidResponse {
 		provider: "transport".into(),
-		message:  SmolStr::from(error.to_string()),
+		message:  Str::from(error.to_string()),
 	}
 }
 

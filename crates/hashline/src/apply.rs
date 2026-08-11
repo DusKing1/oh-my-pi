@@ -7,7 +7,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use similar::{Algorithm, DiffOp, capture_diff_slices};
 use smallvec::SmallVec;
 
@@ -63,7 +63,7 @@ pub struct ApplyResult {
 	/// First changed model-facing line, when any.
 	pub first_changed_line: Option<usize>,
 	/// Non-fatal application diagnostics.
-	pub warnings:           Vec<SmolStr>,
+	pub warnings:           Vec<Str>,
 	/// Syntax-aware block resolutions.
 	pub block_resolutions:  Vec<crate::types::BlockResolution>,
 }
@@ -78,7 +78,7 @@ pub enum ApplyError {
 	/// A clipboard operation was invalid.
 	Clipboard(ClipboardError),
 	/// An original-coordinate edit was invalid.
-	InvalidEdit(SmolStr),
+	InvalidEdit(Str),
 }
 impl fmt::Display for ApplyError {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -127,8 +127,8 @@ fn indent(text: &str) -> &str {
 
 fn repair_replacement_indentation(
 	edits: &mut [Edit],
-	lines: &[SmolStr],
-	warnings: &mut Vec<SmolStr>,
+	lines: &[Str],
+	warnings: &mut Vec<Str>,
 ) {
 	let mut at = 0;
 	let mut repaired = false;
@@ -214,19 +214,19 @@ fn repair_replacement_indentation(
 			if let Edit::Insert { text, .. } = edit
 				&& !text.trim().is_empty()
 			{
-				*text = SmolStr::new(format!("{shift}{text}"));
+				*text = Str::new(format!("{shift}{text}"));
 			}
 		}
 		repaired = true;
 	}
 	if repaired {
-		warnings.push(SmolStr::new(
+		warnings.push(Str::new(
 			"Auto-indented a replacement body to preserve its surrounding block depth",
 		));
 	}
 }
 
-fn repair_landings(edits: &mut [Edit], lines: &[SmolStr], warnings: &mut Vec<SmolStr>) {
+fn repair_landings(edits: &mut [Edit], lines: &[Str], warnings: &mut Vec<Str>) {
 	let mut groups: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
 	let targeted: BTreeSet<usize> = edits.iter().filter_map(anchor_line).collect();
 	for (i, edit) in edits.iter().enumerate() {
@@ -295,7 +295,7 @@ fn repair_landings(edits: &mut [Edit], lines: &[SmolStr], warnings: &mut Vec<Smo
 					*cursor = Cursor::AfterAnchor { anchor: crate::types::Anchor { line: landing } };
 				}
 			}
-			warnings.push(SmolStr::new(format!(
+			warnings.push(Str::new(format!(
 				"after-line insertion shifted from line {anchor} to {landing} across {crossed} closer \
 				 line(s)"
 			)));
@@ -303,19 +303,19 @@ fn repair_landings(edits: &mut [Edit], lines: &[SmolStr], warnings: &mut Vec<Smo
 	}
 }
 
-fn validate(edits: &[Edit], lines: &[SmolStr]) -> Result<(), ApplyError> {
+fn validate(edits: &[Edit], lines: &[Str]) -> Result<(), ApplyError> {
 	let mut deleted = BTreeSet::new();
 	let phantom = lines.len() > 1 && lines.last().is_some_and(|line| line.is_empty());
 	for edit in edits {
 		match edit {
 			Edit::Block { .. } | Edit::Cut { .. } | Edit::Paste { .. } => {
-				return Err(ApplyError::InvalidEdit(SmolStr::new(
+				return Err(ApplyError::InvalidEdit(Str::new(
 					"unresolved high-level edit reached materialization",
 				)));
 			},
 			Edit::Delete { anchor, .. } => {
 				if anchor.line < 1 || anchor.line > lines.len() {
-					return Err(ApplyError::InvalidEdit(format_smol!(
+					return Err(ApplyError::InvalidEdit(fmts!(
 						"line {} does not exist (file has {} lines)",
 						anchor.line,
 						lines.len()
@@ -325,7 +325,7 @@ fn validate(edits: &[Edit], lines: &[SmolStr]) -> Result<(), ApplyError> {
 					continue;
 				}
 				if !deleted.insert(anchor.line) {
-					return Err(ApplyError::InvalidEdit(format_smol!(
+					return Err(ApplyError::InvalidEdit(fmts!(
 						"overlapping delete at line {}",
 						anchor.line
 					)));
@@ -335,7 +335,7 @@ fn validate(edits: &[Edit], lines: &[SmolStr]) -> Result<(), ApplyError> {
 				cursor: Cursor::BeforeAnchor { anchor } | Cursor::AfterAnchor { anchor },
 				..
 			} if anchor.line < 1 || anchor.line > lines.len() => {
-				return Err(ApplyError::InvalidEdit(format_smol!(
+				return Err(ApplyError::InvalidEdit(fmts!(
 					"line {} does not exist (file has {} lines)",
 					anchor.line,
 					lines.len()
@@ -349,12 +349,12 @@ fn validate(edits: &[Edit], lines: &[SmolStr]) -> Result<(), ApplyError> {
 
 fn repair_boundaries(
 	edits: &mut Vec<Edit>,
-	lines: &[SmolStr],
+	lines: &[Str],
 	path: Option<&str>,
-	warnings: &mut Vec<SmolStr>,
+	warnings: &mut Vec<Str>,
 ) {
 	let mut original =
-		String::with_capacity(lines.iter().map(SmolStr::len).sum::<usize>() + lines.len());
+		String::with_capacity(lines.iter().map(Str::len).sum::<usize>() + lines.len());
 	for (index, line) in lines.iter().enumerate() {
 		if index > 0 {
 			original.push('\n');
@@ -422,14 +422,14 @@ fn repair_boundaries(
 		let (candidate, _) = materialize(lines, &proposed);
 		if crate::syntax::parses_cleanly(path, &candidate) {
 			*edits = proposed;
-			warnings.push(SmolStr::new(
+			warnings.push(Str::new(
 				"Repaired replacement boundaries after a syntax-verified delimiter-balance check",
 			));
 		}
 	}
 }
 
-fn materialize(lines: &[SmolStr], edits: &[Edit]) -> (String, Option<usize>) {
+fn materialize(lines: &[Str], edits: &[Edit]) -> (String, Option<usize>) {
 	let phantom = lines.len() > 1 && lines.last().is_some_and(|line| line.is_empty());
 	let mut buckets: BTreeMap<usize, Vec<(usize, &Edit)>> = BTreeMap::new();
 	let mut bof = Vec::new();
@@ -483,7 +483,7 @@ fn materialize(lines: &[SmolStr], edits: &[Edit]) -> (String, Option<usize>) {
 		first = Some(first.map_or(line, |old: usize| old.min(line)));
 	}
 	if !bof.is_empty() {
-		let rows = bof.into_iter().map(SmolStr::new).collect::<Vec<_>>();
+		let rows = bof.into_iter().map(Str::new).collect::<Vec<_>>();
 		if out.len() == 1 && out[0].is_empty() {
 			out = rows;
 		} else {
@@ -497,7 +497,7 @@ fn materialize(lines: &[SmolStr], edits: &[Edit]) -> (String, Option<usize>) {
 		} else {
 			out.len()
 		};
-		out.splice(at..at, eof.into_iter().map(SmolStr::new));
+		out.splice(at..at, eof.into_iter().map(Str::new));
 		first = Some(first.map_or(at + 1, |old| old.min(at + 1)));
 	}
 	(
@@ -541,7 +541,7 @@ pub fn apply_parsed_patch(
 	let ending = detect_line_ending(exact);
 	let bom = strip_bom(exact);
 	let normalized = normalize_to_lf(bom.text);
-	let lines: Vec<SmolStr> = normalized.split('\n').map(SmolStr::new).collect();
+	let lines: Vec<Str> = normalized.split('\n').map(Str::new).collect();
 	let BlockLowering { edits: blocked, resolutions, mut warnings } = resolve_block_edits(
 		&patch.edits,
 		&normalized,

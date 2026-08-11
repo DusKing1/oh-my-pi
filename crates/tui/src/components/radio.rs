@@ -1,4 +1,4 @@
-use omp_core::SmolStr;
+use omp_core::Str;
 use smallvec::SmallVec;
 
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
 
 #[derive(Default)]
 struct RadioState {
-	options: SmallVec<SmolStr, 8>,
+	options: SmallVec<Str, 8>,
 	idx:     u16,
 	spans:   SmallVec<(u16, u16), 8>,
 }

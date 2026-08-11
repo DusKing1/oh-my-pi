@@ -10,7 +10,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{
 	compat::{CacheControlFormat, Compat},
 	provider::TransportId,
@@ -182,7 +182,7 @@ fn encode_request(req: &ChatRequest, compat: &Compat) -> Result<(Value, Vec<Unsu
 					.to_owned();
 				wire_ids.insert(canonical, wire.clone());
 				let input: Value = serde_json::from_slice(&call.args_json).map_err(|error| {
-					Error::Provider(SmolStr::from(format!(
+					Error::Provider(Str::from(format!(
 						"Bedrock tool arguments are not JSON: {error}"
 					)))
 				})?;
@@ -417,7 +417,7 @@ fn encode_tools(
 	let mut tools = Vec::with_capacity(req.tools.len().max(1));
 	for tool in &req.tools {
 		let schema: Value = serde_json::from_slice(&tool.schema_json).map_err(|error| {
-			Error::Provider(SmolStr::from(format!("Bedrock tool schema is not JSON: {error}")))
+			Error::Provider(Str::from(format!("Bedrock tool schema is not JSON: {error}")))
 		})?;
 		let name = escaped_tool_name(&tool.name, escape_tool_names);
 		tools.push(json!({ "toolSpec": {
@@ -567,7 +567,7 @@ fn encode_reasoning(
 					legacy_bedrock_effort(requested_effort)
 				}
 			},
-			SmolStr::as_str,
+			Str::as_str,
 		);
 	if reasoning.effort == Some(Effort::Off) && !requires_thinking {
 		if adaptive && policy_thinking.is_some() {
@@ -575,7 +575,7 @@ fn encode_reasoning(
 				"additionalModelRequestFields".into(),
 				json!({ "output_config": { "effort": policy_thinking
 					.and_then(|thinking| thinking.effort_map.get(&Effort::Low))
-					.map_or("low", SmolStr::as_str) } }),
+					.map_or("low", Str::as_str) } }),
 			);
 		}
 		return Ok(());
@@ -694,7 +694,7 @@ fn report_unhandled(req: &ChatRequest, unsupported: &mut Vec<Unsupported>) -> Re
 						| "amazon-bedrock/interleaved_thinking"
 				) {
 				unsupported.push(dropped(
-					SmolStr::from(key.as_str()),
+					Str::from(key.as_str()),
 					"Unknown Amazon Bedrock provider option",
 				));
 			}
@@ -726,8 +726,8 @@ enum DecodedPart {
 	},
 	Tool {
 		id:      omp_llm_types::CallId,
-		wire_id: SmolStr,
-		name:    SmolStr,
+		wire_id: Str,
+		name:    Str,
 		args:    Vec<u8>,
 		ended:   bool,
 	},
@@ -736,15 +736,15 @@ enum DecodedPart {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WireEvent {
-	role:                Option<SmolStr>,
+	role:                Option<Str>,
 	content_block_index: Option<u32>,
 	start:               Option<WireStart>,
 	delta:               Option<WireDelta>,
-	stop_reason:         Option<SmolStr>,
+	stop_reason:         Option<Str>,
 	usage:               Option<WireUsage>,
 	metrics:             Option<Value>,
 	#[serde(rename = "type")]
-	kind:                Option<SmolStr>,
+	kind:                Option<Str>,
 	error:               Option<WireError>,
 }
 
@@ -758,28 +758,28 @@ struct WireStart {
 #[serde(rename_all = "camelCase")]
 struct WireToolStart {
 	#[serde(default)]
-	tool_use_id: SmolStr,
+	tool_use_id: Str,
 	#[serde(default)]
-	name:        SmolStr,
+	name:        Str,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WireDelta {
-	text:              Option<SmolStr>,
+	text:              Option<Str>,
 	tool_use:          Option<WireToolDelta>,
 	reasoning_content: Option<WireReasoningDelta>,
 }
 
 #[derive(Deserialize)]
 struct WireToolDelta {
-	input: Option<SmolStr>,
+	input: Option<Str>,
 }
 
 #[derive(Deserialize)]
 struct WireReasoningDelta {
-	text:      Option<SmolStr>,
-	signature: Option<SmolStr>,
+	text:      Option<Str>,
+	signature: Option<Str>,
 }
 
 #[derive(Clone, Copy, Default, Deserialize)]
@@ -800,9 +800,9 @@ struct WireUsage {
 #[derive(Deserialize)]
 struct WireError {
 	#[serde(default, rename = "type")]
-	kind:    SmolStr,
+	kind:    Str,
 	#[serde(default)]
-	message: SmolStr,
+	message: Str,
 }
 
 fn decode_event(data: &[u8], state: &mut DecodeState) -> Result<SmallVec<TurnEvent, 2>, Error> {
@@ -858,7 +858,7 @@ fn decode_event(data: &[u8], state: &mut DecodeState) -> Result<SmallVec<TurnEve
 			events.push(TurnEvent::PartStart {
 				index,
 				kind: StreamPartKind::ToolCall,
-				tool_call_id: SmolStr::from(id.to_string()),
+				tool_call_id: Str::from(id.to_string()),
 				tool_name: tool.name,
 			});
 		}
@@ -928,7 +928,7 @@ fn decode_event(data: &[u8], state: &mut DecodeState) -> Result<SmallVec<TurnEve
 			StopReason::EndTurn
 		} else {
 			map_stop(reason.as_str()).ok_or_else(|| {
-				Error::Provider(SmolStr::from(format!(
+				Error::Provider(Str::from(format!(
 					"Bedrock generation failed with stop reason: {reason}"
 				)))
 			})?
@@ -971,8 +971,8 @@ fn ensure_part(
 	events.push(TurnEvent::PartStart {
 		index,
 		kind,
-		tool_call_id: SmolStr::default(),
-		tool_name: SmolStr::default(),
+		tool_call_id: Str::default(),
+		tool_name: Str::default(),
 	});
 	Ok(())
 }
@@ -1029,7 +1029,7 @@ fn outcome(stop: StopReason, state: &BedrockDecodeState) -> Result<ChatOutcome, 
 			{
 				output.push(assistant_item(Part::Thinking(
 					Thinking::builder()
-						.text(SmolStr::from(text.as_str()))
+						.text(Str::from(text.as_str()))
 						.signature(Bytes::copy_from_slice(signature))
 						.redacted(text.is_empty())
 						.build(),
@@ -1040,7 +1040,7 @@ fn outcome(stop: StopReason, state: &BedrockDecodeState) -> Result<ChatOutcome, 
 					Bytes::from_static(b"{}")
 				} else {
 					serde_json::from_slice::<Value>(args).map_err(|error| {
-						Error::Provider(SmolStr::from(format!(
+						Error::Provider(Str::from(format!(
 							"Bedrock tool arguments are incomplete JSON: {error}"
 						)))
 					})?;
@@ -1093,8 +1093,8 @@ fn outcome(stop: StopReason, state: &BedrockDecodeState) -> Result<ChatOutcome, 
 		.maybe_cost(None)
 		.unsupported(Vec::new())
 		.maybe_revision(None)
-		.provider(SmolStr::new_static("amazon-bedrock"))
-		.model(SmolStr::default())
+		.provider(Str::new_static("amazon-bedrock"))
+		.model(Str::default())
 		.props(props)
 		.build())
 }
@@ -1122,7 +1122,7 @@ fn map_stop(reason: &str) -> Option<StopReason> {
 	}
 }
 
-fn turn_error(kind: &str, detail: SmolStr) -> TurnError {
+fn turn_error(kind: &str, detail: Str) -> TurnError {
 	let kind = match kind {
 		"authentication_error" => TurnErrorKind::Auth,
 		"rate_limit_error" => TurnErrorKind::RateLimited,
@@ -1231,8 +1231,8 @@ fn supports_adaptive_display(model: &str) -> bool {
 
 fn report(
 	unsupported: &mut Vec<Unsupported>,
-	what: impl Into<SmolStr>,
-	detail: impl Into<SmolStr>,
+	what: impl Into<Str>,
+	detail: impl Into<Str>,
 	fallback: Fallback,
 ) -> Result<(), Error> {
 	let action = match fallback {
@@ -1259,7 +1259,7 @@ fn report(
 	Ok(())
 }
 
-fn dropped(what: impl Into<SmolStr>, detail: impl Into<SmolStr>) -> Unsupported {
+fn dropped(what: impl Into<Str>, detail: impl Into<Str>) -> Unsupported {
 	Unsupported::builder()
 		.what(what.into())
 		.detail(detail.into())
@@ -1267,7 +1267,7 @@ fn dropped(what: impl Into<SmolStr>, detail: impl Into<SmolStr>) -> Unsupported 
 		.build()
 }
 
-fn emulated(what: impl Into<SmolStr>, detail: impl Into<SmolStr>) -> Unsupported {
+fn emulated(what: impl Into<Str>, detail: impl Into<Str>) -> Unsupported {
 	Unsupported::builder()
 		.what(what.into())
 		.detail(detail.into())
@@ -1277,7 +1277,7 @@ fn emulated(what: impl Into<SmolStr>, detail: impl Into<SmolStr>) -> Unsupported
 
 #[cold]
 fn provider_error(error: impl std::fmt::Display) -> Error {
-	Error::Provider(SmolStr::from(error.to_string()))
+	Error::Provider(Str::from(error.to_string()))
 }
 
 #[cfg(test)]
@@ -1285,7 +1285,7 @@ mod tests {
 	use std::{collections::BTreeMap, sync::Arc};
 
 	use bytes::Bytes;
-	use omp_core::SmolStr;
+	use omp_core::Str;
 	use omp_llm_catalog::compat::Compat;
 	use omp_llm_transport::{DecodeState, Frame, Transport};
 	use omp_llm_types::{
@@ -1312,7 +1312,7 @@ mod tests {
 
 	fn request(model: &str, items: Vec<Item>) -> ChatRequest {
 		ChatRequest::builder()
-			.model(SmolStr::new(model))
+			.model(Str::new(model))
 			.thread(Thread::builder().items(items).build())
 			.tools(Vec::new())
 			.build()

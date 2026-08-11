@@ -14,7 +14,7 @@ use std::{
 
 use blake3::Hasher;
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{
 	Accuracy, BlobPart, ChatOutcome, ContextRef, Item, ItemKind, Message, Part, Props, Revision,
 	Role, StopReason, Thinking, Thread, ThreadDelta, ToolCall, ToolResult, TurnError, TurnErrorKind,
@@ -69,7 +69,7 @@ pub enum BeginInput {
 	/// A full thread, optionally retained under a new context id on commit.
 	Seed {
 		/// Context to create, or `None` for a stateless turn.
-		context_id: Option<SmolStr>,
+		context_id: Option<Str>,
 		/// Complete prompt thread.
 		thread:     Thread,
 	},
@@ -119,13 +119,13 @@ impl TurnAttachment {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SessionAffinity {
 	/// Canonical provider/model route that owns every field below.
-	pub route_id:                     Option<SmolStr>,
+	pub route_id:                     Option<Str>,
 	/// Durable credential selected for a legacy credential-bound route.
-	pub credential_id:                Option<SmolStr>,
+	pub credential_id:                Option<Str>,
 	/// Provider prompt-cache identity associated with the committed prefix.
-	pub prompt_cache_key:             Option<SmolStr>,
+	pub prompt_cache_key:             Option<Str>,
 	/// Last authoritative `OpenAI` Responses id used for stateful chaining.
-	pub previous_response_id:         Option<SmolStr>,
+	pub previous_response_id:         Option<Str>,
 	/// Number of canonical items committed into `previous_response_id`.
 	///
 	/// This is an input boundary, not a truncated thread: the gateway retains
@@ -183,42 +183,42 @@ impl From<ContextError> for TurnError {
 	fn from(error: ContextError) -> Self {
 		let (kind, detail, actual) = match error {
 			ContextError::Conflict { actual } => {
-				(TurnErrorKind::Conflict, SmolStr::from("context revision conflict"), Some(actual))
+				(TurnErrorKind::Conflict, Str::from("context revision conflict"), Some(actual))
 			},
 			ContextError::NeedFull => (
 				TurnErrorKind::NeedFull,
-				SmolStr::from("context unknown or evicted; full thread required"),
+				Str::from("context unknown or evicted; full thread required"),
 				None,
 			),
 			ContextError::Busy => (
 				TurnErrorKind::Overloaded,
-				SmolStr::from("context already has an in-flight turn"),
+				Str::from("context already has an in-flight turn"),
 				None,
 			),
 			ContextError::AlreadyExists => {
-				(TurnErrorKind::Conflict, SmolStr::from("context already exists"), None)
+				(TurnErrorKind::Conflict, Str::from("context already exists"), None)
 			},
 			ContextError::InvalidTruncate { .. } => (
 				TurnErrorKind::Conflict,
-				SmolStr::from("truncate target is beyond the preconditioned head"),
+				Str::from("truncate target is beyond the preconditioned head"),
 				None,
 			),
 			ContextError::TurnIdReuse => (
 				TurnErrorKind::Conflict,
-				SmolStr::from("turn_id was reused with different input"),
+				Str::from("turn_id was reused with different input"),
 				None,
 			),
 			ContextError::DedupWindowFull => {
-				(TurnErrorKind::Overloaded, SmolStr::from("turn_id deduplication window is full"), None)
+				(TurnErrorKind::Overloaded, Str::from("turn_id deduplication window is full"), None)
 			},
 			ContextError::ContextCapacity => {
-				(TurnErrorKind::Overloaded, SmolStr::from("context capacity is full"), None)
+				(TurnErrorKind::Overloaded, Str::from("context capacity is full"), None)
 			},
 			ContextError::OutputAlreadyAccumulated => {
-				(TurnErrorKind::Upstream, SmolStr::from("turn output was supplied twice"), None)
+				(TurnErrorKind::Upstream, Str::from("turn output was supplied twice"), None)
 			},
 			ContextError::InactiveGuard => {
-				(TurnErrorKind::Upstream, SmolStr::from("turn guard is no longer active"), None)
+				(TurnErrorKind::Upstream, Str::from("turn guard is no longer active"), None)
 			},
 		};
 		Self::builder()
@@ -244,16 +244,16 @@ struct Inner {
 
 #[derive(Default)]
 struct StoreState {
-	contexts:         FxHashMap<SmolStr, HeldContext>,
-	pending_contexts: FxHashMap<SmolStr, SmolStr>,
-	turns:            FxHashMap<SmolStr, TurnRecord>,
-	committed_order:  VecDeque<SmolStr>,
+	contexts:         FxHashMap<Str, HeldContext>,
+	pending_contexts: FxHashMap<Str, Str>,
+	turns:            FxHashMap<Str, TurnRecord>,
+	committed_order:  VecDeque<Str>,
 }
 
 struct HeldContext {
 	tip:        History,
-	affinities: BTreeMap<SmolStr, SessionAffinity>,
-	in_flight:  Option<SmolStr>,
+	affinities: BTreeMap<Str, SessionAffinity>,
+	in_flight:  Option<Str>,
 	last_used:  Instant,
 }
 
@@ -322,12 +322,12 @@ enum TurnRecord {
 /// optional cleanup step.
 pub struct TurnGuard {
 	store:       Weak<Inner>,
-	turn_id:     SmolStr,
-	context_id:  Option<SmolStr>,
+	turn_id:     Str,
+	context_id:  Option<Str>,
 	base:        History,
 	thread:      Thread,
 	input_start: usize,
-	affinities:  BTreeMap<SmolStr, SessionAffinity>,
+	affinities:  BTreeMap<Str, SessionAffinity>,
 	output:      Vec<Item>,
 	live:        Arc<LiveTurn>,
 	retained:    bool,
@@ -443,7 +443,7 @@ impl ContextStore {
 	/// [`ContextError::ContextCapacity`] when no idle context can be evicted.
 	pub fn seed(
 		&self,
-		context_id: impl Into<SmolStr>,
+		context_id: impl Into<Str>,
 		thread: Thread,
 	) -> Result<Revision, ContextError> {
 		let context_id = context_id.into();
@@ -479,7 +479,7 @@ impl ContextStore {
 	/// Returns [`ContextError::Conflict`] for a stale revision,
 	/// [`ContextError::NeedFull`] for unknown state, or a resource/serialization
 	/// error.
-	pub fn begin(&self, turn_id: SmolStr, input: BeginInput) -> Result<Begin, ContextError> {
+	pub fn begin(&self, turn_id: Str, input: BeginInput) -> Result<Begin, ContextError> {
 		let mut state = self.inner.state.lock();
 		if let Some(record) = state.turns.get(&turn_id) {
 			return match record {
@@ -653,7 +653,7 @@ impl ContextStore {
 		&self,
 		parent: &ContextRef,
 		at: Option<u64>,
-		context_id: impl Into<SmolStr>,
+		context_id: impl Into<Str>,
 	) -> Result<Revision, ContextError> {
 		let context_id = context_id.into();
 		let mut state = self.inner.state.lock();
@@ -1206,7 +1206,7 @@ mod tests {
 
 	fn context_ref(context_id: &str, expected: Revision) -> ContextRef {
 		ContextRef::builder()
-			.context_id(SmolStr::from(context_id))
+			.context_id(Str::from(context_id))
 			.expected(expected)
 			.build()
 	}
@@ -1223,8 +1223,8 @@ mod tests {
 			.output(output.iter().map(|text| text_item(text)).collect())
 			.stop(StopReason::EndTurn)
 			.unsupported(Vec::new())
-			.provider(SmolStr::from("test"))
-			.model(SmolStr::from("test/model"))
+			.provider(Str::from("test"))
+			.model(Str::from("test/model"))
 			.props(Props::default())
 			.build()
 	}

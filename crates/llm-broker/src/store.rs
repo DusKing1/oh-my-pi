@@ -8,7 +8,7 @@
 
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_egress::auth_inject::{CredentialAuthKind, CredentialLease, CredentialMetadata};
 use parking_lot::Mutex;
 use rusqlite::{
@@ -293,9 +293,9 @@ impl CredentialState {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CredentialBlock {
 	/// Provider meter scope such as `shared`, `chat`, or `spark`.
-	pub scope:        SmolStr,
+	pub scope:        Str,
 	/// Provider endpoint/account discriminator.
-	pub provider_key: SmolStr,
+	pub provider_key: Str,
 	/// Unix epoch milliseconds at which this block expires.
 	pub until_ms:     u64,
 }
@@ -306,17 +306,17 @@ pub struct CredentialMeta {
 	/// Stable database identifier.
 	pub id:             u64,
 	/// Provider catalog identifier.
-	pub provider:       SmolStr,
+	pub provider:       Str,
 	/// Credential category.
 	pub kind:           CredentialKind,
 	/// Non-secret account label.
-	pub identity:       SmolStr,
+	pub identity:       Str,
 	/// Current effective state.
 	pub state:          CredentialState,
 	/// Currently live scoped blocks.
 	pub blocks:         SmallVec<CredentialBlock, 4>,
 	/// Explanation for a disabled credential.
-	pub disabled_cause: SmolStr,
+	pub disabled_cause: Str,
 	/// OAuth access-token expiry, or zero for API keys.
 	pub expires_at_ms:  u64,
 	/// Creation time in Unix epoch milliseconds.
@@ -384,7 +384,7 @@ pub enum DeltaReplay {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UsageWindow {
 	/// Provider-defined window label.
-	pub label:        SmolStr,
+	pub label:        Str,
 	/// Percentage consumed; providers may report values above 100.
 	pub used_percent: f64,
 	/// Unix epoch milliseconds at which the window resets.
@@ -397,9 +397,9 @@ pub struct UsageReport {
 	/// Credential owning this quota report.
 	pub credential_id: u64,
 	/// Provider catalog identifier.
-	pub provider:      SmolStr,
+	pub provider:      Str,
 	/// Provider plan or tier label.
-	pub plan:          SmolStr,
+	pub plan:          Str,
 	/// Provider-defined quota windows.
 	pub windows:       SmallVec<UsageWindow, 4>,
 	/// Fetch time in Unix epoch milliseconds.
@@ -421,9 +421,9 @@ pub struct UsageHistoryEntry {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClientUsage {
 	/// Stable gateway client identifier.
-	pub client_id:          SmolStr,
+	pub client_id:          Str,
 	/// Human-readable client label.
-	pub label:              SmolStr,
+	pub label:              Str,
 	/// Total input tokens.
 	pub input_tokens:       u64,
 	/// Total output tokens.
@@ -453,7 +453,7 @@ pub struct CredentialFilter<'a> {
 pub struct Store {
 	connection: Mutex<Connection>,
 	refreshes:  Mutex<HashMap<u64, Arc<AsyncMutex<()>>>>,
-	warm:       Mutex<HashMap<SmolStr, WarmSelection>>,
+	warm:       Mutex<HashMap<Str, WarmSelection>>,
 	epoch:      [u8; 16],
 }
 
@@ -718,7 +718,7 @@ impl Store {
 			.query_row(
 				"SELECT provider, generation FROM credentials WHERE id = ?1 AND state = 1",
 				[SqlU64(id)],
-				|row| Ok((smol_text(row, 0)?, row.get::<_, SqlU64>(1)?.0)),
+				|row| Ok((row_str(row, 0)?, row.get::<_, SqlU64>(1)?.0)),
 			)
 			.optional()?;
 		Ok(row.map(|(provider, generation)| CredentialLease::new(provider, id, generation)))
@@ -760,7 +760,7 @@ impl Store {
 			self
 				.warm
 				.lock()
-				.insert(SmolStr::new(provider), WarmSelection {
+				.insert(Str::new(provider), WarmSelection {
 					credential_id: selected.id,
 					last_used_ms:  now_ms,
 				});
@@ -904,7 +904,7 @@ impl Store {
 	pub fn clear_blocks(
 		&self,
 		id: u64,
-		scopes: &[SmolStr],
+		scopes: &[Str],
 		now_ms: u64,
 	) -> Result<Option<CredentialMeta>, StoreError> {
 		let mut connection = self.connection.lock();
@@ -944,7 +944,7 @@ impl Store {
 				params![provider, SqlU64(id), SqlU64(generation)],
 				|row| {
 					Ok((
-						smol_text(row, 0)?,
+						row_str(row, 0)?,
 						row.get::<_, Option<Vec<u8>>>(1)?,
 						CredentialKind::from_i64(row.get(2)?),
 					))
@@ -1272,8 +1272,8 @@ impl Store {
 		)?;
 		let rows = statement.query_map([SqlU64(since_ms)], |row| {
 			Ok(ClientUsage {
-				client_id:          smol_text(row, 0)?,
-				label:              smol_text(row, 1)?,
+				client_id:          row_str(row, 0)?,
+				label:              row_str(row, 1)?,
 				input_tokens:       row.get::<_, SqlU64>(2)?.0,
 				output_tokens:      row.get::<_, SqlU64>(3)?.0,
 				cache_read_tokens:  row.get::<_, SqlU64>(4)?.0,
@@ -1688,12 +1688,12 @@ fn set_credential_generation(
 fn metadata_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CredentialMeta> {
 	Ok(CredentialMeta {
 		id:             row.get::<_, SqlU64>(0)?.0,
-		provider:       smol_text(row, 1)?,
+		provider:       row_str(row, 1)?,
 		kind:           CredentialKind::from_i64(row.get(2)?),
-		identity:       smol_text(row, 3)?,
+		identity:       row_str(row, 3)?,
 		state:          CredentialState::from_stored(row.get(4)?),
 		blocks:         SmallVec::new(),
-		disabled_cause: smol_text(row, 5)?,
+		disabled_cause: row_str(row, 5)?,
 		expires_at_ms:  row.get::<_, SqlU64>(6)?.0,
 		created_at_ms:  row.get::<_, SqlU64>(7)?.0,
 		updated_at_ms:  row.get::<_, SqlU64>(8)?.0,
@@ -1731,8 +1731,8 @@ fn load_blocks(
 	meta.blocks = statement
 		.query_map(params![SqlU64(meta.id), SqlU64(now_ms)], |row| {
 			Ok(CredentialBlock {
-				scope:        smol_text(row, 0)?,
-				provider_key: smol_text(row, 1)?,
+				scope:        row_str(row, 0)?,
+				provider_key: row_str(row, 1)?,
 				until_ms:     row.get::<_, SqlU64>(2)?.0,
 			})
 		})?
@@ -1746,23 +1746,23 @@ fn load_blocks(
 #[derive(Default, Deserialize)]
 struct MetadataNamespace {
 	#[serde(alias = "accountId")]
-	account_id:      Option<SmolStr>,
+	account_id:      Option<Str>,
 	#[serde(alias = "projectId")]
-	project_id:      Option<SmolStr>,
+	project_id:      Option<Str>,
 	#[serde(alias = "organizationId", alias = "org_id", alias = "orgId")]
-	organization_id: Option<SmolStr>,
+	organization_id: Option<Str>,
 }
 
 #[derive(Default, Deserialize)]
 struct MetadataProjection {
 	#[serde(alias = "accountId")]
-	account_id:       Option<SmolStr>,
+	account_id:       Option<Str>,
 	#[serde(alias = "projectId")]
-	project_id:       Option<SmolStr>,
+	project_id:       Option<Str>,
 	#[serde(alias = "quotaProjectId")]
-	quota_project_id: Option<SmolStr>,
+	quota_project_id: Option<Str>,
 	#[serde(alias = "organizationId", alias = "org_id", alias = "orgId")]
-	organization_id:  Option<SmolStr>,
+	organization_id:  Option<Str>,
 	openai:           Option<MetadataNamespace>,
 	codex:            Option<MetadataNamespace>,
 	google:           Option<MetadataNamespace>,
@@ -1770,7 +1770,7 @@ struct MetadataProjection {
 	zai:              Option<MetadataNamespace>,
 }
 
-fn first_metadata<const N: usize>(values: [Option<&SmolStr>; N]) -> Option<SmolStr> {
+fn first_metadata<const N: usize>(values: [Option<&Str>; N]) -> Option<Str> {
 	values
 		.into_iter()
 		.flatten()
@@ -1778,18 +1778,18 @@ fn first_metadata<const N: usize>(values: [Option<&SmolStr>; N]) -> Option<SmolS
 		.cloned()
 }
 
-fn smol_text(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<SmolStr> {
+fn row_str(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Str> {
 	let value = row.get_ref(index)?;
 	let text = value.as_str().map_err(|error| {
 		rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(error))
 	})?;
-	Ok(SmolStr::new(text))
+	Ok(Str::new(text))
 }
 
 #[cfg(test)]
 mod tests {
 	use http::header::AUTHORIZATION;
-	use omp_core::SmolStr;
+	use omp_core::Str;
 	use serde_json::json;
 	use tempfile::tempdir;
 
@@ -1806,13 +1806,13 @@ mod tests {
 	) -> UsageReport {
 		UsageReport {
 			credential_id,
-			provider: SmolStr::new(provider),
-			plan: SmolStr::new("test"),
+			provider: Str::new(provider),
+			plan: Str::new("test"),
 			windows: windows
 				.iter()
 				.enumerate()
 				.map(|(index, (used_percent, resets_at_ms))| UsageWindow {
-					label:        SmolStr::new(if index == 0 { "primary" } else { "secondary" }),
+					label:        Str::new(if index == 0 { "primary" } else { "secondary" }),
 					used_percent: *used_percent,
 					resets_at_ms: *resets_at_ms,
 				})
@@ -2303,8 +2303,8 @@ mod tests {
 			.report_block(
 				meta.id,
 				&CredentialBlock {
-					scope:        SmolStr::new("chat"),
-					provider_key: SmolStr::new("primary"),
+					scope:        Str::new("chat"),
+					provider_key: Str::new("primary"),
 					until_ms:     100,
 				},
 				20,
@@ -2314,8 +2314,8 @@ mod tests {
 			.report_block(
 				meta.id,
 				&CredentialBlock {
-					scope:        SmolStr::new("spark"),
-					provider_key: SmolStr::new("primary"),
+					scope:        Str::new("spark"),
+					provider_key: Str::new("primary"),
 					until_ms:     200,
 				},
 				21,

@@ -1,6 +1,6 @@
 use bon::Builder;
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use super::{Item, Props, Revision, ToolCall, ToolResult, Unsupported};
 
@@ -9,7 +9,7 @@ use super::{Item, Props, Revision, ToolCall, ToolResult, Unsupported};
 #[derive(Builder, Clone, Debug, Eq, PartialEq)]
 pub struct ContextRef {
 	/// Client-minted ULID namespaced by the authenticated caller.
-	pub context_id: SmolStr,
+	pub context_id: Str,
 	/// Revision that must exactly match before any mutation is considered.
 	pub expected:   Revision,
 }
@@ -143,15 +143,15 @@ pub enum StopReason {
 #[derive(Builder, Clone, Debug, Eq, PartialEq)]
 pub struct Diagnostic {
 	/// Provider selected for this attempt.
-	pub provider:     SmolStr,
+	pub provider:     Str,
 	/// Model selected for this attempt.
-	pub model:        SmolStr,
+	pub model:        Str,
 	/// One-based attempt number, or zero when unavailable.
 	pub attempt:      u32,
 	/// Stable portable classification code.
-	pub code:         SmolStr,
+	pub code:         Str,
 	/// Human-readable classified detail safe to surface to callers.
-	pub detail:       SmolStr,
+	pub detail:       Str,
 	/// Safe recovery lane for this attempt.
 	pub retryability: Retryability,
 }
@@ -194,12 +194,12 @@ pub struct ChatOutcome {
 	pub revision:          Option<Revision>,
 	/// Provider that actually served the turn after routing and fallback
 	/// resolution.
-	pub provider:          SmolStr,
+	pub provider:          Str,
 	/// Model that actually served the turn after alias and role resolution.
-	pub model:             SmolStr,
+	pub model:             Str,
 	/// Upstream selected by an aggregator, distinct from the configured
 	/// provider route.
-	pub upstream_provider: Option<SmolStr>,
+	pub upstream_provider: Option<Str>,
 	/// Total request duration in milliseconds.
 	pub duration_ms:       Option<u64>,
 	/// Time to first output token in milliseconds.
@@ -234,7 +234,7 @@ pub struct TurnError {
 	/// Stable failure class shared by native and transport callers.
 	pub kind:           TurnErrorKind,
 	/// Classified diagnostic detail.
-	pub detail:         SmolStr,
+	pub detail:         Str,
 	/// Actual server revision for a conflict.
 	pub actual:         Option<Revision>,
 	/// Unsupported features when a fail-closed fallback policy tripped.
@@ -280,10 +280,10 @@ pub enum TurnErrorKind {
 #[derive(Builder, Clone, Debug, PartialEq)]
 pub struct Invoke {
 	/// Correlation id allowing multiple invocations to remain live concurrently.
-	pub invocation_id: SmolStr,
+	pub invocation_id: Str,
 	/// Executor dispatch key matched against the capabilities declared by the
 	/// client.
-	pub name:          SmolStr,
+	pub name:          Str,
 	/// Canonical transcript projection, absent only for pure control
 	/// invocations.
 	pub tool_call:     Option<ToolCall>,
@@ -300,7 +300,7 @@ pub struct Invoke {
 #[derive(Builder, Clone, Debug, Eq, PartialEq)]
 pub struct InvokeInput {
 	/// Correlation id of the live invocation.
-	pub invocation_id: SmolStr,
+	pub invocation_id: Str,
 	/// Canonical output chunk or unprojectable pinned control payload.
 	pub payload:       InvokePayload,
 }
@@ -342,7 +342,7 @@ pub enum InvokeChannel {
 #[derive(Builder, Clone, Debug, PartialEq)]
 pub struct InvokeComplete {
 	/// Correlation id of the completed invocation.
-	pub invocation_id: SmolStr,
+	pub invocation_id: Str,
 	/// Transcript projection committed with the originating tool call when both
 	/// are present.
 	pub tool_result:   Option<ToolResult>,
@@ -364,16 +364,16 @@ pub struct ExecStatus {
 	/// Process exit code when the invocation ran to an exit.
 	pub exit_code:               i32,
 	/// Terminating signal name when the process was killed.
-	pub signal:                  SmolStr,
+	pub signal:                  Str,
 	/// Failure, rejection, or abort detail.
-	pub reason:                  SmolStr,
+	pub reason:                  Str,
 	/// Working directory echoed by pinned exit frames.
-	pub cwd:                     SmolStr,
+	pub cwd:                     Str,
 	/// Whether pinned framing killed the process but still represented it as an
 	/// exit.
 	pub aborted:                 bool,
 	/// Persistent location of full output when the executor spilled it.
-	pub output_location:         SmolStr,
+	pub output_location:         Str,
 	/// Executor-measured wall-clock duration.
 	pub local_execution_time_ms: u64,
 	/// Whether a rejection or denial came from a read-only environment.
@@ -430,7 +430,7 @@ pub enum TurnEvent {
 		/// One-based outbound attempt number.
 		number: u32,
 		/// Why the preceding attempt was abandoned.
-		reason: SmolStr,
+		reason: Str,
 	},
 	/// Announces the kind and metadata of a new streamed part.
 	PartStart {
@@ -439,9 +439,9 @@ pub enum TurnEvent {
 		/// Content kind determining how delta bytes are interpreted.
 		kind:         StreamPartKind,
 		/// Canonical tool-call id for tool-call parts, empty otherwise.
-		tool_call_id: SmolStr,
+		tool_call_id: Str,
 		/// Tool dispatch name for tool-call parts, empty otherwise.
-		tool_name:    SmolStr,
+		tool_name:    Str,
 	},
 	/// Adds bytes to a previously announced part without an accumulated
 	/// snapshot.
@@ -465,7 +465,7 @@ pub enum TurnEvent {
 	/// frames for it.
 	InvokeCancel {
 		/// Correlation id of the abandoned invocation.
-		invocation_id: SmolStr,
+		invocation_id: Str,
 	},
 	/// Terminal success containing the authoritative commit record.
 	Outcome(ChatOutcome),

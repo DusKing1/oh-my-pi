@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use bon::Builder;
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -16,7 +16,7 @@ use super::{Props, Thread};
 pub struct ResolvedModelPolicy {
 	/// Model id sent to the provider when it differs from the logical catalog
 	/// id.
-	pub request_model_id:       Option<SmolStr>,
+	pub request_model_id:       Option<Str>,
 	/// Native reasoning controls and effort routing.
 	pub thinking:               Option<ResolvedThinkingPolicy>,
 	/// Model tool and computer-use capabilities.
@@ -51,9 +51,9 @@ pub struct ResolvedThinkingPolicy {
 	/// Default effort selected when the caller does not provide one.
 	pub default_effort:    Option<Effort>,
 	/// Per-effort native string overrides.
-	pub effort_map:        BTreeMap<Effort, SmolStr>,
+	pub effort_map:        BTreeMap<Effort, Str>,
 	/// Per-effort wire-model overrides.
-	pub effort_routing:    BTreeMap<Effort, SmolStr>,
+	pub effort_routing:    BTreeMap<Effort, Str>,
 	/// Per-effort thinking token budgets.
 	pub effort_budgets:    BTreeMap<Effort, u64>,
 	/// Whether native adaptive-thinking display control is supported.
@@ -115,7 +115,7 @@ pub enum ResolvedReasoningMode {
 /// no serialization implementation, preventing accidental foreign-wire use.
 #[repr(transparent)]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ResolvedModelHeaders(pub BTreeMap<SmolStr, SmolStr>);
+pub struct ResolvedModelHeaders(pub BTreeMap<Str, Str>);
 
 impl ResolvedModelHeaders {
 	/// Returns a static header by case-insensitive name.
@@ -128,7 +128,7 @@ impl ResolvedModelHeaders {
 	}
 
 	/// Iterates over approved header names and values in deterministic order.
-	pub fn iter(&self) -> impl Iterator<Item = (&SmolStr, &SmolStr)> {
+	pub fn iter(&self) -> impl Iterator<Item = (&Str, &Str)> {
 		self.0.iter()
 	}
 }
@@ -166,9 +166,9 @@ pub enum Fallback {
 #[derive(Builder, Clone, Debug, Eq, PartialEq)]
 pub struct Unsupported {
 	/// Stable path naming the typed feature or namespaced property.
-	pub what:   SmolStr,
+	pub what:   Str,
 	/// Human-readable explanation suitable for diagnostics.
-	pub detail: SmolStr,
+	pub detail: Str,
 	/// Honest account of how request semantics changed.
 	pub action: UnsupportedAction,
 }
@@ -192,7 +192,7 @@ pub struct ChatParams {
 	/// Trusted server-resolved model policy; absent on every foreign request.
 	pub model_policy:           Option<Arc<ResolvedModelPolicy>>,
 	/// Catalog id, alias, or role resolved by the gateway at admission.
-	pub model:                  SmolStr,
+	pub model:                  Str,
 	/// Tool contracts exposed to the model.
 	pub tools:                  Vec<ToolDef>,
 	/// Optional tool selection policy and its unsupported-feature behavior.
@@ -234,7 +234,7 @@ pub struct ChatRequest {
 	/// Trusted server-resolved model policy; absent on every foreign request.
 	pub model_policy:           Option<Arc<ResolvedModelPolicy>>,
 	/// Catalog id, alias, or role resolved by the gateway at admission.
-	pub model:                  SmolStr,
+	pub model:                  Str,
 	/// Complete conversation projected into the selected transport.
 	pub thread:                 Thread,
 	/// Tool contracts exposed to the model.
@@ -313,9 +313,9 @@ impl ChatRequest {
 #[derive(Builder, Clone, Debug, Eq, PartialEq)]
 pub struct ToolDef {
 	/// Portable dispatch name.
-	pub name:        SmolStr,
+	pub name:        Str,
 	/// Model-facing purpose and usage guidance.
-	pub description: SmolStr,
+	pub description: Str,
 	/// JSON Schema retained as bytes so transport-specific normalization happens
 	/// only at the edge.
 	pub schema_json: Bytes,
@@ -336,7 +336,7 @@ pub enum ToolChoice {
 	/// Require at least one tool invocation.
 	Required,
 	/// Require the named tool.
-	Named(SmolStr),
+	Named(Str),
 }
 
 /// Portable request processing tier.
@@ -419,7 +419,7 @@ pub struct Sampling {
 	/// Penalty applied to tokens already present in generated text.
 	pub repetition_penalty: Option<f64>,
 	/// Stop strings; absence preserves the provider default.
-	pub stop:               Option<Vec<SmolStr>>,
+	pub stop:               Option<Vec<Str>>,
 	/// Maximum generated tokens.
 	pub max_output_tokens:  Option<u64>,
 }
@@ -465,7 +465,7 @@ pub enum Effort {
 pub struct CacheHint {
 	/// Stable conversation key used for provider prompt-cache affinity and
 	/// credential pinning.
-	pub session_key: SmolStr,
+	pub session_key: Str,
 	/// Optional retention class; absence preserves the provider default.
 	pub retention:   Option<CacheRetention>,
 	/// Optional automatic versus explicit breakpoint selection.
@@ -547,7 +547,7 @@ pub enum ResponseFormatKind {
 #[derive(Builder, Clone, Debug, Eq, PartialEq)]
 pub struct JsonSchema {
 	/// Provider-visible schema name.
-	pub name:        SmolStr,
+	pub name:        Str,
 	/// JSON Schema bytes normalized by each transport.
 	pub schema_json: Bytes,
 	/// Whether the provider must enforce strict conformance. Absence preserves
@@ -562,7 +562,7 @@ pub struct Grammar {
 	/// Grammar syntax understood by the definition.
 	pub flavor:     GrammarFlavor,
 	/// Grammar source projected or translated at the provider edge.
-	pub definition: SmolStr,
+	pub definition: Str,
 }
 
 /// Supported formal grammar syntaxes.
@@ -582,11 +582,11 @@ pub enum GrammarFlavor {
 #[derive(Builder, Clone, Debug, Default, Eq, PartialEq)]
 pub struct RequestMeta {
 	/// User, agent, or subsystem tag used for vendor initiator headers.
-	pub initiator:  SmolStr,
+	pub initiator:  Str,
 	/// Metering and telemetry correlation id that is never sent upstream.
-	pub session_id: SmolStr,
+	pub session_id: Str,
 	/// Deterministic telemetry dimensions retained by the gateway.
-	pub telemetry:  BTreeMap<SmolStr, SmolStr>,
+	pub telemetry:  BTreeMap<Str, Str>,
 }
 
 #[cfg(test)]

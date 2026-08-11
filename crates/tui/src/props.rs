@@ -2,7 +2,7 @@
 
 use std::{fmt, time::Duration};
 
-use omp_core::{SmolStr, SparseMap, sparse_index::TrySparseIndex};
+use omp_core::{Str, SparseMap, sparse_index::TrySparseIndex};
 use strum::{Display, EnumIter, EnumString, FromRepr};
 
 use crate::{
@@ -202,9 +202,9 @@ pub enum PropValue {
 	/// Resolved terminal color.
 	Color(Color),
 	/// Theme color token resolved at render time.
-	Token(SmolStr),
+	Token(Str),
 	/// A validated `start..end` ramp resolved by the renderer's theme.
-	Gradient(SmolStr),
+	Gradient(Str),
 	/// Cell or percentage dimension.
 	Dim(Dim),
 	/// Border glyph family.
@@ -216,7 +216,7 @@ pub enum PropValue {
 	/// Child distribution along the layout axis.
 	Justify(Justify),
 	/// Uninterpreted textual value.
-	Str(SmolStr),
+	Str(Str),
 	/// Easing curve for `anim` transitions.
 	Easing(Easing),
 }
@@ -225,7 +225,7 @@ pub enum PropValue {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PropError {
 	pub prop:  Prop,
-	pub value: SmolStr,
+	pub value: Str,
 }
 
 impl fmt::Display for PropError {
@@ -239,7 +239,7 @@ impl std::error::Error for PropError {}
 #[derive(Clone, Debug, Default)]
 pub struct Props {
 	known:  SparseMap<Prop, PropValue>,
-	custom: Vec<(SmolStr, PropValue)>,
+	custom: Vec<(Str, PropValue)>,
 }
 
 impl Props {
@@ -317,18 +317,18 @@ impl Props {
 	}
 
 	/// Formats a known property value using its markup representation.
-	pub fn get_str(&self, prop: Prop) -> Option<SmolStr> {
+	pub fn get_str(&self, prop: Prop) -> Option<Str> {
 		self.get(prop).map(display_value)
 	}
 
 	/// Returns this collection with a custom property assigned.
-	pub fn with_custom(mut self, name: impl Into<SmolStr>, value: impl Into<PropValue>) -> Self {
+	pub fn with_custom(mut self, name: impl Into<Str>, value: impl Into<PropValue>) -> Self {
 		self.set_custom(name, value);
 		self
 	}
 
 	/// Assigns or replaces a custom property.
-	pub fn set_custom(&mut self, name: impl Into<SmolStr>, value: impl Into<PropValue>) {
+	pub fn set_custom(&mut self, name: impl Into<Str>, value: impl Into<PropValue>) {
 		let name = name.into();
 		let value = value.into();
 		if let Some((_, stored)) = self.custom.iter_mut().find(|(key, _)| key == &name) {
@@ -467,17 +467,17 @@ impl Props {
 	}
 
 	/// Returns the stable component identifier.
-	pub fn id(&self) -> Option<&SmolStr> {
+	pub fn id(&self) -> Option<&Str> {
 		self.str_of(Prop::Id)
 	}
 
 	/// Returns the user-facing component title.
-	pub fn title(&self) -> Option<&SmolStr> {
+	pub fn title(&self) -> Option<&Str> {
 		self.str_of(Prop::Title)
 	}
 
 	/// Returns the footer shown on a framed container's bottom border.
-	pub fn footer(&self) -> Option<&SmolStr> {
+	pub fn footer(&self) -> Option<&Str> {
 		self.str_of(Prop::Footer)
 	}
 
@@ -542,7 +542,7 @@ impl Props {
 		}
 	}
 
-	pub(crate) fn gradient_of(&self, prop: Prop) -> Option<&SmolStr> {
+	pub(crate) fn gradient_of(&self, prop: Prop) -> Option<&Str> {
 		match self.get(prop) {
 			Some(PropValue::Gradient(value)) => Some(value),
 			_ => None,
@@ -555,7 +555,7 @@ impl Props {
 	}
 
 	/// Returns the textual payload of a property.
-	pub fn str_of(&self, prop: Prop) -> Option<&SmolStr> {
+	pub fn str_of(&self, prop: Prop) -> Option<&Str> {
 		match self.get(prop) {
 			Some(PropValue::Str(value)) => Some(value),
 			_ => None,
@@ -620,7 +620,7 @@ impl Props {
 	}
 }
 
-fn parse_str(prop: Prop, value: SmolStr) -> Result<PropValue, PropError> {
+fn parse_str(prop: Prop, value: Str) -> Result<PropValue, PropError> {
 	let bad = || PropError { prop, value: value.clone() };
 	Ok(match prop {
 		Prop::Gap | Prop::PadX | Prop::PadY | Prop::Min | Prop::Max | Prop::H | Prop::Lift => {
@@ -758,43 +758,43 @@ fn parse_duration_ms(value: &str) -> Option<u16> {
 	value.parse().ok()
 }
 
-fn display_value(value: &PropValue) -> SmolStr {
+fn display_value(value: &PropValue) -> Str {
 	match value {
-		PropValue::Bool(value) => SmolStr::new(if *value { "true" } else { "false" }),
-		PropValue::U16(value) => SmolStr::from(value.to_string()),
-		PropValue::F32(value) => SmolStr::from(value.to_string()),
-		PropValue::I64(value) => SmolStr::from(value.to_string()),
-		PropValue::Color(Color::Default) => SmolStr::new_static("default"),
-		PropValue::Color(Color::Indexed(value)) => SmolStr::from(value.to_string()),
-		PropValue::Color(Color::Rgb(r, g, b)) => SmolStr::from(format!("#{r:02x}{g:02x}{b:02x}")),
+		PropValue::Bool(value) => Str::new(if *value { "true" } else { "false" }),
+		PropValue::U16(value) => Str::from(value.to_string()),
+		PropValue::F32(value) => Str::from(value.to_string()),
+		PropValue::I64(value) => Str::from(value.to_string()),
+		PropValue::Color(Color::Default) => Str::new_static("default"),
+		PropValue::Color(Color::Indexed(value)) => Str::from(value.to_string()),
+		PropValue::Color(Color::Rgb(r, g, b)) => Str::from(format!("#{r:02x}{g:02x}{b:02x}")),
 		PropValue::Token(value) | PropValue::Gradient(value) | PropValue::Str(value) => value.clone(),
-		PropValue::Easing(value) => SmolStr::new_static(match value {
+		PropValue::Easing(value) => Str::new_static(match value {
 			Easing::Linear => "linear",
 			Easing::EaseIn => "in",
 			Easing::EaseOut => "out",
 			Easing::EaseInOut => "in-out",
 		}),
-		PropValue::Dim(Dim::Cells(value)) => SmolStr::from(value.to_string()),
-		PropValue::Dim(Dim::Pct(value)) => SmolStr::from(format!("{value}%")),
-		PropValue::Border(value) => SmolStr::new_static(match value {
+		PropValue::Dim(Dim::Cells(value)) => Str::from(value.to_string()),
+		PropValue::Dim(Dim::Pct(value)) => Str::from(format!("{value}%")),
+		PropValue::Border(value) => Str::new_static(match value {
 			Border::Square => "square",
 			Border::Dash => "dash",
 			Border::Round => "round",
 			Border::Heavy => "heavy",
 			Border::Double => "double",
 		}),
-		PropValue::Align(value) => SmolStr::new_static(match value {
+		PropValue::Align(value) => Str::new_static(match value {
 			Align::Start => "start",
 			Align::Center => "center",
 			Align::End => "end",
 		}),
-		PropValue::VAlign(value) => SmolStr::new_static(match value {
+		PropValue::VAlign(value) => Str::new_static(match value {
 			VAlign::Start => "start",
 			VAlign::Center => "center",
 			VAlign::End => "end",
 			VAlign::Stretch => "stretch",
 		}),
-		PropValue::Justify(value) => SmolStr::new_static(match value {
+		PropValue::Justify(value) => Str::new_static(match value {
 			Justify::Start => "start",
 			Justify::Center => "center",
 			Justify::End => "end",
@@ -817,7 +817,7 @@ from_value!(bool, Bool);
 from_value!(u16, U16);
 from_value!(f32, F32);
 from_value!(i64, I64);
-from_value!(SmolStr, Str);
+from_value!(Str, Str);
 from_value!(Dim, Dim);
 from_value!(Border, Border);
 from_value!(Align, Align);
@@ -826,7 +826,7 @@ from_value!(Justify, Justify);
 from_value!(Easing, Easing);
 impl From<&str> for PropValue {
 	fn from(value: &str) -> Self {
-		Self::Str(SmolStr::new(value))
+		Self::Str(Str::new(value))
 	}
 }
 impl From<String> for PropValue {
@@ -847,11 +847,11 @@ mod tests {
 		);
 		assert_eq!(
 			Props::new().with(Prop::Fg, "accent").get(Prop::Fg),
-			Some(&PropValue::Token(SmolStr::new("accent")))
+			Some(&PropValue::Token(Str::new("accent")))
 		);
 		assert_eq!(
 			Props::new().with(Prop::Title, "x").get(Prop::Title),
-			Some(&PropValue::Str(SmolStr::new("x")))
+			Some(&PropValue::Str(Str::new("x")))
 		);
 	}
 
@@ -861,8 +861,8 @@ mod tests {
 			.with(Prop::Bg, "accent..info")
 			.with(Prop::Fg, "#000000..#ffffff")
 			.with(Prop::Angle, "-90deg");
-		assert_eq!(props.get(Prop::Bg), Some(&PropValue::Gradient(SmolStr::new("accent..info"))));
-		assert_eq!(props.get(Prop::Fg), Some(&PropValue::Gradient(SmolStr::new("#000000..#ffffff"))));
+		assert_eq!(props.get(Prop::Bg), Some(&PropValue::Gradient(Str::new("accent..info"))));
+		assert_eq!(props.get(Prop::Fg), Some(&PropValue::Gradient(Str::new("#000000..#ffffff"))));
 		assert_eq!(props.angle(), 270);
 		assert!(Props::prop_of("gradient").is_none());
 		assert!(Props::prop_of("dir").is_none());
@@ -886,7 +886,7 @@ mod tests {
 			.with(Prop::Gap, 2_u16)
 			.with_custom("data-x", "1");
 		assert_eq!(props.get_str(Prop::Gap).as_deref(), Some("2"));
-		assert_eq!(props.custom("data-x"), Some(&PropValue::Str(SmolStr::new("1"))));
+		assert_eq!(props.custom("data-x"), Some(&PropValue::Str(Str::new("1"))));
 		assert_eq!(props.named("data-x"), props.custom("data-x"));
 	}
 

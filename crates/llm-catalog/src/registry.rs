@@ -12,7 +12,7 @@ use std::{
 
 use bytes::Bytes;
 use futures::{StreamExt, stream::BoxStream};
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use omp_llm_types::Effort;
 use parking_lot::RwLock;
 use smallvec::SmallVec;
@@ -64,7 +64,7 @@ pub struct Cursor {
 #[non_exhaustive]
 pub struct ListFilter {
 	/// Provider id, or `None` for every provider.
-	pub provider:       Option<SmolStr>,
+	pub provider:       Option<Str>,
 	/// Required facet, or `None` for every facet.
 	pub facet:          Option<Facet>,
 	/// Whether to omit models that cannot currently serve a request.
@@ -79,7 +79,7 @@ pub struct ListSnapshot {
 	/// Atomic resume position for `models`.
 	pub cursor: Cursor,
 	/// Resolved gateway role to canonical model-id bindings.
-	pub roles:  BTreeMap<SmolStr, SmolStr>,
+	pub roles:  BTreeMap<Str, Str>,
 }
 
 /// One change in the model registry.
@@ -98,7 +98,7 @@ pub enum ModelEvent {
 		/// Position after this event.
 		cursor: Cursor,
 		/// Canonical card id.
-		id:     SmolStr,
+		id:     Str,
 	},
 	/// Replay is impossible; the client must re-list before applying deltas.
 	Reset {
@@ -123,7 +123,7 @@ impl ModelEvent {
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct RoleConfig {
-	candidates: BTreeMap<SmolStr, SmallVec<SmolStr, 8>>,
+	candidates: BTreeMap<Str, SmallVec<Str, 8>>,
 }
 
 impl RoleConfig {
@@ -134,10 +134,10 @@ impl RoleConfig {
 	}
 
 	/// Replaces a role's candidate list while preserving caller order.
-	pub fn set<I, S>(&mut self, role: impl Into<SmolStr>, candidates: I)
+	pub fn set<I, S>(&mut self, role: impl Into<Str>, candidates: I)
 	where
 		I: IntoIterator<Item = S>,
-		S: Into<SmolStr>,
+		S: Into<Str>,
 	{
 		self
 			.candidates
@@ -145,20 +145,20 @@ impl RoleConfig {
 	}
 
 	/// Prepends configured candidates before the role's built-in fallbacks.
-	pub fn prepend<I, S>(&mut self, role: impl Into<SmolStr>, configured: I)
+	pub fn prepend<I, S>(&mut self, role: impl Into<Str>, configured: I)
 	where
 		I: IntoIterator<Item = S>,
-		S: Into<SmolStr>,
+		S: Into<Str>,
 	{
 		let role = role.into();
-		let mut combined: SmallVec<SmolStr, 8> = configured.into_iter().map(Into::into).collect();
+		let mut combined: SmallVec<Str, 8> = configured.into_iter().map(Into::into).collect();
 		if let Some(fallbacks) = self.candidates.remove(&role) {
 			combined.extend(fallbacks);
 		}
 		self.candidates.insert(role, combined);
 	}
 
-	fn get(&self, role: &str) -> Option<&[SmolStr]> {
+	fn get(&self, role: &str) -> Option<&[Str]> {
 		self.candidates.get(role).map(AsRef::as_ref)
 	}
 }
@@ -298,13 +298,13 @@ enum AvailabilityAuthority {
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct SourceKey {
-	provider: SmolStr,
-	account:  SmolStr,
+	provider: Str,
+	account:  Str,
 }
 
 #[derive(Clone)]
 struct LiveSource {
-	cards:         BTreeMap<SmolStr, ModelCard>,
+	cards:         BTreeMap<Str, ModelCard>,
 	authority:     AvailabilityAuthority,
 	authoritative: bool,
 	expires_at_ms: u64,
@@ -313,9 +313,9 @@ struct LiveSource {
 /// Catalog, discovery, and credential join exposed to gateway model RPCs.
 #[non_exhaustive]
 pub struct Registry {
-	static_cards:  BTreeMap<SmolStr, ModelCard>,
+	static_cards:  BTreeMap<Str, ModelCard>,
 	live_sources:  BTreeMap<SourceKey, LiveSource>,
-	cards:         BTreeMap<SmolStr, ModelCard>,
+	cards:         BTreeMap<Str, ModelCard>,
 	credentials:   Arc<dyn CredentialView>,
 	roles:         RoleConfig,
 	providers:     ProviderCatalog,
@@ -527,7 +527,7 @@ impl Registry {
 	/// provider fails.
 	pub async fn refresh(&mut self, provider: Option<&str>) -> Result<Cursor, discovery::Error> {
 		let http = self.http.clone().ok_or_else(|| {
-			discovery::Error::Transport(SmolStr::from("model discovery HTTP client is not configured"))
+			discovery::Error::Transport(Str::from("model discovery HTTP client is not configured"))
 		})?;
 		let targets: Vec<ProviderEntry> = match provider {
 			Some(id) if !id.is_empty() => {
@@ -535,7 +535,7 @@ impl Registry {
 					.providers
 					.get(id)
 					.cloned()
-					.ok_or_else(|| discovery::Error::UnsupportedProvider(SmolStr::from(id)))?;
+					.ok_or_else(|| discovery::Error::UnsupportedProvider(Str::from(id)))?;
 				if !discovery::supports(&entry) {
 					return Err(discovery::Error::UnsupportedProvider(entry.id));
 				}
@@ -645,8 +645,8 @@ impl Registry {
 		ttl_ms: u64,
 	) {
 		for card in &mut cards {
-			card.provider = SmolStr::from(provider);
-			card.id = omp_core::format_smol!("{provider}/{}", card.model);
+			card.provider = Str::from(provider);
+			card.id = omp_core::fmts!("{provider}/{}", card.model);
 			card.source = Source::Discovered;
 		}
 		let key = SourceKey { provider: provider.into(), account: account.into() };
@@ -670,8 +670,8 @@ impl Registry {
 	/// owning federation transport controls their lifecycle.
 	pub fn apply_federated(&mut self, provider: &str, mut cards: Vec<ModelCard>) {
 		for card in &mut cards {
-			card.provider = SmolStr::from(provider);
-			card.id = omp_core::format_smol!("{provider}/{}", card.model);
+			card.provider = Str::from(provider);
+			card.id = omp_core::fmts!("{provider}/{}", card.model);
 			card.source = Source::Discovered;
 		}
 		let key = SourceKey { provider: provider.into(), account: "__federated".into() };
@@ -704,7 +704,7 @@ impl Registry {
 
 	/// Removes snapshots for accounts no longer reported by an authoritative
 	/// account enumeration while retaining failed/reconnecting sources.
-	pub fn retain_discovered_accounts(&mut self, provider: &str, accounts: &BTreeSet<SmolStr>) {
+	pub fn retain_discovered_accounts(&mut self, provider: &str, accounts: &BTreeSet<Str>) {
 		let before = self.live_sources.len();
 		self.live_sources.retain(|key, _| {
 			key.provider != provider || key.account == "__federated" || accounts.contains(&key.account)
@@ -729,7 +729,7 @@ impl Registry {
 
 	/// Returns resolved role bindings suitable for `ListModelsResponse.roles`.
 	#[must_use]
-	pub fn role_bindings(&self) -> BTreeMap<SmolStr, SmolStr> {
+	pub fn role_bindings(&self) -> BTreeMap<Str, Str> {
 		self
 			.roles
 			.candidates
@@ -781,7 +781,7 @@ impl Registry {
 
 	fn publish_join(&mut self) {
 		let joined = self.joined_cards();
-		let ids: BTreeSet<SmolStr> = self.cards.keys().chain(joined.keys()).cloned().collect();
+		let ids: BTreeSet<Str> = self.cards.keys().chain(joined.keys()).cloned().collect();
 		for id in ids {
 			match (self.cards.get(&id), joined.get(&id)) {
 				(Some(previous), Some(card)) if previous == card => {},
@@ -801,14 +801,14 @@ impl Registry {
 		self.cards = joined;
 	}
 
-	fn joined_cards(&self) -> BTreeMap<SmolStr, ModelCard> {
+	fn joined_cards(&self) -> BTreeMap<Str, ModelCard> {
 		let authoritative: BTreeSet<&str> = self
 			.live_sources
 			.iter()
 			.filter(|(_, source)| source.authoritative)
 			.map(|(key, _)| key.provider.as_str())
 			.collect();
-		let mut joined: BTreeMap<SmolStr, ModelCard> = self
+		let mut joined: BTreeMap<Str, ModelCard> = self
 			.static_cards
 			.values()
 			.filter(|card| !authoritative.contains(card.provider.as_str()))
@@ -907,11 +907,11 @@ fn overlay_card(base: &ModelCard, discovered: &ModelCard) -> ModelCard {
 }
 
 fn derived_base<'a>(
-	static_cards: &'a BTreeMap<SmolStr, ModelCard>,
+	static_cards: &'a BTreeMap<Str, ModelCard>,
 	discovered: &ModelCard,
 ) -> Option<&'a ModelCard> {
 	let wire_model = discovered.effort_routing.get(&Effort::Off)?;
-	let id = format_smol!("{}/{}", discovered.provider, wire_model);
+	let id = fmts!("{}/{}", discovered.provider, wire_model);
 	static_cards.get(&id)
 }
 
@@ -959,7 +959,7 @@ mod tests {
 	use super::*;
 	use crate::models::{Modality, Price, PriceUnit};
 
-	struct Credentials(BTreeMap<SmolStr, Availability>);
+	struct Credentials(BTreeMap<Str, Availability>);
 
 	impl CredentialView for Credentials {
 		fn availability(&self, provider: &str) -> Availability {
@@ -978,7 +978,7 @@ mod tests {
 	fn registry_with_credentials(entries: &[(&str, Availability)], retention: usize) -> Registry {
 		let credentials = entries
 			.iter()
-			.map(|(provider, availability)| (SmolStr::from(*provider), *availability))
+			.map(|(provider, availability)| (Str::from(*provider), *availability))
 			.collect();
 		Registry::from_cards_with_retention(&[], Arc::new(Credentials(credentials)), retention)
 	}
@@ -1000,11 +1000,11 @@ mod tests {
 		let mut outputs = SmallVec::new();
 		outputs.push(Modality::Text);
 		ModelCard {
-			id: SmolStr::from(format!("{provider}/{model}")),
-			provider: SmolStr::from(provider),
-			model: SmolStr::from(model),
-			name: SmolStr::from(model),
-			family: SmolStr::from(model),
+			id: Str::from(format!("{provider}/{model}")),
+			provider: Str::from(provider),
+			model: Str::from(model),
+			name: Str::from(model),
+			family: Str::from(model),
 			facets,
 			inputs,
 			outputs,
@@ -1056,7 +1056,7 @@ mod tests {
 			.push(Price { unit: PriceUnit::MtokCacheWrite, nanos_usd: 9 });
 		bundled
 			.effort_routing
-			.insert(Effort::Medium, SmolStr::from("stable-medium"));
+			.insert(Effort::Medium, Str::from("stable-medium"));
 		let mut registry = registry(&[bundled], 16);
 
 		let mut variant = card("provider", "stable-1m");
@@ -1066,7 +1066,7 @@ mod tests {
 			.push(Price { unit: PriceUnit::MtokInput, nanos_usd: 2 });
 		variant
 			.effort_routing
-			.insert(Effort::Off, SmolStr::from("stable"));
+			.insert(Effort::Off, Str::from("stable"));
 		registry.apply_discovered("provider", vec![variant]);
 
 		let variant = listed_card(&registry, "provider/stable-1m");
@@ -1246,7 +1246,7 @@ mod tests {
 				applied.push(card.model);
 			}
 		}
-		assert_eq!(applied, [SmolStr::from("after-list")]);
+		assert_eq!(applied, [Str::from("after-list")]);
 	}
 
 	#[test]
@@ -1318,8 +1318,8 @@ mod tests {
 	fn role_resolution_falls_through_unavailable_candidate() {
 		let cards = [card("first", "fast"), card("second", "steady")];
 		let credentials = Credentials(BTreeMap::from([
-			(SmolStr::from("first"), Availability::LoginRequired),
-			(SmolStr::from("second"), Availability::Available),
+			(Str::from("first"), Availability::LoginRequired),
+			(Str::from("second"), Availability::Available),
 		]));
 		let mut registry = Registry::from_cards(&cards, Arc::new(credentials));
 		let mut roles = RoleConfig::empty();
@@ -1327,6 +1327,6 @@ mod tests {
 		registry.set_roles(roles);
 
 		assert_eq!(registry.resolve_role("smol").map(|card| card.id.as_str()), Some("second/steady"));
-		assert_eq!(registry.role_bindings().get("smol").map(SmolStr::as_str), Some("second/steady"));
+		assert_eq!(registry.role_bindings().get("smol").map(Str::as_str), Some("second/steady"));
 	}
 }

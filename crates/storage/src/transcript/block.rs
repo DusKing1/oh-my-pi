@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
@@ -26,23 +26,23 @@ pub enum BlockKind {
 	/// Assistant-visible text.
 	Text {
 		/// Text exactly as accumulated from the stream.
-		text: SmolStr,
+		text: Str,
 	},
 	/// Model reasoning text.
 	Think {
 		/// Reasoning text exactly as accumulated from the stream.
-		text: SmolStr,
+		text: Str,
 	},
 	/// A tool invocation.
 	Tool {
 		/// Bare call identifier paired with a tool result.
 		id:   CallId,
 		/// Harness-visible tool name.
-		name: SmolStr,
+		name: Str,
 		/// Custom-tool wire name, when distinct from the harness name.
-		wire: Option<SmolStr>,
+		wire: Option<Str>,
 		/// Wire argument string, stored verbatim without parse/serialize drift.
-		args: SmolStr,
+		args: Str,
 	},
 	/// An image emitted by the assistant.
 	Image {
@@ -59,7 +59,7 @@ pub struct Replay {
 	/// Provider replay dialect.
 	pub p: DialectId,
 	/// Verbatim replacement fields and reserved replay markers.
-	pub f: BTreeMap<SmolStr, Box<RawValue>>,
+	pub f: BTreeMap<Str, Box<RawValue>>,
 }
 /// Equality is byte equality of stored JSON text, preserving verbatim round
 /// trips.

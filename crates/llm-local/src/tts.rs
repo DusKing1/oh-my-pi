@@ -9,7 +9,7 @@ use std::{
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use futures::{Stream, channel::mpsc};
-use omp_core::SmolStr;
+use omp_core::Str;
 use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
 use voice_kokoro::{KModel, ModelConfig, SynthesisMode};
@@ -57,11 +57,11 @@ pub const KOKORO_VOICES: &[&str] = &[
 
 /// Voice pack name within a Kokoro repository.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct KokoroVoice(SmolStr);
+pub struct KokoroVoice(Str);
 
 impl KokoroVoice {
 	/// Validates a repository voice name such as `af_heart`.
-	pub fn new(name: impl Into<SmolStr>) -> Result<Self> {
+	pub fn new(name: impl Into<Str>) -> Result<Self> {
 		let name = name.into();
 		if name.is_empty()
 			|| !name
@@ -118,8 +118,8 @@ impl Default for SynthesisOptions {
 pub struct KokoroBuilder {
 	hub:          Option<Hub>,
 	repo:         ModelRepo,
-	config_file:  SmolStr,
-	weights_file: SmolStr,
+	config_file:  Str,
+	weights_file: Str,
 	device:       DevicePreference,
 }
 
@@ -145,8 +145,8 @@ impl KokoroBuilder {
 	pub fn source(
 		mut self,
 		repo: ModelRepo,
-		config_file: impl Into<SmolStr>,
-		weights_file: impl Into<SmolStr>,
+		config_file: impl Into<Str>,
+		weights_file: impl Into<Str>,
 	) -> Self {
 		self.repo = repo;
 		self.config_file = config_file.into();
@@ -208,7 +208,7 @@ struct KokoroRuntime {
 	model:  KModel,
 	config: ModelConfig,
 	device: Device,
-	voices: HashMap<SmolStr, Tensor>,
+	voices: HashMap<Str, Tensor>,
 	g2p:    voice_g2p::G2P,
 }
 
@@ -218,7 +218,7 @@ pub struct Kokoro {
 	worker:      Worker<KokoroRuntime>,
 	hub:         Hub,
 	repo:        ModelRepo,
-	voice_paths: Arc<RwLock<HashMap<SmolStr, PathBuf>>>,
+	voice_paths: Arc<RwLock<HashMap<Str, PathBuf>>>,
 	accelerator: Accelerator,
 }
 

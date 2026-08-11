@@ -6,7 +6,7 @@
 //! to catalog cards classified as OpenAI or GPT-OSS so an OpenAI-compatible
 //! transport cannot accidentally apply these ranks to Anthropic or Gemini.
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::models::ModelCard;
 use omp_llm_types::{
 	CountInput, CountRequest, ImageDetail, ItemKind, Part, Role, Thread, ToolDef, facet::Error,
@@ -156,7 +156,7 @@ impl OpenAiTokenizer {
 							.saturating_add(self.token_count("assistant"));
 					}
 					let arguments = std::str::from_utf8(&call.args_json)
-						.map_err(|_| Error::Provider(SmolStr::from("tool arguments are not UTF-8")))?;
+						.map_err(|_| Error::Provider(Str::from("tool arguments are not UTF-8")))?;
 					tokens = tokens
 						.saturating_add(self.token_count(call.name.as_str()))
 						.saturating_add(self.token_count(arguments))
@@ -197,7 +197,7 @@ impl OpenAiTokenizer {
 				.saturating_add(self.token_count(fallback.to_model.as_str()))),
 			Part::ServerTool(tool) => {
 				let payload = std::str::from_utf8(&tool.payload_json)
-					.map_err(|_| Error::Provider(SmolStr::from("server tool payload is not UTF-8")))?;
+					.map_err(|_| Error::Provider(Str::from("server tool payload is not UTF-8")))?;
 				Ok(self
 					.token_count(tool.name.as_str())
 					.saturating_add(self.token_count(payload))
@@ -215,7 +215,7 @@ impl OpenAiTokenizer {
 		let mut line = String::new();
 		for tool in tools {
 			let schema: Value = serde_json::from_slice(&tool.schema_json).map_err(|error| {
-				Error::Provider(SmolStr::new(format!("invalid tool JSON Schema: {error}")))
+				Error::Provider(Str::new(format!("invalid tool JSON Schema: {error}")))
 			})?;
 			tokens = tokens.saturating_add(self.function_initialization());
 			line.clear();
@@ -259,7 +259,7 @@ impl OpenAiTokenizer {
 impl Tokenizer for OpenAiTokenizer {
 	fn count(&self, request: &CountRequest) -> Result<u64, Error> {
 		let CountInput::Thread(thread) = &request.input else {
-			return Err(Error::Provider(SmolStr::from(
+			return Err(Error::Provider(Str::from(
 				"local token counting requires a resolved inline thread",
 			)));
 		};
@@ -287,7 +287,7 @@ fn role_name(role: Role) -> Result<&'static str, Error> {
 		Role::System => Ok("system"),
 		Role::User => Ok("user"),
 		Role::Assistant => Ok("assistant"),
-		_ => Err(Error::Provider(SmolStr::from("unsupported message role"))),
+		_ => Err(Error::Provider(Str::from("unsupported message role"))),
 	}
 }
 
@@ -300,7 +300,7 @@ mod tests {
 
 	fn fixture_request(items: Vec<Item>, tools: Vec<ToolDef>) -> CountRequest {
 		CountRequest::builder()
-			.model(SmolStr::from("fixture/model"))
+			.model(Str::from("fixture/model"))
 			.input(CountInput::Thread(Thread::builder().items(items).build()))
 			.tools(tools)
 			.build()
@@ -312,7 +312,7 @@ mod tests {
 			.kind(ItemKind::Message(
 				Message::builder()
 					.role(role)
-					.parts(vec![Part::Text(SmolStr::new(text))])
+					.parts(vec![Part::Text(Str::new(text))])
 					.build(),
 			))
 			.props(Props::default())
@@ -350,8 +350,8 @@ mod tests {
 			message(Role::User, "What's the weather like in San Francisco?"),
 		];
 		let tool = ToolDef::builder()
-			.name(SmolStr::from("get_current_weather"))
-			.description(SmolStr::from(
+			.name(Str::from("get_current_weather"))
+			.description(Str::from(
 				"Get the current weather in a given location",
 			))
 			.schema_json(Bytes::from_static(
@@ -379,7 +379,7 @@ mod tests {
 						.parts(vec![Part::Blob(
 							BlobPart::builder()
 								.hash([0; 32])
-								.mime(SmolStr::from("image/png"))
+								.mime(Str::from("image/png"))
 								.size(0)
 								.inline(Bytes::new())
 								.detail(detail)

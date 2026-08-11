@@ -344,8 +344,8 @@ pub fn finish_execute_tool(span: &mut Span, outcome: ToolOutcome<'_>) {
 /// Record a requested tool that bypassed span creation entirely.
 pub fn record_skipped_tool(
 	collector: &mut RunCollector,
-	tool_call_id: impl Into<omp_core::SmolStr>,
-	tool_name: impl Into<omp_core::SmolStr>,
+	tool_call_id: impl Into<omp_core::Str>,
+	tool_name: impl Into<omp_core::Str>,
 	status: ToolStatus,
 ) {
 	collector.record_orphan_tool(tool_call_id, tool_name, status);
@@ -588,7 +588,7 @@ fn apply_aggregate_attributes(span: &mut Span, summary: &RunSummary, coverage: &
 	span.set_attribute(KeyValue::new(omp_aggregate::ERRORS_COUNT, summary.errors.total as i64));
 }
 
-fn push_string_array(span: &mut Span, key: &'static str, values: &[omp_core::SmolStr]) {
+fn push_string_array(span: &mut Span, key: &'static str, values: &[omp_core::Str]) {
 	if !values.is_empty() {
 		span.set_attribute(KeyValue::new(
 			key,

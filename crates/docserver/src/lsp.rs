@@ -6,7 +6,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use globset::{Glob, GlobMatcher};
-use omp_core::SmolStr;
+use omp_core::Str;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -40,7 +40,7 @@ pub enum LspTransportError {
 		/// JSON-RPC error code.
 		code:    i32,
 		/// Server-provided error message.
-		message: SmolStr,
+		message: Str,
 		/// Exact raw JSON error data, when present.
 		data:    Option<Bytes>,
 	},
@@ -48,13 +48,13 @@ pub enum LspTransportError {
 	#[error("LSP transport closed: {message}")]
 	Closed {
 		/// Transport-specific diagnostic.
-		message: SmolStr,
+		message: Str,
 	},
 	/// The peer returned malformed JSON where raw JSON was required.
 	#[error("invalid LSP response JSON: {message}")]
 	InvalidResponse {
 		/// Parsing diagnostic.
-		message: SmolStr,
+		message: Str,
 	},
 }
 
@@ -160,7 +160,7 @@ impl LspCapabilities {
 		let object = value
 			.as_object()
 			.ok_or_else(|| LspError::InvalidCapabilities {
-				reason: SmolStr::new_static("server capabilities must be a JSON object"),
+				reason: Str::new_static("server capabilities must be a JSON object"),
 			})?;
 		let mut base = SyncPolicy::default();
 		if let Some(sync) = object.get("textDocumentSync") {
@@ -202,7 +202,7 @@ impl LspCapabilities {
 			Some("utf-32") => PositionEncoding::Utf32,
 			Some(encoding) => {
 				return Err(LspError::InvalidCapabilities {
-					reason: SmolStr::new(format!("unsupported position encoding {encoding}")),
+					reason: Str::new(format!("unsupported position encoding {encoding}")),
 				});
 			},
 		};
@@ -255,7 +255,7 @@ impl LspCapabilities {
 			.get("registrations")
 			.and_then(Value::as_array)
 			.ok_or_else(|| LspError::InvalidRegistration {
-				reason: SmolStr::new_static("registerCapability requires a registrations array"),
+				reason: Str::new_static("registerCapability requires a registrations array"),
 			})?;
 		let mut compiled = Vec::with_capacity(registrations.len());
 		for registration in registrations {
@@ -266,7 +266,7 @@ impl LspCapabilities {
 					.any(|existing: &DynamicRegistration| existing.id == id)
 			{
 				return Err(LspError::InvalidRegistration {
-					reason: SmolStr::new("duplicate registration id"),
+					reason: Str::new("duplicate registration id"),
 				});
 			}
 			let method = required_string(registration, "method")?;
@@ -293,7 +293,7 @@ impl LspCapabilities {
 			.or_else(|| value.get("unregisterations"))
 			.and_then(Value::as_array)
 			.ok_or_else(|| LspError::InvalidRegistration {
-				reason: SmolStr::new_static("unregisterCapability requires an unregistrations array"),
+				reason: Str::new_static("unregisterCapability requires an unregistrations array"),
 			})?;
 		let removals = entries
 			.iter()
@@ -305,7 +305,7 @@ impl LspCapabilities {
 					&& registration.method.as_str() == method.as_str()
 			}) {
 				return Err(LspError::InvalidRegistration {
-					reason: SmolStr::new("unknown registration id and method"),
+					reason: Str::new("unknown registration id and method"),
 				});
 			}
 		}
@@ -323,20 +323,20 @@ const fn capability_enabled(value: Option<&Value>) -> bool {
 	matches!(value, Some(Value::Bool(true) | Value::Object(_)))
 }
 
-fn required_string(value: &Value, field: &'static str) -> Result<SmolStr, LspError> {
+fn required_string(value: &Value, field: &'static str) -> Result<Str, LspError> {
 	value
 		.get(field)
 		.and_then(Value::as_str)
-		.map(SmolStr::new)
+		.map(Str::new)
 		.ok_or_else(|| LspError::InvalidRegistration {
-			reason: SmolStr::new(format!("registration field {field} must be a string")),
+			reason: Str::new(format!("registration field {field} must be a string")),
 		})
 }
 
 #[derive(Debug)]
 struct DynamicRegistration {
-	id:           SmolStr,
-	method:       SmolStr,
+	id:           Str,
+	method:       Str,
 	selector:     DocumentSelector,
 	change:       TextDocumentSyncKind,
 	include_text: bool,
@@ -359,23 +359,23 @@ impl DocumentSelector {
 		let entries = value
 			.as_array()
 			.ok_or_else(|| LspError::InvalidRegistration {
-				reason: SmolStr::new_static("documentSelector must be an array or null"),
+				reason: Str::new_static("documentSelector must be an array or null"),
 			})?;
 		let mut filters = Vec::with_capacity(entries.len());
 		for entry in entries {
 			let object = entry
 				.as_object()
 				.ok_or_else(|| LspError::InvalidRegistration {
-					reason: SmolStr::new_static("document selector entries must be objects"),
+					reason: Str::new_static("document selector entries must be objects"),
 				})?;
 			let language = object
 				.get("language")
 				.and_then(Value::as_str)
-				.map(SmolStr::new);
+				.map(Str::new);
 			let scheme = object
 				.get("scheme")
 				.and_then(Value::as_str)
-				.map(SmolStr::new);
+				.map(Str::new);
 			let pattern = object
 				.get("pattern")
 				.map(SelectorPattern::compile)
@@ -395,8 +395,8 @@ impl DocumentSelector {
 
 #[derive(Debug)]
 struct SelectorFilter {
-	language: Option<SmolStr>,
-	scheme:   Option<SmolStr>,
+	language: Option<Str>,
+	scheme:   Option<Str>,
 	pattern:  Option<SelectorPattern>,
 }
 
@@ -432,33 +432,33 @@ impl SelectorPattern {
 					.get("pattern")
 					.and_then(Value::as_str)
 					.ok_or_else(|| LspError::InvalidRegistration {
-						reason: SmolStr::new_static("relative pattern requires a string pattern"),
+						reason: Str::new_static("relative pattern requires a string pattern"),
 					})?;
 				let base = relative
 					.get("baseUri")
 					.ok_or_else(|| LspError::InvalidRegistration {
-						reason: SmolStr::new_static("relative pattern requires baseUri"),
+						reason: Str::new_static("relative pattern requires baseUri"),
 					})?;
 				let base = base
 					.as_str()
 					.or_else(|| base.get("uri").and_then(Value::as_str))
 					.ok_or_else(|| LspError::InvalidRegistration {
-						reason: SmolStr::new_static("relative pattern baseUri must contain a URI"),
+						reason: Str::new_static("relative pattern baseUri must contain a URI"),
 					})?;
 				let base = Url::parse(base).map_err(|error| LspError::InvalidRegistration {
-					reason: SmolStr::new(error.to_string()),
+					reason: Str::new(error.to_string()),
 				})?;
 				(pattern, Some(base))
 			},
 			_ => {
 				return Err(LspError::InvalidRegistration {
-					reason: SmolStr::new_static("selector pattern must be a string or relative pattern"),
+					reason: Str::new_static("selector pattern must be a string or relative pattern"),
 				});
 			},
 		};
 		let matcher = Glob::new(pattern)
 			.map_err(|error| LspError::InvalidRegistration {
-				reason: SmolStr::new(error.to_string()),
+				reason: Str::new(error.to_string()),
 			})?
 			.compile_matcher();
 		Ok(Self { matcher, base_uri })
@@ -512,7 +512,7 @@ pub enum LspResponseOutcome {
 		/// JSON-RPC error code.
 		code:    i32,
 		/// Server-provided diagnostic.
-		message: SmolStr,
+		message: Str,
 		/// Exact JSON error data, when present.
 		data:    Option<Bytes>,
 	},
@@ -529,15 +529,15 @@ pub struct LspResponse {
 }
 #[derive(Debug)]
 struct VersionRevision {
-	uri:      SmolStr,
+	uri:      Str,
 	version:  i32,
 	revision: Revision,
 }
 
 #[derive(Debug)]
 struct TrackedDocument {
-	uri:             SmolStr,
-	language:        Option<SmolStr>,
+	uri:             Str,
+	language:        Option<Str>,
 	revision:        Revision,
 	content:         Bytes,
 	version:         i32,
@@ -785,7 +785,7 @@ impl LspServer {
 			resolved_for(&state, document)
 		};
 		if !policy.public.will_save {
-			return Err(LspError::CapabilityNotAdvertised { method: SmolStr::new_static(WILL_SAVE) });
+			return Err(LspError::CapabilityNotAdvertised { method: Str::new_static(WILL_SAVE) });
 		}
 		self
 			.send_notification(
@@ -813,7 +813,7 @@ impl LspServer {
 		};
 		if !policy.public.will_save_wait_until {
 			return Err(LspError::CapabilityNotAdvertised {
-				method: SmolStr::new_static(WILL_SAVE_WAIT_UNTIL),
+				method: Str::new_static(WILL_SAVE_WAIT_UNTIL),
 			});
 		}
 		let result = self
@@ -841,7 +841,7 @@ impl LspServer {
 			resolved_for(&state, document)
 		};
 		if !policy.public.save {
-			return Err(LspError::CapabilityNotAdvertised { method: SmolStr::new_static(DID_SAVE) });
+			return Err(LspError::CapabilityNotAdvertised { method: Str::new_static(DID_SAVE) });
 		}
 		let mut params = json!({ "textDocument": { "uri": document.uri.as_str() } });
 		if policy.public.save_include_text {
@@ -861,7 +861,7 @@ impl LspServer {
 		let options: Value = serde_json::from_slice(&options_json).map_err(invalid_json)?;
 		if !options.is_object() {
 			return Err(LspError::InvalidJson {
-				reason: SmolStr::new_static("formatting options must be an object"),
+				reason: Str::new_static("formatting options must be an object"),
 			});
 		}
 		let _lane = self.enter_lane(&cancel).await?;
@@ -873,7 +873,7 @@ impl LspServer {
 			resolved_for(&state, document)
 		};
 		if !policy.formatting {
-			return Err(LspError::CapabilityNotAdvertised { method: SmolStr::new_static(FORMATTING) });
+			return Err(LspError::CapabilityNotAdvertised { method: Str::new_static(FORMATTING) });
 		}
 		let result = self
 			.send_request(
@@ -895,7 +895,7 @@ impl LspServer {
 		cancel: CancellationToken,
 	) -> Result<LspResponse, LspError> {
 		if is_lifecycle_method(method) {
-			return Err(LspError::LifecyclePassthrough { method: SmolStr::new(method) });
+			return Err(LspError::LifecyclePassthrough { method: Str::new(method) });
 		}
 		ensure_json(&params_json)?;
 		let _lane = self.enter_lane(&cancel).await?;
@@ -941,7 +941,7 @@ impl LspServer {
 		cancel: CancellationToken,
 	) -> Result<(), LspError> {
 		if is_lifecycle_method(method) {
-			return Err(LspError::LifecyclePassthrough { method: SmolStr::new(method) });
+			return Err(LspError::LifecyclePassthrough { method: Str::new(method) });
 		}
 		ensure_json(&params_json)?;
 		let _lane = self.enter_lane(&cancel).await?;
@@ -1034,7 +1034,7 @@ impl LspServer {
 					return Err(LspError::LanguageChanged {
 						document_id,
 						tracked: tracked.language.clone(),
-						requested: language.map(SmolStr::new),
+						requested: language.map(Str::new),
 					});
 				}
 			}
@@ -1136,7 +1136,7 @@ impl LspServer {
 			if tracked.content.as_ref() == document.snapshot.content().as_ref() {
 				if tracked.revision != revision || tracked.language.as_deref() != language {
 					tracked.revision = revision;
-					tracked.language = language.map(SmolStr::new);
+					tracked.language = language.map(Str::new);
 					record_version_revision(tracked, uri, tracked.version, revision);
 					tracked.generation = tracked
 						.generation
@@ -1188,8 +1188,8 @@ impl LspServer {
 					return Err(LspError::StateChanged { document_id });
 				}
 				state.documents.insert(document_id, TrackedDocument {
-					uri: SmolStr::new(document.uri.as_str()),
-					language: document_language(document).map(SmolStr::new),
+					uri: Str::new(document.uri.as_str()),
+					language: document_language(document).map(Str::new),
 					revision: document.snapshot.head().revision(),
 					content: document.snapshot.content().clone(),
 					version,
@@ -1197,7 +1197,7 @@ impl LspServer {
 					generation: 0,
 					leases: 1,
 					version_history: VecDeque::from([VersionRevision {
-						uri: SmolStr::new(document.uri.as_str()),
+						uri: Str::new(document.uri.as_str()),
 						version,
 						revision: document.snapshot.head().revision(),
 					}]),
@@ -1261,8 +1261,8 @@ impl LspServer {
 }
 
 fn install_tracked(tracked: &mut TrackedDocument, document: LspDocument<'_>, version: i32) {
-	tracked.uri = SmolStr::new(document.uri.as_str());
-	tracked.language = document_language(document).map(SmolStr::new);
+	tracked.uri = Str::new(document.uri.as_str());
+	tracked.language = document_language(document).map(Str::new);
 	tracked.revision = document.snapshot.head().revision();
 	tracked.content = document.snapshot.content().clone();
 	tracked.version = version;
@@ -1292,7 +1292,7 @@ fn record_version_revision(
 	}
 	tracked
 		.version_history
-		.push_back(VersionRevision { uri: SmolStr::new(uri), version, revision });
+		.push_back(VersionRevision { uri: Str::new(uri), version, revision });
 }
 
 fn checked_document_mut(
@@ -1326,7 +1326,7 @@ fn initial_change_params(
 			"text": text
 		}]),
 		TextDocumentSyncKind::None => {
-			return Err(LspError::CapabilityNotAdvertised { method: SmolStr::new_static(DID_CHANGE) });
+			return Err(LspError::CapabilityNotAdvertised { method: Str::new_static(DID_CHANGE) });
 		},
 	};
 	Ok(json!({ "textDocument": { "uri": uri, "version": version }, "contentChanges": changes }))
@@ -1352,7 +1352,7 @@ fn change_params(
 			json!([{ "range": range, "text": &new[start..new_end] }])
 		},
 		TextDocumentSyncKind::None => {
-			return Err(LspError::CapabilityNotAdvertised { method: SmolStr::new_static(DID_CHANGE) });
+			return Err(LspError::CapabilityNotAdvertised { method: Str::new_static(DID_CHANGE) });
 		},
 	};
 	Ok(json!({ "textDocument": { "uri": uri, "version": version }, "contentChanges": changes }))
@@ -1461,7 +1461,7 @@ fn ensure_json(bytes: &[u8]) -> Result<(), LspError> {
 }
 
 fn invalid_json(error: serde_json::Error) -> LspError {
-	LspError::InvalidJson { reason: SmolStr::new(error.to_string()) }
+	LspError::InvalidJson { reason: Str::new(error.to_string()) }
 }
 
 fn is_lifecycle_method(method: &str) -> bool {
@@ -1490,19 +1490,19 @@ pub enum LspError {
 	#[error("invalid LSP capabilities: {reason}")]
 	InvalidCapabilities {
 		/// Validation diagnostic.
-		reason: SmolStr,
+		reason: Str,
 	},
 	/// A dynamic registration was malformed or inconsistent.
 	#[error("invalid LSP dynamic registration: {reason}")]
 	InvalidRegistration {
 		/// Validation diagnostic.
-		reason: SmolStr,
+		reason: Str,
 	},
 	/// Raw JSON could not be parsed or encoded.
 	#[error("invalid LSP JSON: {reason}")]
 	InvalidJson {
 		/// JSON diagnostic.
-		reason: SmolStr,
+		reason: Str,
 	},
 	/// Position conversion or edit application failed.
 	#[error(transparent)]
@@ -1528,7 +1528,7 @@ pub enum LspError {
 	#[error("LSP lifecycle method {method} cannot be passed through")]
 	LifecyclePassthrough {
 		/// Rejected method.
-		method: SmolStr,
+		method: Str,
 	},
 	/// A tracked URI was synchronized with a conflicting language
 	/// classification.
@@ -1540,15 +1540,15 @@ pub enum LspError {
 		/// Document identity.
 		document_id: DocumentId,
 		/// Language classification previously installed in the shared server.
-		tracked:     Option<SmolStr>,
+		tracked:     Option<Str>,
 		/// Conflicting language classification requested by this synchronization.
-		requested:   Option<SmolStr>,
+		requested:   Option<Str>,
 	},
 	/// An operation required a capability the server did not advertise.
 	#[error("LSP server did not advertise {method}")]
 	CapabilityNotAdvertised {
 		/// Required method.
-		method: SmolStr,
+		method: Str,
 	},
 	/// The requested document has no state in this server lane.
 	#[error("document {document_id} is not tracked by this LSP server")]
@@ -1594,8 +1594,8 @@ mod tests {
 
 	#[derive(Default)]
 	struct RecordingTransport {
-		messages:   Mutex<Vec<(SmolStr, SmolStr, Bytes)>>,
-		responses:  Mutex<HashMap<SmolStr, Bytes>>,
+		messages:   Mutex<Vec<(Str, Str, Bytes)>>,
+		responses:  Mutex<HashMap<Str, Bytes>>,
 		block_next: AtomicBool,
 		started:    Notify,
 		release:    Notify,
@@ -1612,7 +1612,7 @@ mod tests {
 			self
 				.messages
 				.lock()
-				.push((SmolStr::new_static("request"), SmolStr::new(method), params));
+				.push((Str::new_static("request"), Str::new(method), params));
 			if self.block_next.swap(false, Ordering::SeqCst) {
 				self.started.notify_one();
 				self.release.notified().await;
@@ -1634,7 +1634,7 @@ mod tests {
 			self
 				.messages
 				.lock()
-				.push((SmolStr::new_static("notify"), SmolStr::new(method), params));
+				.push((Str::new_static("notify"), Str::new(method), params));
 			if self.block_next.swap(false, Ordering::SeqCst) {
 				self.started.notify_one();
 				self.release.notified().await;
@@ -1655,7 +1655,7 @@ mod tests {
 		) -> Result<Bytes, LspTransportError> {
 			Err(LspTransportError::JsonRpc {
 				code:    -32_601,
-				message: SmolStr::new_static("application failure"),
+				message: Str::new_static("application failure"),
 				data:    Some(Bytes::from_static(br#"{"retry":false}"#)),
 			})
 		}
@@ -1976,7 +1976,7 @@ mod tests {
 				.documents
 				.get_mut(&first.head().document_id())
 				.unwrap();
-			tracked.uri = SmolStr::new(newer_uri.as_str());
+			tracked.uri = Str::new(newer_uri.as_str());
 			tracked.revision = newer.head().revision();
 			tracked.content = newer.content().clone();
 			tracked.version = 77;
@@ -2051,7 +2051,7 @@ mod tests {
 	async fn formatting_uses_encoding_and_can_be_rolled_back() {
 		let transport = Arc::new(RecordingTransport::default());
 		transport.responses.lock().insert(
-			SmolStr::new_static(FORMATTING),
+			Str::new_static(FORMATTING),
 			Bytes::from_static(br#"[{"range":{"start":{"line":0,"character":1},"end":{"line":0,"character":3}},"newText":"!"}]"#),
 		);
 		let server = LspServer::new(transport.clone(), Bytes::from_static(br#"{"positionEncoding":"utf-16","documentFormattingProvider":true,"textDocumentSync":{"openClose":true,"change":2}}"#)).unwrap();

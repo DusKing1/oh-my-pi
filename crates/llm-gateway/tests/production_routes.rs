@@ -17,7 +17,7 @@ use bytes::Bytes;
 use futures::{Stream, StreamExt, stream};
 use http::{Request, Response, header};
 use http_body_util::{BodyExt, Full};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{
 	compat::Compat,
 	models::{Availability, Modality, ModelCard, ModelCatalog, ModelWire, Source},
@@ -147,7 +147,7 @@ impl CredentialView for Available {
 }
 
 struct RecordingChat {
-	models: Arc<Mutex<Vec<SmolStr>>>,
+	models: Arc<Mutex<Vec<Str>>>,
 }
 
 #[async_trait]
@@ -163,8 +163,8 @@ impl Chat for RecordingChat {
 				.output(Vec::new())
 				.stop(StopReason::EndTurn)
 				.unsupported(Vec::new())
-				.provider(SmolStr::new_static("embedded-provider"))
-				.model(SmolStr::new_static("canonical-model"))
+				.provider(Str::new_static("embedded-provider"))
+				.model(Str::new_static("canonical-model"))
 				.props(Props::default())
 				.build(),
 		)])))
@@ -194,8 +194,8 @@ impl Chat for FederatedScript {
 				.output(Vec::new())
 				.stop(StopReason::EndTurn)
 				.unsupported(Vec::new())
-				.provider(SmolStr::new_static("federated"))
-				.model(SmolStr::new_static("remote-model"))
+				.provider(Str::new_static("federated"))
+				.model(Str::new_static("remote-model"))
 				.props(Props::default())
 				.build(),
 		)])))
@@ -238,7 +238,7 @@ async fn injected_route_resolves_catalog_model_for_foreign_facets() {
 		.await
 		.expect("catalog alias resolves");
 	assert!(matches!(events.next().await, Some(TurnEvent::Outcome(_))));
-	assert_eq!(&*seen.lock(), &[SmolStr::new_static("canonical-model")]);
+	assert_eq!(&*seen.lock(), &[Str::new_static("canonical-model")]);
 }
 
 #[tokio::test]
@@ -425,7 +425,7 @@ fn missing_specialized_and_empty_catalog_are_explicit_errors() {
 	assert_eq!(
 		register(&resolver, [&cursor], SpecializedChats::default()),
 		Err(RouteRegistrationError::MissingSpecialized {
-			provider:  SmolStr::new_static("cursor"),
+			provider:  Str::new_static("cursor"),
 			transport: TransportId::Cursor,
 		})
 	);
@@ -724,7 +724,7 @@ fn message(text: &str) -> Item {
 		.kind(ItemKind::Message(
 			Message::builder()
 				.role(Role::User)
-				.parts(vec![Part::Text(SmolStr::new(text))])
+				.parts(vec![Part::Text(Str::new(text))])
 				.build(),
 		))
 		.props(Props::default())
@@ -733,11 +733,11 @@ fn message(text: &str) -> Item {
 
 fn turn_params(model: &str, session: &str) -> pb::ChatParams {
 	ChatParams::builder()
-		.model(SmolStr::new(model))
+		.model(Str::new(model))
 		.tools(Vec::new())
 		.cache(
 			CacheHint::builder()
-				.session_key(SmolStr::new(session))
+				.session_key(Str::new(session))
 				.build(),
 		)
 		.build()
@@ -779,7 +779,7 @@ fn incremental_open(
 			input:    Some(pb::turn_request::Input::Incremental(pb::Incremental {
 				context: Some(
 					ContextRef::builder()
-						.context_id(SmolStr::new(context_id))
+						.context_id(Str::new(context_id))
 						.expected(expected)
 						.build()
 						.into(),
@@ -889,9 +889,9 @@ fn resolver(cards: Vec<ModelCard>) -> Arc<ChatResolver> {
 
 fn provider(id: &'static str, transport: TransportId) -> ProviderEntry {
 	ProviderEntry::builder()
-		.id(SmolStr::new_static(id))
+		.id(Str::new_static(id))
 		.transport(transport)
-		.base_url(SmolStr::new_static("https://example.invalid"))
+		.base_url(Str::new_static("https://example.invalid"))
 		.auth(AuthSpec::None)
 		.facets(smallvec![Facet::Chat])
 		.headers(BTreeMap::new())
@@ -901,11 +901,11 @@ fn provider(id: &'static str, transport: TransportId) -> ProviderEntry {
 
 fn card(id: &'static str, provider: &'static str, model: &'static str) -> ModelCard {
 	ModelCard::builder()
-		.id(SmolStr::new_static(id))
-		.provider(SmolStr::new_static(provider))
-		.model(SmolStr::new_static(model))
-		.name(SmolStr::new_static(model))
-		.family(SmolStr::new_static("test"))
+		.id(Str::new_static(id))
+		.provider(Str::new_static(provider))
+		.model(Str::new_static(model))
+		.name(Str::new_static(model))
+		.family(Str::new_static("test"))
 		.facets(smallvec![Facet::Chat])
 		.inputs(smallvec![Modality::Text])
 		.outputs(smallvec![Modality::Text])
@@ -947,7 +947,7 @@ fn wire_card_for(
 
 fn request(model: &'static str) -> ChatRequest {
 	ChatRequest::builder()
-		.model(SmolStr::new_static(model))
+		.model(Str::new_static(model))
 		.thread(Thread::default())
 		.tools(Vec::new())
 		.provider_options(Props::default())

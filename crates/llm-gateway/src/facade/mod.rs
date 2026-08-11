@@ -22,7 +22,7 @@ use futures::{Stream, StreamExt};
 use http::{Method, Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, Full, StreamBody, combinators::UnsyncBoxBody};
 use hyper::body::{Body, Frame};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{Props, RequestMeta, TurnError, TurnErrorKind, facet::Facets, ids::CallId};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -49,7 +49,7 @@ pub enum Vendor {
 /// Failure normalized at the facade boundary.
 pub enum FacadeError {
 	/// Malformed or semantically invalid vendor input.
-	Invalid(SmolStr),
+	Invalid(Str),
 	/// Client-to-gateway authentication failed.
 	Unauthorized,
 	/// A canonical turn failed after admission.
@@ -229,7 +229,7 @@ fn vendor_for_path(path: &str) -> Vendor {
 /// Transport adapters either consume these values or report them in the
 /// canonical outcome's unsupported diagnostics; the facade never discards an
 /// accepted extension silently.
-pub(crate) fn provider_options(namespace: &str, fields: &BTreeMap<SmolStr, Value>) -> Props {
+pub(crate) fn provider_options(namespace: &str, fields: &BTreeMap<Str, Value>) -> Props {
 	let mut options = Props::default();
 	for (name, value) in fields {
 		options.insert_ns(namespace, name, value.clone());
@@ -239,12 +239,12 @@ pub(crate) fn provider_options(namespace: &str, fields: &BTreeMap<SmolStr, Value
 
 /// Projects a vendor end-user attribution value into canonical request
 /// metadata.
-pub(crate) fn request_meta(initiator: Option<&SmolStr>) -> Option<RequestMeta> {
+pub(crate) fn request_meta(initiator: Option<&Str>) -> Option<RequestMeta> {
 	let initiator = initiator?;
 	Some(
 		RequestMeta::builder()
 			.initiator(initiator.clone())
-			.session_id(SmolStr::default())
+			.session_id(Str::default())
 			.telemetry(BTreeMap::new())
 			.build(),
 	)
@@ -277,14 +277,14 @@ where
 		.map_err(|error| {
 			Box::new(error_response(
 				vendor,
-				FacadeError::Invalid(SmolStr::from(format!("failed to read request body: {error}"))),
+				FacadeError::Invalid(Str::from(format!("failed to read request body: {error}"))),
 			))
 		})?
 		.to_bytes();
 	serde_json::from_slice(&body).map_err(|error| {
 		Box::new(error_response(
 			vendor,
-			FacadeError::Invalid(SmolStr::from(format!("invalid JSON request: {error}"))),
+			FacadeError::Invalid(Str::from(format!("invalid JSON request: {error}"))),
 		))
 	})
 }
@@ -311,13 +311,13 @@ pub(crate) fn error_response(vendor: Vendor, error: FacadeError) -> FacadeRespon
 		FacadeError::Invalid(detail) => (StatusCode::BAD_REQUEST, detail, "invalid_request_error", 0),
 		FacadeError::Unauthorized => (
 			StatusCode::UNAUTHORIZED,
-			SmolStr::from("invalid gateway credential"),
+			Str::from("invalid gateway credential"),
 			"authentication_error",
 			0,
 		),
 		FacadeError::Facet(_) => (
 			StatusCode::INTERNAL_SERVER_ERROR,
-			SmolStr::new_static("provider operation failed"),
+			Str::new_static("provider operation failed"),
 			"api_error",
 			0,
 		),
@@ -351,16 +351,16 @@ pub(crate) fn error_response(vendor: Vendor, error: FacadeError) -> FacadeRespon
 	response
 }
 
-fn public_turn_message(kind: TurnErrorKind) -> SmolStr {
+fn public_turn_message(kind: TurnErrorKind) -> Str {
 	match kind {
-		TurnErrorKind::Auth => SmolStr::new_static("provider authentication failed"),
+		TurnErrorKind::Auth => Str::new_static("provider authentication failed"),
 		TurnErrorKind::RateLimited | TurnErrorKind::Overloaded => {
-			SmolStr::new_static("provider is temporarily unavailable")
+			Str::new_static("provider is temporarily unavailable")
 		},
-		TurnErrorKind::Conflict => SmolStr::new_static("context revision conflict"),
-		TurnErrorKind::NeedFull => SmolStr::new_static("full context is required"),
-		TurnErrorKind::Unsupported => SmolStr::new_static("requested capability is unavailable"),
-		_ => SmolStr::new_static("provider operation failed"),
+		TurnErrorKind::Conflict => Str::new_static("context revision conflict"),
+		TurnErrorKind::NeedFull => Str::new_static("full context is required"),
+		TurnErrorKind::Unsupported => Str::new_static("requested capability is unavailable"),
+		_ => Str::new_static("provider operation failed"),
 	}
 }
 
@@ -442,7 +442,7 @@ mod tests {
 		for vendor in [Vendor::OpenAi, Vendor::Responses, Vendor::Anthropic] {
 			let error = TurnError::builder()
 				.kind(TurnErrorKind::RateLimited)
-				.detail(SmolStr::from("slow down"))
+				.detail(Str::from("slow down"))
 				.unsupported(Vec::new())
 				.retry_after_ms(1_250)
 				.build();
@@ -473,7 +473,7 @@ mod tests {
 		for vendor in [Vendor::OpenAi, Vendor::Responses, Vendor::Anthropic] {
 			let turn = TurnError::builder()
 				.kind(TurnErrorKind::Upstream)
-				.detail(SmolStr::new_static(CANARY))
+				.detail(Str::new_static(CANARY))
 				.unsupported(Vec::new())
 				.retry_after_ms(0)
 				.build();

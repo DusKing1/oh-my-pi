@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{Effort, Props};
 use serde_json::Value;
 use smallvec::SmallVec;
@@ -47,21 +47,21 @@ impl HttpResponse {
 #[non_exhaustive]
 pub struct Account {
 	/// Stable, opaque source key.
-	pub key:             SmolStr,
+	pub key:             Str,
 	/// Client-safe account label used for diagnostics.
-	pub label:           SmolStr,
+	pub label:           Str,
 	/// Provider account id required by some account-scoped protocols.
-	pub account_id:      Option<SmolStr>,
+	pub account_id:      Option<Str>,
 	/// Provider organization or namespace id, when broker metadata supplies one.
-	pub organization_id: Option<SmolStr>,
+	pub organization_id: Option<Str>,
 	/// Provider project id, when broker metadata supplies one.
-	pub project_id:      Option<SmolStr>,
+	pub project_id:      Option<Str>,
 }
 
 impl Account {
 	/// Creates one client-safe account source.
 	#[must_use]
-	pub fn new(key: impl Into<SmolStr>, label: impl Into<SmolStr>) -> Self {
+	pub fn new(key: impl Into<Str>, label: impl Into<Str>) -> Self {
 		Self {
 			key:             key.into(),
 			label:           label.into(),
@@ -73,7 +73,7 @@ impl Account {
 
 	/// Attaches a validated provider account id.
 	#[must_use]
-	pub fn with_account_id(mut self, account_id: Option<SmolStr>) -> Self {
+	pub fn with_account_id(mut self, account_id: Option<Str>) -> Self {
 		self.account_id = account_id;
 		self
 	}
@@ -82,8 +82,8 @@ impl Account {
 	#[must_use]
 	pub fn with_scope(
 		mut self,
-		organization_id: Option<SmolStr>,
-		project_id: Option<SmolStr>,
+		organization_id: Option<Str>,
+		project_id: Option<Str>,
 	) -> Self {
 		self.organization_id = organization_id;
 		self.project_id = project_id;
@@ -95,8 +95,8 @@ impl Account {
 	#[must_use]
 	pub const fn provider_default() -> Self {
 		Self {
-			key:             SmolStr::new_static(""),
-			label:           SmolStr::new_static("provider"),
+			key:             Str::new_static(""),
+			label:           Str::new_static("provider"),
 			account_id:      None,
 			organization_id: None,
 			project_id:      None,
@@ -148,25 +148,25 @@ pub trait HttpClient: Send + Sync {
 pub enum Error {
 	/// The provider has no model-listing convention known to this module.
 	#[error("provider {0} does not support model discovery")]
-	UnsupportedProvider(SmolStr),
+	UnsupportedProvider(Str),
 	/// The configured provider URL is invalid.
 	#[error("invalid discovery URL for {provider}: {detail}")]
 	InvalidUrl {
 		/// Provider id.
-		provider: SmolStr,
+		provider: Str,
 		/// Parser detail.
-		detail:   SmolStr,
+		detail:   Str,
 	},
 	/// The injected transport failed.
 	// TODO(errors): integrate transport evidence with omp_llm_error once it
 	// exposes an owned provider-operation error type.
 	#[error("model discovery transport failed: {0}")]
-	Transport(SmolStr),
+	Transport(Str),
 	/// The provider returned a non-success status.
 	#[error("model discovery returned HTTP {status} for {provider}")]
 	HttpStatus {
 		/// Provider id.
-		provider: SmolStr,
+		provider: Str,
 		/// HTTP status code.
 		status:   u16,
 	},
@@ -174,9 +174,9 @@ pub enum Error {
 	#[error("invalid model listing for {provider}: {detail}")]
 	InvalidPayload {
 		/// Provider id.
-		provider: SmolStr,
+		provider: Str,
 		/// Decode detail.
-		detail:   SmolStr,
+		detail:   Str,
 	},
 }
 
@@ -285,7 +285,7 @@ const fn is_openai_compatible(provider: &ProviderEntry) -> bool {
 fn discovery_url(provider: &ProviderEntry, kind: EndpointKind) -> Result<String, Error> {
 	let mut url = Url::parse(provider.base_url.as_str()).map_err(|error| Error::InvalidUrl {
 		provider: provider.id.clone(),
-		detail:   SmolStr::from(error.to_string()),
+		detail:   Str::from(error.to_string()),
 	})?;
 	url.set_query(None);
 	url.set_fragment(None);
@@ -445,9 +445,9 @@ fn apply_copilot_metadata(entry: &Value, card: &mut ModelCard) -> Option<ModelCa
 
 	let mut variant = card.clone();
 	let wire_model = card.model.clone();
-	variant.model = omp_core::format_smol!("{wire_model}-1m");
-	variant.id = omp_core::format_smol!("{}/{}", card.provider, variant.model);
-	variant.name = omp_core::format_smol!("{} (1M)", card.name);
+	variant.model = omp_core::fmts!("{wire_model}-1m");
+	variant.id = omp_core::fmts!("{}/{}", card.provider, variant.model);
+	variant.name = omp_core::fmts!("{} (1M)", card.name);
 	variant.context_window = variant_context;
 	if let Some(pricing) = copilot_pricing(long_tier) {
 		variant.pricing = pricing;
@@ -546,7 +546,7 @@ async fn discover_google_pages(
 	let mut url = Url::parse(&discovery_url(provider, EndpointKind::Google)?).map_err(|error| {
 		Error::InvalidUrl {
 			provider: provider.id.clone(),
-			detail:   SmolStr::from(error.to_string()),
+			detail:   Str::from(error.to_string()),
 		}
 	})?;
 	let mut cards = BTreeMap::new();
@@ -776,11 +776,11 @@ pub fn discovered_card(
 	outputs.push(Modality::Text);
 
 	ModelCard {
-		id: SmolStr::from(format!("{}/{model}", provider.id)),
+		id: Str::from(format!("{}/{model}", provider.id)),
 		provider: provider.id.clone(),
-		model: SmolStr::from(model),
-		name: SmolStr::from(name),
-		family: SmolStr::from(family),
+		model: Str::from(model),
+		name: Str::from(name),
+		family: Str::from(family),
 		facets,
 		inputs,
 		outputs,
@@ -811,7 +811,7 @@ fn infer_family(model: &str) -> &str {
 fn invalid_payload(provider: &ProviderEntry, detail: impl std::fmt::Display) -> Error {
 	Error::InvalidPayload {
 		provider: provider.id.clone(),
-		detail:   SmolStr::from(detail.to_string()),
+		detail:   Str::from(detail.to_string()),
 	}
 }
 
@@ -844,11 +844,11 @@ mod tests {
 		let mut facets = SmallVec::new();
 		facets.push(ProviderFacet::Chat);
 		ProviderEntry {
-			id: SmolStr::from(id),
+			id: Str::from(id),
 			transport: TransportId::OpenAiChat,
 			codex_transport: Default::default(),
 			codex_responses_lite: false,
-			base_url: SmolStr::from(base_url),
+			base_url: Str::from(base_url),
 			base_url_overridden: false,
 			transport_overridden: false,
 			api_version: None,
@@ -945,7 +945,7 @@ mod tests {
 			variant
 				.effort_routing
 				.get(&Effort::Off)
-				.map(SmolStr::as_str),
+				.map(Str::as_str),
 			Some("claude-opus-4.7")
 		);
 		assert_eq!(

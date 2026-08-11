@@ -6,7 +6,7 @@ use std::{
 	time::{Duration, Instant},
 };
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use parking_lot::{Condvar, Mutex};
 
 const STALL_THRESHOLD: Duration = Duration::from_millis(250);
@@ -18,7 +18,7 @@ pub struct StallReport {
 	/// Time elapsed since the render loop's most recent tick.
 	pub elapsed: Duration,
 	/// Phase label active when the stall was detected.
-	pub phase:   SmolStr,
+	pub phase:   Str,
 }
 
 /// Deterministic state machine underlying [`LoopWatchdog`].
@@ -29,7 +29,7 @@ pub struct StallReport {
 #[derive(Debug)]
 pub struct LoopWatchdogCore {
 	last_tick: Duration,
-	phase:     SmolStr,
+	phase:     Str,
 	reported:  bool,
 }
 
@@ -47,7 +47,7 @@ impl LoopWatchdogCore {
 	}
 
 	/// Set the label attached to a subsequently detected stall.
-	pub fn set_phase(&mut self, phase: impl Into<SmolStr>) {
+	pub fn set_phase(&mut self, phase: impl Into<Str>) {
 		self.phase = phase.into();
 	}
 
@@ -131,7 +131,7 @@ impl LoopWatchdog {
 	}
 
 	/// Set the phase label attached to a subsequently detected stall.
-	pub fn set_phase(&self, phase: impl Into<SmolStr>) {
+	pub fn set_phase(&self, phase: impl Into<Str>) {
 		let (lock, _) = &*self.shared;
 		let mut shared = lock.lock();
 		shared.core.set_phase(phase);

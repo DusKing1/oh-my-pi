@@ -468,7 +468,7 @@ async fn safe_model_headers_override_statics_before_request_dynamic_headers() {
 	native.meta = Some(
 		RequestMeta::builder()
 			.initiator("user".into())
-			.session_id(omp_core::SmolStr::new_static(""))
+			.session_id(omp_core::Str::new_static(""))
 			.telemetry(BTreeMap::new())
 			.build(),
 	);

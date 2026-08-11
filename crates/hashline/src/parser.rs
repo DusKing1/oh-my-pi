@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use crate::{
 	format::HL_RANGE_SEP,
@@ -18,7 +18,7 @@ pub const MAX_EXPANDED_RANGE_LINES: usize = 100_000;
 
 #[derive(Debug, Clone)]
 struct PayloadRow {
-	text:     SmolStr,
+	text:     Str,
 	line_num: usize,
 	bare:     bool,
 	minus:    bool,
@@ -46,7 +46,7 @@ pub struct Executor {
 	file_op_location:         Option<(usize, usize)>,
 	terminated:               bool,
 	recovered_snapshot_lines: HashSet<usize>,
-	skippable_comments:       Vec<(SmolStr, usize)>,
+	skippable_comments:       Vec<(Str, usize)>,
 }
 
 impl Executor {
@@ -246,7 +246,7 @@ impl Executor {
 		Ok(())
 	}
 
-	fn handle_literal_payload(&mut self, text: SmolStr, line_num: usize) -> Result<(), ParseError> {
+	fn handle_literal_payload(&mut self, text: Str, line_num: usize) -> Result<(), ParseError> {
 		if self.pending.is_none() {
 			if self.file_op.is_some() {
 				return Self::fail(
@@ -294,7 +294,7 @@ impl Executor {
 		Ok(())
 	}
 
-	fn handle_raw(&mut self, text: SmolStr, line_num: usize) -> Result<(), ParseError> {
+	fn handle_raw(&mut self, text: Str, line_num: usize) -> Result<(), ParseError> {
 		if self.pending.is_none() && is_read_metadata_line(&text) {
 			self.warn_once(
 				DiagnosticCode::ReadMetadataIgnored,
@@ -627,7 +627,7 @@ impl Executor {
 		)
 	}
 
-	fn push_insert(&mut self, cursor: Cursor, text: SmolStr, line_num: usize, mode: InsertMode) {
+	fn push_insert(&mut self, cursor: Cursor, text: Str, line_num: usize, mode: InsertMode) {
 		let index = self.next_edit_index();
 		self
 			.edits
@@ -645,7 +645,7 @@ impl Executor {
 		}
 	}
 
-	fn push_cut(&mut self, range: ParsedRange, line_num: usize, register: Option<SmolStr>) {
+	fn push_cut(&mut self, range: ParsedRange, line_num: usize, register: Option<Str>) {
 		let index = self.next_edit_index();
 		self
 			.edits
@@ -653,7 +653,7 @@ impl Executor {
 		self.push_delete_range(range, line_num);
 	}
 
-	fn push_paste(&mut self, at: PasteTarget, register: Option<SmolStr>, line_num: usize) {
+	fn push_paste(&mut self, at: PasteTarget, register: Option<Str>, line_num: usize) {
 		let index = self.next_edit_index();
 		self
 			.edits
@@ -663,9 +663,9 @@ impl Executor {
 	fn push_block(
 		&mut self,
 		anchor: Anchor,
-		payloads: Vec<SmolStr>,
+		payloads: Vec<Str>,
 		mode: BlockMode,
-		register: Option<SmolStr>,
+		register: Option<Str>,
 		line_num: usize,
 	) {
 		let index = self.next_edit_index();
@@ -685,7 +685,7 @@ impl Executor {
 		code: DiagnosticCode,
 		line_num: usize,
 		authored_index: usize,
-		message: impl Into<SmolStr>,
+		message: impl Into<Str>,
 	) {
 		if self
 			.diagnostics
@@ -706,7 +706,7 @@ impl Executor {
 		code: DiagnosticCode,
 		line_num: usize,
 		authored_index: usize,
-		message: impl Into<SmolStr>,
+		message: impl Into<Str>,
 	) -> Result<T, ParseError> {
 		Err(ParseError::new(Diagnostic::error(code, Some(line_num), Some(authored_index), message)))
 	}
@@ -912,7 +912,7 @@ const fn complete_bodyless_target(target: &BlockTarget, had_colon: bool) -> bool
 			))
 }
 
-fn gap_target_parts(target: BlockTarget) -> (Cursor, Option<SmolStr>) {
+fn gap_target_parts(target: BlockTarget) -> (Cursor, Option<Str>) {
 	match target {
 		BlockTarget::InsertBefore { anchor, register } => (Cursor::BeforeAnchor { anchor }, register),
 		BlockTarget::InsertAfter { anchor, register } => (Cursor::AfterAnchor { anchor }, register),
@@ -966,7 +966,7 @@ fn parse_positive(text: &str) -> Option<usize> {
 		.flatten()
 }
 
-fn parse_top_level_snapshot_row(text: &str) -> Option<(usize, SmolStr)> {
+fn parse_top_level_snapshot_row(text: &str) -> Option<(usize, Str)> {
 	let trimmed = text.trim_start();
 	let separator = trimmed.find([':', '|'])?;
 	let line = parse_positive(&trimmed[..separator])?;
@@ -1082,7 +1082,7 @@ fn is_read_metadata_line(line: &str) -> bool {
 		&& (body.contains('…') || body.contains("..."))
 }
 
-fn foreign_patch_message(text: &str) -> Option<SmolStr> {
+fn foreign_patch_message(text: &str) -> Option<Str> {
 	let trimmed = text.trim_start();
 	if ["*** Update File:", "*** Add File:", "*** Delete File:", "*** Move to:"]
 		.iter()

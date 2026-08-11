@@ -11,7 +11,7 @@ use std::{
 
 use bytes::Bytes;
 use cap_std::{ambient_authority, fs::Dir};
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -143,7 +143,7 @@ impl fmt::Display for Revision {
 
 /// A validated, non-empty LSP language identifier.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-pub struct LanguageId(SmolStr);
+pub struct LanguageId(Str);
 
 impl LanguageId {
 	/// Validates and stores a language identifier.
@@ -151,10 +151,10 @@ impl LanguageId {
 		let value = value.as_ref();
 		if value.is_empty() {
 			return Err(Error::InvalidContent {
-				reason: SmolStr::new_static("language id must not be empty"),
+				reason: Str::new_static("language id must not be empty"),
 			});
 		}
-		Ok(Self(SmolStr::new(value)))
+		Ok(Self(Str::new(value)))
 	}
 
 	/// Returns the language identifier as text.
@@ -210,7 +210,7 @@ impl DocumentHead {
 	) -> Result<Self> {
 		if presence == DocumentPresence::Missing && byte_length != 0 {
 			return Err(Error::InvalidContent {
-				reason: SmolStr::new_static("a missing document cannot have content"),
+				reason: Str::new_static("a missing document cannot have content"),
 			});
 		}
 		Ok(Self { document_id, revision, presence, kind, byte_length })
@@ -260,22 +260,22 @@ impl DocumentSnapshot {
 	pub fn new(head: DocumentHead, content: Bytes) -> Result<Self> {
 		if content.len() as u64 != head.byte_length {
 			return Err(Error::InvalidContent {
-				reason: SmolStr::new_static("snapshot byte length does not match its head"),
+				reason: Str::new_static("snapshot byte length does not match its head"),
 			});
 		}
 		if !head.revision.matches(&content) {
 			return Err(Error::InvalidContent {
-				reason: SmolStr::new_static("snapshot bytes do not match their revision"),
+				reason: Str::new_static("snapshot bytes do not match their revision"),
 			});
 		}
 		if head.presence == DocumentPresence::Missing && !content.is_empty() {
 			return Err(Error::InvalidContent {
-				reason: SmolStr::new_static("a missing document cannot have content"),
+				reason: Str::new_static("a missing document cannot have content"),
 			});
 		}
 		if matches!(&head.kind, DocumentKind::Text(_)) && std::str::from_utf8(&content).is_err() {
 			return Err(Error::InvalidContent {
-				reason: SmolStr::new_static("text document content is not valid UTF-8"),
+				reason: Str::new_static("text document content is not valid UTF-8"),
 			});
 		}
 		Ok(Self { head, content })
@@ -497,7 +497,7 @@ impl ServerConfig {
 		let unresolved = environment_root.as_ref();
 		let root =
 			Dir::open_ambient_dir(unresolved, ambient_authority()).map_err(|source| Error::Io {
-				operation: SmolStr::new_static("open Environment capability root"),
+				operation: Str::new_static("open Environment capability root"),
 				path: unresolved.to_path_buf(),
 				source,
 			})?;
@@ -505,30 +505,30 @@ impl ServerConfig {
 			.try_clone()
 			.and_then(|root| root.into_std_file().metadata())
 			.map_err(|source| Error::Io {
-				operation: SmolStr::new_static("inspect Environment capability root"),
+				operation: Str::new_static("inspect Environment capability root"),
 				path: unresolved.to_path_buf(),
 				source,
 			})?;
 		let canonical = fs::canonicalize(unresolved).map_err(|source| Error::Io {
-			operation: SmolStr::new_static("canonicalize Environment root"),
+			operation: Str::new_static("canonicalize Environment root"),
 			path: unresolved.to_path_buf(),
 			source,
 		})?;
 		let metadata = fs::metadata(&canonical).map_err(|source| Error::Io {
-			operation: SmolStr::new_static("verify Environment root"),
+			operation: Str::new_static("verify Environment root"),
 			path: canonical.clone(),
 			source,
 		})?;
 		if !metadata.is_dir() {
 			return Err(Error::InvalidTarget {
-				target: SmolStr::new(canonical.to_string_lossy()),
-				reason: SmolStr::new_static("Environment root is not a directory"),
+				target: Str::new(canonical.to_string_lossy()),
+				reason: Str::new_static("Environment root is not a directory"),
 			});
 		}
 		if !same_directory_identity(&metadata, &opened) {
 			return Err(Error::InvalidTarget {
-				target: SmolStr::new(canonical.to_string_lossy()),
-				reason: SmolStr::new_static("Environment root changed while it was opened"),
+				target: Str::new(canonical.to_string_lossy()),
+				reason: Str::new_static("Environment root changed while it was opened"),
 			});
 		}
 		Ok(Self {
@@ -556,7 +556,7 @@ impl ServerConfig {
 			.is_err()
 		{
 			return Err(Error::Io {
-				operation: SmolStr::new_static("lock Environment authority"),
+				operation: Str::new_static("lock Environment authority"),
 				path:      self.environment_root.clone(),
 				source:    io::Error::new(
 					io::ErrorKind::WouldBlock,
@@ -570,12 +570,12 @@ impl ServerConfig {
 				.try_clone()
 				.map(cap_std::fs::Dir::into_std_file)
 				.map_err(|source| Error::Io {
-					operation: SmolStr::new_static("clone Environment authority handle"),
+					operation: Str::new_static("clone Environment authority handle"),
 					path: self.environment_root.clone(),
 					source,
 				})?;
 			fs2::FileExt::try_lock_exclusive(&root).map_err(|source| Error::Io {
-				operation: SmolStr::new_static("lock Environment authority"),
+				operation: Str::new_static("lock Environment authority"),
 				path: self.environment_root.clone(),
 				source,
 			})?;
@@ -592,7 +592,7 @@ impl ServerConfig {
 
 	pub(crate) fn clone_root(&self) -> Result<Dir> {
 		self.root.try_clone().map_err(|source| Error::Io {
-			operation: SmolStr::new_static("clone Environment capability root"),
+			operation: Str::new_static("clone Environment capability root"),
 			path: self.environment_root.clone(),
 			source,
 		})
@@ -634,14 +634,14 @@ impl ServerConfig {
 			self.environment_root.join(path)
 		};
 		let canonical = fs::canonicalize(&candidate).map_err(|source| Error::Io {
-			operation: SmolStr::new_static("canonicalize document target"),
+			operation: Str::new_static("canonicalize document target"),
 			path: candidate,
 			source,
 		})?;
 		if !canonical.starts_with(&self.environment_root) {
 			return Err(Error::InvalidTarget {
-				target: SmolStr::new(canonical.to_string_lossy()),
-				reason: SmolStr::new_static("target escapes the Environment root"),
+				target: Str::new(canonical.to_string_lossy()),
+				reason: Str::new_static("target escapes the Environment root"),
 			});
 		}
 		Ok(canonical)
@@ -666,25 +666,25 @@ impl ServerConfig {
 		}
 		let Some(file_name) = candidate.file_name() else {
 			return Err(Error::InvalidTarget {
-				target: SmolStr::new(candidate.to_string_lossy()),
-				reason: SmolStr::new_static("target has no final path component"),
+				target: Str::new(candidate.to_string_lossy()),
+				reason: Str::new_static("target has no final path component"),
 			});
 		};
 		let Some(parent) = candidate.parent() else {
 			return Err(Error::InvalidTarget {
-				target: SmolStr::new(candidate.to_string_lossy()),
-				reason: SmolStr::new_static("target has no parent directory"),
+				target: Str::new(candidate.to_string_lossy()),
+				reason: Str::new_static("target has no parent directory"),
 			});
 		};
 		let canonical_parent = fs::canonicalize(parent).map_err(|source| Error::Io {
-			operation: SmolStr::new_static("canonicalize target parent"),
+			operation: Str::new_static("canonicalize target parent"),
 			path: parent.to_path_buf(),
 			source,
 		})?;
 		if !canonical_parent.starts_with(&self.environment_root) {
 			return Err(Error::InvalidTarget {
-				target: SmolStr::new(candidate.to_string_lossy()),
-				reason: SmolStr::new_static("target escapes the Environment root"),
+				target: Str::new(candidate.to_string_lossy()),
+				reason: Str::new_static("target escapes the Environment root"),
 			});
 		}
 		Ok(canonical_parent.join(file_name))
@@ -701,8 +701,8 @@ impl ServerConfig {
 			Ok(canonical) => {
 				if !canonical.starts_with(&self.environment_root) {
 					return Err(Error::InvalidTarget {
-						target: SmolStr::new(canonical.to_string_lossy()),
-						reason: SmolStr::new_static("target escapes the Environment root"),
+						target: Str::new(canonical.to_string_lossy()),
+						reason: Str::new_static("target escapes the Environment root"),
 					});
 				}
 				Ok(canonical)
@@ -711,14 +711,14 @@ impl ServerConfig {
 				if fs::symlink_metadata(&entry).is_ok_and(|metadata| metadata.file_type().is_symlink())
 				{
 					return Err(Error::InvalidTarget {
-						target: SmolStr::new(entry.to_string_lossy()),
-						reason: SmolStr::new_static("document target is a dangling symbolic link"),
+						target: Str::new(entry.to_string_lossy()),
+						reason: Str::new_static("document target is a dangling symbolic link"),
 					});
 				}
 				Ok(entry)
 			},
 			Err(source) => Err(Error::Io {
-				operation: SmolStr::new_static("canonicalize document target"),
+				operation: Str::new_static("canonicalize document target"),
 				path: entry,
 				source,
 			}),
@@ -731,8 +731,8 @@ impl ServerConfig {
 	/// The final component may be a symbolic link or may be missing.
 	pub fn resolve_file_uri(&self, uri: &Url) -> Result<PathBuf> {
 		let path = uri.to_file_path().map_err(|()| Error::InvalidTarget {
-			target: SmolStr::new(uri.as_str()),
-			reason: SmolStr::new_static("target is not a local file URI"),
+			target: Str::new(uri.as_str()),
+			reason: Str::new_static("target is not a local file URI"),
 		})?;
 		self.resolve_entry(path)
 	}
@@ -741,8 +741,8 @@ impl ServerConfig {
 	/// link.
 	pub fn resolve_document_uri(&self, uri: &Url) -> Result<PathBuf> {
 		let path = uri.to_file_path().map_err(|()| Error::InvalidTarget {
-			target: SmolStr::new(uri.as_str()),
-			reason: SmolStr::new_static("target is not a local file URI"),
+			target: Str::new(uri.as_str()),
+			reason: Str::new_static("target is not a local file URI"),
 		})?;
 		self.resolve_target(path)
 	}
@@ -752,13 +752,13 @@ impl ServerConfig {
 		let resolved = self.resolve_entry(canonical_path)?;
 		if resolved != canonical_path {
 			return Err(Error::InvalidTarget {
-				target: SmolStr::new(canonical_path.to_string_lossy()),
-				reason: SmolStr::new_static("path does not have a canonical confined parent"),
+				target: Str::new(canonical_path.to_string_lossy()),
+				reason: Str::new_static("path does not have a canonical confined parent"),
 			});
 		}
 		Url::from_file_path(&resolved).map_err(|()| Error::InvalidTarget {
-			target: SmolStr::new(resolved.to_string_lossy()),
-			reason: SmolStr::new_static("path cannot be represented as a file URI"),
+			target: Str::new(resolved.to_string_lossy()),
+			reason: Str::new_static("path cannot be represented as a file URI"),
 		})
 	}
 }

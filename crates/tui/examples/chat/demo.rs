@@ -5,7 +5,7 @@ use std::{
 	time::{Duration, Instant},
 };
 
-use omp_core::SmolStrMut;
+use omp_core::StrMut;
 use omp_tui::{
 	Border, Charset, Color, Command, Component, EditOutcome, Editor, EditorOptions, EventCtx, Flow,
 	Frame, Hit, HitTag, Icon, Key, Mouse, MouseReport, PaintCtx, Prop, Props, Rect, Size,
@@ -67,7 +67,7 @@ impl<'a> Span<'a> {
 
 /// Previous mutable-row text and placement, retained for byte-run updates.
 struct LiveRowCache {
-	label:          SmolStrMut,
+	label:          StrMut,
 	label_x:        u16,
 	label_shard:    u16,
 	label_progress: u64,
@@ -79,7 +79,7 @@ struct LiveRowCache {
 impl LiveRowCache {
 	fn new() -> Self {
 		Self {
-			label:          SmolStrMut::with_capacity(40),
+			label:          StrMut::with_capacity(40),
 			label_x:        0,
 			label_shard:    0,
 			label_progress: 0,
@@ -117,14 +117,14 @@ fn draw_shimmer(
 	}
 }
 
-fn elapsed_label(elapsed: Duration) -> omp_core::SmolStr {
+fn elapsed_label(elapsed: Duration) -> omp_core::Str {
 	let seconds = elapsed.as_secs();
 	if seconds < 60 {
-		omp_core::format_smol!("{seconds}s")
+		omp_core::fmts!("{seconds}s")
 	} else if seconds < 3_600 {
-		omp_core::format_smol!("{}m", seconds / 60)
+		omp_core::fmts!("{}m", seconds / 60)
 	} else {
-		omp_core::format_smol!("{}h", (seconds / 3_600).min(99))
+		omp_core::fmts!("{}h", (seconds / 3_600).min(99))
 	}
 }
 
@@ -288,9 +288,9 @@ impl DemoInput {
 	}
 
 	/// The `╰─` composer prompt composed from the tier's round border.
-	fn input_prompt(charset: Charset) -> omp_core::SmolStr {
+	fn input_prompt(charset: Charset) -> omp_core::Str {
 		let (_, _, bl, _, horizontal, _) = charset.border(Border::Round);
-		omp_core::format_smol!("{bl}{horizontal}")
+		omp_core::fmts!("{bl}{horizontal}")
 	}
 
 	const fn input_width(width: u16) -> u16 {
@@ -551,7 +551,7 @@ struct DemoStatus {
 	props:   Props,
 	slot:    Slot,
 	work:    Rc<RefCell<WorkState>>,
-	model:   Rc<RefCell<omp_core::SmolStr>>,
+	model:   Rc<RefCell<omp_core::Str>>,
 	charset: Charset,
 	right:   Status,
 }
@@ -559,7 +559,7 @@ struct DemoStatus {
 impl DemoStatus {
 	fn new(
 		work: Rc<RefCell<WorkState>>,
-		model: Rc<RefCell<omp_core::SmolStr>>,
+		model: Rc<RefCell<omp_core::Str>>,
 		charset: Charset,
 	) -> Self {
 		let mut props = Props::new();
@@ -580,13 +580,13 @@ impl DemoStatus {
 	fn brand_segment(&self, now: Duration) -> Segment {
 		let work = self.work.borrow();
 		let brand = if work.working {
-			omp_core::format_smol!(
+			omp_core::fmts!(
 				"{} {}",
 				self.charset.spinner().at(now),
 				elapsed_label(now.saturating_sub(work.since))
 			)
 		} else {
-			omp_core::format_smol!("{} omp", self.charset.icon(Icon::Omp))
+			omp_core::fmts!("{} omp", self.charset.icon(Icon::Omp))
 		};
 		Segment::new()
 			.label(brand)
@@ -595,7 +595,7 @@ impl DemoStatus {
 
 	fn model_segment(&self) -> Segment {
 		Segment::new()
-			.label(omp_core::format_smol!(
+			.label(omp_core::fmts!(
 				"{} {}",
 				self.charset.icon(Icon::Model),
 				self.model.borrow()
@@ -605,13 +605,13 @@ impl DemoStatus {
 
 	fn git_segment(charset: Charset) -> Segment {
 		Segment::new()
-			.label(omp_core::format_smol!("{} main *5 +9", charset.icon(Icon::Branch)))
+			.label(omp_core::fmts!("{} main *5 +9", charset.icon(Icon::Branch)))
 			.with(Prop::Fg, CYAN)
 	}
 
 	fn context_segment(charset: Charset) -> Segment {
 		Segment::new()
-			.label(omp_core::format_smol!("{} 39.1%/1M", charset.icon(Icon::Context)))
+			.label(omp_core::fmts!("{} 39.1%/1M", charset.icon(Icon::Context)))
 			.with(Prop::Fg, GOLD)
 	}
 
@@ -727,7 +727,7 @@ pub struct Demo {
 	edit_outcome:       Rc<RefCell<Option<EditOutcome>>>,
 	work:               Rc<RefCell<WorkState>>,
 	last_working:       bool,
-	model:              Rc<RefCell<omp_core::SmolStr>>,
+	model:              Rc<RefCell<omp_core::Str>>,
 	/// Images staged on the composer, previewed above the status line.
 	attachments:        Attachments,
 	/// Append-only transcript log, replayed in full on geometry rebuilds.
@@ -746,7 +746,7 @@ pub struct Demo {
 	/// Reusable text and placement state for the animated shard rows.
 	live_rows:          [LiveRowCache; LIVE_SHARD_ROWS as usize],
 	/// One build buffer rotated through the row caches without reallocating.
-	live_label_scratch: SmolStrMut,
+	live_label_scratch: StrMut,
 	/// Columns reserved at the right edge for a composited rail; the
 	/// editor and title dock against the remaining visible width.
 	right_inset:        u16,
@@ -769,7 +769,7 @@ impl Demo {
 			since:   Duration::ZERO,
 			fade:    Tween::settled(GREEN),
 		}));
-		let model = Rc::new(RefCell::new(omp_core::SmolStr::new_static("Fable 5++")));
+		let model = Rc::new(RefCell::new(omp_core::Str::new_static("Fable 5++")));
 		let pane = EditorPane::new()
 			.input(DemoInput::new(Rc::clone(&editor), Rc::clone(&edit_outcome)))
 			.status(DemoStatus::new(Rc::clone(&work), Rc::clone(&model), ctx.charset));
@@ -796,7 +796,7 @@ impl Demo {
 			frame: Frame::new(Size::new(0, 0)),
 			live_panel: None,
 			live_rows: std::array::from_fn(|_| LiveRowCache::new()),
-			live_label_scratch: SmolStrMut::with_capacity(40),
+			live_label_scratch: StrMut::with_capacity(40),
 			right_inset: 0,
 			switch_requested: false,
 		}
@@ -902,7 +902,7 @@ impl Demo {
 
 	/// Reflects a session model switch in the status bar's model segment.
 	pub fn set_model(&mut self, name: &str) {
-		*self.model.borrow_mut() = omp_core::SmolStr::from(name);
+		*self.model.borrow_mut() = omp_core::Str::from(name);
 		self.editor_ui.invalidate(STATUS_ID);
 	}
 
@@ -1352,8 +1352,8 @@ impl Demo {
 	/// Appends a finished shard's permanent one-line result.
 	fn draw_shard_done(frame: &mut Frame, y: u16, shard: u16, width: u16, charset: Charset) {
 		let margin = u16::from(width >= 50);
-		let prefix = omp_core::format_smol!(" {} shard {shard:03} passed", charset.check());
-		let detail = omp_core::format_smol!("  workspace-{shard:03}.test.ts  [100%]");
+		let prefix = omp_core::fmts!(" {} shard {shard:03} passed", charset.check());
+		let detail = omp_core::fmts!("  workspace-{shard:03}.test.ts  [100%]");
 		draw_line(frame, margin + 1, y, width.saturating_sub(margin * 2).saturating_sub(2), &[
 			Span::new(prefix.as_str(), ink(GREEN)),
 			Span::new(detail.as_str(), ink(MUTED)),
@@ -1422,7 +1422,7 @@ fn draw_command_box(frame: &mut Frame, rect: Rect, charset: Charset) {
 fn draw_live_panel(
 	frame: &mut Frame,
 	rows: &mut [LiveRowCache; LIVE_SHARD_ROWS as usize],
-	label_scratch: &mut SmolStrMut,
+	label_scratch: &mut StrMut,
 	rect: Rect,
 	repaint_chrome: bool,
 	emitted_shards: u16,
@@ -1473,7 +1473,7 @@ fn draw_live_panel(
 			|| cache.prefix_phase != prefix_phase;
 		changed |= prefix_changed;
 		let label_x = if prefix_changed {
-			let prefix = omp_core::format_smol!(" {symbol} shard {shard:03} ");
+			let prefix = omp_core::fmts!(" {symbol} shard {shard:03} ");
 			let prefix_width = prefix.len().saturating_sub(symbol.len()).saturating_add(1);
 			let next_x = content_x
 				.saturating_add(u16::try_from(prefix_width).unwrap_or(u16::MAX))

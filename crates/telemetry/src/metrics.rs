@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use opentelemetry::{
 	KeyValue, global,
 	metrics::{Counter, Histogram},
@@ -18,26 +18,26 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MetricAgent {
 	/// Stable agent identifier, when configured.
-	pub id:   Option<SmolStr>,
+	pub id:   Option<Str>,
 	/// Human-readable agent name, when configured.
-	pub name: Option<SmolStr>,
+	pub name: Option<Str>,
 }
 
 /// A completed chat's metric inputs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChatUsageMetric {
 	/// Provider name, when known.
-	pub provider:       Option<SmolStr>,
+	pub provider:       Option<Str>,
 	/// Requested model identifier.
-	pub model:          SmolStr,
+	pub model:          Str,
 	/// Response service tier, when supplied.
-	pub service_tier:   Option<SmolStr>,
+	pub service_tier:   Option<Str>,
 	/// Optional agent identity.
 	pub agent:          Option<MetricAgent>,
 	/// Token usage buckets.
 	pub usage:          Usage,
 	/// Provider usage-accuracy vocabulary (`provider`, `estimated`, or `mixed`).
-	pub usage_accuracy: SmolStr,
+	pub usage_accuracy: Str,
 	/// Estimated USD cost, when available.
 	pub cost_usd:       Option<f64>,
 }
@@ -216,7 +216,7 @@ impl MetricRecorder {
 	}
 }
 
-fn string_attr(key: &'static str, value: &SmolStr) -> KeyValue {
+fn string_attr(key: &'static str, value: &Str) -> KeyValue {
 	KeyValue::new(key, Arc::<str>::from(value.as_str()))
 }
 
@@ -227,7 +227,7 @@ fn count_attr(key: &'static str, value: usize) -> KeyValue {
 fn with_string_attr<const N: usize>(
 	attrs: &SmallVec<KeyValue, N>,
 	key: &'static str,
-	value: &SmolStr,
+	value: &Str,
 ) -> SmallVec<KeyValue, 7> {
 	let mut extended: SmallVec<KeyValue, 7> = attrs.iter().cloned().collect();
 	extended.push(string_attr(key, value));

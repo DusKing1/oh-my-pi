@@ -6,7 +6,7 @@
 
 use std::{cell::Cell, cmp::Reverse, collections::HashMap, sync::LazyLock};
 
-use omp_core::{SmolStr, smolstr::IntoSmolStr};
+use omp_core::{Str, str::IntoStr};
 use smallvec::SmallVec;
 use xutf::Text;
 
@@ -54,7 +54,7 @@ enum Jump {
 struct Atom {
 	start:   usize,
 	end:     usize,
-	payload: SmolStr,
+	payload: Str,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -302,7 +302,7 @@ impl EditBuffer {
 		self.cursor = start + marker.len();
 		self
 			.atoms
-			.push(Atom { start, end: start + marker.len(), payload: SmolStr::new(payload) });
+			.push(Atom { start, end: start + marker.len(), payload: Str::new(payload) });
 		self.desired = None;
 		BufferOutcome::Changed
 	}
@@ -508,7 +508,7 @@ impl EditBuffer {
 			&& self.text[..self.cursor].ends_with('<')
 			&& let Some(name) = nearest_open_tag(&self.text[..self.cursor - 1])
 		{
-			let name = SmolStr::new(name);
+			let name = Str::new(name);
 			let mut expansion = String::with_capacity(name.len() + 2);
 			expansion.push('/');
 			expansion.push_str(&name);
@@ -1138,7 +1138,7 @@ const EMOTICONS: &[(&str, &str)] = &[
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SuggestionDisplay {
 	/// A plain text label (command name, file path, mention, …).
-	Text(SmolStr),
+	Text(Str),
 	/// An emoji paired with its shortcode or emoticon.
 	Emoji {
 		/// The emoji inserted on acceptance.
@@ -1151,16 +1151,16 @@ pub enum SuggestionDisplay {
 /// One selectable completion row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Suggestion {
-	value:       SmolStr,
+	value:       Str,
 	display:     SuggestionDisplay,
-	description: Option<SmolStr>,
-	hint:        Option<SmolStr>,
+	description: Option<Str>,
+	hint:        Option<Str>,
 }
 
 impl Suggestion {
 	/// Builds a row: on acceptance `insert` replaces the completion's
 	/// prefix range verbatim; `label` is shown in the dropdown.
-	pub fn new(insert: impl Into<SmolStr>, label: impl Into<SmolStr>) -> Self {
+	pub fn new(insert: impl Into<Str>, label: impl Into<Str>) -> Self {
 		Self {
 			value:       insert.into(),
 			display:     SuggestionDisplay::Text(label.into()),
@@ -1171,14 +1171,14 @@ impl Suggestion {
 
 	/// Explanatory text shown beside the label.
 	#[must_use]
-	pub fn with_description(mut self, description: impl Into<SmolStr>) -> Self {
+	pub fn with_description(mut self, description: impl Into<Str>) -> Self {
 		self.description = Some(description.into());
 		self
 	}
 
 	/// Ghost text shown after the cursor while this row is selected.
 	#[must_use]
-	pub fn with_hint(mut self, hint: impl Into<SmolStr>) -> Self {
+	pub fn with_hint(mut self, hint: impl Into<Str>) -> Self {
 		self.hint = Some(hint.into());
 		self
 	}
@@ -1214,7 +1214,7 @@ pub struct CompletionEdit {
 	/// Byte range to replace.
 	pub range:  std::ops::Range<usize>,
 	/// Replacement text.
-	pub insert: SmolStr,
+	pub insert: Str,
 }
 
 /// Provider verdict for a Tab press, from [`EditorCompletion::tab`].
@@ -1240,7 +1240,7 @@ pub trait EditorCompletion {
 
 	/// Dim ghost text rendered after the cursor (usage hints, AI
 	/// completion). Re-queried after every edit.
-	fn hint(&mut self, text: &str, cursor: usize) -> Option<SmolStr> {
+	fn hint(&mut self, text: &str, cursor: usize) -> Option<Str> {
 		let _ = (text, cursor);
 		None
 	}
@@ -1318,10 +1318,10 @@ pub struct Editor {
 	picker:            Option<Picker>,
 	completion:        Option<Box<dyn EditorCompletion>>,
 	options:           EditorOptions,
-	hint:              Option<SmolStr>,
-	history:           Vec<SmolStr>,
+	hint:              Option<Str>,
+	history:           Vec<Str>,
 	history_index:     Option<usize>,
-	history_draft:     SmolStr,
+	history_draft:     Str,
 	last_layout_width: Cell<u16>,
 }
 
@@ -1339,7 +1339,7 @@ impl Editor {
 			hint: None,
 			history: Vec::new(),
 			history_index: None,
-			history_draft: SmolStr::new_static(""),
+			history_draft: Str::new_static(""),
 			last_layout_width: Cell::new(80),
 		}
 	}
@@ -1529,7 +1529,7 @@ impl Editor {
 			return EditOutcome::Ignored;
 		}
 		if self.history_index.is_none() {
-			self.history_draft = SmolStr::new(self.buffer.text());
+			self.history_draft = Str::new(self.buffer.text());
 		}
 		self.history_index = Some(next);
 		self.buffer.replace_external(&self.history[next], true);
@@ -1593,7 +1593,7 @@ impl Editor {
 			self
 				.history
 				.retain(|entry| entry.as_str() != submitted.as_str());
-			self.history.insert(0, submitted.into_smolstr());
+			self.history.insert(0, submitted.into_str());
 			self.history.truncate(HISTORY_CAPACITY);
 		}
 		self.history_index = None;
@@ -1669,7 +1669,7 @@ impl Editor {
 	/// hint while the dropdown is open, otherwise the completion engine's
 	/// latest [`EditorCompletion::hint`].
 	#[must_use]
-	pub fn inline_hint(&self) -> Option<SmolStr> {
+	pub fn inline_hint(&self) -> Option<Str> {
 		if let Some(picker) = &self.picker
 			&& let Some(hint) = &picker.suggestions[picker.selected].hint
 		{
@@ -1730,28 +1730,28 @@ impl Editor {
 /// One slash-command palette entry completed by [`SlashCommands`].
 #[derive(Clone)]
 pub struct Command {
-	name:        SmolStr,
-	description: SmolStr,
-	aliases:     SmallVec<SmolStr, 1>,
+	name:        Str,
+	description: Str,
+	aliases:     SmallVec<Str, 1>,
 	args:        Box<[CommandArg]>,
-	hint:        Option<SmolStr>,
+	hint:        Option<Str>,
 }
 
 /// One argument candidate completed after a command name (`/mcp add …`).
 #[derive(Clone)]
 struct CommandArg {
-	name:        SmolStr,
-	description: SmolStr,
-	usage:       Option<SmolStr>,
+	name:        Str,
+	description: Str,
+	usage:       Option<Str>,
 }
 
 impl Command {
 	/// Builds a palette entry from its name, blurb, and alias spellings.
 	pub fn new(name: &str, description: &str, aliases: &[&str]) -> Self {
 		Self {
-			name:        SmolStr::new(name),
-			description: SmolStr::new(description),
-			aliases:     aliases.iter().map(SmolStr::new).collect(),
+			name:        Str::new(name),
+			description: Str::new(description),
+			aliases:     aliases.iter().map(Str::new).collect(),
 			args:        Box::default(),
 			hint:        None,
 		}
@@ -1765,9 +1765,9 @@ impl Command {
 		self.args = args
 			.iter()
 			.map(|&(name, description, usage)| CommandArg {
-				name:        SmolStr::new(name),
-				description: SmolStr::new(description),
-				usage:       (!usage.is_empty()).then(|| SmolStr::new(usage)),
+				name:        Str::new(name),
+				description: Str::new(description),
+				usage:       (!usage.is_empty()).then(|| Str::new(usage)),
 			})
 			.collect();
 		self
@@ -1777,7 +1777,7 @@ impl Command {
 	/// (e.g. `<name> [--scope project|user]`).
 	#[must_use]
 	pub fn with_hint(mut self, hint: &str) -> Self {
-		self.hint = Some(SmolStr::new(hint));
+		self.hint = Some(Str::new(hint));
 		self
 	}
 
@@ -1838,7 +1838,7 @@ impl SlashCommands {
 			score = score.max(description_score);
 			if score > 0 {
 				ranked.push((score, Suggestion {
-					value:       omp_core::format_smol!("/{selected_name} "),
+					value:       omp_core::fmts!("/{selected_name} "),
 					display:     SuggestionDisplay::Text(selected_name.clone()),
 					description: Some(command.description.clone()),
 					hint:        command.hint.clone(),
@@ -1874,7 +1874,7 @@ impl SlashCommands {
 			let score = command_score(&query, &arg.name);
 			if score > 0 {
 				ranked.push((score, Suggestion {
-					value:       omp_core::format_smol!("{} ", arg.name),
+					value:       omp_core::fmts!("{} ", arg.name),
 					display:     SuggestionDisplay::Text(arg.name.clone()),
 					description: Some(arg.description.clone()),
 					hint:        None,
@@ -1905,7 +1905,7 @@ impl EditorCompletion for SlashCommands {
 	/// Pi-style usage ghosting: bare `/name ` shows the command's own
 	/// usage; a partial argument shows its remaining characters plus
 	/// usage; a chosen argument ghosts the usage words not yet typed.
-	fn hint(&mut self, text: &str, cursor: usize) -> Option<SmolStr> {
+	fn hint(&mut self, text: &str, cursor: usize) -> Option<Str> {
 		let line_start = text[..cursor].rfind('\n').map_or(0, |at| at + 1);
 		let line = &text[line_start..cursor];
 		let body = line.trim_start_matches([' ', '\t']).strip_prefix('/')?;
@@ -1926,9 +1926,9 @@ impl EditorCompletion for SlashCommands {
 					.find(|arg| arg.name.starts_with(&prefix))?;
 				let remaining = &matched.name.as_str()[prefix.len()..];
 				match &matched.usage {
-					Some(usage) => Some(omp_core::format_smol!("{remaining} {usage}")),
+					Some(usage) => Some(omp_core::fmts!("{remaining} {usage}")),
 					None if remaining.is_empty() => None,
-					None => Some(SmolStr::new(remaining)),
+					None => Some(Str::new(remaining)),
 				}
 			},
 			Some(argument_end) => {
@@ -1938,14 +1938,14 @@ impl EditorCompletion for SlashCommands {
 				let usage = arg.usage.as_deref()?;
 				let typed = after.split_whitespace().count();
 				if typed == 0 {
-					return Some(SmolStr::new(usage));
+					return Some(Str::new(usage));
 				}
 				let mut words = usage.split(' ');
 				for _ in 0..typed {
 					words.next()?;
 				}
 				let remaining = words.collect::<Vec<_>>().join(" ");
-				(!remaining.is_empty()).then(|| SmolStr::new(&remaining))
+				(!remaining.is_empty()).then(|| Str::new(&remaining))
 			},
 		}
 	}
@@ -1961,7 +1961,7 @@ fn emoji_picker(text_before_cursor: &str) -> Option<Picker> {
 		}
 		if pattern.len() >= wanted.len() && pattern[..wanted.len()].eq_ignore_ascii_case(&wanted) {
 			suggestions.push(Suggestion {
-				value:       SmolStr::new_static(emoji),
+				value:       Str::new_static(emoji),
 				display:     SuggestionDisplay::Emoji { emoji, shortcode: pattern },
 				description: None,
 				hint:        None,
@@ -1976,7 +1976,7 @@ fn emoji_picker(text_before_cursor: &str) -> Option<Picker> {
 				break;
 			}
 			suggestions.push(Suggestion {
-				value:       SmolStr::new_static(entry[1]),
+				value:       Str::new_static(entry[1]),
 				display:     SuggestionDisplay::Emoji { emoji: entry[1], shortcode: entry[0] },
 				description: None,
 				hint:        None,
@@ -2547,15 +2547,15 @@ mod tests {
 			let items = ["alice", "bob"]
 				.iter()
 				.filter(|name| !query.is_empty() && name.starts_with(query))
-				.map(|name| Suggestion::new(omp_core::format_smol!("@{name} "), *name))
+				.map(|name| Suggestion::new(omp_core::fmts!("@{name} "), *name))
 				.collect::<SuggestionList>();
 			(!items.is_empty()).then_some(Suggestions { prefix_start: at, items })
 		}
 
-		fn hint(&mut self, text: &str, cursor: usize) -> Option<SmolStr> {
+		fn hint(&mut self, text: &str, cursor: usize) -> Option<Str> {
 			text[..cursor]
 				.ends_with("hel")
-				.then(|| SmolStr::new("lo world"))
+				.then(|| Str::new("lo world"))
 		}
 
 		fn tab(&mut self, text: &str, cursor: usize, selected: Option<&Suggestion>) -> TabAction {

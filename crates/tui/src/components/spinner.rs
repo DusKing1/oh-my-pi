@@ -1,6 +1,6 @@
 //! Indeterminate activity indicator backing the `<spinner>` markup tag.
 
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use crate::{
 	component::{Component, PaintCtx, Slot, next_slot},
@@ -19,17 +19,17 @@ use crate::{
 pub struct Spinner {
 	props: Props,
 	slot:  Slot,
-	label: SmolStr,
+	label: Str,
 }
 
 impl Spinner {
 	/// Creates a bare spinner.
 	pub fn new() -> Self {
-		Self { props: Props::new(), slot: next_slot(), label: SmolStr::default() }
+		Self { props: Props::new(), slot: next_slot(), label: Str::default() }
 	}
 
 	/// Sets the text following the spinner glyph.
-	pub fn label(mut self, label: impl Into<SmolStr>) -> Self {
+	pub fn label(mut self, label: impl Into<Str>) -> Self {
 		self.label = label.into();
 		self
 	}
@@ -87,7 +87,7 @@ impl Component for Spinner {
 		pc.wake(self.slot, frames.next_change(pc.now));
 	}
 
-	fn set_text(&mut self, _ctx: &UiContext, text: SmolStr) -> bool {
+	fn set_text(&mut self, _ctx: &UiContext, text: Str) -> bool {
 		if self.label == text {
 			return false;
 		}

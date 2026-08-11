@@ -8,7 +8,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_proto::{document::v1 as proto, prost::Message};
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -431,7 +431,7 @@ async fn open_document(
 						protocol_minor,
 						lease_id,
 						DocumentEventStreamError::Synchronization {
-							message: SmolStr::new(error.message),
+							message: Str::new(error.message),
 						},
 					);
 					close_owned_lease(&event_session, lease_id).await;
@@ -1323,7 +1323,7 @@ fn parse_summary_options(options: proto::CodeSummaryOptions) -> DispatchResult<S
 		unfold_until_lines: options.unfold_until_lines,
 		unfold_limit_lines: options.unfold_limit_lines,
 		enable_prose: options.enable_prose,
-		language: (!options.language.is_empty()).then(|| SmolStr::new(options.language)),
+		language: (!options.language.is_empty()).then(|| Str::new(options.language)),
 		render_mode,
 	})
 }

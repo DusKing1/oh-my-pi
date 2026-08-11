@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::{Buf, Bytes, BytesMut};
-use omp_core::{SmolStr, SmolStrMut};
+use omp_core::{Str, StrMut};
 use omp_llm_catalog::{compat::Compat, provider::TransportId};
 use omp_llm_egress::auth_inject::AwsSigV4Context;
 use omp_llm_transport::{DecodeState, Frame, Transport};
@@ -70,7 +70,7 @@ impl Transport for BedrockCodec {
 		let mut events = self.inner.decode(frame, state)?;
 		for event in &mut events {
 			if let TurnEvent::Outcome(outcome) = event {
-				outcome.provider = SmolStr::new_static("amazon-bedrock");
+				outcome.provider = Str::new_static("amazon-bedrock");
 			}
 		}
 		Ok(events)
@@ -86,23 +86,23 @@ impl Transport for BedrockCodec {
 /// standard Bedrock Runtime endpoint host and the SDK-compatible `us-east-1`
 /// fallback.
 #[must_use]
-pub fn resolve_region(explicit: &str, model: &str, base_url: &str) -> SmolStr {
+pub fn resolve_region(explicit: &str, model: &str, base_url: &str) -> Str {
 	if let Some(region) = arn_region(model) {
-		return SmolStr::new(region);
+		return Str::new(region);
 	}
 	if let Some((geo, fallback)) = inference_profile_geo(model) {
 		if !explicit.is_empty() && region_serves_geo(explicit, geo) {
-			return SmolStr::new(explicit);
+			return Str::new(explicit);
 		}
-		return SmolStr::new_static(fallback);
+		return Str::new_static(fallback);
 	}
 	if !explicit.is_empty() {
-		return SmolStr::new(explicit);
+		return Str::new(explicit);
 	}
 	if let Some(region) = endpoint_region(base_url) {
-		return SmolStr::new(region);
+		return Str::new(region);
 	}
-	SmolStr::new_static("us-east-1")
+	Str::new_static("us-east-1")
 }
 
 /// Builds a Bedrock `InvokeModelWithResponseStream` endpoint.
@@ -111,11 +111,11 @@ pub fn resolve_region(explicit: &str, model: &str, base_url: &str) -> SmolStr {
 /// Custom endpoints are retained verbatim apart from a trailing slash. Model
 /// identifiers, including inference-profile ARNs, are encoded as one path
 /// segment so embedded `/` cannot alter the invocation route.
-pub fn endpoint(base_url: &str, region: &str, model: &str) -> Result<SmolStr, Error> {
+pub fn endpoint(base_url: &str, region: &str, model: &str) -> Result<Str, Error> {
 	endpoint_for(base_url, region, model, "invoke-with-response-stream")
 }
 /// Builds a model-independent Bedrock `ConverseStream` endpoint.
-pub fn converse_endpoint(base_url: &str, region: &str, model: &str) -> Result<SmolStr, Error> {
+pub fn converse_endpoint(base_url: &str, region: &str, model: &str) -> Result<Str, Error> {
 	endpoint_for(base_url, region, model, "converse-stream")
 }
 fn endpoint_for(
@@ -123,7 +123,7 @@ fn endpoint_for(
 	region: &str,
 	model: &str,
 	operation: &str,
-) -> Result<SmolStr, Error> {
+) -> Result<Str, Error> {
 	if model.is_empty() {
 		return Err(provider_error("Bedrock model must not be empty"));
 	}
@@ -135,7 +135,7 @@ fn endpoint_for(
 		return Err(provider_error("Bedrock region contains invalid hostname characters"));
 	}
 	let mut target = if base_url.is_empty() {
-		let mut target = SmolStrMut::new("https://bedrock-runtime.");
+		let mut target = StrMut::new("https://bedrock-runtime.");
 		target.push_str(&region);
 		target.push_str(if region.starts_with("cn-") {
 			".amazonaws.com.cn"
@@ -144,7 +144,7 @@ fn endpoint_for(
 		});
 		target
 	} else {
-		SmolStrMut::new(base_url.trim_end_matches('/'))
+		StrMut::new(base_url.trim_end_matches('/'))
 	};
 	target.push_str("/model/");
 	push_path_segment(&mut target, model);
@@ -216,7 +216,7 @@ fn endpoint_region(base_url: &str) -> Option<&str> {
 /// headers, and buffered body immediately before dispatch.
 pub fn attach_sigv4<B>(
 	request: &mut http::Request<B>,
-	region: impl Into<SmolStr>,
+	region: impl Into<Str>,
 	signed_at: SystemTime,
 ) {
 	request.headers_mut().remove("anthropic-beta");
@@ -517,7 +517,7 @@ fn take<'a>(input: &mut &'a [u8], len: usize) -> Result<&'a [u8], Error> {
 	Ok(value)
 }
 
-fn push_path_segment(target: &mut SmolStrMut, value: &str) {
+fn push_path_segment(target: &mut StrMut, value: &str) {
 	const HEX: &[u8; 16] = b"0123456789ABCDEF";
 	for byte in value.bytes() {
 		if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
@@ -534,7 +534,7 @@ fn json_error(error: serde_json::Error) -> Error {
 	provider_error(error.to_string())
 }
 
-fn provider_error(detail: impl Into<SmolStr>) -> Error {
+fn provider_error(detail: impl Into<Str>) -> Error {
 	Error::Provider(detail.into())
 }
 

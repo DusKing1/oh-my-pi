@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use smallvec::SmallVec;
 
 use super::{
@@ -21,7 +21,7 @@ use crate::{
 /// Declarative option data backing the `<option>` markup tag.
 pub struct SelectOption {
 	props:   Props,
-	label:   SmolStr,
+	label:   Str,
 	preview: Vec<Cached>,
 	cells:   SmallVec<Cached, 8>,
 }
@@ -31,7 +31,7 @@ impl SelectOption {
 	pub fn new() -> Self {
 		Self {
 			props:   Props::new(),
-			label:   SmolStr::default(),
+			label:   Str::default(),
 			preview: Vec::new(),
 			cells:   SmallVec::new(),
 		}
@@ -50,12 +50,12 @@ impl SelectOption {
 	}
 
 	/// Appends label text.
-	pub fn label(mut self, label: impl Into<SmolStr>) -> Self {
+	pub fn label(mut self, label: impl Into<Str>) -> Self {
 		let label = label.into();
 		if self.label.is_empty() {
 			self.label = label;
 		} else {
-			self.label = SmolStr::from(format!("{}{}", self.label, label));
+			self.label = Str::from(format!("{}{}", self.label, label));
 		}
 		self
 	}
@@ -81,9 +81,9 @@ impl Default for SelectOption {
 }
 
 struct OptionData {
-	label:       SmolStr,
-	value:       SmolStr,
-	desc:        Option<SmolStr>,
+	label:       Str,
+	value:       Str,
+	desc:        Option<Str>,
 	recommended: bool,
 	preview:     Range<usize>,
 	/// Grid cells rendered as this option's row; empty for label options.
@@ -284,8 +284,8 @@ impl Select {
 			(true, None) => {
 				let end = self.children.len();
 				self.insert_option(self.state.options.len(), OptionData {
-					label:       SmolStr::from("Other (type your own)"),
-					value:       SmolStr::default(),
+					label:       Str::from("Other (type your own)"),
+					value:       Str::default(),
 					desc:        None,
 					recommended: false,
 					preview:     end..end,
@@ -378,12 +378,12 @@ impl Select {
 	}
 
 	/// Value of the option under the cursor, `None` when nothing matches.
-	fn cursor_value(&self) -> Option<SmolStr> {
+	fn cursor_value(&self) -> Option<Str> {
 		let visible = self.state.visible();
 		let &index = visible.get(usize::from(self.state.cursor))?;
 		let option = &self.state.options[usize::from(index)];
 		Some(if option.custom {
-			SmolStr::from(self.state.custom_text.as_str())
+			Str::from(self.state.custom_text.as_str())
 		} else {
 			option.value.clone()
 		})
@@ -405,7 +405,7 @@ impl Select {
 		match self.props.id() {
 			Some(id) => Flow::Event(UiEvent::Filtered {
 				id:    id.clone(),
-				query: SmolStr::from(self.state.filter_q.as_str()),
+				query: Str::from(self.state.filter_q.as_str()),
 				value: self.cursor_value(),
 			}),
 			None => Flow::Consumed,
@@ -586,7 +586,7 @@ impl Select {
 			Some(id) => {
 				let option = &self.state.options[usize::from(index)];
 				let value = if option.custom {
-					SmolStr::from(self.state.custom_text.as_str())
+					Str::from(self.state.custom_text.as_str())
 				} else {
 					option.value.clone()
 				};
@@ -1112,7 +1112,7 @@ fn fuzzy_score(hay: &str, needle: &str) -> Option<i32> {
 	Some(score - i32::try_from(hay.len().min(64)).expect("bounded length"))
 }
 
-fn desc_lines(desc: &SmolStr, width: u16) -> SmallVec<SmolStr, 2> {
+fn desc_lines(desc: &Str, width: u16) -> SmallVec<Str, 2> {
 	let width = width.max(8);
 	let mut lines = SmallVec::new();
 	let mut start = None;

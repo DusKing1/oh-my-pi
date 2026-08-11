@@ -1,4 +1,4 @@
-use omp_core::{SmolStr, SmolStrMut};
+use omp_core::{Str, StrMut};
 use smallvec::SmallVec;
 
 use super::MdTheme;
@@ -25,7 +25,7 @@ struct HtmlState {
 
 enum CodeText<'a> {
 	Borrowed(&'a str),
-	Owned(SmolStr),
+	Owned(Str),
 }
 
 impl CodeText<'_> {
@@ -153,7 +153,7 @@ fn render_range(
 			if let Some((label, consumed)) = angle_autolink(tail) {
 				flush_plain_marked(&text[plain_start..offset], style, html, sink);
 				let target = if label.contains('@') {
-					let mut target = SmolStrMut::with_capacity("mailto:".len() + label.len());
+					let mut target = StrMut::with_capacity("mailto:".len() + label.len());
 					target.push_str("mailto:");
 					target.push_str(label);
 					CodeText::Owned(target.freeze())
@@ -334,7 +334,7 @@ fn normalize_code_text(text: &str) -> CodeText<'_> {
 	} else {
 		text
 	};
-	let mut normalized = SmolStrMut::with_capacity(inner.len());
+	let mut normalized = StrMut::with_capacity(inner.len());
 	let mut chars = inner.chars().peekable();
 	while let Some(ch) = chars.next() {
 		match ch {
@@ -685,7 +685,7 @@ fn render_html_tag(
 			sink.run(style, "  ");
 		}
 		if let Some(HtmlList::Ordered(next)) = state.lists.last_mut() {
-			let marker = omp_core::format_smol!("{next}. ");
+			let marker = omp_core::fmts!("{next}. ");
 			sink.run(style, marker.as_str());
 			*next = next.saturating_add(1);
 		} else {

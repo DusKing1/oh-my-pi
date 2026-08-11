@@ -9,7 +9,7 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{Stream, StreamExt, stream::BoxStream};
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use omp_llm_catalog::{
 	models::{Availability, ModelWire},
 	provider::{Facet as CatalogFacet, TransportId},
@@ -55,9 +55,9 @@ pub type TurnStream = BoxStream<'static, Result<pb::TurnEvent, Status>>;
 #[derive(Clone)]
 pub struct ChatRoute {
 	/// Provider catalog id.
-	pub provider:          SmolStr,
+	pub provider:          Str,
 	/// Credential identity pinned when this route is selected.
-	pub credential_id:     SmolStr,
+	pub credential_id:     Str,
 	/// Whether the transport cannot progress without an in-turn executor.
 	pub requires_executor: bool,
 	/// Fully assembled chat facet stack.
@@ -79,7 +79,7 @@ impl fmt::Debug for ChatRoute {
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct ChatRouteKey {
 	pub(crate) transport: TransportId,
-	pub(crate) base_url:  SmolStr,
+	pub(crate) base_url:  Str,
 }
 
 impl ChatRouteKey {
@@ -113,7 +113,7 @@ impl ChatRouteKey {
 #[derive(Clone)]
 struct RegisteredChatRoute {
 	wire:              Option<ChatRouteKey>,
-	credential_id:     Option<SmolStr>,
+	credential_id:     Option<Str>,
 	requires_executor: bool,
 	chat:              Arc<dyn Chat>,
 }
@@ -132,9 +132,9 @@ struct CachedModelPolicy {
 /// their selection middleware.
 pub struct ChatResolver {
 	registry: Arc<RwLock<Registry>>,
-	routes:   RwLock<BTreeMap<SmolStr, SmallVec<RegisteredChatRoute, 2>>>,
-	defaults: RwLock<BTreeMap<SmolStr, (ChatRouteKey, bool, bool)>>,
-	policies: RwLock<BTreeMap<SmolStr, CachedModelPolicy>>,
+	routes:   RwLock<BTreeMap<Str, SmallVec<RegisteredChatRoute, 2>>>,
+	defaults: RwLock<BTreeMap<Str, (ChatRouteKey, bool, bool)>>,
+	policies: RwLock<BTreeMap<Str, CachedModelPolicy>>,
 }
 impl ChatResolver {
 	/// Creates an empty resolver over the live catalog registry.
@@ -163,7 +163,7 @@ impl ChatResolver {
 	///
 	/// This is the production registration path for a once-built route stack;
 	/// unlike [`Self::register`], it does not invent a gateway credential pin.
-	pub fn register_stack(&self, provider: SmolStr, requires_executor: bool, chat: Arc<dyn Chat>) {
+	pub fn register_stack(&self, provider: Str, requires_executor: bool, chat: Arc<dyn Chat>) {
 		self.register_route(provider, None, None, requires_executor, chat);
 	}
 
@@ -171,7 +171,7 @@ impl ChatResolver {
 	/// tuple.
 	pub(crate) fn register_wire_stack(
 		&self,
-		provider: SmolStr,
+		provider: Str,
 		wire: ChatRouteKey,
 		default: ChatRouteKey,
 		base_url_overridden: bool,
@@ -189,7 +189,7 @@ impl ChatResolver {
 	/// Returns the distinct effective tuples required by this provider's cards.
 	pub(crate) fn wire_routes(
 		&self,
-		provider: &SmolStr,
+		provider: &Str,
 		default: &ChatRouteKey,
 		base_url_overridden: bool,
 		transport_overridden: bool,
@@ -216,9 +216,9 @@ impl ChatResolver {
 
 	fn register_route(
 		&self,
-		provider: SmolStr,
+		provider: Str,
 		wire: Option<ChatRouteKey>,
-		credential_id: Option<SmolStr>,
+		credential_id: Option<Str>,
 		requires_executor: bool,
 		chat: Arc<dyn Chat>,
 	) {
@@ -427,14 +427,14 @@ fn resolver_facet_error(error: TurnError) -> FacetError {
 
 #[derive(Clone)]
 struct ResolvedChat {
-	route_id:              SmolStr,
-	provider:              SmolStr,
-	logical_model:         SmolStr,
+	route_id:              Str,
+	provider:              Str,
+	logical_model:         Str,
 	policy:                Arc<ResolvedModelPolicy>,
 	effective_effort:      Option<Effort>,
 	preflight_unsupported: Option<Unsupported>,
-	model:                 SmolStr,
-	credential_id:         Option<SmolStr>,
+	model:                 Str,
+	credential_id:         Option<Str>,
 	requires_executor:     bool,
 	chat:                  Arc<dyn Chat>,
 }
@@ -481,7 +481,7 @@ fn effective_effort(
 	if supported == requested {
 		return Ok((Some(requested), None));
 	}
-	Ok(clamped_effort(supported, format_smol!("requested {requested:?} was not advertised")))
+	Ok(clamped_effort(supported, fmts!("requested {requested:?} was not advertised")))
 }
 
 fn clamp_to_lowest_non_off(
@@ -499,13 +499,13 @@ fn clamp_to_lowest_non_off(
 			"model requires reasoning but advertises no non-off effort",
 		));
 	};
-	Ok(clamped_effort(effort, SmolStr::new(reason)))
+	Ok(clamped_effort(effort, Str::new(reason)))
 }
 
-fn clamped_effort(effort: Effort, reason: SmolStr) -> (Option<Effort>, Option<Unsupported>) {
+fn clamped_effort(effort: Effort, reason: Str) -> (Option<Effort>, Option<Unsupported>) {
 	let unsupported = Unsupported::builder()
-		.what(SmolStr::new_static("thinking.effort"))
-		.detail(format_smol!("{reason} and was clamped to the advertised {effort:?} effort"))
+		.what(Str::new_static("thinking.effort"))
+		.detail(fmts!("{reason} and was clamped to the advertised {effort:?} effort"))
 		.action(UnsupportedAction::Clamped)
 		.build();
 	(Some(effort), Some(unsupported))
@@ -550,7 +550,7 @@ fn report_preflight(
 fn report_routed_resolution(
 	stream: BoxStream<'static, TurnEvent>,
 	unsupported: Option<Unsupported>,
-	logical_model: SmolStr,
+	logical_model: Str,
 ) -> BoxStream<'static, TurnEvent> {
 	stream
 		.map(move |mut event| {
@@ -567,9 +567,9 @@ fn report_routed_resolution(
 
 #[derive(Clone, Debug)]
 struct AffinityKey {
-	context_id:  SmolStr,
-	route_id:    SmolStr,
-	session_key: SmolStr,
+	context_id:  Str,
+	route_id:    Str,
+	session_key: Str,
 }
 
 /// Stateful server-side implementation of the chat-turn protocol.
@@ -774,7 +774,7 @@ impl TurnEngine {
 				.context_id
 				.as_deref()
 				.or(prepared.session_key.as_deref())
-				.map(SmolStr::new);
+				.map(Str::new);
 			let request = build_request(
 				guard.thread().clone(),
 				prepared.params,
@@ -933,12 +933,12 @@ enum DriveProgress {
 }
 
 struct PreparedTurn {
-	turn_id:     SmolStr,
+	turn_id:     Str,
 	input:       BeginInput,
-	context_id:  Option<SmolStr>,
+	context_id:  Option<Str>,
 	params:      ChatParams,
-	executor:    Option<SmallVec<SmolStr, 4>>,
-	session_key: Option<SmolStr>,
+	executor:    Option<SmallVec<Str, 4>>,
+	session_key: Option<Str>,
 }
 
 impl TryFrom<pb::TurnRequest> for PreparedTurn {
@@ -981,7 +981,7 @@ impl TryFrom<pb::TurnRequest> for PreparedTurn {
 		}
 		let session_key = params.cache.as_ref().map(|cache| cache.session_key.clone());
 		let executor = open.executor.map(|value| {
-			let tools: SmallVec<SmolStr, 4> = value.tools.into_iter().map(SmolStr::from).collect();
+			let tools: SmallVec<Str, 4> = value.tools.into_iter().map(Str::from).collect();
 			tools
 		});
 		let (input, context_id) = match open
@@ -1008,12 +1008,12 @@ impl TryFrom<pb::TurnRequest> for PreparedTurn {
 					.ok_or_else(|| error(TurnErrorKind::Unsupported, "Seed.thread is required"))?
 					.try_into()
 					.map_err(convert_error)?;
-				let context_id = (!seed.context_id.is_empty()).then(|| SmolStr::from(seed.context_id));
+				let context_id = (!seed.context_id.is_empty()).then(|| Str::from(seed.context_id));
 				(BeginInput::Seed { context_id: context_id.clone(), thread }, context_id)
 			},
 		};
 		Ok(Self {
-			turn_id: SmolStr::from(open.turn_id),
+			turn_id: Str::from(open.turn_id),
 			input,
 			context_id,
 			params,
@@ -1050,7 +1050,7 @@ fn build_request(
 	if let Some(session) = upstream_session {
 		let meta = params.meta.get_or_insert_with(Default::default);
 		if meta.session_id.is_empty() {
-			meta.session_id = SmolStr::new(session);
+			meta.session_id = Str::new(session);
 		}
 	}
 	if let (Some(previous), Some(boundary)) =
@@ -1093,22 +1093,22 @@ fn build_request(
 		.build()
 }
 
-fn route_identity(provider: &str, model: &str) -> SmolStr {
+fn route_identity(provider: &str, model: &str) -> Str {
 	let mut hasher = blake3::Hasher::new();
 	hasher.update(provider.as_bytes());
 	hasher.update(&[0]);
 	hasher.update(model.as_bytes());
-	format_smol!("omp_route_{}", hasher.finalize().to_hex())
+	fmts!("omp_route_{}", hasher.finalize().to_hex())
 }
 
-fn prompt_cache_key(key: &AffinityKey) -> SmolStr {
+fn prompt_cache_key(key: &AffinityKey) -> Str {
 	let mut hasher = blake3::Hasher::new();
 	hasher.update(key.route_id.as_bytes());
 	hasher.update(&[0]);
 	hasher.update(key.context_id.as_bytes());
 	hasher.update(&[0]);
 	hasher.update(key.session_key.as_bytes());
-	format_smol!("omp_cache_{}", hasher.finalize().to_hex())
+	fmts!("omp_cache_{}", hasher.finalize().to_hex())
 }
 
 fn update_affinity_from_outcome(
@@ -1120,7 +1120,7 @@ fn update_affinity_from_outcome(
 		.props
 		.get_ns("openai", "response_id")
 		.and_then(Value::as_str);
-	affinity.previous_response_id = response_id.map(SmolStr::new);
+	affinity.previous_response_id = response_id.map(Str::new);
 	affinity.previous_response_item_count = response_id.map(|_| committed_item_count);
 	if let Some(state) = outcome
 		.props
@@ -1207,19 +1207,19 @@ struct PendingInvocation {
 
 #[derive(Default)]
 struct ExecutorState {
-	pending:           FxHashMap<SmolStr, PendingInvocation>,
-	early_inputs:      FxHashMap<SmolStr, SmallVec<InvokeInput, 4>>,
-	early_completions: FxHashMap<SmolStr, InvokeComplete>,
+	pending:           FxHashMap<Str, PendingInvocation>,
+	early_inputs:      FxHashMap<Str, SmallVec<InvokeInput, 4>>,
+	early_completions: FxHashMap<Str, InvokeComplete>,
 }
 
 #[derive(Clone)]
 struct ClientExecutor {
-	tools: SmallVec<SmolStr, 4>,
+	tools: SmallVec<Str, 4>,
 	state: Arc<Mutex<ExecutorState>>,
 }
 
 impl ClientExecutor {
-	fn new(tools: SmallVec<SmolStr, 4>) -> Self {
+	fn new(tools: SmallVec<Str, 4>) -> Self {
 		Self { tools, state: Arc::new(Mutex::new(ExecutorState::default())) }
 	}
 
@@ -1334,16 +1334,16 @@ impl Executor for ClientExecutor {
 
 fn failed_completion(invocation_id: &str, reason: &str) -> InvokeComplete {
 	InvokeComplete::builder()
-		.invocation_id(SmolStr::new(invocation_id))
+		.invocation_id(Str::new(invocation_id))
 		.status(
 			ExecStatus::builder()
 				.outcome(ExecOutcome::Failed)
 				.exit_code(0)
-				.signal(SmolStr::new_static(""))
-				.reason(SmolStr::new(reason))
-				.cwd(SmolStr::new_static(""))
+				.signal(Str::new_static(""))
+				.reason(Str::new(reason))
+				.cwd(Str::new_static(""))
 				.aborted(true)
-				.output_location(SmolStr::new_static(""))
+				.output_location(Str::new_static(""))
 				.local_execution_time_ms(0)
 				.is_readonly(false)
 				.command_timeout_ms(0)
@@ -1357,11 +1357,11 @@ fn failed_completion(invocation_id: &str, reason: &str) -> InvokeComplete {
 fn unsupported_executor() -> TurnError {
 	TurnError::builder()
 		.kind(TurnErrorKind::Unsupported)
-		.detail(SmolStr::new_static("selected transport requires an in-turn executor"))
+		.detail(Str::new_static("selected transport requires an in-turn executor"))
 		.unsupported(vec![
 			Unsupported::builder()
-				.what(SmolStr::new_static("executor"))
-				.detail(SmolStr::new_static("client did not declare an in-turn executor"))
+				.what(Str::new_static("executor"))
+				.detail(Str::new_static("client did not declare an in-turn executor"))
 				.action(UnsupportedAction::Dropped)
 				.build(),
 		])
@@ -1373,7 +1373,7 @@ fn facet_error(failure: FacetError) -> TurnError {
 	match failure {
 		FacetError::Unsupported(unsupported) => TurnError::builder()
 			.kind(TurnErrorKind::Unsupported)
-			.detail(SmolStr::new_static("selected provider cannot serve this request"))
+			.detail(Str::new_static("selected provider cannot serve this request"))
 			.unsupported(unsupported)
 			.retry_after_ms(0)
 			.build(),
@@ -1385,9 +1385,9 @@ fn facet_error(failure: FacetError) -> TurnError {
 }
 
 fn sanitize_upstream_error(mut failure: TurnError) -> TurnError {
-	failure.detail = SmolStr::new_static("provider inference failed");
+	failure.detail = Str::new_static("provider inference failed");
 	for diagnostic in &mut failure.diagnostics {
-		diagnostic.detail = SmolStr::new_static("provider attempt failed");
+		diagnostic.detail = Str::new_static("provider attempt failed");
 	}
 	failure
 }
@@ -1395,7 +1395,7 @@ fn sanitize_upstream_error(mut failure: TurnError) -> TurnError {
 fn error(kind: TurnErrorKind, detail: &'static str) -> TurnError {
 	TurnError::builder()
 		.kind(kind)
-		.detail(SmolStr::new_static(detail))
+		.detail(Str::new_static(detail))
 		.unsupported(Vec::new())
 		.retry_after_ms(0)
 		.build()
@@ -1404,7 +1404,7 @@ fn error(kind: TurnErrorKind, detail: &'static str) -> TurnError {
 fn status_error(_status: Status) -> TurnError {
 	TurnError::builder()
 		.kind(TurnErrorKind::Unsupported)
-		.detail(SmolStr::new_static("invalid Turn frame stream"))
+		.detail(Str::new_static("invalid Turn frame stream"))
 		.unsupported(Vec::new())
 		.retry_after_ms(0)
 		.build()
@@ -1414,9 +1414,9 @@ struct ChatTelemetry {
 	span:            Option<span::Span>,
 	metrics:         Arc<MetricRecorder>,
 	config:          Arc<TelemetryConfig>,
-	model:           SmolStr,
-	provider:        SmolStr,
-	conversation_id: Option<SmolStr>,
+	model:           Str,
+	provider:        Str,
+	conversation_id: Option<Str>,
 }
 
 impl ChatTelemetry {
@@ -1430,7 +1430,7 @@ impl ChatTelemetry {
 			.sampling
 			.as_ref()
 			.and_then(|sampling| sampling.stop.as_ref())
-			.map_or_else(Vec::new, |values| values.iter().map(SmolStr::as_str).collect());
+			.map_or_else(Vec::new, |values| values.iter().map(Str::as_str).collect());
 		let tools: Vec<&str> = request
 			.tools
 			.iter()
@@ -1599,7 +1599,7 @@ impl ChatTelemetry {
 					reasoning_output: 0,
 					total:            value.input_tokens.saturating_add(value.output_tokens),
 				},
-				usage_accuracy: SmolStr::new_static(match value.accuracy {
+				usage_accuracy: Str::new_static(match value.accuracy {
 					Accuracy::Exact => "provider",
 					Accuracy::Estimated => "estimated",
 					_ => "mixed",
@@ -1699,7 +1699,7 @@ mod tests {
 
 	use bytes::Bytes;
 	use futures::{StreamExt, stream};
-	use omp_core::SmolStr;
+	use omp_core::Str;
 	use omp_llm_catalog::{
 		models::{
 			Availability, Modality, ModelCard, ModelCatalog, ModelWire, Source, load_catalog_json,
@@ -1791,12 +1791,12 @@ mod tests {
 						let call_id = CallId::new();
 						*state.call_id.lock() = Some(call_id);
 						let invocation = Invoke::builder()
-							.invocation_id(SmolStr::new_static("invoke-1"))
-							.name(SmolStr::new_static("cursor/shell"))
+							.invocation_id(Str::new_static("invoke-1"))
+							.name(Str::new_static("cursor/shell"))
 							.tool_call(
 								ToolCall::builder()
 									.id(call_id)
-									.name(SmolStr::new_static("cursor/shell"))
+									.name(Str::new_static("cursor/shell"))
 									.args_json(Bytes::from_static(br#"{"command":"echo hello"}"#))
 									.thought_signature(Bytes::new())
 									.build(),
@@ -1826,11 +1826,11 @@ mod tests {
 
 	fn model_card() -> ModelCard {
 		ModelCard::builder()
-			.id(SmolStr::new_static("test/model"))
-			.provider(SmolStr::new_static("test"))
-			.model(SmolStr::new_static("model"))
-			.name(SmolStr::new_static("Model"))
-			.family(SmolStr::new_static("test"))
+			.id(Str::new_static("test/model"))
+			.provider(Str::new_static("test"))
+			.model(Str::new_static("model"))
+			.name(Str::new_static("Model"))
+			.family(Str::new_static("test"))
 			.facets(smallvec![CatalogFacet::Chat])
 			.inputs(smallvec![Modality::Text])
 			.outputs(smallvec![Modality::Text])
@@ -1859,8 +1859,8 @@ mod tests {
 		let resolver = Arc::new(ChatResolver::new(registry));
 		let seen = Arc::new(Mutex::new(Vec::new()));
 		resolver.register(ChatRoute {
-			provider: SmolStr::new_static("test"),
-			credential_id: SmolStr::new_static("cred-a"),
+			provider: Str::new_static("test"),
+			credential_id: Str::new_static("cred-a"),
 			requires_executor,
 			chat: Arc::new(MockChat { behavior, seen: Arc::clone(&seen) }),
 		});
@@ -1870,20 +1870,20 @@ mod tests {
 	#[test]
 	fn resolver_uses_catalog_wire_model_routes() {
 		let mut card = model_card();
-		card.id = SmolStr::new_static("test/model-1m");
-		card.model = SmolStr::new_static("model-1m");
+		card.id = Str::new_static("test/model-1m");
+		card.model = Str::new_static("model-1m");
 		card
 			.effort_routing
-			.insert(Effort::Off, SmolStr::new_static("model"));
+			.insert(Effort::Off, Str::new_static("model"));
 		card
 			.effort_routing
-			.insert(Effort::High, SmolStr::new_static("model-high"));
+			.insert(Effort::High, Str::new_static("model-high"));
 		let catalog = ModelCatalog::new(vec![card]);
 		let registry = Arc::new(RwLock::new(Registry::new(&catalog, Arc::new(Available))));
 		let resolver = ChatResolver::new(registry);
 		resolver.register(ChatRoute {
-			provider:          SmolStr::new_static("test"),
-			credential_id:     SmolStr::new_static("cred-a"),
+			provider:          Str::new_static("test"),
+			credential_id:     Str::new_static("cred-a"),
 			requires_executor: false,
 			chat:              Arc::new(MockChat {
 				behavior: Behavior::Events(Vec::new()),
@@ -1917,7 +1917,7 @@ mod tests {
 		let stable = resolver.policy_for(&card);
 		assert!(Arc::ptr_eq(&first, &stable));
 
-		card.behavior.request_model_id = Some(SmolStr::new_static("changed-wire"));
+		card.behavior.request_model_id = Some(Str::new_static("changed-wire"));
 		let refreshed = resolver.policy_for(&card);
 		assert!(!Arc::ptr_eq(&first, &refreshed));
 		assert_eq!(refreshed.request_model_id.as_deref(), Some("changed-wire"));
@@ -1932,8 +1932,8 @@ mod tests {
 		let registry = Arc::new(RwLock::new(Registry::new(&catalog, Arc::new(Available))));
 		let resolver = ChatResolver::new(registry);
 		resolver.register(ChatRoute {
-			provider:          SmolStr::new_static("github-copilot"),
-			credential_id:     SmolStr::new_static("cred-a"),
+			provider:          Str::new_static("github-copilot"),
+			credential_id:     Str::new_static("cred-a"),
 			requires_executor: false,
 			chat:              Arc::new(MockChat {
 				behavior: Behavior::Events(Vec::new()),
@@ -2004,8 +2004,8 @@ mod tests {
 		let resolver = Arc::new(ChatResolver::new(registry));
 		let seen = Arc::new(Mutex::new(Vec::new()));
 		resolver.register(ChatRoute {
-			provider:          SmolStr::new_static("kimi"),
-			credential_id:     SmolStr::new_static("cred-a"),
+			provider:          Str::new_static("kimi"),
+			credential_id:     Str::new_static("cred-a"),
 			requires_executor: false,
 			chat:              Arc::new(MockChat {
 				behavior: Behavior::Events(vec![successful_outcome()]),
@@ -2027,7 +2027,7 @@ mod tests {
 		);
 
 		let mut request = ChatRequest::builder()
-			.model(SmolStr::new_static("kimi/k2"))
+			.model(Str::new_static("kimi/k2"))
 			.thread(Thread::default())
 			.tools(Vec::new())
 			.thinking(
@@ -2075,7 +2075,7 @@ mod tests {
 			.kind(ItemKind::Message(
 				Message::builder()
 					.role(role)
-					.parts(vec![Part::Text(SmolStr::new_static(text))])
+					.parts(vec![Part::Text(Str::new_static(text))])
 					.build(),
 			))
 			.props(Props::default())
@@ -2088,8 +2088,8 @@ mod tests {
 				.output(vec![item(Role::Assistant, "answer")])
 				.stop(StopReason::EndTurn)
 				.unsupported(Vec::new())
-				.provider(SmolStr::new_static("test"))
-				.model(SmolStr::new_static("model"))
+				.provider(Str::new_static("test"))
+				.model(Str::new_static("model"))
 				.props(Props::default())
 				.build(),
 		)
@@ -2103,8 +2103,8 @@ mod tests {
 				.output(vec![item(Role::Assistant, "answer")])
 				.stop(StopReason::EndTurn)
 				.unsupported(Vec::new())
-				.provider(SmolStr::new_static("openai"))
-				.model(SmolStr::new_static("gpt-5"))
+				.provider(Str::new_static("openai"))
+				.model(Str::new_static("gpt-5"))
 				.props(props)
 				.build(),
 		)
@@ -2114,7 +2114,7 @@ mod tests {
 		TurnEvent::Error(
 			TurnError::builder()
 				.kind(TurnErrorKind::Upstream)
-				.detail(SmolStr::new_static("mock failure"))
+				.detail(Str::new_static("mock failure"))
 				.unsupported(Vec::new())
 				.retry_after_ms(0)
 				.build(),
@@ -2134,7 +2134,7 @@ mod tests {
 				input:    Some(pb::turn_request::Input::Incremental(pb::Incremental {
 					context: Some(
 						ContextRef::builder()
-							.context_id(SmolStr::new_static(context_id))
+							.context_id(Str::new_static(context_id))
 							.expected(expected)
 							.build()
 							.into(),
@@ -2172,7 +2172,7 @@ mod tests {
 
 	fn context_ref(context_id: &'static str, expected: Revision) -> ContextRef {
 		ContextRef::builder()
-			.context_id(SmolStr::new_static(context_id))
+			.context_id(Str::new_static(context_id))
 			.expected(expected)
 			.build()
 	}
@@ -2203,7 +2203,7 @@ mod tests {
 		assert!(matches!(next_event(&mut events).await, TurnEvent::Accepted { replay: false }));
 		assert!(matches!(next_event(&mut events).await, TurnEvent::Invoke(_)));
 		let input = InvokeInput::builder()
-			.invocation_id(SmolStr::new_static("invoke-1"))
+			.invocation_id(Str::new_static("invoke-1"))
 			.payload(InvokePayload::Chunk(
 				InvokeChunk::builder()
 					.channel(InvokeChannel::Stdout)
@@ -2219,7 +2219,7 @@ mod tests {
 			.expect("input");
 		assert!(matches!(next_event(&mut events).await, TurnEvent::PartDelta { .. }));
 		let complete = InvokeComplete::builder()
-			.invocation_id(SmolStr::new_static("invoke-1"))
+			.invocation_id(Str::new_static("invoke-1"))
 			.tool_result(
 				ToolResult::builder()
 					.call_id(
@@ -2230,8 +2230,8 @@ mod tests {
 							.copied()
 							.expect("call id"),
 					)
-					.name(SmolStr::new_static("shell"))
-					.parts(vec![Part::Text(SmolStr::new_static("done"))])
+					.name(Str::new_static("shell"))
+					.parts(vec![Part::Text(Str::new_static("done"))])
 					.is_error(false)
 					.build(),
 			)
@@ -2239,11 +2239,11 @@ mod tests {
 				ExecStatus::builder()
 					.outcome(ExecOutcome::Exited)
 					.exit_code(0)
-					.signal(SmolStr::new_static(""))
-					.reason(SmolStr::new_static(""))
-					.cwd(SmolStr::new_static("/tmp"))
+					.signal(Str::new_static(""))
+					.reason(Str::new_static(""))
+					.cwd(Str::new_static("/tmp"))
 					.aborted(false)
-					.output_location(SmolStr::new_static(""))
+					.output_location(Str::new_static(""))
 					.local_execution_time_ms(1)
 					.is_readonly(false)
 					.command_timeout_ms(0)
@@ -2441,8 +2441,8 @@ mod tests {
 			engine(Arc::clone(&contexts), Behavior::Events(vec![successful_outcome()]), false);
 		let alternate_seen = Arc::new(Mutex::new(Vec::new()));
 		resolver.register(ChatRoute {
-			provider:          SmolStr::new_static("test"),
-			credential_id:     SmolStr::new_static("cred-b"),
+			provider:          Str::new_static("test"),
+			credential_id:     Str::new_static("cred-b"),
 			requires_executor: false,
 			chat:              Arc::new(MockChat {
 				behavior: Behavior::Events(vec![successful_outcome()]),
@@ -2549,7 +2549,7 @@ mod tests {
 		let streamed = sanitize_upstream_error(
 			TurnError::builder()
 				.kind(TurnErrorKind::Upstream)
-				.detail(SmolStr::new_static(CANARY))
+				.detail(Str::new_static(CANARY))
 				.unsupported(Vec::new())
 				.retry_after_ms(19)
 				.build(),

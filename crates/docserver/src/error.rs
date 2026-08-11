@@ -1,6 +1,6 @@
 use std::{fmt, io, path::PathBuf};
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use thiserror::Error as ThisError;
 
 use crate::{DocumentId, LeaseId, Revision, TransactionId};
@@ -30,9 +30,9 @@ pub enum Error {
 	#[error("invalid target {target}: {reason}")]
 	InvalidTarget {
 		/// The rejected target.
-		target: SmolStr,
+		target: Str,
 		/// Why the target was rejected.
-		reason: SmolStr,
+		reason: Str,
 	},
 
 	/// A resource exists but its active ownership or state forbids the
@@ -40,9 +40,9 @@ pub enum Error {
 	#[error("precondition failed for {target}: {reason}")]
 	PreconditionFailed {
 		/// The resource whose state rejected the operation.
-		target: SmolStr,
+		target: Str,
 		/// The failed ownership or state requirement.
-		reason: SmolStr,
+		reason: Str,
 	},
 
 	/// A half-open range is reversed or extends past the available content.
@@ -62,7 +62,7 @@ pub enum Error {
 	#[error("invalid content: {reason}")]
 	InvalidContent {
 		/// Why the content was rejected.
-		reason: SmolStr,
+		reason: Str,
 	},
 
 	/// The requested document is not known to the Environment.
@@ -165,14 +165,14 @@ pub enum Error {
 	#[error("protocol failure: {reason}")]
 	Protocol {
 		/// The protocol violation.
-		reason: SmolStr,
+		reason: Str,
 	},
 
 	/// A local filesystem operation failed.
 	#[error("I/O operation {operation} failed for {path:?}: {source}")]
 	Io {
 		/// The operation being attempted.
-		operation: SmolStr,
+		operation: Str,
 		/// The canonical path, or best available unresolved path on resolution
 		/// failure.
 		path:      PathBuf,

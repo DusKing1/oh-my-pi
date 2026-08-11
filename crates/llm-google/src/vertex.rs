@@ -1,6 +1,6 @@
 //! Vertex AI deployment routing and provider-status classification.
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::provider::{BaseUrlVars, ProviderEntry, expand_base_url};
 use omp_llm_types::{Error, TurnErrorKind};
 
@@ -43,14 +43,14 @@ impl VertexDeployment {
 	}
 
 	/// Builds the canonical Vertex publisher/model streaming endpoint.
-	pub fn stream_endpoint(&self, model: &str) -> Result<SmolStr, Error> {
+	pub fn stream_endpoint(&self, model: &str) -> Result<Str, Error> {
 		validate_segment("model", model)?;
 		let host = if self.location == "global" {
 			"aiplatform.googleapis.com".to_owned()
 		} else {
 			format!("{}-aiplatform.googleapis.com", self.location)
 		};
-		Ok(SmolStr::from(format!(
+		Ok(Str::from(format!(
 			"https://{host}/v1/projects/{}/locations/{}/publishers/google/models/{model}:{STREAM_ACTION}?alt=sse",
 			self.project, self.location
 		)))
@@ -66,12 +66,12 @@ pub fn vertex_stream_url(
 	project: &str,
 	region: &str,
 	model: &str,
-) -> Result<SmolStr, Error> {
+) -> Result<Str, Error> {
 	validate_segment("project", project)?;
 	validate_segment("location", region)?;
 	validate_segment("model", model)?;
 	let base_template = if region == "global" {
-		SmolStr::from(
+		Str::from(
 			provider
 				.base_url
 				.replace("{location}-aiplatform.googleapis.com", "aiplatform.googleapis.com")
@@ -88,7 +88,7 @@ pub fn vertex_stream_url(
 			.build(),
 	)
 	.map_err(provider_error)?;
-	Ok(SmolStr::from(format!(
+	Ok(Str::from(format!(
 		"{}/projects/{project}/locations/{region}/publishers/google/models/{model}:{STREAM_ACTION}?\
 		 alt=sse",
 		base.trim_end_matches('/')
@@ -114,14 +114,14 @@ fn validate_segment(name: &'static str, value: &str) -> Result<(), Error> {
 			.bytes()
 			.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 	{
-		return Err(Error::Provider(SmolStr::from(format!("invalid Vertex {name}"))));
+		return Err(Error::Provider(Str::from(format!("invalid Vertex {name}"))));
 	}
 	Ok(())
 }
 
 #[cold]
 fn provider_error(error: impl std::fmt::Display) -> Error {
-	Error::Provider(SmolStr::from(error.to_string()))
+	Error::Provider(Str::from(error.to_string()))
 }
 
 #[cfg(test)]

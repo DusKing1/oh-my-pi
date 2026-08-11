@@ -14,7 +14,7 @@ use std::{
 };
 
 use futures::{Stream, StreamExt, future::Either};
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 /// Canonical non-secret credential routing values selected for a provider
 /// attempt.
 pub use omp_llm_egress::auth_inject::{CredentialLease, CredentialMetadata};
@@ -106,7 +106,7 @@ pub struct SelectLayer {
 	pool:   Arc<dyn CredentialPool>,
 	leases: Arc<dyn LeaseSource>,
 	blocks: Arc<Mutex<BlockTable>>,
-	pins:   Arc<Mutex<HashMap<SmolStr, u64>>>,
+	pins:   Arc<Mutex<HashMap<Str, u64>>>,
 }
 
 impl SelectLayer {
@@ -142,7 +142,7 @@ pub struct Select<S> {
 	pool:   Arc<dyn CredentialPool>,
 	leases: Arc<dyn LeaseSource>,
 	blocks: Arc<Mutex<BlockTable>>,
-	pins:   Arc<Mutex<HashMap<SmolStr, u64>>>,
+	pins:   Arc<Mutex<HashMap<Str, u64>>>,
 }
 
 impl<S> Select<S> {
@@ -181,13 +181,13 @@ where
 			.request()
 			.params
 			.as_ref()
-			.map_or_else(|| SmolStr::new_static(""), |params| SmolStr::new(&params.model));
+			.map_or_else(|| Str::new_static(""), |params| Str::new(&params.model));
 		let session = req
 			.request()
 			.params
 			.as_ref()
 			.and_then(|params| params.cache.as_ref())
-			.map_or_else(|| SmolStr::new_static(""), |cache| SmolStr::new(&cache.session_key));
+			.map_or_else(|| Str::new_static(""), |cache| Str::new(&cache.session_key));
 		let candidates = self.pool.candidates(model.as_str());
 		let pinned = (!session.is_empty())
 			.then(|| self.pins.lock().get(&session).copied())
@@ -300,10 +300,10 @@ fn select_stream<S, St>(
 	credential_metadata: Option<CredentialMetadata>,
 	candidates: CredentialCandidates,
 	credential_id: u64,
-	session: SmolStr,
+	session: Str,
 	leases: Arc<dyn LeaseSource>,
 	blocks: Arc<Mutex<BlockTable>>,
-	pins: Arc<Mutex<HashMap<SmolStr, u64>>>,
+	pins: Arc<Mutex<HashMap<Str, u64>>>,
 ) -> SelectStream<S, St>
 where
 	S: Service<Routed, Response = St> + Send + 'static,
@@ -422,7 +422,7 @@ fn service_error(error: &impl fmt::Display) -> TurnEvent {
 }
 
 fn block_key(credential_id: u64) -> BlockKey {
-	BlockKey { credential: format_smol!("{credential_id}"), scope: None }
+	BlockKey { credential: fmts!("{credential_id}"), scope: None }
 }
 
 fn no_credential_error(model: &str, blocked: usize, earliest_unblock_ms: u64) -> SingleTurn {

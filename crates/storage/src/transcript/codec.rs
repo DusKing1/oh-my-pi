@@ -3,7 +3,7 @@
 use std::{path::PathBuf, str::Utf8Error};
 
 use bytes::BufMut;
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use thiserror::Error as ThisError;
@@ -275,7 +275,7 @@ struct Probe {
 	#[serde(default)]
 	ts: Option<u64>,
 	#[serde(default)]
-	k:  Option<SmolStr>,
+	k:  Option<Str>,
 }
 
 macro_rules! payload {
@@ -289,8 +289,8 @@ macro_rules! payload {
 
 payload!(InitPayload {
 	system_prompt: BlobRef,
-	tools: Vec<SmolStr>,
-	agent: Option<SmolStr>,
+	tools: Vec<Str>,
+	agent: Option<Str>,
 	output_schema: Option<Box<RawValue>>,
 });
 payload!(FailedPayload {
@@ -313,22 +313,22 @@ struct InferPayload {
 
 payload!(RewindPayload { to: Option<u64> });
 payload!(CompactPayload {
-	summary: SmolStr,
-	short: Option<SmolStr>,
+	summary: Str,
+	short: Option<Str>,
 	first_kept: u64,
 	tokens_before: u64,
-	warning: Option<SmolStr>,
+	warning: Option<Str>,
 });
-payload!(BranchPayload { from: u64, summary: SmolStr });
-payload!(TitlePayload { title: SmolStr, source: TitleSource });
+payload!(BranchPayload { from: u64, summary: Str });
+payload!(TitlePayload { title: Str, source: TitleSource });
 payload!(AddDirsPayload { dirs: Vec<PathBuf> });
 payload!(ForkedFromPayload { session: SessionId, at: Option<u64> });
 payload!(CheckpointPayload { provider: ProviderId, model: ModelId, items: BlobRef });
 payload!(AbortedPayload { tool_call_ids: Vec<CallId> });
 payload!(AmendPayload { target: u64, patch: AmendPatch });
-payload!(LabelPayload { target: u64, label: Option<SmolStr> });
+payload!(LabelPayload { target: u64, label: Option<Str> });
 payload!(CustomPayload {
-	kind: SmolStr,
+	kind: Str,
 	data: Option<Box<RawValue>>,
 	context: Option<Content>,
 	display: bool,
@@ -338,7 +338,7 @@ payload!(CustomPayload {
 /// bytes.
 pub fn read_line(line: &[u8]) -> Result<Event, Error> {
 	let probe: Probe = serde_json::from_slice(line)?;
-	let Some(tag) = probe.k.as_ref().map(SmolStr::as_str) else {
+	let Some(tag) = probe.k.as_ref().map(Str::as_str) else {
 		return unknown_line(line, probe.ts.unwrap_or_default());
 	};
 	let Some(ts) = probe.ts else {

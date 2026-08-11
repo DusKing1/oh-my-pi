@@ -290,7 +290,7 @@ async fn scope_isolates_endpoints_serving_the_same_model() {
 			.as_ref()
 			.map(|meta| meta.session_id.as_str())
 			.unwrap_or_default();
-		Some(omp_core::SmolStr::new(format!("{}@{}", params.model, session)))
+		Some(omp_core::Str::new(format!("{}@{}", params.model, session)))
 	});
 	let scoped_req = |endpoint: &str| {
 		let mut request = req("model");

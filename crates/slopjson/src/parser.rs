@@ -17,7 +17,7 @@
 //!   unrecognized bareword such as `{"paths": packages/foo/*}` is recovered as
 //!   a string up to the next `,` / `}` / `]` / newline.
 
-use omp_core::{SmolCow, SmolStrMut};
+use omp_core::{CowStr, StrMut};
 
 use crate::{
 	error::ParseError,
@@ -137,11 +137,11 @@ impl<'a> Parser<'a> {
 
 	/// Read a string starting at the opening `quote`. Borrowed (zero-copy)
 	/// when the literal needs no unescaping.
-	pub(crate) fn string(&mut self, quote: u8) -> Result<SmolCow<'a>, ParseError> {
+	pub(crate) fn string(&mut self, quote: u8) -> Result<CowStr<'a>, ParseError> {
 		let s = self.s;
 		let n = s.len();
 		let mut i = self.i + 1; // skip opening quote
-		let mut out: Option<SmolStrMut> = None;
+		let mut out: Option<StrMut> = None;
 		let mut run_start = i;
 		while i < n {
 			let b = s[i];
@@ -352,12 +352,12 @@ impl<'a> Parser<'a> {
 }
 
 /// Assemble the final string: borrowed when nothing needed unescaping.
-fn finish(owned: Option<SmolStrMut>, tail: &str) -> SmolCow<'_> {
+fn finish(owned: Option<StrMut>, tail: &str) -> CowStr<'_> {
 	match owned {
-		None => SmolCow::Borrowed(tail),
+		None => CowStr::Borrowed(tail),
 		Some(mut out) => {
 			out.push_str(tail);
-			SmolCow::Owned(out)
+			CowStr::Owned(out)
 		},
 	}
 }

@@ -23,7 +23,7 @@ use std::{
 	time::{Duration, Instant},
 };
 
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use omp_tui::{
 	AltScreenUse, Charset, Color, Frame, Icon, InputEvent, Key, Mouse, Rect, Renderer, Size, Style,
 	Terminal, TerminalEvent, TerminalOptions, TtyOut, UiContext, anim::Shimmer, detect,
@@ -134,12 +134,12 @@ impl Scene {
 		self.charset.spinner().at(self.elapsed)
 	}
 
-	fn timer(&self) -> SmolStr {
+	fn timer(&self) -> Str {
 		let seconds = self.elapsed.as_secs();
 		if seconds < 60 {
-			format_smol!("{seconds}s")
+			fmts!("{seconds}s")
 		} else {
-			format_smol!("{}m", seconds / 60)
+			fmts!("{}m", seconds / 60)
 		}
 	}
 
@@ -216,7 +216,7 @@ fn compose(scene: &Scene) -> Frame {
 
 	let mut y = 3_u16;
 	for (index, study) in STUDIES.iter().enumerate() {
-		let number = format_smol!("{:>2} ", index + 1);
+		let number = fmts!("{:>2} ", index + 1);
 		let mut column = frame.put(1, y, &number, ink(GOLD).bold());
 		column = frame.put(column, y, study.title, ink(TEXT).bold());
 		column = frame.put(column, y, "  ", ink(FAINT));
@@ -324,38 +324,38 @@ fn study_hem(frame: &mut Frame, y: u16, scene: &Scene) {
 
 /// One status item: a label painted in its identity color.
 struct Seg {
-	label: SmolStr,
+	label: Str,
 	color: Color,
 }
 
 impl Seg {
-	fn new(label: impl Into<SmolStr>, color: Color) -> Self {
+	fn new(label: impl Into<Str>, color: Color) -> Self {
 		Self { label: label.into(), color }
 	}
 }
 
 fn brand(scene: &Scene) -> Seg {
-	Seg::new(format_smol!("{} {}", scene.spinner(), scene.timer()), GREEN)
+	Seg::new(fmts!("{} {}", scene.spinner(), scene.timer()), GREEN)
 }
 
 fn omp_brand(scene: &Scene) -> Seg {
-	Seg::new(format_smol!("{} omp", scene.charset.icon(Icon::Omp)), MUTED)
+	Seg::new(fmts!("{} omp", scene.charset.icon(Icon::Omp)), MUTED)
 }
 
 fn model(scene: &Scene) -> Seg {
-	Seg::new(format_smol!("{} {MODEL}", scene.charset.icon(Icon::Model)), GREEN)
+	Seg::new(fmts!("{} {MODEL}", scene.charset.icon(Icon::Model)), GREEN)
 }
 
 fn git(scene: &Scene) -> Seg {
-	Seg::new(format_smol!("{} {GIT}", scene.charset.icon(Icon::Branch)), CYAN)
+	Seg::new(fmts!("{} {GIT}", scene.charset.icon(Icon::Branch)), CYAN)
 }
 
 fn context(scene: &Scene) -> Seg {
-	Seg::new(format_smol!("{} {CONTEXT}", scene.charset.icon(Icon::Context)), GOLD)
+	Seg::new(fmts!("{} {CONTEXT}", scene.charset.icon(Icon::Context)), GOLD)
 }
 
 fn cost() -> Seg {
-	Seg::new(SmolStr::new_static(COST), PURPLE)
+	Seg::new(Str::new_static(COST), PURPLE)
 }
 
 fn full_band(scene: &Scene) -> [Seg; 5] {
@@ -406,9 +406,9 @@ fn width_of(text: &str) -> u16 {
 
 /// [`TITLE`] truncated to at most `max` cells, ellipsized when it cannot
 /// fit whole.
-fn fit_title(scene: &Scene, max: u16) -> SmolStr {
+fn fit_title(scene: &Scene, max: u16) -> Str {
 	if width_of(TITLE) <= max {
-		return SmolStr::new_static(TITLE);
+		return Str::new_static(TITLE);
 	}
 	let ellipsis = match scene.charset {
 		Charset::Ascii => "...",
@@ -426,9 +426,9 @@ fn fit_title(scene: &Scene, max: u16) -> SmolStr {
 		end += grapheme.len();
 	}
 	if end == 0 {
-		return SmolStr::default();
+		return Str::default();
 	}
-	format_smol!("{}{ellipsis}", TITLE[..end].trim_end())
+	fmts!("{}{ellipsis}", TITLE[..end].trim_end())
 }
 
 /// Total cells a powerline band with `segments` occupies, mirroring the

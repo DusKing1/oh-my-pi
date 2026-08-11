@@ -28,7 +28,7 @@ use crate::turn::{ChatResolver, ChatRouteKey};
 pub struct SpecializedChats {
 	/// Provider-keyed specialized implementations for rows that cannot share
 	/// transport-global endpoint or credential state.
-	pub by_provider:         BTreeMap<omp_core::SmolStr, Arc<dyn Chat>>,
+	pub by_provider:         BTreeMap<omp_core::Str, Arc<dyn Chat>>,
 	/// Cursor's Connect/gRPC agent implementation.
 	pub cursor:              Option<Arc<dyn Chat>>,
 	/// Devin's Connect server-streaming implementation.
@@ -55,7 +55,7 @@ pub enum RouteRegistrationError {
 	#[error("chat provider {provider} requires an injected {transport:?} transport")]
 	MissingSpecialized {
 		/// Provider catalog id that could not be registered.
-		provider:  omp_core::SmolStr,
+		provider:  omp_core::Str,
 		/// Specialized transport required by the catalog row.
 		transport: TransportId,
 	},
@@ -63,7 +63,7 @@ pub enum RouteRegistrationError {
 	#[error("chat provider {provider} could not be assembled: {source}")]
 	Provider {
 		/// Provider catalog id that could not be registered.
-		provider: omp_core::SmolStr,
+		provider: omp_core::Str,
 		/// Concrete adapter construction failure.
 		source:   ProviderBuildError,
 	},
@@ -115,7 +115,7 @@ where
 		return Err(RouteRegistrationError::NoUsableRoutes);
 	}
 
-	let omp_dialect = std::env::var(DIALECT_ENV).ok().map(omp_core::SmolStr::from);
+	let omp_dialect = std::env::var(DIALECT_ENV).ok().map(omp_core::Str::from);
 	let mut assembled = Vec::with_capacity(providers.len());
 	for provider in providers {
 		let default =

@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{SinkExt as _, StreamExt as _, stream::BoxStream};
 use http::{HeaderMap, HeaderValue, header};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{
 	Accuracy, CallIdMapper, Chat, ChatOutcome, ChatRequest, Diagnostic, Error, Executor, Fallback,
 	Invoke, Item, ItemKind, Message, Part, Props, Retryability, Role, StopReason, StreamPartKind,
@@ -101,7 +101,7 @@ impl WorkflowSocket for TungsteniteSocket {
 				Some(Ok(WsMessage::Binary(bytes))) => {
 					return String::from_utf8(bytes.to_vec())
 						.map(Some)
-						.map_err(|error| Error::Transport(SmolStr::from(error.to_string())));
+						.map_err(|error| Error::Transport(Str::from(error.to_string())));
 				},
 				Some(Ok(WsMessage::Ping(payload))) => {
 					self
@@ -126,11 +126,11 @@ impl WorkflowSocket for TungsteniteSocket {
 #[derive(Clone, Debug)]
 pub struct WorkflowConfig {
 	/// Authenticated WebSocket endpoint.
-	pub websocket_url:  SmolStr,
+	pub websocket_url:  Str,
 	/// Server-created workflow identifier.
-	pub workflow_id:    SmolStr,
+	pub workflow_id:    Str,
 	/// Stable transport session identifier used by reconnect/resume.
-	pub session_id:     SmolStr,
+	pub session_id:     Str,
 	/// Maximum reconnects after an unclean transport loss.
 	pub max_reconnects: u32,
 	/// Maximum silence between workflow frames.
@@ -141,9 +141,9 @@ impl WorkflowConfig {
 	/// Creates a route configuration for a server-created workflow.
 	#[must_use]
 	pub fn new(
-		websocket_url: impl Into<SmolStr>,
-		workflow_id: impl Into<SmolStr>,
-		session_id: impl Into<SmolStr>,
+		websocket_url: impl Into<Str>,
+		workflow_id: impl Into<Str>,
+		session_id: impl Into<Str>,
 	) -> Self {
 		Self {
 			websocket_url:  websocket_url.into(),
@@ -217,7 +217,7 @@ impl Chat for GitLabDuoChat {
 							 reconnects += 1;
 							 yield TurnEvent::Attempt {
 								  number: reconnects + 1,
-								  reason: SmolStr::new_static("GitLab Duo Workflow socket reconnect/resume"),
+								  reason: Str::new_static("GitLab Duo Workflow socket reconnect/resume"),
 							 };
 							 match reconnect_socket(&*connector, &*auth, &config, state.last_event_id.as_deref()).await {
 								  Ok(next) => { socket = next; continue; },
@@ -229,7 +229,7 @@ impl Chat for GitLabDuoChat {
 							 reconnects += 1;
 							 yield TurnEvent::Attempt {
 								  number: reconnects + 1,
-								  reason: SmolStr::new_static("GitLab Duo Workflow idle reconnect/resume"),
+								  reason: Str::new_static("GitLab Duo Workflow idle reconnect/resume"),
 							 };
 							 match reconnect_socket(&*connector, &*auth, &config, state.last_event_id.as_deref()).await {
 								  Ok(next) => { socket = next; continue; },
@@ -237,12 +237,12 @@ impl Chat for GitLabDuoChat {
 							 }
 						},
 						Ok(Ok(None)) => {
-							 yield terminal_error(&mut state, Error::Transport(SmolStr::new_static("GitLab Duo Workflow socket closed before a terminal status")));
+							 yield terminal_error(&mut state, Error::Transport(Str::new_static("GitLab Duo Workflow socket closed before a terminal status")));
 							 return;
 						},
 						Ok(Err(error)) => { yield terminal_error(&mut state, error); return; },
 						Err(_) => {
-							 yield terminal_error(&mut state, Error::Transport(SmolStr::new_static("GitLab Duo Workflow socket idle timeout")));
+							 yield terminal_error(&mut state, Error::Transport(Str::new_static("GitLab Duo Workflow socket idle timeout")));
 							 return;
 						},
 				  };
@@ -262,8 +262,8 @@ impl Chat for GitLabDuoChat {
 							 socket.close().await;
 							 yield terminal_error(&mut state, Error::Unsupported(vec![
 								  Unsupported::builder()
-										.what(SmolStr::new_static("gitlab-duo-workflow/executor"))
-										.detail(SmolStr::new_static("GitLab Duo Workflow requested an in-turn MCP action"))
+										.what(Str::new_static("gitlab-duo-workflow/executor"))
+										.detail(Str::new_static("GitLab Duo Workflow requested an in-turn MCP action"))
 										.action(UnsupportedAction::Dropped)
 										.build(),
 							 ]));
@@ -276,7 +276,7 @@ impl Chat for GitLabDuoChat {
 						let result = completion.tool_result.unwrap_or_else(|| ToolResult::builder()
 							 .call_id(action.call.id)
 							 .name(action.call.name.clone())
-							 .parts(vec![Part::Text(SmolStr::new_static("tool completed without a transcript result"))])
+							 .parts(vec![Part::Text(Str::new_static("tool completed without a transcript result"))])
 							 .is_error(true)
 							 .build());
 						state.output.push(Item::builder()
@@ -325,7 +325,7 @@ async fn open_socket(
 		"https"
 	};
 	origin.set_scheme(origin_scheme).map_err(|()| {
-		Error::Transport(SmolStr::new_static("GitLab Duo Workflow endpoint has no HTTP origin"))
+		Error::Transport(Str::new_static("GitLab Duo Workflow endpoint has no HTTP origin"))
 	})?;
 	headers.insert(header::ORIGIN, header_value(origin.origin().ascii_serialization().as_str())?);
 	connector.connect(&config.websocket_url, headers).await
@@ -361,8 +361,8 @@ fn build_start_request(request: &ChatRequest, config: &WorkflowConfig) -> Result
 			let schema = serde_json::from_slice::<Value>(&tool.schema_json).map_err(|error| {
 				Error::Unsupported(vec![
 					Unsupported::builder()
-						.what(SmolStr::from(format!("tools.{}/schema", tool.name)))
-						.detail(SmolStr::from(format!("tool schema is not valid JSON: {error}")))
+						.what(Str::from(format!("tools.{}/schema", tool.name)))
+						.detail(Str::from(format!("tool schema is not valid JSON: {error}")))
 						.action(UnsupportedAction::Dropped)
 						.build(),
 				])
@@ -517,15 +517,15 @@ fn record_feature(
 		},
 		Fallback::Error | Fallback::Emulate => Err(Error::Unsupported(vec![
 			Unsupported::builder()
-				.what(SmolStr::new_static(what))
-				.detail(SmolStr::new_static(detail))
+				.what(Str::new_static(what))
+				.detail(Str::new_static(detail))
 				.action(UnsupportedAction::Dropped)
 				.build(),
 		])),
 		_ => Err(Error::Unsupported(vec![
 			Unsupported::builder()
-				.what(SmolStr::new_static(what))
-				.detail(SmolStr::new_static(detail))
+				.what(Str::new_static(what))
+				.detail(Str::new_static(detail))
 				.action(UnsupportedAction::Dropped)
 				.build(),
 		])),
@@ -616,7 +616,7 @@ fn parts_text(parts: &[Part]) -> String {
 }
 
 struct DecodeState {
-	model:           SmolStr,
+	model:           Str,
 	mapper:          CallIdMapper,
 	next_part:       u32,
 	open_text:       Option<u32>,
@@ -629,7 +629,7 @@ struct DecodeState {
 }
 
 impl DecodeState {
-	fn new(model: SmolStr, unsupported: Vec<Unsupported>) -> Self {
+	fn new(model: Str, unsupported: Vec<Unsupported>) -> Self {
 		Self {
 			model,
 			mapper: CallIdMapper::new(),
@@ -652,17 +652,17 @@ struct DecodedFrame {
 }
 
 struct DecodedAction {
-	request_id: SmolStr,
+	request_id: Str,
 	call:       ToolCall,
 	invocation: Invoke,
 }
 
 fn decode_frame(frame: &str, state: &mut DecodeState) -> Result<DecodedFrame, Error> {
 	let value: Value = serde_json::from_str(frame).map_err(|error| {
-		Error::Provider(SmolStr::from(format!("malformed GitLab Duo Workflow frame: {error}")))
+		Error::Provider(Str::from(format!("malformed GitLab Duo Workflow frame: {error}")))
 	})?;
 	let event = value.as_object().ok_or_else(|| {
-		Error::Provider(SmolStr::new_static("malformed GitLab Duo Workflow frame: expected object"))
+		Error::Provider(Str::new_static("malformed GitLab Duo Workflow frame: expected object"))
 	})?;
 	if let Some(id) = string_at(event, &["eventID", "event_id", "id"]) {
 		state.last_event_id = Some(id.to_owned());
@@ -685,8 +685,8 @@ fn decode_frame(frame: &str, state: &mut DecodeState) -> Result<DecodedFrame, Er
 				events.push(TurnEvent::PartStart {
 					index,
 					kind: StreamPartKind::Text,
-					tool_call_id: SmolStr::default(),
-					tool_name: SmolStr::default(),
+					tool_call_id: Str::default(),
+					tool_name: Str::default(),
 				});
 				index
 			};
@@ -705,7 +705,7 @@ fn decode_frame(frame: &str, state: &mut DecodeState) -> Result<DecodedFrame, Er
 		let canonical_id = state.mapper.observe(action.request_id);
 		let args =
 			serde_json::to_vec(&action.arguments).expect("JSON value serialization is infallible");
-		let tool_name = SmolStr::from(action.tool_name.as_str());
+		let tool_name = Str::from(action.tool_name.as_str());
 		let call = ToolCall::builder()
 			.id(canonical_id)
 			.name(tool_name.clone())
@@ -717,7 +717,7 @@ fn decode_frame(frame: &str, state: &mut DecodeState) -> Result<DecodedFrame, Er
 		events.push(TurnEvent::PartStart {
 			index,
 			kind: StreamPartKind::ToolCall,
-			tool_call_id: SmolStr::from(action.request_id),
+			tool_call_id: Str::from(action.request_id),
 			tool_name: tool_name.clone(),
 		});
 		events.push(TurnEvent::PartDelta { index, chunk: Bytes::from(args) });
@@ -732,14 +732,14 @@ fn decode_frame(frame: &str, state: &mut DecodeState) -> Result<DecodedFrame, Er
 		let mut props = Props::default();
 		props.insert_ns(PROVIDER, "request_id", Value::String(action.request_id.to_owned()));
 		let invocation = Invoke::builder()
-			.invocation_id(SmolStr::from(action.request_id))
+			.invocation_id(Str::from(action.request_id))
 			.name(tool_name)
 			.tool_call(call.clone())
 			.vendor(Bytes::new())
 			.timeout_ms(DEFAULT_INVOKE_TIMEOUT_MS)
 			.props(props)
 			.build();
-		DecodedAction { request_id: SmolStr::from(action.request_id), call, invocation }
+		DecodedAction { request_id: Str::from(action.request_id), call, invocation }
 	});
 
 	let status = status(event);
@@ -750,7 +750,7 @@ fn decode_frame(frame: &str, state: &mut DecodeState) -> Result<DecodedFrame, Er
 	}
 	if matches!(status, Some("FAILED" | "STOPPED")) {
 		let detail = string_at(event, &["error", "message"]).unwrap_or(status.unwrap_or("FAILED"));
-		return Err(Error::Provider(SmolStr::from(format!(
+		return Err(Error::Provider(Str::from(format!(
 			"GitLab Duo Workflow {status:?}: {detail}"
 		))));
 	}
@@ -828,7 +828,7 @@ fn map_action<'a>(
 }
 
 fn malformed_action(action: &str, detail: &str) -> Error {
-	Error::Provider(SmolStr::from(format!(
+	Error::Provider(Str::from(format!(
 		"malformed GitLab Duo Workflow action `{action}`: {detail}"
 	)))
 }
@@ -864,7 +864,7 @@ fn checkpoint_text(event: &Map<String, Value>) -> Result<Option<String>, Error> 
 		.unwrap_or(checkpoint);
 	let checkpoint = if let Some(text) = serialized.as_str() {
 		serde_json::from_str::<Value>(text).map_err(|error| {
-			Error::Provider(SmolStr::from(format!(
+			Error::Provider(Str::from(format!(
 				"malformed GitLab Duo Workflow checkpoint: {error}"
 			)))
 		})?
@@ -984,7 +984,7 @@ fn push_text_output(state: &mut DecodeState) {
 			.kind(ItemKind::Message(
 				Message::builder()
 					.role(Role::Assistant)
-					.parts(vec![Part::Text(SmolStr::from(std::mem::take(&mut state.text)))])
+					.parts(vec![Part::Text(Str::from(std::mem::take(&mut state.text)))])
 					.build(),
 			))
 			.props(Props::default())
@@ -1001,7 +1001,7 @@ fn terminal_outcome(state: &mut DecodeState) -> TurnEvent {
 			.stop(StopReason::EndTurn)
 			.maybe_usage(state.usage.take())
 			.unsupported(std::mem::take(&mut state.unsupported))
-			.provider(SmolStr::new_static(PROVIDER))
+			.provider(Str::new_static(PROVIDER))
 			.model(std::mem::take(&mut state.model))
 			.props(Props::default())
 			.build(),
@@ -1012,13 +1012,13 @@ fn terminal_error(state: &mut DecodeState, error: Error) -> TurnEvent {
 	let (kind, detail, unsupported) = match error {
 		Error::Unsupported(unsupported) => (
 			TurnErrorKind::Unsupported,
-			SmolStr::new_static("GitLab Duo Workflow requires an in-turn executor"),
+			Str::new_static("GitLab Duo Workflow requires an in-turn executor"),
 			unsupported,
 		),
 		Error::Provider(detail) | Error::Transport(detail) => {
 			(TurnErrorKind::Upstream, detail, Vec::new())
 		},
-		_ => (TurnErrorKind::Upstream, SmolStr::new_static("GitLab Duo Workflow failed"), Vec::new()),
+		_ => (TurnErrorKind::Upstream, Str::new_static("GitLab Duo Workflow failed"), Vec::new()),
 	};
 	let code = if kind == TurnErrorKind::Unsupported {
 		"unsupported"
@@ -1037,10 +1037,10 @@ fn terminal_error(state: &mut DecodeState, error: Error) -> TurnEvent {
 		kind
 	};
 	let diagnostic = Diagnostic::builder()
-		.provider(SmolStr::new_static(PROVIDER))
+		.provider(Str::new_static(PROVIDER))
 		.model(state.model.clone())
 		.attempt(1)
-		.code(SmolStr::new_static(code))
+		.code(Str::new_static(code))
 		.detail(detail.clone())
 		.retryability(Retryability::Never)
 		.build();
@@ -1057,12 +1057,12 @@ fn terminal_error(state: &mut DecodeState, error: Error) -> TurnEvent {
 
 fn header_value(value: &str) -> Result<HeaderValue, Error> {
 	HeaderValue::from_str(value).map_err(|_| {
-		Error::Transport(SmolStr::new_static(
+		Error::Transport(Str::new_static(
 			"GitLab Duo Workflow correlation id is not a valid header value",
 		))
 	})
 }
 
 fn transport_error(error: impl std::fmt::Display) -> Error {
-	Error::Transport(SmolStr::from(error.to_string()))
+	Error::Transport(Str::from(error.to_string()))
 }

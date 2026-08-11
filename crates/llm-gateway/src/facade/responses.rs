@@ -11,7 +11,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use http::{Request, StatusCode};
 use hyper::body::Body;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{
 	CacheHint, ChatOutcome, ChatRequest, Fallback, Feature, Item, ItemKind, Message, Part,
 	Reasoning, Role, Sampling, StopReason, StreamPartKind, Thread, ToolCall, ToolDef, ToolResult,
@@ -32,10 +32,10 @@ use super::{
 
 #[derive(Default, Deserialize)]
 struct WireRequest {
-	model:                SmolStr,
+	model:                Str,
 	#[serde(default)]
 	input:                Value,
-	instructions:         Option<SmolStr>,
+	instructions:         Option<Str>,
 	#[serde(default)]
 	tools:                Vec<Value>,
 	tool_choice:          Option<Value>,
@@ -45,15 +45,15 @@ struct WireRequest {
 	presence_penalty:     Option<f64>,
 	frequency_penalty:    Option<f64>,
 	stop:                 Option<Value>,
-	user:                 Option<SmolStr>,
+	user:                 Option<Str>,
 	reasoning:            Option<Value>,
 	text:                 Option<Value>,
 	#[serde(default)]
 	stream:               bool,
-	prompt_cache_key:     Option<SmolStr>,
-	previous_response_id: Option<SmolStr>,
+	prompt_cache_key:     Option<Str>,
+	previous_response_id: Option<Str>,
 	#[serde(flatten)]
-	extra:                BTreeMap<SmolStr, Value>,
+	extra:                BTreeMap<Str, Value>,
 }
 
 /// Handles `POST /v1/responses` through the shared chat service.
@@ -98,7 +98,7 @@ fn canonical_request(wire: &WireRequest) -> Result<ChatRequest, FacadeError> {
 		Value::String(text) => items.push(item(ItemKind::Message(
 			Message::builder()
 				.role(Role::User)
-				.parts(vec![Part::Text(SmolStr::from(text.as_str()))])
+				.parts(vec![Part::Text(Str::from(text.as_str()))])
 				.build(),
 		))),
 		Value::Array(values) => {
@@ -115,8 +115,8 @@ fn canonical_request(wire: &WireRequest) -> Result<ChatRequest, FacadeError> {
 		let schema = tool.get("parameters").cloned().unwrap_or_else(|| json!({}));
 		tools.push(
 			ToolDef::builder()
-				.name(SmolStr::from(name))
-				.description(SmolStr::from(
+				.name(Str::from(name))
+				.description(Str::from(
 					tool
 						.get("description")
 						.and_then(Value::as_str)
@@ -187,14 +187,14 @@ fn canonical_request(wire: &WireRequest) -> Result<ChatRequest, FacadeError> {
 fn sampling(wire: &WireRequest) -> Result<Option<Sampling>, FacadeError> {
 	let stop = match wire.stop.as_ref() {
 		None | Some(Value::Null) => None,
-		Some(Value::String(value)) => Some(vec![SmolStr::from(value.as_str())]),
+		Some(Value::String(value)) => Some(vec![Str::from(value.as_str())]),
 		Some(Value::Array(values)) => Some(
 			values
 				.iter()
 				.map(|value| {
 					value
 						.as_str()
-						.map(SmolStr::from)
+						.map(Str::from)
 						.ok_or_else(|| invalid("stop entries must be strings"))
 				})
 				.collect::<Result<Vec<_>, _>>()?,
@@ -299,7 +299,7 @@ fn append_item(value: &Value, items: &mut Vec<Item>) -> Result<(), FacadeError> 
 			items.push(item(ItemKind::ToolCall(
 				ToolCall::builder()
 					.id(canonical_call_id(id))
-					.name(SmolStr::from(string_at(value, "name")?))
+					.name(Str::from(string_at(value, "name")?))
 					.args_json(Bytes::copy_from_slice(arguments.as_bytes()))
 					.thought_signature(Bytes::new())
 					.build(),
@@ -334,7 +334,7 @@ fn append_item(value: &Value, items: &mut Vec<Item>) -> Result<(), FacadeError> 
 
 async fn non_streaming(
 	mut events: futures::stream::BoxStream<'static, TurnEvent>,
-	model: SmolStr,
+	model: Str,
 ) -> FacadeResponse {
 	let mut outcome = None;
 	while let Some(event) = events.next().await {
@@ -355,7 +355,7 @@ async fn non_streaming(
 
 fn streaming(
 	mut events: futures::stream::BoxStream<'static, TurnEvent>,
-	model: SmolStr,
+	model: Str,
 ) -> FacadeResponse {
 	let output = stream! {
 		let id = format!("resp_{}", ulid::Ulid::generate());
@@ -473,7 +473,7 @@ fn response_value(outcome: &ChatOutcome, requested_model: &str, response_id: &st
 }
 
 fn invalid(detail: &str) -> FacadeError {
-	FacadeError::Invalid(SmolStr::from(detail))
+	FacadeError::Invalid(Str::from(detail))
 }
 
 #[cfg(test)]
@@ -483,11 +483,11 @@ mod tests {
 	#[test]
 	fn previous_response_is_gateway_affinity() {
 		let wire = WireRequest {
-			model: SmolStr::from("test"),
+			model: Str::from("test"),
 			input: Value::String("continue".into()),
 			tools: Vec::new(),
 			stream: false,
-			previous_response_id: Some(SmolStr::from("resp_previous")),
+			previous_response_id: Some(Str::from("resp_previous")),
 			..WireRequest::default()
 		};
 		let request = canonical_request(&wire).expect("valid Responses request");

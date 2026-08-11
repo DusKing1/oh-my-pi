@@ -16,7 +16,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use flume::{Receiver, Sender};
-use omp_core::SmolStr;
+use omp_core::Str;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, value::RawValue};
@@ -58,11 +58,11 @@ const JSON_RPC_VERSION: &str = "2.0";
 #[serde(default, deny_unknown_fields)]
 pub struct LspProcessSelectorConfig {
 	/// LSP language identifiers accepted by this binding. Empty matches all.
-	pub languages:     Vec<SmolStr>,
+	pub languages:     Vec<Str>,
 	/// URI schemes accepted by this binding. Empty matches all.
-	pub schemes:       Vec<SmolStr>,
+	pub schemes:       Vec<Str>,
 	/// URI-path glob patterns accepted by this binding. Empty matches all.
-	pub path_patterns: Vec<SmolStr>,
+	pub path_patterns: Vec<Str>,
 }
 
 /// Explicit memory and cardinality limits for one child transport.
@@ -115,14 +115,14 @@ impl LspTransportSettings {
 		validate_limit("max_pending_requests", self.max_pending_requests, MAX_PENDING_REQUESTS)?;
 		if self.initialize_timeout_ms == 0 || self.initialize_timeout_ms > MAX_INITIALIZE_TIMEOUT_MS {
 			return Err(LspProcessError::InvalidConfig {
-				reason: SmolStr::new(format!(
+				reason: Str::new(format!(
 					"initialize_timeout_ms must be between 1 and {MAX_INITIALIZE_TIMEOUT_MS}"
 				)),
 			});
 		}
 		if self.shutdown_timeout_ms == 0 || self.shutdown_timeout_ms > MAX_SHUTDOWN_TIMEOUT_MS {
 			return Err(LspProcessError::InvalidConfig {
-				reason: SmolStr::new(format!(
+				reason: Str::new(format!(
 					"shutdown_timeout_ms must be between 1 and {MAX_SHUTDOWN_TIMEOUT_MS}"
 				)),
 			});
@@ -136,7 +136,7 @@ impl LspTransportSettings {
 #[serde(deny_unknown_fields)]
 pub struct LspProcessConfig {
 	/// Unique binding name exposed through the document protocol.
-	pub name:                   SmolStr,
+	pub name:                   Str,
 	/// Selection priority. Higher values are selected first.
 	#[serde(default)]
 	pub priority:               i32,
@@ -147,10 +147,10 @@ pub struct LspProcessConfig {
 	pub executable:             PathBuf,
 	/// Ordered command-line arguments passed without shell interpretation.
 	#[serde(default)]
-	pub args:                   Vec<SmolStr>,
+	pub args:                   Vec<Str>,
 	/// Environment entries added or replaced for the child.
 	#[serde(default)]
-	pub env:                    BTreeMap<SmolStr, SmolStr>,
+	pub env:                    BTreeMap<Str, Str>,
 	/// Optional exact JSON value supplied as `initializationOptions`.
 	#[serde(default)]
 	pub initialization_options: Option<Value>,
@@ -163,12 +163,12 @@ impl LspProcessConfig {
 	fn binding_spec(&self) -> Result<LspBindingSpec, LspProcessError> {
 		if self.name.is_empty() {
 			return Err(LspProcessError::InvalidConfig {
-				reason: SmolStr::new_static("binding name must not be empty"),
+				reason: Str::new_static("binding name must not be empty"),
 			});
 		}
 		if self.executable.as_os_str().is_empty() {
 			return Err(LspProcessError::InvalidConfig {
-				reason: SmolStr::new_static("executable must not be empty"),
+				reason: Str::new_static("executable must not be empty"),
 			});
 		}
 		self.transport.validate()?;
@@ -178,7 +178,7 @@ impl LspProcessConfig {
 			.iter()
 			.map(|language| {
 				LanguageId::new(language).map_err(|error| LspProcessError::InvalidConfig {
-					reason: SmolStr::new(error.to_string()),
+					reason: Str::new(error.to_string()),
 				})
 			})
 			.collect::<Result<Vec<_>, LspProcessError>>()?;
@@ -217,7 +217,7 @@ pub enum LspProcessError {
 	#[error("invalid LSP process configuration: {reason}")]
 	InvalidConfig {
 		/// Validation diagnostic.
-		reason: SmolStr,
+		reason: Str,
 	},
 	/// The child did not complete initialize before the configured deadline.
 	#[error("LSP initialize request timed out")]
@@ -282,7 +282,7 @@ impl LspProcess {
 		let spec = config.binding_spec()?;
 		let mut command = Command::new(&config.executable);
 		command
-			.args(config.args.iter().map(SmolStr::as_str))
+			.args(config.args.iter().map(Str::as_str))
 			.envs(
 				config
 					.env
@@ -298,13 +298,13 @@ impl LspProcess {
 			.stdin
 			.take()
 			.ok_or_else(|| LspProcessError::InvalidConfig {
-				reason: SmolStr::new_static("spawned child has no standard input"),
+				reason: Str::new_static("spawned child has no standard input"),
 			})?;
 		let stdout = child
 			.stdout
 			.take()
 			.ok_or_else(|| LspProcessError::InvalidConfig {
-				reason: SmolStr::new_static("spawned child has no standard output"),
+				reason: Str::new_static("spawned child has no standard output"),
 			})?;
 		let (binding_tx, binding_rx) = watch::channel(None);
 		let (transport, inbound, reader_task, writer_task) =
@@ -357,7 +357,7 @@ impl LspProcess {
 					.remove_binding(binding_id, CancellationToken::new())
 					.await;
 				return Err(LspProcessError::Transport(LspTransportError::Closed {
-					message: SmolStr::new_static("inbound dispatcher stopped during startup"),
+					message: Str::new_static("inbound dispatcher stopped during startup"),
 				}));
 			}
 			if let Err(error) = transport
@@ -510,7 +510,7 @@ struct WriteCommand {
 
 struct InboundMessage {
 	id:           Option<Bytes>,
-	method:       SmolStr,
+	method:       Str,
 	params:       Bytes,
 	cancellation: CancellationToken,
 }
@@ -584,7 +584,7 @@ impl ProcessTransport {
 	}
 
 	fn close(&self, message: &str) {
-		self.fail_all(LspTransportError::Closed { message: SmolStr::new(message) });
+		self.fail_all(LspTransportError::Closed { message: Str::new(message) });
 	}
 
 	fn fail_all(&self, error: LspTransportError) {
@@ -640,7 +640,7 @@ impl ProcessTransport {
 	) -> Result<(), LspTransportError> {
 		if payload.len() > self.max_message_bytes {
 			return Err(LspTransportError::InvalidResponse {
-				message: SmolStr::new("outbound JSON-RPC message exceeds configured limit"),
+				message: Str::new("outbound JSON-RPC message exceeds configured limit"),
 			});
 		}
 		let closed = self.state.lock().closed.clone();
@@ -671,7 +671,7 @@ impl ProcessTransport {
 			.lock()
 			.closed
 			.clone()
-			.unwrap_or_else(|| LspTransportError::Closed { message: SmolStr::new_static(fallback) })
+			.unwrap_or_else(|| LspTransportError::Closed { message: Str::new_static(fallback) })
 	}
 
 	fn serialize_bounded(&self, value: &impl Serialize) -> Result<Bytes, LspTransportError> {
@@ -683,7 +683,7 @@ impl ProcessTransport {
 		if let Err(error) = serde_json::to_writer(&mut output, value) {
 			return Err(if output.exceeded {
 				LspTransportError::InvalidResponse {
-					message: SmolStr::new_static("outbound JSON-RPC message exceeds configured limit"),
+					message: Str::new_static("outbound JSON-RPC message exceeds configured limit"),
 				}
 			} else {
 				invalid_response(error)
@@ -731,7 +731,7 @@ impl LspTransport for ProcessTransport {
 			.next_id
 			.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
 			.map_err(|_| LspTransportError::Closed {
-				message: SmolStr::new_static("LSP request identifier space exhausted"),
+				message: Str::new_static("LSP request identifier space exhausted"),
 			})?;
 		let payload = self.serialize_bounded(&RequestEnvelope {
 			jsonrpc: JSON_RPC_VERSION,
@@ -840,16 +840,16 @@ struct RpcErrorBody<'a> {
 
 struct RpcError {
 	code:    i32,
-	message: SmolStr,
+	message: Str,
 }
 
 impl RpcError {
 	fn method_not_found(method: &str) -> Self {
-		Self { code: -32601, message: SmolStr::new(format!("method not found: {method}")) }
+		Self { code: -32601, message: Str::new(format!("method not found: {method}")) }
 	}
 
 	fn invalid_params(message: impl AsRef<str>) -> Self {
-		Self { code: -32602, message: SmolStr::new(message.as_ref()) }
+		Self { code: -32602, message: Str::new(message.as_ref()) }
 	}
 }
 
@@ -873,7 +873,7 @@ async fn writer_loop<W>(
 		let result = write_frame(&mut writer, &command.payload)
 			.await
 			.map_err(|error| LspTransportError::Closed {
-				message: SmolStr::new(format!("cannot write LSP frame: {error}")),
+				message: Str::new(format!("cannot write LSP frame: {error}")),
 			});
 		let failed = result.is_err();
 		let failure = result.as_ref().err().cloned();
@@ -914,13 +914,13 @@ async fn reader_loop<R>(
 			.and_then(|version| serde_json::from_str::<String>(version.get()).ok());
 		if version.as_deref() != Some(JSON_RPC_VERSION) {
 			transport.fail_all(LspTransportError::InvalidResponse {
-				message: SmolStr::new_static("JSON-RPC message must declare version 2.0"),
+				message: Str::new_static("JSON-RPC message must declare version 2.0"),
 			});
 			break;
 		}
 		if let Some(method) = fields.get("method") {
 			let method = match serde_json::from_str::<String>(method.get()) {
-				Ok(method) => SmolStr::new(method),
+				Ok(method) => Str::new(method),
 				Err(error) => {
 					transport.fail_all(invalid_response(error));
 					break;
@@ -985,7 +985,7 @@ async fn reader_loop<R>(
 			},
 			_ => {
 				transport.fail_all(LspTransportError::InvalidResponse {
-					message: SmolStr::new_static("response must contain exactly one of result or error"),
+					message: Str::new_static("response must contain exactly one of result or error"),
 				});
 				break;
 			},
@@ -1005,65 +1005,65 @@ async fn read_frame<R: AsyncRead + Unpin>(
 	reader: &mut R,
 	max_header_bytes: usize,
 	max_message_bytes: usize,
-) -> Result<Bytes, SmolStr> {
+) -> Result<Bytes, Str> {
 	let mut header = Vec::with_capacity(max_header_bytes.min(1024));
 	let mut byte = [0_u8; 1];
 	loop {
 		match reader.read(&mut byte).await {
 			Ok(0) if header.is_empty() => {
-				return Err(SmolStr::new_static("LSP standard output reached EOF"));
+				return Err(Str::new_static("LSP standard output reached EOF"));
 			},
-			Ok(0) => return Err(SmolStr::new_static("EOF inside LSP frame header")),
+			Ok(0) => return Err(Str::new_static("EOF inside LSP frame header")),
 			Ok(_) => {
 				if header.len() == max_header_bytes {
-					return Err(SmolStr::new_static("LSP frame header exceeds configured limit"));
+					return Err(Str::new_static("LSP frame header exceeds configured limit"));
 				}
 				if header.len() == header.capacity() {
 					header.reserve_exact(1);
 				}
 				header.push(byte[0]);
 			},
-			Err(error) => return Err(SmolStr::new(format!("cannot read LSP frame header: {error}"))),
+			Err(error) => return Err(Str::new(format!("cannot read LSP frame header: {error}"))),
 		}
 		if header.ends_with(b"\r\n\r\n") {
 			break;
 		}
 	}
 	let header_text = std::str::from_utf8(&header)
-		.map_err(|_| SmolStr::new_static("LSP frame header is not ASCII-compatible UTF-8"))?;
+		.map_err(|_| Str::new_static("LSP frame header is not ASCII-compatible UTF-8"))?;
 	if !header.is_ascii() {
-		return Err(SmolStr::new_static("LSP frame header contains non-ASCII bytes"));
+		return Err(Str::new_static("LSP frame header contains non-ASCII bytes"));
 	}
 	let mut content_length = None;
 	for line in header_text[..header_text.len() - 4].split("\r\n") {
 		let (name, value) = line
 			.split_once(':')
-			.ok_or_else(|| SmolStr::new_static("malformed LSP frame header field"))?;
+			.ok_or_else(|| Str::new_static("malformed LSP frame header field"))?;
 		if name.eq_ignore_ascii_case("Content-Length") {
 			if content_length.is_some() {
-				return Err(SmolStr::new_static("duplicate Content-Length header"));
+				return Err(Str::new_static("duplicate Content-Length header"));
 			}
 			let value = value.trim();
 			if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-				return Err(SmolStr::new_static("invalid Content-Length header"));
+				return Err(Str::new_static("invalid Content-Length header"));
 			}
 			content_length = Some(
 				value
 					.parse::<usize>()
-					.map_err(|_| SmolStr::new_static("Content-Length overflows this platform"))?,
+					.map_err(|_| Str::new_static("Content-Length overflows this platform"))?,
 			);
 		}
 	}
 	let content_length =
-		content_length.ok_or_else(|| SmolStr::new_static("LSP frame is missing Content-Length"))?;
+		content_length.ok_or_else(|| Str::new_static("LSP frame is missing Content-Length"))?;
 	if content_length > max_message_bytes {
-		return Err(SmolStr::new_static("LSP frame payload exceeds configured limit"));
+		return Err(Str::new_static("LSP frame payload exceeds configured limit"));
 	}
 	let mut payload = vec![0; content_length];
 	reader
 		.read_exact(&mut payload)
 		.await
-		.map_err(|error| SmolStr::new(format!("cannot read complete LSP frame payload: {error}")))?;
+		.map_err(|error| Str::new(format!("cannot read complete LSP frame payload: {error}")))?;
 	Ok(Bytes::from(payload))
 }
 
@@ -1076,13 +1076,13 @@ fn parse_rpc_error(error: &RawValue) -> Result<LspTransportError, LspTransportEr
 	let code = fields
 		.get("code")
 		.ok_or_else(|| LspTransportError::InvalidResponse {
-			message: SmolStr::new_static("JSON-RPC error is missing code"),
+			message: Str::new_static("JSON-RPC error is missing code"),
 		})
 		.and_then(|code| serde_json::from_str::<i32>(code.get()).map_err(invalid_response))?;
 	let message = fields
 		.get("message")
 		.ok_or_else(|| LspTransportError::InvalidResponse {
-			message: SmolStr::new_static("JSON-RPC error is missing message"),
+			message: Str::new_static("JSON-RPC error is missing message"),
 		})
 		.and_then(|message| {
 			serde_json::from_str::<String>(message.get()).map_err(invalid_response)
@@ -1090,7 +1090,7 @@ fn parse_rpc_error(error: &RawValue) -> Result<LspTransportError, LspTransportEr
 	let data = fields
 		.get("data")
 		.map(|data| Bytes::copy_from_slice(data.get().as_bytes()));
-	Ok(LspTransportError::JsonRpc { code, message: SmolStr::new(message), data })
+	Ok(LspTransportError::JsonRpc { code, message: Str::new(message), data })
 }
 
 fn raw_from_bytes(bytes: &[u8]) -> Result<&RawValue, LspTransportError> {
@@ -1098,13 +1098,13 @@ fn raw_from_bytes(bytes: &[u8]) -> Result<&RawValue, LspTransportError> {
 }
 
 fn invalid_response(error: serde_json::Error) -> LspTransportError {
-	LspTransportError::InvalidResponse { message: SmolStr::new(error.to_string()) }
+	LspTransportError::InvalidResponse { message: Str::new(error.to_string()) }
 }
 
 fn validate_limit(name: &str, value: usize, maximum: usize) -> Result<(), LspProcessError> {
 	if value == 0 || value > maximum {
 		return Err(LspProcessError::InvalidConfig {
-			reason: SmolStr::new(format!("{name} must be between 1 and {maximum}")),
+			reason: Str::new(format!("{name} must be between 1 and {maximum}")),
 		});
 	}
 	Ok(())
@@ -1166,13 +1166,13 @@ fn extract_capabilities(result: &[u8]) -> Result<Bytes, LspProcessError> {
 	let fields = parse_fields(result)?;
 	let capabilities = fields.get("capabilities").ok_or_else(|| {
 		LspProcessError::Transport(LspTransportError::InvalidResponse {
-			message: SmolStr::new_static("initialize result is missing capabilities"),
+			message: Str::new_static("initialize result is missing capabilities"),
 		})
 	})?;
 	Ok(Bytes::copy_from_slice(capabilities.get().as_bytes()))
 }
 
-fn workspace_name(root_uri: &Url) -> SmolStr {
+fn workspace_name(root_uri: &Url) -> Str {
 	root_uri
 		.to_file_path()
 		.ok()
@@ -1182,7 +1182,7 @@ fn workspace_name(root_uri: &Url) -> SmolStr {
 				.map(|name| name.to_string_lossy().into_owned())
 		})
 		.filter(|name| !name.is_empty())
-		.map_or_else(|| SmolStr::new_static("workspace"), SmolStr::new)
+		.map_or_else(|| Str::new_static("workspace"), Str::new)
 }
 
 /// Deferred work that must begin only after a server-request response write
@@ -1220,7 +1220,7 @@ fn spawn_inbound_dispatch(
 	environment: Environment,
 	registry: LspRegistry,
 	root_uri: Url,
-	root_name: SmolStr,
+	root_name: Str,
 	deferred_limit: usize,
 ) -> JoinHandle<()> {
 	tokio::spawn(async move {

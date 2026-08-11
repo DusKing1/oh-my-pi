@@ -3,7 +3,7 @@
 use std::fmt;
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde_json::Value;
 use smallvec::SmallVec;
 use thiserror::Error;
@@ -139,23 +139,23 @@ pub enum ScanEvent {
 	/// Start of one in-band tool invocation.
 	ToolStart {
 		/// Model-provided or scanner-minted correlation token.
-		id:   SmolStr,
+		id:   Str,
 		/// Portable tool name.
-		name: SmolStr,
+		name: Str,
 	},
 	/// Incremental JSON argument bytes for an active invocation.
 	ToolArgumentDelta {
 		/// Correlation token from the matching start event.
-		id:    SmolStr,
+		id:    Str,
 		/// Newly accepted argument bytes only.
 		delta: Bytes,
 	},
 	/// Completed in-band tool invocation.
 	ToolEnd {
 		/// Correlation token from the matching start event.
-		id:        SmolStr,
+		id:        Str,
 		/// Portable tool name.
-		name:      SmolStr,
+		name:      Str,
 		/// Complete, coerced UTF-8 JSON arguments.
 		args_json: Bytes,
 		/// Original model-authored tool envelope when the dialect exposes one.
@@ -220,7 +220,7 @@ pub enum DialectError {
 	#[error("invalid schema for dialect tool `{tool}`")]
 	InvalidToolSchema {
 		/// Portable tool name.
-		tool:   SmolStr,
+		tool:   Str,
 		/// JSON decoding failure.
 		#[source]
 		source: serde_json::Error,
@@ -229,7 +229,7 @@ pub enum DialectError {
 	#[error("invalid arguments for dialect tool `{tool}`")]
 	InvalidToolArguments {
 		/// Portable tool name.
-		tool:   SmolStr,
+		tool:   Str,
 		/// JSON decoding failure.
 		#[source]
 		source: serde_json::Error,

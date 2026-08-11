@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{TransportId, compat::Compat};
 use omp_llm_transport::{
 	DecodeState, Frame, Transport,
@@ -57,7 +57,7 @@ impl Transport for OllamaChatCodec {
 				continue;
 			}
 			let schema: Value = serde_json::from_slice(&tool.schema_json).map_err(|error| {
-				Error::Provider(SmolStr::from(format!(
+				Error::Provider(Str::from(format!(
 					"invalid Ollama tool schema for {}: {error}",
 					tool.name
 				)))
@@ -126,8 +126,8 @@ impl Transport for OllamaChatCodec {
 				if bounded != requested {
 					unsupported.push(
 						Unsupported::builder()
-							.what(SmolStr::new_static("sampling.max_output_tokens"))
-							.detail(SmolStr::new_static(
+							.what(Str::new_static("sampling.max_output_tokens"))
+							.detail(Str::new_static(
 								"Ollama Cloud caps generated output at 65,536 tokens",
 							))
 							.action(UnsupportedAction::Clamped)
@@ -209,7 +209,7 @@ impl Transport for OllamaChatCodec {
 			.map(Bytes::from)
 			.map(|body| (body, unsupported))
 			.map_err(|error| {
-				Error::Provider(SmolStr::from(format!("Ollama request serialization failed: {error}")))
+				Error::Provider(Str::from(format!("Ollama request serialization failed: {error}")))
 			})
 	}
 
@@ -277,7 +277,7 @@ fn encode_reasoning(
 		Some(effort) => {
 			let mapped = thinking_policy
 				.and_then(|policy| policy.effort_map.get(&effort))
-				.map(SmolStr::as_str)
+				.map(Str::as_str)
 				.unwrap_or_else(|| ollama_effort(effort));
 			Some(Value::String(mapped.into()))
 		},
@@ -338,7 +338,7 @@ fn encode_messages(
 			ItemKind::Message(message) => messages.push(encode_message(message, unsupported)?),
 			ItemKind::ToolCall(call) => {
 				let arguments: Value = serde_json::from_slice(&call.args_json).map_err(|error| {
-					Error::Provider(SmolStr::from(format!("invalid Ollama tool arguments: {error}")))
+					Error::Provider(Str::from(format!("invalid Ollama tool arguments: {error}")))
 				})?;
 				let tool_call = json!({
 					"type": "function",
@@ -394,7 +394,7 @@ fn encode_message(message: &Message, unsupported: &mut Vec<Unsupported>) -> Resu
 		Role::System => "system",
 		Role::User => "user",
 		Role::Assistant => "assistant",
-		_ => return Err(Error::Provider(SmolStr::new_static("unsupported Ollama message role"))),
+		_ => return Err(Error::Provider(Str::new_static("unsupported Ollama message role"))),
 	};
 	let (content, images) = encode_parts(&message.parts, message.role, unsupported)?;
 	let mut object = Map::new();
@@ -546,7 +546,7 @@ struct OllamaDecodeState {
 enum DecodedPart {
 	Text(String),
 	Thinking(String),
-	ToolCall { id: CallId, name: SmolStr, args: Bytes },
+	ToolCall { id: CallId, name: Str, args: Bytes },
 }
 
 fn decode_line(data: &[u8], state: &mut DecodeState) -> Result<SmallVec<TurnEvent, 2>, Error> {
@@ -554,7 +554,7 @@ fn decode_line(data: &[u8], state: &mut DecodeState) -> Result<SmallVec<TurnEven
 		return Ok(SmallVec::new());
 	}
 	let chunk: Value = serde_json::from_slice(data).map_err(|error| {
-		Error::Provider(SmolStr::from(format!("invalid Ollama NDJSON chunk: {error}")))
+		Error::Provider(Str::from(format!("invalid Ollama NDJSON chunk: {error}")))
 	})?;
 	let state = state.get_or_insert_with(OllamaDecodeState::default);
 	if state.completed {
@@ -589,14 +589,14 @@ fn decode_line(data: &[u8], state: &mut DecodeState) -> Result<SmallVec<TurnEven
 					.get("function")
 					.and_then(Value::as_object)
 					.ok_or_else(|| {
-						Error::Provider(SmolStr::new_static("Ollama tool call is missing function"))
+						Error::Provider(Str::new_static("Ollama tool call is missing function"))
 					})?;
 				let name = function
 					.get("name")
 					.and_then(Value::as_str)
 					.filter(|name| !name.is_empty())
 					.ok_or_else(|| {
-						Error::Provider(SmolStr::new_static("Ollama tool call is missing name"))
+						Error::Provider(Str::new_static("Ollama tool call is missing name"))
 					})?;
 				let args = match function.get("arguments") {
 					Some(Value::String(arguments)) => Bytes::copy_from_slice(arguments.as_bytes()),
@@ -604,7 +604,7 @@ fn decode_line(data: &[u8], state: &mut DecodeState) -> Result<SmallVec<TurnEven
 						serde_json::to_vec(arguments)
 							.map(Bytes::from)
 							.map_err(|error| {
-								Error::Provider(SmolStr::from(format!(
+								Error::Provider(Str::from(format!(
 									"invalid Ollama tool arguments: {error}"
 								)))
 							})?
@@ -616,14 +616,14 @@ fn decode_line(data: &[u8], state: &mut DecodeState) -> Result<SmallVec<TurnEven
 				let id = CallId::new();
 				state.parts.insert(index, DecodedPart::ToolCall {
 					id,
-					name: SmolStr::new(name),
+					name: Str::new(name),
 					args: args.clone(),
 				});
 				events.push(TurnEvent::PartStart {
 					index,
 					kind: StreamPartKind::ToolCall,
-					tool_call_id: SmolStr::from(id.to_string()),
-					tool_name: SmolStr::new(name),
+					tool_call_id: Str::from(id.to_string()),
+					tool_name: Str::new(name),
 				});
 				events.push(TurnEvent::PartDelta { index, chunk: args });
 				events.push(TurnEvent::PartEnd { index, signature: Bytes::new() });
@@ -681,7 +681,7 @@ fn append_part(
 	};
 	match state.parts.get_mut(&index) {
 		Some(DecodedPart::Text(text) | DecodedPart::Thinking(text)) => text.push_str(chunk),
-		_ => return Err(Error::Provider(SmolStr::new_static("Ollama stream part state mismatch"))),
+		_ => return Err(Error::Provider(Str::new_static("Ollama stream part state mismatch"))),
 	}
 	events.push(TurnEvent::PartDelta { index, chunk: Bytes::copy_from_slice(chunk.as_bytes()) });
 	Ok(())
@@ -706,8 +706,8 @@ fn open_part(
 	events.push(TurnEvent::PartStart {
 		index,
 		kind,
-		tool_call_id: SmolStr::default(),
-		tool_name: SmolStr::default(),
+		tool_call_id: Str::default(),
+		tool_name: Str::default(),
 	});
 	index
 }
@@ -738,12 +738,12 @@ fn outcome(stop: StopReason, state: &OllamaDecodeState) -> ChatOutcome {
 	for part in state.parts.values() {
 		match part {
 			DecodedPart::Text(text) if !text.is_empty() => {
-				output.push(assistant_item(Part::Text(SmolStr::from(text.as_str()))))
+				output.push(assistant_item(Part::Text(Str::from(text.as_str()))))
 			},
 			DecodedPart::Thinking(text) if !text.is_empty() => {
 				output.push(assistant_item(Part::Thinking(
 					Thinking::builder()
-						.text(SmolStr::from(text.as_str()))
+						.text(Str::from(text.as_str()))
 						.signature(Bytes::new())
 						.redacted(false)
 						.build(),
@@ -783,8 +783,8 @@ fn outcome(stop: StopReason, state: &OllamaDecodeState) -> ChatOutcome {
 		.maybe_cost(None)
 		.unsupported(Vec::new())
 		.maybe_revision(None)
-		.provider(SmolStr::new_static("ollama-cloud"))
-		.model(SmolStr::default())
+		.provider(Str::new_static("ollama-cloud"))
+		.model(Str::default())
 		.props(Props::default())
 		.build()
 }
@@ -805,13 +805,13 @@ fn assistant_item(part: Part) -> Item {
 fn turn_error(kind: TurnErrorKind, detail: &str) -> TurnError {
 	TurnError::builder()
 		.kind(kind)
-		.detail(SmolStr::new(detail))
+		.detail(Str::new(detail))
 		.unsupported(Vec::new())
 		.retry_after_ms(0)
 		.build()
 }
 
-fn dropped(what: impl Into<SmolStr>, detail: impl Into<SmolStr>) -> Unsupported {
+fn dropped(what: impl Into<Str>, detail: impl Into<Str>) -> Unsupported {
 	Unsupported::builder()
 		.what(what.into())
 		.detail(detail.into())

@@ -1,6 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig};
 use tokio_util::sync::CancellationToken;
 
@@ -16,13 +16,13 @@ const PARAKEET_SAMPLE_RATE: u32 = 16_000;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParakeetFiles {
 	/// Acoustic encoder ONNX graph.
-	pub encoder: SmolStr,
+	pub encoder: Str,
 	/// Autoregressive decoder ONNX graph.
-	pub decoder: SmolStr,
+	pub decoder: Str,
 	/// Encoder-decoder joiner ONNX graph.
-	pub joiner:  SmolStr,
+	pub joiner:  Str,
 	/// Token table used to reconstruct recognized text.
-	pub tokens:  SmolStr,
+	pub tokens:  Str,
 }
 
 impl Default for ParakeetFiles {

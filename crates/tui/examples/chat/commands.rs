@@ -8,7 +8,7 @@
 //! hover, wheel, and click activation — the palette only routes the
 //! surfaced [`UiEvent`]s, exactly like the model picker.
 
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use omp_tui::{
 	Color, Dim, Key, Layer, Mouse, OverlayAnchor, OverlayOptions, Prop, Size, Ui, UiContext,
 	UiEvent, dom,
@@ -47,7 +47,7 @@ pub enum PaletteAction {
 	/// Exit the demo (`Ctrl+C`).
 	Quit,
 	/// Stage this text in the composer (slash commands).
-	Insert(SmolStr),
+	Insert(Str),
 }
 
 /// Sentinel values for the built-in actions; slash entries carry their
@@ -63,7 +63,7 @@ pub struct CommandPalette {
 	ctx:     UiContext,
 	options: OverlayOptions,
 	/// Query carried across width rebuilds.
-	query:   SmolStr,
+	query:   Str,
 	/// List rows granted by the last viewport.
 	rows:    u16,
 }
@@ -79,7 +79,7 @@ impl CommandPalette {
 			ui: build("", 8, 100, ctx),
 			ctx: ctx.clone(),
 			options,
-			query: SmolStr::default(),
+			query: Str::default(),
 			rows: 8,
 		}
 	}
@@ -136,7 +136,7 @@ impl CommandPalette {
 				SWITCH_MODEL => PaletteEvent::Run(PaletteAction::SwitchModel),
 				TOGGLE_SIDEBAR => PaletteEvent::Run(PaletteAction::ToggleSidebar),
 				QUIT => PaletteEvent::Run(PaletteAction::Quit),
-				slash => PaletteEvent::Run(PaletteAction::Insert(format_smol!("{slash} "))),
+				slash => PaletteEvent::Run(PaletteAction::Insert(fmts!("{slash} "))),
 			},
 			UiEvent::Filtered { query, .. } => {
 				self.query = query;
@@ -151,13 +151,13 @@ impl CommandPalette {
 
 /// One option row's static content.
 struct EntrySpec {
-	value:   SmolStr,
-	label:   SmolStr,
-	name:    SmolStr,
+	value:   Str,
+	label:   Str,
+	name:    Str,
 	name_fg: Color,
-	detail:  SmolStr,
+	detail:  Str,
 	/// Right-aligned keybinding column; empty for slash entries.
-	key:     SmolStr,
+	key:     Str,
 }
 
 impl EntrySpec {
@@ -168,12 +168,12 @@ impl EntrySpec {
 		key: &'static str,
 	) -> Self {
 		Self {
-			value:   SmolStr::new_static(value),
-			label:   SmolStr::new_static(name),
-			name:    SmolStr::new_static(name),
+			value:   Str::new_static(value),
+			label:   Str::new_static(name),
+			name:    Str::new_static(name),
 			name_fg: TEXT,
-			detail:  SmolStr::new_static(detail),
-			key:     SmolStr::new_static(key),
+			detail:  Str::new_static(detail),
+			key:     Str::new_static(key),
 		}
 	}
 }
@@ -197,14 +197,14 @@ fn entries() -> Vec<EntrySpec> {
 	));
 	list.push(EntrySpec::action(QUIT, "Quit", "Exit the demo", "ctrl+c"));
 	list.extend(commands.iter().map(|command| {
-		let name = format_smol!("/{}", command.name());
+		let name = fmts!("/{}", command.name());
 		EntrySpec {
 			value: name.clone(),
 			label: name.clone(),
 			name,
 			name_fg: CYAN,
-			detail: SmolStr::from(command.description()),
-			key: SmolStr::default(),
+			detail: Str::from(command.description()),
+			key: Str::default(),
 		}
 	}));
 	list
@@ -213,7 +213,7 @@ fn entries() -> Vec<EntrySpec> {
 /// Builds the retained overlay tree.
 fn build(query: &str, rows: u16, width: u16, ctx: &UiContext) -> Ui {
 	let list = entries();
-	let seed = SmolStr::from(query);
+	let seed = Str::from(query);
 	let height = rows.saturating_add(1);
 	Ui::from_root(
 		dom! {

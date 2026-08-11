@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde_json::Value;
 use smallvec::SmallVec;
 
@@ -20,14 +20,14 @@ use crate::{
 
 #[derive(Clone, Debug)]
 enum Predicate {
-	Equal(SmolStr),
-	NotEqual(SmolStr),
+	Equal(Str),
+	NotEqual(Str),
 }
 
 #[derive(Clone, Debug)]
 struct CompiledCond {
 	target:    Slot,
-	source_id: SmolStr,
+	source_id: Str,
 	predicate: Predicate,
 }
 
@@ -67,7 +67,7 @@ impl OverlayEntry {
 /// A parsed, laid-out, retained component tree painting into a [`Frame`].
 pub struct Ui {
 	#[allow(dead_code, reason = "keeps parsed source storage alive")]
-	pub(crate) source:     SmolStr,
+	pub(crate) source:     Str,
 	pub(crate) root:       Cached,
 	pub(crate) frame:      Frame,
 	pub(crate) width:      u16,
@@ -123,7 +123,7 @@ impl Ui {
 	/// # Errors
 	/// Returns [`ParseError`] for malformed markup.
 	pub fn from_markup(
-		source: impl Into<SmolStr>,
+		source: impl Into<Str>,
 		width: u16,
 		ctx: UiContext,
 	) -> Result<Self, ParseError> {
@@ -134,10 +134,10 @@ impl Ui {
 
 	/// Builds a retained UI directly from a component tree.
 	pub fn from_root(root: impl IntoComponent, width: u16, ctx: UiContext) -> Self {
-		Self::from_cached(SmolStr::new(""), Cached::new(root.into_component()), width, ctx)
+		Self::from_cached(Str::new(""), Cached::new(root.into_component()), width, ctx)
 	}
 
-	fn from_cached(source: SmolStr, root: Cached, width: u16, ctx: UiContext) -> Self {
+	fn from_cached(source: Str, root: Cached, width: u16, ctx: UiContext) -> Self {
 		let mut ui = Self {
 			source,
 			root,
@@ -273,7 +273,7 @@ impl Ui {
 	}
 
 	/// Replaces a named component's text and refreshes the smallest safe region.
-	pub fn set_text(&mut self, id: &str, text: impl Into<SmolStr>) -> bool {
+	pub fn set_text(&mut self, id: &str, text: impl Into<Str>) -> bool {
 		let Some((slot, old_measure, old_rect, presented)) = self.snapshot_id(id) else {
 			return false;
 		};
@@ -2097,20 +2097,20 @@ fn compile_cached_conds(cached: &Cached, out: &mut Vec<CompiledCond>) {
 	}
 }
 
-fn compile_predicate(condition: &SmolStr) -> Option<(SmolStr, Predicate)> {
+fn compile_predicate(condition: &Str) -> Option<(Str, Predicate)> {
 	if let Some((id, expected)) = condition.split_once("!=") {
 		let id = id.trim();
 		if id.is_empty() {
 			return None;
 		}
-		return Some((SmolStr::new(id), Predicate::NotEqual(SmolStr::new(expected.trim()))));
+		return Some((Str::new(id), Predicate::NotEqual(Str::new(expected.trim()))));
 	}
 	let (id, expected) = condition.split_once('=')?;
 	let id = id.trim();
 	if id.is_empty() {
 		return None;
 	}
-	Some((SmolStr::new(id), Predicate::Equal(SmolStr::new(expected.trim()))))
+	Some((Str::new(id), Predicate::Equal(Str::new(expected.trim()))))
 }
 
 fn find_named_value<'a>(values: &'a serde_json::Map<String, Value>, id: &str) -> Option<&'a Value> {
@@ -4534,7 +4534,7 @@ cd</pre>"##,
 		);
 		assert_eq!(
 			ui.handle_mouse(right_hit.rect.x, right_hit.rect.y, Mouse::Click),
-			UiEvent::Pressed(SmolStr::from("right")),
+			UiEvent::Pressed(Str::from("right")),
 			"click outside the layer falls through to the base tree"
 		);
 		ui.close_overlay(id);

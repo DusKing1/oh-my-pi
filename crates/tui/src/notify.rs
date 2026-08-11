@@ -10,7 +10,7 @@ use std::{
 	sync::atomic::{AtomicU64, Ordering},
 };
 
-use omp_core::{SmolStr, encoding::base64};
+use omp_core::{Str, encoding::base64};
 use smallvec::SmallVec;
 
 use crate::{NotifyProtocol, TerminalCaps, escape::esc, kitty::append_tmux_passthrough};
@@ -121,17 +121,17 @@ impl NotificationSound {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Notification {
 	/// Optional notification title.
-	pub title:      Option<SmolStr>,
+	pub title:      Option<Str>,
 	/// Optional notification body.
-	pub body:       Option<SmolStr>,
+	pub body:       Option<Str>,
 	/// Optional stable OSC 99 notification identifier.
-	pub id:         Option<SmolStr>,
+	pub id:         Option<Str>,
 	/// Notification categories encoded as OSC 99 `t=` metadata.
-	pub types:      SmallVec<SmolStr, 1>,
+	pub types:      SmallVec<Str, 1>,
 	/// Optional urgency metadata.
 	pub urgency:    Option<Urgency>,
 	/// Optional icon name.
-	pub icon_name:  Option<SmolStr>,
+	pub icon_name:  Option<Str>,
 	/// Optional sound request.
 	pub sound:      Option<NotificationSound>,
 	/// Optional terminal action request.
@@ -157,28 +157,28 @@ pub struct NotificationBuilder {
 impl NotificationBuilder {
 	/// Sets the notification title.
 	#[must_use]
-	pub fn title(mut self, title: impl Into<SmolStr>) -> Self {
+	pub fn title(mut self, title: impl Into<Str>) -> Self {
 		self.notification.title = Some(title.into());
 		self
 	}
 
 	/// Sets the notification body.
 	#[must_use]
-	pub fn body(mut self, body: impl Into<SmolStr>) -> Self {
+	pub fn body(mut self, body: impl Into<Str>) -> Self {
 		self.notification.body = Some(body.into());
 		self
 	}
 
 	/// Sets the stable OSC 99 identifier.
 	#[must_use]
-	pub fn id(mut self, id: impl Into<SmolStr>) -> Self {
+	pub fn id(mut self, id: impl Into<Str>) -> Self {
 		self.notification.id = Some(id.into());
 		self
 	}
 
 	/// Appends one notification category.
 	#[must_use]
-	pub fn notification_type(mut self, notification_type: impl Into<SmolStr>) -> Self {
+	pub fn notification_type(mut self, notification_type: impl Into<Str>) -> Self {
 		self.notification.types.push(notification_type.into());
 		self
 	}
@@ -188,7 +188,7 @@ impl NotificationBuilder {
 	pub fn notification_types<I, S>(mut self, notification_types: I) -> Self
 	where
 		I: IntoIterator<Item = S>,
-		S: Into<SmolStr>,
+		S: Into<Str>,
 	{
 		self
 			.notification
@@ -206,7 +206,7 @@ impl NotificationBuilder {
 
 	/// Sets the icon name.
 	#[must_use]
-	pub fn icon_name(mut self, icon_name: impl Into<SmolStr>) -> Self {
+	pub fn icon_name(mut self, icon_name: impl Into<Str>) -> Self {
 		self.notification.icon_name = Some(icon_name.into());
 		self
 	}

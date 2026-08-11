@@ -243,7 +243,7 @@ fn usage() -> Usage {
 		.build()
 }
 
-fn outcome(model: omp_core::SmolStr) -> ChatOutcome {
+fn outcome(model: omp_core::Str) -> ChatOutcome {
 	ChatOutcome::builder()
 		.output(Vec::new())
 		.stop(StopReason::EndTurn)

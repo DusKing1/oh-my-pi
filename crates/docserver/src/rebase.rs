@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
-use omp_core::SmolStr;
+use omp_core::Str;
 use similar::{Algorithm, DiffOp, capture_diff_slices_deadline};
 
 use crate::{ByteRange, Error, Result};
@@ -332,7 +332,7 @@ fn u64_to_usize(value: u64) -> Result<usize> {
 }
 
 const fn invalid_edits(reason: &'static str) -> Error {
-	Error::InvalidContent { reason: SmolStr::new_static(reason) }
+	Error::InvalidContent { reason: Str::new_static(reason) }
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, fmt, str::FromStr};
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use parking_lot::Mutex;
 use ulid::{DecodeError, Ulid};
 
@@ -88,9 +88,9 @@ pub struct CallIdMapper {
 
 #[derive(Debug, Default)]
 struct MappingState {
-	forward:          BTreeMap<(ToolCallIdProfile, CallId), SmolStr>,
-	observed_forward: BTreeMap<CallId, SmolStr>,
-	reverse:          BTreeMap<SmolStr, CallId>,
+	forward:          BTreeMap<(ToolCallIdProfile, CallId), Str>,
+	observed_forward: BTreeMap<CallId, Str>,
+	reverse:          BTreeMap<Str, CallId>,
 }
 
 impl CallIdMapper {
@@ -107,7 +107,7 @@ impl CallIdMapper {
 	/// Provider-originated IDs remain byte-for-byte identical only under
 	/// [`ToolCallIdProfile::Preserve`].
 	#[must_use]
-	pub fn to_wire(&self, id: &CallId, profile: ToolCallIdProfile) -> SmolStr {
+	pub fn to_wire(&self, id: &CallId, profile: ToolCallIdProfile) -> Str {
 		let mut state = self.state.lock();
 		if profile == ToolCallIdProfile::Preserve
 			&& let Some(wire) = state.observed_forward.get(id)
@@ -125,7 +125,7 @@ impl CallIdMapper {
 			ToolCallIdProfile::Anthropic => format!("toolu_{canonical}"),
 			ToolCallIdProfile::Mistral9 => canonical[..9].to_owned(),
 		};
-		let mut wire = SmolStr::from(base.as_str());
+		let mut wire = Str::from(base.as_str());
 		if let Some(existing) = state.reverse.get(&wire)
 			&& existing != id
 		{
@@ -145,7 +145,7 @@ impl CallIdMapper {
 	#[must_use]
 	pub fn observe(&self, wire: &str) -> CallId {
 		let mut state = self.state.lock();
-		let wire = SmolStr::from(wire);
+		let wire = Str::from(wire);
 		if let Some(id) = state.reverse.get(&wire) {
 			return *id;
 		}
@@ -167,7 +167,7 @@ impl CallIdMapper {
 	}
 }
 
-fn unique_wire(state: &MappingState, profile: ToolCallIdProfile, base: &str) -> SmolStr {
+fn unique_wire(state: &MappingState, profile: ToolCallIdProfile, base: &str) -> Str {
 	let width = match profile {
 		ToolCallIdProfile::Mistral9 => 9,
 		ToolCallIdProfile::OpenAi => 40,
@@ -178,7 +178,7 @@ fn unique_wire(state: &MappingState, profile: ToolCallIdProfile, base: &str) -> 
 		let suffix = base62(nonce);
 		let keep = width.saturating_sub(suffix.len());
 		let prefix = &base[..keep.min(base.len())];
-		let candidate = SmolStr::from(format!("{prefix}{suffix}"));
+		let candidate = Str::from(format!("{prefix}{suffix}"));
 		if !state.reverse.contains_key(&candidate) {
 			return candidate;
 		}

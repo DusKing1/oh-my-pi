@@ -15,7 +15,7 @@ use std::{
 
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{
 	compat::{Compat, ThinkingToolChoiceConflict},
 	identity::{Dialect, DialectSelection},
@@ -182,7 +182,7 @@ fn user(text: &str) -> Item {
 		.kind(ItemKind::Message(
 			Message::builder()
 				.role(Role::User)
-				.parts(vec![Part::Text(SmolStr::new(text))])
+				.parts(vec![Part::Text(Str::new(text))])
 				.build(),
 		))
 		.props(Props::default())
@@ -318,7 +318,7 @@ async fn production_stack_projects_owned_tools_and_renders_result_history() {
 				ToolResult::builder()
 					.call_id(call.id)
 					.name(call.name)
-					.parts(vec![Part::Text(SmolStr::new_static("hello"))])
+					.parts(vec![Part::Text(Str::new_static("hello"))])
 					.is_error(false)
 					.build(),
 			))
@@ -433,7 +433,7 @@ async fn local_chat_auto_keeps_native_tools_and_completes_owned_tool_result_turn
 				ToolResult::builder()
 					.call_id(call.id)
 					.name(call.name)
-					.parts(vec![Part::Text(SmolStr::new_static("local"))])
+					.parts(vec![Part::Text(Str::new_static("local"))])
 					.is_error(false)
 					.build(),
 			))
@@ -512,7 +512,7 @@ async fn local_chat_auto_keeps_native_tools_and_completes_owned_tool_result_turn
 	let forced = OwnedDialectChat::new(
 		Arc::new(forced_script.clone()),
 		OwnedDialectConfig::new(DialectSelection::Auto, Compat::default())
-			.with_override(Some(SmolStr::new_static("qwen3"))),
+			.with_override(Some(Str::new_static("qwen3"))),
 	);
 	let mut forced_request = ChatRequest::try_from(request(
 		omp_llm_types::Thread::builder()
@@ -706,7 +706,7 @@ async fn fabricated_result_drops_upstream_and_native_selection_is_passthrough() 
 	let native_script = omp_llm_tower::testing::Script::new([text_stream(&[b"native"])]);
 	let mut native = OwnedDialectLayer::new(
 		OwnedDialectConfig::new(DialectSelection::Native, Compat::default())
-			.with_override(Some(SmolStr::new_static("native"))),
+			.with_override(Some(Str::new_static("native"))),
 	)
 	.layer(native_script.clone());
 	let original = request(omp_llm_types::Thread::default(), tool_choice::Mode::Auto);

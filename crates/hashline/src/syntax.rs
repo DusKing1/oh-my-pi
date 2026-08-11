@@ -6,15 +6,15 @@ use std::{
 };
 
 use omp_ast::block::{EnclosingBoundaryOptions, LineRange, enclosing_block_boundaries};
-use omp_core::SmolStr;
+use omp_core::Str;
 use parking_lot::Mutex;
 
 const CACHE_LIMIT: usize = 256;
 
 #[derive(Default)]
 struct ParseCache {
-	values: HashMap<([u8; 32], SmolStr), bool>,
-	order:  VecDeque<([u8; 32], SmolStr)>,
+	values: HashMap<([u8; 32], Str), bool>,
+	order:  VecDeque<([u8; 32], Str)>,
 }
 
 static CACHE: LazyLock<Mutex<ParseCache>> = LazyLock::new(|| Mutex::new(ParseCache::default()));
@@ -23,7 +23,7 @@ static CACHE: LazyLock<Mutex<ParseCache>> = LazyLock::new(|| Mutex::new(ParseCac
 /// parses cleanly.
 pub fn parses_cleanly(path: Option<&str>, text: &str) -> bool {
 	let Some(path) = path else { return false };
-	let key = (*blake3::hash(text.as_bytes()).as_bytes(), SmolStr::new(path));
+	let key = (*blake3::hash(text.as_bytes()).as_bytes(), Str::new(path));
 	if let Some(value) = CACHE.lock().values.get(&key) {
 		return *value;
 	}

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde_json::{Value, value::RawValue};
 use smallvec::SmallVec;
 
@@ -208,7 +208,7 @@ struct Candidate {
 	block_index: usize,
 	np:          u32,
 	join:        Option<JoinMode>,
-	fields:      BTreeMap<SmolStr, Box<RawValue>>,
+	fields:      BTreeMap<Str, Box<RawValue>>,
 	score:       usize,
 }
 
@@ -320,7 +320,7 @@ fn matching_replay<'a>(block: &'a Block, dialect: &str) -> Option<&'a Replay> {
 		.filter(|replay| replay.p.0.as_str() == dialect)
 }
 
-fn capsule_score(fields: &BTreeMap<SmolStr, Box<RawValue>>) -> usize {
+fn capsule_score(fields: &BTreeMap<Str, Box<RawValue>>) -> usize {
 	fields
 		.iter()
 		.filter(|(key, _)| !key.as_str().starts_with('~'))

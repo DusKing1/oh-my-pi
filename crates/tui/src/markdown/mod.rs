@@ -1,6 +1,6 @@
 //! Width-aware Markdown rendering into styled terminal lines.
 
-use omp_core::{SmolStr, SmolStrMut};
+use omp_core::{Str, StrMut};
 use smallvec::SmallVec;
 
 use crate::{
@@ -165,14 +165,14 @@ impl RichSink for DocumentSink<'_> {
 }
 
 /// Renders Markdown into rows no wider than `width` terminal cells.
-pub fn render(src: &SmolStr, width: u16, theme: &MdTheme, sink: &mut dyn RichSink) {
+pub fn render(src: &Str, width: u16, theme: &MdTheme, sink: &mut dyn RichSink) {
 	let normalized = normalize_source(src);
 	// degenerate viewports still make progress: every block renders at
 	// one cell and the paint layer clips
 	render_document(&normalized, width.max(1), theme, sink);
 }
 
-fn render_document(source: &SmolStr, width: u16, theme: &MdTheme, sink: &mut dyn RichSink) {
+fn render_document(source: &Str, width: u16, theme: &MdTheme, sink: &mut dyn RichSink) {
 	let mut lines: SmallVec<&str, 64> = source.as_str().split('\n').collect();
 	while lines.last().is_some_and(|line| line.is_empty()) {
 		lines.pop();
@@ -319,7 +319,7 @@ fn render_heading(text: &str, depth: usize, width: u16, theme: &MdTheme, sink: &
 	};
 	let mut wrap = (&mut *sink).wrap(width);
 	if depth >= 3 {
-		let mut prefix = SmolStrMut::with_capacity(depth + 1);
+		let mut prefix = StrMut::with_capacity(depth + 1);
 		for _ in 0..depth {
 			prefix.push('#');
 		}
@@ -486,9 +486,9 @@ fn render_fenced_code(
 	};
 
 	let top = if language.is_empty() {
-		SmolStr::new_static("```")
+		Str::new_static("```")
 	} else {
-		omp_core::format_smol!("```{language}")
+		omp_core::fmts!("```{language}")
 	};
 	clipped_row(sink, width, theme.code_border, top.as_str());
 
@@ -567,7 +567,7 @@ const fn after_fence(end: usize, line_count: usize) -> usize {
 	if end < line_count { end + 1 } else { end }
 }
 
-fn display_math(lines: &[&str], index: usize) -> Option<(usize, SmolStr)> {
+fn display_math(lines: &[&str], index: usize) -> Option<(usize, Str)> {
 	let opening = lines[index].trim();
 	let closing = match opening {
 		"$$" => "$$",
@@ -597,7 +597,7 @@ fn bare_math_end(lines: &[&str], index: usize) -> Option<usize> {
 	if !crate::latex::is_bare_math_environment(environment) {
 		return None;
 	}
-	let end_token = omp_core::format_smol!("\\end{{{environment}}}");
+	let end_token = omp_core::fmts!("\\end{{{environment}}}");
 	for (offset, candidate) in lines[index..].iter().enumerate() {
 		if offset > 0 && candidate.trim().is_empty() {
 			return None;
@@ -663,7 +663,7 @@ fn render_blockquote(
 	theme: &MdTheme,
 	sink: &mut dyn RichSink,
 ) {
-	let mut inner = SmolStrMut::new("");
+	let mut inner = StrMut::new("");
 	let mut saw_quote = false;
 	while *index < lines.len() {
 		if let Some(text) = quote_line(lines[*index]) {
@@ -772,9 +772,9 @@ fn render_list(
 		let marker_text = if ordered {
 			let value = ordinal;
 			ordinal = ordinal.saturating_add(1);
-			omp_core::format_smol!("{value}. ")
+			omp_core::fmts!("{value}. ")
 		} else {
-			SmolStr::new_static("- ")
+			Str::new_static("- ")
 		};
 		let indent = depth.saturating_mul(2);
 		let mut first_prefix = Prefix::default();
@@ -919,9 +919,9 @@ fn render_list_fenced_code(
 	};
 
 	let top = if language.is_empty() {
-		SmolStr::new_static("```")
+		Str::new_static("```")
 	} else {
-		omp_core::format_smol!("```{language}")
+		omp_core::fmts!("```{language}")
 	};
 	{
 		let clipped = (&mut *sink).clip(width, None);
@@ -970,13 +970,13 @@ fn trim_list_continuation(line: &str, root_indent: usize) -> &str {
 	&line[spaces.min(wanted)..]
 }
 
-fn join_list_fence_lines(lines: &[&str], start: usize, end: usize, root_indent: usize) -> SmolStr {
+fn join_list_fence_lines(lines: &[&str], start: usize, end: usize, root_indent: usize) -> Str {
 	let slice = &lines[start..end];
 	let capacity = slice
 		.iter()
 		.map(|line| trim_list_continuation(line, root_indent).len() + 1)
 		.sum();
-	let mut joined = SmolStrMut::with_capacity(capacity);
+	let mut joined = StrMut::with_capacity(capacity);
 	for (index, line) in slice.iter().enumerate() {
 		if index > 0 {
 			joined.push('\n');
@@ -1107,17 +1107,17 @@ fn table_separator(line: &str) -> Option<Vec<Alignment>> {
 		.collect()
 }
 
-fn repeated_char(character: char, count: usize) -> SmolStr {
-	let mut output = SmolStrMut::with_capacity(count.saturating_mul(character.len_utf8()));
+fn repeated_char(character: char, count: usize) -> Str {
+	let mut output = StrMut::with_capacity(count.saturating_mul(character.len_utf8()));
 	for _ in 0..count {
 		output.push(character);
 	}
 	output.freeze()
 }
 
-fn join_lines(lines: &[&str]) -> SmolStr {
+fn join_lines(lines: &[&str]) -> Str {
 	let capacity = lines.iter().map(|line| line.len() + 1).sum();
-	let mut joined = SmolStrMut::with_capacity(capacity);
+	let mut joined = StrMut::with_capacity(capacity);
 	for (index, line) in lines.iter().enumerate() {
 		if index > 0 {
 			joined.push('\n');
@@ -1127,7 +1127,7 @@ fn join_lines(lines: &[&str]) -> SmolStr {
 	joined.freeze()
 }
 
-fn normalize_source(source: &SmolStr) -> SmolStr {
+fn normalize_source(source: &Str) -> Str {
 	if !source.as_str().contains('\t')
 		&& !source.as_str().contains('<')
 		&& !source.as_str().contains('&')
@@ -1139,7 +1139,7 @@ fn normalize_source(source: &SmolStr) -> SmolStr {
 		return tabs;
 	}
 	let text = tabs.as_str();
-	let mut output = SmolStrMut::with_capacity(text.len());
+	let mut output = StrMut::with_capacity(text.len());
 	let mut outside_start = 0;
 	let mut in_fence: Option<(char, usize)> = None;
 	for line in text.split_inclusive('\n') {
@@ -1181,7 +1181,7 @@ fn normalize_source(source: &SmolStr) -> SmolStr {
 	output.freeze()
 }
 
-fn replace_tabs(source: &SmolStr) -> SmolStr {
+fn replace_tabs(source: &Str) -> Str {
 	if !source.as_str().contains('\t') {
 		return source.clone();
 	}
@@ -1191,7 +1191,7 @@ fn replace_tabs(source: &SmolStr) -> SmolStr {
 		.filter(|byte| *byte == b'\t')
 		.count();
 	let mut output =
-		SmolStrMut::with_capacity(source.len().saturating_add(tab_count.saturating_mul(2)));
+		StrMut::with_capacity(source.len().saturating_add(tab_count.saturating_mul(2)));
 	let mut start = 0;
 	for (offset, character) in source.as_str().char_indices() {
 		if character == '\t' {
@@ -1210,7 +1210,7 @@ struct HtmlList {
 	next:    usize,
 }
 
-fn normalize_html_chunk(raw: &str, output: &mut SmolStrMut) {
+fn normalize_html_chunk(raw: &str, output: &mut StrMut) {
 	let mut lists: SmallVec<HtmlList, 4> = SmallVec::new();
 	let mut quote_depth = 0_usize;
 	let mut cursor = 0;
@@ -1317,7 +1317,7 @@ fn normalize_html_chunk(raw: &str, output: &mut SmolStrMut) {
 							}
 							if let Some(list) = lists.last_mut() {
 								if list.ordered {
-									output.push_str(omp_core::format_smol!("{}. ", list.next).as_str());
+									output.push_str(omp_core::fmts!("{}. ", list.next).as_str());
 									list.next = list.next.saturating_add(1);
 								} else {
 									output.push_str("- ");
@@ -1352,12 +1352,12 @@ fn normalize_html_chunk(raw: &str, output: &mut SmolStrMut) {
 	}
 }
 
-fn decode_html_text(text: &str, output: &mut SmolStrMut, quote_depth: usize) {
+fn decode_html_text(text: &str, output: &mut StrMut, quote_depth: usize) {
 	if quote_depth == 0 || !text.contains('\n') {
 		decode_entities(text, output);
 		return;
 	}
-	let mut decoded = SmolStrMut::with_capacity(text.len());
+	let mut decoded = StrMut::with_capacity(text.len());
 	decode_entities(text, &mut decoded);
 	for chunk in decoded.as_str().split_inclusive('\n') {
 		output.push_str(chunk);
@@ -1403,7 +1403,7 @@ fn html_ol_start(tag: &str) -> usize {
 	rest[..digits].parse().unwrap_or(1)
 }
 
-fn append_html_break(output: &mut SmolStrMut, force: bool, quote_depth: usize) {
+fn append_html_break(output: &mut StrMut, force: bool, quote_depth: usize) {
 	let trimmed = output.as_str().trim_end_matches([' ', '\t']).len();
 	output.truncate(trimmed);
 	if force || !output.as_str().ends_with('\n') {
@@ -1414,13 +1414,13 @@ fn append_html_break(output: &mut SmolStrMut, force: bool, quote_depth: usize) {
 	}
 }
 
-fn append_quote_prefix(output: &mut SmolStrMut, depth: usize) {
+fn append_quote_prefix(output: &mut StrMut, depth: usize) {
 	for _ in 0..depth {
 		output.push_str("> ");
 	}
 }
 
-fn decode_entities(text: &str, output: &mut SmolStrMut) {
+fn decode_entities(text: &str, output: &mut StrMut) {
 	let mut cursor = 0;
 	while let Some(relative) = text[cursor..].find('&') {
 		let at = cursor + relative;
@@ -1470,7 +1470,7 @@ mod tests {
 	use super::*;
 
 	fn rendered(source: &str, width: u16, theme: &MdTheme) -> RichText {
-		let source = SmolStr::new(source);
+		let source = Str::new(source);
 		let mut rendered = RichText::default();
 		render(&source, width, theme, &mut rendered);
 		rendered
@@ -1626,7 +1626,7 @@ mod tests {
 	fn fenced_code_uses_semantic_highlighting_across_lines_and_lists() {
 		let theme = MdTheme::default();
 		let palette = Theme::default();
-		let source = SmolStr::new(
+		let source = Str::new(
 			"```rust\npub fn main() {\n  let value = \"hi\";\n  /* first\n     second */\n}\n```",
 		);
 		let fenced = rendered(source.as_str(), 80, &theme);
@@ -1634,12 +1634,12 @@ mod tests {
 		assert_eq!(style_containing(&fenced, "hi").foreground_color(), palette.ok);
 		assert_eq!(style_containing(&fenced, "second").foreground_color(), palette.muted);
 
-		let listed = SmolStr::new("- ```rust\n  let value = \"ok\";\n  ```");
+		let listed = Str::new("- ```rust\n  let value = \"ok\";\n  ```");
 		let nested = rendered(listed.as_str(), 80, &theme);
 		assert_eq!(style_containing(&nested, "let").foreground_color(), palette.accent);
 		assert_eq!(style_containing(&nested, "ok").foreground_color(), palette.ok);
 
-		let unknown = SmolStr::new("```not-a-language\nanswer = 42\n```");
+		let unknown = Str::new("```not-a-language\nanswer = 42\n```");
 		let fallback = rendered(unknown.as_str(), 80, &theme);
 		assert_eq!(style_containing(&fallback, "answer"), theme.code_block);
 	}
@@ -1680,7 +1680,7 @@ mod tests {
 				.all(|label| narrow.iter().any(|line| line.contains(label)))
 		);
 
-		let source = SmolStr::new(source);
+		let source = Str::new(source);
 		let context = UiContext { charset: Charset::Ascii, ..UiContext::default() };
 		let theme = MdTheme::from_context(&context);
 		let ascii = rendered(source.as_str(), 40, &theme);
@@ -1715,7 +1715,7 @@ mod tests {
 
 	#[test]
 	fn repeated_render_reuses_rich_text_capacity() {
-		let source = SmolStr::new("# Heading\n\nA paragraph with **styled** text.\n\n- one\n- two");
+		let source = Str::new("# Heading\n\nA paragraph with **styled** text.\n\n- one\n- two");
 		let theme = MdTheme::default();
 		let mut output = RichText::default();
 		render(&source, 32, &theme, &mut output);

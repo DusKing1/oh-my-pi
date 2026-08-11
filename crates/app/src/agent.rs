@@ -9,7 +9,7 @@ use std::future::Future;
 
 use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt as _};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{
 	Chat, ChatOutcome, ChatRequest, Item, ItemKind, MessageAttribution, Part, Props, StreamPartKind,
 	ToolCall, ToolDef, ToolResult, TurnEvent, ids::CallId,
@@ -47,7 +47,7 @@ pub struct OwnedToolOutput {
 impl OwnedToolOutput {
 	/// Creates a successful textual tool result.
 	#[must_use]
-	pub fn text(text: impl Into<SmolStr>) -> Self {
+	pub fn text(text: impl Into<Str>) -> Self {
 		Self { parts: vec![Part::Text(text.into())], is_error: false, details: None }
 	}
 }
@@ -78,10 +78,10 @@ pub enum OwnedToolLoopError {
 	Protocol(&'static str),
 	/// The streamed call identifier was not a nonzero canonical ULID.
 	#[error("invalid canonical tool-call id `{0}`")]
-	InvalidCallId(SmolStr),
+	InvalidCallId(Str),
 	/// The model invoked a different tool from the one declared by this loop.
 	#[error("model invoked undeclared tool `{0}`")]
-	UndeclaredTool(SmolStr),
+	UndeclaredTool(Str),
 	/// Streamed argument deltas disagreed with the authoritative outcome.
 	#[error("streamed tool arguments disagree with the committed outcome")]
 	ArgumentMismatch,
@@ -90,15 +90,15 @@ pub enum OwnedToolLoopError {
 #[derive(Debug)]
 struct StreamedCall {
 	id:        CallId,
-	name:      SmolStr,
+	name:      Str,
 	args_json: Bytes,
 }
 
 #[derive(Debug)]
 struct OpenCall {
 	index: u32,
-	id:    SmolStr,
-	name:  SmolStr,
+	id:    Str,
+	name:  Str,
 	args:  BytesMut,
 }
 

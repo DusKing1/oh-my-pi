@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde::Deserialize;
 use smallvec::SmallVec;
 use thiserror::Error;
@@ -68,30 +68,30 @@ pub enum CustomExchange {
 #[non_exhaustive]
 pub struct OAuthParams {
 	/// Stable flow identifier used by provider authentication policy.
-	pub provider:            SmolStr,
+	pub provider:            Str,
 	/// Canonical provider row that stores and consumes credentials from this
 	/// flow.
-	pub credential_provider: SmolStr,
+	pub credential_provider: Str,
 	/// Engine choice; Cursor and Z.ai forced the explicit custom-exchange case.
 	pub kind:                FlowKind,
 	/// Public OAuth application id; empty only for non-OAuth paste-key/custom
 	/// flows.
-	pub client_id:           SmolStr,
+	pub client_id:           Str,
 	/// Browser authorization or device-code initiation URL.
-	pub authorize_url:       SmolStr,
+	pub authorize_url:       Str,
 	/// Token endpoint, or the bespoke exchange endpoint for custom flows.
-	pub token_url:           SmolStr,
+	pub token_url:           Str,
 	/// Requested grants; Google requires more than the common four-scope inline
 	/// case.
 	#[serde(default)]
-	pub scopes:              SmallVec<SmolStr, 4>,
+	pub scopes:              SmallVec<Str, 4>,
 	/// Preferred loopback port; fixed allowlists force ports such as Codex's
 	/// 1455.
 	pub callback_port:       Option<u16>,
 	/// Provider-only authorization parameters such as Google's
 	/// `access_type=offline`.
 	#[serde(default)]
-	pub extra_auth_params:   BTreeMap<SmolStr, SmolStr>,
+	pub extra_auth_params:   BTreeMap<Str, Str>,
 	/// Bespoke post-authorization operation; required by
 	/// [`FlowKind::CustomExchange`].
 	pub exchange:            Option<CustomExchange>,
@@ -105,12 +105,12 @@ pub enum OAuthParamsError {
 	Toml(#[from] toml::de::Error),
 	/// Two rows use the same provider id.
 	#[error("duplicate OAuth provider `{0}`")]
-	DuplicateProvider(SmolStr),
+	DuplicateProvider(Str),
 	/// A row violates the requirements of its selected flow engine.
 	#[error("invalid OAuth provider `{provider}`: {detail}")]
 	InvalidFlow {
 		/// Provider id of the invalid row.
-		provider: SmolStr,
+		provider: Str,
 		/// Human-readable invariant that was violated.
 		detail:   &'static str,
 	},
@@ -123,38 +123,38 @@ pub enum OAuthLinkError {
 	#[error("provider `{provider}` references unknown OAuth flow `{flow}`")]
 	UnknownFlow {
 		/// Provider catalog identifier.
-		provider: SmolStr,
+		provider: Str,
 		/// Missing flow identifier.
-		flow:     SmolStr,
+		flow:     Str,
 	},
 	/// A provider's request-auth flow and supplemental login flow disagree.
 	#[error("provider `{provider}` has conflicting OAuth flows `{auth_flow}` and `{login_flow}`")]
 	ConflictingFlow {
 		/// Provider catalog identifier.
-		provider:   SmolStr,
+		provider:   Str,
 		/// Flow selected by [`AuthSpec::OAuth`].
-		auth_flow:  SmolStr,
+		auth_flow:  Str,
 		/// Supplemental login flow on the provider row.
-		login_flow: SmolStr,
+		login_flow: Str,
 	},
 	/// One or more flow rows have no provider reference.
 	#[error("orphan OAuth flows: {0:?}")]
-	OrphanFlows(Box<[SmolStr]>),
+	OrphanFlows(Box<[Str]>),
 	/// A flow names a canonical provider absent from the provider catalog.
 	#[error("OAuth flow `{flow}` names missing credential provider `{provider}`")]
 	MissingCredentialProvider {
 		/// OAuth flow identifier.
-		flow:     SmolStr,
+		flow:     Str,
 		/// Missing provider identifier.
-		provider: SmolStr,
+		provider: Str,
 	},
 	/// A flow's canonical provider does not point back to it.
 	#[error("OAuth flow `{flow}` is not referenced by credential provider `{provider}`")]
 	UnlinkedCredentialProvider {
 		/// OAuth flow identifier.
-		flow:     SmolStr,
+		flow:     Str,
 		/// Provider identifier.
-		provider: SmolStr,
+		provider: Str,
 	},
 }
 
@@ -259,7 +259,7 @@ pub fn validate_provider_links(
 		}
 	}
 
-	let orphans: Box<[SmolStr]> = params
+	let orphans: Box<[Str]> = params
 		.iter()
 		.filter(|row| !referenced.contains(row.provider.as_str()))
 		.map(|row| row.provider.clone())

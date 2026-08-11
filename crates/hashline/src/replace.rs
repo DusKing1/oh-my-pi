@@ -3,7 +3,7 @@
 use std::{error::Error, fmt};
 
 use bytes::{Bytes, BytesMut};
-use omp_core::SmolStr;
+use omp_core::Str;
 use xutf::IntoUnicodeNormalized as _;
 
 use crate::normalize::{LineEnding, detect_line_ending, normalize_to_lf, restore_line_endings};
@@ -78,7 +78,7 @@ pub struct MatchOutcome {
 	/// One-based lines for the first retained exact occurrences.
 	pub occurrence_lines:    Vec<usize>,
 	/// Context previews for the first retained exact occurrences.
-	pub occurrence_previews: Vec<SmolStr>,
+	pub occurrence_previews: Vec<Str>,
 	/// Number of fuzzy windows at or above the threshold.
 	pub fuzzy_matches:       Option<usize>,
 	/// Whether selection used the dominant-match exception.
@@ -223,7 +223,7 @@ pub enum ReplaceError {
 		/// One-based lines for retained occurrences.
 		lines:       Vec<usize>,
 		/// Context previews for retained occurrences.
-		previews:    Vec<SmolStr>,
+		previews:    Vec<Str>,
 	},
 	/// Fuzzy replace-all found an ambiguous candidate group.
 	AmbiguousFuzzy {
@@ -348,7 +348,7 @@ fn overlaps_excluded(start: usize, end: usize, excluded: &[ExcludedRange]) -> bo
 		.any(|range| start < range.end && end > range.start)
 }
 
-fn format_preview_window(lines: &[&str], center: usize) -> SmolStr {
+fn format_preview_window(lines: &[&str], center: usize) -> Str {
 	let start = center.saturating_sub(OCCURRENCE_PREVIEW_CONTEXT);
 	let end = lines.len().min(center + OCCURRENCE_PREVIEW_CONTEXT + 1);
 	let mut result = String::new();
@@ -360,7 +360,7 @@ fn format_preview_window(lines: &[&str], center: usize) -> SmolStr {
 		use std::fmt::Write as _;
 		let _ = write!(result, "  {} | {truncated}", start + offset + 1);
 	}
-	SmolStr::new(result)
+	Str::new(result)
 }
 
 fn truncate_utf16(text: &str, max_units: usize) -> String {

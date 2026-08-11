@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use crate::{
 	ChatRequest, CountRequest, CountResponse, EmbedRequest, EmbedResponse, GenerateImageRequest,
@@ -55,10 +55,10 @@ pub enum Error {
 	Unsupported(Vec<Unsupported>),
 	/// The provider rejected or failed an admitted operation.
 	#[error("provider failure: {0}")]
-	Provider(SmolStr),
+	Provider(Str),
 	/// The upstream transport failed.
 	#[error("transport failure: {0}")]
-	Transport(SmolStr),
+	Transport(Str),
 }
 
 /// Executes tools that a transport must answer while a turn remains open.
@@ -137,7 +137,7 @@ pub trait Transcribe: Send + Sync {
 #[non_exhaustive]
 pub struct GenerationHandle {
 	/// Gateway-scoped generation identifier.
-	pub id: SmolStr,
+	pub id: Str,
 }
 
 /// Job-shaped video generation.
@@ -174,7 +174,7 @@ pub trait Search: Send + Sync {
 #[non_exhaustive]
 pub struct QuotaRequest {
 	/// Provider whose credential quota should be inspected.
-	pub provider: SmolStr,
+	pub provider: Str,
 }
 
 /// One bounded provider usage window.
@@ -182,7 +182,7 @@ pub struct QuotaRequest {
 #[non_exhaustive]
 pub struct QuotaWindow {
 	/// Provider-defined window name.
-	pub name:         SmolStr,
+	pub name:         Str,
 	/// Consumed units.
 	pub used:         u64,
 	/// Maximum units, when the provider discloses one.
@@ -266,17 +266,17 @@ impl UnsupportedSink {
 	}
 
 	/// Records a feature omitted under its fallback policy.
-	pub fn drop_feature(&mut self, what: impl Into<SmolStr>, detail: impl Into<SmolStr>) {
+	pub fn drop_feature(&mut self, what: impl Into<Str>, detail: impl Into<Str>) {
 		self.record(what, detail, crate::UnsupportedAction::Dropped);
 	}
 
 	/// Records a feature approximated by a softer strategy.
-	pub fn emulate(&mut self, what: impl Into<SmolStr>, detail: impl Into<SmolStr>) {
+	pub fn emulate(&mut self, what: impl Into<Str>, detail: impl Into<Str>) {
 		self.record(what, detail, crate::UnsupportedAction::Emulated);
 	}
 
 	/// Records a requested value constrained to provider limits.
-	pub fn clamp(&mut self, what: impl Into<SmolStr>, detail: impl Into<SmolStr>) {
+	pub fn clamp(&mut self, what: impl Into<Str>, detail: impl Into<Str>) {
 		self.record(what, detail, crate::UnsupportedAction::Clamped);
 	}
 
@@ -288,8 +288,8 @@ impl UnsupportedSink {
 
 	fn record(
 		&mut self,
-		what: impl Into<SmolStr>,
-		detail: impl Into<SmolStr>,
+		what: impl Into<Str>,
+		detail: impl Into<Str>,
 		action: crate::UnsupportedAction,
 	) {
 		self

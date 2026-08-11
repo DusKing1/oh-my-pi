@@ -1,6 +1,6 @@
 use bon::Builder;
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use crate::{BlobPart, Cost, Props, Unsupported, Usage};
 
@@ -77,9 +77,9 @@ pub enum ImageBackground {
 #[derive(Builder, Clone, Debug, PartialEq)]
 pub struct GenerateImageRequest {
 	/// Catalog model used for generation.
-	pub model:        SmolStr,
+	pub model:        Str,
 	/// Fully assembled prompt; prompt engineering remains tool-level policy.
-	pub prompt:       SmolStr,
+	pub prompt:       Str,
 	/// Images requested; zero preserves the protocol's default of one.
 	pub n:            u32,
 	/// Desired ratio when explicit dimensions are absent.
@@ -130,9 +130,9 @@ pub struct ImageDone {
 	/// Durable generated images ingested into the blob store.
 	pub images:         Vec<BlobPart>,
 	/// Provider-rewritten prompt when reported.
-	pub revised_prompt: SmolStr,
+	pub revised_prompt: Str,
 	/// Commentary interleaved by chat-shaped image backends.
-	pub text:           SmolStr,
+	pub text:           Str,
 	/// Provider usage when available.
 	pub usage:          Option<Usage>,
 	/// Metered cost when available.
@@ -169,7 +169,7 @@ pub struct VoiceClone {
 	pub reference:  BlobPart,
 	/// Known transcript of the sample, improving clone alignment where
 	/// supported.
-	pub transcript: SmolStr,
+	pub transcript: Str,
 }
 
 /// Speech-synthesis request.
@@ -177,11 +177,11 @@ pub struct VoiceClone {
 #[derive(Builder, Clone, Debug, PartialEq)]
 pub struct SpeakRequest {
 	/// Catalog model used for synthesis.
-	pub model:          SmolStr,
+	pub model:          Str,
 	/// Text to speak.
-	pub text:           SmolStr,
+	pub text:           Str,
 	/// Provider voice id.
-	pub voice:          SmolStr,
+	pub voice:          Str,
 	/// Required output codec.
 	pub encoding:       AudioEncoding,
 	/// Explicit sample rate; absence preserves the provider or codec default.
@@ -189,7 +189,7 @@ pub struct SpeakRequest {
 	/// Playback speed multiplier; absence means normal speed.
 	pub speed:          Option<f64>,
 	/// Expressive tonal or style direction.
-	pub instructions:   SmolStr,
+	pub instructions:   Str,
 	/// Optional stateless voice-cloning input.
 	pub clone:          Option<VoiceClone>,
 	/// Namespaced synthesis controls.
@@ -213,7 +213,7 @@ pub struct SpeakChunk {
 	/// Raw codec bytes; framing follows the requested encoding and sample rate.
 	pub audio:            Bytes,
 	/// Transcript alignment delta when reported by the provider.
-	pub transcript_delta: SmolStr,
+	pub transcript_delta: Str,
 }
 
 /// Terminal speech-synthesis result.
@@ -249,13 +249,13 @@ pub enum TranscriptionGranularity {
 #[derive(Builder, Clone, Debug, PartialEq)]
 pub struct TranscribeRequest {
 	/// Catalog model used for transcription.
-	pub model:         SmolStr,
+	pub model:         Str,
 	/// Recorded audio payload.
 	pub audio:         BlobPart,
 	/// ISO-639-1 language hint; empty requests auto-detection.
-	pub language:      SmolStr,
+	pub language:      Str,
 	/// Vocabulary or domain hint used to steer spelling.
-	pub prompt:        SmolStr,
+	pub prompt:        Str,
 	/// Translate the transcript to English.
 	pub translate:     bool,
 	/// Timestamp detail requested from the provider.
@@ -277,7 +277,7 @@ pub struct TranscriptSegment {
 	/// Exclusive end offset from the recording beginning.
 	pub end_ms:     u64,
 	/// Segment text.
-	pub text:       SmolStr,
+	pub text:       Str,
 	/// Diarization label when requested and supported.
 	pub speaker:    Option<u32>,
 	/// Provider confidence from zero through one when reported.
@@ -293,7 +293,7 @@ pub struct TranscriptWord {
 	/// Exclusive end offset from the recording beginning.
 	pub end_ms:   u64,
 	/// Recognized word.
-	pub word:     SmolStr,
+	pub word:     Str,
 	/// Diarization label when requested and supported.
 	pub speaker:  Option<u32>,
 }
@@ -303,9 +303,9 @@ pub struct TranscriptWord {
 #[derive(Builder, Clone, Debug, PartialEq)]
 pub struct TranscribeResponse {
 	/// Full transcript text.
-	pub text:        SmolStr,
+	pub text:        Str,
 	/// Detected or confirmed ISO-639-1 language.
-	pub language:    SmolStr,
+	pub language:    Str,
 	/// Recording duration.
 	pub duration_ms: u64,
 	/// Requested segment-level timings.
@@ -341,9 +341,9 @@ pub enum VideoResolution {
 #[derive(Builder, Clone, Debug, PartialEq)]
 pub struct GenerateVideoRequest {
 	/// Catalog model used for generation.
-	pub model:            SmolStr,
+	pub model:            Str,
 	/// Fully assembled video prompt.
-	pub prompt:           SmolStr,
+	pub prompt:           Str,
 	/// Requested duration; provider clamping is reported as unsupported detail.
 	pub duration_seconds: Option<u32>,
 	/// Desired frame aspect ratio.
@@ -387,9 +387,9 @@ pub struct GenerationArtifact {
 	/// Durable blob-store output when ingestion has completed.
 	pub blob:              Option<BlobPart>,
 	/// Output role such as video, thumbnail, or spritesheet.
-	pub variant:           SmolStr,
+	pub variant:           Str,
 	/// Provider passthrough URL for clients that need the expiring original.
-	pub url:               SmolStr,
+	pub url:               Str,
 	/// Expiration of the provider URL in Unix milliseconds.
 	pub url_expires_at_ms: u64,
 }
@@ -399,13 +399,13 @@ pub struct GenerationArtifact {
 #[derive(Builder, Clone, Debug, PartialEq)]
 pub struct GenerationStatus {
 	/// Gateway-scoped identity stable across client reconnects.
-	pub generation_id:    SmolStr,
+	pub generation_id:    Str,
 	/// Current lifecycle state.
 	pub state:            GenerationState,
 	/// Provider progress from zero through one hundred where available.
 	pub progress_percent: f64,
 	/// Classified failure detail in the failed state.
-	pub detail:           SmolStr,
+	pub detail:           Str,
 	/// Outputs already ingested or linked by the gateway.
 	pub artifacts:        Vec<GenerationArtifact>,
 	/// Provider usage when available.

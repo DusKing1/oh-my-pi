@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{Unsupported, UnsupportedAction};
 use serde_json::{Value, json};
 use xutf::{Utf8, Utf16};
@@ -18,7 +18,7 @@ pub(crate) enum ToolKind {
 }
 
 /// Wire identity of a tool call already delivered to the server.
-pub(crate) type SentCall = (ToolKind, SmolStr);
+pub(crate) type SentCall = (ToolKind, Str);
 
 /// Applies pi's directional orphan repair to a Responses `input` array.
 ///
@@ -35,7 +35,7 @@ pub(crate) fn repair_responses_tool_pairs(
 		let call_id = item
 			.get("call_id")
 			.and_then(Value::as_str)
-			.map(SmolStr::from);
+			.map(Str::from);
 		if let (Some(kind), Some(call_id)) = (tool_call_kind(item), call_id.as_ref()) {
 			preceding_calls.insert((kind, call_id.clone()));
 		}
@@ -72,7 +72,7 @@ pub(crate) fn repair_responses_tool_pairs(
 		let Some(call_id) = item.get("call_id").and_then(Value::as_str) else {
 			continue;
 		};
-		let call_id = SmolStr::from(call_id);
+		let call_id = Str::from(call_id);
 		if let Some(kind) = tool_output_kind(item) {
 			later_outputs.insert((kind, call_id.clone()));
 		}
@@ -95,7 +95,7 @@ pub(crate) fn repair_responses_tool_pairs(
 		let Some(call_id) = item
 			.get("call_id")
 			.and_then(Value::as_str)
-			.map(SmolStr::from)
+			.map(Str::from)
 		else {
 			repaired.push(item);
 			continue;
@@ -150,8 +150,8 @@ fn orphan_output_text(output: Option<&Value>) -> String {
 
 fn repair_report(what: &str, detail: &str) -> Unsupported {
 	Unsupported::builder()
-		.what(SmolStr::from(what))
-		.detail(SmolStr::from(detail))
+		.what(Str::from(what))
+		.detail(Str::from(detail))
 		.action(UnsupportedAction::Emulated)
 		.build()
 }
@@ -183,7 +183,7 @@ pub(crate) fn call_kind_of(type_name: &str) -> Option<ToolKind> {
 mod tests {
 	use std::collections::BTreeSet;
 
-	use omp_core::SmolStr;
+	use omp_core::Str;
 	use serde_json::{Value, json};
 
 	use super::{ToolKind, repair_responses_tool_pairs};
@@ -220,7 +220,7 @@ mod tests {
 	fn output_paired_by_an_already_sent_call_is_left_intact() {
 		let mut input =
 			vec![json!({"type":"function_call_output","call_id":"call_sent","output":"Sunny"})];
-		let sent = BTreeSet::from([(ToolKind::Function, SmolStr::new_static("call_sent"))]);
+		let sent = BTreeSet::from([(ToolKind::Function, Str::new_static("call_sent"))]);
 		assert!(repair_responses_tool_pairs(&mut input, &sent).is_empty());
 		assert_eq!(input[0]["type"], "function_call_output");
 

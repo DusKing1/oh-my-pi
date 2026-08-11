@@ -11,9 +11,9 @@
 //! leaves the inline mouse to the terminal for native text selection, so
 //! that path is live during alternate-screen scenes.
 
-use std::time::Duration;
+use std::time::Strn;fmts
 
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use omp_tui::{
 	Color, Dim, Key, Layer, Mouse, OverlayAnchor, OverlayOptions, Prop, Size, Ui, UiContext,
 	UiEvent, dom,
@@ -45,7 +45,7 @@ pub struct Sidebar {
 	options:         OverlayOptions,
 	/// Whether the rail is composited at all (`Ctrl+B`).
 	open:            bool,
-	/// Whether the rail holds the keyboard (arrow keys drive the file list).
+	/// WhethStrrail holds the keyboard (arrow keys drive the file list).
 	focused:         bool,
 	elapsed_seconds: u64,
 	height:          u16,
@@ -62,7 +62,7 @@ impl Sidebar {
 		let mut ui = build(model, ctx);
 		// The rail starts without the keyboard: no focus chrome or frame
 		// cursor until `toggle` or a click hands it over.
-		ui.blur();
+		ui.blur();Str
 		Self { ui, options, open: true, focused: false, elapsed_seconds: 0, height: 0 }
 	}
 
@@ -153,16 +153,16 @@ impl Sidebar {
 			self.ui.set_text("elapsed", elapsed_label(seconds));
 		}
 		Some(Layer { frame: self.ui.frame(), options: &self.options, active: self.focused })
-	}
+	}Str
 
-	fn blur(&mut self) {
+	fmtst self) {
 		self.focused = false;
 		self.ui.blur();
 	}
 }
 
-fn elapsed_label(seconds: u64) -> SmolStr {
-	format_smol!("{}:{:02}", seconds / 60, seconds % 60)
+fn elapsed_label(seconds: u64) -> Str {
+	fmts!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
 /// Builds the retained rail tree: session facts, the touched-file list,

@@ -8,26 +8,26 @@
 //! double-wraps another JSON error inside `error.message`, and proxies
 //! return HTML. One walker normalizes all of it.
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde_json::Value;
 
 /// Fields recovered from a provider error body.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Envelope {
 	/// Machine code (`error.code`, preferred over `error.type`).
-	pub code:        Option<SmolStr>,
+	pub code:        Option<Str>,
 	/// Error type token (`error.type`), when distinct from `code`.
-	pub error_type:  Option<SmolStr>,
+	pub error_type:  Option<Str>,
 	/// Human-readable message.
-	pub message:     Option<SmolStr>,
+	pub message:     Option<Str>,
 	/// gRPC-style status word (`"RESOURCE_EXHAUSTED"`, `"NOT_FOUND"`, ...).
-	pub status_word: Option<SmolStr>,
+	pub status_word: Option<Str>,
 	/// Numeric status embedded in the body (Google `error.code`).
 	pub status_code: Option<u16>,
 	/// Provider request id when present (`request_id` / `requestId`).
-	pub request_id:  Option<SmolStr>,
+	pub request_id:  Option<Str>,
 	/// Offending parameter name (`error.param`).
-	pub param:       Option<SmolStr>,
+	pub param:       Option<Str>,
 	/// Body was HTML/non-JSON — treat content as opaque.
 	pub opaque:      bool,
 }
@@ -52,11 +52,11 @@ pub fn parse(body: &str) -> Option<Envelope> {
 			&& env.status_word.is_none()
 		{
 			env.opaque = true;
-			env.message = Some(SmolStr::new(trimmed));
+			env.message = Some(Str::new(trimmed));
 		}
 		return Some(env);
 	}
-	Some(Envelope { message: Some(SmolStr::new(trimmed)), opaque: true, ..Envelope::default() })
+	Some(Envelope { message: Some(Str::new(trimmed)), opaque: true, ..Envelope::default() })
 }
 
 /// Maximum `.error` nesting to descend. SDK gateways have been observed
@@ -71,7 +71,7 @@ fn walk(value: &Value, env: &mut Envelope, depth: usize) {
 	let type_is_frame = obj.get("type").and_then(Value::as_str) == Some("error");
 
 	if let Some(id) = str_field(obj, &["request_id", "requestId"]) {
-		env.request_id.get_or_insert_with(|| SmolStr::new(id));
+		env.request_id.get_or_insert_with(|| Str::new(id));
 	}
 
 	// Descend nested error objects first: deepest fields are most specific.
@@ -81,7 +81,7 @@ fn walk(value: &Value, env: &mut Envelope, depth: usize) {
 		match inner {
 			Value::Object(_) => walk(inner, env, depth + 1),
 			Value::String(s) => {
-				env.message.get_or_insert_with(|| SmolStr::new(s));
+				env.message.get_or_insert_with(|| Str::new(s));
 			},
 			_ => {},
 		}
@@ -90,7 +90,7 @@ fn walk(value: &Value, env: &mut Envelope, depth: usize) {
 	if let Some(code) = obj.get("code") {
 		match code {
 			Value::String(s) => {
-				env.code.get_or_insert_with(|| SmolStr::new(s));
+				env.code.get_or_insert_with(|| Str::new(s));
 			},
 			Value::Number(n) => {
 				if let Some(status) = n.as_u64().and_then(|n| u16::try_from(n).ok())
@@ -103,18 +103,18 @@ fn walk(value: &Value, env: &mut Envelope, depth: usize) {
 		}
 	}
 	if !type_is_frame && let Some(t) = obj.get("type").and_then(Value::as_str) {
-		env.error_type.get_or_insert_with(|| SmolStr::new(t));
+		env.error_type.get_or_insert_with(|| Str::new(t));
 	}
 	if let Some(status) = obj.get("status").and_then(Value::as_str) {
 		// gRPC status words are SCREAMING_SNAKE; HTTP reason phrases are not.
 		if status.chars().all(|c| c.is_ascii_uppercase() || c == '_') && !status.is_empty() {
-			env.status_word.get_or_insert_with(|| SmolStr::new(status));
+			env.status_word.get_or_insert_with(|| Str::new(status));
 		}
 	}
 	if let Some(param) = obj.get("param").and_then(Value::as_str)
 		&& !param.is_empty()
 	{
-		env.param.get_or_insert_with(|| SmolStr::new(param));
+		env.param.get_or_insert_with(|| Str::new(param));
 	}
 	if let Some(msg) = str_field(obj, &["message", "detail", "error_description"]) {
 		// Google double-wrap: `error.message` may itself be a JSON error
@@ -126,7 +126,7 @@ fn walk(value: &Value, env: &mut Envelope, depth: usize) {
 		{
 			walk(&inner, env, depth + 1);
 		}
-		env.message.get_or_insert_with(|| SmolStr::new(msg));
+		env.message.get_or_insert_with(|| Str::new(msg));
 	}
 }
 

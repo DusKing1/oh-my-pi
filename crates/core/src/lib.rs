@@ -14,14 +14,14 @@
 pub mod append_vec;
 pub mod cow_bytes;
 pub mod encoding;
-pub mod smolstr;
 pub mod sparse_index;
 pub mod sparse_map;
 pub mod sparse_set;
+pub mod str;
 
 pub use append_vec::{AppendSlice, AppendVec};
 pub use cow_bytes::CowBytes;
 pub use encoding::{base32, base32_dns, base32_hex, base64, base64_url, hex};
-pub use smolstr::{IntoSmolStr, SmolCow, SmolStr, SmolStrMut};
 pub use sparse_map::SparseMap;
 pub use sparse_set::SparseSet;
+pub use str::{CowStr, IntoStr, Str, StrMut};

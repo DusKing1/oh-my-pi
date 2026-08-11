@@ -1,4 +1,4 @@
-use omp_core::smolstr::IntoSmolStr;
+use omp_core::str::IntoStr;
 
 use crate::{
 	component::{Component, PaintCtx, Slot, next_slot},
@@ -151,7 +151,7 @@ impl Img {
 		let width = self.requested_width(available);
 		let trim = self.props.flag(Prop::Trim);
 		if let Some(loader) = &ctx.loader {
-			loader.request(self.slot, source.to_smolstr(), width, self.props.h(), trim);
+			loader.request(self.slot, source.to_str(), width, self.props.h(), trim);
 			self.state.phase = Load::Loading;
 			self.state.width = width;
 			self.state.rows = 3;

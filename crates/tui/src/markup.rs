@@ -67,7 +67,7 @@
 //! `<option>` accepts the same `<td>` cells and the hosting `<select>`
 //! owns cursor, filter, hover, and activation over aligned rows.
 
-use omp_core::{SmolStr, SmolStrMut};
+use omp_core::{Str, StrMut};
 
 use crate::{
 	component::{Cached, Component},
@@ -170,17 +170,17 @@ impl std::fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 /// Parses markup into a retained component tree rooted at a [`Col`].
-pub fn parse(source: &SmolStr, ctx: &UiContext) -> Result<Cached, ParseError> {
+pub fn parse(source: &Str, ctx: &UiContext) -> Result<Cached, ParseError> {
 	let mut parser = Parser { source, src: source, ctx, fragment: false };
 	let (parts, _) = parser.parse_children(0, None, false, 0, "col", &Props::new())?;
 	let children = cached_children(parts, "col")?;
-	let root = build("col", Props::new(), children, &SmolStr::default())
+	let root = build("col", Props::new(), children, &Str::default())
 		.expect("the root col is a catalog component");
 	Ok(Cached::new(root))
 }
 
 pub fn parse_md_fragment_inheriting(
-	text: &SmolStr,
+	text: &Str,
 	ctx: &UiContext,
 	host: &Props,
 ) -> Result<Vec<Cached>, ParseError> {
@@ -195,14 +195,14 @@ pub fn parse_md_fragment_inheriting(
 }
 
 enum Parsed {
-	Cached { cached: Box<Cached>, text: Option<SmolStr>, at: usize, implicit: bool },
+	Cached { cached: Box<Cached>, text: Option<Str>, at: usize, implicit: bool },
 	Option { option: SelectOption, at: usize },
 	Segment { segment: Segment, at: usize },
-	Tab { title: SmolStr, children: Vec<Cached>, at: usize },
+	Tab { title: Str, children: Vec<Cached>, at: usize },
 	TreeItem { node: TreeNode, at: usize },
 	Task { task: TodoTask, at: usize },
 	Field { field: Field, at: usize },
-	Step { title: SmolStr, children: Vec<Cached>, at: usize },
+	Step { title: Str, children: Vec<Cached>, at: usize },
 	TableRow { row: Box<TableRow>, at: usize },
 	Cell { cell: TableCell, at: usize },
 }
@@ -251,7 +251,7 @@ fn cached_children(parts: Vec<Parsed>, parent: &str) -> Result<Vec<Cached>, Pars
 }
 
 struct Parser<'a> {
-	source:   &'a SmolStr,
+	source:   &'a Str,
 	src:      &'a str,
 	ctx:      &'a UiContext,
 	fragment: bool,
@@ -393,7 +393,7 @@ impl Parser<'_> {
 		}
 		let body_start = close + 1;
 		if self_closing {
-			return finish_element(name, props, Vec::new(), SmolStr::default(), at)
+			return finish_element(name, props, Vec::new(), Str::default(), at)
 				.map(|part| (part, body_start));
 		}
 		if matches!(name, "pre" | "latex" | "callout") {
@@ -440,13 +440,13 @@ impl Parser<'_> {
 			return self.parse_md(body_start, indent, props, true);
 		}
 		if is_leaf_tag(name) {
-			return finish_element(name, props, Vec::new(), SmolStr::default(), at)
+			return finish_element(name, props, Vec::new(), Str::default(), at)
 				.map(|part| (part, body_start));
 		}
 		let child_props = child_props(&props);
 		let (parts, end) =
 			self.parse_children(body_start, Some(name), restricted, indent, name, &child_props)?;
-		let part = finish_element(name, props, parts, SmolStr::default(), at)?;
+		let part = finish_element(name, props, parts, Str::default(), at)?;
 		Ok((part, end))
 	}
 
@@ -467,10 +467,10 @@ impl Parser<'_> {
 		indent: usize,
 		props: &Props,
 		require_close: bool,
-	) -> Result<(SmolStr, Vec<Cached>, usize), ParseError> {
+	) -> Result<(Str, Vec<Cached>, usize), ParseError> {
 		let mut segment_start = body_start;
 		let mut first = true;
-		let mut first_text = SmolStr::default();
+		let mut first_text = Str::default();
 		let mut embedded = Vec::new();
 		let child_props = child_props(props);
 		loop {
@@ -631,11 +631,11 @@ impl Parser<'_> {
 /// pretty-printed document does not read as a code block.
 ///
 /// Zero-copy when there is nothing to strip.
-fn dedent(source: &SmolStr, body: &str, indent: usize) -> SmolStr {
+fn dedent(source: &Str, body: &str, indent: usize) -> Str {
 	if indent == 0 || !body.lines().any(|line| line.starts_with(' ')) {
 		return source.slice_ref(body);
 	}
-	let mut out = SmolStrMut::with_capacity(body.len());
+	let mut out = StrMut::with_capacity(body.len());
 	for (index, line) in body.split('\n').enumerate() {
 		if index > 0 {
 			out.push_str("\n");
@@ -883,11 +883,11 @@ pub fn ico_tag(text: &str) -> Option<(&str, usize)> {
 /// Substitutes every `<ico:name/>` in an attribute value through the
 /// charset; zero-copy when none are present. Unknown names keep the bare
 /// name — visible and greppable instead of silently dropped.
-fn resolve_icons(charset: Charset, source: &SmolStr, value: &str) -> SmolStr {
+fn resolve_icons(charset: Charset, source: &Str, value: &str) -> Str {
 	if !value.contains("<ico:") {
 		return source.slice_ref(value);
 	}
-	let mut resolved = SmolStrMut::new("");
+	let mut resolved = StrMut::new("");
 	let mut rest = value;
 	while let Some(at) = rest.find("<ico:") {
 		if let Some((name, consumed)) = ico_tag(&rest[at..]) {
@@ -1097,7 +1097,7 @@ fn build(
 	tag: &str,
 	props: Props,
 	children: Vec<Cached>,
-	body: &SmolStr,
+	body: &Str,
 ) -> Option<Box<dyn Component>> {
 	macro_rules! configured {
 		($component:expr) => {{
@@ -1151,7 +1151,7 @@ fn finish_element(
 	tag: &str,
 	props: Props,
 	mut parts: Vec<Parsed>,
-	body: SmolStr,
+	body: Str,
 	at: usize,
 ) -> Result<Parsed, ParseError> {
 	match tag {
@@ -1220,7 +1220,7 @@ fn finish_element(
 			let title = props
 				.title()
 				.cloned()
-				.unwrap_or_else(|| SmolStr::new("tab"));
+				.unwrap_or_else(|| Str::new("tab"));
 			let children = cached_children(parts, "tab")?;
 			Ok(Parsed::Tab { title, children, at })
 		},
@@ -1287,7 +1287,7 @@ fn finish_element(
 			let title = props
 				.title()
 				.cloned()
-				.unwrap_or_else(|| SmolStr::new("step"));
+				.unwrap_or_else(|| Str::new("step"));
 			let children = cached_children(parts, "step")?;
 			Ok(Parsed::Step { title, children, at })
 		},
@@ -1470,7 +1470,7 @@ fn finish_element(
 	}
 }
 
-fn take_label(parts: &mut Vec<Parsed>) -> Option<SmolStr> {
+fn take_label(parts: &mut Vec<Parsed>) -> Option<Str> {
 	let index = parts
 		.iter()
 		.position(|part| matches!(part, Parsed::Cached { text: Some(_), .. }))?;
@@ -1481,7 +1481,7 @@ fn take_label(parts: &mut Vec<Parsed>) -> Option<SmolStr> {
 }
 fn markdown_with_parts(
 	props: Props,
-	text: SmolStr,
+	text: Str,
 	children: Vec<Cached>,
 	at: usize,
 	implicit: bool,
@@ -1491,7 +1491,7 @@ fn markdown_with_parts(
 	Parsed::Cached { cached: Box::new(Cached::new(component)), text: Some(metadata), at, implicit }
 }
 
-fn markdown_part(text: SmolStr, props: Props) -> Cached {
+fn markdown_part(text: Str, props: Props) -> Cached {
 	let visible = !text.is_empty();
 	let Parsed::Cached { cached, .. } = markdown_with_parts(props, text, Vec::new(), 0, false)
 	else {
@@ -1502,14 +1502,14 @@ fn markdown_part(text: SmolStr, props: Props) -> Cached {
 	cached
 }
 
-fn markdown_parsed(text: SmolStr, props: Props, at: usize) -> Parsed {
+fn markdown_parsed(text: Str, props: Props, at: usize) -> Parsed {
 	markdown_with_parts(props, text, Vec::new(), at, true)
 }
 
 fn apply_attrs(
 	attrs: &str,
 	at: usize,
-	source: &SmolStr,
+	source: &Str,
 	ctx: &UiContext,
 	inherited: &Props,
 ) -> Result<Props, ParseError> {
@@ -1528,7 +1528,7 @@ fn apply_attrs(
 		} else if let Some(prop) = Props::prop_of(key) {
 			let value = match (prop, value) {
 				(Prop::Title, Some(value)) => PropValue::Str(resolve_icons(ctx.charset, source, value)),
-				(Prop::Gap | Prop::Grow, None) => PropValue::Str(SmolStr::new("1")),
+				(Prop::Gap | Prop::Grow, None) => PropValue::Str(Str::new("1")),
 				(_, Some(value)) => PropValue::Str(source.slice_ref(value)),
 				(_, None) => PropValue::Bool(true),
 			};
@@ -1596,18 +1596,18 @@ mod tests {
 	#[test]
 	fn well_known_bad_values_are_parse_errors() {
 		let ctx = UiContext::default();
-		assert!(parse(&SmolStr::new("<text fg=nosuch>x</text>"), &ctx).is_err());
-		assert!(parse(&SmolStr::new("<text fg=\"rgb(300,0)\">x</text>"), &ctx).is_err());
-		assert!(parse(&SmolStr::new("<text fg=💥>x</text>"), &ctx).is_err());
-		assert!(parse(&SmolStr::new("<text fg=\"rgb💥(1,2,3)\">x</text>"), &ctx).is_err());
-		assert!(parse(&SmolStr::new("<text fg=#héx>x</text>"), &ctx).is_err());
+		assert!(parse(&Str::new("<text fg=nosuch>x</text>"), &ctx).is_err());
+		assert!(parse(&Str::new("<text fg=\"rgb(300,0)\">x</text>"), &ctx).is_err());
+		assert!(parse(&Str::new("<text fg=💥>x</text>"), &ctx).is_err());
+		assert!(parse(&Str::new("<text fg=\"rgb💥(1,2,3)\">x</text>"), &ctx).is_err());
+		assert!(parse(&Str::new("<text fg=#héx>x</text>"), &ctx).is_err());
 	}
 
 	#[test]
 	fn chrome_attributes_parse_with_aliases_and_flags() {
 		let ctx = UiContext::default();
 		let root = parse(
-			&SmolStr::new(
+			&Str::new(
 				"<col><box border=dash on=navy edge=red><text accent reverse strike truncate \
 				 mystery>x</text></box><spacer/></col>",
 			),
@@ -1630,7 +1630,7 @@ mod tests {
 		assert_eq!(child(col, 1).comp().props().grow(), Some(1.0));
 
 		let overrides =
-			parse(&SmolStr::new("<col><box pad='2 3'></box><spacer grow=2/></col>"), &ctx).unwrap();
+			parse(&Str::new("<col><box pad='2 3'></box><spacer grow=2/></col>"), &ctx).unwrap();
 		let col = child(&overrides, 0);
 		assert_eq!(child(col, 0).comp().props().pad(), (2, 3));
 		assert_eq!(child(col, 1).comp().props().grow(), Some(2.0));
@@ -1644,13 +1644,13 @@ mod tests {
 			"<box title='b'><text>x</text></box>",
 			"<box title=\"b\"><text>x</text></box>",
 		] {
-			let root = parse(&SmolStr::new(src), &ctx).unwrap();
-			assert_eq!(child(&root, 0).comp().props().title().map(SmolStr::as_str), Some("b"));
+			let root = parse(&Str::new(src), &ctx).unwrap();
+			assert_eq!(child(&root, 0).comp().props().title().map(Str::as_str), Some("b"));
 		}
 		let root =
-			parse(&SmolStr::new("<box title='say \"hi\" now'><text>x</text></box>"), &ctx).unwrap();
+			parse(&Str::new("<box title='say \"hi\" now'><text>x</text></box>"), &ctx).unwrap();
 		assert_eq!(
-			child(&root, 0).comp().props().title().map(SmolStr::as_str),
+			child(&root, 0).comp().props().title().map(Str::as_str),
 			Some("say \"hi\" now")
 		);
 	}
@@ -1658,24 +1658,24 @@ mod tests {
 	#[test]
 	fn title_resolves_ico_tags_through_the_charset() {
 		let unicode = UiContext::default();
-		let src = SmolStr::new("<box title=\"<ico:folder/> Files\"><text>x</text></box>");
+		let src = Str::new("<box title=\"<ico:folder/> Files\"><text>x</text></box>");
 		let root = parse(&src, &unicode).unwrap();
-		assert_eq!(child(&root, 0).comp().props().title().map(SmolStr::as_str), Some("📁 Files"));
+		assert_eq!(child(&root, 0).comp().props().title().map(Str::as_str), Some("📁 Files"));
 
 		let ascii = UiContext { charset: Charset::Ascii, ..UiContext::default() };
 		let root = parse(&src, &ascii).unwrap();
-		assert_eq!(child(&root, 0).comp().props().title().map(SmolStr::as_str), Some("[D] Files"));
+		assert_eq!(child(&root, 0).comp().props().title().map(Str::as_str), Some("[D] Files"));
 
-		let src = SmolStr::new("<hr title=\"<ico:icon.folder/> <ico:nope/>\"/>");
+		let src = Str::new("<hr title=\"<ico:icon.folder/> <ico:nope/>\"/>");
 		let root = parse(&src, &unicode).unwrap();
-		assert_eq!(child(&root, 0).comp().props().title().map(SmolStr::as_str), Some("📁 nope"));
+		assert_eq!(child(&root, 0).comp().props().title().map(Str::as_str), Some("📁 nope"));
 	}
 
 	#[test]
 	fn styles_cascade_to_children() {
 		let ctx = UiContext::default();
 		let root = parse(
-			&SmolStr::new(
+			&Str::new(
 				"<col fg=#0000ff bold><text>a</text><text fg=#ff0000>b</text><box \
 				 bg=#00ff00><text>c</text></box></col>",
 			),
@@ -1698,7 +1698,7 @@ mod tests {
 	fn gradients_live_in_property_values() {
 		let ctx = UiContext::default();
 		let root = parse(
-			&SmolStr::new(
+			&Str::new(
 				r##"<box bg="#000000..#ffffff" angle=90><pre fg="accent..info" angle=45>  ██
  █</pre></box>"##,
 			),
@@ -1708,39 +1708,39 @@ mod tests {
 		let boxed = child(&root, 0);
 		assert_eq!(
 			boxed.comp().props().get(Prop::Bg),
-			Some(&PropValue::Gradient(SmolStr::new("#000000..#ffffff")))
+			Some(&PropValue::Gradient(Str::new("#000000..#ffffff")))
 		);
 		assert_eq!(boxed.comp().props().angle(), 90);
 		let pre = child(boxed, 0);
 		assert_eq!(
 			pre.comp().props().get(Prop::Fg),
-			Some(&PropValue::Gradient(SmolStr::new("accent..info")))
+			Some(&PropValue::Gradient(Str::new("accent..info")))
 		);
 		assert_eq!(pre.comp().props().angle(), 45);
 		for source in ["<pre gradient=\"accent..info\">x</pre>", "<pre dir=h>x</pre>"] {
-			assert!(parse(&SmolStr::new(source), &ctx).is_err(), "{source}");
+			assert!(parse(&Str::new(source), &ctx).is_err(), "{source}");
 		}
 	}
 
 	#[test]
 	fn custom_elements_require_a_complete_tag_pair() {
 		let ctx = UiContext::default();
-		let root = parse(&SmolStr::new("<panel mystery><text>x</text></panel>"), &ctx).unwrap();
+		let root = parse(&Str::new("<panel mystery><text>x</text></panel>"), &ctx).unwrap();
 		let panel = child(&root, 0);
 		assert_eq!(panel.comp().props().custom("mystery"), Some(&PropValue::Bool(true)));
 		assert_eq!(panel.comp().children().len(), 1);
 
-		let literal = parse(&SmolStr::new("before <panel> after"), &ctx).unwrap();
+		let literal = parse(&Str::new("before <panel> after"), &ctx).unwrap();
 		assert_eq!(literal.comp().children().len(), 1);
 	}
 
 	#[test]
 	fn markdown_html_stays_literal_but_line_start_custom_elements_embed() {
 		let ctx = UiContext::default();
-		let html = parse(&SmolStr::new("<md>before <span>inside</span> after</md>"), &ctx).unwrap();
+		let html = parse(&Str::new("<md>before <span>inside</span> after</md>"), &ctx).unwrap();
 		assert!(child(&html, 0).comp().children().is_empty());
 
-		let custom = parse(&SmolStr::new("<md>before\n<panel/>\nafter</md>"), &ctx).unwrap();
+		let custom = parse(&Str::new("<md>before\n<panel/>\nafter</md>"), &ctx).unwrap();
 		assert_eq!(child(&custom, 0).comp().children().len(), 2);
 	}
 }

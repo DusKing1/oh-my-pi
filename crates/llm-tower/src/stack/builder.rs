@@ -11,7 +11,7 @@ use std::{
 };
 
 use futures::{Stream, StreamExt, TryFutureExt, future::MapOk, stream::Map};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{compat::Compat, identity::DialectSelection};
 use omp_llm_error::{BlockTable, RetryBudget};
 use omp_proto::inference::v1::TurnEvent;
@@ -80,7 +80,7 @@ pub struct RouteStackConfig {
 	/// stacks provider-native; production registration promotes it to `Auto`.
 	pub dialect:              Option<DialectSelection>,
 	/// Captured `OMP_DIALECT` override, resolved against each request's model.
-	pub omp_dialect:          Option<SmolStr>,
+	pub omp_dialect:          Option<Str>,
 	/// Maximum streams simultaneously admitted to this route.
 	pub max_inflight:         usize,
 	/// Provider call/first-event/idle deadlines.

@@ -3,7 +3,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use futures::{StreamExt, stream};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{
 	models::{Availability, Modality, ModelCard, ModelCatalog, Source},
 	provider::Facet as CatalogFacet,
@@ -65,8 +65,8 @@ impl Chat for SuccessfulChat {
 				)
 				.cost(Cost::builder().nanos_usd(2_500_000).estimated(true).build())
 				.unsupported(Vec::new())
-				.provider(SmolStr::new_static("test"))
-				.model(SmolStr::new_static("model"))
+				.provider(Str::new_static("test"))
+				.model(Str::new_static("model"))
 				.props(Props::default())
 				.build(),
 		)])
@@ -80,7 +80,7 @@ fn item(role: Role, text: &'static str) -> Item {
 		.kind(ItemKind::Message(
 			Message::builder()
 				.role(role)
-				.parts(vec![Part::Text(SmolStr::new_static(text))])
+				.parts(vec![Part::Text(Str::new_static(text))])
 				.build(),
 		))
 		.props(Props::default())
@@ -89,11 +89,11 @@ fn item(role: Role, text: &'static str) -> Item {
 
 fn model_card() -> ModelCard {
 	ModelCard::builder()
-		.id(SmolStr::new_static("test/model"))
-		.provider(SmolStr::new_static("test"))
-		.model(SmolStr::new_static("model"))
-		.name(SmolStr::new_static("Model"))
-		.family(SmolStr::new_static("test"))
+		.id(Str::new_static("test/model"))
+		.provider(Str::new_static("test"))
+		.model(Str::new_static("model"))
+		.name(Str::new_static("Model"))
+		.family(Str::new_static("test"))
 		.facets(smallvec![CatalogFacet::Chat])
 		.inputs(smallvec![Modality::Text])
 		.outputs(smallvec![Modality::Text])
@@ -117,8 +117,8 @@ fn engine(config: TelemetryConfig) -> TurnEngine {
 	let registry = Arc::new(RwLock::new(Registry::new(&catalog, Arc::new(Available))));
 	let resolver = Arc::new(ChatResolver::new(registry));
 	resolver.register(ChatRoute {
-		provider:          SmolStr::new_static("test"),
-		credential_id:     SmolStr::new_static("cred-a"),
+		provider:          Str::new_static("test"),
+		credential_id:     Str::new_static("cred-a"),
 		requires_executor: false,
 		chat:              Arc::new(SuccessfulChat),
 	});

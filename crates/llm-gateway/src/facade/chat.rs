@@ -8,7 +8,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use http::{Request, StatusCode};
 use hyper::body::Body;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_types::{
 	CacheHint, ChatOutcome, ChatRequest, Effort, Fallback, Feature, Item, ItemKind, JsonSchema,
 	Message, Part, Props, Reasoning, ResponseFormat, ResponseFormatKind, Role, Sampling, StopReason,
@@ -24,7 +24,7 @@ use super::{
 
 #[derive(Default, Deserialize)]
 struct WireRequest {
-	model:                 SmolStr,
+	model:                 Str,
 	#[serde(default)]
 	messages:              Vec<Value>,
 	#[serde(default)]
@@ -38,15 +38,15 @@ struct WireRequest {
 	presence_penalty:      Option<f64>,
 	stop:                  Option<Value>,
 	reasoning_effort:      Option<Value>,
-	user:                  Option<SmolStr>,
-	prompt_cache_key:      Option<SmolStr>,
+	user:                  Option<Str>,
+	prompt_cache_key:      Option<Str>,
 	response_format:       Option<Value>,
 	#[serde(default)]
 	stream:                bool,
 	#[serde(default)]
 	stream_options:        StreamOptions,
 	#[serde(flatten)]
-	extra:                 BTreeMap<SmolStr, Value>,
+	extra:                 BTreeMap<Str, Value>,
 }
 
 #[derive(Default, Deserialize)]
@@ -54,7 +54,7 @@ struct StreamOptions {
 	#[serde(default)]
 	include_usage: bool,
 	#[serde(flatten)]
-	extra:         BTreeMap<SmolStr, Value>,
+	extra:         BTreeMap<Str, Value>,
 }
 
 /// Handles `POST /v1/chat/completions` against the shared chat facet.
@@ -74,7 +74,7 @@ where
 	let Some(chat) = state.facets.chat.clone() else {
 		return error_response(
 			Vendor::OpenAi,
-			FacadeError::Invalid(SmolStr::from("chat facet is unavailable")),
+			FacadeError::Invalid(Str::from("chat facet is unavailable")),
 		);
 	};
 	let events = match chat.turn(request, None).await {
@@ -109,8 +109,8 @@ fn canonical_request(wire: &WireRequest) -> Result<ChatRequest, FacadeError> {
 			.unwrap_or_else(|| json!({}));
 		tools.push(
 			ToolDef::builder()
-				.name(SmolStr::from(name))
-				.description(SmolStr::from(description))
+				.name(Str::from(name))
+				.description(Str::from(description))
 				.schema_json(Bytes::from(serde_json::to_vec(&schema).expect("JSON values serialize")))
 				.maybe_strict(function.get("strict").and_then(Value::as_bool))
 				.build(),
@@ -172,7 +172,7 @@ pub(crate) fn tool_choice(
 				.or_else(|| value.get("name"))
 				.and_then(Value::as_str)
 				.ok_or_else(|| invalid("tool_choice name is required"))?;
-			ToolChoice::Named(SmolStr::from(name))
+			ToolChoice::Named(Str::from(name))
 		},
 		_ => return Err(invalid("tool_choice must be a string or object")),
 	};
@@ -187,7 +187,7 @@ pub(crate) fn tool_choice(
 fn sampling(wire: &WireRequest) -> Result<Option<Sampling>, FacadeError> {
 	let stop = match wire.stop.as_ref() {
 		None | Some(Value::Null) => None,
-		Some(Value::String(value)) => Some(vec![SmolStr::from(value.as_str())]),
+		Some(Value::String(value)) => Some(vec![Str::from(value.as_str())]),
 		Some(Value::Array(values)) => {
 			if values.len() > 4 {
 				return Err(invalid("stop accepts at most four strings"));
@@ -198,7 +198,7 @@ fn sampling(wire: &WireRequest) -> Result<Option<Sampling>, FacadeError> {
 					.map(|value| {
 						value
 							.as_str()
-							.map(SmolStr::from)
+							.map(Str::from)
 							.ok_or_else(|| invalid("stop entries must be strings"))
 					})
 					.collect::<Result<Vec<_>, _>>()?,
@@ -268,7 +268,7 @@ pub(crate) fn response_format(
 				ResponseFormat::builder()
 					.kind(ResponseFormatKind::JsonSchema(
 						JsonSchema::builder()
-							.name(SmolStr::from(name))
+							.name(Str::from(name))
 							.schema_json(Bytes::from(
 								serde_json::to_vec(&schema).expect("JSON values serialize"),
 							))
@@ -348,7 +348,7 @@ pub(crate) fn append_message(value: &Value, items: &mut Vec<Item>) -> Result<(),
 			items.push(item(ItemKind::ToolCall(
 				ToolCall::builder()
 					.id(canonical_call_id(wire_id))
-					.name(SmolStr::from(string_at(function, "name")?))
+					.name(Str::from(string_at(function, "name")?))
 					.args_json(Bytes::copy_from_slice(arguments.as_bytes()))
 					.thought_signature(Bytes::new())
 					.build(),
@@ -368,14 +368,14 @@ pub(crate) fn item(kind: ItemKind) -> Item {
 
 pub(crate) fn content_parts(value: Option<&Value>) -> Vec<Part> {
 	match value {
-		Some(Value::String(text)) => vec![Part::Text(SmolStr::from(text.as_str()))],
+		Some(Value::String(text)) => vec![Part::Text(Str::from(text.as_str()))],
 		Some(Value::Array(parts)) => parts
 			.iter()
 			.filter_map(|part| {
 				part
 					.as_str()
 					.or_else(|| part.get("text").and_then(Value::as_str))
-					.map(|text| Part::Text(SmolStr::from(text)))
+					.map(|text| Part::Text(Str::from(text)))
 			})
 			.collect(),
 		_ => Vec::new(),
@@ -390,12 +390,12 @@ pub(crate) fn string_at<'a>(value: &'a Value, key: &str) -> Result<&'a str, Faca
 }
 
 fn invalid(detail: &str) -> FacadeError {
-	FacadeError::Invalid(SmolStr::from(detail))
+	FacadeError::Invalid(Str::from(detail))
 }
 
 async fn non_streaming(
 	mut events: futures::stream::BoxStream<'static, TurnEvent>,
-	requested_model: SmolStr,
+	requested_model: Str,
 ) -> FacadeResponse {
 	let mut outcome = None;
 	while let Some(event) = events.next().await {
@@ -422,7 +422,7 @@ async fn non_streaming(
 
 fn streaming(
 	mut events: futures::stream::BoxStream<'static, TurnEvent>,
-	model: SmolStr,
+	model: Str,
 	include_usage: bool,
 ) -> FacadeResponse {
 	let output = stream! {
@@ -599,7 +599,7 @@ mod tests {
 	fn tool_argument_bytes_survive_request_projection() {
 		let arguments = r#"{ "z": [3, 2], "a": "x&y" }"#;
 		let wire = WireRequest {
-			model: SmolStr::from("test"),
+			model: Str::from("test"),
 			messages: vec![json!({
 				"role":"assistant",
 				"tool_calls":[{"id":"call_vendor","type":"function","function":{"name":"lookup","arguments":arguments}}]

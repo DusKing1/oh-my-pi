@@ -5,7 +5,7 @@ use std::sync::{
 	atomic::{AtomicU8, AtomicU64, Ordering},
 };
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use smallvec::SmallVec;
 use xutf::{Text, width_char};
 
@@ -799,7 +799,7 @@ pub struct Clip<S: RichSink> {
 	marker:  Option<char>,
 	used:    u16,
 	done:    bool,
-	pending: Option<(Style, SmolStr, u16)>,
+	pending: Option<(Style, Str, u16)>,
 }
 
 impl<S: RichSink> Clip<S> {
@@ -847,7 +847,7 @@ impl<S: RichSink> RichSink for Clip<S> {
 			}
 			if self.marker.is_some() {
 				self.flush_pending();
-				self.pending = Some((style, SmolStr::new(grapheme), grapheme_width));
+				self.pending = Some((style, Str::new(grapheme), grapheme_width));
 			} else {
 				self.inner.run(style, grapheme);
 			}

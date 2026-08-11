@@ -11,7 +11,7 @@ pub mod vertex;
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{
 	compat::{Compat, ReasoningWireFormat},
 	provider::TransportId,
@@ -116,7 +116,7 @@ pub(crate) fn encode_request_with_tools(
 	let mut unsupported = Vec::new();
 	let mut contents = Vec::<Value>::new();
 	let mut system_parts = Vec::<Value>::new();
-	let mut call_names = BTreeMap::<CallId, SmolStr>::new();
+	let mut call_names = BTreeMap::<CallId, Str>::new();
 
 	for item in &req.thread.items {
 		match &item.kind {
@@ -471,7 +471,7 @@ fn encode_tools(
 			if tool.strict.is_some() {
 				report(
 					unsupported,
-					SmolStr::from(format!("tools.{}.strict", tool.name)),
+					Str::from(format!("tools.{}.strict", tool.name)),
 					"Gemini function declarations do not expose a strict boolean",
 					Fallback::Ignore,
 				)?;
@@ -513,7 +513,7 @@ fn encode_tools(
 		if let ToolChoice::Named(name) = &choice.value
 			&& !tools.iter().any(|tool| tool.name == *name)
 		{
-			return Err(Error::Provider(SmolStr::from(format!(
+			return Err(Error::Provider(Str::from(format!(
 				"named Google tool choice `{name}` is not declared"
 			))));
 		}
@@ -606,7 +606,7 @@ fn encode_policy_thinking(
 				let level = policy
 					.effort_map
 					.get(&floor)
-					.map(SmolStr::as_str)
+					.map(Str::as_str)
 					.unwrap_or_else(|| thinking_level(floor));
 				thinking.insert("thinkingLevel".into(), Value::String(level.into()));
 			},
@@ -639,7 +639,7 @@ fn encode_policy_thinking(
 				let level = policy
 					.effort_map
 					.get(&effort)
-					.map(SmolStr::as_str)
+					.map(Str::as_str)
 					.unwrap_or_else(|| thinking_level(effort));
 				thinking.insert("thinkingLevel".into(), Value::String(level.into()));
 			}
@@ -716,8 +716,8 @@ const fn thinking_level(effort: Effort) -> &'static str {
 
 fn report(
 	unsupported: &mut Vec<Unsupported>,
-	what: impl Into<SmolStr>,
-	detail: impl Into<SmolStr>,
+	what: impl Into<Str>,
+	detail: impl Into<Str>,
 	fallback: Fallback,
 ) -> Result<(), Error> {
 	let action = match fallback {
@@ -749,7 +749,7 @@ struct GoogleDecodeState {
 	next_index:         u32,
 	open:               Option<(u32, StreamPartKind)>,
 	usage:              Option<WireUsage>,
-	response_id:        Option<SmolStr>,
+	response_id:        Option<Str>,
 	parts:              BTreeMap<u32, DecodedPart>,
 	part_props:         BTreeMap<u32, Props>,
 	thought_signatures: BTreeMap<u32, Bytes>,
@@ -760,7 +760,7 @@ struct GoogleDecodeState {
 enum DecodedPart {
 	Text(String),
 	Thinking(String),
-	ToolCall { id: CallId, name: SmolStr, args: Bytes, signature: Bytes },
+	ToolCall { id: CallId, name: Str, args: Bytes, signature: Bytes },
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
@@ -781,7 +781,7 @@ struct WireUsage {
 struct WireResponse {
 	#[serde(default)]
 	candidates:      Vec<WireCandidate>,
-	response_id:     Option<SmolStr>,
+	response_id:     Option<Str>,
 	usage_metadata:  Option<WireUsage>,
 	prompt_feedback: Option<WirePromptFeedback>,
 	error:           Option<WireError>,
@@ -791,7 +791,7 @@ struct WireResponse {
 #[serde(rename_all = "camelCase")]
 struct WireCandidate {
 	content:       Option<WireContent>,
-	finish_reason: Option<SmolStr>,
+	finish_reason: Option<Str>,
 	#[serde(flatten)]
 	metadata:      stream::CandidateMetadata,
 }
@@ -805,10 +805,10 @@ struct WireContent {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WirePart {
-	text:                  Option<SmolStr>,
+	text:                  Option<Str>,
 	#[serde(default)]
 	thought:               bool,
-	thought_signature:     Option<SmolStr>,
+	thought_signature:     Option<Str>,
 	function_call:         Option<WireFunctionCall>,
 	executable_code:       Option<stream::ExecutableCode>,
 	code_execution_result: Option<stream::CodeExecutionResult>,
@@ -816,23 +816,23 @@ struct WirePart {
 
 #[derive(Deserialize)]
 struct WireFunctionCall {
-	id:   Option<SmolStr>,
-	name: Option<SmolStr>,
+	id:   Option<Str>,
+	name: Option<Str>,
 	args: Option<Box<RawValue>>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WirePromptFeedback {
-	block_reason:         Option<SmolStr>,
-	block_reason_message: Option<SmolStr>,
+	block_reason:         Option<Str>,
+	block_reason_message: Option<Str>,
 }
 
 #[derive(Deserialize)]
 struct WireError {
 	code:    Option<u16>,
-	message: Option<SmolStr>,
-	status:  Option<SmolStr>,
+	message: Option<Str>,
+	status:  Option<Str>,
 }
 
 fn decode_bytes(data: &[u8], state: &mut DecodeState) -> Result<SmallVec<TurnEvent, 2>, Error> {
@@ -900,7 +900,7 @@ fn decode_response(
 					if part
 						.thought_signature
 						.as_ref()
-						.is_some_and(SmolStr::is_empty)
+						.is_some_and(Str::is_empty)
 					{
 						state.completed = true;
 						events.push(TurnEvent::Error(turn_error(
@@ -928,7 +928,7 @@ fn decode_response(
 					events.push(TurnEvent::PartStart {
 						index,
 						kind: StreamPartKind::ToolCall,
-						tool_call_id: SmolStr::from(id.to_string()),
+						tool_call_id: Str::from(id.to_string()),
 						tool_name: name,
 					});
 					events.push(TurnEvent::PartDelta { index, chunk: args });
@@ -1040,8 +1040,8 @@ fn ensure_open(
 	events.push(TurnEvent::PartStart {
 		index,
 		kind,
-		tool_call_id: SmolStr::default(),
-		tool_name: SmolStr::default(),
+		tool_call_id: Str::default(),
+		tool_name: Str::default(),
 	});
 	index
 }
@@ -1103,7 +1103,7 @@ fn outcome(stop: StopReason, state: &GoogleDecodeState) -> ChatOutcome {
 			DecodedPart::Thinking(text) if !text.is_empty() => {
 				output.push(assistant_item(Part::Thinking(
 					Thinking::builder()
-						.text(SmolStr::from(text.as_str()))
+						.text(Str::from(text.as_str()))
 						.signature(
 							state
 								.thought_signatures
@@ -1157,8 +1157,8 @@ fn outcome(stop: StopReason, state: &GoogleDecodeState) -> ChatOutcome {
 		.maybe_cost(None)
 		.unsupported(Vec::new())
 		.maybe_revision(None)
-		.provider(SmolStr::from("google"))
-		.model(SmolStr::default())
+		.provider(Str::from("google"))
+		.model(Str::default())
 		.props(props)
 		.build()
 }
@@ -1177,7 +1177,7 @@ fn assistant_item(part: Part) -> Item {
 }
 
 fn assistant_text_item(text: &str, signature: Option<&Bytes>, extra: Option<&Props>) -> Item {
-	let mut item = assistant_item(Part::Text(SmolStr::from(text)));
+	let mut item = assistant_item(Part::Text(Str::from(text)));
 	if let Some(signature) = signature {
 		item.props.insert_ns(
 			"google",
@@ -1193,7 +1193,7 @@ fn assistant_text_item(text: &str, signature: Option<&Bytes>, extra: Option<&Pro
 	item
 }
 
-fn turn_error(detail: SmolStr) -> TurnError {
+fn turn_error(detail: Str) -> TurnError {
 	TurnError::builder()
 		.kind(TurnErrorKind::Upstream)
 		.detail(detail)
@@ -1276,7 +1276,7 @@ fn signature_string(signature: &Bytes) -> Result<String, Error> {
 
 #[cold]
 fn provider_error(error: impl std::fmt::Display) -> Error {
-	Error::Provider(SmolStr::from(error.to_string()))
+	Error::Provider(Str::from(error.to_string()))
 }
 
 #[cfg(test)]
@@ -1284,7 +1284,7 @@ mod tests {
 	use std::{collections::BTreeMap, sync::Arc};
 
 	use bytes::Bytes;
-	use omp_core::SmolStr;
+	use omp_core::Str;
 	use omp_llm_catalog::{
 		compat::{Compat, ReasoningWireFormat, ToolSchemaFlavor},
 		provider::{TransportId, load_builtin},
@@ -1565,7 +1565,7 @@ mod tests {
 		let req = request(vec![item(ItemKind::Message(
 			Message::builder()
 				.role(Role::System)
-				.parts(vec![Part::Text(SmolStr::from("be concise"))])
+				.parts(vec![Part::Text(Str::from("be concise"))])
 				.build(),
 		))]);
 		let (body, _) = encode_request(&req, &compat(), GoogleVariant::GEN_AI).unwrap();

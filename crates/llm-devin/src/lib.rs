@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, error::Error as StdError, future::Future, sync:
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
-use omp_core::{SmolStr, base64};
+use omp_core::{Str, base64};
 use omp_llm_types::{
 	Accuracy, CallId, CallIdMapper, Chat, ChatOutcome, ChatRequest, Error, Executor, Fallback, Item,
 	ItemKind, Message, Part, Props, Role, StopReason, StreamPartKind, Thinking, ToolCall,
@@ -35,9 +35,9 @@ const DEFAULT_STOP_PATTERNS: [&str; 5] =
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiscoveredModel {
 	/// Provider-local model uid.
-	pub id:                SmolStr,
+	pub id:                Str,
 	/// Devin display label.
-	pub name:              SmolStr,
+	pub name:              Str,
 	/// Whether the model accepts image input.
 	pub supports_images:   bool,
 	/// Whether the model exposes thinking behavior.
@@ -79,7 +79,7 @@ pub fn model_discovery_request(api_key: &[u8]) -> Bytes {
 /// Returns a transport error when the response is malformed.
 pub fn decode_model_discovery(payload: &[u8]) -> Result<Vec<DiscoveredModel>, Error> {
 	let response = GetCliModelConfigsResponse::decode(payload)
-		.map_err(|error| Error::Transport(SmolStr::from(error.to_string())))?;
+		.map_err(|error| Error::Transport(Str::from(error.to_string())))?;
 	let mut models = BTreeMap::new();
 	for config in response.client_model_configs {
 		if config.disabled || config.model_uid.trim().is_empty() {
@@ -105,11 +105,11 @@ pub fn decode_model_discovery(payload: &[u8]) -> Result<Vec<DiscoveredModel>, Er
 			.and_then(|info| u64::try_from(info.max_output_tokens).ok())
 			.filter(|value| *value > 0)
 			.unwrap_or_else(|| context_window.min(64_000));
-		let id = SmolStr::from(config.model_uid.trim());
+		let id = Str::from(config.model_uid.trim());
 		let name = if config.label.trim().is_empty() {
 			id.clone()
 		} else {
-			SmolStr::from(config.label.trim())
+			Str::from(config.label.trim())
 		};
 		models.insert(id.clone(), DiscoveredModel {
 			id,
@@ -178,13 +178,13 @@ where
 			.auth
 			.apply(&mut channel, &mut wire)
 			.await
-			.map_err(|_| Error::Transport(SmolStr::new_static("Devin authentication failed")))?;
+			.map_err(|_| Error::Transport(Str::new_static("Devin authentication failed")))?;
 
 		let mut grpc = tonic::client::Grpc::new(channel);
 		grpc
 			.ready()
 			.await
-			.map_err(|status| Error::Provider(SmolStr::from(status.to_string())))?;
+			.map_err(|status| Error::Provider(Str::from(status.to_string())))?;
 
 		let path =
 			http::uri::PathAndQuery::from_static("/exa.api_server_pb.ApiServerService/GetChatMessage");
@@ -194,7 +194,7 @@ where
 		let mut stream = grpc
 			.server_streaming(tonic::Request::new(wire), path, codec)
 			.await
-			.map_err(|status| Error::Provider(SmolStr::from(status.to_string())))?
+			.map_err(|status| Error::Provider(Str::from(status.to_string())))?
 			.into_inner();
 
 		Ok(Box::pin(async_stream::stream! {
@@ -220,7 +220,7 @@ where
 						yield TurnEvent::Error(
 							TurnError::builder()
 								.kind(TurnErrorKind::Upstream)
-								.detail(SmolStr::from(status.to_string()))
+								.detail(Str::from(status.to_string()))
 								.unsupported(state.unsupported.clone())
 								.retry_after_ms(0)
 								.build(),
@@ -243,11 +243,11 @@ pub struct State {
 	open_text:      Option<u32>,
 	open_thinking:  Option<u32>,
 	parts:          BTreeMap<u32, OutputPart>,
-	tools:          BTreeMap<SmolStr, ToolState>,
-	active_tool_id: Option<SmolStr>,
+	tools:          BTreeMap<Str, ToolState>,
+	active_tool_id: Option<Str>,
 	latest_stop:    i32,
 	usage:          Option<Usage>,
-	model:          SmolStr,
+	model:          Str,
 	unsupported:    Vec<Unsupported>,
 	finished:       bool,
 }
@@ -255,13 +255,13 @@ pub struct State {
 enum OutputPart {
 	Text(String),
 	Thinking { text: String, signature: Bytes },
-	Tool(SmolStr),
+	Tool(Str),
 }
 
 struct ToolState {
 	canonical_id: CallId,
 	index:        u32,
-	name:         SmolStr,
+	name:         Str,
 	arguments:    String,
 }
 
@@ -293,7 +293,7 @@ fn build_request(req: &ChatRequest) -> Result<(GetChatMessageRequest, Vec<Unsupp
 					name:           call.name.to_string(),
 					arguments_json: std::str::from_utf8(&call.args_json)
 						.map_err(|_| {
-							Error::Provider(SmolStr::from("Devin tool arguments are not UTF-8"))
+							Error::Provider(Str::from("Devin tool arguments are not UTF-8"))
 						})?
 						.to_owned(),
 				};
@@ -418,7 +418,7 @@ fn build_request(req: &ChatRequest) -> Result<(GetChatMessageRequest, Vec<Unsupp
 				name:               tool.name.to_string(),
 				description:        tool.description.to_string(),
 				json_schema_string: std::str::from_utf8(&tool.schema_json)
-					.map_err(|_| Error::Provider(SmolStr::from("Devin tool schema is not UTF-8")))?
+					.map_err(|_| Error::Provider(Str::from("Devin tool schema is not UTF-8")))?
 					.to_owned(),
 				strict:             tool.strict.unwrap_or(false),
 			})
@@ -540,7 +540,7 @@ fn append_parts(
 	}
 }
 
-fn dropped(what: impl Into<SmolStr>, detail: impl Into<SmolStr>) -> Unsupported {
+fn dropped(what: impl Into<Str>, detail: impl Into<Str>) -> Unsupported {
 	Unsupported::builder()
 		.what(what.into())
 		.detail(detail.into())
@@ -628,8 +628,8 @@ fn ensure_text_part(state: &mut State, events: &mut SmallVec<TurnEvent, 2>, thin
 		} else {
 			StreamPartKind::Text
 		},
-		tool_call_id: SmolStr::default(),
-		tool_name: SmolStr::default(),
+		tool_call_id: Str::default(),
+		tool_name: Str::default(),
 	});
 	index
 }
@@ -642,7 +642,7 @@ fn decode_tool_delta(
 	let wire_id = if call.id.is_empty() {
 		state.active_tool_id.clone()
 	} else {
-		Some(SmolStr::from(std::mem::take(&mut call.id)))
+		Some(Str::from(std::mem::take(&mut call.id)))
 	};
 	let Some(wire_id) = wire_id else {
 		return;
@@ -651,7 +651,7 @@ fn decode_tool_delta(
 		let canonical_id = CallId::new();
 		let index = state.next_index;
 		state.next_index += 1;
-		let name = SmolStr::from(std::mem::take(&mut call.name));
+		let name = Str::from(std::mem::take(&mut call.name));
 		state.parts.insert(index, OutputPart::Tool(wire_id.clone()));
 		state.tools.insert(wire_id.clone(), ToolState {
 			canonical_id,
@@ -662,14 +662,14 @@ fn decode_tool_delta(
 		events.push(TurnEvent::PartStart {
 			index,
 			kind: StreamPartKind::ToolCall,
-			tool_call_id: SmolStr::from(canonical_id.to_string()),
+			tool_call_id: Str::from(canonical_id.to_string()),
 			tool_name: name,
 		});
 	}
 	state.active_tool_id = Some(wire_id.clone());
 	let tool = state.tools.get_mut(&wire_id).expect("inserted above");
 	if !call.name.is_empty() {
-		tool.name = SmolStr::from(std::mem::take(&mut call.name));
+		tool.name = Str::from(std::mem::take(&mut call.name));
 	}
 	if call.arguments_json.is_empty() {
 		return;
@@ -715,12 +715,12 @@ pub fn finish(state: &mut State) -> SmallVec<TurnEvent, 2> {
 	for part in state.parts.values_mut() {
 		match part {
 			OutputPart::Text(text) => {
-				message_parts.push(Part::Text(SmolStr::from(std::mem::take(text))));
+				message_parts.push(Part::Text(Str::from(std::mem::take(text))));
 			},
 			OutputPart::Thinking { text, signature } => {
 				message_parts.push(Part::Thinking(
 					Thinking::builder()
-						.text(SmolStr::from(std::mem::take(text)))
+						.text(Str::from(std::mem::take(text)))
 						.signature(std::mem::take(signature))
 						.redacted(false)
 						.build(),
@@ -766,7 +766,7 @@ pub fn finish(state: &mut State) -> SmallVec<TurnEvent, 2> {
 			.output(output)
 			.stop(stop)
 			.unsupported(std::mem::take(&mut state.unsupported))
-			.provider(SmolStr::from("devin"))
+			.provider(Str::from("devin"))
 			.model(std::mem::take(&mut state.model))
 			.props(Props::default())
 			.maybe_usage(state.usage.take())
@@ -791,7 +791,7 @@ fn assistant_item(parts: Vec<Part>) -> Item {
 #[cfg(test)]
 mod tests {
 	use bytes::Bytes;
-	use omp_core::SmolStr;
+	use omp_core::Str;
 	use omp_llm_types::{
 		ChatRequest, Item, ItemKind, Message, Part, Props, Role, StopReason, Thread, TurnEvent,
 	};
@@ -837,7 +837,7 @@ mod tests {
 	#[test]
 	fn plain_text_fixture_maps_to_one_user_prompt() {
 		let request = ChatRequest::builder()
-			.model(SmolStr::from("devin-test"))
+			.model(Str::from("devin-test"))
 			.thread(
 				Thread::builder()
 					.items(vec![
@@ -846,7 +846,7 @@ mod tests {
 							.kind(ItemKind::Message(
 								Message::builder()
 									.role(Role::User)
-									.parts(vec![Part::Text(SmolStr::from("Hello"))])
+									.parts(vec![Part::Text(Str::from("Hello"))])
 									.build(),
 							))
 							.props(Props::default())

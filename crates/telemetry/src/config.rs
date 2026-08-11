@@ -32,7 +32,7 @@ use std::{
 	sync::Arc,
 };
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use opentelemetry::{KeyValue, Value, global::BoxedTracer, trace::Span as _};
 use serde_json::Value as JsonValue;
 use smallvec::SmallVec;
@@ -49,7 +49,7 @@ use crate::{
 pub const DEFAULT_TRACER_NAME: &str = "@omp/agent-core";
 
 /// A result returned by a host telemetry callback.
-pub type HookResult<T = ()> = Result<T, SmolStr>;
+pub type HookResult<T = ()> = Result<T, Str>;
 
 /// Attributes attached to a span by static configuration or a resolver.
 pub type TelemetryAttributes = SmallVec<KeyValue, 8>;
@@ -71,11 +71,11 @@ pub enum TelemetrySpanKind {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TelemetryAgentIdentity {
 	/// Stable agent identifier.
-	pub id:          Option<SmolStr>,
+	pub id:          Option<Str>,
 	/// Human-readable agent name.
-	pub name:        Option<SmolStr>,
+	pub name:        Option<Str>,
 	/// Human-readable agent description.
-	pub description: Option<SmolStr>,
+	pub description: Option<Str>,
 }
 
 /// Context supplied to dynamic attributes and lifecycle callbacks.
@@ -164,7 +164,7 @@ pub enum CostEstimate {
 	/// Pricing intentionally could not be determined.
 	Unavailable {
 		/// Stable reason suitable for an attribute value.
-		reason: SmolStr,
+		reason: Str,
 	},
 }
 
@@ -218,7 +218,7 @@ pub struct ChatUsageEvent<'a> {
 	/// Resolved dynamic span attributes.
 	pub attributes:      Option<&'a [KeyValue]>,
 	/// Lower-cased upstream response headers.
-	pub headers:         Option<&'a [(SmolStr, SmolStr)]>,
+	pub headers:         Option<&'a [(Str, Str)]>,
 }
 
 /// Stable category for a non-fatal telemetry failure.
@@ -254,9 +254,9 @@ pub struct TelemetryWarning {
 	/// Stable failure category.
 	pub code:    TelemetryWarningCode,
 	/// Human-readable description.
-	pub message: SmolStr,
+	pub message: Str,
 	/// Error or panic description, when available.
-	pub error:   Option<SmolStr>,
+	pub error:   Option<Str>,
 }
 
 /// Optional overrides for pi's five bounded content serializers.
@@ -276,18 +276,18 @@ pub struct TelemetryContentSerializer {
 
 /// Request-content serializer hook.
 pub type RequestSerializer =
-	Arc<dyn for<'a> Fn(RequestContent<'a>) -> HookResult<Option<SmolStr>> + Send + Sync>;
+	Arc<dyn for<'a> Fn(RequestContent<'a>) -> HookResult<Option<Str>> + Send + Sync>;
 /// Response-content serializer hook.
 pub type ResponseSerializer =
-	Arc<dyn for<'a> Fn(ResponseContent<'a>) -> HookResult<Option<SmolStr>> + Send + Sync>;
+	Arc<dyn for<'a> Fn(ResponseContent<'a>) -> HookResult<Option<Str>> + Send + Sync>;
 /// Arbitrary JSON serializer hook.
-pub type JsonSerializer = Arc<dyn Fn(&JsonValue) -> HookResult<Option<SmolStr>> + Send + Sync>;
+pub type JsonSerializer = Arc<dyn Fn(&JsonValue) -> HookResult<Option<Str>> + Send + Sync>;
 /// Dynamic attribute resolver hook.
 pub type AttributeResolver = Arc<
 	dyn for<'a> Fn(&TelemetryAttributeContext<'a>) -> HookResult<TelemetryAttributes> + Send + Sync,
 >;
 /// Provider or agent-name normalizer hook.
-pub type NameNormalizer = Arc<dyn Fn(Option<&str>) -> HookResult<Option<SmolStr>> + Send + Sync>;
+pub type NameNormalizer = Arc<dyn Fn(Option<&str>) -> HookResult<Option<Str>> + Send + Sync>;
 /// Cost estimator hook.
 pub type CostEstimator =
 	Arc<dyn for<'a> Fn(&CostEstimatorContext<'a>) -> HookResult<Option<CostEstimate>> + Send + Sync>;
@@ -308,7 +308,7 @@ pub struct TelemetryConfig {
 	/// Explicit tracer override; otherwise the global tracer is resolved lazily.
 	pub tracer: Option<Arc<BoxedTracer>>,
 	/// Tracer-name override.
-	pub tracer_name: SmolStr,
+	pub tracer_name: Str,
 	/// Message-content capture policy.
 	pub capture_message_content: CaptureMode,
 	/// Host-facing mirror of the process-global credential-redaction switch.
@@ -328,7 +328,7 @@ pub struct TelemetryConfig {
 	/// Agent identity stamped on agent spans and propagated to children.
 	pub agent: Option<TelemetryAgentIdentity>,
 	/// Explicit conversation identifier.
-	pub conversation_id: Option<SmolStr>,
+	pub conversation_id: Option<Str>,
 	/// Per-step cost estimator override.
 	pub cost_estimator: Option<CostEstimator>,
 	/// Cost-delta lifecycle callback.
@@ -355,7 +355,7 @@ impl Default for TelemetryConfig {
 	fn default() -> Self {
 		Self {
 			tracer: None,
-			tracer_name: SmolStr::new_static(DEFAULT_TRACER_NAME),
+			tracer_name: Str::new_static(DEFAULT_TRACER_NAME),
 			capture_message_content: CaptureMode::from_env_value(
 				std::env::var("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT")
 					.ok()
@@ -436,12 +436,12 @@ impl TelemetryConfig {
 
 	/// Normalizes a provider, falling back to [`semconv::normalize_provider`].
 	#[must_use]
-	pub fn normalized_provider(&self, provider: Option<&str>) -> Option<SmolStr> {
+	pub fn normalized_provider(&self, provider: Option<&str>) -> Option<Str> {
 		let Some(normalizer) = &self.normalize_provider else {
 			return provider
 				.map(semconv::normalize_provider)
 				.filter(|value| !value.is_empty())
-				.map(SmolStr::new);
+				.map(Str::new);
 		};
 		match invoke(&**normalizer, provider) {
 			Ok(value) => value,
@@ -454,16 +454,16 @@ impl TelemetryConfig {
 				provider
 					.map(semconv::normalize_provider)
 					.filter(|value| !value.is_empty())
-					.map(SmolStr::new)
+					.map(Str::new)
 			},
 		}
 	}
 
 	/// Normalizes an agent name, preserving pi's built-in identity behavior.
 	#[must_use]
-	pub fn normalized_agent_name(&self, name: Option<&str>) -> Option<SmolStr> {
+	pub fn normalized_agent_name(&self, name: Option<&str>) -> Option<Str> {
 		let Some(normalizer) = &self.normalize_agent_name else {
-			return name.filter(|value| !value.is_empty()).map(SmolStr::new);
+			return name.filter(|value| !value.is_empty()).map(Str::new);
 		};
 		match invoke(&**normalizer, name) {
 			Ok(value) => value,
@@ -473,7 +473,7 @@ impl TelemetryConfig {
 					"normalizeAgentName failed; using the original agent name",
 					error,
 				);
-				name.filter(|value| !value.is_empty()).map(SmolStr::new)
+				name.filter(|value| !value.is_empty()).map(Str::new)
 			},
 		}
 	}
@@ -589,7 +589,7 @@ impl TelemetryConfig {
 
 	/// Serializes a bounded request summary, honoring a custom override.
 	#[must_use]
-	pub fn serialize_request_messages(&self, request: RequestContent<'_>) -> Option<SmolStr> {
+	pub fn serialize_request_messages(&self, request: RequestContent<'_>) -> Option<Str> {
 		if let Some(serializer) = &self.content_serializer.request_messages {
 			return self.serialized_result(invoke(&**serializer, request));
 		}
@@ -601,7 +601,7 @@ impl TelemetryConfig {
 
 	/// Serializes a bounded response-text summary, honoring a custom override.
 	#[must_use]
-	pub fn serialize_response_text(&self, response: ResponseContent<'_>) -> Option<SmolStr> {
+	pub fn serialize_response_text(&self, response: ResponseContent<'_>) -> Option<Str> {
 		if let Some(serializer) = &self.content_serializer.response_text {
 			return self.serialized_result(invoke(&**serializer, response));
 		}
@@ -613,7 +613,7 @@ impl TelemetryConfig {
 
 	/// Serializes a bounded response-tool-call summary, honoring an override.
 	#[must_use]
-	pub fn serialize_response_tool_calls(&self, response: ResponseContent<'_>) -> Option<SmolStr> {
+	pub fn serialize_response_tool_calls(&self, response: ResponseContent<'_>) -> Option<Str> {
 		if let Some(serializer) = &self.content_serializer.response_tool_calls {
 			return self.serialized_result(invoke(&**serializer, response));
 		}
@@ -625,7 +625,7 @@ impl TelemetryConfig {
 
 	/// Serializes bounded tool-call arguments, honoring a custom override.
 	#[must_use]
-	pub fn serialize_tool_call_arguments(&self, value: &JsonValue) -> Option<SmolStr> {
+	pub fn serialize_tool_call_arguments(&self, value: &JsonValue) -> Option<Str> {
 		self.serialize_json(
 			self.content_serializer.tool_call_arguments.as_ref(),
 			value,
@@ -635,7 +635,7 @@ impl TelemetryConfig {
 
 	/// Serializes a bounded tool result, honoring a custom override.
 	#[must_use]
-	pub fn serialize_tool_call_result(&self, value: &JsonValue) -> Option<SmolStr> {
+	pub fn serialize_tool_call_result(&self, value: &JsonValue) -> Option<Str> {
 		self.serialize_json(
 			self.content_serializer.tool_call_result.as_ref(),
 			value,
@@ -643,7 +643,7 @@ impl TelemetryConfig {
 		)
 	}
 
-	fn serialized_result(&self, result: Result<Option<SmolStr>, SmolStr>) -> Option<SmolStr> {
+	fn serialized_result(&self, result: Result<Option<Str>, Str>) -> Option<Str> {
 		match result {
 			Ok(value) => value,
 			Err(error) => {
@@ -662,7 +662,7 @@ impl TelemetryConfig {
 		serializer: Option<&JsonSerializer>,
 		value: &JsonValue,
 		default: fn(CaptureMode, &JsonValue) -> Option<KeyValue>,
-	) -> Option<SmolStr> {
+	) -> Option<Str> {
 		if let Some(serializer) = serializer {
 			return match invoke(&**serializer, value) {
 				Ok(value) => value,
@@ -687,14 +687,14 @@ impl TelemetryConfig {
 		let _ = catch_unwind(AssertUnwindSafe(|| hook(warning)));
 	}
 
-	fn warn(&self, code: TelemetryWarningCode, message: &'static str, error: SmolStr) {
+	fn warn(&self, code: TelemetryWarningCode, message: &'static str, error: Str) {
 		let warning =
-			TelemetryWarning { code, message: SmolStr::new_static(message), error: Some(error) };
+			TelemetryWarning { code, message: Str::new_static(message), error: Some(error) };
 		self.telemetry_warning(&warning);
 	}
 }
 
-fn invoke<A, T>(hook: &(impl Fn(A) -> HookResult<T> + ?Sized), argument: A) -> Result<T, SmolStr> {
+fn invoke<A, T>(hook: &(impl Fn(A) -> HookResult<T> + ?Sized), argument: A) -> Result<T, Str> {
 	match catch_unwind(AssertUnwindSafe(|| hook(argument))) {
 		Ok(result) => result,
 		Err(payload) => Err(panic_message(payload)),
@@ -705,35 +705,35 @@ fn invoke2<A, B, T>(
 	hook: &(impl Fn(A, B) -> HookResult<T> + ?Sized),
 	first: A,
 	second: B,
-) -> Result<T, SmolStr> {
+) -> Result<T, Str> {
 	match catch_unwind(AssertUnwindSafe(|| hook(first, second))) {
 		Ok(result) => result,
 		Err(payload) => Err(panic_message(payload)),
 	}
 }
 
-fn panic_message(payload: Box<dyn Any + Send>) -> SmolStr {
+fn panic_message(payload: Box<dyn Any + Send>) -> Str {
 	if let Some(message) = payload.downcast_ref::<&str>() {
-		SmolStr::new(*message)
+		Str::new(*message)
 	} else if let Some(message) = payload.downcast_ref::<String>() {
-		SmolStr::new(message)
+		Str::new(message)
 	} else {
-		SmolStr::new_static("telemetry hook panicked")
+		Str::new_static("telemetry hook panicked")
 	}
 }
 
-fn string_attribute(attributes: impl IntoIterator<Item = KeyValue>, key: &str) -> Option<SmolStr> {
+fn string_attribute(attributes: impl IntoIterator<Item = KeyValue>, key: &str) -> Option<Str> {
 	attributes
 		.into_iter()
 		.find(|attribute| attribute.key.as_str() == key)
 		.and_then(key_value_string)
 }
 
-fn key_value_string(attribute: KeyValue) -> Option<SmolStr> {
+fn key_value_string(attribute: KeyValue) -> Option<Str> {
 	let Value::String(value) = attribute.value else {
 		return None;
 	};
-	Some(SmolStr::new(value.as_str()))
+	Some(Str::new(value.as_str()))
 }
 
 #[cfg(test)]
@@ -788,7 +788,7 @@ mod tests {
 		let config = TelemetryConfig {
 			resolve_attributes: Some(Arc::new(move |context| {
 				*capture.lock() =
-					Some((context.kind, context.model.map(SmolStr::new), context.step_number));
+					Some((context.kind, context.model.map(Str::new), context.step_number));
 				Ok(SmallVec::new())
 			})),
 			..TelemetryConfig::default()
@@ -796,7 +796,7 @@ mod tests {
 		let _ = config.attributes_for_span(&context());
 		assert_eq!(
 			*seen.lock(),
-			Some((TelemetrySpanKind::Chat, Some(SmolStr::new_static("claude-sonnet-4")), Some(3)))
+			Some((TelemetrySpanKind::Chat, Some(Str::new_static("claude-sonnet-4")), Some(3)))
 		);
 	}
 
@@ -805,7 +805,7 @@ mod tests {
 		let warnings = Arc::new(Mutex::new(Vec::new()));
 		let capture = Arc::clone(&warnings);
 		let config = TelemetryConfig {
-			cost_estimator: Some(Arc::new(|_| Err(SmolStr::new_static("pricing offline")))),
+			cost_estimator: Some(Arc::new(|_| Err(Str::new_static("pricing offline")))),
 			on_telemetry_warning: Some(Arc::new(move |warning| {
 				capture.lock().push(warning.code);
 				Ok(())
@@ -832,21 +832,21 @@ mod tests {
 	fn custom_content_serializer_overrides_default() {
 		let config = TelemetryConfig {
 			content_serializer: TelemetryContentSerializer {
-				tool_call_arguments: Some(Arc::new(|_| Ok(Some(SmolStr::new_static("custom"))))),
+				tool_call_arguments: Some(Arc::new(|_| Ok(Some(Str::new_static("custom"))))),
 				..TelemetryContentSerializer::default()
 			},
 			..TelemetryConfig::default()
 		};
 		assert_eq!(
 			config.serialize_tool_call_arguments(&serde_json::json!({"secret": true})),
-			Some(SmolStr::new_static("custom"))
+			Some(Str::new_static("custom"))
 		);
 	}
 
 	#[test]
 	fn tracer_name_override_is_honored() {
 		let config = TelemetryConfig {
-			tracer_name: SmolStr::new_static("host-tracer"),
+			tracer_name: Str::new_static("host-tracer"),
 			..TelemetryConfig::default()
 		};
 		assert_eq!(config.tracer_name(), "host-tracer");
@@ -879,8 +879,8 @@ mod tests {
 	#[test]
 	fn erroring_warning_hook_is_swallowed() {
 		let config = TelemetryConfig {
-			cost_estimator: Some(Arc::new(|_| Err(SmolStr::new_static("failed")))),
-			on_telemetry_warning: Some(Arc::new(|_| Err(SmolStr::new_static("also failed")))),
+			cost_estimator: Some(Arc::new(|_| Err(Str::new_static("failed")))),
+			on_telemetry_warning: Some(Arc::new(|_| Err(Str::new_static("also failed")))),
 			..TelemetryConfig::default()
 		};
 		let input = CostEstimatorContext {

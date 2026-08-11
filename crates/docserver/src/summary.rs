@@ -6,7 +6,7 @@ use omp_ast::{
 	SupportLang,
 	summary::{SummaryResult as AstSummary, SummarySettings as AstSettings, summarize_source},
 };
-use omp_core::SmolStr;
+use omp_core::Str;
 use parking_lot::{Mutex, MutexGuard};
 use tokio_util::sync::CancellationToken;
 
@@ -48,7 +48,7 @@ pub struct SummaryOptions {
 	/// Whether Markdown-family and plain-text paths may be parsed.
 	pub enable_prose:       bool,
 	/// Optional language alias which takes precedence over path inference.
-	pub language:           Option<SmolStr>,
+	pub language:           Option<Str>,
 	/// Kept-line rendering convention.
 	pub render_mode:        SummaryRenderMode,
 }
@@ -133,7 +133,7 @@ pub struct RenderedSummary {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DocumentSummary {
 	/// Canonical parser language name.
-	pub language:    SmolStr,
+	pub language:    Str,
 	/// Total original source lines.
 	pub total_lines: u32,
 	/// Ordered structural regions in original source coordinates.
@@ -177,7 +177,7 @@ pub struct SummaryFallback {
 	/// Total original lines when counting was applicable.
 	pub total_lines: u32,
 	/// Canonical inferred language, when one was selected.
-	pub language:    Option<SmolStr>,
+	pub language:    Option<Str>,
 	/// Whether tree-sitter completed a syntax-valid parse.
 	pub parsed:      bool,
 }
@@ -198,7 +198,7 @@ struct CacheKey {
 	content_hash: [u8; 32],
 	missing:      bool,
 	binary:       bool,
-	language:     Option<SmolStr>,
+	language:     Option<Str>,
 	prose_path:   bool,
 	options:      SummaryOptions,
 }
@@ -351,15 +351,15 @@ impl SummaryService {
 	}
 }
 
-fn infer_language(language: Option<&str>, path: &Path) -> Option<SmolStr> {
+fn infer_language(language: Option<&str>, path: &Path) -> Option<Str> {
 	if let Some(language) = language
 		.map(str::trim)
 		.filter(|language| !language.is_empty())
 	{
 		return SupportLang::from_alias(language)
-			.map(|lang| SmolStr::new_static(lang.canonical_name()));
+			.map(|lang| Str::new_static(lang.canonical_name()));
 	}
-	SupportLang::from_path(path).map(|lang| SmolStr::new_static(lang.canonical_name()))
+	SupportLang::from_path(path).map(|lang| Str::new_static(lang.canonical_name()))
 }
 
 fn is_prose_summary_path(path: &Path) -> bool {
@@ -388,7 +388,7 @@ fn count_lines(source: &str) -> u32 {
 fn fallback(
 	reason: SummaryUnavailableReason,
 	total_lines: u32,
-	language: Option<SmolStr>,
+	language: Option<Str>,
 	parsed: bool,
 ) -> CachedSummary {
 	CachedSummary::Fallback(Arc::new(SummaryFallback { reason, total_lines, language, parsed }))
@@ -396,7 +396,7 @@ fn fallback(
 
 fn parse_snapshot(
 	snapshot: &DocumentSnapshot,
-	language: &SmolStr,
+	language: &Str,
 	options: &SummaryOptions,
 ) -> CachedSummary {
 	let Ok(source) = std::str::from_utf8(snapshot.content()) else {
@@ -458,7 +458,7 @@ fn parse_snapshot(
 }
 
 fn build_available(ast: AstSummary, mode: SummaryRenderMode) -> CachedSummary {
-	let language = SmolStr::new(
+	let language = Str::new(
 		ast.language
 			.expect("parsed summary identifies its language"),
 	);

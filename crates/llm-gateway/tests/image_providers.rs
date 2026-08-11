@@ -8,7 +8,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use http::Request;
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::provider::{ProviderCatalog, load_providers};
 use omp_llm_egress::{
 	auth_inject::{
@@ -86,7 +86,7 @@ fn reference() -> BlobPart {
 	let bytes = Bytes::from_static(b"reference-image");
 	BlobPart::builder()
 		.hash(*blake3::hash(&bytes).as_bytes())
-		.mime(SmolStr::new_static("image/png"))
+		.mime(Str::new_static("image/png"))
 		.size(bytes.len() as u64)
 		.inline(bytes)
 		.build()
@@ -243,8 +243,8 @@ impl ImageBackend for ScriptedBackend {
 fn success() -> ImageDone {
 	ImageDone::builder()
 		.images(vec![reference()])
-		.revised_prompt(SmolStr::default())
-		.text(SmolStr::default())
+		.revised_prompt(Str::default())
+		.text(Str::default())
 		.unsupported(Vec::new())
 		.props(Props::default())
 		.build()

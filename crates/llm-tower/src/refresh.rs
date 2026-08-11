@@ -15,7 +15,7 @@ use std::{
 };
 
 use futures::{Stream, StreamExt};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_error::{Kind, OAuthFailure, oauth::classify_refresh};
 use omp_proto::inference::v1::{Attempt, TurnError, TurnEvent, turn_error, turn_event};
 use tower::{Layer, Service, ServiceExt};
@@ -26,13 +26,13 @@ use crate::{envelope::TurnRequestEnvelope, recovery::classify_turn_error};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RefreshFailure {
 	/// Diagnostic returned by the token endpoint or credential store.
-	pub message: SmolStr,
+	pub message: Str,
 }
 
 impl RefreshFailure {
 	/// Creates a refresh failure with the given diagnostic.
 	pub fn new(message: impl AsRef<str>) -> Self {
-		Self { message: SmolStr::new(message) }
+		Self { message: Str::new(message) }
 	}
 }
 

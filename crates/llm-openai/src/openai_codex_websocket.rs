@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use serde_json::{Map, Value};
 
 /// Codex WebSocket request discriminator.
@@ -21,7 +21,7 @@ pub fn codex_websocket_url(url: &str) -> Result<String, CodexWebSocketProtocolEr
 	} else if url.starts_with("wss://") || url.starts_with("ws://") {
 		Ok(url.to_owned())
 	} else {
-		Err(CodexWebSocketProtocolError(SmolStr::new(
+		Err(CodexWebSocketProtocolError(Str::new(
 			"Codex WebSocket endpoint requires http, https, ws, or wss",
 		)))
 	}
@@ -36,7 +36,7 @@ pub fn codex_http_fallback_body(
 	full_request: &Value,
 ) -> Result<Value, CodexWebSocketProtocolError> {
 	let mut body = full_request.as_object().cloned().ok_or_else(|| {
-		CodexWebSocketProtocolError(SmolStr::new("Codex HTTP fallback body must be a JSON object"))
+		CodexWebSocketProtocolError(Str::new("Codex HTTP fallback body must be a JSON object"))
 	})?;
 	body.remove("type");
 	body.remove("previous_response_id");
@@ -56,7 +56,7 @@ pub enum CodexFrameDisposition {
 
 /// Protocol violation that makes continued use of a socket unsafe.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CodexWebSocketProtocolError(SmolStr);
+pub struct CodexWebSocketProtocolError(Str);
 
 impl fmt::Display for CodexWebSocketProtocolError {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -74,8 +74,8 @@ impl std::error::Error for CodexWebSocketProtocolError {}
 /// frames and tells the socket owner to drop the upstream body.
 #[derive(Clone, Debug, Default)]
 pub struct CodexFrameRouter {
-	prior_response_id:  Option<SmolStr>,
-	active_response_id: Option<SmolStr>,
+	prior_response_id:  Option<Str>,
+	active_response_id: Option<Str>,
 	last_sequence:      Option<i64>,
 	terminal:           bool,
 	cancelled:          bool,
@@ -84,7 +84,7 @@ pub struct CodexFrameRouter {
 impl CodexFrameRouter {
 	/// Creates a router that can recognize a late frame from the prior response.
 	#[must_use]
-	pub fn after_response(response_id: impl Into<SmolStr>) -> Self {
+	pub fn after_response(response_id: impl Into<Str>) -> Self {
 		Self { prior_response_id: Some(response_id.into()), ..Self::default() }
 	}
 
@@ -109,7 +109,7 @@ impl CodexFrameRouter {
 			return Ok(CodexFrameDisposition::Drop);
 		}
 		let object = frame.as_object().ok_or_else(|| {
-			CodexWebSocketProtocolError(SmolStr::new("Codex WebSocket frame must be a JSON object"))
+			CodexWebSocketProtocolError(Str::new("Codex WebSocket frame must be a JSON object"))
 		})?;
 		if let Some(response_id) = response_id(object) {
 			if self.active_response_id.is_none()
@@ -119,18 +119,18 @@ impl CodexFrameRouter {
 			}
 			if let Some(active) = &self.active_response_id {
 				if active != response_id {
-					return Err(CodexWebSocketProtocolError(SmolStr::from(format!(
+					return Err(CodexWebSocketProtocolError(Str::from(format!(
 						"Codex WebSocket response {response_id} interleaved into active response \
 						 {active}",
 					))));
 				}
 			} else {
-				self.active_response_id = Some(SmolStr::new(response_id));
+				self.active_response_id = Some(Str::new(response_id));
 			}
 		}
 		if let Some(sequence) = object.get("sequence_number").and_then(Value::as_i64) {
 			if self.last_sequence.is_some_and(|last| sequence < last) {
-				return Err(CodexWebSocketProtocolError(SmolStr::from(format!(
+				return Err(CodexWebSocketProtocolError(Str::from(format!(
 					"Codex WebSocket sequence {sequence} regressed",
 				))));
 			}
@@ -159,10 +159,10 @@ impl CodexFrameRouter {
 #[derive(Clone, Debug, Default)]
 pub struct CodexContinuationState {
 	previous_request:        Option<Value>,
-	previous_response_id:    Option<SmolStr>,
+	previous_response_id:    Option<Str>,
 	previous_response_items: Vec<Value>,
-	turn_state:              Option<SmolStr>,
-	models_etag:             Option<SmolStr>,
+	turn_state:              Option<Str>,
+	models_etag:             Option<Str>,
 }
 
 impl CodexContinuationState {
@@ -170,7 +170,7 @@ impl CodexContinuationState {
 	pub fn commit(
 		&mut self,
 		request: Value,
-		response_id: impl Into<SmolStr>,
+		response_id: impl Into<Str>,
 		response_items: Vec<Value>,
 	) {
 		self.previous_request = Some(request);
@@ -192,10 +192,10 @@ impl CodexContinuationState {
 	/// headers. Missing fields preserve the last authoritative values.
 	pub fn update_metadata(&mut self, turn_state: Option<&str>, models_etag: Option<&str>) {
 		if let Some(value) = turn_state {
-			self.turn_state = Some(SmolStr::new(value));
+			self.turn_state = Some(Str::new(value));
 		}
 		if let Some(value) = models_etag {
-			self.models_etag = Some(SmolStr::new(value));
+			self.models_etag = Some(Str::new(value));
 		}
 	}
 
@@ -225,7 +225,7 @@ impl CodexContinuationState {
 		current: &Value,
 	) -> Result<Value, CodexWebSocketProtocolError> {
 		let current_object = current.as_object().ok_or_else(|| {
-			CodexWebSocketProtocolError(SmolStr::new(
+			CodexWebSocketProtocolError(Str::new(
 				"Codex response.create body must be a JSON object",
 			))
 		})?;

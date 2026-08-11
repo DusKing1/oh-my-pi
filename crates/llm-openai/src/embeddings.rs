@@ -1,7 +1,7 @@
 //! OpenAI-compatible unary embeddings wire codec.
 
 use bytes::Bytes;
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use omp_llm_types::{
 	Accuracy, EmbedRequest, EmbedResponse, EmbeddingVector, Error, Props, Unsupported,
 	UnsupportedAction, Usage,
@@ -31,7 +31,7 @@ pub fn encode(request: &EmbedRequest) -> Result<Bytes, Error> {
 	}
 	serde_json::to_vec(&Value::Object(body))
 		.map(Bytes::from)
-		.map_err(|error| Error::Provider(format_smol!("failed to encode embedding request: {error}")))
+		.map_err(|error| Error::Provider(fmts!("failed to encode embedding request: {error}")))
 }
 
 /// Decodes an OpenAI-compatible embeddings response and restores input order
@@ -41,14 +41,14 @@ pub fn encode(request: &EmbedRequest) -> Result<Bytes, Error> {
 /// object, as some otherwise compatible local servers do.
 pub fn decode(body: &[u8], estimated_input_tokens: u64) -> Result<EmbedResponse, Error> {
 	let value: Value = serde_json::from_slice(body)
-		.map_err(|error| Error::Provider(format_smol!("invalid embedding response JSON: {error}")))?;
+		.map_err(|error| Error::Provider(fmts!("invalid embedding response JSON: {error}")))?;
 	if let Some(message) = error_message(&value) {
 		return Err(Error::Provider(message));
 	}
 	let data = value
 		.get("data")
 		.and_then(Value::as_array)
-		.ok_or_else(|| Error::Provider(SmolStr::from("embedding response is missing data")))?;
+		.ok_or_else(|| Error::Provider(Str::from("embedding response is missing data")))?;
 	let mut ordered = vec![None; data.len()];
 	for item in data {
 		let index = item
@@ -56,17 +56,17 @@ pub fn decode(body: &[u8], estimated_input_tokens: u64) -> Result<EmbedResponse,
 			.and_then(Value::as_u64)
 			.and_then(|index| usize::try_from(index).ok())
 			.ok_or_else(|| {
-				Error::Provider(SmolStr::from("embedding response item has no valid index"))
+				Error::Provider(Str::from("embedding response item has no valid index"))
 			})?;
 		if index >= ordered.len() || ordered[index].is_some() {
-			return Err(Error::Provider(SmolStr::from(
+			return Err(Error::Provider(Str::from(
 				"embedding response contains an out-of-range or duplicate index",
 			)));
 		}
 		let embedding = item
 			.get("embedding")
 			.and_then(Value::as_array)
-			.ok_or_else(|| Error::Provider(SmolStr::from("embedding response item has no vector")))?;
+			.ok_or_else(|| Error::Provider(Str::from("embedding response item has no vector")))?;
 		ordered[index] = Some(
 			EmbeddingVector::builder()
 				.values(vector(embedding)?)
@@ -76,7 +76,7 @@ pub fn decode(body: &[u8], estimated_input_tokens: u64) -> Result<EmbedResponse,
 	let vectors = ordered
 		.into_iter()
 		.collect::<Option<Vec<_>>>()
-		.ok_or_else(|| Error::Provider(SmolStr::from("embedding response has a missing index")))?;
+		.ok_or_else(|| Error::Provider(Str::from("embedding response has a missing index")))?;
 	let exact = value
 		.get("usage")
 		.and_then(|usage| usage.get("prompt_tokens"))
@@ -90,12 +90,12 @@ pub fn decode(body: &[u8], estimated_input_tokens: u64) -> Result<EmbedResponse,
 
 /// Extracts the safe provider message from a successful or error envelope.
 #[must_use]
-pub fn error_message(value: &Value) -> Option<SmolStr> {
+pub fn error_message(value: &Value) -> Option<Str> {
 	let error = value.get("error")?;
 	if let Some(message) = error.get("message").and_then(Value::as_str) {
-		return Some(SmolStr::from(message));
+		return Some(Str::from(message));
 	}
-	error.as_str().map(SmolStr::from)
+	error.as_str().map(Str::from)
 }
 
 fn vector(values: &[Value]) -> Result<Vec<f32>, Error> {
@@ -103,11 +103,11 @@ fn vector(values: &[Value]) -> Result<Vec<f32>, Error> {
 		.iter()
 		.map(|value| {
 			let number = value.as_f64().ok_or_else(|| {
-				Error::Provider(SmolStr::from("embedding vector contains a non-number"))
+				Error::Provider(Str::from("embedding vector contains a non-number"))
 			})?;
 			let number = number as f32;
 			if !number.is_finite() {
-				return Err(Error::Provider(SmolStr::from(
+				return Err(Error::Provider(Str::from(
 					"embedding vector contains a non-finite component",
 				)));
 			}
@@ -142,7 +142,7 @@ fn reject_props(props: &Props) -> Result<(), Error> {
 			.map(|key| {
 				Unsupported::builder()
 					.what(key.clone())
-					.detail(SmolStr::from(
+					.detail(Str::from(
 						"the OpenAI-compatible embeddings wire has no mapping for this property",
 					))
 					.action(UnsupportedAction::Dropped)

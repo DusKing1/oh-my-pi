@@ -12,7 +12,7 @@ use std::{
 };
 
 use http::{HeaderMap, Request, Response, StatusCode};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_error::extract::retry_hint_from_headers;
 use parking_lot::{Mutex, RwLock};
 use rustc_hash::FxHashMap;
@@ -25,7 +25,7 @@ use crate::client::Body;
 /// Admission-control key for one provider credential.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EgressKey {
-	provider:      SmolStr,
+	provider:      Str,
 	credential_id: u64,
 }
 
@@ -33,10 +33,10 @@ impl EgressKey {
 	/// Constructs a provider-and-credential key.
 	#[must_use]
 	pub fn new(provider: impl AsRef<str>, credential_id: u64) -> Self {
-		Self { provider: SmolStr::new(provider.as_ref()), credential_id }
+		Self { provider: Str::new(provider.as_ref()), credential_id }
 	}
 
-	pub(crate) const fn from_smol(provider: SmolStr, credential_id: u64) -> Self {
+	pub(crate) const fn from_str(provider: Str, credential_id: u64) -> Self {
 		Self { provider, credential_id }
 	}
 

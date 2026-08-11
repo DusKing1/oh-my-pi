@@ -14,7 +14,7 @@ use std::{
 };
 
 use futures::{Stream, StreamExt};
-use omp_core::{SmolStr, SparseSet};
+use omp_core::{Str, SparseSet};
 use omp_llm_error::{Classification, Feature, Kind};
 use omp_proto::{
 	inference::v1::{
@@ -32,10 +32,10 @@ const DEFAULT_LEARN_EXPIRY: Duration = Duration::from_secs(6 * 60 * 60);
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct LearningScope {
-	provider:  SmolStr,
-	model:     SmolStr,
+	provider:  Str,
+	model:     Str,
 	account:   Option<u64>,
-	namespace: Option<SmolStr>,
+	namespace: Option<Str>,
 }
 
 #[derive(Clone)]
@@ -51,7 +51,7 @@ type LearnedSet = Arc<Mutex<HashMap<(LearningScope, u8), LearnedFailure>>>;
 /// Provider, model, and account are always included by the middleware. This
 /// hook adds endpoint or region identity when one provider id fronts several
 /// independently deployed routes.
-pub type ScopeFn = Arc<dyn Fn(&TurnRequest) -> Option<SmolStr> + Send + Sync>;
+pub type ScopeFn = Arc<dyn Fn(&TurnRequest) -> Option<Str> + Send + Sync>;
 
 /// Coordinator hook that removes one rejected feature from a request.
 ///
@@ -329,16 +329,16 @@ fn learning_scope<R: TurnRequestEnvelope>(
 	let namespace = namespace.and_then(|scope| scope(req.request()));
 	let model = model_of(req.request())?;
 	let (provider, account) = req.learning_identity().map_or_else(
-		|| (SmolStr::new("unknown"), None),
-		|(provider, account)| (SmolStr::new(provider), Some(account)),
+		|| (Str::new("unknown"), None),
+		|(provider, account)| (Str::new(provider), Some(account)),
 	);
 	Some(LearningScope { provider, model, account, namespace })
 }
 
-fn model_of(req: &TurnRequest) -> Option<SmolStr> {
+fn model_of(req: &TurnRequest) -> Option<Str> {
 	req.params
 		.as_ref()
-		.map(|params| SmolStr::from(params.model.as_str()))
+		.map(|params| Str::from(params.model.as_str()))
 }
 
 fn apply_learned(

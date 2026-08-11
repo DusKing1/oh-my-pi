@@ -2,7 +2,7 @@
 
 use std::{ffi::OsString, path::Path};
 
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 
 #[cfg(unix)]
 mod platform {
@@ -40,7 +40,7 @@ pub const UNKNOWN_TERMINAL_ID: &str = "unknown";
 /// multiplexer and terminal-emulator environment variables are consulted from
 /// the innermost to the outermost terminal.
 #[must_use]
-pub fn terminal_id() -> SmolStr {
+pub fn terminal_id() -> Str {
 	#[cfg(unix)]
 	{
 		let tty_path = platform::tty_path();
@@ -64,7 +64,7 @@ pub fn terminal_id() -> SmolStr {
 pub fn terminal_id_with(
 	tty_path: Option<&Path>,
 	mut env: impl FnMut(&str) -> Option<OsString>,
-) -> SmolStr {
+) -> Str {
 	if let Some(id) = tty_path.and_then(normalize_tty_path) {
 		return id;
 	}
@@ -72,9 +72,9 @@ pub fn terminal_id_with(
 	if let Some(pane) = nonempty_env(&mut env, "ZELLIJ_PANE_ID") {
 		if let Some(session) = nonempty_env(&mut env, "ZELLIJ_SESSION_NAME") {
 			let session = session.replace(['/', '\\'], "-");
-			return format_smol!("zellij-{session}-{pane}");
+			return fmts!("zellij-{session}-{pane}");
 		}
-		return format_smol!("zellij-{pane}");
+		return fmts!("zellij-{pane}");
 	}
 
 	for (name, prefix) in [
@@ -86,20 +86,20 @@ pub fn terminal_id_with(
 		("WT_SESSION", "wt"),
 	] {
 		if let Some(value) = nonempty_env(&mut env, name) {
-			return format_smol!("{prefix}-{value}");
+			return fmts!("{prefix}-{value}");
 		}
 	}
 
 	UNKNOWN_TERMINAL_ID.into()
 }
 
-fn normalize_tty_path(path: &Path) -> Option<SmolStr> {
+fn normalize_tty_path(path: &Path) -> Option<Str> {
 	let path = path.to_str()?;
 	let relative = path.strip_prefix("/dev/")?;
 	if relative.is_empty() {
 		return None;
 	}
-	Some(SmolStr::from(relative.replace('/', "-")))
+	Some(Str::from(relative.replace('/', "-")))
 }
 
 fn nonempty_env(env: &mut impl FnMut(&str) -> Option<OsString>, name: &str) -> Option<String> {

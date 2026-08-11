@@ -16,7 +16,7 @@ use std::{
 };
 
 use http::{HeaderMap, Request, Response, StatusCode, Uri, uri::PathAndQuery};
-use omp_core::SmolStr;
+use omp_core::Str;
 use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
 use tokio::sync::watch;
@@ -45,7 +45,7 @@ use crate::{client::Body, limits::EgressKey};
 /// ```
 #[derive(Clone)]
 pub struct SensitiveQuery {
-	parameter: SmolStr,
+	parameter: Str,
 	value:     Zeroizing<Vec<u8>>,
 }
 
@@ -54,7 +54,7 @@ impl SensitiveQuery {
 	#[must_use]
 	pub fn new(parameter: impl AsRef<str>, value: &[u8]) -> Self {
 		Self {
-			parameter: SmolStr::new(parameter.as_ref()),
+			parameter: Str::new(parameter.as_ref()),
 			value:     Zeroizing::new(value.to_vec()),
 		}
 	}
@@ -98,14 +98,14 @@ impl std::fmt::Debug for SensitiveQuery {
 /// Request extension identifying the provider whose credential should be used.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthContext {
-	provider: SmolStr,
+	provider: Str,
 }
 
 impl AuthContext {
 	/// Constructs authentication context for `provider`.
 	#[must_use]
 	pub fn new(provider: impl AsRef<str>) -> Self {
-		Self { provider: SmolStr::new(provider.as_ref()) }
+		Self { provider: Str::new(provider.as_ref()) }
 	}
 
 	/// Returns the provider identifier.
@@ -120,9 +120,9 @@ impl AuthContext {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AwsSigV4Context {
 	/// AWS signing service, such as `bedrock`.
-	pub service:   SmolStr,
+	pub service:   Str,
 	/// AWS region used in the credential scope.
-	pub region:    SmolStr,
+	pub region:    Str,
 	/// Injectable signing time used for deterministic request signatures.
 	pub signed_at: SystemTime,
 }
@@ -142,7 +142,7 @@ pub struct AwsSigV4Context {
 /// ```
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct CredentialLease {
-	provider:      SmolStr,
+	provider:      Str,
 	credential_id: u64,
 	generation:    u64,
 }
@@ -151,7 +151,7 @@ impl CredentialLease {
 	/// Constructs a lease containing identity metadata but no secret bytes.
 	#[must_use]
 	pub fn new(provider: impl AsRef<str>, credential_id: u64, generation: u64) -> Self {
-		Self { provider: SmolStr::new(provider.as_ref()), credential_id, generation }
+		Self { provider: Str::new(provider.as_ref()), credential_id, generation }
 	}
 
 	/// Returns the provider identifier.
@@ -175,7 +175,7 @@ impl CredentialLease {
 	/// Returns the admission-control identity for this credential.
 	#[must_use]
 	pub fn egress_key(&self) -> EgressKey {
-		EgressKey::from_smol(self.provider.clone(), self.credential_id)
+		EgressKey::from_str(self.provider.clone(), self.credential_id)
 	}
 }
 
@@ -243,15 +243,15 @@ pub enum CredentialAuthKind {
 #[derive(Clone, Eq, PartialEq)]
 pub struct CredentialMetadata {
 	/// Non-secret account label stored with the credential.
-	pub identity:        SmolStr,
+	pub identity:        Str,
 	/// Non-secret authentication category used to select provider wire policy.
 	pub auth_kind:       CredentialAuthKind,
 	/// Provider account identifier when known.
-	pub account_id:      Option<SmolStr>,
+	pub account_id:      Option<Str>,
 	/// Cloud project identifier when known.
-	pub project_id:      Option<SmolStr>,
+	pub project_id:      Option<Str>,
 	/// Provider organization identifier when known.
-	pub organization_id: Option<SmolStr>,
+	pub organization_id: Option<Str>,
 }
 
 impl std::fmt::Debug for CredentialMetadata {

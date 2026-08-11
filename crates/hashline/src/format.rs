@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use xxhash_rust::xxh32::Xxh32;
 
 use crate::types::Cursor;
@@ -75,48 +75,48 @@ pub(crate) fn normalized_file_xxh32(exact: &[u8]) -> u32 {
 }
 
 /// Computes the uppercase four-hex xxHash32 snapshot tag.
-pub fn compute_file_hash(text: &str) -> SmolStr {
-	format_smol!("{:04X}", normalized_file_xxh32(text.as_bytes()) & 0xffff)
+pub fn compute_file_hash(text: &str) -> Str {
+	fmts!("{:04X}", normalized_file_xxh32(text.as_bytes()) & 0xffff)
 }
 
 /// Formats a concrete replacement header such as `PUT 5.=9:`.
-pub fn format_replace_header(start: usize, end: usize) -> SmolStr {
-	format_smol!("PUT {start}.={end}:")
+pub fn format_replace_header(start: usize, end: usize) -> Str {
+	fmts!("PUT {start}.={end}:")
 }
 
 /// Formats a concrete cut header such as `CUT 5.=9`.
-pub fn format_cut_header(start: usize, end: usize) -> SmolStr {
-	format_smol!("CUT {start}.={end}")
+pub fn format_cut_header(start: usize, end: usize) -> Str {
+	fmts!("CUT {start}.={end}")
 }
 
 /// Formats a gap locator such as `<5`, `>5`, `<1`, or `>$`.
-pub fn format_gap_locator(cursor: Cursor) -> SmolStr {
+pub fn format_gap_locator(cursor: Cursor) -> Str {
 	match cursor {
-		Cursor::Bof => SmolStr::from("<1"),
-		Cursor::Eof => SmolStr::from(">$"),
-		Cursor::BeforeAnchor { anchor } => format_smol!("<{}", anchor.line),
-		Cursor::AfterAnchor { anchor } => format_smol!(">{}", anchor.line),
+		Cursor::Bof => Str::from("<1"),
+		Cursor::Eof => Str::from(">$"),
+		Cursor::BeforeAnchor { anchor } => fmts!("<{}", anchor.line),
+		Cursor::AfterAnchor { anchor } => fmts!(">{}", anchor.line),
 	}
 }
 
 /// Formats an insertion header for a cursor.
-pub fn format_insert_header(cursor: Cursor) -> SmolStr {
-	format_smol!("PUT {}:", format_gap_locator(cursor))
+pub fn format_insert_header(cursor: Cursor) -> Str {
+	fmts!("PUT {}:", format_gap_locator(cursor))
 }
 
 /// Formats a named register reference.
-pub fn format_register(name: &str) -> SmolStr {
-	format_smol!("@{name}")
+pub fn format_register(name: &str) -> Str {
+	fmts!("@{name}")
 }
 
 /// Formats a section header from a path and snapshot tag.
-pub fn format_hashline_header(path: &str, tag: &str) -> SmolStr {
-	format_smol!("[{path}#{tag}]")
+pub fn format_hashline_header(path: &str, tag: &str) -> Str {
+	fmts!("[{path}#{tag}]")
 }
 
 /// Formats one displayed source row as `LINE:TEXT`.
-pub fn format_numbered_line(line: usize, text: &str) -> SmolStr {
-	format_smol!("{line}:{text}")
+pub fn format_numbered_line(line: usize, text: &str) -> Str {
+	fmts!("{line}:{text}")
 }
 
 /// Formats source text with one-indexed line prefixes.

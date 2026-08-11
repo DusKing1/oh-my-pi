@@ -1,5 +1,5 @@
 use bon::Builder;
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use crate::{Accuracy, ContextRef, Props, Thread, ToolDef, Usage};
 
@@ -19,7 +19,7 @@ pub enum CountInput {
 #[derive(Builder, Clone, Debug, PartialEq)]
 pub struct CountRequest {
 	/// Catalog model whose tokenizer and projection rules apply.
-	pub model: SmolStr,
+	pub model: Str,
 	/// Held or inline conversation to count.
 	pub input: CountInput,
 	/// Tool schemas included in the projected prompt.
@@ -42,9 +42,9 @@ pub struct CountResponse {
 #[derive(Builder, Clone, Debug, PartialEq)]
 pub struct EmbedRequest {
 	/// Catalog model used for embedding.
-	pub model:      SmolStr,
+	pub model:      Str,
 	/// Ordered texts, preserving one-to-one response correspondence.
-	pub texts:      Vec<SmolStr>,
+	pub texts:      Vec<Str>,
 	/// Requested vector width where the model supports dimensionality reduction.
 	pub dimensions: Option<u32>,
 	/// Namespaced provider-specific embedding controls.

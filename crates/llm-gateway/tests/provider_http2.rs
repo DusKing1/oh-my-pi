@@ -23,7 +23,7 @@ use hyper_util::{
 	client::legacy::{Client, connect::HttpConnector},
 	rt::{TokioExecutor, TokioIo},
 };
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{
 	models::{Availability, Modality, ModelCard, ModelCatalog, Source},
 	provider::load_builtin,
@@ -308,11 +308,11 @@ fn dependencies() -> RouteDependencies {
 
 fn model_card() -> ModelCard {
 	ModelCard::builder()
-		.id(SmolStr::new_static(MODEL))
-		.provider(SmolStr::new_static(PROVIDER))
-		.model(SmolStr::new_static(MODEL))
-		.name(SmolStr::new_static(MODEL))
-		.family(SmolStr::new_static("fixture"))
+		.id(Str::new_static(MODEL))
+		.provider(Str::new_static(PROVIDER))
+		.model(Str::new_static(MODEL))
+		.name(Str::new_static(MODEL))
+		.family(Str::new_static("fixture"))
 		.facets(
 			[omp_llm_catalog::provider::Facet::Chat]
 				.into_iter()
@@ -346,7 +346,7 @@ fn turn_request() -> ChatRequest {
 		.props(Props::default())
 		.build();
 	ChatRequest::builder()
-		.model(SmolStr::new_static(MODEL))
+		.model(Str::new_static(MODEL))
 		.thread(Thread::builder().items(vec![item]).build())
 		.tools(Vec::new())
 		.provider_options(Props::default())

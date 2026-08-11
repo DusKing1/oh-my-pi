@@ -1,4 +1,4 @@
-use omp_core::SmolStr;
+use omp_core::Str;
 use smallvec::SmallVec;
 
 use crate::{
@@ -13,22 +13,22 @@ use crate::{
 /// Declarative segment data backing the `<segment>` markup tag.
 pub struct Segment {
 	props: Props,
-	label: SmolStr,
+	label: Str,
 }
 
 impl Segment {
 	/// Creates an empty status segment.
 	pub fn new() -> Self {
-		Self { props: Props::new(), label: SmolStr::default() }
+		Self { props: Props::new(), label: Str::default() }
 	}
 
 	/// Appends label text.
-	pub fn label(mut self, label: impl Into<SmolStr>) -> Self {
+	pub fn label(mut self, label: impl Into<Str>) -> Self {
 		let label = label.into();
 		if self.label.is_empty() {
 			self.label = label;
 		} else {
-			self.label = SmolStr::from(format!("{}{}", self.label, label));
+			self.label = Str::from(format!("{}{}", self.label, label));
 		}
 		self
 	}
@@ -40,7 +40,7 @@ impl Segment {
 	}
 
 	/// Sets one custom segment property.
-	pub fn with_custom(mut self, name: impl Into<SmolStr>, value: impl Into<PropValue>) -> Self {
+	pub fn with_custom(mut self, name: impl Into<Str>, value: impl Into<PropValue>) -> Self {
 		self.props.set_custom(name, value);
 		self
 	}

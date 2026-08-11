@@ -1,4 +1,4 @@
-use omp_core::{SmolStr, SmolStrMut};
+use omp_core::{Str, StrMut};
 use smallvec::SmallVec;
 
 #[cfg(test)]
@@ -8,7 +8,7 @@ use crate::{
 	rich::RichSink,
 };
 
-pub(super) type Row = SmallVec<(Style, SmolStr), 4>;
+pub(super) type Row = SmallVec<(Style, Str), 4>;
 
 /// Unicode mathematical-alphanumeric style selected by a LaTeX font command.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,12 +31,12 @@ pub enum MathFont {
 struct LineBuilder {
 	line:  Row,
 	style: Option<Style>,
-	text:  SmolStrMut,
+	text:  StrMut,
 }
 
 impl LineBuilder {
 	fn new() -> Self {
-		Self { line: Row::new(), style: None, text: SmolStrMut::default() }
+		Self { line: Row::new(), style: None, text: StrMut::default() }
 	}
 
 	fn push(&mut self, style: Style, text: &str) {
@@ -74,7 +74,7 @@ impl LineBuilder {
 fn one(style: Style, text: &str) -> Row {
 	let mut line = Row::new();
 	if !text.is_empty() {
-		line.push((style, SmolStr::new(text)));
+		line.push((style, Str::new(text)));
 	}
 	line
 }
@@ -92,7 +92,7 @@ fn restyle(line: &mut Row, transform: impl Fn(Style) -> Style) {
 fn map_line(line: &Row, map: impl Fn(char) -> Option<&'static str>) -> Option<Row> {
 	let mut out = LineBuilder::new();
 	for (style, text) in line {
-		let mut mapped = SmolStrMut::with_capacity(text.len());
+		let mut mapped = StrMut::with_capacity(text.len());
 		for ch in text.chars() {
 			mapped.push_str(map(ch)?);
 		}
@@ -104,7 +104,7 @@ fn map_line(line: &Row, map: impl Fn(char) -> Option<&'static str>) -> Option<Ro
 fn combine_line(line: &Row, mark: &str) -> Row {
 	let mut out = LineBuilder::new();
 	for (style, text) in line {
-		let mut combined = SmolStrMut::with_capacity(text.len().saturating_mul(2));
+		let mut combined = StrMut::with_capacity(text.len().saturating_mul(2));
 		for ch in text.chars() {
 			combined.push(ch);
 			if ch != ' ' {

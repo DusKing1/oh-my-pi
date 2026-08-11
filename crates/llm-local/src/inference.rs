@@ -10,7 +10,7 @@
 
 use bytes::Bytes;
 use futures::{StreamExt, stream::BoxStream};
-use omp_core::{SmolStr, format_smol};
+use omp_core::{Str, fmts};
 use omp_llm_transport::embedded::LocalEngine;
 use omp_llm_types as native;
 use tokio_util::sync::CancellationToken;
@@ -56,7 +56,7 @@ impl Default for SttSelection {
 
 enum TextEngine {
 	Fm(AppleFm),
-	Gguf { generator: TextGenerator, model_id: SmolStr },
+	Gguf { generator: TextGenerator, model_id: Str },
 }
 
 impl TextEngine {
@@ -259,12 +259,12 @@ impl Inference {
 			unsupported_error("embed", "the local embeddings facet was not configured")
 		})?;
 		if request.texts.is_empty() {
-			return Err(native::Error::Provider(SmolStr::new(
+			return Err(native::Error::Provider(Str::new(
 				"at least one embedding text is required",
 			)));
 		}
 		if request.dimensions == Some(0) {
-			return Err(native::Error::Provider(SmolStr::new(
+			return Err(native::Error::Provider(Str::new(
 				"embedding dimensions must be non-zero",
 			)));
 		}
@@ -323,7 +323,7 @@ impl Inference {
 			unsupported_error("speak", "the local speech-synthesis facet was not configured")
 		})?;
 		if request.text.trim().is_empty() {
-			return Err(native::Error::Provider(SmolStr::new("cannot synthesize empty text")));
+			return Err(native::Error::Provider(Str::new("cannot synthesize empty text")));
 		}
 		if request.clone.is_some() {
 			return Err(unsupported_error(
@@ -339,11 +339,11 @@ impl Inference {
 			},
 		};
 		if request.sample_rate_hz == Some(0) {
-			return Err(native::Error::Provider(SmolStr::new("sample rate must be non-zero")));
+			return Err(native::Error::Provider(Str::new("sample rate must be non-zero")));
 		}
 		let speed = request.speed.map(f64_to_f32).transpose()?.unwrap_or(1.0);
 		if speed <= 0.0 {
-			return Err(native::Error::Provider(SmolStr::new(
+			return Err(native::Error::Provider(Str::new(
 				"synthesis speed must be greater than zero",
 			)));
 		}
@@ -381,7 +381,7 @@ impl Inference {
 		hash.copy_from_slice(blake3::hash(&encoded).as_bytes());
 		let blob = native::BlobPart::builder()
 			.hash(hash)
-			.mime(SmolStr::new(match encoding {
+			.mime(Str::new(match encoding {
 				native::AudioEncoding::Pcm16 => "audio/L16",
 				native::AudioEncoding::Wav => "audio/wav",
 				_ => unreachable!("validated local encoding"),
@@ -398,7 +398,7 @@ impl Inference {
 			events.push(native::SpeakEvent::Chunk(
 				native::SpeakChunk::builder()
 					.audio(encoded.slice(start..end))
-					.transcript_delta(SmolStr::new(""))
+					.transcript_delta(Str::new(""))
 					.build(),
 			));
 		}
@@ -552,7 +552,7 @@ fn prepare_chat(
 > {
 	let messages = canonical_messages(request.thread)?;
 	if messages.is_empty() {
-		return Err(native::Error::Provider(SmolStr::new("at least one chat message is required")));
+		return Err(native::Error::Provider(Str::new("at least one chat message is required")));
 	}
 	let mut unsupported_features = Vec::new();
 	if !request.tools.is_empty() {
@@ -664,13 +664,13 @@ fn decode_inline_audio(blob: &native::BlobPart) -> std::result::Result<Audio, na
 		let start = offset + 8;
 		let end = start
 			.checked_add(length)
-			.ok_or_else(|| native::Error::Provider(SmolStr::new("WAV chunk length overflowed")))?;
+			.ok_or_else(|| native::Error::Provider(Str::new("WAV chunk length overflowed")))?;
 		let chunk = bytes
 			.get(start..end)
-			.ok_or_else(|| native::Error::Provider(SmolStr::new("truncated inline WAV chunk")))?;
+			.ok_or_else(|| native::Error::Provider(Str::new("truncated inline WAV chunk")))?;
 		if id == b"fmt " {
 			if chunk.len() < 16 {
-				return Err(native::Error::Provider(SmolStr::new("truncated WAV format chunk")));
+				return Err(native::Error::Provider(Str::new("truncated WAV format chunk")));
 			}
 			format = Some((
 				u16::from_le_bytes([chunk[0], chunk[1]]),
@@ -684,7 +684,7 @@ fn decode_inline_audio(blob: &native::BlobPart) -> std::result::Result<Audio, na
 		offset = end.saturating_add(length & 1);
 	}
 	let Some((encoding, channels, sample_rate, bits)) = format else {
-		return Err(native::Error::Provider(SmolStr::new("inline WAV has no format chunk")));
+		return Err(native::Error::Provider(Str::new("inline WAV has no format chunk")));
 	};
 	if encoding != 1 || bits != 16 {
 		return Err(unsupported_error(
@@ -693,9 +693,9 @@ fn decode_inline_audio(blob: &native::BlobPart) -> std::result::Result<Audio, na
 		));
 	}
 	let data =
-		data.ok_or_else(|| native::Error::Provider(SmolStr::new("inline WAV has no data chunk")))?;
+		data.ok_or_else(|| native::Error::Provider(Str::new("inline WAV has no data chunk")))?;
 	if !data.len().is_multiple_of(2) {
-		return Err(native::Error::Provider(SmolStr::new(
+		return Err(native::Error::Provider(Str::new(
 			"inline PCM16 WAV contains a partial sample",
 		)));
 	}
@@ -712,7 +712,7 @@ fn decode_inline_audio(blob: &native::BlobPart) -> std::result::Result<Audio, na
 
 fn drive_gguf_turn(
 	mut stream: GenerationStream,
-	model_id: SmolStr,
+	model_id: Str,
 	unsupported_features: Vec<native::Unsupported>,
 ) -> BoxStream<'static, native::TurnEvent> {
 	Box::pin(async_stream::stream! {
@@ -720,8 +720,8 @@ fn drive_gguf_turn(
 		yield native::TurnEvent::PartStart {
 			index: 0,
 			kind: native::StreamPartKind::Text,
-			tool_call_id: SmolStr::new(""),
-			tool_name: SmolStr::new(""),
+			tool_call_id: Str::new(""),
+			tool_name: Str::new(""),
 		};
 		let mut text = String::new();
 		while let Some(item) = stream.next().await {
@@ -761,7 +761,7 @@ fn drive_gguf_turn(
 			stop,
 			usage,
 			unsupported_features,
-			SmolStr::new("localai"),
+			Str::new("localai"),
 			model_id,
 		);
 	})
@@ -776,8 +776,8 @@ fn drive_fm_turn(
 		yield native::TurnEvent::PartStart {
 			index: 0,
 			kind: native::StreamPartKind::Text,
-			tool_call_id: SmolStr::new(""),
-			tool_name: SmolStr::new(""),
+			tool_call_id: Str::new(""),
+			tool_name: Str::new(""),
 		};
 		let mut text = String::new();
 		while let Some(item) = stream.next().await {
@@ -804,8 +804,8 @@ fn drive_fm_turn(
 						native::StopReason::EndTurn,
 						Some(usage),
 						unsupported_features,
-						SmolStr::new("apple"),
-						SmolStr::new("foundation-models"),
+						Str::new("apple"),
+						Str::new("foundation-models"),
 					);
 					return;
 				},
@@ -821,19 +821,19 @@ fn drive_fm_turn(
 			native::StopReason::EndTurn,
 			None,
 			unsupported_features,
-			SmolStr::new("apple"),
-			SmolStr::new("foundation-models"),
+			Str::new("apple"),
+			Str::new("foundation-models"),
 		);
 	})
 }
 
 fn native_outcome(
-	text: SmolStr,
+	text: Str,
 	stop: native::StopReason,
 	usage: Option<native::Usage>,
 	unsupported_features: Vec<native::Unsupported>,
-	provider: SmolStr,
-	model: SmolStr,
+	provider: Str,
+	model: Str,
 ) -> native::TurnEvent {
 	let output = native::Item::builder()
 		.seq(0)
@@ -865,7 +865,7 @@ fn canonical_turn_error(error: Error) -> native::TurnEvent {
 				crate::ErrorKind::Unsupported => native::TurnErrorKind::Unsupported,
 				_ => native::TurnErrorKind::Upstream,
 			})
-			.detail(SmolStr::from(error.to_string()))
+			.detail(Str::from(error.to_string()))
 			.unsupported(Vec::new())
 			.retry_after_ms(0)
 			.build(),
@@ -878,12 +878,12 @@ fn gguf_options(
 	let max_tokens = match sampling.max_output_tokens {
 		None => GenerationOptions::default().max_tokens,
 		Some(0) => {
-			return Err(native::Error::Provider(SmolStr::new(
+			return Err(native::Error::Provider(Str::new(
 				"maximum output tokens must be non-zero",
 			)));
 		},
 		Some(max) => usize::try_from(max).map_err(|_| {
-			native::Error::Provider(SmolStr::new("maximum output tokens exceed this platform"))
+			native::Error::Provider(Str::new("maximum output tokens exceed this platform"))
 		})?,
 	};
 	Ok(GenerationOptions {
@@ -914,8 +914,8 @@ fn fm_sampling(
 		} else {
 			unsupported_features.push(
 				native::Unsupported::builder()
-					.what(SmolStr::new("sampling.max_output_tokens"))
-					.detail(format_smol!("clamped to {}, the framework's u32 limit", u32::MAX))
+					.what(Str::new("sampling.max_output_tokens"))
+					.detail(fmts!("clamped to {}, the framework's u32 limit", u32::MAX))
 					.action(native::UnsupportedAction::Clamped)
 					.build(),
 			);
@@ -937,7 +937,7 @@ fn fm_sampling(
 	}
 }
 
-fn fm_prompt(messages: &[ChatMessage]) -> Result<(Option<SmolStr>, SmolStr)> {
+fn fm_prompt(messages: &[ChatMessage]) -> Result<(Option<Str>, Str)> {
 	let mut system = Vec::new();
 	let mut turns = Vec::new();
 	for message in messages {
@@ -987,8 +987,8 @@ fn admit_drop(
 
 fn unsupported(what: &'static str, detail: &'static str) -> native::Unsupported {
 	native::Unsupported::builder()
-		.what(SmolStr::new(what))
-		.detail(SmolStr::new(detail))
+		.what(Str::new(what))
+		.detail(Str::new(detail))
 		.action(native::UnsupportedAction::Dropped)
 		.build()
 }
@@ -1001,18 +1001,18 @@ fn facet_error(error: Error) -> native::Error {
 	match error {
 		Error::Unavailable(detail) => native::Error::Unsupported(vec![
 			native::Unsupported::builder()
-				.what(SmolStr::new("local_engine"))
+				.what(Str::new("local_engine"))
 				.detail(detail)
 				.action(native::UnsupportedAction::Dropped)
 				.build(),
 		]),
-		other => native::Error::Provider(SmolStr::from(other.to_string())),
+		other => native::Error::Provider(Str::from(other.to_string())),
 	}
 }
 
 fn f64_to_f32(value: f64) -> std::result::Result<f32, native::Error> {
 	if !value.is_finite() || value < f64::from(f32::MIN) || value > f64::from(f32::MAX) {
-		return Err(native::Error::Provider(SmolStr::new(
+		return Err(native::Error::Provider(Str::new(
 			"local floating-point control is outside the supported f32 range",
 		)));
 	}
@@ -1033,7 +1033,7 @@ fn fm_error(error: AppleFmError) -> Error {
 	}
 }
 
-fn text_model_id(model: &TextModel) -> SmolStr {
+fn text_model_id(model: &TextModel) -> Str {
 	match model {
 		TextModel::Small(small) => match small {
 			SmallModel::Lfm2_350M => "lfm2-350m".into(),

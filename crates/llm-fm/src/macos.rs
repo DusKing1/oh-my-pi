@@ -12,7 +12,7 @@ use std::{
 	time::Duration,
 };
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use parking_lot::{Condvar, Mutex};
 use tokio_util::sync::CancellationToken;
 
@@ -589,7 +589,7 @@ impl TaskControl {
 }
 
 enum StreamMessage {
-	Snapshot(SmolStr),
+	Snapshot(Str),
 	Complete(std::result::Result<(), BridgeFailure>),
 }
 
@@ -671,7 +671,7 @@ pub fn availability() -> AppleFmAvailability {
 
 pub fn generate(
 	options: AppleFmOptions,
-	mut on_delta: impl FnMut(SmolStr) -> bool,
+	mut on_delta: impl FnMut(Str) -> bool,
 	cancel: &CancellationToken,
 ) -> Result<AppleFmGeneration> {
 	if cancel.is_cancelled() {
@@ -688,7 +688,7 @@ pub fn generate(
 		sender,
 	)
 	.map_err(failure_result)?;
-	let mut content = SmolStr::default();
+	let mut content = Str::default();
 
 	loop {
 		match receiver.recv_timeout(RECEIVE_INTERVAL) {
@@ -1210,7 +1210,7 @@ impl Request {
 		let text = self
 			.snapshot_strings
 			.to_rust(unsafe { content.assume_init() })
-			.map(SmolStr::from);
+			.map(Str::from);
 		self.snapshot.destroy();
 		match text {
 			Ok(text) => {

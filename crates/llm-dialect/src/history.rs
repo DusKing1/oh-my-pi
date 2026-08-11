@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use omp_core::SmolStrMut;
+use omp_core::StrMut;
 use omp_llm_types::{Item, ItemKind, Message, Part, Role, Thread};
 
 use crate::{
@@ -41,7 +41,7 @@ pub fn project_inband_history(
 					index += 1;
 					continue;
 				}
-				let mut text = SmolStrMut::default();
+				let mut text = StrMut::default();
 				write_history_assistant_text(&mut text, message, dialect)?;
 				if !text.is_empty() && calls_end > index + 1 {
 					text.write_char('\n')?;
@@ -66,7 +66,7 @@ pub fn project_inband_history(
 			},
 			ItemKind::ToolCall(_) => {
 				let end = call_run_end(source, index);
-				let mut text = SmolStrMut::default();
+				let mut text = StrMut::default();
 				write_call_run_from_items(&mut text, dialect, &source[index..end], options)?;
 				projected.push(projected_message(&source[index], Role::Assistant, vec![Part::Text(
 					text.freeze(),
@@ -75,7 +75,7 @@ pub fn project_inband_history(
 			},
 			ItemKind::ToolResult(_) => {
 				let end = result_run_end(source, index);
-				let mut text = SmolStrMut::default();
+				let mut text = StrMut::default();
 				write_canonical_result_run_text_only(&mut text, dialect, &source[index..end])?;
 				let image_count = source[index..end]
 					.iter()

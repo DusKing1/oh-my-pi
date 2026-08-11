@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_egress::auth_inject::CredentialLease;
 use omp_llm_types::TurnEvent;
 use smallvec::SmallVec;
@@ -110,7 +110,7 @@ impl<L: CredentialSource> CredentialRotate<PreCommit, L> {
 			credential,
 			event: TurnEvent::Attempt {
 				number: self.attempt_number,
-				reason: SmolStr::new(match cause {
+				reason: Str::new(match cause {
 					RotationCause::Unauthorized => "credential returned 401; rotating identity",
 					RotationCause::Forbidden => "credential returned 403; rotating identity",
 					RotationCause::UsageLimit => "credential usage limit reached; rotating identity",

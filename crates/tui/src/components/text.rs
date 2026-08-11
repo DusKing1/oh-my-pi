@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use omp_core::{SmolStr, SmolStrMut};
+use omp_core::{Str, StrMut};
 use smallvec::SmallVec;
 use xutf::Text;
 
@@ -17,7 +17,7 @@ use crate::{
 pub struct TextLeaf {
 	props:        Props,
 	slot:         Slot,
-	text:         SmolStr,
+	text:         Str,
 	rich:         RichText,
 	version:      u64,
 	cached_width: u16,
@@ -39,7 +39,7 @@ impl TextLeaf {
 		Self {
 			props:        Props::new(),
 			slot:         next_slot(),
-			text:         SmolStr::default(),
+			text:         Str::default(),
 			rich:         RichText::default(),
 			version:      1,
 			cached_width: 0,
@@ -63,7 +63,7 @@ impl TextLeaf {
 	}
 
 	/// Appends plain text content.
-	pub fn text(mut self, text: impl Into<SmolStr>) -> Self {
+	pub fn text(mut self, text: impl Into<Str>) -> Self {
 		append(&mut self.text, text.into());
 		self.version = self.version.wrapping_add(1);
 		self
@@ -103,10 +103,10 @@ impl TextLeaf {
 				}
 			},
 			Some(Truncate::Start) => {
-				let mut runs: SmallVec<(Style, SmolStr), 8> = SmallVec::new();
+				let mut runs: SmallVec<(Style, Str), 8> = SmallVec::new();
 				for (index, line) in visible.split('\n').enumerate() {
 					if index > 0 {
-						runs.push((style, SmolStr::new_static(" ")));
+						runs.push((style, Str::new_static(" ")));
 					}
 					if !line.is_empty() {
 						runs.push((style, self.text.slice_ref(line)));
@@ -195,7 +195,7 @@ impl Component for TextLeaf {
 		}
 	}
 
-	fn set_text(&mut self, _ctx: &crate::UiContext, text: SmolStr) -> bool {
+	fn set_text(&mut self, _ctx: &crate::UiContext, text: Str) -> bool {
 		if self.text == text {
 			return false;
 		}
@@ -207,7 +207,7 @@ impl Component for TextLeaf {
 
 impl TextLeaf {
 	/// Verbatim content for single-line flattening by grid cells.
-	pub(crate) const fn content(&self) -> &SmolStr {
+	pub(crate) const fn content(&self) -> &Str {
 		&self.text
 	}
 }
@@ -221,7 +221,7 @@ impl TextLeaf {
 struct RevealState {
 	pace:        anim::Reveal,
 	/// The text the memos below describe (O(1) clone of the leaf's text).
-	seen:        SmolStr,
+	seen:        Str,
 	/// Grapheme clusters in `seen`.
 	total:       usize,
 	/// Byte start of the final cluster of `seen`.
@@ -238,7 +238,7 @@ impl RevealState {
 	/// Reconciles the memos with the leaf's current text: an extension
 	/// recounts from the final counted cluster, anything else recounts in
 	/// full and restarts the cursor.
-	fn sync(&mut self, text: &SmolStr) {
+	fn sync(&mut self, text: &Str) {
 		if self.seen == *text {
 			return;
 		}
@@ -326,13 +326,13 @@ fn count_clusters(text: &str, start: usize) -> (usize, usize) {
 pub struct Pre {
 	props: Props,
 	slot:  Slot,
-	text:  SmolStr,
+	text:  Str,
 }
 
 impl Pre {
 	/// Creates an empty preformatted block.
 	pub fn new() -> Self {
-		Self { props: Props::new(), slot: next_slot(), text: SmolStr::default() }
+		Self { props: Props::new(), slot: next_slot(), text: Str::default() }
 	}
 
 	/// Sets one property.
@@ -347,13 +347,13 @@ impl Pre {
 	}
 
 	/// Appends preformatted text content.
-	pub fn text(mut self, text: impl Into<SmolStr>) -> Self {
+	pub fn text(mut self, text: impl Into<Str>) -> Self {
 		append(&mut self.text, text.into());
 		self
 	}
 
 	/// Verbatim content for single-line flattening by grid cells.
-	pub(crate) const fn content(&self) -> &SmolStr {
+	pub(crate) const fn content(&self) -> &Str {
 		&self.text
 	}
 }
@@ -424,7 +424,7 @@ impl Component for Pre {
 		Some(Rect::new(x, content.y, width, height))
 	}
 
-	fn set_text(&mut self, _ctx: &crate::UiContext, text: SmolStr) -> bool {
+	fn set_text(&mut self, _ctx: &crate::UiContext, text: Str) -> bool {
 		if self.text == text {
 			return false;
 		}
@@ -433,12 +433,12 @@ impl Component for Pre {
 	}
 }
 
-pub(super) fn append(target: &mut SmolStr, suffix: SmolStr) {
+pub(super) fn append(target: &mut Str, suffix: Str) {
 	if target.is_empty() {
 		*target = suffix;
 		return;
 	}
-	let mut joined = SmolStrMut::with_capacity(target.len().saturating_add(suffix.len()));
+	let mut joined = StrMut::with_capacity(target.len().saturating_add(suffix.len()));
 	joined.push_str(target);
 	joined.push_str(&suffix);
 	*target = joined.freeze();
@@ -446,7 +446,7 @@ pub(super) fn append(target: &mut SmolStr, suffix: SmolStr) {
 
 /// Emits `runs` as one line clipped to `width` cells keeping the tail: a
 /// leading ellipsis replaces however much of the head does not fit.
-pub(super) fn clip_start_runs(rich: &mut RichText, width: u16, runs: &[(Style, SmolStr)]) {
+pub(super) fn clip_start_runs(rich: &mut RichText, width: u16, runs: &[(Style, Str)]) {
 	let width = width.max(1);
 	let total = runs
 		.iter()
@@ -502,9 +502,9 @@ pub(super) fn truncate_rich(
 	}
 	match mode {
 		Truncate::End => {
-			let row: SmallVec<(Style, SmolStr), 4> = rich
+			let row: SmallVec<(Style, Str), 4> = rich
 				.row_runs(0)
-				.map(|(style, text)| (style, SmolStr::new(text)))
+				.map(|(style, text)| (style, Str::new(text)))
 				.collect();
 			rich.clear();
 			{
@@ -518,14 +518,14 @@ pub(super) fn truncate_rich(
 		},
 		Truncate::Start => {
 			// Rejoin the wrapped rows with single spaces and keep the tail.
-			let mut joined: SmallVec<(Style, SmolStr), 8> = SmallVec::new();
+			let mut joined: SmallVec<(Style, Str), 8> = SmallVec::new();
 			for row in 0..RichText::rows(rich) {
 				if row > 0 {
 					let style = joined.last().map_or(fallback, |(style, _)| *style);
-					joined.push((style, SmolStr::new_static(" ")));
+					joined.push((style, Str::new_static(" ")));
 				}
 				for (style, text) in rich.row_runs(row) {
-					joined.push((style, SmolStr::new(text)));
+					joined.push((style, Str::new(text)));
 				}
 			}
 			rich.clear();
@@ -764,15 +764,15 @@ mod tests {
 	#[test]
 	fn reveal_state_extends_counts_across_cluster_boundaries() {
 		let mut state = RevealState::default();
-		state.sync(&SmolStr::new("e"));
+		state.sync(&Str::new("e"));
 		assert_eq!(state.total, 1);
 		// The appended combining mark extends the final cluster in place.
-		state.sync(&SmolStr::new("e\u{301}"));
+		state.sync(&Str::new("e\u{301}"));
 		assert_eq!(state.total, 1);
-		state.sync(&SmolStr::new("e\u{301}f"));
+		state.sync(&Str::new("e\u{301}f"));
 		assert_eq!(state.total, 2);
 		// Replacement restarts the cursor from nothing.
-		state.sync(&SmolStr::new("zz"));
+		state.sync(&Str::new("zz"));
 		assert_eq!(state.total, 2);
 		assert_eq!(state.advance(Duration::ZERO, Duration::from_millis(250)), 0);
 	}
@@ -780,10 +780,10 @@ mod tests {
 	#[test]
 	fn reveal_state_reslices_the_boundary_cluster_after_an_append() {
 		let mut state = RevealState::default();
-		state.sync(&SmolStr::new("ab"));
+		state.sync(&Str::new("ab"));
 		// A zero horizon snaps the cursor to everything counted so far.
 		assert_eq!(state.advance(Duration::ZERO, Duration::ZERO), 2);
-		state.sync(&SmolStr::new("ab\u{301}c"));
+		state.sync(&Str::new("ab\u{301}c"));
 		// The shown boundary cluster grew; the slice re-walks it before
 		// advancing rather than splitting the combining mark off.
 		let end = state.advance(Duration::from_millis(1), Duration::from_millis(250));

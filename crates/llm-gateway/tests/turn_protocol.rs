@@ -14,7 +14,7 @@ use futures::{
 	Stream, StreamExt,
 	stream::{self, BoxStream},
 };
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::{
 	models::{Availability, Modality, ModelCard, ModelCatalog, Source},
 	provider::Facet as CatalogFacet,
@@ -107,13 +107,13 @@ impl Chat for MockChat {
 					let call_id = call_id();
 					let tool_call = ToolCall::builder()
 						.id(call_id)
-						.name(SmolStr::new_static("shell"))
+						.name(Str::new_static("shell"))
 						.args_json(Bytes::from_static(br#"{"command":"pwd"}"#))
 						.thought_signature(Bytes::new())
 						.build();
 					let invocation = Invoke::builder()
-						.invocation_id(SmolStr::new_static("invoke-1"))
-						.name(SmolStr::new_static("cursor/shell"))
+						.invocation_id(Str::new_static("invoke-1"))
+						.name(Str::new_static("cursor/shell"))
 						.tool_call(tool_call)
 						.vendor(Bytes::new())
 						.timeout_ms(5_000)
@@ -140,11 +140,11 @@ impl Chat for MockChat {
 
 fn model_card() -> ModelCard {
 	ModelCard::builder()
-		.id(SmolStr::new_static("test/model"))
-		.provider(SmolStr::new_static("test"))
-		.model(SmolStr::new_static("model"))
-		.name(SmolStr::new_static("Model"))
-		.family(SmolStr::new_static("test"))
+		.id(Str::new_static("test/model"))
+		.provider(Str::new_static("test"))
+		.model(Str::new_static("model"))
+		.name(Str::new_static("Model"))
+		.family(Str::new_static("test"))
 		.facets(smallvec![CatalogFacet::Chat])
 		.inputs(smallvec![Modality::Text])
 		.outputs(smallvec![Modality::Text])
@@ -173,8 +173,8 @@ fn engine(
 	let resolver = Arc::new(ChatResolver::new(registry));
 	let calls = Arc::new(AtomicUsize::new(0));
 	resolver.register(ChatRoute {
-		provider: SmolStr::new_static("test"),
-		credential_id: SmolStr::new_static("cred-a"),
+		provider: Str::new_static("test"),
+		credential_id: Str::new_static("cred-a"),
 		requires_executor,
 		chat: Arc::new(MockChat { behavior, calls: Arc::clone(&calls) }),
 	});
@@ -191,7 +191,7 @@ fn item(role: Role, text: &'static str) -> Item {
 		.kind(ItemKind::Message(
 			Message::builder()
 				.role(role)
-				.parts(vec![Part::Text(SmolStr::new_static(text))])
+				.parts(vec![Part::Text(Str::new_static(text))])
 				.build(),
 		))
 		.props(Props::default())
@@ -204,8 +204,8 @@ fn successful_outcome() -> TurnEvent {
 			.output(vec![item(Role::Assistant, "answer")])
 			.stop(StopReason::EndTurn)
 			.unsupported(Vec::new())
-			.provider(SmolStr::new_static("test"))
-			.model(SmolStr::new_static("model"))
+			.provider(Str::new_static("test"))
+			.model(Str::new_static("model"))
 			.props(Props::default())
 			.build(),
 	)
@@ -215,7 +215,7 @@ fn failure() -> TurnEvent {
 	TurnEvent::Error(
 		TurnError::builder()
 			.kind(TurnErrorKind::Upstream)
-			.detail(SmolStr::new_static("mock failure"))
+			.detail(Str::new_static("mock failure"))
 			.unsupported(Vec::new())
 			.retry_after_ms(0)
 			.build(),
@@ -224,7 +224,7 @@ fn failure() -> TurnEvent {
 
 fn context_ref(context_id: &'static str, expected: Revision) -> ContextRef {
 	ContextRef::builder()
-		.context_id(SmolStr::new_static(context_id))
+		.context_id(Str::new_static(context_id))
 		.expected(expected)
 		.build()
 }
@@ -644,7 +644,7 @@ async fn interactive_turn_commits_tool_pair_and_assistant_atomically() {
 	};
 	assert!(invoke.tool_call.is_some());
 	let input = InvokeInput::builder()
-		.invocation_id(SmolStr::new_static("invoke-1"))
+		.invocation_id(Str::new_static("invoke-1"))
 		.payload(InvokePayload::Chunk(
 			InvokeChunk::builder()
 				.channel(InvokeChannel::Stdout)
@@ -661,22 +661,22 @@ async fn interactive_turn_commits_tool_pair_and_assistant_atomically() {
 	assert!(matches!(next_event(&mut events).await, TurnEvent::PartDelta { .. }));
 	let result = ToolResult::builder()
 		.call_id(call_id())
-		.name(SmolStr::new_static("shell"))
-		.parts(vec![Part::Text(SmolStr::new_static("/work/omp"))])
+		.name(Str::new_static("shell"))
+		.parts(vec![Part::Text(Str::new_static("/work/omp"))])
 		.is_error(false)
 		.build();
 	let complete = InvokeComplete::builder()
-		.invocation_id(SmolStr::new_static("invoke-1"))
+		.invocation_id(Str::new_static("invoke-1"))
 		.tool_result(result.clone())
 		.status(
 			ExecStatus::builder()
 				.outcome(ExecOutcome::Exited)
 				.exit_code(0)
-				.signal(SmolStr::new_static(""))
-				.reason(SmolStr::new_static(""))
-				.cwd(SmolStr::new_static("/work/omp"))
+				.signal(Str::new_static(""))
+				.reason(Str::new_static(""))
+				.cwd(Str::new_static("/work/omp"))
 				.aborted(false)
-				.output_location(SmolStr::new_static(""))
+				.output_location(Str::new_static(""))
 				.local_execution_time_ms(1)
 				.is_readonly(false)
 				.command_timeout_ms(0)

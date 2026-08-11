@@ -8,7 +8,7 @@ use std::{
 };
 
 use futures::{Stream, TryFutureExt};
-use omp_core::SmolStr;
+use omp_core::Str;
 use omp_llm_catalog::models::{CacheTtlUsage, CostUsage, ModelCard, calculate_cost};
 use omp_llm_egress::auth_inject::CredentialLease;
 use omp_llm_types::{Accuracy, Cost, Usage};
@@ -124,12 +124,12 @@ where
 #[derive(Clone)]
 struct ObservedIdentity {
 	lease: Option<CredentialLease>,
-	turn_id: SmolStr,
-	model: SmolStr,
-	initiator: SmolStr,
+	turn_id: Str,
+	model: Str,
+	initiator: Str,
 	premium_multiplier_millionths: Option<u64>,
-	client_id: SmolStr,
-	client_label: SmolStr,
+	client_id: Str,
+	client_label: Str,
 }
 
 impl ObservedIdentity {
@@ -153,19 +153,19 @@ impl ObservedIdentity {
 		};
 		Self {
 			lease,
-			turn_id: SmolStr::new(&request.turn_id),
+			turn_id: Str::new(&request.turn_id),
 			model: request
 				.params
 				.as_ref()
-				.map_or_else(|| SmolStr::new_static(""), |params| SmolStr::new(&params.model)),
+				.map_or_else(|| Str::new_static(""), |params| Str::new(&params.model)),
 			initiator: request
 				.params
 				.as_ref()
 				.and_then(|params| params.meta.as_ref())
-				.map_or_else(|| SmolStr::new_static(""), |meta| SmolStr::new(&meta.initiator)),
+				.map_or_else(|| Str::new_static(""), |meta| Str::new(&meta.initiator)),
 			premium_multiplier_millionths,
-			client_id: SmolStr::new(client_id),
-			client_label: SmolStr::new(client_id),
+			client_id: Str::new(client_id),
+			client_label: Str::new(client_id),
 		}
 	}
 }
@@ -244,7 +244,7 @@ impl Meter {
 		usage: &Usage,
 		cache_ttl: Option<CacheTtlUsage>,
 		billed_nanos_usd: Option<u64>,
-		service_tier: Option<SmolStr>,
+		service_tier: Option<Str>,
 	) -> Cost {
 		let cost = cost_for_usage(model, usage, cache_ttl, billed_nanos_usd);
 		let telemetry_usage = collector_usage(usage);
@@ -254,7 +254,7 @@ impl Meter {
 			service_tier,
 			agent: None,
 			usage: telemetry_usage,
-			usage_accuracy: SmolStr::new(match usage.accuracy {
+			usage_accuracy: Str::new(match usage.accuracy {
 				Accuracy::Exact => "provider",
 				Accuracy::Estimated => "estimated",
 				_ => "estimated",
@@ -334,11 +334,11 @@ mod tests {
 
 	fn priced_model() -> ModelCard {
 		ModelCard::builder()
-			.id(SmolStr::new("known/model"))
-			.provider(SmolStr::new("known"))
-			.model(SmolStr::new("model"))
-			.name(SmolStr::new("Known"))
-			.family(SmolStr::new("known"))
+			.id(Str::new("known/model"))
+			.provider(Str::new("known"))
+			.model(Str::new("model"))
+			.name(Str::new("Known"))
+			.family(Str::new("known"))
 			.facets(smallvec![Facet::Chat])
 			.inputs(smallvec![])
 			.outputs(smallvec![])

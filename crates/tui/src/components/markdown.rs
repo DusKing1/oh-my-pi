@@ -1,4 +1,4 @@
-use omp_core::SmolStr;
+use omp_core::Str;
 
 use super::text::{append, paint_rich, truncate_rich};
 use crate::{
@@ -13,8 +13,8 @@ use crate::{
 pub struct Markdown {
 	props:        Props,
 	slot:         Slot,
-	text:         SmolStr,
-	source:       SmolStr,
+	text:         Str,
+	source:       Str,
 	rich:         RichText,
 	embedded:     Vec<Cached>,
 	version:      u64,
@@ -28,8 +28,8 @@ impl Markdown {
 		Self {
 			props:        Props::new(),
 			slot:         next_slot(),
-			text:         SmolStr::default(),
-			source:       SmolStr::default(),
+			text:         Str::default(),
+			source:       Str::default(),
 			rich:         RichText::default(),
 			embedded:     Vec::new(),
 			version:      1,
@@ -39,7 +39,7 @@ impl Markdown {
 	}
 
 	/// Creates a Markdown block containing the supplied source.
-	pub fn text_of(text: impl Into<SmolStr>) -> Self {
+	pub fn text_of(text: impl Into<Str>) -> Self {
 		Self::new().text(text)
 	}
 
@@ -56,7 +56,7 @@ impl Markdown {
 	}
 
 	/// Appends Markdown source text.
-	pub fn text(mut self, text: impl Into<SmolStr>) -> Self {
+	pub fn text(mut self, text: impl Into<Str>) -> Self {
 		let text = text.into();
 		append(&mut self.source, text.clone());
 		append(&mut self.text, text);
@@ -190,7 +190,7 @@ impl Component for Markdown {
 		}
 	}
 
-	fn set_text(&mut self, ctx: &crate::UiContext, text: SmolStr) -> bool {
+	fn set_text(&mut self, ctx: &crate::UiContext, text: Str) -> bool {
 		if self.source == text {
 			return false;
 		}
@@ -198,7 +198,7 @@ impl Component for Markdown {
 		if crate::markup::md_embeds_markup(&text) {
 			if let Ok(children) = crate::markup::parse_md_fragment_inheriting(&text, ctx, &self.props)
 			{
-				self.text = SmolStr::default();
+				self.text = Str::default();
 				self.embedded = children;
 			} else {
 				self.text = text;
@@ -223,7 +223,7 @@ mod tests {
 		let ctx = UiContext::default();
 		let mut markdown = Markdown::text_of("old");
 		assert!(
-			markdown.set_text(&ctx, SmolStr::new("before\n<box><text>inside</text></box>\nafter"),)
+			markdown.set_text(&ctx, Str::new("before\n<box><text>inside</text></box>\nafter"),)
 		);
 		assert!(markdown.text.is_empty());
 		assert_eq!(markdown.embedded.len(), 3);
@@ -234,7 +234,7 @@ mod tests {
 		let ctx = UiContext::default();
 		for source in ["<input/>", "<box id=duplicate/>", "<box when=\"x == y\"/>", "</md>"] {
 			let mut markdown = Markdown::text_of("old");
-			assert!(markdown.set_text(&ctx, SmolStr::new(source)));
+			assert!(markdown.set_text(&ctx, Str::new(source)));
 			assert_eq!(markdown.text, source);
 			assert!(markdown.embedded.is_empty());
 		}

@@ -5,7 +5,7 @@ use std::{
 	path::{Component, Path, PathBuf},
 };
 
-use omp_core::{SmolStr, SmolStrMut};
+use omp_core::{Str, StrMut};
 
 use crate::{
 	format::{ABORT_MARKER, BEGIN_PATCH_MARKER, END_PATCH_MARKER, HL_FILE_HASH_LENGTH},
@@ -19,9 +19,9 @@ use crate::{
 
 #[derive(Debug, Clone)]
 struct RawSection {
-	path:        SmolStr,
-	file_hash:   Option<SmolStr>,
-	diff:        SmolStr,
+	path:        Str,
+	file_hash:   Option<Str>,
+	diff:        Str,
 	interleaved: bool,
 }
 
@@ -29,11 +29,11 @@ struct RawSection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchSection {
 	/// The normalized authored target path.
-	pub path:              SmolStr,
+	pub path:              Str,
 	/// The optional uppercase four-hex snapshot tag.
-	pub file_hash:         Option<SmolStr>,
+	pub file_hash:         Option<Str>,
 	/// The section body without its header.
-	pub diff:              SmolStr,
+	pub diff:              Str,
 	/// Whether same-path section merging crossed another target file.
 	pub interleaved_merge: bool,
 }
@@ -179,7 +179,7 @@ fn split_raw_sections(input: &str, options: &SplitOptions) -> Result<Vec<RawSect
 	let first = lines.first().copied().unwrap_or("");
 	if parse_header_line(first, 1, options)?.is_none() {
 		let trimmed = first.trim_end();
-		let message: SmolStr = if trimmed.starts_with("@@") {
+		let message: Str = if trimmed.starts_with("@@") {
 			"unified-diff hunk header is not valid in hashline. File sections start with \
 			 `[path#HASH]`; use `PUT`, `CUT`, `REM`, or `MV`."
 				.into()
@@ -290,7 +290,7 @@ fn parse_header_line(
 		return Ok(Some(RawSection {
 			path: path.into(),
 			file_hash,
-			diff: SmolStr::default(),
+			diff: Str::default(),
 			interleaved: false,
 		}));
 	}
@@ -319,7 +319,7 @@ fn recover_header(line: &str, cwd: Option<&str>) -> Option<RawSection> {
 		{
 			return None;
 		}
-		(path.trim_end(), Some(SmolStr::from(tag.to_ascii_uppercase())))
+		(path.trim_end(), Some(Str::from(tag.to_ascii_uppercase())))
 	} else {
 		if body.contains('#') {
 			return None;
@@ -330,7 +330,7 @@ fn recover_header(line: &str, cwd: Option<&str>) -> Option<RawSection> {
 	if path.is_empty() {
 		return None;
 	}
-	Some(RawSection { path: path.into(), file_hash, diff: SmolStr::default(), interleaved: false })
+	Some(RawSection { path: path.into(), file_hash, diff: Str::default(), interleaved: false })
 }
 
 fn strip_apply_patch_path_noise(text: &str) -> &str {
@@ -407,7 +407,7 @@ fn path_to_slashes(path: &Path) -> String {
 		.replace(std::path::MAIN_SEPARATOR, "/")
 }
 
-fn invalid_header(line_num: usize, message: impl Into<SmolStr>) -> ParseError {
+fn invalid_header(line_num: usize, message: impl Into<Str>) -> ParseError {
 	ParseError::new(Diagnostic::error(
 		DiagnosticCode::InvalidSectionHeader,
 		Some(line_num),
@@ -420,13 +420,13 @@ fn merge_same_path_sections(sections: Vec<RawSection>) -> Result<Vec<RawSection>
 	#[derive(Debug)]
 	struct Entry {
 		index:       usize,
-		file_hash:   Option<SmolStr>,
-		diffs:       Vec<SmolStr>,
+		file_hash:   Option<Str>,
+		diffs:       Vec<Str>,
 		interleaved: bool,
 	}
-	let mut entries = HashMap::<SmolStr, Entry>::new();
-	let mut order = Vec::<SmolStr>::new();
-	let mut previous_path: Option<SmolStr> = None;
+	let mut entries = HashMap::<Str, Entry>::new();
+	let mut order = Vec::<Str>::new();
+	let mut previous_path: Option<Str> = None;
 	for section in sections {
 		if let Some(existing) = entries.get_mut(&section.path) {
 			if let (Some(left), Some(right)) = (&existing.file_hash, &section.file_hash)
@@ -467,8 +467,8 @@ fn merge_same_path_sections(sections: Vec<RawSection>) -> Result<Vec<RawSection>
 	for path in order {
 		let entry = entries.remove(&path).unwrap();
 		debug_assert_eq!(entry.index, merged.len());
-		let mut diff = SmolStrMut::with_capacity(
-			entry.diffs.iter().map(SmolStr::len).sum::<usize>() + entry.diffs.len(),
+		let mut diff = StrMut::with_capacity(
+			entry.diffs.iter().map(Str::len).sum::<usize>() + entry.diffs.len(),
 		);
 		for (index, section) in entry.diffs.iter().enumerate() {
 			if index > 0 {

@@ -632,7 +632,7 @@ fn integer(value: u64) -> AnyValue {
 	AnyValue::Int(i64::try_from(value).unwrap_or(i64::MAX))
 }
 
-fn join_strings(values: &[omp_core::SmolStr]) -> String {
+fn join_strings(values: &[omp_core::Str]) -> String {
 	let capacity =
 		values.iter().map(|value| value.len()).sum::<usize>() + values.len().saturating_sub(1);
 	let mut joined = String::with_capacity(capacity);

@@ -1,7 +1,7 @@
 //! Mermaid-to-terminal rendering for fenced Markdown blocks.
 
 use mermaid_text::RenderOptions;
-use omp_core::{SmolStr, SmolStrMut};
+use omp_core::{Str, StrMut};
 use xutf::Text;
 
 use crate::{
@@ -88,9 +88,9 @@ fn display_width(rendered: &str) -> usize {
 	rendered.lines().map(Text::visible_width).max().unwrap_or(0)
 }
 
-fn force_flow_direction(source: &str, direction: &str) -> Option<SmolStr> {
+fn force_flow_direction(source: &str, direction: &str) -> Option<Str> {
 	let (start, end, needs_space) = flow_direction_span(source)?;
-	let mut forced = SmolStrMut::with_capacity(source.len().saturating_add(3));
+	let mut forced = StrMut::with_capacity(source.len().saturating_add(3));
 	forced.push_str(&source[..start]);
 	if needs_space {
 		forced.push(' ');

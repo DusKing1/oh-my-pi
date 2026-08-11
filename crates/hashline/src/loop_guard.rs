@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
-use omp_core::SmolStr;
+use omp_core::Str;
 use xxhash_rust::xxh32::xxh32;
 
 /// Consecutive identical no-ops required before a hard diagnostic.
@@ -29,7 +29,7 @@ pub enum NoopSeverity {
 pub struct NoopRecord {
 	count:      usize,
 	severity:   NoopSeverity,
-	diagnostic: SmolStr,
+	diagnostic: Str,
 }
 
 impl NoopRecord {
@@ -61,7 +61,7 @@ impl NoopRecord {
 /// Per-session counters isolated by canonical path and exact raw payload bytes.
 #[derive(Clone, Debug, Default)]
 pub struct NoopLoopGuard {
-	entries: HashMap<SmolStr, NoopEntry>,
+	entries: HashMap<Str, NoopEntry>,
 }
 
 impl NoopLoopGuard {
@@ -75,7 +75,7 @@ impl NoopLoopGuard {
 	///
 	/// Exact payload bytes are retained so a hash collision can never escalate a
 	/// different edit. A different payload on the same path starts again at one.
-	pub fn record_noop(&mut self, canonical_path: impl Into<SmolStr>, payload: Bytes) -> NoopRecord {
+	pub fn record_noop(&mut self, canonical_path: impl Into<Str>, payload: Bytes) -> NoopRecord {
 		let canonical_path = canonical_path.into();
 		let count = self
 			.entries
@@ -91,13 +91,13 @@ impl NoopLoopGuard {
 			NoopSeverity::Soft
 		};
 		let diagnostic = match severity {
-			NoopSeverity::Soft => SmolStr::from(format!(
+			NoopSeverity::Soft => Str::from(format!(
 				"Edits to {canonical_path} parsed and applied cleanly, but produced no change: your \
 				 body row(s) are byte-identical to the file at the targeted lines. The bug is \
 				 somewhere else — re-read the file before issuing another edit. Do NOT widen the \
 				 payload or add lines; verify the anchor first."
 			)),
-			NoopSeverity::Hard => SmolStr::from(format!(
+			NoopSeverity::Hard => Str::from(format!(
 				"STOP. Edits to {canonical_path} have been a byte-identical no-op {count} times in a \
 				 row — the patch body matches the file at the targeted lines and the soft hint did \
 				 not break the cycle. Cease re-issuing this payload. Either the intended change is \

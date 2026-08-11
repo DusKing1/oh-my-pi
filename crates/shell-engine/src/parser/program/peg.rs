@@ -656,7 +656,7 @@ peg::parser! {
 				non_posix_extensions_enabled() [Token::Word(w, l)] specific_operator("(") elements:array_elements() end:specific_operator(")") {?
 					 let mut parsed = word::parse_array_assignment(w.as_str(), elements.as_slice())?;
 
-					 let mut all_as_word = omp_core::SmolStrMut::new(w.as_str());
+					 let mut all_as_word = omp_core::StrMut::new(w.as_str());
 					 all_as_word.push('(');
 					 for (i, e) in elements.iter().enumerate() {
 						  if i > 0 {
@@ -677,10 +677,10 @@ peg::parser! {
 					 Ok((parsed, ast::Word::with_location(w, l)))
 				}
 
-		  rule array_elements() -> Vec<&'input omp_core::SmolStr> =
+		  rule array_elements() -> Vec<&'input omp_core::Str> =
 				 linebreak() e:array_element()* { e }
 
-		  rule array_element() -> &'input omp_core::SmolStr =
+		  rule array_element() -> &'input omp_core::Str =
 				linebreak() [Token::Word(e, _)] linebreak() { e }
 
 		  // N.B. An I/O number must be a string of only digits, and it must be
