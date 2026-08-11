@@ -43,7 +43,10 @@ fn main() {
 			 scripts/fetch-python.sh; set it before cargo runs — e.g. in the consumer's \
 			 .cargo/config.toml: [env] PYO3_CONFIG_FILE = \"<vendor>/python/pyo3-config.txt\"",
 		);
-	let vendor = config.parent().expect("PYO3_CONFIG_FILE has no parent directory").to_path_buf();
+	let vendor = config
+		.parent()
+		.expect("PYO3_CONFIG_FILE has no parent directory")
+		.to_path_buf();
 	assert!(
 		vendor.join("PYTHON.json").is_file(),
 		"{} does not sit in a python-build-standalone vendor tree — run omp-py's \
@@ -80,10 +83,7 @@ fn main() {
 	// Emitted here, not in .cargo/config.toml, so no absolute checkout path is
 	// baked in and only this binary pays for the shim.
 	if std::env::var("TARGET").as_deref() == Ok("aarch64-apple-darwin") {
-		println!(
-			"cargo::rustc-link-arg=--ld-path={}",
-			manifest.join("scripts/ld64.lld").display()
-		);
+		println!("cargo::rustc-link-arg=--ld-path={}", manifest.join("scripts/ld64.lld").display());
 	}
 
 	// Wheels' native extensions (.so) resolve CPython symbols from this

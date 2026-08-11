@@ -10,9 +10,9 @@ use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use futures::{Stream, channel::mpsc};
 use omp_core::Str;
+use omp_voice_kokoro::{KModel, ModelConfig, SynthesisMode};
 use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
-use omp_voice_kokoro::{KModel, ModelConfig, SynthesisMode};
 
 use crate::{
 	Accelerator, Audio, DevicePreference, Error, Hub, ModelRepo, Result, device::candle_device,
