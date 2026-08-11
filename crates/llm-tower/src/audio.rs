@@ -97,6 +97,11 @@ impl<S> AudioProviderAttempt<S> {
 	}
 
 	/// Starts one streamed speech attempt.
+	#[allow(
+		clippy::future_not_send,
+		reason = "the service contract accepts Send providers that are not Sync; callers choose \
+		          where to poll the borrowed attempt future"
+	)]
 	pub async fn speak<B>(
 		&self,
 		request: SpeakRequest,
@@ -169,6 +174,11 @@ impl<S> AudioProviderAttempt<S> {
 	}
 
 	/// Executes one multipart transcription attempt.
+	#[allow(
+		clippy::future_not_send,
+		reason = "the service contract accepts Send providers that are not Sync; callers choose \
+		          where to poll the borrowed attempt future"
+	)]
 	pub async fn transcribe<B>(
 		&self,
 		request: TranscribeRequest,
@@ -215,6 +225,11 @@ impl<S> AudioProviderAttempt<S> {
 		Ok(decoded)
 	}
 
+	#[allow(
+		clippy::future_not_send,
+		reason = "the service contract accepts Send providers that are not Sync; callers choose \
+		          where to poll the borrowed attempt future"
+	)]
 	async fn dispatch<B>(
 		&self,
 		model: &str,

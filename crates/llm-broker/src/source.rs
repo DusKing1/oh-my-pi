@@ -334,63 +334,62 @@ where
 {
 	type Error = BrokerCredentialSourceError<R::Error>;
 
-	fn apply<'a>(
-		&'a self,
-		channel: &'a mut Channel,
-		request: &'a mut GetChatMessageRequest,
-	) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a {
-		async move {
-			let lease = self.source.lease(self.provider.as_str())?.ok_or_else(|| {
-				BrokerCredentialSourceError::MissingCredential { provider: self.provider.to_string() }
+	async fn apply(
+		&self,
+		channel: &mut Channel,
+		request: &mut GetChatMessageRequest,
+	) -> Result<(), Self::Error> {
+		let lease = self.source.lease(self.provider.as_str())?.ok_or_else(|| {
+			BrokerCredentialSourceError::MissingCredential { provider: self.provider.to_string() }
+		})?;
+		let mut auth_request = GetUserJwtRequest { metadata: Some(Metadata::default()) };
+		self.source.apply_devin_metadata(
+			&lease,
+			auth_request
+				.metadata
+				.as_mut()
+				.expect("metadata initialized"),
+			String::new(),
+		)?;
+		let mut grpc = tonic::client::Grpc::new(channel.clone());
+		grpc
+			.ready()
+			.await
+			.map_err(|_| BrokerCredentialSourceError::DevinAuthentication {
+				provider: self.provider.to_string(),
 			})?;
-			let mut auth_request = GetUserJwtRequest { metadata: Some(Metadata::default()) };
-			self.source.apply_devin_metadata(
-				&lease,
-				auth_request
-					.metadata
-					.as_mut()
-					.expect("metadata initialized"),
-				String::new(),
-			)?;
-			let mut grpc = tonic::client::Grpc::new(channel.clone());
-			grpc
-				.ready()
-				.await
-				.map_err(|_| BrokerCredentialSourceError::DevinAuthentication {
-					provider: self.provider.to_string(),
-				})?;
-			let path = http::uri::PathAndQuery::from_static("/exa.auth_pb.AuthService/GetUserJwt");
-			let codec = tonic_prost::ProstCodec::<GetUserJwtRequest, GetUserJwtResponse>::default();
-			let response = grpc
-				.unary(tonic::Request::new(auth_request), path, codec)
-				.await
-				.map_err(|_| BrokerCredentialSourceError::DevinAuthentication {
-					provider: self.provider.to_string(),
-				})?
-				.into_inner();
-			if response.user_jwt.is_empty() {
-				return Err(BrokerCredentialSourceError::DevinAuthentication {
-					provider: self.provider.to_string(),
-				});
-			}
-			if !response.custom_api_server_url.trim().is_empty() {
-				let endpoint = Endpoint::from_shared(
-					response
-						.custom_api_server_url
-						.trim()
-						.trim_end_matches('/')
-						.to_owned(),
-				)
-				.map_err(|_| BrokerCredentialSourceError::InvalidDevinEndpoint {
-					provider: self.provider.to_string(),
-				})?;
-				*channel = endpoint.connect_lazy();
-			}
-			let metadata = request.metadata.get_or_insert_default();
-			self
-				.source
-				.apply_devin_metadata(&lease, metadata, response.user_jwt)
+		let path = http::uri::PathAndQuery::from_static("/exa.auth_pb.AuthService/GetUserJwt");
+		let codec = tonic_prost::ProstCodec::<GetUserJwtRequest, GetUserJwtResponse>::default();
+		let response = grpc
+			.unary(tonic::Request::new(auth_request), path, codec)
+			.await
+			.map_err(|_| BrokerCredentialSourceError::DevinAuthentication {
+				provider: self.provider.to_string(),
+			})?
+			.into_inner();
+		if response.user_jwt.is_empty() {
+			return Err(BrokerCredentialSourceError::DevinAuthentication {
+				provider: self.provider.to_string(),
+			});
 		}
+		if !response.custom_api_server_url.trim().is_empty() {
+			let endpoint = Endpoint::from_shared(
+				response
+					.custom_api_server_url
+					.trim()
+					.trim_end_matches('/')
+					.to_owned(),
+			)
+			.map_err(|_| BrokerCredentialSourceError::InvalidDevinEndpoint {
+				provider: self.provider.to_string(),
+			})?;
+			*channel = endpoint.connect_lazy();
+		}
+		let metadata = request.metadata.get_or_insert_default();
+		self
+			.source
+			.apply_devin_metadata(&lease, metadata, response.user_jwt)?;
+		Ok(())
 	}
 }
 

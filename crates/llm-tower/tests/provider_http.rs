@@ -123,7 +123,8 @@ impl HttpBody for ControlledBody {
 		self: Pin<&mut Self>,
 		cx: &mut Context<'_>,
 	) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-		if let Some(step) = self.state.steps.lock().pop_front() {
+		let step = { self.state.steps.lock().pop_front() };
+		if let Some(step) = step {
 			return Poll::Ready(match step {
 				BodyStep::Data(data) => Some(Ok(Frame::data(data))),
 				BodyStep::Fail => Some(Err(BodyFailure)),
@@ -131,7 +132,8 @@ impl HttpBody for ControlledBody {
 			});
 		}
 		self.state.waker.register(cx.waker());
-		if let Some(step) = self.state.steps.lock().pop_front() {
+		let step = { self.state.steps.lock().pop_front() };
+		if let Some(step) = step {
 			cx.waker().wake_by_ref();
 			return Poll::Ready(match step {
 				BodyStep::Data(data) => Some(Ok(Frame::data(data))),
@@ -351,13 +353,12 @@ fn anthropic_vertex_rejects_beta_as_a_static_header() {
 		.headers
 		.insert("AnThRoPiC-BeTa".into(), "prompt-caching".into());
 	let (body, _control) = ControlledBody::new();
-	let error = match ProviderAttempt::new(
+	let Err(error) = ProviderAttempt::new(
 		provider,
 		ProviderRoute::default(),
 		CaptureService::new(body, "text/event-stream"),
-	) {
-		Ok(_) => panic!("Anthropic Vertex accepted a forbidden beta header"),
-		Err(error) => error,
+	) else {
+		panic!("Anthropic Vertex accepted a forbidden beta header");
 	};
 	assert!(matches!(
 		error,

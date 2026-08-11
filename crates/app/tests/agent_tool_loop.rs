@@ -484,7 +484,8 @@ impl OwnedToolHandler for PendingHandler {
 	}
 
 	fn execute(&self, _args_json: Bytes) -> Self::Execute<'_> {
-		if let Some(started) = self.started.lock().take() {
+		let started = self.started.lock().take();
+		if let Some(started) = started {
 			let _ = started.send(());
 		}
 		PendingExecution { dropped: self.dropped.clone() }

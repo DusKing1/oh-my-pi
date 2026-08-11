@@ -15,7 +15,8 @@ use std::{
 };
 
 use bytes::Bytes;
-use futures::{SinkExt as _, StreamExt as _};
+use flume::Sender;
+use futures::{SinkExt as _, Stream as _, StreamExt as _};
 use http::{Request, Response, StatusCode, header};
 use http_body_util::Full;
 use hyper::body::{Body as HttpBody, Frame as HttpFrame};
@@ -32,7 +33,7 @@ use omp_llm_openai::{
 };
 use parking_lot::Mutex;
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio_tungstenite::{
 	MaybeTlsStream, WebSocketStream, connect_async,
 	tungstenite::{Message, client::IntoClientRequest as _},
@@ -581,7 +582,8 @@ fn websocket_response<B: HttpBody<Data = Bytes> + Unpin + 'static>(
 	session: Arc<Mutex<CodexContinuationState>>,
 	full_request: Value,
 ) -> Response<CodexEgressBody<B>> {
-	let (tx, rx) = mpsc::channel(64);
+	let (tx, rx) = flume::bounded(64);
+	let (cancellation, cancelled) = watch::channel(());
 	for value in &opened.buffered {
 		let _ = tx.try_send(Ok(sse_frame(value)));
 	}
@@ -601,6 +603,7 @@ fn websocket_response<B: HttpBody<Data = Bytes> + Unpin + 'static>(
 			opened.socket,
 			opened.router,
 			tx,
+			cancelled,
 			session,
 			full_request,
 			opened.turn_state,
@@ -610,14 +613,18 @@ fn websocket_response<B: HttpBody<Data = Bytes> + Unpin + 'static>(
 	Response::builder()
 		.status(StatusCode::OK)
 		.header(header::CONTENT_TYPE, "text/event-stream")
-		.body(CodexEgressBody::WebSocket(CodexChannelBody { receiver: rx }))
+		.body(CodexEgressBody::WebSocket(CodexChannelBody {
+			stream:        rx.into_stream(),
+			_cancellation: cancellation,
+		}))
 		.expect("static Codex WebSocket response is valid")
 }
 
 async fn pump_socket(
 	mut socket: Socket,
 	mut router: CodexFrameRouter,
-	tx: mpsc::Sender<Result<Bytes, CodexBodyError>>,
+	tx: Sender<Result<Bytes, CodexBodyError>>,
+	mut cancelled: watch::Receiver<()>,
 	session: Arc<Mutex<CodexContinuationState>>,
 	full_request: Value,
 	mut turn_state: Option<Str>,
@@ -626,7 +633,7 @@ async fn pump_socket(
 	loop {
 		tokio::select! {
 			biased;
-			() = tx.closed() => {
+			_ = cancelled.changed() => {
 				router.cancel();
 				session.lock().reset();
 				let _ = socket.close(None).await;
@@ -636,18 +643,18 @@ async fn pump_socket(
 				let value = match result {
 					Ok(value) => value,
 					Err(error) => {
-						let _ = tx.send(Err(CodexBodyError(error.message))).await;
+						let _ = tx.send_async(Err(CodexBodyError(error.message))).await;
 						return;
 					},
 				};
 				if let Some(error) = in_band_failure(&value) {
-					let _ = tx.send(Err(CodexBodyError(error.message))).await;
+					let _ = tx.send_async(Err(CodexBodyError(error.message))).await;
 					return;
 				}
 				let disposition = match router.route(&value) {
 					Ok(disposition) => disposition,
 					Err(error) => {
-						let _ = tx.send(Err(CodexBodyError(Str::from(error.to_string())))).await;
+						let _ = tx.send_async(Err(CodexBodyError(Str::from(error.to_string())))).await;
 						return;
 					},
 				};
@@ -656,7 +663,7 @@ async fn pump_socket(
 				}
 				update_metadata(&value, &mut turn_state, &mut models_etag);
 				let terminal = terminal_response(&value);
-				if tx.send(Ok(sse_frame(&value))).await.is_err() {
+				if tx.send_async(Ok(sse_frame(&value))).await.is_err() {
 					router.cancel();
 					session.lock().reset();
 					let _ = socket.close(None).await;
@@ -730,7 +737,7 @@ where
 	fn is_end_stream(&self) -> bool {
 		match self {
 			Self::Http(body) => body.is_end_stream(),
-			Self::WebSocket(body) => body.receiver.is_closed() && body.receiver.is_empty(),
+			Self::WebSocket(body) => body.stream.is_disconnected() && body.stream.is_empty(),
 		}
 	}
 }
@@ -757,7 +764,8 @@ impl<E> std::error::Error for CodexEgressBodyError<E> where E: std::error::Error
 
 /// Bounded WebSocket frame receiver.
 pub struct CodexChannelBody {
-	receiver: mpsc::Receiver<Result<Bytes, CodexBodyError>>,
+	stream:        flume::r#async::RecvStream<'static, Result<Bytes, CodexBodyError>>,
+	_cancellation: watch::Sender<()>,
 }
 
 impl HttpBody for CodexChannelBody {
@@ -768,9 +776,8 @@ impl HttpBody for CodexChannelBody {
 		mut self: Pin<&mut Self>,
 		cx: &mut Context<'_>,
 	) -> Poll<Option<Result<HttpFrame<Self::Data>, Self::Error>>> {
-		self
-			.receiver
-			.poll_recv(cx)
+		Pin::new(&mut self.stream)
+			.poll_next(cx)
 			.map(|item| item.map(|result| result.map(HttpFrame::data)))
 	}
 }

@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
 use ast_grep_core::{
 	MatchStrictness,
 	matcher::{Pattern, PatternError},
@@ -12,7 +11,7 @@ use ignore::WalkBuilder;
 use omp_core::Str;
 use smallvec::SmallVec;
 
-use crate::language::SupportLang;
+use crate::{AstError, Result, language::SupportLang};
 
 /// Pattern matching strictness exposed by the AST API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,8 +94,9 @@ pub fn supported_lang_list() -> String {
 
 /// Resolves a language alias or returns a descriptive error.
 pub fn resolve_supported_lang(value: &str) -> Result<SupportLang> {
-	SupportLang::from_alias(value).ok_or_else(|| {
-		anyhow!("Unsupported language '{value}'. Supported: {}", supported_lang_list())
+	SupportLang::from_alias(value).ok_or_else(|| AstError::UnsupportedLanguage {
+		value:     Str::from(value),
+		supported: Str::from(supported_lang_list()),
 	})
 }
 
@@ -105,12 +105,8 @@ pub fn resolve_language(lang: Option<&str>, file_path: &Path) -> Result<SupportL
 	if let Some(lang) = lang.map(str::trim).filter(|lang| !lang.is_empty()) {
 		return resolve_supported_lang(lang);
 	}
-	SupportLang::from_path(file_path).ok_or_else(|| {
-		anyhow!(
-			"Unable to infer language from file extension: {}. Specify `lang` explicitly.",
-			file_path.display()
-		)
-	})
+	SupportLang::from_path(file_path)
+		.ok_or_else(|| AstError::InferLanguageFailed { path: file_path.to_path_buf() })
 }
 
 /// Reports whether a file has an explicit or inferable language.
@@ -132,21 +128,17 @@ pub fn compile_pattern(
 	let selector = selector.map(str::trim).filter(|s| !s.is_empty());
 	let mut compiled = if let Some(selector) = selector {
 		Pattern::contextual(pattern, selector, lang)
-			.map_err(|err| anyhow!("Invalid pattern: {err}"))?
+			.map_err(|source| AstError::InvalidPattern { source })?
 	} else {
 		match Pattern::try_new(pattern, lang) {
 			Ok(compiled) => compiled,
-			// A fragment like `"key": $V` parses to multiple root nodes and is
-			// rejected as `MultipleNode`; auto-wrap it in a single-node context
-			// before giving up. Any other error, or a failed fallback, keeps the
-			// original message so genuinely-bad patterns behave as before.
 			Err(err @ PatternError::MultipleNode(_)) => {
 				match compile_wrapped_fallback(pattern, strictness, lang) {
 					Some(compiled) => return Ok(compiled),
-					None => return Err(anyhow!("Invalid pattern: {err}")),
+					None => return Err(AstError::InvalidPattern { source: err }),
 				}
 			},
-			Err(err) => return Err(anyhow!("Invalid pattern: {err}")),
+			Err(err) => return Err(AstError::InvalidPattern { source: err }),
 		}
 	};
 	compiled.strictness = strictness.clone();
@@ -311,7 +303,7 @@ pub fn rewrite_source(
 	source: &str,
 	language: SupportLang,
 	ops: &[CompiledRewrite],
-) -> Result<(String, u32), String> {
+) -> Result<(String, u32)> {
 	let mut ast = language.ast_grep(source);
 	let mut replacements = 0_u32;
 	for op in ops {
@@ -321,8 +313,7 @@ pub fn rewrite_source(
 				continue;
 			}
 			replacements = replacements.saturating_add(edits.len() as u32);
-			let updated =
-				apply_edits(ast.root().text().as_ref(), &edits).map_err(|error| error.to_string())?;
+			let updated = apply_edits(ast.root().text().as_ref(), &edits)?;
 			ast = language.ast_grep(updated);
 		}
 	}
@@ -349,27 +340,29 @@ pub fn apply_edits(content: &str, edits: &[Edit<String>]) -> Result<String> {
 	let mut prev_end = 0usize;
 	for edit in &sorted {
 		if edit.position < prev_end {
-			return Err(anyhow!(
-				"Overlapping replacements detected; refine pattern to avoid ambiguous edits"
-			));
+			return Err(AstError::OverlappingReplacements);
 		}
-		prev_end = edit.position.saturating_add(edit.deleted_length);
+		let end = edit
+			.position
+			.checked_add(edit.deleted_length)
+			.ok_or(AstError::EditRangeOutOfBounds)?;
+		if end > content.len()
+			|| !content.is_char_boundary(edit.position)
+			|| !content.is_char_boundary(end)
+		{
+			return Err(AstError::EditRangeOutOfBounds);
+		}
+		std::str::from_utf8(&edit.inserted_text)
+			.map_err(|source| AstError::NonUtf8Replacement { source })?;
+		prev_end = end;
 	}
 
 	let mut output = content.to_string();
 	for edit in sorted.into_iter().rev() {
-		let start = edit.position;
-		let end = edit.position.saturating_add(edit.deleted_length);
-		if end > output.len() || start > end {
-			return Err(anyhow!("Computed edit range is out of bounds"));
-		}
-		let replacement = match std::str::from_utf8(&edit.inserted_text) {
-			Ok(replacement) => replacement,
-			Err(error) => {
-				return Err(anyhow!("Replacement text is not valid UTF-8: {error}"));
-			},
-		};
-		output.replace_range(start..end, replacement);
+		let end = edit.position + edit.deleted_length;
+		let replacement = std::str::from_utf8(&edit.inserted_text)
+			.expect("replacement UTF-8 was validated before applying edits");
+		output.replace_range(edit.position..end, replacement);
 	}
 	Ok(output)
 }

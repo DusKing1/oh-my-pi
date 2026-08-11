@@ -3,9 +3,37 @@
 use std::{ffi::OsString, path::PathBuf, process::ExitCode};
 
 use omp_docserver::daemon::{self, Transport};
+use thiserror::Error;
 
 const USAGE: &str =
 	"usage: omp-docserverd --root <path> [--socket <path> | --stdio] [--lsp-config <path>]...";
+
+#[derive(Debug, Error)]
+enum CliError {
+	#[error("--root is required")]
+	MissingRoot,
+
+	#[error("--root may be supplied only once")]
+	DuplicateRoot,
+
+	#[error("--root requires a path")]
+	MissingRootPath,
+
+	#[error("--socket and --stdio are mutually exclusive")]
+	ConflictingTransport,
+
+	#[error("--socket requires a path")]
+	MissingSocketPath,
+
+	#[error("--lsp-config requires a path")]
+	MissingLspConfigPath,
+
+	#[error("unknown argument {0:?}")]
+	UnknownArgument(OsString),
+
+	#[error("arguments must be valid Unicode option names")]
+	NonUnicodeArgument,
+}
 
 struct Options {
 	root:        PathBuf,
@@ -36,7 +64,7 @@ async fn main() -> ExitCode {
 	}
 }
 
-fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, String> {
+fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, CliError> {
 	let mut arguments = arguments.into_iter();
 	let mut root = None;
 	let mut transport = None;
@@ -46,42 +74,33 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Option<Options
 			Some("--help" | "-h") => return Ok(None),
 			Some("--root") => {
 				if root.is_some() {
-					return Err("--root may be supplied only once".to_owned());
+					return Err(CliError::DuplicateRoot);
 				}
-				root = Some(PathBuf::from(
-					arguments
-						.next()
-						.ok_or_else(|| "--root requires a path".to_owned())?,
-				));
+				root = Some(PathBuf::from(arguments.next().ok_or(CliError::MissingRootPath)?));
 			},
 			Some("--socket") => {
 				if transport.is_some() {
-					return Err("--socket and --stdio are mutually exclusive".to_owned());
+					return Err(CliError::ConflictingTransport);
 				}
 				transport = Some(Transport::Socket(PathBuf::from(
-					arguments
-						.next()
-						.ok_or_else(|| "--socket requires a path".to_owned())?,
+					arguments.next().ok_or(CliError::MissingSocketPath)?,
 				)));
 			},
 			Some("--stdio") => {
 				if transport.is_some() {
-					return Err("--socket and --stdio are mutually exclusive".to_owned());
+					return Err(CliError::ConflictingTransport);
 				}
 				transport = Some(Transport::Stdio);
 			},
 			Some("--lsp-config") => {
-				lsp_configs.push(PathBuf::from(
-					arguments
-						.next()
-						.ok_or_else(|| "--lsp-config requires a path".to_owned())?,
-				));
+				lsp_configs
+					.push(PathBuf::from(arguments.next().ok_or(CliError::MissingLspConfigPath)?));
 			},
-			Some(argument) => return Err(format!("unknown argument {argument:?}")),
-			None => return Err("arguments must be valid Unicode option names".to_owned()),
+			Some(_) => return Err(CliError::UnknownArgument(argument)),
+			None => return Err(CliError::NonUnicodeArgument),
 		}
 	}
-	let root = root.ok_or_else(|| "--root is required".to_owned())?;
+	let root = root.ok_or(CliError::MissingRoot)?;
 	Ok(Some(Options { root, transport: transport.unwrap_or(Transport::Stdio), lsp_configs }))
 }
 

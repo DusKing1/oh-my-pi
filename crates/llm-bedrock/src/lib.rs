@@ -241,7 +241,7 @@ fn encode_request(req: &ChatRequest, compat: &Compat) -> Result<(Value, Vec<Unsu
 	if !system.is_empty() {
 		body.insert("system".into(), Value::Array(system));
 	}
-	encode_inference(req, &mut body, &mut unsupported)?;
+	encode_inference(req, &mut body, &mut unsupported);
 	encode_tools(req, history_has_tools, escape_tool_names, &mut body, &mut unsupported)?;
 	encode_reasoning(req, &mut body, &mut unsupported)?;
 	report_unhandled(req, &mut unsupported)?;
@@ -372,9 +372,9 @@ fn encode_inference(
 	req: &ChatRequest,
 	body: &mut Map<String, Value>,
 	unsupported: &mut Vec<Unsupported>,
-) -> Result<(), Error> {
+) {
 	let Some(sampling) = &req.sampling else {
-		return Ok(());
+		return;
 	};
 	let mut inference = Map::new();
 	if let Some(max) = sampling.max_output_tokens {
@@ -406,7 +406,6 @@ fn encode_inference(
 	if !inference.is_empty() {
 		body.insert("inferenceConfig".into(), Value::Object(inference));
 	}
-	Ok(())
 }
 
 fn encode_tools(
@@ -586,10 +585,12 @@ fn encode_reasoning(
 		.and_then(|props| props.get_ns("amazon-bedrock", "thinking_display"))
 		.and_then(Value::as_str)
 		.filter(|value| matches!(*value, "summarized" | "omitted"))
-		.unwrap_or(if reasoning.hide_summary == Some(true) {
-			"omitted"
-		} else {
-			"summarized"
+		.unwrap_or_else(|| {
+			if reasoning.hide_summary == Some(true) {
+				"omitted"
+			} else {
+				"summarized"
+			}
 		});
 	let supports_display = policy_thinking.map_or_else(
 		|| {
@@ -782,6 +783,11 @@ struct WireReasoningDelta {
 	signature: Option<Str>,
 }
 
+#[expect(
+	clippy::struct_field_names,
+	reason = "token suffixes mirror Bedrock's usage wire fields; aliases would obscure their units \
+	          and require redundant serde renames"
+)]
 #[derive(Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WireUsage {

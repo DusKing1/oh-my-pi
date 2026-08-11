@@ -24,6 +24,7 @@ smallvec = { workspace = true }
 thiserror = { workspace = true }
 xutf = { workspace = true }
 zeroize = { workspace = true }
+parking_lot = { workspace = true }
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 block2 = { workspace = true }

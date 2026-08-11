@@ -1672,7 +1672,7 @@ mod tests {
 		events.clear();
 		decoder.keymap_mut().disable(chord);
 		decoder.feed(b"\x1bf", start, &mut events);
-		assert_eq!(events, [] as [input::InputEvent; 0]);
+		assert_eq!(events, [] as [InputEvent; 0]);
 
 		decoder.keymap_mut().bind(chord, Key::PageDown);
 		decoder.feed(b"\x1bf", start, &mut events);
@@ -1730,7 +1730,7 @@ mod tests {
 		decoder.set_kitty_keyboard(true);
 		decoder.feed(b"\x1b", start, &mut events);
 		decoder.tick(start + Duration::from_millis(224), &mut events);
-		assert_eq!(events, [] as [input::InputEvent; 0]);
+		assert_eq!(events, [] as [InputEvent; 0]);
 		decoder.tick(start + Duration::from_millis(225), &mut events);
 		assert_eq!(events, [InputEvent::Key(Key::Esc)]);
 	}
@@ -1742,7 +1742,7 @@ mod tests {
 		assert_eq!(decoder.deadline(), None);
 
 		decoder.feed(b"\x1b[", start, &mut events);
-		assert_eq!(events, [] as [input::InputEvent; 0]);
+		assert_eq!(events, [] as [InputEvent; 0]);
 		assert_eq!(decoder.deadline(), Some(start + Duration::from_millis(75)));
 
 		decoder.tick(start + Duration::from_millis(75), &mut events);

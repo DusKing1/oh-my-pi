@@ -1364,7 +1364,7 @@ mod tests {
 			store
 				.read_usage_reports(None, Some(credential.id))
 				.expect("latest"),
-			[report.clone()]
+			std::slice::from_ref(&report)
 		);
 		assert_eq!(store.usage_history(credential.id, 0, 0).expect("history"), [UsageHistoryEntry {
 			at_ms: 1_001,
@@ -1685,6 +1685,6 @@ mod tests {
 			.observer()
 			.record_terminal_usage(None)
 			.expect("cancellation is a no-op");
-		assert_eq!(store.client_usage(0).expect("client usage"), [] as [store::ClientUsage; 0]);
+		assert_eq!(store.client_usage(0).expect("client usage"), [] as [ClientUsage; 0]);
 	}
 }

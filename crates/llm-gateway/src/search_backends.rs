@@ -275,7 +275,7 @@ fn build_request(
 			body = json!({"query": request.query.as_str()});
 		},
 		"perplexity" => {
-			body = json!({"model":"sonar", "messages":[{"role":"user","content":request.query.as_str()}], "search_recency_filter": recency(request.recency)});
+			body = json!({"model":"sonar", "messages":[{"role":"user","content":request.query.as_str()}], "search_recency_filter": request.recency.map(recency)});
 		},
 		"gemini" => {
 			body = json!({"contents":[{"parts":[{"text":request.query.as_str()}]}],"tools":[{"google_search":{}}]});
@@ -570,14 +570,14 @@ fn field_string<'a>(value: &'a Value, fields: &[&str]) -> Option<&'a str> {
 fn nonempty(value: &Str) -> Option<&str> {
 	(!value.is_empty()).then_some(value.as_str())
 }
-fn recency(value: Option<SearchRecency>) -> Option<&'static str> {
-	value.map(|value| match value {
+const fn recency(value: SearchRecency) -> &'static str {
+	match value {
 		SearchRecency::Day => "day",
 		SearchRecency::Week => "week",
 		SearchRecency::Month => "month",
 		SearchRecency::Year => "year",
 		_ => "month",
-	})
+	}
 }
 const fn safe_search(value: Option<SafeSearch>) -> &'static str {
 	match value {

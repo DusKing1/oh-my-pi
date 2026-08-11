@@ -59,9 +59,134 @@ pub enum Error {
 	/// A configured language-server process failed to start or stop.
 	#[error(transparent)]
 	LspProcess(#[from] LspProcessError),
-	/// An authority lock or socket safety invariant was not satisfied.
-	#[error("{0}")]
-	Authority(String),
+	/// Document actors did not stop within the shutdown deadline.
+	#[error("document actors did not stop within the shutdown deadline")]
+	ShutdownDeadlineExceeded,
+
+	/// Cannot open an authority lock file.
+	#[error("cannot open authority lock {path:?}: {source}")]
+	OpenAuthorityLock {
+		/// Path to the lock file.
+		path:   PathBuf,
+		/// Underlying I/O error.
+		#[source]
+		source: std::io::Error,
+	},
+
+	/// Cannot set permissions on an authority lock file.
+	#[error("cannot secure authority lock {path:?}: {source}")]
+	SecureAuthorityLock {
+		/// Path to the lock file.
+		path:   PathBuf,
+		/// Underlying I/O error.
+		#[source]
+		source: std::io::Error,
+	},
+
+	/// An authority lock is unavailable because another instance is running.
+	#[cfg(unix)]
+	#[error("another {kind} authority is already running or lock {path:?} is unavailable: {source}")]
+	AcquireAuthorityLock {
+		/// Kind of authority lock (e.g., "socket").
+		kind:   &'static str,
+		/// Path to the lock file.
+		path:   PathBuf,
+		/// Underlying file locking error.
+		#[source]
+		source: rustix::io::Errno,
+	},
+
+	/// Cannot set permissions on the lock directory.
+	#[error("cannot secure lock directory {directory:?}: {source}")]
+	SecureLockDirectory {
+		/// Path to the lock directory.
+		directory: PathBuf,
+		/// Underlying I/O error.
+		#[source]
+		source:    std::io::Error,
+	},
+
+	/// Cannot create the lock directory.
+	#[error("cannot create lock directory {directory:?}: {source}")]
+	CreateLockDirectory {
+		/// Path to the lock directory.
+		directory: PathBuf,
+		/// Underlying I/O error.
+		#[source]
+		source:    std::io::Error,
+	},
+
+	/// Cannot stat or inspect the lock directory.
+	#[error("cannot inspect lock directory {directory:?}: {source}")]
+	InspectLockDirectory {
+		/// Path to the lock directory.
+		directory: PathBuf,
+		/// Underlying I/O error.
+		#[source]
+		source:    std::io::Error,
+	},
+
+	/// The lock directory has invalid ownership or permissions.
+	#[error("lock directory {directory:?} must be an owner-only directory owned by uid {user_id}")]
+	InvalidLockDirectoryPermissions {
+		/// Path to the lock directory.
+		directory: PathBuf,
+		/// Effective user ID.
+		user_id:   u32,
+	},
+
+	/// The requested Unix socket path lacks a file name component.
+	#[error("socket path {path:?} has no file name")]
+	SocketPathMissingFileName {
+		/// Path to the socket.
+		path: PathBuf,
+	},
+
+	/// The directory containing the socket has invalid ownership or permissions.
+	#[error("socket directory {directory:?} must be an owner-only directory owned by uid {user_id}")]
+	InvalidSocketDirectoryPermissions {
+		/// Path to the socket directory.
+		directory: PathBuf,
+		/// Effective user ID.
+		user_id:   u32,
+	},
+
+	/// Refusing to replace an existing non-socket file at the socket path.
+	#[error("refusing to replace non-socket path {path:?}")]
+	ReplaceNonSocketPath {
+		/// Path to the existing non-socket entry.
+		path: PathBuf,
+	},
+
+	/// Another docserver daemon is actively listening on the socket.
+	#[error("another omp-docserver is listening on {path:?}")]
+	SocketInUse {
+		/// Active socket path.
+		path: PathBuf,
+	},
+
+	/// Failed to probe whether an existing socket is active.
+	#[error("cannot determine whether socket {path:?} is active: {source}")]
+	ProbeActiveSocket {
+		/// Socket path being probed.
+		path:   PathBuf,
+		/// Underlying I/O error.
+		#[source]
+		source: std::io::Error,
+	},
+
+	/// Environment root URI cannot be converted to a local file path.
+	#[error("Environment root is not a local file URI")]
+	NonFileUriRoot,
+
+	/// The socket path is inside the writable Environment root.
+	#[error("socket path {path:?} must be outside the writable Environment root {root:?}")]
+	SocketInsideEnvironmentRoot {
+		/// Requested socket path.
+		path: PathBuf,
+		/// Environment root path.
+		root: PathBuf,
+	},
 	/// Unix-domain sockets were requested on a platform that does not support
 	/// them.
 	#[error("Unix-domain sockets are unsupported on this platform; use standard I/O")]
@@ -107,9 +232,7 @@ pub async fn run(root: PathBuf, transport: Transport, lsp_config_paths: Vec<Path
 		// reusable authority while an actor may still persist would permit a
 		// split brain.
 		std::mem::forget(authority_lock);
-		return Err(Error::Authority(
-			"document actors did not stop within the shutdown deadline".to_owned(),
-		));
+		return Err(Error::ShutdownDeadlineExceeded);
 	}
 	serve_result?;
 	process_result
@@ -134,7 +257,7 @@ struct InstanceLock {
 
 #[cfg(unix)]
 impl InstanceLock {
-	fn acquire(kind: &str, identity: &Path) -> Result<Self> {
+	fn acquire(kind: &'static str, identity: &Path) -> Result<Self> {
 		let directory = lock_directory()?;
 		let digest = blake3::hash(identity.as_os_str().as_encoded_bytes());
 		let encoded = hex::encode_n(digest.as_bytes());
@@ -145,18 +268,11 @@ impl InstanceLock {
 			.create(true)
 			.truncate(false)
 			.open(&path)
-			.map_err(|error| {
-				Error::Authority(format!("cannot open authority lock {}: {error}", path.display()))
-			})?;
-		std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|error| {
-			Error::Authority(format!("cannot secure authority lock {}: {error}", path.display()))
-		})?;
-		flock(&file, FlockOperation::NonBlockingLockExclusive).map_err(|error| {
-			Error::Authority(format!(
-				"another {kind} authority is already running or lock {} is unavailable: {error}",
-				path.display()
-			))
-		})?;
+			.map_err(|source| Error::OpenAuthorityLock { path: path.clone(), source })?;
+		std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+			.map_err(|source| Error::SecureAuthorityLock { path: path.clone(), source })?;
+		flock(&file, FlockOperation::NonBlockingLockExclusive)
+			.map_err(|source| Error::AcquireAuthorityLock { kind, path: path.clone(), source })?;
 		Ok(Self { _file: file })
 	}
 }
@@ -170,28 +286,16 @@ fn lock_directory() -> Result<PathBuf> {
 	};
 	match std::fs::create_dir(&directory) {
 		Ok(()) => std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
-			.map_err(|error| {
-				Error::Authority(format!(
-					"cannot secure lock directory {}: {error}",
-					directory.display()
-				))
-			})?,
+			.map_err(|source| Error::SecureLockDirectory { directory: directory.clone(), source })?,
 		Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
-		Err(error) => {
-			return Err(Error::Authority(format!(
-				"cannot create lock directory {}: {error}",
-				directory.display()
-			)));
+		Err(source) => {
+			return Err(Error::CreateLockDirectory { directory, source });
 		},
 	}
-	let metadata = std::fs::symlink_metadata(&directory).map_err(|error| {
-		Error::Authority(format!("cannot inspect lock directory {}: {error}", directory.display()))
-	})?;
+	let metadata = std::fs::symlink_metadata(&directory)
+		.map_err(|source| Error::InspectLockDirectory { directory: directory.clone(), source })?;
 	if !metadata.is_dir() || metadata.uid() != user_id || metadata.mode() & 0o077 != 0 {
-		return Err(Error::Authority(format!(
-			"lock directory {} must be an owner-only directory owned by uid {user_id}",
-			directory.display()
-		)));
+		return Err(Error::InvalidLockDirectoryPermissions { directory, user_id });
 	}
 	Ok(directory)
 }
@@ -220,9 +324,7 @@ async fn bind_socket(path: PathBuf) -> Result<(UnixListener, SocketCleanup)> {
 	let name = path
 		.file_name()
 		.map(std::ffi::OsStr::to_owned)
-		.ok_or_else(|| {
-			Error::Authority(format!("socket path {} has no file name", path.display()))
-		})?;
+		.ok_or_else(|| Error::SocketPathMissingFileName { path: path.clone() })?;
 	let parent = path
 		.parent()
 		.filter(|parent| !parent.as_os_str().is_empty())
@@ -234,27 +336,21 @@ async fn bind_socket(path: PathBuf) -> Result<(UnixListener, SocketCleanup)> {
 		|| parent_metadata.uid() != user_id
 		|| parent_metadata.mode() & 0o077 != 0
 	{
-		return Err(Error::Authority(format!(
-			"socket directory {} must be an owner-only directory owned by uid {user_id}",
-			canonical_parent.display()
-		)));
+		return Err(Error::InvalidSocketDirectoryPermissions {
+			directory: canonical_parent,
+			user_id,
+		});
 	}
 	let path = canonical_parent.join(name);
 	let identity = path.clone();
 	let lock = InstanceLock::acquire("socket", &identity)?;
 	match std::fs::symlink_metadata(&path) {
 		Ok(metadata) if !metadata.file_type().is_socket() => {
-			return Err(Error::Authority(format!(
-				"refusing to replace non-socket path {}",
-				path.display()
-			)));
+			return Err(Error::ReplaceNonSocketPath { path });
 		},
 		Ok(_) => match UnixStream::connect(&path).await {
 			Ok(_) => {
-				return Err(Error::Authority(format!(
-					"another omp-docserver is listening on {}",
-					path.display()
-				)));
+				return Err(Error::SocketInUse { path });
 			},
 			Err(error)
 				if matches!(
@@ -265,10 +361,7 @@ async fn bind_socket(path: PathBuf) -> Result<(UnixListener, SocketCleanup)> {
 				std::fs::remove_file(&path)?;
 			},
 			Err(error) => {
-				return Err(Error::Authority(format!(
-					"cannot determine whether socket {} is active: {error}",
-					path.display()
-				)));
+				return Err(Error::ProbeActiveSocket { path, source: error });
 			},
 		},
 		Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
@@ -286,18 +379,14 @@ async fn serve_socket(environment: Environment, path: PathBuf) -> Result {
 	let root = environment
 		.root_uri()
 		.to_file_path()
-		.map_err(|()| Error::Authority("Environment root is not a local file URI".to_owned()))?;
+		.map_err(|()| Error::NonFileUriRoot)?;
 	let parent = path
 		.parent()
 		.filter(|parent| !parent.as_os_str().is_empty())
 		.unwrap_or_else(|| Path::new("."));
 	let canonical_parent = std::fs::canonicalize(parent)?;
 	if canonical_parent.starts_with(&root) {
-		return Err(Error::Authority(format!(
-			"socket path {} must be outside the writable Environment root {}",
-			path.display(),
-			root.display()
-		)));
+		return Err(Error::SocketInsideEnvironmentRoot { path, root });
 	}
 	let (listener, socket) = bind_socket(path).await?;
 	let shutdown = CancellationToken::new();

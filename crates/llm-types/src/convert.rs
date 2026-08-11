@@ -3009,13 +3009,12 @@ mod tests {
 			assert_eq!(wire.sampling.as_ref().and_then(|value| value.stop_present), Some(true));
 			assert!(wire.responses_include.is_some());
 			assert!(wire.service_tier_by_family.is_some());
-			let schema = match wire
+			let Some(pb::response_format::Kind::JsonSchema(schema)) = wire
 				.response_format
 				.as_ref()
 				.and_then(|value| value.kind.as_ref())
-			{
-				Some(pb::response_format::Kind::JsonSchema(schema)) => schema,
-				_ => panic!("json schema response format"),
+			else {
+				panic!("json schema response format");
 			};
 			assert_eq!(schema.strict, Some(false));
 			assert!(wire.provider_options.is_some());

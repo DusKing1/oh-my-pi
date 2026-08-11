@@ -881,7 +881,7 @@ struct RawModel {
 	thinking: Option<ModelThinking>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	embedding_dimensions: Option<u32>,
-	#[serde(default, skip_serializing_if = "is_false")]
+	#[serde(default, skip_serializing_if = "<&bool as std::ops::Not>::not")]
 	deprecated: bool,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	supports_tools: Option<bool>,
@@ -915,10 +915,6 @@ struct RawModel {
 	headers: BTreeMap<Str, Str>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	compat: Option<RawCompat>,
-}
-
-const fn is_false(value: &bool) -> bool {
-	!*value
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 enum RawApi {

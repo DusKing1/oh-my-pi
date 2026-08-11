@@ -27,6 +27,11 @@ impl CapabilityResolver {
 	}
 
 	/// Resolves a feature using the relevant compatibility-axis selector.
+	#[allow(
+		clippy::result_large_err,
+		reason = "TurnError is the rich canonical terminal-error API and remains unboxed across \
+		          capability layers"
+	)]
 	pub fn resolve<T>(
 		&self,
 		feature: Feature<T>,
@@ -60,6 +65,11 @@ pub enum FeatureResolution<T> {
 /// `is_supported` names the relevant [`Compat`] axis. Keeping the axis selector
 /// at the call site makes this usable for every `Feature<T>` without inventing
 /// a second capability table beside the catalog.
+#[allow(
+	clippy::result_large_err,
+	reason = "TurnError is the rich canonical terminal-error API and remains unboxed across \
+	          capability layers"
+)]
 pub fn resolve_feature<T>(
 	feature: Feature<T>,
 	compat: &Compat,
@@ -143,6 +153,11 @@ impl ForcedToolEscalation {
 	///
 	/// Calling this more than once returns the same terminal bounded-retry error
 	/// rather than accidentally issuing an unreported extra request.
+	#[allow(
+		clippy::result_large_err,
+		reason = "TurnError is the rich canonical terminal-error API and remains unboxed across \
+		          capability layers"
+	)]
 	pub fn start(&mut self) -> Result<ForcedToolAttempt, TurnError> {
 		if self.attempt != 0 || self.finished {
 			return Err(Self::failure("forced-tool escalation already started"));
@@ -155,6 +170,11 @@ impl ForcedToolEscalation {
 	///
 	/// `None` means the model complied and no further provider request is
 	/// needed.
+	#[allow(
+		clippy::result_large_err,
+		reason = "TurnError is the rich canonical terminal-error API and remains unboxed across \
+		          capability layers"
+	)]
 	pub fn verify(&mut self, complied: bool) -> Result<Option<ForcedToolAttempt>, TurnError> {
 		if self.attempt == 0 {
 			return Err(Self::failure("forced-tool escalation was not started"));

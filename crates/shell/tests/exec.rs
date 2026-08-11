@@ -89,7 +89,12 @@ fn executes_bash_behavior_corpus() {
 			stderr: "",
 			exit:   0,
 		},
-		Case { script: r"echo ${undef:-fallback}", stdout: "fallback\n", stderr: "", exit: 0 },
+		Case {
+			script: concat!("echo $", "{", "undef:-fallback", "}"),
+			stdout: "fallback\n",
+			stderr: "",
+			exit:   0,
+		},
 		Case { script: "x=abc; echo ${x/b/_}", stdout: "a_c\n", stderr: "", exit: 0 },
 		Case { script: "echo {1..3}{a,b}", stdout: "1a 1b 2a 2b 3a 3b\n", stderr: "", exit: 0 },
 		Case {
@@ -134,7 +139,12 @@ fn executes_bash_behavior_corpus() {
 		Case { script: "trap 'echo bye' EXIT; echo hi", stdout: "hi\nbye\n", stderr: "", exit: 0 },
 		Case { script: "eval 'echo e\"v\"al'", stdout: "eval\n", stderr: "", exit: 0 },
 		Case { script: "(( 3 > 2 )) && echo y", stdout: "y\n", stderr: "", exit: 0 },
-		Case { script: r"(x=5); echo ${x:-unset}", stdout: "unset\n", stderr: "", exit: 0 },
+		Case {
+			script: concat!("(x=5); echo $", "{", "x:-unset", "}"),
+			stdout: "unset\n",
+			stderr: "",
+			exit:   0,
+		},
 		Case { script: "type -t echo", stdout: "builtin\n", stderr: "", exit: 0 },
 		Case { script: "echo $ x; echo \"$\"", stdout: "$ x\n$\n", stderr: "", exit: 0 },
 		Case { script: "printf 'b\\na\\n' | sort", stdout: "a\nb\n", stderr: "", exit: 0 },

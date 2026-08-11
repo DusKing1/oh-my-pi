@@ -853,8 +853,8 @@ fn decode_response(
 	if state.completed {
 		return Ok(SmallVec::new());
 	}
-	if response.response_id.is_some() {
-		state.response_id = response.response_id.clone();
+	if let Some(response_id) = response.response_id {
+		state.response_id = Some(response_id);
 	}
 	let mut events = SmallVec::new();
 	if let Some(error) = response.error {

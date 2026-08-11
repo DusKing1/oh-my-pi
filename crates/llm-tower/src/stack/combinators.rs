@@ -291,7 +291,7 @@ where
 						complied |= outcome.stop() == StopReason::StopToolUse;
 					},
 					Some(proto_turn_event::Event::Error(_)) => {
-						for frame in buffered.drain(..) {
+						for frame in buffered {
 							yield frame;
 						}
 						yield event;
@@ -442,7 +442,7 @@ impl Default for ThinkingLoopRetry {
 /// [`LeakedThinkingHealer::None`] the input events, indexes, and byte buffers
 /// pass through untouched. Enabled streams are re-indexed because one visible
 /// input part may expand into several canonical parts.
-
+///
 /// Heap-pinned stream returned by [`heal`].
 pub type HealStream<S: Stream<Item = TurnEvent>> = impl Stream<Item = TurnEvent> + Unpin;
 /// Repairs leaked reasoning and tool markup in `stream` according to `compat`.
@@ -479,7 +479,7 @@ where
 /// The detector is active only when [`Compat::thinking_loop_guard`] is true.
 /// Detection drops the wrapped stream before yielding the terminal error,
 /// structurally aborting the upstream request.
-
+///
 /// Heap-pinned stream returned by [`guard_thinking_loop`].
 pub type ThinkingLoopGuardStream<S: Stream<Item = TurnEvent>> =
 	impl Stream<Item = TurnEvent> + Unpin;
@@ -526,7 +526,7 @@ where
 /// three loop, the third call to `resample` receives `false`; that final
 /// attempt is forwarded without detection rather than failing the turn.
 /// Dropping the returned stream drops whichever attempt is currently live.
-
+///
 /// Heap-pinned stream returned by [`guard_thinking_loop_with_resampling`].
 pub type ThinkingLoopResamplingStream<S: Stream<Item = TurnEvent>, F: FnMut(bool) -> S> =
 	impl Stream<Item = TurnEvent> + Unpin;
@@ -597,7 +597,7 @@ where
 /// Both bounds come from [`Compat::stream_watchdog`]. `None` disables that
 /// phase. A timeout drops the upstream stream before yielding one classified
 /// terminal error.
-
+///
 /// Heap-pinned stream returned by [`watchdog`].
 pub type WatchdogStream<S: Stream<Item = TurnEvent>> = impl Stream<Item = TurnEvent> + Unpin;
 /// Applies provider-specific first-event and inter-event timeout bounds.

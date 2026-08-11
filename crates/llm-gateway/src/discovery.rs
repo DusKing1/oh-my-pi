@@ -124,11 +124,14 @@ impl DiscoveryService {
 	}
 
 	/// Implements `Inference.ListProviders`.
-	pub async fn list_providers(
+	pub fn list_providers(
 		&self,
 		request: Request<pb::ListProvidersRequest>,
-	) -> Result<Response<pb::ListProvidersResponse>, Status> {
-		let requested_facet = facet_filter(request.into_inner().facet)?;
+	) -> std::future::Ready<Result<Response<pb::ListProvidersResponse>, Status>> {
+		let requested_facet = match facet_filter(request.into_inner().facet) {
+			Ok(facet) => facet,
+			Err(status) => return std::future::ready(Err(status)),
+		};
 		let registry = self.registry.read();
 		let (models, cursor) = registry.list(&ListFilter::default());
 		let providers = self
@@ -165,25 +168,29 @@ impl DiscoveryService {
 				}
 			})
 			.collect();
-		Ok(Response::new(pb::ListProvidersResponse {
+		std::future::ready(Ok(Response::new(pb::ListProvidersResponse {
 			providers,
 			cursor: Some(cursor_to_proto(cursor)),
-		}))
+		})))
 	}
 
 	/// Implements `Inference.ListModels`.
-	pub async fn list_models(
+	pub fn list_models(
 		&self,
 		request: Request<pb::ListModelsRequest>,
-	) -> Result<Response<pb::ListModelsResponse>, Status> {
+	) -> std::future::Ready<Result<Response<pb::ListModelsResponse>, Status>> {
 		let request = request.into_inner();
+		let facet = match facet_filter(request.facet) {
+			Ok(facet) => facet,
+			Err(status) => return std::future::ready(Err(status)),
+		};
 		let filter = ListFilter::builder()
 			.maybe_provider((!request.provider.is_empty()).then(|| request.provider.into()))
-			.maybe_facet(facet_filter(request.facet)?)
+			.maybe_facet(facet)
 			.available_only(request.available_only)
 			.build();
 		let snapshot = self.registry.read().list_snapshot(&filter);
-		Ok(Response::new(pb::ListModelsResponse {
+		std::future::ready(Ok(Response::new(pb::ListModelsResponse {
 			models: snapshot.models.into_iter().map(model_to_proto).collect(),
 			cursor: Some(cursor_to_proto(snapshot.cursor)),
 			roles:  snapshot
@@ -191,15 +198,15 @@ impl DiscoveryService {
 				.into_iter()
 				.map(|(role, model)| (role.to_string(), model.to_string()))
 				.collect(),
-		}))
+		})))
 	}
 
 	/// Implements resumable `Inference.WatchModels` without altering registry
 	/// cursor semantics.
-	pub async fn watch_models(
+	pub fn watch_models(
 		&self,
 		request: Request<pb::WatchModelsRequest>,
-	) -> Result<Response<WatchModelsStream>, Status> {
+	) -> std::future::Ready<Result<Response<WatchModelsStream>, Status>> {
 		let wire_since = request.into_inner().since;
 		let registry = self.registry.read();
 		let since = wire_since.map(|cursor| {
@@ -212,7 +219,7 @@ impl DiscoveryService {
 			.watch(since)
 			.map(|event| Ok(event_to_proto(event)))
 			.boxed();
-		Ok(Response::new(stream))
+		std::future::ready(Ok(Response::new(stream)))
 	}
 
 	/// Implements `Inference.RefreshModels` and returns the refreshed unfiltered
@@ -253,7 +260,7 @@ impl DiscoveryService {
 		for provider in &gathered {
 			successful_sources = successful_sources.saturating_add(provider.snapshots.len());
 			if first_error.is_none() {
-				first_error = provider.first_error.clone();
+				first_error.clone_from(&provider.first_error);
 			}
 		}
 		if explicitly_requested

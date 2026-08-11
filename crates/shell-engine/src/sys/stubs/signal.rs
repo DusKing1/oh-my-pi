@@ -4,13 +4,19 @@ use crate::{error, sys, traps};
 
 /// A stub enum representing system signals on unsupported platforms.
 #[cfg(not(windows))]
-#[allow(unnameable_types)]
+#[allow(
+	unnameable_types,
+	reason = "the empty signal enum preserves the platform-neutral signal API"
+)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Signal {}
 
 /// Minimal signal representation for Windows.
 #[cfg(windows)]
-#[allow(unnameable_types)]
+#[allow(
+	unnameable_types,
+	reason = "the restricted Windows signal enum preserves the platform-neutral signal API"
+)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Signal {
 	/// Terminate signal.

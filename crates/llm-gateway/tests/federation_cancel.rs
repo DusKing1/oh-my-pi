@@ -2,7 +2,7 @@
 use std::{
 	collections::BTreeMap,
 	convert::Infallible,
-	future::Future,
+	future::{self, Future},
 	pin::Pin,
 	sync::{
 		Arc,
@@ -77,12 +77,16 @@ struct NoRefresh;
 impl CredentialRefresher for NoRefresh {
 	type Error = Infallible;
 
+	#[allow(
+		clippy::manual_async_fn,
+		reason = "synchronous test refresher intentionally returns a zero-allocation ready future"
+	)]
 	fn refresh(
 		&self,
 		_credential_id: u64,
 		_now_ms: u64,
 	) -> impl Future<Output = Result<(), Self::Error>> + Send {
-		async { Ok(()) }
+		future::ready(Ok(()))
 	}
 }
 
@@ -475,9 +479,8 @@ impl Harness {
 		let credential_applied = Arc::new(AtomicUsize::new(0));
 		let (cancelled_tx, cancelled) = flume::unbounded();
 		let terminal_provider = terminal_provider();
-		let providers: ProviderCatalog = [(terminal_provider.id.clone(), terminal_provider)]
-			.into_iter()
-			.collect();
+		let providers: ProviderCatalog =
+			std::iter::once((terminal_provider.id.clone(), terminal_provider)).collect();
 		let terminal = TerminalGateway {
 			credentials: BrokerCredentialSource::new(
 				Arc::clone(&store),

@@ -19,7 +19,7 @@ use omp_llm_catalog::compat::{Compat, ThinkingToolChoiceConflict};
 use omp_llm_dialect::{
 	DialectRenderOptions, DialectSelection, InbandTool, ScannerOptions,
 	history::project_inband_history,
-	projector::{Projection, ProjectionBatch, StreamProjector},
+	projector::{ProjectionBatch, StreamProjector},
 	prompt::write_inband_tool_prompt,
 };
 use omp_llm_types::{

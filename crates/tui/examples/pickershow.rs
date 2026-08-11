@@ -5,6 +5,10 @@ use std::io::{self, Write};
 
 use omp_tui::{Frame, Renderer, Size, UiContext, detect};
 
+#[allow(
+	dead_code,
+	reason = "this screenshot-only example renders the shared picker without routing input events"
+)]
 #[path = "chat/picker.rs"]
 mod picker;
 

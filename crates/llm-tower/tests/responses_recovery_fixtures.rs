@@ -6,7 +6,7 @@ use std::{
 	future::Future,
 	path::Path,
 	pin::Pin,
-	sync::{Arc, Mutex},
+	sync::Arc,
 	task::{Context, Poll},
 };
 
@@ -27,6 +27,7 @@ use omp_llm_types::{
 	TurnEvent as NativeTurnEvent,
 };
 use omp_proto::inference::v1::{TurnRequest, turn_event, turn_request, value};
+use parking_lot::Mutex;
 use serde_json::{Value, json};
 use tower::{Service, ServiceExt};
 
@@ -68,7 +69,7 @@ impl Service<Request<Body>> for WireScript {
 				.to_bytes();
 			let request = serde_json::from_slice(&bytes).expect("Responses codec emitted JSON");
 			let (status, body) = {
-				let mut state = state.lock().expect("wire fixture state");
+				let mut state = state.lock();
 				state.requests.push(request);
 				state
 					.responses
@@ -106,7 +107,6 @@ where
 		self
 			.state
 			.lock()
-			.expect("wire fixture state")
 			.canonical_calls
 			.push(request.request.clone());
 		self.inner.call(request)
@@ -125,7 +125,10 @@ async fn responses_recovery_wire_corpus() {
 			path
 				.file_name()
 				.and_then(|name| name.to_str())
-				.is_some_and(|name| name.starts_with("recovery.") && name.ends_with(".json"))
+				.is_some_and(|name| name.starts_with("recovery."))
+				&& path
+					.extension()
+					.is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
 		})
 		.collect::<Vec<_>>();
 	fixtures.sort();
@@ -187,7 +190,7 @@ async fn run_fixture(path: &Path) {
 		.collect::<Vec<_>>()
 		.await;
 
-	let state = state.lock().expect("wire fixture state");
+	let state = state.lock();
 	let expected_attempts = fixture["expected_attempts"]
 		.as_u64()
 		.expect("expected attempts") as usize;

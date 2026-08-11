@@ -50,8 +50,8 @@ pub struct ControlProjection<'a> {
 /// Projects provider-only Anthropic controls without silently discarding
 /// malformed values.
 pub fn project<'a>(
-	format: &'a Option<Feature<ResponseFormat>>,
-	meta: &'a Option<RequestMeta>,
+	format: Option<&'a Feature<ResponseFormat>>,
+	meta: Option<&'a RequestMeta>,
 	props: &'a Props,
 	unsupported: &mut Vec<Unsupported>,
 ) -> Result<ControlProjection<'a>, Error> {
@@ -167,7 +167,7 @@ fn cache_control(
 }
 
 fn output_config<'a>(
-	format: &'a Option<Feature<ResponseFormat>>,
+	format: Option<&'a Feature<ResponseFormat>>,
 	props: &'a Props,
 	unsupported: &mut Vec<Unsupported>,
 ) -> Result<Option<OutputConfig<'a>>, Error> {
@@ -254,7 +254,7 @@ fn output_config<'a>(
 	}))
 }
 
-fn metadata(meta: &'_ Option<RequestMeta>, props: &Props) -> Result<Option<Value>, Error> {
+fn metadata(meta: Option<&RequestMeta>, props: &Props) -> Result<Option<Value>, Error> {
 	let provider = props.get_ns("anthropic", "metadata");
 	let mut object = match provider {
 		Some(Value::Object(value)) => value.clone(),

@@ -1,9 +1,6 @@
 //! Integration coverage for production image provider adapters.
 
-use std::{
-	collections::VecDeque,
-	sync::{Arc, Mutex},
-};
+use std::{collections::VecDeque, future, sync::Arc};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -26,6 +23,7 @@ use omp_llm_gateway::{
 	},
 };
 use omp_llm_types::{BlobPart, GenerateImageRequest, ImageDone, Props};
+use parking_lot::Mutex;
 use serde_json::{Value, json};
 use wiremock::{
 	Mock, MockServer, ResponseTemplate,
@@ -230,13 +228,8 @@ impl ImageBackend for ScriptedBackend {
 		_credential: &ImageCredential,
 		_request: &GenerateImageRequest,
 	) -> Result<ImageDone, ImageAttemptError> {
-		self.attempts.lock().expect("attempt lock").push(provider);
-		self
-			.results
-			.lock()
-			.expect("result lock")
-			.pop_front()
-			.expect("scripted result")
+		self.attempts.lock().push(provider);
+		self.results.lock().pop_front().expect("scripted result")
 	}
 }
 
@@ -283,7 +276,7 @@ async fn ordered_fallback_advances_but_cancellation_is_a_hard_stop() {
 		.execute(unpinned.clone())
 		.await
 		.expect("fallback result");
-	assert_eq!(*fallback_backend.attempts.lock().expect("attempt lock"), vec![
+	assert_eq!(*fallback_backend.attempts.lock(), vec![
 		ImageProvider::OpenAi,
 		ImageProvider::Gemini
 	]);
@@ -295,9 +288,7 @@ async fn ordered_fallback_advances_but_cancellation_is_a_hard_stop() {
 	let registry = ImageRegistry::new(credentials, cancelled_backend.clone())
 		.with_configured_order(["openai", "gemini"]);
 	assert!(matches!(registry.execute(unpinned).await, Err(ImageRegistryError::Cancelled)));
-	assert_eq!(*cancelled_backend.attempts.lock().expect("attempt lock"), vec![
-		ImageProvider::OpenAi
-	]);
+	assert_eq!(*cancelled_backend.attempts.lock(), vec![ImageProvider::OpenAi]);
 }
 
 #[derive(Clone)]
@@ -318,11 +309,14 @@ impl CredentialSource for MetadataSource {
 		Ok(())
 	}
 
+	// The trait requires a `'static` future; `ready` preserves that contract
+	// without allocation.
+	#[allow(clippy::manual_async_fn, reason = "retain an allocation-free `static` ready future")]
 	fn refresh(
 		&self,
 		lease: CredentialLease,
 	) -> impl Future<Output = Result<CredentialLease, Self::Error>> + Send + 'static {
-		async move { Ok(lease) }
+		future::ready(Ok(lease))
 	}
 }
 

@@ -394,10 +394,11 @@ async fn sampling_rejection_retries_then_proactively_preserves_only_output_limit
 		.collect::<Vec<_>>()
 		.await;
 	assert_eq!(frames.iter().map(kind_of).collect::<Vec<_>>(), ["attempt", "outcome"]);
-	let calls = calls.lock();
-	assert_eq!(calls[0].params.as_ref().unwrap().sampling, Some(sampling.clone()));
-	assert_repaired(&calls[1]);
-	drop(calls);
+	{
+		let calls = calls.lock();
+		assert_eq!(calls[0].params.as_ref().unwrap().sampling, Some(sampling.clone()));
+		assert_repaired(&calls[1]);
+	}
 
 	let proactive = Script::new([vec![outcome()]]);
 	let proactive_calls = proactive.calls.clone();

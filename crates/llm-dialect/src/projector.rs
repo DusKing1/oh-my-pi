@@ -25,7 +25,7 @@ pub struct Projection {
 impl Projection {
 	/// Creates a projection containing one canonical turn event.
 	#[must_use]
-	pub fn event(event: TurnEvent) -> Self {
+	pub const fn event(event: TurnEvent) -> Self {
 		Self { event: Some(event) }
 	}
 

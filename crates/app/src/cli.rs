@@ -7,7 +7,6 @@ use std::{
 	time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context as _, bail};
 use clap::{Args, Parser, Subcommand};
 use futures::{StreamExt as _, stream};
 use omp_core::Str;
@@ -26,6 +25,7 @@ use tokio::io::AsyncWriteExt as _;
 use crate::{
 	auth_backend,
 	daemon::{DaemonConfig, DaemonHandle},
+	error::AppError,
 };
 
 /// Top-level parser for the production `omp` executable.
@@ -164,7 +164,7 @@ const fn dispatch_target(command: &Command) -> DispatchTarget {
 }
 
 /// Dispatches one parsed command to its production implementation.
-pub async fn dispatch(cli: OmpCli) -> anyhow::Result<()> {
+pub async fn dispatch(cli: OmpCli) -> crate::Result<()> {
 	match cli.command {
 		Command::Serve(args) => serve(args).await,
 		Command::Infer(args) => infer(args).await,
@@ -176,7 +176,7 @@ pub async fn dispatch(cli: OmpCli) -> anyhow::Result<()> {
 	}
 }
 
-async fn serve(args: ServeArgs) -> anyhow::Result<()> {
+async fn serve(args: ServeArgs) -> crate::Result<()> {
 	let config = match args.data_dir {
 		Some(data_dir) => DaemonConfig::local(args.endpoint).with_data_dir(data_dir),
 		None => DaemonConfig::local(args.endpoint),
@@ -186,10 +186,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 	Ok(())
 }
 
-async fn infer(args: InferArgs) -> anyhow::Result<()> {
+async fn infer(args: InferArgs) -> crate::Result<()> {
 	let channel = omp_llm_gateway::local::connect(&args.endpoint)
 		.await
-		.with_context(|| format!("could not connect to {}", args.endpoint))?;
+		.map_err(|source| AppError::ConnectGateway { endpoint: args.endpoint.clone(), source })?;
 	omp_rpc::handshake(channel.clone(), "omp-cli", &["inference"]).await?;
 	let request = ChatRequest::builder()
 		.model(args.model)
@@ -213,12 +213,14 @@ async fn infer(args: InferArgs) -> anyhow::Result<()> {
 		match event?.event {
 			Some(turn_event::Event::PartDelta(delta)) => stdout.write_all(&delta.chunk).await?,
 			Some(turn_event::Event::Outcome(_)) => terminal = true,
-			Some(turn_event::Event::Error(error)) => bail!("inference failed: {}", error.detail),
+			Some(turn_event::Event::Error(error)) => {
+				return Err(AppError::InferenceFailed { detail: Str::from(error.detail) });
+			},
 			_ => {},
 		}
 	}
 	if !terminal {
-		bail!("inference stream ended without a terminal outcome");
+		return Err(AppError::InferenceStreamUnterminated);
 	}
 	stdout.write_all(b"\n").await?;
 	stdout.flush().await?;
@@ -246,7 +248,7 @@ fn turn_id() -> String {
 	format!("cli-{}-{now}", std::process::id())
 }
 
-async fn auth(args: AuthArgs) -> anyhow::Result<()> {
+async fn auth(args: AuthArgs) -> crate::Result<()> {
 	validate_auth(&args.command)?;
 	let database = data_dir(args.data_dir)?.join("broker.db");
 	let backend = auth_backend::open(&database)?;
@@ -255,41 +257,42 @@ async fn auth(args: AuthArgs) -> anyhow::Result<()> {
 	Ok(())
 }
 
-fn validate_auth(command: &AuthCommand) -> anyhow::Result<()> {
+const fn validate_auth(command: &AuthCommand) -> crate::Result<()> {
 	if let AuthCommand::Migrate(args) = command
 		&& args.sqlite.is_none()
 		&& args.json_file.is_none()
 	{
-		bail!("auth migrate requires --sqlite or --json-file");
+		return Err(AppError::AuthMigrateArgsRequired);
 	}
 	Ok(())
 }
 
-fn data_dir(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+fn data_dir(explicit: Option<PathBuf>) -> crate::Result<PathBuf> {
 	if let Some(path) = explicit {
 		return Ok(path);
 	}
 	if let Some(path) = std::env::var_os("OMP_DATA_DIR") {
 		return Ok(path.into());
 	}
-	let home = std::env::var_os("HOME").context("HOME or OMP_DATA_DIR must be set")?;
+	let home = std::env::var_os("HOME").ok_or(AppError::DataDirNotConfigured)?;
 	Ok(PathBuf::from(home).join(".local/share/omp"))
 }
 
-fn catalog_import(args: &CatalogImportArgs) -> anyhow::Result<()> {
+fn catalog_import(args: &CatalogImportArgs) -> crate::Result<()> {
 	if same_path(&args.source, &args.destination) {
-		bail!("catalog source and destination must be different files");
+		return Err(AppError::SameCatalogSourceAndDestination);
 	}
 	let input = std::fs::read(&args.source)
-		.with_context(|| format!("could not read {}", args.source.display()))?;
+		.map_err(|source| AppError::ReadCatalogSource { path: args.source.clone(), source })?;
 	let payload = import_catalog_zstd(&input)?;
 	if let Some(parent) = args.destination.parent()
 		&& !parent.as_os_str().is_empty()
 	{
 		std::fs::create_dir_all(parent)?;
 	}
-	std::fs::write(&args.destination, payload)
-		.with_context(|| format!("could not write {}", args.destination.display()))?;
+	std::fs::write(&args.destination, payload).map_err(|source| {
+		AppError::WriteCatalogDestination { path: args.destination.clone(), source }
+	})?;
 	Ok(())
 }
 
@@ -302,7 +305,7 @@ fn same_path(left: &Path, right: &Path) -> bool {
 			.is_some_and(|(left, right)| left == right)
 }
 
-async fn local_infer(args: LocalInferArgs) -> anyhow::Result<()> {
+async fn local_infer(args: LocalInferArgs) -> crate::Result<()> {
 	let selection = match args.model.as_str() {
 		"auto" => TextSelection::Auto,
 		"foundation" => TextSelection::FoundationModels,
@@ -335,12 +338,14 @@ async fn local_infer(args: LocalInferArgs) -> anyhow::Result<()> {
 				text_parts.remove(&index);
 			},
 			TurnEvent::Outcome(_) => terminal = true,
-			TurnEvent::Error(error) => bail!("local inference failed: {}", error.detail),
+			TurnEvent::Error(error) => {
+				return Err(AppError::InferenceFailed { detail: error.detail });
+			},
 			_ => {},
 		}
 	}
 	if !terminal {
-		bail!("local inference stream ended without a terminal outcome");
+		return Err(AppError::LocalInferenceStreamUnterminated);
 	}
 	stdout.write_all(b"\n").await?;
 	stdout.flush().await?;

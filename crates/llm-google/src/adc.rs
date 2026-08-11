@@ -152,7 +152,7 @@ pub enum AdcError {
 
 /// Failure to deliver an ADC token into a protected credential store.
 #[derive(Debug, thiserror::Error)]
-pub enum AdcIntoError<E: StdError + Send + Sync + 'static> {
+pub enum AdcIntoError<E: Send + Sync + 'static> {
 	/// Credential discovery or token exchange failed.
 	#[error(transparent)]
 	Adc(#[from] AdcError),
@@ -235,6 +235,10 @@ impl<E: AdcEgress> AdcEngine<E> {
 	}
 
 	/// Resolves a cached or newly minted token and sends it directly to `sink`.
+	#[expect(
+		clippy::future_not_send,
+		reason = "the borrowed credential sink may intentionally be thread-local"
+	)]
 	pub async fn authorize_into<S: AdcTokenSink>(
 		&self,
 		sink: &S,
@@ -243,6 +247,10 @@ impl<E: AdcEgress> AdcEngine<E> {
 	}
 
 	/// Forces a new token exchange and sends the replacement directly to `sink`.
+	#[expect(
+		clippy::future_not_send,
+		reason = "the borrowed credential sink may intentionally be thread-local"
+	)]
 	pub async fn refresh_into<S: AdcTokenSink>(
 		&self,
 		sink: &S,
@@ -281,6 +289,11 @@ impl<E: AdcEgress> AdcEngine<E> {
 		Ok(AdcRoute { project, location })
 	}
 
+	#[expect(
+		clippy::future_not_send,
+		reason = "delivery retains the intentionally potentially thread-local sink across token \
+		          loading"
+	)]
 	async fn deliver<S: AdcTokenSink>(
 		&self,
 		force: bool,

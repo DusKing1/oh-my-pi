@@ -1348,6 +1348,11 @@ mod tests {
 		test_support::frame_row_text,
 	};
 
+	#[expect(
+		clippy::future_not_send,
+		reason = "this helper runs only in current-thread Tokio tests with thread-confined UI \
+		          components"
+	)]
 	async fn receive_image<'a>(loader: &'a ImageLoader, ui: &'a mut Ui) {
 		let message = tokio::time::timeout(Duration::from_secs(5), loader.rx.recv_async())
 			.await

@@ -17,7 +17,6 @@ name = "omp"
 path = "src/main.rs"
 
 [dependencies]
-anyhow.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 clap.workspace = true
@@ -58,6 +57,7 @@ zeroize.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+flume = { workspace = true }
 tempfile.workspace = true
 tonic-health.workspace = true
 

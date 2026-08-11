@@ -125,10 +125,9 @@ where
 		let metadata = self.source.metadata(&lease).ok()?;
 		Some(ImageCredential {
 			auth_provider: lease.provider().into(),
-			lease: Some(lease),
-			project_id: metadata.project_id,
-			account_id: metadata.account_id,
-			..ImageCredential::default()
+			lease:         Some(lease),
+			project_id:    metadata.project_id,
+			account_id:    metadata.account_id,
 		})
 	}
 }

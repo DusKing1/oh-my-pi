@@ -12,8 +12,11 @@ pub mod auth_backend;
 pub mod cli;
 pub mod daemon;
 pub mod discovery;
+pub mod error;
+
+pub use error::{AppError, Result};
 
 /// Parses process arguments and runs the selected production operation.
-pub async fn run() -> anyhow::Result<()> {
+pub async fn run() -> Result<()> {
 	cli::dispatch(cli::OmpCli::parse()).await
 }

@@ -10,7 +10,7 @@ async fn main() -> ExitCode {
 	match result {
 		Ok(()) => ExitCode::SUCCESS,
 		Err(error) => {
-			// Do not print the anyhow source chain: lower transport layers may
+			// Do not print inner details: lower transport layers may
 			// carry untrusted provider diagnostics. Public top-level errors are
 			// deliberately classified and redacted at their subsystem boundary.
 			eprintln!("omp: {error}");

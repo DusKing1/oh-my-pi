@@ -14,6 +14,7 @@ async-trait = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
+flume = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }

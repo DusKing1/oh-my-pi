@@ -456,30 +456,31 @@ async fn local_chat_auto_keeps_native_tools_and_completes_owned_tool_result_turn
 	assert!(second_events.iter().any(
 		|event| matches!(event, omp_llm_types::TurnEvent::PartDelta { chunk, .. } if chunk.as_ref() == b"local follow-up")
 	));
-	let calls = owned_script.calls.lock();
-	assert_eq!(calls.len(), 2);
-	assert!(calls.iter().all(|request| request.tools.is_empty()));
-	assert!(calls.iter().all(|request| {
-		Arc::ptr_eq(request.model_policy.as_ref().expect("trusted policy"), &owned_policy)
-	}));
-	let rendered = calls[1]
-		.thread
-		.items
-		.iter()
-		.filter_map(|item| match &item.kind {
-			ItemKind::Message(message) => Some(message),
-			_ => None,
-		})
-		.flat_map(|message| &message.parts)
-		.filter_map(|part| match part {
-			Part::Text(text) => Some(text.as_str()),
-			_ => None,
-		})
-		.collect::<Vec<_>>()
-		.join("\n");
+	let rendered = {
+		let calls = owned_script.calls.lock();
+		assert_eq!(calls.len(), 2);
+		assert!(calls.iter().all(|request| request.tools.is_empty()));
+		assert!(calls.iter().all(|request| {
+			Arc::ptr_eq(request.model_policy.as_ref().expect("trusted policy"), &owned_policy)
+		}));
+		calls[1]
+			.thread
+			.items
+			.iter()
+			.filter_map(|item| match &item.kind {
+				ItemKind::Message(message) => Some(message),
+				_ => None,
+			})
+			.flat_map(|message| &message.parts)
+			.filter_map(|part| match part {
+				Part::Text(text) => Some(text.as_str()),
+				_ => None,
+			})
+			.collect::<Vec<_>>()
+			.join("\n")
+	};
 	assert!(rendered.contains("# Tools"));
 	assert!(rendered.contains("<tool_response>\nlocal\n</tool_response>"));
-	drop(calls);
 
 	let native_script = LocalChatScript::new([native_events(text_stream(&[b"native"]))]);
 	let native = OwnedDialectChat::new(

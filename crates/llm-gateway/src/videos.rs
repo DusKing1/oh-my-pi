@@ -41,9 +41,11 @@ const PROVIDER: &str = "openai";
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Non-secret credential selection used to bind every job to the account that
-/// submitted it. Implementations redeem no secrets here; the egress auth layer
-/// receives the returned canonical lease on each request.
+/// Selects the non-secret credential that binds a job to its submitting
+/// account.
+///
+/// Implementations redeem no secrets here; the egress auth layer receives the
+/// returned canonical lease on each request.
 pub trait VideoCredentialLeases: Send + Sync {
 	/// Selects the credential for a new `OpenAI` video job.
 	fn select(&self) -> Result<CredentialLease, VideoError>;

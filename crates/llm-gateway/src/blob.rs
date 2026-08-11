@@ -17,10 +17,7 @@ use omp_proto::blob::v1::{
 	blob_server::Blob,
 };
 use omp_storage::blob::{BlobRef, BlobStore};
-use tokio::{
-	io::{AsyncReadExt, AsyncSeekExt},
-	sync::mpsc,
-};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tonic::{Request, Response, Status, Streaming};
 
 const TRANSFER_CHUNK_SIZE: usize = 64 * 1024;
@@ -128,7 +125,7 @@ impl Blob for BlobService {
 		request: Request<Streaming<Chunk>>,
 	) -> Result<Response<PutResponse>, Status> {
 		let mut stream = request.into_inner();
-		let (sender, receiver) = mpsc::channel::<UploadMessage>(2);
+		let (sender, receiver) = flume::bounded::<UploadMessage>(2);
 		let store = Arc::clone(&self.store);
 		let writer =
 			tokio::task::spawn_blocking(move || store.put_reader(ChunkReader::new(receiver)));
@@ -183,7 +180,7 @@ impl Blob for BlobService {
 			if sender
 				.as_ref()
 				.expect("upload sender is present")
-				.send(UploadMessage::Data(chunk.data))
+				.send_async(UploadMessage::Data(chunk.data))
 				.await
 				.is_err()
 			{
@@ -211,7 +208,7 @@ impl Blob for BlobService {
 		sender
 			.take()
 			.expect("upload sender is present")
-			.send(UploadMessage::End)
+			.send_async(UploadMessage::End)
 			.await
 			.map_err(|_| Status::internal("blob upload writer stopped"))?;
 		let reference = writer
@@ -241,7 +238,7 @@ impl Blob for BlobService {
 }
 
 async fn abort_upload(
-	sender: Option<mpsc::Sender<UploadMessage>>,
+	sender: Option<flume::Sender<UploadMessage>>,
 	writer: tokio::task::JoinHandle<Result<BlobRef, omp_storage::blob::Error>>,
 	status: Status,
 ) -> Result<Response<PutResponse>, Status> {
@@ -256,13 +253,13 @@ enum UploadMessage {
 }
 
 struct ChunkReader {
-	receiver: mpsc::Receiver<UploadMessage>,
+	receiver: flume::Receiver<UploadMessage>,
 	chunk:    Bytes,
 	ended:    bool,
 }
 
 impl ChunkReader {
-	const fn new(receiver: mpsc::Receiver<UploadMessage>) -> Self {
+	const fn new(receiver: flume::Receiver<UploadMessage>) -> Self {
 		Self { receiver, chunk: Bytes::new(), ended: false }
 	}
 }
@@ -270,10 +267,10 @@ impl ChunkReader {
 impl Read for ChunkReader {
 	fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
 		while self.chunk.is_empty() && !self.ended {
-			match self.receiver.blocking_recv() {
-				Some(UploadMessage::Data(chunk)) => self.chunk = chunk,
-				Some(UploadMessage::End) => self.ended = true,
-				None => return Err(io::Error::new(io::ErrorKind::BrokenPipe, "upload cancelled")),
+			match self.receiver.recv() {
+				Ok(UploadMessage::Data(chunk)) => self.chunk = chunk,
+				Ok(UploadMessage::End) => self.ended = true,
+				Err(_) => return Err(io::Error::new(io::ErrorKind::BrokenPipe, "upload cancelled")),
 			}
 		}
 		if self.ended {

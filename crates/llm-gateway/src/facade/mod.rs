@@ -5,6 +5,11 @@
 //! `x-api-key: <gateway token>` authenticate the client to omp. They are never
 //! provider credentials. Provider secrets are selected and injected by the
 //! server-side egress stack and no facade request may override them.
+#![allow(
+	clippy::result_large_err,
+	reason = "FacadeError intentionally preserves rich TurnError and facet failures unboxed across \
+	          the HTTP facade boundary"
+)]
 
 pub mod audio;
 pub mod chat;

@@ -36,8 +36,6 @@ pub static DISCOVERY: OllamaCloudDiscovery = OllamaCloudDiscovery;
 
 #[cfg(test)]
 mod tests {
-	use std::sync::Mutex;
-
 	use bytes::Bytes;
 	use omp_core::Str;
 	use omp_llm_catalog::{
@@ -45,6 +43,7 @@ mod tests {
 		discovery::HttpResponse,
 		provider::{AuthSpec, Facet as ProviderFacet},
 	};
+	use parking_lot::Mutex;
 	use smallvec::{SmallVec, smallvec};
 
 	use super::*;
@@ -61,7 +60,7 @@ mod tests {
 			_account: &Account,
 			request: http::Request<Bytes>,
 		) -> Result<HttpResponse, Error> {
-			*self.requested.lock().expect("request recorder lock") = Some(request.uri().to_string());
+			*self.requested.lock() = Some(request.uri().to_string());
 			Ok(HttpResponse::new(
 				200,
 				Bytes::from_static(
@@ -94,14 +93,7 @@ mod tests {
 			.await
 			.expect("Ollama Cloud tags should parse");
 
-		assert_eq!(
-			http
-				.requested
-				.lock()
-				.expect("request recorder lock")
-				.as_deref(),
-			Some("https://ollama.com/api/tags")
-		);
+		assert_eq!(http.requested.lock().as_deref(), Some("https://ollama.com/api/tags"));
 		assert_eq!(cards.len(), 1);
 		assert_eq!(cards[0].id.as_str(), "ollama-cloud/qwen3:8b");
 		assert_eq!(cards[0].family.as_str(), "qwen3");

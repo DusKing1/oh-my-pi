@@ -365,7 +365,7 @@ fn encode_messages(
 				}
 			},
 			ItemKind::ToolResult(result) => {
-				let (content, images) = encode_parts(&result.parts, Role::User, unsupported)?;
+				let (content, images) = encode_parts(&result.parts, Role::User, unsupported);
 				let mut message = Map::new();
 				message.insert("role".into(), Value::String("tool".into()));
 				message.insert("content".into(), Value::String(content));
@@ -395,7 +395,7 @@ fn encode_message(message: &Message, unsupported: &mut Vec<Unsupported>) -> Resu
 		Role::Assistant => "assistant",
 		_ => return Err(Error::Provider(Str::new_static("unsupported Ollama message role"))),
 	};
-	let (content, images) = encode_parts(&message.parts, message.role, unsupported)?;
+	let (content, images) = encode_parts(&message.parts, message.role, unsupported);
 	let mut object = Map::new();
 	object.insert("role".into(), Value::String(role.into()));
 	object.insert("content".into(), Value::String(content));
@@ -409,7 +409,7 @@ fn encode_parts(
 	parts: &[Part],
 	role: Role,
 	unsupported: &mut Vec<Unsupported>,
-) -> Result<(String, Vec<String>), Error> {
+) -> (String, Vec<String>) {
 	let mut text = String::new();
 	let mut images = Vec::new();
 	for part in parts {
@@ -437,7 +437,7 @@ fn encode_parts(
 				.push(dropped("thread.message.part", "part kind is unsupported by Ollama chat")),
 		}
 	}
-	Ok((text, images))
+	(text, images)
 }
 
 fn sanitize_schema(value: Value) -> Value {

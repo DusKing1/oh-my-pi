@@ -352,7 +352,8 @@ where
 			}
 		})
 		.abort_handle();
-		if let Some(previous) = registry.lock().insert(key, handle) {
+		let previous = registry.lock().insert(key, handle);
+		if let Some(previous) = previous {
 			previous.abort();
 		}
 	}
@@ -380,7 +381,8 @@ where
 		if let Some(key) = &key {
 			// A real request supersedes any refresh loop for this conversation:
 			// it re-reads the prefix itself, and a stale loop would race it.
-			if let Some(handle) = self.registry.lock().remove(key) {
+			let handle = self.registry.lock().remove(key);
+			if let Some(handle) = handle {
 				handle.abort();
 			}
 		}

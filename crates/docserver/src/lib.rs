@@ -18,7 +18,8 @@ mod error;
 pub mod fs;
 /// Ordered LSP lifecycle, synchronization, and passthrough primitives.
 pub mod lsp;
-mod lsp_apply_edit;
+/// Transactional lowering for server-initiated workspace edit requests.
+pub mod lsp_apply_edit;
 /// Bounded child-process JSON-RPC transport and production LSP binding startup.
 pub mod lsp_process;
 pub mod lsp_registry;
@@ -48,6 +49,7 @@ pub use fs::{
 	FollowSymlinks, PathMetadata, PortablePermissions, SymlinkTarget, SymlinkTargetForm,
 	SymlinkTargetKind,
 };
+pub use lsp_apply_edit::ApplyWorkspaceEditError;
 pub use lsp_process::{
 	InboundDispatch, LspPostResponse, LspProcess, LspProcessConfig, LspProcessError,
 	LspProcessSelectorConfig, LspTransportSettings, load_lsp_process_configs,

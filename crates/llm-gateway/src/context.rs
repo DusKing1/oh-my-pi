@@ -76,6 +76,11 @@ pub enum BeginInput {
 }
 
 /// Result of idempotent turn admission.
+#[allow(
+	clippy::large_enum_variant,
+	reason = "Replay keeps its authoritative ChatOutcome inline so idempotent replay does not add \
+	          a heap allocation to the durable response path"
+)]
 pub enum Begin {
 	/// This caller owns newly admitted work.
 	Started(TurnGuard),

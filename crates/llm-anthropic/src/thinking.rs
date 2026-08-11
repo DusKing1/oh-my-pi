@@ -283,16 +283,16 @@ pub struct ReasoningProjection<'a> {
 pub fn reasoning_projection(request: &ChatRequest) -> ReasoningProjection<'_> {
 	reasoning_projection_for(
 		&request.model,
-		&request.thinking,
-		&request.provider_options,
+		request.thinking.as_ref(),
+		request.provider_options.as_ref(),
 		request.model_policy.as_deref(),
 	)
 }
 
 pub fn reasoning_projection_for<'a>(
 	model: &'a str,
-	thinking: &'a Option<Feature<Reasoning>>,
-	provider_options: &'a Option<Props>,
+	thinking: Option<&'a Feature<Reasoning>>,
+	provider_options: Option<&'a Props>,
 	model_policy: Option<&'a ResolvedModelPolicy>,
 ) -> ReasoningProjection<'a> {
 	let requires_thinking =
@@ -307,10 +307,9 @@ pub fn reasoning_projection_for<'a>(
 		return ReasoningProjection::default();
 	};
 
-	if option_bool(provider_options.as_ref(), "thinking_supported") == Some(false) {
+	if option_bool(provider_options, "thinking_supported") == Some(false) {
 		return ReasoningProjection::default();
 	}
-	let reasoning = reasoning;
 	let requested_effort = if requires_thinking && reasoning.effort == Some(Effort::Off) {
 		model_policy
 			.and_then(|policy| policy.thinking.as_ref())
@@ -326,9 +325,9 @@ pub fn reasoning_projection_for<'a>(
 			.or_else(|| model_policy.and_then(|policy| policy.thinking.as_ref()?.default_effort))
 	};
 	let policy_mode = model_policy.and_then(|policy| policy.thinking.as_ref());
-	let caller_mode = option_str(provider_options.as_ref(), "thinking_mode");
-	let disable_adaptive = option_bool(provider_options.as_ref(), "disable_adaptive_thinking")
-		.or_else(|| {
+	let caller_mode = option_str(provider_options, "thinking_mode");
+	let disable_adaptive =
+		option_bool(provider_options, "disable_adaptive_thinking").or_else(|| {
 			policy_bool(
 				model_policy,
 				"disable_adaptive_thinking",
@@ -341,7 +340,7 @@ pub fn reasoning_projection_for<'a>(
 		_ => {
 			policy_mode
 				.is_some_and(|thinking| thinking.mode == ResolvedThinkingMode::AnthropicAdaptive)
-				|| policy_mode.is_none() && adaptive_model(model, provider_options.as_ref())
+				|| policy_mode.is_none() && adaptive_model(model, provider_options)
 		},
 	} && !disable_adaptive;
 	let budget_effort = caller_mode.is_none()
@@ -495,7 +494,7 @@ pub fn project_history<'a>(
 	thinking: &'a Thinking,
 	item_props: &Props,
 	target_model: &str,
-	_provider_options: &Option<Props>,
+	_provider_options: Option<&Props>,
 	_model_policy: Option<&ResolvedModelPolicy>,
 	_thinking_enabled: bool,
 	compat: &Compat,
@@ -582,9 +581,9 @@ fn has_mid_conversation_system(request: &ChatRequest) -> bool {
 
 pub fn claude_code_system_prelude_for(
 	thread: &omp_llm_types::Thread,
-	provider_options: &Option<Props>,
+	provider_options: Option<&Props>,
 ) -> Option<[String; 2]> {
-	if option_bool(provider_options.as_ref(), "claude_code") != Some(true) {
+	if option_bool(provider_options, "claude_code") != Some(true) {
 		return None;
 	}
 	let first = first_user_text(thread);
@@ -772,7 +771,7 @@ mod tests {
 				&same_thinking,
 				&same.thread.items[0].props,
 				&same.model,
-				&same.provider_options,
+				same.provider_options.as_ref(),
 				same.model_policy.as_deref(),
 				true,
 				&anthropic_compat()
@@ -786,7 +785,7 @@ mod tests {
 				&foreign_thinking,
 				&foreign.thread.items[0].props,
 				&foreign.model,
-				&foreign.provider_options,
+				foreign.provider_options.as_ref(),
 				foreign.model_policy.as_deref(),
 				true,
 				&anthropic_compat()
@@ -814,7 +813,7 @@ mod tests {
 			message,
 			&req.thread.items[0].props,
 			&req.model,
-			&req.provider_options,
+			req.provider_options.as_ref(),
 			&anthropic_compat(),
 			&mut unsupported,
 			req.model_policy.as_deref(),
@@ -845,7 +844,7 @@ mod tests {
 			message,
 			&req.thread.items[0].props,
 			&req.model,
-			&req.provider_options,
+			req.provider_options.as_ref(),
 			&anthropic_compat(),
 			&mut unsupported,
 			req.model_policy.as_deref(),

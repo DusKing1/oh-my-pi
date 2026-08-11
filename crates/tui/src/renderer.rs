@@ -3253,7 +3253,7 @@ mod tests {
 			.present(document(&["one", "TWO", "three", "FOUR", "five", "six", "seven"]), 2, 2)
 			.expect_err("deferred stable rows remain immutable");
 		assert_eq!(error.kind(), ErrorKind::InvalidData);
-		assert!(renderer.writer_mut().is_empty());
+		assert_eq!(renderer.writer_mut().as_slice(), &[] as &[u8]);
 	}
 
 	#[test]
@@ -3293,7 +3293,7 @@ mod tests {
 			.expect_err("stable mutation must fail");
 
 		assert_eq!(error.kind(), ErrorKind::InvalidData);
-		assert!(renderer.writer_mut().is_empty());
+		assert_eq!(renderer.writer_mut().as_slice(), &[] as &[u8]);
 		assert_eq!(renderer.committed_rows(), 2);
 	}
 
@@ -3312,7 +3312,7 @@ mod tests {
 			.expect_err("reported stable mutation must fail");
 
 		assert_eq!(error.kind(), ErrorKind::InvalidData);
-		assert!(renderer.writer_mut().is_empty());
+		assert_eq!(renderer.writer_mut().as_slice(), &[] as &[u8]);
 		assert_eq!(renderer.committed_rows(), 2);
 	}
 
@@ -3507,7 +3507,7 @@ mod tests {
 			.present(document(&["one", "two", "three"]), 2, 2)
 			.expect_err("a document tail shorter than committed history must be rejected");
 		assert_eq!(error.kind(), ErrorKind::InvalidData);
-		assert!(renderer.writer_mut().is_empty());
+		assert_eq!(renderer.writer_mut().as_slice(), &[] as &[u8]);
 
 		renderer
 			.rebuild(document(&["one", "two", "three"]), 2, 2, "")
@@ -3530,7 +3530,7 @@ mod tests {
 			.expect_err("retreat must fail");
 
 		assert_eq!(error.kind(), ErrorKind::InvalidData);
-		assert!(renderer.writer_mut().is_empty());
+		assert_eq!(renderer.writer_mut().as_slice(), &[] as &[u8]);
 	}
 
 	#[test]
@@ -3645,7 +3645,7 @@ mod tests {
 			.expect("second paint succeeds");
 
 		assert_eq!(stats.bytes, 0);
-		assert!(renderer.writer_mut().is_empty());
+		assert_eq!(renderer.writer_mut().as_slice(), &[] as &[u8]);
 	}
 
 	#[test]
@@ -4023,7 +4023,7 @@ mod tests {
 
 		let stats = renderer.present(fully_visible, 4, 0).unwrap();
 		assert_eq!(stats.bytes, 0);
-		assert_eq!(renderer.writer_mut().as_slice(), []);
+		assert_eq!(renderer.writer_mut().as_slice(), &[] as &[u8]);
 
 		let mut tmux = Renderer::new(Vec::new());
 		tmux.set_graphics(Graphics::Sixel);

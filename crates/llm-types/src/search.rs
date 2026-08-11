@@ -47,6 +47,14 @@ pub struct SearchLocation {
 /// Web search request spanning raw, synthesized, and hybrid engines.
 #[non_exhaustive]
 #[derive(Builder, Clone, Debug, PartialEq)]
+#[allow(
+	clippy::allow_attributes_without_reason,
+	reason = "the Builder derive emits generated allow attributes without reason metadata"
+)]
+#[allow(
+	clippy::struct_field_names,
+	reason = "the public field names intentionally match the wire search request vocabulary"
+)]
 pub struct SearchRequest {
 	/// User query.
 	pub query:            Str,
@@ -59,10 +67,6 @@ pub struct SearchRequest {
 	/// Inclusive ISO date upper bound, empty when unbounded.
 	pub before:           Str,
 	/// Domain allowlist.
-	#[allow(
-		clippy::struct_field_names,
-		reason = "the public field name intentionally matches the wire search request vocabulary"
-	)]
 	pub allowed_domains:  Vec<Str>,
 	/// Domain denylist.
 	pub excluded_domains: Vec<Str>,

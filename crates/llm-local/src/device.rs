@@ -86,7 +86,11 @@ pub fn whisper_accelerator(preference: DevicePreference) -> Result<Accelerator> 
 		DevicePreference::Cpu => Ok(Accelerator::Cpu),
 		DevicePreference::Metal => Ok(require_metal()),
 		DevicePreference::Cuda => require_cuda(),
+		#[cfg(target_os = "macos")]
+		DevicePreference::Gpu | DevicePreference::Auto => Ok(native_whisper_gpu()),
+		#[cfg(not(target_os = "macos"))]
 		DevicePreference::Gpu => native_whisper_gpu(),
+		#[cfg(not(target_os = "macos"))]
 		DevicePreference::Auto => native_whisper_gpu().or(Ok(Accelerator::Cpu)),
 	}
 }
@@ -112,8 +116,8 @@ fn require_cuda() -> Result<Accelerator> {
 }
 
 #[cfg(target_os = "macos")]
-const fn native_whisper_gpu() -> Result<Accelerator> {
-	Ok(require_metal())
+const fn native_whisper_gpu() -> Accelerator {
+	require_metal()
 }
 
 #[cfg(all(not(target_os = "macos"), feature = "cuda"))]

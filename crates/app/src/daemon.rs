@@ -291,8 +291,6 @@ pub enum DaemonError {
 	Signal(#[from] std::io::Error),
 }
 
-/// Running daemon ownership, readiness, and graceful-shutdown control.
-
 /// Prompt-cache policy for one transport.
 ///
 /// `TailTwo` placement and short retention are Anthropic's breakpoint
@@ -663,30 +661,28 @@ impl DaemonHandle {
 		let signal = shutdown_signal();
 		tokio::pin!(signal);
 		let mut tasks: FuturesUnordered<_> = std::mem::take(&mut self.tasks).into_iter().collect();
-		loop {
-			tokio::select! {
-				signal = &mut signal => {
-					signal?;
-					self.begin_shutdown();
-					return drain_listener_tasks(&mut tasks).await;
-				},
-				result = tasks.next() => {
-					let Some(result) = result else {
-						return Ok(());
-					};
-					match result? {
-						Ok(()) => {
-							self.begin_shutdown();
-							return drain_listener_tasks(&mut tasks).await;
-						},
-						Err(error) => {
-							self.begin_shutdown();
-							let _ = drain_listener_tasks(&mut tasks).await;
-							return Err(error.into());
-						},
-					}
-				},
-			}
+		tokio::select! {
+			signal = &mut signal => {
+				signal?;
+				self.begin_shutdown();
+				drain_listener_tasks(&mut tasks).await
+			},
+			result = tasks.next() => {
+				let Some(result) = result else {
+					return Ok(());
+				};
+				match result? {
+					Ok(()) => {
+						self.begin_shutdown();
+						drain_listener_tasks(&mut tasks).await
+					},
+					Err(error) => {
+						self.begin_shutdown();
+						let _ = drain_listener_tasks(&mut tasks).await;
+						Err(error.into())
+					},
+				}
+			},
 		}
 	}
 

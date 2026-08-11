@@ -294,7 +294,7 @@ mod tests {
 					&& value.signature == Bytes::from_static(b"signed-thinking")
 		));
 		assert_eq!(accumulator.tool_calls()[0].id, call_id);
-		assert_eq!(accumulator.completed_tool_calls(), [] as [thread::ToolCall; 0]);
+		assert_eq!(accumulator.completed_tool_calls(), [] as [crate::ToolCall; 0]);
 	}
 
 	#[test]

@@ -353,8 +353,7 @@ fn anthropic_thinking(wire: &WireRequest) -> Result<Option<Feature<Reasoning>>, 
 		})
 		.transpose()?;
 	let mut budget_tokens = None;
-	let mut hide_summary = None;
-	if let Some(thinking) = &wire.thinking {
+	let hide_summary = if let Some(thinking) = &wire.thinking {
 		match thinking.get("type").and_then(Value::as_str) {
 			Some("enabled") => {
 				budget_tokens = Some(
@@ -370,13 +369,15 @@ fn anthropic_thinking(wire: &WireRequest) -> Result<Option<Feature<Reasoning>>, 
 			},
 			_ => return Err(invalid("unsupported Anthropic thinking type")),
 		}
-		hide_summary = match thinking.get("display").and_then(Value::as_str) {
+		match thinking.get("display").and_then(Value::as_str) {
 			Some("omitted") => Some(true),
 			Some("summarized") => Some(false),
 			None => None,
 			Some(_) => return Err(invalid("unsupported Anthropic thinking display")),
-		};
-	}
+		}
+	} else {
+		None
+	};
 	if wire.thinking.is_none()
 		&& effort.is_none()
 		&& budget_tokens.is_none()
@@ -762,10 +763,12 @@ fn anthropic_part_value(part: &Part, template: Option<&Value>) -> Result<Value, 
 			let kind = template
 				.and_then(|value| value.get("type"))
 				.and_then(Value::as_str)
-				.unwrap_or(if blob.mime.starts_with("image/") {
-					"image"
-				} else {
-					"document"
+				.unwrap_or_else(|| {
+					if blob.mime.starts_with("image/") {
+						"image"
+					} else {
+						"document"
+					}
 				});
 			object.insert("type".into(), json!(kind));
 			let source_type = object

@@ -473,8 +473,7 @@ mod tests {
 	fn model_policy_selects_lite_but_explicit_option_keeps_precedence() {
 		let codec = OpenAiCodexCodec::new();
 		let mut req = request();
-		let mut policy = ResolvedModelPolicy::default();
-		policy.use_responses_lite = Some(true);
+		let policy = ResolvedModelPolicy { use_responses_lite: Some(true), ..Default::default() };
 		req.model_policy = Some(Arc::new(policy));
 		assert!(codec.request_uses_responses_lite(&req).unwrap());
 

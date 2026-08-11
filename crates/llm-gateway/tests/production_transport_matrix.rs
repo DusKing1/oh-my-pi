@@ -7,7 +7,7 @@ use std::{
 	convert::Infallible,
 	future::Future,
 	pin::Pin,
-	sync::{Arc, Mutex},
+	sync::Arc,
 	task::{Context, Poll},
 	time::Duration,
 };
@@ -72,10 +72,10 @@ use omp_llm_types::{
 	Part, Props, Role, Thread, TurnEvent, facet::Chat,
 };
 use omp_proto::inference::v1::{self as pb, inference_client::InferenceClient};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use prost::Message as _;
 use smallvec::smallvec;
-use tokio::{net::TcpListener, sync::mpsc};
+use tokio::net::TcpListener;
 use tokio_tungstenite::{accept_hdr_async, tungstenite::Message as WsMessage};
 use tonic::transport::Endpoint;
 use tower::Layer as _;
@@ -164,7 +164,7 @@ impl BrokerCredentialRefresher for NoBrokerRefresh {
 		_credential_id: u64,
 		_now_ms: u64,
 	) -> impl Future<Output = Result<(), Self::Error>> + Send {
-		async { Ok(()) }
+		std::future::ready(Ok(()))
 	}
 }
 
@@ -227,7 +227,7 @@ struct Captured {
 struct SocketState {
 	calls:     Mutex<BTreeMap<TransportId, usize>>,
 	captured:  Mutex<Vec<Captured>>,
-	cancelled: mpsc::UnboundedSender<TransportId>,
+	cancelled: flume::Sender<TransportId>,
 }
 
 impl SocketState {
@@ -275,14 +275,14 @@ impl SocketState {
 				.to_bytes()
 		};
 		verify_request(transport, &path, request.headers(), &body);
-		self.captured.lock().expect("capture lock").push(Captured {
+		self.captured.lock().push(Captured {
 			transport,
 			path,
 			headers: request.headers().clone(),
 			body,
 		});
 		let call = {
-			let mut calls = self.calls.lock().expect("call lock");
+			let mut calls = self.calls.lock();
 			let call = calls.entry(transport).or_default();
 			*call += 1;
 			*call
@@ -435,7 +435,7 @@ const fn expected_path_fragment(transport: TransportId) -> &'static str {
 struct MatrixBody {
 	frames: VecDeque<Frame<Bytes>>,
 	hangs:  bool,
-	cancel: Option<(TransportId, mpsc::UnboundedSender<TransportId>)>,
+	cancel: Option<(TransportId, flume::Sender<TransportId>)>,
 }
 
 impl MatrixBody {
@@ -450,7 +450,7 @@ impl MatrixBody {
 	fn streaming(
 		chunks: Vec<Bytes>,
 		transport: TransportId,
-		tx: mpsc::UnboundedSender<TransportId>,
+		tx: flume::Sender<TransportId>,
 	) -> Self {
 		Self {
 			frames: chunks.into_iter().map(Frame::data).collect(),
@@ -828,16 +828,19 @@ async fn spawn_websocket_fixture() -> (String, tokio::task::JoinHandle<()>) {
 	let task = tokio::spawn(async move {
 		for cancelling in [false, true] {
 			let (stream, _) = listener.accept().await.expect("GitLab connection");
-			let mut socket = accept_hdr_async(
-				stream,
+			#[allow(
+				clippy::result_large_err,
+				reason = "the error type is fixed by tungstenite's external callback signature"
+			)]
+			let handshake =
 				|request: &tokio_tungstenite::tungstenite::handshake::server::Request,
 				 response: tokio_tungstenite::tungstenite::handshake::server::Response| {
 					assert_eq!(request.headers()[header::AUTHORIZATION], "Bearer gitlab-lease");
 					Ok(response)
-				},
-			)
-			.await
-			.expect("GitLab handshake");
+				};
+			let mut socket = accept_hdr_async(stream, handshake)
+				.await
+				.expect("GitLab handshake");
 			let start = socket
 				.next()
 				.await
@@ -1003,7 +1006,7 @@ async fn generated_catalog_transports_complete_through_registered_production_rou
 		.await
 		.expect("bind production protocol fixture");
 	let address = listener.local_addr().expect("fixture address");
-	let (cancelled_tx, mut cancelled_rx) = mpsc::unbounded_channel();
+	let (cancelled_tx, cancelled_rx) = flume::unbounded();
 	let socket_state = Arc::new(SocketState {
 		calls:     Mutex::new(BTreeMap::new()),
 		captured:  Mutex::new(Vec::new()),
@@ -1277,7 +1280,7 @@ async fn generated_catalog_transports_complete_through_registered_production_rou
 
 	let mut cancelled = BTreeSet::new();
 	while cancelled.len() < STREAMED_TRANSPORTS.len() - 1 {
-		let transport = tokio::time::timeout(Duration::from_secs(2), cancelled_rx.recv())
+		let transport = tokio::time::timeout(Duration::from_secs(2), cancelled_rx.recv_async())
 			.await
 			.expect("socket cancellation deadline")
 			.expect("cancellation channel");
@@ -1290,7 +1293,7 @@ async fn generated_catalog_transports_complete_through_registered_production_rou
 	assert_eq!(cancelled, expected_socket_cancellations);
 
 	gitlab_server.await.expect("GitLab fixture");
-	let captured = socket_state.captured.lock().expect("capture lock");
+	let captured = socket_state.captured.lock();
 	for transport in STREAMED_TRANSPORTS {
 		if transport == TransportId::GitLabDuoWorkflow {
 			continue;

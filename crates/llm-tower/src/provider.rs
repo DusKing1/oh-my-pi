@@ -86,6 +86,11 @@ pub struct ProviderRoute {
 /// The enum deliberately avoids a `dyn Transport` call on every frame. Only
 /// transports whose wire protocol is ordinary HTTP can be represented here.
 #[derive(Debug)]
+#[allow(
+	clippy::large_enum_variant,
+	reason = "provider codecs are constructed once behind Arc; keeping concrete variants preserves \
+	          allocation-free static dispatch on every streamed frame"
+)]
 pub enum HttpCodec {
 	/// OpenAI-compatible Chat Completions.
 	OpenAiChat(OpenAiChatCodec),
@@ -335,11 +340,15 @@ pub struct ProviderAttempt<S> {
 	egress: S,
 }
 
+type EndpointPolicyPair = (Arc<ResolvedModelPolicy>, Arc<ResolvedModelPolicy>);
+type EndpointPolicies = HashMap<usize, EndpointPolicyPair>;
+type PreparedProviderRequest = (Request<Body>, Vec<Unsupported>, Arc<HttpCodec>, Str);
+
 struct ProviderShared {
 	provider:          ProviderEntry,
 	route:             ProviderRoute,
 	codec:             Arc<HttpCodec>,
-	endpoint_policies: Mutex<HashMap<usize, (Arc<ResolvedModelPolicy>, Arc<ResolvedModelPolicy>)>>,
+	endpoint_policies: Mutex<EndpointPolicies>,
 }
 
 impl<S> ProviderAttempt<S> {
@@ -531,10 +540,15 @@ where
 	}
 }
 
+#[allow(
+	clippy::result_large_err,
+	reason = "the public attempt error keeps rich typed provider failures unboxed for \
+	          classification by retry policy"
+)]
 fn prepare_request<E, B>(
 	shared: &ProviderShared,
 	routed: Routed,
-) -> Result<(Request<Body>, Vec<Unsupported>, Arc<HttpCodec>, Str), ProviderAttemptError<E, B>> {
+) -> Result<PreparedProviderRequest, ProviderAttemptError<E, B>> {
 	let Routed { request: turn_request, model_policy, lease, credential_metadata } = routed;
 	let mut native = ChatRequest::try_from(turn_request).map_err(ProviderAttemptError::Request)?;
 	native.model_policy = model_policy;
@@ -1483,6 +1497,11 @@ impl<B> DecodeMachine<B> {
 	}
 }
 
+#[allow(
+	clippy::result_large_err,
+	reason = "the public attempt error keeps rich typed provider failures unboxed for \
+	          classification by retry policy"
+)]
 async fn establish_commit<E, B>(
 	mut machine: DecodeMachine<B>,
 ) -> Result<ProviderStream<B>, ProviderAttemptError<E, B::Error>>

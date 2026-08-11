@@ -8,8 +8,8 @@ use omp_proto::blob::v1::{
 	Chunk, DeleteRequest, GetRequest, StatRequest, blob_client::BlobClient, blob_server::BlobServer,
 };
 use omp_storage::blob::{BlobRef, BlobStore};
-use tokio::{net::TcpListener, sync::mpsc};
-use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
+use tokio::net::TcpListener;
+use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{
 	Code, Request,
 	transport::{Channel, Endpoint, Server},
@@ -104,16 +104,25 @@ async fn remote_chunked_blob_lifecycle_ranges_limits_and_cancellation() {
 		.expect_err("oversize upload must fail");
 	assert_eq!(error.code(), Code::ResourceExhausted);
 
-	let (sender, receiver) = mpsc::channel(1);
+	let (sender, receiver) = flume::bounded(1);
+	let upload_stream = futures::stream::unfold(receiver, |receiver| async move {
+		receiver
+			.recv_async()
+			.await
+			.ok()
+			.map(|chunk| (chunk, receiver))
+	});
 	let cancellation_client = BlobClient::new(cancellation_channel);
 	let upload = tokio::spawn(async move {
 		let mut cancellation_client = cancellation_client;
-		cancellation_client
-			.put(Request::new(ReceiverStream::new(receiver)))
-			.await
+		cancellation_client.put(Request::new(upload_stream)).await
 	});
 	sender
-		.send(Chunk { data: Bytes::from(vec![7_u8; 128 * 1024]), hash: Bytes::new(), size: None })
+		.send_async(Chunk {
+			data: Bytes::from(vec![7_u8; 128 * 1024]),
+			hash: Bytes::new(),
+			size: None,
+		})
 		.await
 		.expect("send partial upload");
 	tokio::time::sleep(Duration::from_millis(20)).await;

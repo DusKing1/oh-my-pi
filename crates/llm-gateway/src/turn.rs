@@ -270,6 +270,12 @@ impl ChatResolver {
 		policy
 	}
 
+	// `TurnError` intentionally carries the complete durable failure record; this
+	// internal resolver keeps that shape rather than allocating every error.
+	#[allow(
+		clippy::result_large_err,
+		reason = "preserve the durable TurnError shape without per-error allocation"
+	)]
 	fn resolve(
 		&self,
 		requested: &str,
@@ -439,6 +445,12 @@ struct ResolvedChat {
 	chat:                  Arc<dyn Chat>,
 }
 
+// These policy helpers return the durable turn error unchanged on the rare
+// invalid-policy path; boxing it would add allocation and alter the error API.
+#[allow(
+	clippy::result_large_err,
+	reason = "preserve the durable TurnError shape without per-error allocation"
+)]
 fn effective_effort(
 	explicit: Option<Effort>,
 	thinking: Option<&omp_llm_types::ResolvedThinkingPolicy>,
@@ -484,6 +496,10 @@ fn effective_effort(
 	Ok(clamped_effort(supported, fmts!("requested {requested:?} was not advertised")))
 }
 
+#[allow(
+	clippy::result_large_err,
+	reason = "preserve the durable TurnError shape without per-error allocation"
+)]
 fn clamp_to_lowest_non_off(
 	thinking: &omp_llm_types::ResolvedThinkingPolicy,
 	reason: &'static str,
@@ -926,6 +942,12 @@ impl TurnEngine {
 	}
 }
 
+// This select result lives only until the immediately following match. Boxing
+// every streamed `TurnEvent` would add a hot-path allocation to shrink it.
+#[allow(
+	clippy::large_enum_variant,
+	reason = "boxing each streamed turn event would allocate on the hot path"
+)]
 enum DriveProgress {
 	Frame(Box<Result<pb::TurnFrame, Status>>),
 	InputClosed,

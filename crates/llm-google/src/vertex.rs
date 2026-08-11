@@ -74,8 +74,14 @@ pub fn vertex_stream_url(
 		Str::from(
 			provider
 				.base_url
-				.replace("{location}-aiplatform.googleapis.com", "aiplatform.googleapis.com")
-				.replace("{region}-aiplatform.googleapis.com", "aiplatform.googleapis.com"),
+				.replace(
+					concat!("{", "location}-aiplatform.googleapis.com"),
+					"aiplatform.googleapis.com",
+				)
+				.replace(
+					concat!("{", "region}-aiplatform.googleapis.com"),
+					"aiplatform.googleapis.com",
+				),
 		)
 	} else {
 		provider.base_url.clone()

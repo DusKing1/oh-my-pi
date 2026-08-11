@@ -3,8 +3,10 @@
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
+use omp_core::Str;
 use serde::Deserialize;
 use serde_json::{Map, Value};
+use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -19,6 +21,149 @@ use crate::{
 		TextMutation, TextProposal, TransactionOutcome, TransactionRequest,
 	},
 };
+/// Failures that can occur when lowering server-initiated `workspace/applyEdit`
+/// requests.
+#[derive(Debug, Error)]
+pub enum ApplyWorkspaceEditError {
+	/// The incoming workspace edit parameters could not be parsed.
+	#[error("invalid workspace edit: {0}")]
+	InvalidWorkspaceEdit(#[source] serde_json::Error),
+
+	/// Workspace edits cannot mix `changes` and `documentChanges` without a
+	/// declared order.
+	#[error("workspace edits cannot mix changes and documentChanges without a declared order")]
+	MixedChangesAndDocumentChanges,
+
+	/// The edit requires interactive confirmation.
+	#[error("workspace edit requires interactive confirmation")]
+	InteractiveConfirmationRequired,
+
+	/// A `textDocument` edit entry could not be parsed.
+	#[error("invalid text document edit: {0}")]
+	InvalidTextDocumentEdit(#[source] serde_json::Error),
+
+	/// A `documentChanges` entry lacked both `textDocument` and `kind`.
+	#[error("documentChanges entry requires textDocument or kind")]
+	MissingDocumentChangesKind,
+
+	/// A `documentChanges` resource operation kind is unsupported.
+	#[error("unsupported workspace resource operation {kind}")]
+	UnsupportedResourceOperation {
+		/// The unsupported operation kind name.
+		kind: Str,
+	},
+
+	/// A workspace edit URI is invalid.
+	#[error("invalid workspace edit URI {uri:?}: {source}")]
+	InvalidUri {
+		/// The URI string.
+		uri:    Str,
+		/// The URL parse error.
+		#[source]
+		source: url::ParseError,
+	},
+
+	/// A required field was missing from a resource operation.
+	#[error("workspace resource operation requires {field}")]
+	MissingResourceField {
+		/// The required field name.
+		field: Str,
+	},
+
+	/// No admitted revision was found for an LSP version.
+	#[error("LSP version {version} has no admitted daemon revision for {uri}")]
+	NoAdmittedRevision {
+		/// Target document URI.
+		uri:     Url,
+		/// LSP version number.
+		version: i32,
+	},
+
+	/// A target text document was missing.
+	#[error("text document {uri} is missing")]
+	TextDocumentMissing {
+		/// Target document URI.
+		uri: Url,
+	},
+
+	/// Text edits attempted to target a binary document.
+	#[error("text edits cannot target binary document {uri}")]
+	BinaryDocumentTarget {
+		/// Target document URI.
+		uri: Url,
+	},
+
+	/// A document's content is not valid UTF-8.
+	#[error("text document {uri} does not contain UTF-8")]
+	NonUtf8Document {
+		/// Target document URI.
+		uri: Url,
+	},
+
+	/// Edit start coordinate exceeded u64 limits.
+	#[error("edit start exceeds u64: {source}")]
+	EditStartOverflow {
+		/// Numeric conversion error.
+		#[source]
+		source: std::num::TryFromIntError,
+	},
+
+	/// Edit end coordinate exceeded u64 limits.
+	#[error("edit end exceeds u64: {source}")]
+	EditEndOverflow {
+		/// Numeric conversion error.
+		#[source]
+		source: std::num::TryFromIntError,
+	},
+
+	/// Document length exceeded u64 limits.
+	#[error("document length exceeds u64: {source}")]
+	DocumentLengthOverflow {
+		/// Numeric conversion error.
+		#[source]
+		source: std::num::TryFromIntError,
+	},
+
+	/// Recursive workspace deletes are not supported.
+	#[error("recursive workspace deletes are not supported transactionally")]
+	RecursiveDeleteUnsupported,
+
+	/// A delete target was missing.
+	#[error("delete target {uri} is missing")]
+	DeleteTargetMissing {
+		/// Target document URI.
+		uri: Url,
+	},
+
+	/// A rename source was missing.
+	#[error("rename source {old_uri} is missing")]
+	RenameSourceMissing {
+		/// Source document URI.
+		old_uri: Url,
+	},
+
+	/// A rename destination already exists.
+	#[error("rename destination {new_uri} already exists")]
+	RenameDestinationExists {
+		/// Destination document URI.
+		new_uri: Url,
+	},
+	/// The workspace edit was cancelled.
+	#[error("workspace edit was cancelled")]
+	Cancelled,
+
+	/// Underlying document store error.
+	#[error(transparent)]
+	Store(#[from] crate::Error),
+
+	/// LSP registry error.
+	#[error(transparent)]
+	LspRegistry(#[from] crate::lsp_registry::LspRegistryError),
+
+	/// Position conversion error.
+	#[error(transparent)]
+	Position(#[from] crate::position::PositionError),
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,7 +209,7 @@ pub async fn apply_workspace_edit(
 ) -> InboundDispatch {
 	let request = match lower_workspace_edit(&environment, handle, &params, &cancellation).await {
 		Ok(request) => request,
-		Err(reason) => return apply_failure(reason, None),
+		Err(error) => return apply_failure(&error, None),
 	};
 	let transaction_id = request.transaction_id();
 	let barrier = environment
@@ -88,14 +233,11 @@ async fn lower_workspace_edit(
 	handle: crate::lsp_registry::LspBindingHandle,
 	params: &[u8],
 	cancellation: &CancellationToken,
-) -> Result<TransactionRequest, String> {
+) -> Result<TransactionRequest, ApplyWorkspaceEditError> {
 	let params: ApplyEditParams =
-		serde_json::from_slice(params).map_err(|error| format!("invalid workspace edit: {error}"))?;
+		serde_json::from_slice(params).map_err(ApplyWorkspaceEditError::InvalidWorkspaceEdit)?;
 	if params.edit.changes.is_some() && params.edit.document_changes.is_some() {
-		return Err(
-			"workspace edits cannot mix changes and documentChanges without a declared order"
-				.to_owned(),
-		);
+		return Err(ApplyWorkspaceEditError::MixedChangesAndDocumentChanges);
 	}
 	if params
 		.edit
@@ -103,7 +245,7 @@ async fn lower_workspace_edit(
 		.values()
 		.any(|annotation| annotation.get("needsConfirmation").and_then(Value::as_bool) == Some(true))
 	{
-		return Err("workspace edit requires interactive confirmation".to_owned());
+		return Err(ApplyWorkspaceEditError::InteractiveConfirmationRequired);
 	}
 
 	let mut operations = Vec::new();
@@ -117,7 +259,7 @@ async fn lower_workspace_edit(
 		for change in document_changes {
 			if change.get("textDocument").is_some() {
 				let edit: TextDocumentEdit = serde_json::from_value(change)
-					.map_err(|error| format!("invalid text document edit: {error}"))?;
+					.map_err(ApplyWorkspaceEditError::InvalidTextDocumentEdit)?;
 				operations.push(
 					lower_text_edit(
 						environment,
@@ -134,12 +276,16 @@ async fn lower_workspace_edit(
 			let kind = change
 				.get("kind")
 				.and_then(Value::as_str)
-				.ok_or_else(|| "documentChanges entry requires textDocument or kind".to_owned())?;
+				.ok_or(ApplyWorkspaceEditError::MissingDocumentChangesKind)?;
 			match kind {
 				"create" => lower_create(environment, &change, cancellation, &mut operations).await?,
 				"rename" => lower_rename(environment, &change, cancellation, &mut operations).await?,
 				"delete" => lower_delete(environment, &change, cancellation, &mut operations).await?,
-				_ => return Err(format!("unsupported workspace resource operation {kind}")),
+				_ => {
+					return Err(ApplyWorkspaceEditError::UnsupportedResourceOperation {
+						kind: Str::from(kind),
+					});
+				},
 			}
 		}
 	}
@@ -153,15 +299,15 @@ async fn lower_text_edit(
 	version: Option<i32>,
 	edits: Vec<TextEdit>,
 	cancellation: &CancellationToken,
-) -> Result<DocumentMutation, String> {
+) -> Result<DocumentMutation, ApplyWorkspaceEditError> {
 	let uri = parse_uri(&uri)?;
 	let revision = match version {
 		Some(version) => environment
 			.lsp()
-			.revision_for_version(handle, &uri, version)
-			.map_err(|error| error.to_string())?
-			.ok_or_else(|| {
-				format!("LSP version {version} has no admitted daemon revision for {uri}")
+			.revision_for_version(handle, &uri, version)?
+			.ok_or_else(|| ApplyWorkspaceEditError::NoAdmittedRevision {
+				uri: uri.clone(),
+				version,
 			})?,
 		None => load_document(environment, &uri, None, cancellation)
 			.await?
@@ -170,39 +316,38 @@ async fn lower_text_edit(
 	};
 	let loaded = load_document(environment, &uri, Some(revision), cancellation).await?;
 	if loaded.head.presence() != DocumentPresence::Present {
-		return Err(format!("text document {uri} is missing"));
+		return Err(ApplyWorkspaceEditError::TextDocumentMissing { uri });
 	}
 	let language_id = match loaded.head.kind() {
 		DocumentKind::Text(language_id) => language_id.as_ref(),
 		DocumentKind::Binary => {
-			return Err(format!("text edits cannot target binary document {uri}"));
+			return Err(ApplyWorkspaceEditError::BinaryDocumentTarget { uri });
 		},
 	};
 	let policy = environment
 		.lsp()
-		.sync_policy_for_handle(handle, &uri, language_id)
-		.map_err(|error| error.to_string())?;
+		.sync_policy_for_handle(handle, &uri, language_id)?;
 	let text = std::str::from_utf8(&loaded.content)
-		.map_err(|_| format!("text document {uri} does not contain UTF-8"))?;
+		.map_err(|_| ApplyWorkspaceEditError::NonUtf8Document { uri: uri.clone() })?;
 	let mut byte_edits = Vec::with_capacity(edits.len());
 	for edit in edits {
 		let (start, end) = policy
 			.position_encoding
-			.range_to_offsets(text, edit.range)
-			.map_err(|error| error.to_string())?;
+			.range_to_offsets(text, edit.range)?;
 		let range = ByteRange::new(
-			u64::try_from(start).map_err(|_| "edit start exceeds u64".to_owned())?,
-			u64::try_from(end).map_err(|_| "edit end exceeds u64".to_owned())?,
-		)
-		.map_err(|error| error.to_string())?;
+			u64::try_from(start)
+				.map_err(|source| ApplyWorkspaceEditError::EditStartOverflow { source })?,
+			u64::try_from(end)
+				.map_err(|source| ApplyWorkspaceEditError::EditEndOverflow { source })?,
+		)?;
 		byte_edits.push(ByteEdit::new(range, Bytes::from(edit.new_text)));
 	}
 	byte_edits.sort_by_key(|edit| edit.range().start());
 	crate::validate_edits(
-		u64::try_from(loaded.content.len()).map_err(|_| "document length exceeds u64".to_owned())?,
+		u64::try_from(loaded.content.len())
+			.map_err(|source| ApplyWorkspaceEditError::DocumentLengthOverflow { source })?,
 		&byte_edits,
-	)
-	.map_err(|error| error.to_string())?;
+	)?;
 	Ok(DocumentMutation::new(
 		DocumentTarget::Uri(uri),
 		MutationOperation::Text(TextMutation::new(
@@ -219,7 +364,7 @@ async fn lower_create(
 	change: &Value,
 	cancellation: &CancellationToken,
 	operations: &mut Vec<DocumentMutation>,
-) -> Result<(), String> {
+) -> Result<(), ApplyWorkspaceEditError> {
 	let uri = parse_required_uri(change, "uri")?;
 	let overwrite = option(change, "overwrite");
 	let ignore = option(change, "ignoreIfExists");
@@ -250,9 +395,9 @@ async fn lower_delete(
 	change: &Value,
 	cancellation: &CancellationToken,
 	operations: &mut Vec<DocumentMutation>,
-) -> Result<(), String> {
+) -> Result<(), ApplyWorkspaceEditError> {
 	if option(change, "recursive") {
-		return Err("recursive workspace deletes are not supported transactionally".to_owned());
+		return Err(ApplyWorkspaceEditError::RecursiveDeleteUnsupported);
 	}
 	let uri = parse_required_uri(change, "uri")?;
 	let loaded = load_document(environment, &uri, None, cancellation).await?;
@@ -260,7 +405,7 @@ async fn lower_delete(
 		return Ok(());
 	}
 	if loaded.head.presence() != DocumentPresence::Present {
-		return Err(format!("delete target {uri} is missing"));
+		return Err(ApplyWorkspaceEditError::DeleteTargetMissing { uri });
 	}
 	operations.push(DocumentMutation::new(
 		DocumentTarget::Uri(uri),
@@ -274,12 +419,12 @@ async fn lower_rename(
 	change: &Value,
 	cancellation: &CancellationToken,
 	operations: &mut Vec<DocumentMutation>,
-) -> Result<(), String> {
+) -> Result<(), ApplyWorkspaceEditError> {
 	let old_uri = parse_required_uri(change, "oldUri")?;
 	let new_uri = parse_required_uri(change, "newUri")?;
 	let source = load_document(environment, &old_uri, None, cancellation).await?;
 	if source.head.presence() != DocumentPresence::Present {
-		return Err(format!("rename source {old_uri} is missing"));
+		return Err(ApplyWorkspaceEditError::RenameSourceMissing { old_uri });
 	}
 	let destination = load_document(environment, &new_uri, None, cancellation).await?;
 	let overwrite = option(change, "overwrite");
@@ -291,7 +436,7 @@ async fn lower_rename(
 	}
 	let destination_precondition = if destination.head.presence() == DocumentPresence::Present {
 		if !overwrite {
-			return Err(format!("rename destination {new_uri} already exists"));
+			return Err(ApplyWorkspaceEditError::RenameDestinationExists { new_uri });
 		}
 		MoveDestinationPrecondition::Revision(destination.head.revision())
 	} else {
@@ -313,27 +458,23 @@ async fn load_document(
 	uri: &Url,
 	revision: Option<crate::Revision>,
 	cancellation: &CancellationToken,
-) -> Result<LoadedDocument, String> {
+) -> Result<LoadedDocument, ApplyWorkspaceEditError> {
 	if cancellation.is_cancelled() {
-		return Err("workspace edit was cancelled".to_owned());
+		return Err(ApplyWorkspaceEditError::Cancelled);
 	}
-	let path = environment
-		.store()
-		.resolve_entry_path(uri)
-		.map_err(|error| error.to_string())?;
+	let path = environment.store().resolve_entry_path(uri)?;
 	let opened = environment
 		.store()
 		.open(DocumentLocator::Path(path))
-		.await
-		.map_err(|error| error.to_string())?;
+		.await?;
 	let lease_id = opened.lease_id();
 	let read = environment
 		.store()
 		.read(lease_id, revision, ReadSelection::Whole)
 		.await;
 	let close = environment.store().close(lease_id).await;
-	let read = read.map_err(|error| error.to_string())?;
-	close.map_err(|error| error.to_string())?;
+	let read = read?;
+	close?;
 	let content = match read.body() {
 		ReadBody::Whole(content) => content.clone(),
 		ReadBody::Slices(_) => unreachable!("whole read returns whole bytes"),
@@ -341,18 +482,20 @@ async fn load_document(
 	Ok(LoadedDocument { head: read.head().clone(), content })
 }
 
-fn parse_required_uri(value: &Value, field: &str) -> Result<Url, String> {
+fn parse_required_uri(value: &Value, field: &str) -> Result<Url, ApplyWorkspaceEditError> {
 	let uri = value
 		.get(field)
 		.and_then(Value::as_str)
-		.ok_or_else(|| format!("workspace resource operation requires {field}"))?;
+		.ok_or_else(|| ApplyWorkspaceEditError::MissingResourceField { field: Str::from(field) })?;
 	parse_uri(uri)
 }
 
-fn parse_uri(uri: &str) -> Result<Url, String> {
-	Url::parse(uri).map_err(|error| format!("invalid workspace edit URI {uri:?}: {error}"))
+fn parse_uri(uri: &str) -> Result<Url, ApplyWorkspaceEditError> {
+	Url::parse(uri).map_err(|error| ApplyWorkspaceEditError::InvalidUri {
+		uri:    Str::from(uri),
+		source: error,
+	})
 }
-
 fn option(value: &Value, name: &str) -> bool {
 	value
 		.get("options")
@@ -373,8 +516,8 @@ fn outcome_response(outcome: &TransactionOutcome) -> Bytes {
 	}
 }
 
-fn apply_failure(reason: String, failed_change: Option<u32>) -> InboundDispatch {
-	InboundDispatch::success(apply_response(false, Some(&reason), failed_change))
+fn apply_failure(reason: &ApplyWorkspaceEditError, failed_change: Option<u32>) -> InboundDispatch {
+	InboundDispatch::success(apply_response(false, Some(&reason.to_string()), failed_change))
 }
 
 fn apply_response(applied: bool, reason: Option<&str>, failed_change: Option<u32>) -> Bytes {
@@ -387,4 +530,36 @@ fn apply_response(applied: bool, reason: Option<&str>, failed_change: Option<u32
 		response.insert("failedChange".to_owned(), Value::from(failed_change));
 	}
 	Bytes::from(serde_json::to_vec(&response).expect("workspace edit response is serializable"))
+}
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn formats_apply_workspace_edit_errors() {
+		let err = ApplyWorkspaceEditError::MixedChangesAndDocumentChanges;
+		assert_eq!(
+			err.to_string(),
+			"workspace edits cannot mix changes and documentChanges without a declared order"
+		);
+
+		let err = ApplyWorkspaceEditError::InteractiveConfirmationRequired;
+		assert_eq!(err.to_string(), "workspace edit requires interactive confirmation");
+
+		let err =
+			ApplyWorkspaceEditError::UnsupportedResourceOperation { kind: Str::from("unknown") };
+		assert_eq!(err.to_string(), "unsupported workspace resource operation unknown");
+
+		let err = ApplyWorkspaceEditError::RecursiveDeleteUnsupported;
+		assert_eq!(err.to_string(), "recursive workspace deletes are not supported transactionally");
+	}
+
+	#[test]
+	fn apply_response_produces_valid_json() {
+		let err = ApplyWorkspaceEditError::InteractiveConfirmationRequired;
+		let response_bytes = apply_response(false, Some(&err.to_string()), None);
+		let json: Value = serde_json::from_slice(&response_bytes).unwrap();
+		assert_eq!(json["applied"], false);
+		assert_eq!(json["failureReason"], "workspace edit requires interactive confirmation");
+	}
 }

@@ -2426,10 +2426,15 @@ mod tests {
 			tokio::spawn(async move { coordinator.commit(request, CancellationToken::new()).await });
 		entered.notified().await;
 		std::fs::write(&path, b"external").expect("external invalidation");
-		let observed = tokio::time::timeout(
-			Duration::from_secs(5),
-			current_bytes(&store, opened.head().document_id()),
-		)
+		let observed = tokio::time::timeout(Duration::from_secs(5), async {
+			loop {
+				let bytes = current_bytes(&store, opened.head().document_id()).await;
+				if bytes == b"external".as_slice() {
+					return bytes;
+				}
+				tokio::time::sleep(Duration::from_millis(10)).await;
+			}
+		})
 		.await
 		.expect("watcher invalidation");
 		assert_eq!(observed, b"external".as_slice());

@@ -98,6 +98,10 @@ async fn authenticated_turn_maps_tool_result_and_resumes_after_disconnect() {
 		let (first, _) = listener.accept().await.expect("first workflow connection");
 		let mut first = accept_hdr_async(
 			first,
+			#[allow(
+				clippy::result_large_err,
+				reason = "tungstenite's handshake callback API requires this response error type"
+			)]
 			|request: &tokio_tungstenite::tungstenite::handshake::server::Request,
 			 response: tokio_tungstenite::tungstenite::handshake::server::Response| {
 				assert_eq!(request.headers()[header::AUTHORIZATION], "Bearer fixture-lease");

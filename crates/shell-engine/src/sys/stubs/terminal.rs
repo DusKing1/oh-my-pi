@@ -6,7 +6,10 @@ use crate::{builtins::terminal, error, openfiles, sys};
 #[derive(Clone, Debug)]
 pub(crate) struct Config;
 
-#[allow(clippy::unused_self)]
+#[allow(
+	clippy::unused_self,
+	reason = "stub methods retain the shared terminal configuration interface"
+)]
 impl Config {
 	/// Creates a new `Config` from the actual terminal attributes of the
 	/// terminal associated with the given file descriptor.

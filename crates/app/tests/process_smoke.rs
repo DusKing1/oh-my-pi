@@ -22,7 +22,7 @@ use tokio::{
 	io::{AsyncReadExt as _, AsyncWriteExt as _},
 	net::{TcpListener, TcpStream, UnixStream},
 	process::{Child, Command},
-	sync::{mpsc, oneshot},
+	sync::oneshot,
 	time::{sleep, timeout},
 };
 use tonic::{Code, Response, Status, transport::Channel};
@@ -140,7 +140,7 @@ async fn daemon_composition_mounts_catalog_facets_and_drains_cleanly() {
 	)
 	.expect("write omp auth migration fixture");
 
-	let (requests_tx, mut requests_rx) = mpsc::unbounded_channel();
+	let (requests_tx, requests_rx) = flume::unbounded();
 	let chat_requests = Arc::new(AtomicUsize::new(0));
 	let (fixture_shutdown_tx, fixture_shutdown_rx) = oneshot::channel();
 	let fixture = tokio::spawn(run_provider_fixture(
@@ -452,7 +452,7 @@ async fn daemon_composition_mounts_catalog_facets_and_drains_cleanly() {
 	let request = timeout(TURN_TIMEOUT, async {
 		loop {
 			let request = requests_rx
-				.recv()
+				.recv_async()
 				.await
 				.expect("provider fixture remains live");
 			if request.method == "POST" && request.path.ends_with("/chat/completions") {
@@ -498,7 +498,7 @@ async fn daemon_composition_mounts_catalog_facets_and_drains_cleanly() {
 	let failed_request = timeout(TURN_TIMEOUT, async {
 		loop {
 			let request = requests_rx
-				.recv()
+				.recv_async()
 				.await
 				.expect("provider fixture remains live");
 			if request.method == "POST" && request.path.ends_with("/chat/completions") {
@@ -580,21 +580,18 @@ async fn probe_mounted<T>(name: &str, call: impl Future<Output = Result<Response
 			Code::Unimplemented,
 			"{name} was advertised but not mounted: {status}"
 		),
-		Err(_) => panic!("{name} did not complete before the listener deadline"),
+		Err(error) => panic!("{name} did not complete before the listener deadline: {error}"),
 	}
 }
 
 fn turn_open(turn_id: &str) -> pb::TurnFrame {
-	let prompt = thread_pb::Part {
-		kind: Some(thread_pb::part::Kind::Text("process smoke prompt".into())),
-		..Default::default()
-	};
+	let prompt =
+		thread_pb::Part { kind: Some(thread_pb::part::Kind::Text("process smoke prompt".into())) };
 	let item = thread_pb::Item {
 		seq: 0,
 		kind: Some(thread_pb::item::Kind::Message(thread_pb::Message {
-			role: thread_pb::Role::User as i32,
+			role:  thread_pb::Role::User as i32,
 			parts: vec![prompt],
-			..Default::default()
 		})),
 		..Default::default()
 	};
@@ -603,13 +600,11 @@ fn turn_open(turn_id: &str) -> pb::TurnFrame {
 			turn_id: turn_id.into(),
 			input: Some(pb::turn_request::Input::Seed(pb::Seed {
 				context_id: String::new(),
-				thread: Some(thread_pb::Thread { items: vec![item], ..Default::default() }),
-				..Default::default()
+				thread:     Some(thread_pb::Thread { items: vec![item] }),
 			})),
 			params: Some(pb::ChatParams { model: MODEL.into(), ..Default::default() }),
 			..Default::default()
 		})),
-		..Default::default()
 	}
 }
 
@@ -752,7 +747,7 @@ impl FixtureRequest {
 
 async fn run_provider_fixture(
 	listener: TcpListener,
-	requests: mpsc::UnboundedSender<FixtureRequest>,
+	requests: flume::Sender<FixtureRequest>,
 	chat_requests: Arc<AtomicUsize>,
 	mut shutdown: oneshot::Receiver<()>,
 ) -> std::io::Result<()> {

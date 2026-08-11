@@ -109,6 +109,11 @@ struct OpenCall {
 /// deltas without accumulated snapshots, executes exactly once, appends the
 /// authoritative first outcome and matching [`ToolResult`] to the thread, then
 /// submits the follow-up through the same [`Chat`] implementation.
+#[allow(
+	clippy::result_large_err,
+	reason = "the owned-tool boundary preserves rich TurnError context inline; boxing would change \
+	          its public error contract and add allocation to error propagation"
+)]
 pub async fn run_owned_tool_loop<H>(
 	chat: &dyn Chat,
 	mut request: ChatRequest,
@@ -160,6 +165,11 @@ where
 	Ok(OwnedToolLoopOutcome { tool_turn, tool_result: result, follow_up_turn })
 }
 
+#[allow(
+	clippy::result_large_err,
+	reason = "the owned-tool loop preserves rich TurnError context inline without allocating while \
+	          propagating terminal stream failures"
+)]
 async fn collect_tool_turn<S>(
 	stream: &mut S,
 ) -> Result<(ChatOutcome, StreamedCall), OwnedToolLoopError>
@@ -221,6 +231,11 @@ where
 	Ok((outcome, call))
 }
 
+#[allow(
+	clippy::result_large_err,
+	reason = "the owned-tool loop preserves rich TurnError context inline without allocating while \
+	          propagating terminal stream failures"
+)]
 async fn collect_terminal_outcome<S>(stream: &mut S) -> Result<ChatOutcome, OwnedToolLoopError>
 where
 	S: Stream<Item = TurnEvent> + Unpin,
@@ -241,6 +256,11 @@ where
 		.map_err(OwnedToolLoopError::Turn)
 }
 
+#[allow(
+	clippy::result_large_err,
+	reason = "the owned-tool loop uses one rich unboxed error contract throughout its parsing \
+	          helpers to preserve exact protocol failures"
+)]
 fn unique_committed_call(outcome: &ChatOutcome) -> Result<&ToolCall, OwnedToolLoopError> {
 	let mut calls = outcome.output.iter().filter_map(|item| match &item.kind {
 		ItemKind::ToolCall(call) => Some(call),

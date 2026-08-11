@@ -174,11 +174,11 @@ impl AppliedAuth {
 			prefixed
 		};
 		metadata.user_jwt = user_jwt;
-		metadata.ide_name = "windsurf".to_owned();
-		metadata.ide_version = "3.2.23".to_owned();
-		metadata.extension_name = "windsurf".to_owned();
-		metadata.extension_version = "1.48.2".to_owned();
-		metadata.locale = "en".to_owned();
+		"windsurf".clone_into(&mut metadata.ide_name);
+		"3.2.23".clone_into(&mut metadata.ide_version);
+		"windsurf".clone_into(&mut metadata.extension_name);
+		"1.48.2".clone_into(&mut metadata.extension_version);
+		"en".clone_into(&mut metadata.locale);
 	}
 
 	/// Applies the credential as the complete `Authorization` value.

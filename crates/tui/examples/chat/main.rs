@@ -434,10 +434,6 @@ async fn chat<'a>(
 /// the first card paint, mouse tracking is active throughout, and every
 /// geometry change repaints in place immediately. The main screen stays
 /// untouched underneath — the caller releases the hold on scene exit.
-#[expect(
-	clippy::future_not_send,
-	reason = "the welcome component is deliberately confined to its terminal event-loop thread"
-)]
 async fn run_welcome<'a>(
 	terminal: &'a mut Terminal,
 	renderer: &'a mut Renderer<TtyOut>,

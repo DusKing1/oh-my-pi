@@ -59,8 +59,8 @@ impl OpenAiTokenizer {
 	#[must_use]
 	pub fn for_model(model: &ModelCard) -> Option<Self> {
 		let family = model.family.as_str();
-		if !matches!(family, "openai" | "gpt-oss")
-			&& !(family.is_empty() && matches!(model.provider.as_str(), "openai" | "openai-codex"))
+		if !(matches!(family, "openai" | "gpt-oss")
+			|| family.is_empty() && matches!(model.provider.as_str(), "openai" | "openai-codex"))
 		{
 			return None;
 		}

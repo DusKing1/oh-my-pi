@@ -1147,7 +1147,7 @@ impl OAuthEngine {
 					params.credential_provider.as_str(),
 					meta.identity.as_str(),
 					access.expose(),
-					Some(next_refresh.map_or(refresh.expose(), str::as_bytes)),
+					Some(next_refresh.map_or_else(|| refresh.expose(), str::as_bytes)),
 					&self.store.oauth_props(meta.id)?.unwrap_or(Value::Null),
 					expires_at_ms,
 					now_ms,
@@ -1925,6 +1925,10 @@ fn base64_url_decode(input: &str) -> Result<Vec<u8>, OAuthError> {
 	Ok(output)
 }
 
+#[allow(
+	clippy::many_single_char_names,
+	reason = "SHA-256's standard compression state is conventionally named a through h"
+)]
 fn sha256(input: &[u8]) -> [u8; 32] {
 	const INITIAL: [u32; 8] = [
 		0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
@@ -1971,10 +1975,7 @@ fn sha256(input: &[u8]) -> [u8; 32] {
 				.wrapping_add(words[index - 7])
 				.wrapping_add(s1);
 		}
-		#[expect(
-			clippy::many_single_char_names,
-			reason = "SHA-256's standard state uses a through h"
-		)]
+
 		let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = state;
 		for index in 0..64 {
 			let sum1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
@@ -2537,9 +2538,8 @@ mod tests {
 			.begin_login("cursor", 1_000)
 			.await
 			.expect("Cursor login");
-		let auth_url = match login.prompt {
-			LoginPrompt::Browse { url, loopback: false } => url,
-			_ => panic!("Cursor must use browser polling"),
+		let LoginPrompt::Browse { url: auth_url, loopback: false } = login.prompt else {
+			panic!("Cursor must use browser polling");
 		};
 		let auth_url = Url::parse(&auth_url).expect("Cursor auth URL");
 		assert!(auth_url.query_pairs().any(|(key, _)| key == "challenge"));

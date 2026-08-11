@@ -5,7 +5,7 @@ use std::{
 	convert::Infallible,
 	pin::Pin,
 	sync::{
-		Arc, Mutex,
+		Arc,
 		atomic::{AtomicBool, Ordering},
 	},
 	task::{Context, Poll},
@@ -28,6 +28,7 @@ use omp_llm_types::{
 	AudioEncoding, BlobPart, Props, SpeakEvent, SpeakRequest, TranscribeRequest,
 	TranscriptionGranularity,
 };
+use parking_lot::Mutex;
 use tower::service_fn;
 
 struct FixtureBody {
@@ -99,7 +100,7 @@ async fn streamed_speech_preserves_chunks_auth_isolation_and_one_terminal() {
 		let captured = Arc::clone(&captured);
 		let dropped = Arc::clone(&dropped);
 		move |request| {
-			*captured.lock().expect("capture lock") = Some(request);
+			*captured.lock() = Some(request);
 			let body =
 				FixtureBody::chunks([b"ID3-one".as_slice(), b"-two".as_slice()], Arc::clone(&dropped));
 			async move {
@@ -147,11 +148,7 @@ async fn streamed_speech_preserves_chunks_auth_isolation_and_one_terminal() {
 		})
 		.expect("one terminal result");
 	assert_eq!(done.audio.inline, Bytes::from_static(b"ID3-one-two"));
-	let request = captured
-		.lock()
-		.expect("capture lock")
-		.take()
-		.expect("captured request");
+	let request = captured.lock().take().expect("captured request");
 	assert_eq!(request.uri(), "https://fixture.test/v1/audio/speech");
 	assert_eq!(
 		request
@@ -214,7 +211,7 @@ async fn multipart_transcription_decodes_timestamps_diarization_and_usage() {
 	let service = service_fn({
 		let captured = Arc::clone(&captured);
 		move |request| {
-			*captured.lock().expect("capture lock") = Some(request);
+			*captured.lock() = Some(request);
 			async move {
 				Ok::<_, Infallible>(
 					Response::builder()
@@ -262,11 +259,7 @@ async fn multipart_transcription_decodes_timestamps_diarization_and_usage() {
 	assert_eq!(response.segments[0].speaker, Some(0));
 	assert_eq!(response.words, [] as [omp_llm_types::TranscriptWord; 0]);
 	assert_eq!(response.usage.as_ref().map(|usage| usage.input_tokens), Some(12));
-	let request = captured
-		.lock()
-		.expect("capture lock")
-		.take()
-		.expect("captured request");
+	let request = captured.lock().take().expect("captured request");
 	let content_type = request.headers()[header::CONTENT_TYPE]
 		.to_str()
 		.expect("content type");
@@ -349,7 +342,7 @@ async fn azure_audio_version_is_selected_by_catalog_data() {
 	let service = service_fn({
 		let captured = Arc::clone(&captured);
 		move |request: Request<client::Body>| {
-			*captured.lock().expect("capture lock") = Some(request);
+			*captured.lock() = Some(request);
 			async move {
 				Ok::<_, Infallible>(
 					Response::builder()
@@ -364,8 +357,7 @@ async fn azure_audio_version_is_selected_by_catalog_data() {
 		}
 	});
 	let provider = load_builtin().expect("built-in providers")["azure"].clone();
-	let mut route = ProviderRoute::default();
-	route.region = "eastus".into();
+	let route = ProviderRoute { region: "eastus".into(), ..ProviderRoute::default() };
 	let attempt = AudioProviderAttempt::new(provider, route, service).expect("Azure audio route");
 	let mut request = speech();
 	request.instructions = Str::default();
@@ -375,11 +367,7 @@ async fn azure_audio_version_is_selected_by_catalog_data() {
 		.expect("speech starts")
 		.collect()
 		.await;
-	let request = captured
-		.lock()
-		.expect("capture lock")
-		.take()
-		.expect("captured request");
+	let request = captured.lock().take().expect("captured request");
 	assert_eq!(
 		request.uri(),
 		"https://eastus.openai.azure.com/openai/deployments/gpt-4o-mini-tts/audio/speech?api-version=2025-04-01-preview",

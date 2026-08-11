@@ -196,8 +196,8 @@ mod tests {
 		bytes[0..4].copy_from_slice(b"RIFF");
 		bytes[8..12].copy_from_slice(b"WEBP");
 		bytes[12..16].copy_from_slice(b"VP8 ");
-		bytes[26..28].copy_from_slice(&(0xc000_u16 | 1000).to_le_bytes());
-		bytes[28..30].copy_from_slice(&(0x8000_u16 | 700).to_le_bytes());
+		bytes[26..28].copy_from_slice(&(0xc000_u16 | 0x03e8).to_le_bytes());
+		bytes[28..30].copy_from_slice(&(0x8000_u16 | 0x02bc).to_le_bytes());
 		assert_dimensions(&bytes, 1000, 700);
 	}
 

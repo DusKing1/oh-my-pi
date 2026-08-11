@@ -5,7 +5,7 @@ use std::{
 	convert::Infallible,
 	future::Future,
 	pin::Pin,
-	sync::{Arc, Mutex},
+	sync::Arc,
 	task::{Context, Poll},
 	time::Duration,
 };
@@ -55,7 +55,7 @@ use omp_llm_types::{
 };
 use omp_proto::inference::v1::{TurnEvent as ProtoTurnEvent, TurnRequest as ProtoTurnRequest};
 use omp_storage::blob::BlobStore;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use tokio::{net::TcpListener, sync::oneshot};
 use tower::{Layer, Service, ServiceExt, service_fn};
 
@@ -88,7 +88,7 @@ impl FixtureState {
 			.expect("read HTTP/2 request body")
 			.to_bytes();
 		let attempt = {
-			let mut requests = self.requests.lock().expect("request capture lock");
+			let mut requests = self.requests.lock();
 			requests.push(CapturedRequest {
 				method: parts.method,
 				uri: parts.uri,
@@ -123,11 +123,7 @@ impl FixtureState {
 		let body = if attempt == 2 || attempt == 4 {
 			FixtureBody::finite(chunks)
 		} else {
-			let cancelled = self
-				.cancelled_tx
-				.lock()
-				.expect("cancellation sender lock")
-				.take();
+			let cancelled = self.cancelled_tx.lock().take();
 			FixtureBody::streaming([chunks[0].clone()], cancelled)
 		};
 		Ok(Response::builder()
@@ -227,11 +223,16 @@ impl CredentialSource for Credentials {
 		Ok(())
 	}
 
+	#[allow(
+		clippy::manual_async_fn,
+		reason = "the trait requires a 'static future; ready preserves that contract without \
+		          allocation"
+	)]
 	fn refresh(
 		&self,
-		_lease: CredentialLease,
+		lease: CredentialLease,
 	) -> impl Future<Output = Result<CredentialLease, Self::Error>> + Send + 'static {
-		async { unreachable!("the fixture never returns 401") }
+		std::future::ready(Ok(lease))
 	}
 }
 
@@ -313,13 +314,9 @@ fn model_card() -> ModelCard {
 		.model(Str::new_static(MODEL))
 		.name(Str::new_static(MODEL))
 		.family(Str::new_static("fixture"))
-		.facets(
-			[omp_llm_catalog::provider::Facet::Chat]
-				.into_iter()
-				.collect(),
-		)
-		.inputs([Modality::Text].into_iter().collect())
-		.outputs([Modality::Text].into_iter().collect())
+		.facets(std::iter::once(omp_llm_catalog::provider::Facet::Chat).collect())
+		.inputs(std::iter::once(Modality::Text).collect())
+		.outputs(std::iter::once(Modality::Text).collect())
 		.reasoning(false)
 		.efforts(Default::default())
 		.context_window(4_096)
@@ -528,7 +525,7 @@ async fn registered_provider_replays_before_commit_decodes_usage_and_resets_http
 	assert_eq!(facade_json["usage"]["prompt_tokens"], 3);
 	assert_eq!(facade_json["usage"]["completion_tokens"], 2);
 
-	let requests = state.requests.lock().expect("request capture lock");
+	let requests = state.requests.lock();
 	assert_eq!(requests[0], requests[1], "retry must replay the exact encoded request");
 	assert_eq!(requests[1], requests[2], "cancellation probe uses the same registered route");
 	assert_eq!(requests.len(), 4);

@@ -51,6 +51,10 @@ impl CredentialSource for Credentials {
 		Ok(())
 	}
 
+	#[allow(
+		clippy::manual_async_fn,
+		reason = "the trait requires a 'static future that must not capture `&self`"
+	)]
 	fn refresh(
 		&self,
 		lease: CredentialLease,
@@ -154,6 +158,10 @@ async fn codex_websocket_executes_continues_cancels_and_falls_back_before_output
 			let (stream, _) = listener.accept().await.unwrap();
 			let mut socket = accept_hdr_async(
 				stream,
+				#[allow(
+					clippy::result_large_err,
+					reason = "tungstenite fixes the external handshake callback error type"
+				)]
 				move |request: &HandshakeRequest, mut response: HandshakeResponse| {
 					assert_eq!(request.headers()[header::AUTHORIZATION], "Bearer sealed-fixture-token");
 					assert_eq!(request.headers()["openai-beta"], "responses_websockets=2026-02-06");

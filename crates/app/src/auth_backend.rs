@@ -291,7 +291,7 @@ fn usage_transport_error(error: impl std::fmt::Display) -> UsageError {
 ///
 /// OAuth and quota requests use the same pooled, proxy-aware egress client as
 /// provider inference. The database parent is created before SQLite is opened.
-pub fn open(path: &Path) -> anyhow::Result<BrokerCliBackend> {
+pub fn open(path: &Path) -> crate::Result<BrokerCliBackend> {
 	if let Some(parent) = path.parent()
 		&& !parent.as_os_str().is_empty()
 	{

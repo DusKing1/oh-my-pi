@@ -407,9 +407,11 @@ mod tests {
 		assert_eq!(cost, Cost::builder().nanos_usd(42).estimated(false).build());
 	}
 
+	type UsageRecord = (u64, String, String, String, Option<u64>, u64);
+
 	#[derive(Default)]
 	struct CapturingUsage {
-		records: Mutex<Vec<(u64, String, String, String, Option<u64>, u64)>>,
+		records: Mutex<Vec<UsageRecord>>,
 	}
 
 	impl UsageObserver for CapturingUsage {

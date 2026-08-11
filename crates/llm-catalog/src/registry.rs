@@ -861,17 +861,17 @@ fn overlay_card(base: &ModelCard, discovered: &ModelCard) -> ModelCard {
 		card.family = discovered.family.clone();
 	}
 	if !discovered.facets.is_empty() {
-		card.facets = discovered.facets.clone();
+		card.facets.clone_from(&discovered.facets);
 	}
 	if !discovered.inputs.is_empty() {
-		card.inputs = discovered.inputs.clone();
+		card.inputs.clone_from(&discovered.inputs);
 	}
 	if !discovered.outputs.is_empty() {
-		card.outputs = discovered.outputs.clone();
+		card.outputs.clone_from(&discovered.outputs);
 	}
 	card.reasoning |= discovered.reasoning;
 	if !discovered.efforts.is_empty() {
-		card.efforts = discovered.efforts.clone();
+		card.efforts.clone_from(&discovered.efforts);
 	}
 	if discovered.context_window != 0 {
 		card.context_window = discovered.context_window;

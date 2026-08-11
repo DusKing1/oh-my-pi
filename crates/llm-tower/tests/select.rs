@@ -275,7 +275,7 @@ async fn unpolled_cancel_dispatches_nothing_and_preserves_committed_session_pin(
 		.unwrap();
 	assert_eq!(first.collect::<Vec<_>>().await.len(), 1);
 
-	*ranking.lock() = [SECOND_ID].into_iter().collect();
+	*ranking.lock() = std::iter::once(SECOND_ID).collect();
 	let cancelled = select
 		.ready()
 		.await

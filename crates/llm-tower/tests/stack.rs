@@ -470,11 +470,12 @@ async fn built_stack_downgrades_strict_grammar_before_commit_only() {
 	);
 	let frames = drive_request(&mut stack, strict_request("provider/model")).await;
 	assert_eq!(frames.iter().map(kind_of).collect::<Vec<_>>(), ["attempt", "outcome"]);
-	let calls = stack.script.calls.lock();
-	assert_eq!(calls.len(), 2);
-	assert_eq!(calls[0].params.as_ref().unwrap().tools[0].strict, Some(true));
-	assert_eq!(calls[1].params.as_ref().unwrap().tools[0].strict, Some(false));
-	drop(calls);
+	{
+		let calls = stack.script.calls.lock();
+		assert_eq!(calls.len(), 2);
+		assert_eq!(calls[0].params.as_ref().unwrap().tools[0].strict, Some(true));
+		assert_eq!(calls[1].params.as_ref().unwrap().tools[0].strict, Some(false));
+	}
 
 	let mut late = stack_with_config(
 		Arc::new(AllowAll),

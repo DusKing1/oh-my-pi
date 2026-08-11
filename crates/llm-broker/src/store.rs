@@ -1737,6 +1737,10 @@ fn load_blocks(
 }
 
 #[derive(Default, Deserialize)]
+#[allow(
+	clippy::struct_field_names,
+	reason = "the id suffixes distinguish the provider metadata wire fields they deserialize"
+)]
 struct MetadataNamespace {
 	#[serde(alias = "accountId")]
 	account_id:      Option<Str>,
@@ -1787,8 +1791,8 @@ mod tests {
 	use tempfile::tempdir;
 
 	use super::{
-		CredentialBlock, CredentialFilter, CredentialState, SCHEMA_VERSION, SqlU64, Store,
-		UsageReport, UsageWindow,
+		CredentialBlock, CredentialFilter, CredentialMeta, CredentialState, SCHEMA_VERSION, SqlU64,
+		Store, UsageReport, UsageWindow,
 	};
 
 	fn report(
@@ -2382,6 +2386,6 @@ mod tests {
 		let credentials = store
 			.list_credentials(&CredentialFilter { now_ms: 20, ..CredentialFilter::default() })
 			.expect("list");
-		assert_eq!(credentials, [] as [store::CredentialMeta; 0]);
+		assert_eq!(credentials, [] as [CredentialMeta; 0]);
 	}
 }

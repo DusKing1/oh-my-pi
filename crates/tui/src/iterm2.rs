@@ -119,7 +119,7 @@ fn append_inline_image(
 	sequence.extend(base64::encode(IMAGE_FILENAME.as_bytes()).map(char::from));
 	sequence.push(':');
 	sequence.extend(base64::encode(png).map(char::from));
-	sequence.push_str(esc!(bel));
+	sequence.push('\x07');
 	if tmux_passthrough {
 		append_tmux_passthrough(output, &sequence);
 	} else {

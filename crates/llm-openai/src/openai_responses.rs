@@ -1813,9 +1813,7 @@ fn encode_format(
 	};
 	match &format.value.kind {
 		ResponseFormatKind::JsonSchema(schema) => {
-			let mut parsed = if let Ok(value) = serde_json::from_slice(&schema.schema_json) {
-				value
-			} else {
+			let Ok(mut parsed) = serde_json::from_slice(&schema.schema_json) else {
 				report(
 					unsupported,
 					"response_format.json_schema",
@@ -2311,15 +2309,15 @@ mod tests {
 		req.provider_options = Some(options);
 
 		let mut native = policy(Props::default());
-		let mut native_capabilities = ResolvedModelCapabilities::default();
-		native_capabilities.computer_use = Some(true);
+		let native_capabilities =
+			ResolvedModelCapabilities { computer_use: Some(true), ..Default::default() };
 		native.capabilities = native_capabilities;
 		req.model_policy = Some(Arc::new(native));
 		assert_eq!(encoded(&req)["tools"][0], json!({"type":"computer"}));
 
 		let mut fallback = policy(Props::default());
-		let mut fallback_capabilities = ResolvedModelCapabilities::default();
-		fallback_capabilities.computer_use = Some(false);
+		let fallback_capabilities =
+			ResolvedModelCapabilities { computer_use: Some(false), ..Default::default() };
 		fallback.capabilities = fallback_capabilities;
 		req.model_policy = Some(Arc::new(fallback));
 		let fallback = encoded(&req);
@@ -2376,15 +2374,15 @@ mod tests {
 				.build(),
 		);
 		let mut native_history = policy(Props::default());
-		let mut native_capabilities = ResolvedModelCapabilities::default();
-		native_capabilities.computer_use = Some(true);
+		let native_capabilities =
+			ResolvedModelCapabilities { computer_use: Some(true), ..Default::default() };
 		native_history.capabilities = native_capabilities;
 		req.model_policy = Some(Arc::new(native_history));
 		assert_eq!(encoded(&req)["input"][0]["type"], "computer_call");
 
 		let mut fallback_history = policy(Props::default());
-		let mut fallback_capabilities = ResolvedModelCapabilities::default();
-		fallback_capabilities.computer_use = Some(false);
+		let fallback_capabilities =
+			ResolvedModelCapabilities { computer_use: Some(false), ..Default::default() };
 		fallback_history.capabilities = fallback_capabilities;
 		req.model_policy = Some(Arc::new(fallback_history));
 		let fallback_history = encoded(&req);

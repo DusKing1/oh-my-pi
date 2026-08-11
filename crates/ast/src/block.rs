@@ -8,12 +8,14 @@
 //! full span; pointing at a continuation line or a lone closing delimiter
 //! resolves to nothing.
 
-use anyhow::{Result, anyhow};
 use ast_grep_core::tree_sitter::LanguageExt;
 use serde::{Deserialize, Serialize};
 use tree_sitter::{Parser, Point, TreeCursor};
 
-use crate::summary::{node_content_end_line, node_start_line, resolve_language};
+use crate::{
+	AstError, Result,
+	summary::{node_content_end_line, node_start_line, resolve_language},
+};
 
 /// Owned inputs for resolving the syntactic block beginning on a line.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,7 +73,7 @@ pub fn block_range_at(options: BlockRangeOptions) -> Result<Option<BlockRange>> 
 	let mut parser = Parser::new();
 	parser
 		.set_language(&language.get_ts_language())
-		.map_err(|err| anyhow!("Failed to load tree-sitter language: {err}"))?;
+		.map_err(|source| AstError::LoadLanguage { source })?;
 	let Some(tree) = parser.parse(&code, None) else {
 		return Ok(None);
 	};
@@ -249,7 +251,7 @@ pub fn enclosing_block_boundaries(options: EnclosingBoundaryOptions) -> Result<O
 	let mut parser = Parser::new();
 	parser
 		.set_language(&language.get_ts_language())
-		.map_err(|err| anyhow!("Failed to load tree-sitter language: {err}"))?;
+		.map_err(|source| AstError::LoadLanguage { source })?;
 	let Some(tree) = parser.parse(&code, None) else {
 		return Ok(None);
 	};

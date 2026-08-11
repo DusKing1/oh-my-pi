@@ -1,5 +1,8 @@
-#![allow(clippy::missing_const_for_fn)]
-#![allow(clippy::unnecessary_wraps)]
+#![allow(
+	clippy::missing_const_for_fn,
+	clippy::unnecessary_wraps,
+	reason = "Windows implementations retain the Unix-compatible fallible user API"
+)]
 
 use std::{path::PathBuf, sync::LazyLock};
 
@@ -68,7 +71,6 @@ pub(crate) fn get_current_username() -> Result<String, error::Error> {
 	Ok(username)
 }
 
-#[allow(clippy::unnecessary_wraps)]
 pub(crate) fn get_user_group_ids() -> Result<Vec<u32>, error::Error> {
 	// TODO(windows): implement some version of this for Windows
 	Ok(vec![])

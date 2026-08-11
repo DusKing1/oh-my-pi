@@ -145,7 +145,7 @@ fn random_uuid() -> Str {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod platform {
 	use std::{
-		sync::{Arc, Mutex},
+		sync::Arc,
 		time::{Duration, Instant},
 	};
 
@@ -153,6 +153,7 @@ mod platform {
 	use block2::RcBlock;
 	use objc2_device_check::DCDevice;
 	use objc2_foundation::{NSData, NSError, NSLocale, NSTimeZone};
+	use parking_lot::Mutex;
 	use tokio::sync::oneshot;
 	use zeroize::Zeroizing;
 
@@ -164,9 +165,14 @@ mod platform {
 	pub(super) async fn generate() -> Option<CodexAttestation> {
 		let started = Instant::now();
 		let receiver = {
-			// SAFETY: `currentDevice` and `isSupported` are framework singleton
-			// accessors with no caller-side lifetime requirements.
+			// SAFETY: the linked DeviceCheck framework supplies the `DCDevice`
+			// class and `currentDevice` selector on this macOS-only target. The
+			// class method takes no arguments and returns a retained, non-null
+			// `DCDevice`.
 			let device = unsafe { DCDevice::currentDevice() };
+			// SAFETY: `device` is the live retained receiver returned directly
+			// above, DeviceCheck supplies the `isSupported` selector, and the
+			// query takes no arguments.
 			if !unsafe { device.isSupported() } {
 				return build(false, None, started);
 			}
@@ -178,7 +184,8 @@ mod platform {
 				// SAFETY: DeviceCheck promises both callback pointers remain valid
 				// for the duration of this invocation. `to_vec` copies immediately.
 				let token = unsafe { token.as_ref() }.map(NSData::to_vec);
-				if let Some(sender) = callback_sender.lock().ok().and_then(|mut slot| slot.take()) {
+				let sender = callback_sender.lock().take();
+				if let Some(sender) = sender {
 					let _ = sender.send(token);
 				}
 			});
@@ -245,14 +252,15 @@ pub fn build_codex_attestation(
 	let timezone = truncate_scalars(signals.timezone, 64);
 	let session_id = truncate_scalars(signals.session_id, 128);
 
-	let mut signal_entries = Vec::with_capacity(7);
-	signal_entries.push((cbor_unsigned(0), cbor_unsigned(1)));
-	signal_entries.push((cbor_unsigned(1), cbor_array(vec![cbor_text(locale.as_bytes())?])?));
-	signal_entries.push((cbor_unsigned(2), cbor_text(locale.as_bytes())?));
-	signal_entries.push((cbor_unsigned(3), cbor_text(timezone.as_bytes())?));
-	signal_entries.push((cbor_unsigned(4), cbor_unsigned(0)));
-	signal_entries.push((cbor_unsigned(5), cbor_unsigned(1)));
-	signal_entries.push((cbor_unsigned(6), cbor_text(session_id.as_bytes())?));
+	let signal_entries = vec![
+		(cbor_unsigned(0), cbor_unsigned(1)),
+		(cbor_unsigned(1), cbor_array(vec![cbor_text(locale.as_bytes())?])?),
+		(cbor_unsigned(2), cbor_text(locale.as_bytes())?),
+		(cbor_unsigned(3), cbor_text(timezone.as_bytes())?),
+		(cbor_unsigned(4), cbor_unsigned(0)),
+		(cbor_unsigned(5), cbor_unsigned(1)),
+		(cbor_unsigned(6), cbor_text(session_id.as_bytes())?),
+	];
 	let signal_bytes = cbor_map(signal_entries)?;
 
 	let mut entries = Vec::with_capacity(4);
@@ -294,23 +302,23 @@ fn truncate_scalars(value: &str, maximum: usize) -> Str {
 }
 
 fn cbor_unsigned(value: u32) -> Vec<u8> {
-	cbor_header(0x00, value).expect("u32 is always a valid CBOR length")
+	cbor_header(0x00, value)
 }
 
 fn cbor_text(value: &[u8]) -> Result<Vec<u8>, CodexAttestationError> {
-	let mut out = cbor_header(0x60, length(value.len())?)?;
+	let mut out = cbor_header(0x60, length(value.len())?);
 	out.extend_from_slice(value);
 	Ok(out)
 }
 
 fn cbor_bytes(value: &[u8]) -> Result<Vec<u8>, CodexAttestationError> {
-	let mut out = cbor_header(0x40, length(value.len())?)?;
+	let mut out = cbor_header(0x40, length(value.len())?);
 	out.extend_from_slice(value);
 	Ok(out)
 }
 
 fn cbor_array(values: Vec<Vec<u8>>) -> Result<Vec<u8>, CodexAttestationError> {
-	let mut out = cbor_header(0x80, length(values.len())?)?;
+	let mut out = cbor_header(0x80, length(values.len())?);
 	for value in values {
 		out.extend(value);
 	}
@@ -318,7 +326,7 @@ fn cbor_array(values: Vec<Vec<u8>>) -> Result<Vec<u8>, CodexAttestationError> {
 }
 
 fn cbor_map(entries: Vec<(Vec<u8>, Vec<u8>)>) -> Result<Vec<u8>, CodexAttestationError> {
-	let mut out = cbor_header(0xa0, length(entries.len())?)?;
+	let mut out = cbor_header(0xa0, length(entries.len())?);
 	for (key, value) in entries {
 		out.extend(key);
 		out.extend(value);
@@ -330,8 +338,8 @@ fn length(value: usize) -> Result<u32, CodexAttestationError> {
 	u32::try_from(value).map_err(|_| CodexAttestationError::FieldTooLarge)
 }
 
-fn cbor_header(base: u8, value: u32) -> Result<Vec<u8>, CodexAttestationError> {
-	let out = if value < 24 {
+fn cbor_header(base: u8, value: u32) -> Vec<u8> {
+	if value < 24 {
 		vec![base + value as u8]
 	} else if let Ok(value) = u8::try_from(value) {
 		vec![base + 24, value]
@@ -343,6 +351,5 @@ fn cbor_header(base: u8, value: u32) -> Result<Vec<u8>, CodexAttestationError> {
 		let mut out = vec![base + 26];
 		out.extend_from_slice(&value.to_be_bytes());
 		out
-	};
-	Ok(out)
+	}
 }

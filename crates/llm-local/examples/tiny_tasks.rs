@@ -339,7 +339,7 @@ fn parse_title(raw: &str) -> Option<String> {
 /// bucket to an effort (`trivial → low`, `moderate → high`, `hard → xhigh`),
 /// exactly as pi's `parseDifficultyBucket` does.
 async fn classify_difficulty(worker: &Backend<'_>, prompt: &str) -> DemoResult<Option<Effort>> {
-	let rendered = DIFFICULTY_PROMPT.replace(r"{prompt}", prompt);
+	let rendered = DIFFICULTY_PROMPT.replace(concat!("{", "prompt", "}"), prompt);
 	let raw = worker.ask(None, &rendered, 16, None).await?;
 	Ok(parse_difficulty_bucket(&raw))
 }
@@ -357,7 +357,7 @@ fn parse_difficulty_bucket(text: &str) -> Option<Effort> {
 
 /// YES/NO check for an assistant message that stopped mid-promise.
 async fn classify_unexpected_stop(worker: &Backend<'_>, message: &str) -> DemoResult<Option<bool>> {
-	let rendered = UNEXPECTED_STOP_PROMPT.replace(r"{message}", message);
+	let rendered = UNEXPECTED_STOP_PROMPT.replace(concat!("{", "message", "}"), message);
 	let raw = worker.ask(None, &rendered, 16, None).await?;
 	let answer = raw.trim().to_ascii_lowercase();
 	Ok(if answer.starts_with("yes") {

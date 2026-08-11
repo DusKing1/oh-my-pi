@@ -4296,10 +4296,10 @@ dependencies = [
 name = "omp-app"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "bytes",
  "clap",
+ "flume",
  "futures",
  "http",
  "http-body-util",
@@ -4343,7 +4343,6 @@ dependencies = [
 name = "omp-ast"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "ast-grep-core",
  "globset",
  "ignore",
@@ -4351,6 +4350,7 @@ dependencies = [
  "phf 0.13.1",
  "serde",
  "smallvec 2.0.0-alpha.12",
+ "thiserror 2.0.20",
  "tree-sitter",
  "tree-sitter-astro-next",
  "tree-sitter-bash",
@@ -4861,6 +4861,7 @@ dependencies = [
  "omp-llm-catalog",
  "omp-llm-transport",
  "omp-llm-types",
+ "parking_lot",
  "serde_json",
  "smallvec 2.0.0-alpha.12",
  "tokio",
@@ -4883,6 +4884,7 @@ dependencies = [
  "omp-llm-error",
  "omp-llm-transport",
  "omp-llm-types",
+ "parking_lot",
  "rand 0.10.2",
  "serde_json",
  "smallvec 2.0.0-alpha.12",
@@ -4900,6 +4902,7 @@ dependencies = [
  "async-trait",
  "blake3",
  "bytes",
+ "flume",
  "futures",
  "http",
  "http-body-util",

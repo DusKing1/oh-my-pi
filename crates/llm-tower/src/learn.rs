@@ -478,18 +478,22 @@ fn canonical_feature_repair(
 			}
 		},
 		Feature::FastMode => {
-			let mut changed = false;
-			if params.service_tier == ServiceTier::Priority as i32 {
+			let tier_changed = if params.service_tier == ServiceTier::Priority as i32 {
 				params.service_tier = ServiceTier::Unspecified as i32;
-				changed = true;
-			}
-			if let Some(tiers) = &mut params.service_tier_by_family
+				true
+			} else {
+				false
+			};
+			let family_changed = if let Some(tiers) = &mut params.service_tier_by_family
 				&& tiers.anthropic == ServiceTier::Priority as i32
 			{
 				tiers.anthropic = ServiceTier::Unspecified as i32;
-				changed = true;
-			}
-			let remove_options = if let Some(options) = &mut params.provider_options {
+				true
+			} else {
+				false
+			};
+			let (options_changed, remove_options) = if let Some(options) = &mut params.provider_options
+			{
 				let priority = options
 					.fields
 					.get("anthropic/service_tier")
@@ -499,16 +503,15 @@ fn canonical_feature_repair(
 					);
 				if priority {
 					options.fields.remove("anthropic/service_tier");
-					changed = true;
 				}
-				priority && options.fields.is_empty()
+				(priority, priority && options.fields.is_empty())
 			} else {
-				false
+				(false, false)
 			};
 			if remove_options {
 				params.provider_options = None;
 			}
-			changed
+			tier_changed || family_changed || options_changed
 		},
 		Feature::ThinkingSignature => {
 			let disabled = Value { kind: Some(value::Kind::Bool(false)) };

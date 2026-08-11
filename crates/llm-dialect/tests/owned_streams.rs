@@ -4,7 +4,7 @@ use bytes::Bytes;
 use omp_core::Str;
 use omp_llm_dialect::{
 	Dialect, InbandTool, ScannerOptions,
-	projector::{Projection, ProjectionBatch, StreamProjector},
+	projector::{ProjectionBatch, StreamProjector},
 };
 use omp_llm_types::{StreamAccumulator, StreamPartKind, TurnEvent, ids::CallId};
 use serde_json::{Value, json};

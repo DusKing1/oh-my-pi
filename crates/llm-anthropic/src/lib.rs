@@ -350,7 +350,8 @@ fn build_body<'a>(
 		None => empty_props(),
 	};
 	thinking::validate_options(props)?;
-	let mut controls = controls::project(req.response_format, req.meta, props, &mut unsupported)?;
+	let mut controls =
+		controls::project(req.response_format.as_ref(), req.meta.as_ref(), props, &mut unsupported)?;
 	let thinking_enabled = req
 		.thinking
 		.as_ref()
@@ -388,7 +389,8 @@ fn build_body<'a>(
 	let mapper = CallIdMapper::new();
 	let mut messages: Vec<WireMessage<'a>> = Vec::new();
 	let mut system = Vec::new();
-	if let Some(prelude) = thinking::claude_code_system_prelude_for(req.thread, req.provider_options)
+	if let Some(prelude) =
+		thinking::claude_code_system_prelude_for(req.thread, req.provider_options.as_ref())
 	{
 		system.extend(
 			prelude
@@ -452,7 +454,7 @@ fn build_body<'a>(
 					message,
 					&item.props,
 					req.model,
-					req.provider_options,
+					req.provider_options.as_ref(),
 					compat,
 					&mut unsupported,
 					req.model_policy,
@@ -600,8 +602,8 @@ fn build_body<'a>(
 		if compat.reasoning_wire_format == ReasoningWireFormat::Anthropic && thinking_supported {
 			thinking::reasoning_projection_for(
 				req.model,
-				req.thinking,
-				req.provider_options,
+				req.thinking.as_ref(),
+				req.provider_options.as_ref(),
 				req.model_policy,
 			)
 		} else {
@@ -1045,7 +1047,7 @@ fn message_blocks<'a>(
 	message: &'a Message,
 	item_props: &'a Props,
 	target_model: &str,
-	provider_options: &Option<Props>,
+	provider_options: Option<&Props>,
 	compat: &Compat,
 	unsupported: &mut Vec<Unsupported>,
 	model_policy: Option<&ResolvedModelPolicy>,

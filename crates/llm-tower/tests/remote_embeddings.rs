@@ -432,9 +432,8 @@ fn every_advertised_remote_embedding_route_constructs_and_rerank_stays_unadverti
 	);
 
 	let fake = provider("anthropic", TransportId::AnthropicMessages, CatalogFacet::Embeddings);
-	let error = match RemoteEmbed::new(fake, ProviderRoute::default(), ()) {
-		Ok(_) => panic!("Anthropic must not construct an embedding adapter"),
-		Err(error) => error,
+	let Err(error) = RemoteEmbed::new(fake, ProviderRoute::default(), ()) else {
+		panic!("Anthropic must not construct an embedding adapter")
 	};
 	assert_eq!(error, RemoteEmbedBuildError::UnsupportedTransport(TransportId::AnthropicMessages));
 }
