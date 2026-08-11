@@ -3520,7 +3520,7 @@ mod tests {
 		// width-3 row and is stored as a blank cell — the flag, not the
 		// cells, certifies the row as exactly full.
 		let mut leaf = TextLeaf::new().with(Prop::Wrap, "char").text("ab cdef");
-		let mut paint_into = |leaf: &mut TextLeaf, frame: &mut Frame| {
+		let paint_into = |leaf: &mut TextLeaf, frame: &mut Frame| {
 			let mut hits = Vec::new();
 			let mut wakes = Vec::new();
 			let mut pc = PaintCtx::new(frame, &ctx, &mut hits, &mut wakes);

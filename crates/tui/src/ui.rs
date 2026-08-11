@@ -312,9 +312,9 @@ impl Ui {
 		let changed = self
 			.root
 			.update(slot, |cached| {
-				let before = cached.comp().props().get(prop).cloned();
+				let before = cached.comp().props().get(prop);
 				cached.comp_mut().props_mut().set(prop, value);
-				let changed = cached.comp().props().get(prop) != before.as_ref();
+				let changed = cached.comp().props().get(prop) != before;
 				(changed, changed)
 			})
 			.unwrap_or(false);
@@ -3900,7 +3900,7 @@ cd</pre>"##,
 		}
 
 		let text = &ui.root.comp().children()[0];
-		assert_eq!(text.comp().props().get(Prop::Italic), Some(&PropValue::Bool(true)),);
+		assert_eq!(text.comp().props().get(Prop::Italic), Some(PropValue::Bool(true)),);
 	}
 
 	#[test]
@@ -4242,7 +4242,7 @@ cd</pre>"##,
 		// The target prop itself is untouched by the mid-flight swap.
 		let target = ui
 			.root
-			.update_id("b", |cached| (cached.comp().props().get(Prop::Bg).cloned(), false))
+			.update_id("b", |cached| (cached.comp().props().get(Prop::Bg), false))
 			.unwrap();
 		assert_eq!(target, Some(PropValue::Color(Color::Rgb(200, 200, 200))));
 

@@ -67,7 +67,10 @@
 //! `<option>` accepts the same `<td>` cells and the hosting `<select>`
 //! owns cursor, filter, hover, and activation over aligned rows.
 
+use std::{num::ParseIntError, str::FromStr};
+
 use omp_core::{Str, StrMut};
+use strum::{EnumString, IntoStaticStr};
 
 use crate::{
 	component::{Cached, Component},
@@ -82,7 +85,8 @@ use crate::{
 };
 
 /// Border glyph set for framed containers (`<box>`, bordered `<row>`/`<col>`).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, EnumString, IntoStaticStr)]
+#[strum(serialize_all = "lowercase")]
 pub enum Border {
 	/// Sharp corners: `┌ ┐ └ ┘`.
 	#[default]
@@ -106,16 +110,32 @@ pub enum Dim {
 	Pct(u8),
 }
 
+impl FromStr for Dim {
+	type Err = ParseIntError;
+
+	/// Parses a fixed cell count (`12`) or a percentage (`50%`).
+	fn from_str(value: &str) -> Result<Self, Self::Err> {
+		match value.strip_suffix('%') {
+			Some(percent) => percent.parse().map(Self::Pct),
+			None => value.parse().map(Self::Cells),
+		}
+	}
+}
+
 /// Cross-axis content alignment.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, EnumString, IntoStaticStr)]
 pub enum Align {
 	#[default]
+	#[strum(to_string = "start", serialize = "left")]
 	Start,
+	#[strum(to_string = "center", serialize = "middle")]
 	Center,
+	#[strum(to_string = "end", serialize = "right")]
 	End,
 }
 /// Main-axis distribution for a row's children.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, EnumString, IntoStaticStr)]
+#[strum(serialize_all = "lowercase")]
 pub enum Justify {
 	#[default]
 	Start,
@@ -125,7 +145,8 @@ pub enum Justify {
 }
 
 /// Which end of a truncated line is clipped away.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, EnumString, IntoStaticStr)]
+#[strum(serialize_all = "lowercase")]
 pub enum Truncate {
 	/// Keep the head; a trailing ellipsis replaces the overflow.
 	#[default]
@@ -134,21 +155,37 @@ pub enum Truncate {
 	/// paths whose distinctive part is the suffix.
 	Start,
 }
+/// How text flows to the layout width.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, EnumString, IntoStaticStr)]
+#[strum(serialize_all = "lowercase")]
+pub enum TextWrap {
+	/// Break at word boundaries, collapsing the whitespace at each break.
+	#[default]
+	Word,
+	/// Flow grapheme-exact to the width like a bare terminal: every break
+	/// is a byte-preserving soft wrap the renderer re-joins for native
+	/// copy.
+	Char,
+}
 
 /// How a container distributes leftover vertical space among its children.
 ///
 /// Unset means "inherit the axis default": a `<row>` stretches its children
 /// to the tallest one (like flex `align-items: stretch`), every other
 /// container leaves them at the top.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, EnumString, IntoStaticStr)]
 pub enum VAlign {
 	/// Children keep their own height, at the top.
+	#[strum(to_string = "start", serialize = "top")]
 	Start,
 	/// Centered in the available height.
+	#[strum(to_string = "center", serialize = "middle")]
 	Center,
 	/// Flush with the bottom.
+	#[strum(to_string = "end", serialize = "bottom")]
 	End,
 	/// Every child's rect spans the full height, so a `bg=` panel fills it.
+	#[strum(to_string = "stretch", serialize = "fill")]
 	Stretch,
 }
 
@@ -378,22 +415,22 @@ impl Parser<'_> {
 		let mut props = apply_attrs(attrs, at, self.source, self.ctx, inherited)?;
 		let tag = self.source.slice_ref(name);
 		let name = tag.as_str();
-		if self.fragment && (props.get(Prop::Id).is_some() || props.get(Prop::When).is_some()) {
+		if self.fragment && (props.contains(Prop::Id) || props.contains(Prop::When)) {
 			return Err(ParseError {
 				message: "id= and when= are not allowed in dynamic Markdown".into(),
 				at,
 			});
 		}
 		if name == "box" {
-			if props.get(Prop::Border).is_none() {
+			if !props.contains(Prop::Border) {
 				props
 					.try_set(Prop::Border, PropValue::Border(Border::Square))
 					.unwrap();
 			}
-			if props.get(Prop::PadX).is_none() {
+			if !props.contains(Prop::PadX) {
 				props.try_set(Prop::PadX, PropValue::U16(1)).unwrap();
 			}
-		} else if name == "spacer" && props.get(Prop::Grow).is_none() {
+		} else if name == "spacer" && !props.contains(Prop::Grow) {
 			props.try_set(Prop::Grow, PropValue::F32(1.0)).unwrap();
 		}
 		let body_start = close + 1;
@@ -1074,8 +1111,8 @@ fn child_props(parent: &Props) -> Props {
 		Prop::Strike,
 		Prop::Truncate,
 	] {
-		if let Some(value) = parent.get(prop).cloned()
-			&& !matches!(value, PropValue::Gradient(_))
+		if let Some(value) = parent.get(prop)
+			&& !matches!(&value, PropValue::Gradient(_))
 		{
 			child.try_set(prop, value).unwrap();
 		}
@@ -1086,7 +1123,7 @@ fn child_props(parent: &Props) -> Props {
 macro_rules! replay_props {
 	($component:ident, $props:expr) => {
 		for prop in <Prop as strum::IntoEnumIterator>::iter() {
-			if let Some(value) = $props.get(prop).cloned() {
+			if let Some(value) = $props.get(prop) {
 				$component = $component.with(prop, value);
 			}
 		}
@@ -1699,13 +1736,13 @@ mod tests {
 		let boxed = child(&root, 0);
 		assert_eq!(
 			boxed.comp().props().get(Prop::Bg),
-			Some(&PropValue::Gradient(Str::new("#000000..#ffffff")))
+			Some(PropValue::Gradient(Str::new("#000000..#ffffff")))
 		);
 		assert_eq!(boxed.comp().props().angle(), 90);
 		let pre = child(boxed, 0);
 		assert_eq!(
 			pre.comp().props().get(Prop::Fg),
-			Some(&PropValue::Gradient(Str::new("accent..info")))
+			Some(PropValue::Gradient(Str::new("accent..info")))
 		);
 		assert_eq!(pre.comp().props().angle(), 45);
 		for source in ["<pre gradient=\"accent..info\">x</pre>", "<pre dir=h>x</pre>"] {

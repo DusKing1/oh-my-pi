@@ -131,8 +131,8 @@ impl FieldData {
 			FieldKind::Text => FieldValue::Text(raw.map(ToString::to_string).unwrap_or_default()),
 		};
 		let i64_prop = |prop| match field.props.get(prop) {
-			Some(PropValue::I64(value)) => Some(*value),
-			Some(PropValue::U16(value)) => Some(i64::from(*value)),
+			Some(PropValue::I64(value)) => Some(value),
+			Some(PropValue::U16(value)) => Some(i64::from(value)),
 			Some(PropValue::Str(value)) => value.parse().ok(),
 			_ => None,
 		};
@@ -617,9 +617,10 @@ fn cycle_choice(field: &mut FieldData, forward: bool) {
 }
 
 fn toggle_multi(field: &mut FieldData, index: u16) {
-	let Some(option) = field.options.get(usize::from(index)).cloned() else {
+	let Some(option) = field.options.get(usize::from(index)) else {
 		return;
 	};
+	let option = option.clone();
 	if let FieldValue::Many(values) = &mut field.value {
 		if values.contains(&option) {
 			values.retain(|value| *value != option);

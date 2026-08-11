@@ -71,8 +71,8 @@ impl Component for Col {
 		// alignment keep full fidelity during a resize.
 		if self.props.border().is_some()
 			|| self.props.valign().is_some()
-			|| self.props.get(Prop::Bg).is_some()
-			|| self.props.get(Prop::On).is_some()
+			|| self.props.contains(Prop::Bg)
+			|| self.props.contains(Prop::On)
 		{
 			return None;
 		}

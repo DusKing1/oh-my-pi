@@ -82,7 +82,7 @@ impl Table {
 	/// Spacing between columns: the `gap` prop, defaulting to two cells so
 	/// adjacent columns never touch.
 	fn column_gap(&self) -> u16 {
-		if self.props.get(Prop::Gap).is_some() {
+		if self.props.contains(Prop::Gap) {
 			self.props.gap()
 		} else {
 			2

@@ -35,8 +35,8 @@ impl Progress {
 
 	fn amount(&self) -> (u64, u64) {
 		let number = |prop| match self.props.get(prop) {
-			Some(PropValue::U16(value)) => Some(u64::from(*value)),
-			Some(PropValue::I64(value)) => Some((*value).max(0) as u64),
+			Some(PropValue::U16(value)) => Some(u64::from(value)),
+			Some(PropValue::I64(value)) => Some(value.max(0) as u64),
 			Some(PropValue::F32(value)) => Some(value.max(0.0) as u64),
 			Some(PropValue::Str(value)) => value.parse().ok(),
 			_ => None,

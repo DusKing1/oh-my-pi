@@ -234,7 +234,7 @@ impl Select {
 			// A bare `filter` flag enables filtering; a string value also
 			// seeds the initial query (rebuilding hosts keep continuity).
 			Prop::Filter => match self.props.get(Prop::Filter) {
-				Some(PropValue::Bool(enabled)) => self.state.filter = *enabled,
+				Some(PropValue::Bool(enabled)) => self.state.filter = enabled,
 				Some(PropValue::Str(seed)) => {
 					self.state.filter = true;
 					self.state.filter_q = seed.as_str().to_owned();
@@ -318,7 +318,7 @@ impl Select {
 
 	/// Spacing between cell columns: the `gap` prop, defaulting to two.
 	fn cell_gap(&self) -> u16 {
-		if self.props.get(Prop::Gap).is_some() {
+		if self.props.contains(Prop::Gap) {
 			self.props.gap()
 		} else {
 			2

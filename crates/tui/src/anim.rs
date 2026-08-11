@@ -29,6 +29,8 @@
 
 use std::time::Duration;
 
+use strum::{EnumString, IntoStaticStr};
+
 use crate::frame::{Color, Style};
 
 /// Repaint cadence for continuously changing values (mid-flight tweens,
@@ -37,16 +39,20 @@ use crate::frame::{Color, Style};
 pub const FRAME: Duration = Duration::from_millis(33);
 
 /// Easing curve applied to a tween's normalized progress.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, EnumString, IntoStaticStr)]
 pub enum Easing {
 	/// Constant velocity.
 	#[default]
+	#[strum(serialize = "linear")]
 	Linear,
 	/// Cubic acceleration from rest.
+	#[strum(serialize = "in")]
 	EaseIn,
 	/// Cubic deceleration to rest.
+	#[strum(serialize = "out")]
 	EaseOut,
 	/// Cubic acceleration, then deceleration.
+	#[strum(serialize = "in-out")]
 	EaseInOut,
 }
 

@@ -221,7 +221,7 @@ impl Row {
 			);
 		let slack = width.saturating_sub(used);
 		let justify = match self.props.get(Prop::Justify) {
-			Some(PropValue::Justify(value)) => *value,
+			Some(PropValue::Justify(value)) => value,
 			_ => Justify::Start,
 		};
 		let mut cursor = x.saturating_add(match justify {

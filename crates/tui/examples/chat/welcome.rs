@@ -1,18 +1,17 @@
 //! Welcome card shown while the chat demo "boots".
 //!
 //! The stippled-eclipse landing shader ([`omp_tui::shader::Eclipse`])
-//! resolves out of black as a full-viewport backdrop — the same brand
-//! palette as the card, so the corona frames it like a landing page. Over
-//! it, a raytraced platter spins up, turns to glass, and settles into the
-//! omp brand gradient. The wide layout connects it to a recency rail with
-//! a moving lock-on beam and sparse depth field. The scene is traced per
-//! frame through [`omp_tui::scene`]'s braille rasterizer, so it animates
-//! inside an ordinary text grid. The card shrinks to a narrow
-//! variant, then to the bare logo, as the viewport tightens.
+//! resolves out of black as a full-viewport backdrop. A raytraced orbital
+//! aperture hangs over a dithered light floor: live violet core, hard cyan
+//! Fresnel edge, smoked-aqua glass ring with a solid rim, vertical calibration
+//! pole, and three orbiting probes. The wide layout sets that hero against a
+//! compact, ruled session index. [`omp_tui::scene`]'s braille rasterizer traces
+//! it per frame inside an ordinary text grid. The card shrinks to a narrow
+//! instrument panel, then to the bare aperture, as the viewport tightens.
 //!
 //! Hovering the card rides the same primitive the retained pipeline's
 //! `hover` prop uses: an [`omp_tui::anim::Tween`] eases a pointer-tracking
-//! glow that sweeps the brand gradient along the border.
+//! cyan edge while the pointer directly orbits the aperture camera.
 #![allow(
 	clippy::suboptimal_flops,
 	reason = "straight port of the omp-welcome-term prototype; mul_add obscures the math"
@@ -32,25 +31,23 @@ use omp_tui::{
 };
 
 // ── card palette (independent of the chat chrome) ──────────────────────────
-const CARD_BG: Color = Color::Rgb(11, 14, 21);
-const CARD_BORDER: Color = Color::Rgb(43, 51, 68);
-const FOOTER_BG: Color = Color::Rgb(7, 10, 15);
-const SELECTED_BG: Color = Color::Rgb(13, 21, 27);
-const TEXT: Color = Color::Rgb(226, 232, 240);
-const TEXT_STRONG: Color = Color::Rgb(248, 250, 252);
-const MUTED: Color = Color::Rgb(100, 116, 139);
-const FAINT: Color = Color::Rgb(51, 65, 85);
-const CYAN: Color = Color::Rgb(56, 189, 248);
-const INDIGO: Color = Color::Rgb(129, 140, 248);
-const VIOLET: Color = Color::Rgb(192, 132, 252);
-const GREEN: Color = Color::Rgb(52, 211, 153);
-const AMBER: Color = Color::Rgb(251, 191, 36);
+const CARD_BG: Color = Color::Rgb(10, 10, 12);
+const CARD_BORDER: Color = Color::Rgb(42, 42, 50);
+const FOOTER_BG: Color = Color::Rgb(0, 0, 0);
+const SELECTED_BG: Color = Color::Rgb(8, 18, 23);
+const TEXT: Color = Color::Rgb(202, 214, 222);
+const TEXT_STRONG: Color = Color::Rgb(230, 250, 255);
+const MUTED: Color = Color::Rgb(112, 126, 136);
+const FAINT: Color = Color::Rgb(53, 53, 63);
+const CYAN: Color = Color::Rgb(68, 207, 255);
+const VIOLET: Color = Color::Rgb(168, 106, 244);
+const AMBER: Color = Color::Rgb(246, 193, 119);
 
 /// Wide card: logo on the left, recent sessions on the right.
-const CARD_COLS: u16 = 90;
-const CARD_ROWS: u16 = 15;
-/// Narrow card: centered logo, condensed key hints.
-const SMOL_COLS: u16 = 33;
+const CARD_COLS: u16 = 98;
+const CARD_ROWS: u16 = 17;
+/// Narrow card: centered aperture, condensed key hints.
+const SMOL_COLS: u16 = 37;
 
 /// Hover transition length; the same feel as the pipeline's `anim` default.
 const HOVER_EASE: Duration = Duration::from_millis(160);
@@ -60,11 +57,11 @@ const AMBIENT_REVEAL_INTERVAL: Duration = Duration::from_millis(40);
 const LOGO_IDLE_INTERVAL: Duration = Duration::from_millis(120);
 const BACKDROP_IDLE_INTERVAL: Duration = Duration::from_millis(80);
 const AMBIENT_REVEAL_END: Duration = Duration::from_millis(1_200);
-/// The eclipse's plate tone behind the bare logo, so braille composites
-/// over the backdrop instead of punching a default-background hole.
-const PLATE: Color = Color::Rgb(9, 9, 11);
+/// The eclipse's black chassis behind the bare aperture, so braille
+/// composites over the backdrop instead of punching a background hole.
+const PLATE: Color = Color::Rgb(10, 10, 12);
 /// Backdrop fade-in horizon (seconds): the eclipse resolves out of black
-/// while the platter does its reveal orbit.
+/// while the aperture completes its reveal orbit.
 const BACKDROP_FADE: f32 = 1.2;
 
 fn ambient_interval(clock: Duration, idle: Duration) -> Duration {
@@ -75,6 +72,42 @@ fn ambient_interval(clock: Duration, idle: Duration) -> Duration {
 	}
 }
 
+fn perimeter_angle(rect: Rect, column: u16, row: u16) -> f32 {
+	let right = rect.x.saturating_add(rect.width.saturating_sub(1));
+	let bottom = rect.y.saturating_add(rect.height.saturating_sub(1));
+	let x = column.clamp(rect.x, right);
+	let y = row.clamp(rect.y, bottom);
+	let width = f32::from(right.saturating_sub(rect.x)).max(1.0);
+	let height = f32::from(bottom.saturating_sub(rect.y)).max(1.0);
+	let x_fraction = f32::from(x.saturating_sub(rect.x)) / width;
+	let y_fraction = f32::from(y.saturating_sub(rect.y)) / height;
+
+	// Terminal cells are roughly twice as tall as they are wide. Compare
+	// physical edge distances, then give every side one 90-degree quadrant.
+	let left_distance = f32::from(x.saturating_sub(rect.x)) * 0.5;
+	let right_distance = f32::from(right.saturating_sub(x)) * 0.5;
+	let top_distance = f32::from(y.saturating_sub(rect.y));
+	let bottom_distance = f32::from(bottom.saturating_sub(y));
+	let quarter = TAU * 0.25;
+	let angle = if left_distance <= bottom_distance
+		&& left_distance <= right_distance
+		&& left_distance <= top_distance
+	{
+		quarter * y_fraction
+	} else if bottom_distance <= right_distance && bottom_distance <= top_distance {
+		quarter * (1.0 + x_fraction)
+	} else if right_distance <= top_distance {
+		quarter * (3.0 - y_fraction)
+	} else {
+		quarter * (4.0 - x_fraction)
+	};
+	angle.rem_euclid(TAU)
+}
+
+fn shortest_angle_delta(from: f32, to: f32) -> f32 {
+	(to - from + PI).rem_euclid(TAU) - PI
+}
+
 const SESSIONS: [(&str, &str); 4] = [
 	("Optimize custom status widget rendering", "NOW"),
 	("Check Unicode character display", "01m"),
@@ -82,58 +115,41 @@ const SESSIONS: [(&str, &str); 4] = [
 	("The Unicode Similarity", "18m"),
 ];
 
-const DUST: [(u16, u16, f32); 9] = [
-	(3, 3, 0.1),
-	(6, 9, 1.7),
-	(9, 2, 2.5),
-	(12, 10, 4.4),
-	(18, 2, 5.2),
-	(21, 11, 3.1),
-	(25, 3, 1.2),
-	(28, 9, 4.8),
-	(30, 6, 0.8),
-];
-const BEAM: [(u16, u16, &str); 8] = [
-	(27, 7, "╱"),
-	(28, 6, "╱"),
-	(29, 6, "─"),
-	(30, 5, "╱"),
-	(31, 5, "─"),
-	(32, 4, "╱"),
-	(33, 4, "━"),
-	(34, 4, "━"),
-];
-const HORIZON: &str = "· · · · · · · · · · · · · · · ";
-
 // ── scene constants ─────────────────────────────────────────────────────────
-const LOGO_COLS: usize = 25;
-const LOGO_ROWS: usize = 10;
+const LOGO_COLS: usize = 29;
+const LOGO_ROWS: usize = 11;
 
-const DISK_RADIUS: f32 = 0.82;
-const DISK_Y: f32 = 0.12;
-const DISK_HALF_THICKNESS: f32 = 0.045;
-const DISK_GLASS_OPACITY: f32 = 0.56;
-const AXIS_RADIUS: f32 = 0.047;
-const AXIS_BOTTOM: f32 = -0.78;
-const AXIS_TOP: f32 = 1.14;
-const FLOOR_Y: f32 = -0.84;
+const CORE_CENTER: Vec3 = vec3(0.0, 0.12, 0.0);
+const CORE_RADIUS: f32 = 0.47;
+const RING_OUTER_RADIUS: f32 = 1.05;
+const RING_INNER_RADIUS: f32 = 0.68;
+const RING_RIM_WIDTH: f32 = 0.09;
+/// Fixed surface opacity of the smoked-aqua glass inside the solid rim.
+const RING_GLASS_OPACITY: f32 = 0.50;
+const SPARK_RADIUS: f32 = 0.055;
+const POLE_RADIUS: f32 = 0.035;
+const POLE_CAP_RADIUS: f32 = 0.065;
+const POLE_BOTTOM: f32 = -0.70;
+const POLE_TOP: f32 = 1.08;
+const FLOOR_Y: f32 = -0.78;
 
-/// The prototype's orbit (xz radius 3.78, eye 3.78·sin 28° above target),
-/// restated as the spherical orbit [`Camera`] expects.
-const CAMERA_DISTANCE: f32 = 4.176;
-const CAMERA_PITCH: f32 = 0.4391;
-const CAMERA_FOCAL: f32 = 2.72;
+/// Orbit camera tuned for a wide, low instrument silhouette.
+const CAMERA_DISTANCE: f32 = 4.05;
+const CAMERA_PITCH: f32 = 0.36;
+const CAMERA_FOCAL: f32 = 2.82;
 
-/// Brand gradient around the disk: cyan → indigo → violet → cyan.
-const DISK_STOPS: [Vec3; 4] = [
-	Vec3::rgb(56, 189, 248),
-	Vec3::rgb(129, 140, 248),
-	Vec3::rgb(192, 132, 252),
-	Vec3::rgb(56, 189, 248),
+/// Cyan instrument ramp: deep mass → hard edge → white glint → cyan.
+const CYAN_STOPS: [Vec3; 4] = [
+	Vec3::rgb(18, 91, 122),
+	Vec3::rgb(68, 207, 255),
+	Vec3::rgb(230, 250, 255),
+	Vec3::rgb(68, 207, 255),
 ];
-const BACKGROUND: Vec3 = Vec3::rgb(11, 14, 21);
-const WHITE: Vec3 = Vec3::rgb(248, 250, 252);
-const INK: Vec3 = Vec3::rgb(3, 4, 7);
+const BACKGROUND: Vec3 = Vec3::rgb(10, 10, 12);
+const WHITE: Vec3 = Vec3::rgb(230, 250, 255);
+const INK: Vec3 = Vec3::rgb(0, 0, 0);
+const LIVE: Vec3 = Vec3::rgb(168, 106, 244);
+const GLASS: Vec3 = Vec3::rgb(118, 238, 218);
 
 type LogoGrid = [[Option<(char, Color)>; LOGO_COLS]; LOGO_ROWS];
 
@@ -148,8 +164,8 @@ pub struct Welcome {
 	camera:         (f32, f32),
 	camera_target:  (f32, f32),
 	last_elapsed:   f32,
-	/// Top-left cell of the logo as last drawn; anchors pointer mapping.
-	logo_origin:    (u16, u16),
+	/// Last visible card or bare-logo bounds used for pointer orbit mapping.
+	orbit_rect:     Rect,
 	logo:           LogoGrid,
 	logo_at:        Option<Duration>,
 	backdrop_frame: Frame,
@@ -172,7 +188,7 @@ impl Welcome {
 			camera: (0.0, 0.0),
 			camera_target: (0.0, 0.0),
 			last_elapsed: 0.0,
-			logo_origin: (0, 0),
+			orbit_rect: Rect::new(0, 0, 1, 1),
 			logo: [[None; LOGO_COLS]; LOGO_ROWS],
 			logo_at: None,
 			backdrop_frame: Frame::new(Size::new(0, 0)),
@@ -184,18 +200,23 @@ impl Welcome {
 		}
 	}
 
-	/// Records the pointer (0-based cells) for the hover zone and retargets
-	/// the camera: the pointer's offset from the logo center maps to camera
-	/// lift and a full half-turn of yaw in each direction, matching the
-	/// prototype.
+	/// Records the pointer and retargets the camera from its nearest card edge.
+	///
+	/// The perimeter runs clockwise: top-left `0°`, bottom-left `90°`,
+	/// bottom-right `180°`, and top-right `270°`. Points inside use their
+	/// physically nearest edge; points outside clamp to the card first.
 	pub fn point_at(&mut self, column: u16, row: u16) {
 		self.pointer = Some((column, row));
 		self.logo_at = None;
-		let center_x = f32::from(self.logo_origin.0) + LOGO_COLS as f32 / 2.0;
-		let center_y = f32::from(self.logo_origin.1) + LOGO_ROWS as f32 / 2.0;
-		let horizontal = ((f32::from(column) - center_x) / (LOGO_COLS as f32 / 2.0)).clamp(-1.0, 1.0);
-		let vertical = ((f32::from(row) - center_y) / (LOGO_ROWS as f32 / 2.0)).clamp(-1.0, 1.0);
-		self.camera_target = (-vertical * 0.42, -horizontal * PI);
+		let bottom = self
+			.orbit_rect
+			.y
+			.saturating_add(self.orbit_rect.height.saturating_sub(1));
+		let center_y = f32::from(self.orbit_rect.y) + f32::from(bottom - self.orbit_rect.y) * 0.5;
+		let half_height = (f32::from(bottom - self.orbit_rect.y) * 0.5).max(1.0);
+		let clamped_row = row.clamp(self.orbit_rect.y, bottom);
+		let vertical = (f32::from(clamped_row) - center_y) / half_height;
+		self.camera_target = (-vertical * 0.42, perimeter_angle(self.orbit_rect, column, row));
 	}
 
 	/// Paints the card centered in `viewport` at `elapsed` since boot and
@@ -213,7 +234,8 @@ impl Welcome {
 		self.last_elapsed = elapsed;
 		let response = 1.0 - (-delta * 10.0).exp();
 		self.camera.0 += (self.camera_target.0 - self.camera.0) * response;
-		self.camera.1 += (self.camera_target.1 - self.camera.1) * response;
+		let yaw_delta = shortest_angle_delta(self.camera.1, self.camera_target.1);
+		self.camera.1 = (self.camera.1 + yaw_delta * response).rem_euclid(TAU);
 		self.draw_backdrop(viewport, clock, elapsed);
 
 		let logo_interval = ambient_interval(clock, LOGO_IDLE_INTERVAL);
@@ -234,13 +256,19 @@ impl Welcome {
 		let Some(cols) = cols else {
 			let left = viewport.width.saturating_sub(LOGO_COLS as u16) / 2;
 			let top = viewport.height.saturating_sub(LOGO_ROWS as u16) / 2;
-			self.logo_origin = (left, top);
+			self.orbit_rect = Rect::new(
+				left,
+				top,
+				(LOGO_COLS as u16).min(viewport.width),
+				(LOGO_ROWS as u16).min(viewport.height),
+			);
 			blit_logo(&mut self.frame, &self.logo, left, top, PLATE);
 			return &self.frame;
 		};
 
 		let left = (viewport.width - cols) / 2;
 		let top = (viewport.height - CARD_ROWS) / 2;
+		self.orbit_rect = Rect::new(left, top, cols, CARD_ROWS);
 		let hovered = self.pointer.is_some_and(|(x, y)| {
 			(left..left + cols).contains(&x) && (top..top + CARD_ROWS).contains(&y)
 		});
@@ -289,14 +317,11 @@ impl Welcome {
 	fn draw_card(&mut self, cols: u16, left: u16, top: u16, elapsed: f32, hover: f32) {
 		let full = cols == CARD_COLS;
 		let logo_left = if full {
-			left + 3
+			left + 4
 		} else {
 			left + (cols - LOGO_COLS as u16) / 2
 		};
-		self.logo_origin = (logo_left, top + 2);
-		// Pointer-tracking border glow: the brand gradient sampled by angle
-		// around the card center (the disk's own palette), strongest near
-		// the pointer, scaled by the eased hover amount.
+
 		let pointer = self.pointer;
 		let center =
 			(f32::from(left) + f32::from(cols) / 2.0, f32::from(top) + f32::from(CARD_ROWS) / 2.0);
@@ -311,8 +336,9 @@ impl Welcome {
 				return on_card(CARD_BORDER);
 			}
 			let angle = (f32::from(y) - center.1).atan2((f32::from(x) - center.0) * 0.5);
-			let brand = vec3_color(gradient(angle - elapsed * 0.5));
-			on_card(CARD_BORDER.lerp(brand, glow))
+			let glint = (0.5 + 0.5 * (elapsed * 2.4 - angle * 2.0).sin()) * 0.38;
+			let edge = CYAN.lerp(TEXT_STRONG, glint);
+			on_card(CARD_BORDER.lerp(edge, glow))
 		};
 		let frame = &mut self.frame;
 		frame.fill(Rect::new(left, top, cols, CARD_ROWS), on_card(TEXT));
@@ -320,7 +346,7 @@ impl Welcome {
 		let right = left + cols - 1;
 		let bottom = top + CARD_ROWS - 1;
 		let divider = bottom - 2;
-		let (tl, tr, bl, br, horizontal, vertical) = self.charset.border(Border::Round);
+		let (tl, tr, bl, br, horizontal, vertical) = self.charset.border(Border::Square);
 		let grid = self.charset.grid();
 		let mut glyph = [0_u8; 4];
 		frame.put(left, top, tl.encode_utf8(&mut glyph), edge_at(left, top));
@@ -343,21 +369,19 @@ impl Welcome {
 
 		frame.put(left + 2, top, self.title.as_str(), on_card(TEXT_STRONG));
 		if full {
-			frame.put(left + 34, top, " SESSION ORBIT ", on_card(FAINT));
-			draw_dust(frame, left, top, elapsed);
+			frame.put(left + 39, top, " SESSION INDEX ", on_card(FAINT));
+			let live = fmts!(" {} LIVE ", self.charset.icon(Icon::Enabled));
+			frame.put(left + cols - 11, top, &live, on_card(VIOLET));
 			draw_sessions(frame, left, top, self.charset);
-			draw_beam(frame, left, top, elapsed);
 		}
 
+		draw_instrument_hud(frame, logo_left, top);
 		blit_logo(frame, &self.logo, logo_left, top + 2, CARD_BG);
 
 		let footer = divider + 1;
 		frame.fill(Rect::new(left + 1, footer, cols - 2, 1), on_footer(TEXT));
 		if full {
-			frame.put(left + 3, divider, " SHORTCUTS ", on_card(FAINT));
-			let dot = fmts!(" {} ", self.charset.icon(Icon::Enabled));
-			let x = frame.put(left + cols - 21, top, &dot, on_card(GREEN));
-			frame.put(x, top, "rust-analyzer ", on_card(MUTED));
+			frame.put(left + 3, divider, " COMMAND DECK ", on_card(FAINT));
 			draw_full_hints(frame, left, footer);
 		} else {
 			draw_smol_hints(frame, left, cols, footer);
@@ -371,46 +395,27 @@ impl Default for Welcome {
 	}
 }
 
-fn draw_dust(frame: &mut Frame, left: u16, top: u16, elapsed: f32) {
-	for &(x, y, offset) in &DUST {
-		let pulse = 0.5 + 0.5 * (elapsed * 1.4 + offset).sin();
-		let color = FAINT.lerp(CYAN, pulse * 0.28);
-		frame.put(left + x, top + y, "·", on_card(color));
-	}
-	frame.put(left + 1, top + 7, HORIZON, on_card(FAINT.lerp(INDIGO, 0.16)));
-	frame.put(left + 14, top + 1, "+Z", on_card(FAINT));
-}
-
-fn draw_beam(frame: &mut Frame, left: u16, top: u16, elapsed: f32) {
-	let phase = (elapsed * 9.0) as usize % BEAM.len();
-	for (index, &(x, y, glyph)) in BEAM.iter().enumerate() {
-		let direct = index.abs_diff(phase);
-		let distance = direct.min(BEAM.len() - direct);
-		let color = match distance {
-			0 => TEXT_STRONG,
-			1 => CYAN,
-			_ => FAINT.lerp(INDIGO, 0.34),
-		};
-		frame.put(left + x, top + y, glyph, on_card(color));
-	}
+fn draw_instrument_hud(frame: &mut Frame, logo_left: u16, top: u16) {
+	frame.put(logo_left, top + 1, "00 / APERTURE", on_card(FAINT));
+	frame.put(logo_left + 25, top + 1, "Y+", on_card(FAINT));
 }
 
 fn draw_sessions(frame: &mut Frame, left: u16, top: u16, charset: Charset) {
-	let (_, _, _, _, _, vertical) = charset.border(Border::Round);
+	let (_, _, _, _, _, vertical) = charset.border(Border::Square);
 	let mut glyph = [0_u8; 4];
-	let panel_x = left + 36;
+	let panel_x = left + 40;
 	frame.put(panel_x, top + 2, "RECENT SESSIONS", on_card(MUTED));
-	frame.put(left + CARD_COLS - 14, top + 2, "4 / LOCAL", on_card(FAINT));
-	for y in top + 4..=top + 10 {
-		frame.put(panel_x, y, vertical.encode_utf8(&mut glyph), on_card(FAINT.lerp(INDIGO, 0.18)));
+	frame.put(left + CARD_COLS - 15, top + 2, "04 / LOCAL", on_card(FAINT));
+	for y in top + 4..=top + 11 {
+		frame.put(panel_x, y, vertical.encode_utf8(&mut glyph), on_card(FAINT));
 	}
 	for (index, (label, age)) in SESSIONS.iter().enumerate() {
 		let y = top + 4 + index as u16 * 2;
 		if index == 0 {
-			frame.fill(Rect::new(panel_x - 2, y, CARD_COLS - 35, 1), on_selected(TEXT));
-			frame.put(panel_x - 2, y, charset.rail(), on_selected(GREEN));
-			frame.put(panel_x, y, charset.radio(true), on_selected(GREEN));
-			frame.put(panel_x + 2, y, age, on_selected(GREEN));
+			frame.fill(Rect::new(panel_x - 2, y, CARD_COLS - 39, 1), on_selected(TEXT));
+			frame.put(panel_x - 2, y, charset.rail(), on_selected(CYAN));
+			frame.put(panel_x, y, charset.radio(true), on_selected(CYAN));
+			frame.put(panel_x + 2, y, age, on_selected(CYAN));
 			frame.put(panel_x + 7, y, label, on_selected(TEXT_STRONG));
 		} else {
 			frame.put(panel_x, y, charset.radio(false), on_card(FAINT));
@@ -418,28 +423,29 @@ fn draw_sessions(frame: &mut Frame, left: u16, top: u16, charset: Charset) {
 			frame.put(panel_x + 7, y, label, on_card(MUTED));
 		}
 	}
+	frame.put(panel_x, top + 12, "INDEXED / LOCAL", on_card(FAINT));
 }
 
 fn draw_full_hints(frame: &mut Frame, left: u16, y: u16) {
 	frame.put(left + 3, y, "#", on_footer(CYAN));
 	frame.put(left + 5, y, "actions", on_footer(MUTED));
-	frame.put(left + 14, y, "/", on_footer(GREEN));
+	frame.put(left + 14, y, "/", on_footer(FAINT));
 	frame.put(left + 16, y, "commands", on_footer(MUTED));
 	frame.put(left + 27, y, "!", on_footer(AMBER));
 	frame.put(left + 29, y, "shell", on_footer(MUTED));
-	frame.put(left + 37, y, "$", on_footer(VIOLET));
+	frame.put(left + 37, y, "$", on_footer(FAINT));
 	frame.put(left + 39, y, "python", on_footer(MUTED));
-	frame.put(left + CARD_COLS - 23, y, "↑↓ move", on_footer(FAINT));
-	frame.put(left + CARD_COLS - 13, y, "↵ resume", on_footer(TEXT_STRONG));
+	frame.put(left + CARD_COLS - 26, y, "↑↓ select", on_footer(FAINT));
+	frame.put(left + CARD_COLS - 14, y, "↵ resume", on_footer(CYAN).bold());
 }
 
 fn draw_smol_hints(frame: &mut Frame, left: u16, cols: u16, y: u16) {
-	frame.put(left + 3, y, "#", on_footer(CYAN).bold());
-	frame.put(left + 5, y, "/", on_footer(CYAN).bold());
-	frame.put(left + 7, y, "!", on_footer(AMBER).bold());
-	frame.put(left + 9, y, "$", on_footer(GREEN).bold());
+	frame.put(left + 3, y, "#", on_footer(CYAN));
+	frame.put(left + 5, y, "/", on_footer(FAINT));
+	frame.put(left + 7, y, "!", on_footer(AMBER));
+	frame.put(left + 9, y, "$", on_footer(FAINT));
 	frame.put(left + cols - 14, y, "enter", on_footer(FAINT));
-	frame.put(left + cols - 8, y, "resume", on_footer(TEXT_STRONG).bold());
+	frame.put(left + cols - 8, y, "resume", on_footer(CYAN).bold());
 }
 
 fn blit_logo(frame: &mut Frame, logo: &LogoGrid, left: u16, top: u16, background: Color) {
@@ -476,9 +482,9 @@ fn ease_in(progress: f32) -> f32 {
 	clamped * clamped
 }
 
-/// Opaque platter → glass blend, driven by boot time.
-fn color_mix(elapsed: f32) -> f32 {
-	ease_in((elapsed - 0.18) / 0.58)
+/// Raises the live core and cyan edge after the boot beat.
+fn activation_curve(elapsed: f32) -> f32 {
+	ease_in((elapsed - 0.18) / 0.72)
 }
 
 /// One decaying full camera orbit as the logo reveals.
@@ -487,11 +493,11 @@ fn reveal_orbit(elapsed: f32) -> f32 {
 	TAU * (1.0 - (1.0 - progress).powi(3))
 }
 
-/// Disk spin: quadratic ramp into a constant angular speed.
-fn disk_rotation(elapsed: f32) -> f32 {
+/// Orbital motion: a measured ramp into a slow instrument rotation.
+fn orbit_rotation(elapsed: f32) -> f32 {
 	let spinning = (elapsed - 0.18).max(0.0);
-	let ramp = 0.40;
-	let angular_speed = TAU / 2.4;
+	let ramp = 0.55;
+	let angular_speed = TAU / 4.8;
 	if spinning < ramp {
 		angular_speed * spinning * spinning / (2.0 * ramp)
 	} else {
@@ -499,28 +505,23 @@ fn disk_rotation(elapsed: f32) -> f32 {
 	}
 }
 
-/// Samples the brand gradient by angle around the disk.
-fn gradient(angle: f32) -> Vec3 {
+/// Samples the cyan instrument ramp by angle.
+fn cyan_ramp(angle: f32) -> Vec3 {
 	let position = (angle / TAU + 0.5).rem_euclid(1.0) * 3.0;
 	let index = (position as usize).min(2);
-	DISK_STOPS[index].lerp(DISK_STOPS[index + 1], position - index as f32)
+	CYAN_STOPS[index].lerp(CYAN_STOPS[index + 1], position - index as f32)
 }
 
-/// Encodes a linear-light color for the terminal.
-fn vec3_color(color: Vec3) -> Color {
-	Color::from(color)
-}
-
-/// Three soft light shafts crossing the stage in the sun's plane.
+/// Three soft light shafts crossing the floor in the key light's plane.
 fn sun_rays(x: f32, z: f32) -> f32 {
 	let length = 0.55_f32.hypot(0.38);
 	let (hx, hz) = (-0.55 / length, 0.38 / length);
 	let across = x * -hz + z * hx;
 	let along = x * hx + z * hz;
-	let rays = (-((across + 0.56) / 0.075).powi(2)).exp()
-		+ (-((across + 0.04) / 0.055).powi(2)).exp()
-		+ (-((across - 0.47) / 0.09).powi(2)).exp();
-	let envelope = (-((along + 0.20) / 2.45).powi(4)).exp();
+	let rays = (-((across + 0.52) / 0.065).powi(2)).exp()
+		+ (-((across + 0.02) / 0.045).powi(2)).exp()
+		+ (-((across - 0.44) / 0.075).powi(2)).exp();
+	let envelope = (-((along + 0.16) / 2.35).powi(4)).exp();
 	(rays * envelope).clamp(0.0, 1.0)
 }
 
@@ -528,66 +529,136 @@ fn sphere_depth(origin: Vec3, direction: Vec3, center: Vec3, radius: f32) -> f32
 	let offset = origin - center;
 	let projection = offset.dot(direction);
 	let discriminant = projection * projection - (offset.dot(offset) - radius * radius);
-	let root = -projection - discriminant.max(0.0).sqrt();
-	if discriminant >= 0.0 && root > 0.0 {
-		root
+	if discriminant < 0.0 {
+		return f32::INFINITY;
+	}
+	let root = discriminant.sqrt();
+	let near = -projection - root;
+	if near > 0.0 {
+		near
 	} else {
-		f32::INFINITY
+		let far = -projection + root;
+		if far > 0.0 { far } else { f32::INFINITY }
 	}
 }
 
-/// Central axis: a capped cylinder with a slightly bulged top sphere.
-fn axis_hit(origin: Vec3, direction: Vec3) -> (f32, bool, Vec3) {
-	let quadratic = direction.x * direction.x + direction.z * direction.z;
-	let linear = 2.0 * (origin.x * direction.x + origin.z * direction.z);
-	let constant = origin.x * origin.x + origin.z * origin.z - AXIS_RADIUS * AXIS_RADIUS;
-	let discriminant = linear * linear - 4.0 * quadratic * constant;
-	let root = (-linear - discriminant.max(0.0).sqrt()) / (2.0 * quadratic).max(1e-8);
-	let hit_y = origin.y + direction.y * root;
-	let cylinder = if discriminant >= 0.0 && root > 0.0 && (AXIS_BOTTOM..=AXIS_TOP).contains(&hit_y)
-	{
-		root
-	} else {
-		f32::INFINITY
-	};
-	let cap_center = vec3(0.0, AXIS_TOP, 0.0);
-	let cap = sphere_depth(origin, direction, cap_center, AXIS_RADIUS * 1.75);
-	let depth = cylinder.min(cap);
-	if !depth.is_finite() {
-		return (f32::INFINITY, false, vec3(0.0, 1.0, 0.0));
+fn ray_distance(origin: Vec3, direction: Vec3, center: Vec3) -> f32 {
+	let along = (center - origin).dot(direction).max(0.0);
+	(origin + direction * along - center).length()
+}
+
+const fn ring_basis() -> (Vec3, Vec3, Vec3) {
+	(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0))
+}
+
+fn ring_hit(
+	origin: Vec3,
+	direction: Vec3,
+	normal: Vec3,
+	tangent: Vec3,
+	bitangent: Vec3,
+) -> Option<(f32, Vec3, f32, f32, Vec3)> {
+	let denominator = normal.dot(direction);
+	if denominator.abs() <= 1.0e-5 {
+		return None;
+	}
+	let depth = normal.dot(CORE_CENTER - origin) / denominator;
+	if depth <= 0.0 {
+		return None;
 	}
 	let point = origin + direction * depth;
-	let normal = if cap < cylinder {
-		(point - cap_center).normalize()
+	let offset = point - CORE_CENTER;
+	let u = offset.dot(tangent);
+	let v = offset.dot(bitangent);
+	let radial = u.hypot(v);
+	if !(RING_INNER_RADIUS..=RING_OUTER_RADIUS).contains(&radial) {
+		return None;
+	}
+	let facing = if denominator < 0.0 {
+		normal
+	} else {
+		normal * -1.0
+	};
+	Some((depth, point, radial, v.atan2(u), facing))
+}
+
+fn ring_opacity(radial: f32) -> f32 {
+	if radial >= RING_OUTER_RADIUS - RING_RIM_WIDTH {
+		1.0
+	} else {
+		RING_GLASS_OPACITY
+	}
+}
+
+fn pole_hit(origin: Vec3, direction: Vec3) -> Option<(f32, Vec3, Vec3)> {
+	let quadratic = direction.x * direction.x + direction.z * direction.z;
+	let linear = 2.0 * (origin.x * direction.x + origin.z * direction.z);
+	let constant = origin.x * origin.x + origin.z * origin.z - POLE_RADIUS * POLE_RADIUS;
+	let mut cylinder_depth = f32::INFINITY;
+	if quadratic > 1.0e-8 {
+		let discriminant = linear * linear - 4.0 * quadratic * constant;
+		if discriminant >= 0.0 {
+			let root = discriminant.sqrt();
+			let denominator = 2.0 * quadratic;
+			for depth in [(-linear - root) / denominator, (-linear + root) / denominator] {
+				let height = origin.y + direction.y * depth;
+				if depth > 0.0 && (POLE_BOTTOM..=POLE_TOP).contains(&height) {
+					cylinder_depth = depth;
+					break;
+				}
+			}
+		}
+	}
+
+	let top_center = vec3(0.0, POLE_TOP, 0.0);
+	let bottom_center = vec3(0.0, POLE_BOTTOM, 0.0);
+	let top_depth = sphere_depth(origin, direction, top_center, POLE_CAP_RADIUS);
+	let bottom_depth = sphere_depth(origin, direction, bottom_center, POLE_CAP_RADIUS);
+	let cap_depth = top_depth.min(bottom_depth);
+	let depth = cylinder_depth.min(cap_depth);
+	if !depth.is_finite() {
+		return None;
+	}
+	let point = origin + direction * depth;
+	let normal = if cap_depth < cylinder_depth {
+		let center = if top_depth < bottom_depth {
+			top_center
+		} else {
+			bottom_center
+		};
+		(point - center).normalize()
 	} else {
 		vec3(point.x, 0.0, point.z).normalize()
 	};
-	(depth, true, normal)
+	Some((depth, point, normal))
+}
+
+fn spark_position(index: usize, angle: f32) -> Vec3 {
+	let phase = angle * 0.82 + index as f32 * (TAU / 3.0);
+	vec3(1.11 * phase.cos(), CORE_CENTER.y + 0.24 * (phase * 2.0).sin(), 1.11 * phase.sin())
 }
 
 /// Terminal display lift in linear light so braille remains legible on the
-/// dark card.
+/// black chassis.
 fn tone(color: Vec3) -> Vec3 {
-	color * 1.28 + Vec3::rgb(4, 4, 4)
+	color * 1.20 + Vec3::rgb(3, 3, 4)
 }
 
-/// Per-frame scene state shared by every ray: sun direction, disk spin,
-/// glass transition, and the pointer camera offsets.
-struct Platter {
+/// Per-frame orbital aperture state shared by every ray.
+struct Aperture {
 	sun:        Vec3,
 	angle:      f32,
-	transition: f32,
+	activation: f32,
 	/// Smoothed pointer camera from [`Welcome`]: (lift, yaw).
 	pointer:    (f32, f32),
 }
 
-impl Platter {
+impl Aperture {
 	fn new(pointer: (f32, f32)) -> Self {
-		Self { sun: vec3(-0.55, 1.0, 0.38).normalize(), angle: 0.0, transition: 0.0, pointer }
+		Self { sun: vec3(-0.55, 1.0, 0.38).normalize(), angle: 0.0, activation: 0.0, pointer }
 	}
 
-	/// Floor glow: light shafts, the disk's shadow, tinted transmission
-	/// through the glass, and a soft rim reflection.
+	/// Dithered floor aura, cast shafts, soft shadow, and core reflection.
 	fn ground(&self, origin: Vec3, direction: Vec3) -> (Vec3, f32) {
 		if direction.y >= 0.0 {
 			return (BACKGROUND, 0.0);
@@ -598,141 +669,182 @@ impl Platter {
 		}
 		let floor = origin + direction * depth;
 		let stage =
-			(-0.42 * ((floor.x.abs() / 2.30).powi(4) + ((floor.z + 0.15).abs() / 1.70).powi(4))).exp();
-
-		let sun_depth = (DISK_Y - DISK_HALF_THICKNESS - FLOOR_Y) / self.sun.y;
+			(-0.52 * ((floor.x.abs() / 2.20).powi(4) + ((floor.z + 0.12).abs() / 1.55).powi(4))).exp();
+		let sun_depth = (CORE_CENTER.y - FLOOR_Y) / self.sun.y;
 		let sunlit = floor + self.sun * sun_depth;
-		let shadow_radius = sunlit.x.hypot(sunlit.z);
-		let occlusion = smooth(((DISK_RADIUS + 0.08 - shadow_radius) / 0.16).clamp(0.0, 1.0));
-		let rays = sun_rays(floor.x, floor.z);
-
-		let neutral_alpha = stage * rays * (1.0 - occlusion) * 0.36;
-		let neutral = (BACKGROUND + vec3(0.36, 0.33, 0.27) * (stage * rays)).clamp01();
-		let mut color = neutral * neutral_alpha + BACKGROUND * (1.0 - neutral_alpha);
-		let mut alpha = neutral_alpha;
-
-		let transmission_alpha =
-			stage * sun_rays(sunlit.x, sunlit.z) * occlusion * self.transition * 0.64;
-		let transmission =
-			(BACKGROUND + gradient(sunlit.z.atan2(sunlit.x) - self.angle) * 0.86).clamp01();
-		color = transmission * transmission_alpha + color * (1.0 - transmission_alpha);
-		alpha = transmission_alpha + alpha * (1.0 - transmission_alpha);
+		let shadow_distance = (sunlit.x - CORE_CENTER.x).hypot(sunlit.z - CORE_CENTER.z);
+		let occlusion = smooth(((CORE_RADIUS + 0.16 - shadow_distance) / 0.20).clamp(0.0, 1.0));
+		let floor_radius = floor.x.hypot((floor.z + 0.10) * 1.28);
+		let aura = (-(floor_radius / 0.94).powi(2)).exp() * self.activation;
+		let dither = 0.72 + 0.28 * ((floor.x * 21.0).sin() * (floor.z * 17.0).sin()).max(0.0);
+		let shafts = sun_rays(floor.x, floor.z) * (1.0 - occlusion);
+		let cyan_alpha = stage * (shafts * 0.24 + aura * dither * 0.34);
+		let live_alpha = stage * aura * occlusion * 0.30;
+		let mut alpha = (cyan_alpha + live_alpha).clamp(0.0, 0.78);
+		let live_mix = live_alpha / (cyan_alpha + live_alpha).max(1.0e-6);
+		let mut color = CYAN_STOPS[1]
+			.lerp(LIVE, live_mix)
+			.lerp(WHITE, shafts * 0.14);
 
 		let mirrored = vec3(direction.x, -direction.y, direction.z);
-		let reflected_depth = (DISK_Y - DISK_HALF_THICKNESS - FLOOR_Y) / mirrored.y.max(1e-6);
-		let reflected = floor + mirrored * reflected_depth;
-		let reflected_radius = reflected.x.hypot(reflected.z);
-		if reflected_radius <= DISK_RADIUS {
-			let edge = smooth(((DISK_RADIUS - reflected_radius) / 0.13).clamp(0.0, 1.0));
-			let grazing = (1.0 + direction.y).clamp(0.0, 1.0);
-			let reflection_alpha = self.transition * edge * (0.22 + 0.28 * grazing);
-			let reflection = gradient(reflected.z.atan2(reflected.x) - self.angle);
-			color = reflection * reflection_alpha + color * (1.0 - reflection_alpha);
+		let reflected_depth =
+			sphere_depth(floor + vec3(0.0, 1.0e-4, 0.0), mirrored, CORE_CENTER, CORE_RADIUS);
+		if reflected_depth.is_finite() {
+			let reflected_point = floor + mirrored * reflected_depth;
+			let reflected_normal = (reflected_point - CORE_CENTER).normalize();
+			let edge = (1.0 - reflected_normal.dot(mirrored * -1.0).abs()).powi(3);
+			let reflection_alpha = self.activation * (0.18 + edge * 0.26);
+			color = color.lerp(CYAN_STOPS[1].lerp(LIVE, 0.28), reflection_alpha);
 			alpha = reflection_alpha + alpha * (1.0 - reflection_alpha);
 		}
 		(color, alpha)
 	}
+
+	fn core_color(&self, point: Vec3, direction: Vec3) -> Vec3 {
+		let normal = (point - CORE_CENTER).normalize();
+		let view = direction * -1.0;
+		let halfway = (self.sun + view).normalize();
+		let diffuse = normal.dot(self.sun).max(0.0);
+		let specular = normal.dot(halfway).max(0.0).powi(72);
+		let fresnel = (1.0 - normal.dot(view).max(0.0)).powi(3);
+		let longitude = normal.z.atan2(normal.x);
+		let band_phase = normal.y * 7.0 + longitude * 2.0 - self.angle * 1.35;
+		let scan = (-(band_phase.sin() / 0.13).powi(2)).exp();
+		let pulse = 0.58 + 0.42 * (self.angle * 2.4).sin();
+		let mass = INK.lerp(LIVE, self.activation * (0.18 + 0.24 * pulse));
+		let reflected = direction.reflect(normal);
+		(mass * (0.54 + 0.28 * diffuse)
+			+ cyan_ramp(reflected.z.atan2(reflected.x)) * (0.18 + fresnel * 0.64)
+			+ CYAN_STOPS[1] * (scan * self.activation * 0.34)
+			+ WHITE * (specular * 0.78 + fresnel * 0.34))
+			.clamp01()
+	}
+
+	fn ring_color(&self, radial: f32, local_angle: f32, normal: Vec3, direction: Vec3) -> Vec3 {
+		let view = direction * -1.0;
+		let halfway = (self.sun + view).normalize();
+		let diffuse = normal.dot(self.sun).max(0.0);
+		let specular = normal.dot(halfway).max(0.0).powi(96);
+		let fresnel = (1.0 - normal.dot(view).max(0.0)).powi(3);
+		let outer_edge =
+			smooth(((radial - (RING_OUTER_RADIUS - RING_RIM_WIDTH)) / RING_RIM_WIDTH).clamp(0.0, 1.0));
+		let inner_edge = smooth(((RING_INNER_RADIUS + 0.045 - radial) / 0.045).clamp(0.0, 1.0));
+		let edge = (outer_edge + inner_edge).clamp(0.0, 1.0);
+		let angle = local_angle - self.angle;
+		let ticks = (angle * 18.0).cos().abs().powi(24);
+		let live_distance = (angle - 0.42 + PI).rem_euclid(TAU) - PI;
+		let live_arc = (-(live_distance / 0.22).powi(2)).exp() * self.activation;
+		let body = BACKGROUND.lerp(GLASS, 0.20 + 0.24 * diffuse);
+		(body * (0.48 + 0.24 * diffuse)
+			+ GLASS * (edge * 0.62 + fresnel * 0.28)
+			+ CYAN_STOPS[1] * (ticks * 0.14)
+			+ LIVE * (live_arc * 0.72)
+			+ WHITE * (specular * 0.96 + live_arc * 0.18))
+			.clamp01()
+	}
+
+	fn pole_color(&self, point: Vec3, normal: Vec3, direction: Vec3) -> Vec3 {
+		let view = direction * -1.0;
+		let halfway = (self.sun + view).normalize();
+		let diffuse = normal.dot(self.sun).max(0.0);
+		let specular = normal.dot(halfway).max(0.0).powi(64);
+		let fresnel = (1.0 - normal.dot(view).max(0.0)).powi(3);
+		let height = ((point.y - POLE_BOTTOM) / (POLE_TOP - POLE_BOTTOM)).clamp(0.0, 1.0);
+		let pulse_height = 0.5 + 0.5 * (self.angle * 1.8).sin();
+		let pulse = (-((height - pulse_height) / 0.075).powi(2)).exp() * self.activation;
+		(CYAN_STOPS[1] * (0.38 + 0.40 * diffuse + 0.22 * fresnel)
+			+ WHITE * (0.20 + 0.72 * specular + 0.82 * pulse)
+			+ LIVE * (0.20 * pulse))
+			.clamp01()
+	}
+
+	fn spark_color(&self, index: usize, point: Vec3, center: Vec3, direction: Vec3) -> Vec3 {
+		let normal = (point - center).normalize();
+		let view = direction * -1.0;
+		let halfway = (self.sun + view).normalize();
+		let diffuse = normal.dot(self.sun).max(0.0);
+		let specular = normal.dot(halfway).max(0.0).powi(48);
+		let fresnel = (1.0 - normal.dot(view).max(0.0)).powi(3);
+		let base = if index == 0 { LIVE } else { CYAN_STOPS[1] };
+		(base * (0.42 + 0.58 * diffuse) + WHITE * (specular * 0.80 + fresnel * 0.48)).clamp01()
+	}
 }
 
-impl Trace for Platter {
+impl Trace for Aperture {
 	fn advance(&mut self, now: Duration) -> Camera {
 		let elapsed = now.as_secs_f32();
-		self.angle = disk_rotation(elapsed);
-		self.transition = color_mix(elapsed);
+		self.angle = orbit_rotation(elapsed);
+		self.activation = activation_curve(elapsed);
 		Camera {
-			target:   vec3(0.0, 0.08, 0.0),
-			yaw:      self.pointer.1 + reveal_orbit(elapsed) + (elapsed * 0.31).sin() * 0.018,
+			target:   CORE_CENTER,
+			yaw:      self.pointer.1 + reveal_orbit(elapsed) + (elapsed * 0.24).sin() * 0.024,
 			pitch:    CAMERA_PITCH,
 			distance: CAMERA_DISTANCE,
-			lift:     self.pointer.0.clamp(-0.42, 0.42) + (elapsed * 0.55).sin() * 0.014,
+			lift:     self.pointer.0.clamp(-0.42, 0.42) + (elapsed * 0.42).sin() * 0.018,
 			focal:    CAMERA_FOCAL,
 		}
 	}
 
-	/// Shades one sample: returns the color composited over the card
-	/// background and the coverage used for braille dot thresholds.
+	/// Shades one supersample of the core, ring, vertical pole, probes, halo,
+	/// and floor.
 	fn shade(&self, ray: Ray) -> (Vec3, f32) {
 		let Ray { origin, dir: direction } = ray;
-
-		// Top surface of the disk.
-		let mut disk_depth = f32::INFINITY;
-		let mut disk_point = Vec3::ZERO;
-		let mut disk_radial = 0.0;
-		if direction.y < 0.0 {
-			let depth = (DISK_Y + DISK_HALF_THICKNESS - origin.y) / direction.y;
-			if depth > 0.0 {
-				let point = origin + direction * depth;
-				let radial = point.x.hypot(point.z);
-				if radial <= DISK_RADIUS {
-					disk_depth = depth;
-					disk_point = point;
-					disk_radial = radial;
-				}
-			}
-		}
-		let disk_visible = disk_depth.is_finite();
-		let (axis_depth, axis_visible, axis_normal) = axis_hit(origin, direction);
-
 		let (ground_color, ground_alpha) = self.ground(origin, direction);
 		let mut color = ground_color * ground_alpha + BACKGROUND * (1.0 - ground_alpha);
 		let mut alpha = ground_alpha;
 
-		let view = direction * -1.0;
-		let halfway = if disk_visible || axis_visible {
-			(self.sun + view).normalize()
+		let core_depth = sphere_depth(origin, direction, CORE_CENTER, CORE_RADIUS);
+		let halo_distance = ray_distance(origin, direction, CORE_CENTER);
+		let halo = smooth(((CORE_RADIUS + 0.24 - halo_distance) / 0.24).clamp(0.0, 1.0));
+		let halo_alpha = halo * self.activation * 0.44;
+		if halo_alpha > 0.0 {
+			let halo_color = CYAN_STOPS[1].lerp(WHITE, halo * 0.22);
+			color = halo_color * halo_alpha + color * (1.0 - halo_alpha);
+			alpha = halo_alpha + alpha * (1.0 - halo_alpha);
+		}
+
+		let mut nearest_depth = f32::INFINITY;
+		let mut nearest_color = if core_depth.is_finite() {
+			let point = origin + direction * core_depth;
+			nearest_depth = core_depth;
+			self.core_color(point, direction)
 		} else {
 			Vec3::ZERO
 		};
-		let axis_color = if axis_visible {
-			let diffuse = axis_normal.dot(self.sun).max(0.0);
-			let specular = axis_normal.dot(halfway).max(0.0).powi(44);
-			(WHITE * (0.32 + 0.68 * diffuse + 0.48 * specular)).clamp01()
-		} else {
-			Vec3::ZERO
-		};
 
-		if axis_visible && axis_depth > disk_depth {
-			color = axis_color;
-			alpha = 1.0;
+		let (ring_normal, tangent, bitangent) = ring_basis();
+		let ring_sample = ring_hit(origin, direction, ring_normal, tangent, bitangent).map(
+			|(depth, _, radial, local_angle, facing)| {
+				(depth, self.ring_color(radial, local_angle, facing, direction), ring_opacity(radial))
+			},
+		);
+
+		if let Some((depth, point, normal)) = pole_hit(origin, direction)
+			&& depth < nearest_depth
+		{
+			nearest_depth = depth;
+			nearest_color = self.pole_color(point, normal, direction);
 		}
 
-		if disk_visible {
-			let diffuse = self.sun.y.max(0.0);
-			let specular = halfway.y.max(0.0).powi(72);
-			let fresnel = (1.0 - view.y.max(0.0)).powi(4);
-			let material_angle = disk_point.z.atan2(disk_point.x) - self.angle;
-			let rim = smooth(((disk_radial - (DISK_RADIUS - 0.075)) / 0.055).clamp(0.0, 1.0));
-			let streak_angle = (material_angle - 0.32 + PI).rem_euclid(TAU) - PI;
-			let streak = (-(streak_angle / 0.19).powi(2)).exp();
-			let incident = sun_rays(disk_point.x, disk_point.z);
-
-			let opaque =
-				(WHITE * (0.30 + 0.27 * diffuse + 0.36 * incident + 0.20 * specular)).clamp01();
-			let glass = (gradient(material_angle) * (0.34 + 0.70 * diffuse)
-				+ WHITE * (0.72 * specular + 0.16 * fresnel + 0.20 * streak))
-				.clamp01();
-			let border_strength = rim * self.transition;
-			let mut disk_color = opaque
-				.lerp(glass, self.transition)
-				.lerp(WHITE, border_strength);
-
-			// Orbiting index marker punched into the surface.
-			let marker_x = 0.52 * self.angle.cos();
-			let marker_z = 0.52 * self.angle.sin();
-			let marker_distance = (disk_point.x - marker_x).hypot(disk_point.z - marker_z);
-			let marker = smooth(((0.10 - marker_distance) / 0.035).clamp(0.0, 1.0));
-			disk_color = disk_color.lerp(INK, marker);
-
-			let disk_alpha = (1.0 - self.transition * (1.0 - DISK_GLASS_OPACITY))
-				.max(border_strength * 0.96)
-				.max(marker * 0.98);
-			color = disk_color * disk_alpha + color * (1.0 - disk_alpha);
-			alpha = disk_alpha + alpha * (1.0 - disk_alpha);
+		for index in 0..3 {
+			let center = spark_position(index, self.angle);
+			let depth = sphere_depth(origin, direction, center, SPARK_RADIUS);
+			if depth < nearest_depth {
+				let point = origin + direction * depth;
+				nearest_depth = depth;
+				nearest_color = self.spark_color(index, point, center, direction);
+			}
 		}
 
-		if axis_visible && axis_depth <= disk_depth {
-			color = axis_color;
+		if nearest_depth.is_finite() {
+			color = nearest_color;
 			alpha = 1.0;
+		}
+		if let Some((ring_depth, ring_color, ring_opacity)) = ring_sample
+			&& ring_depth < nearest_depth
+		{
+			color = ring_color * ring_opacity + color * (1.0 - ring_opacity);
+			alpha = ring_opacity + alpha * (1.0 - ring_opacity);
 		}
 		(tone(color), alpha)
 	}
@@ -741,20 +853,33 @@ impl Trace for Platter {
 /// Renders the scene at `elapsed` under the pointer camera and packs it
 /// into braille cells through [`scene::rasterize`].
 fn logo_cells(elapsed: f32, pointer: (f32, f32)) -> LogoGrid {
-	let mut platter = Platter::new(pointer);
-	let camera = platter.advance(Duration::from_secs_f32(elapsed));
+	let mut aperture = Aperture::new(pointer);
+	let camera = aperture.advance(Duration::from_secs_f32(elapsed));
 	let mut grid: LogoGrid = [[None; LOGO_COLS]; LOGO_ROWS];
-	scene::rasterize(&platter, &camera, LOGO_COLS as u16, LOGO_ROWS as u16, |x, y, glyph, color| {
-		grid[y as usize][x as usize] = Some((glyph, color));
-	});
+	scene::rasterize(
+		&aperture,
+		&camera,
+		LOGO_COLS as u16,
+		LOGO_ROWS as u16,
+		|x, y, glyph, color| {
+			grid[y as usize][x as usize] = Some((glyph, color));
+		},
+	);
 	grid
 }
 
 #[cfg(test)]
 mod tests {
-	use omp_tui::test_support::{frame_cell_style, frame_row_text};
+	use omp_tui::{
+		scene::{Ray, Trace},
+		test_support::{frame_cell_style, frame_row_text},
+	};
 
-	use super::{CARD_BORDER, CARD_ROWS, Charset, Duration, Size, Welcome};
+	use super::{
+		Aperture, CARD_BORDER, CARD_ROWS, CORE_CENTER, Charset, Duration, PI, RING_GLASS_OPACITY,
+		RING_INNER_RADIUS, RING_OUTER_RADIUS, RING_RIM_WIDTH, Rect, Size, TAU, Welcome,
+		perimeter_angle, ring_basis, shortest_angle_delta,
+	};
 
 	fn rows(viewport: Size, elapsed_ms: u64) -> Vec<String> {
 		let mut welcome = Welcome::new(Charset::NerdFont);
@@ -771,18 +896,30 @@ mod tests {
 		})
 	}
 
+	fn assert_angle(actual: f32, expected: f32) {
+		let delta = shortest_angle_delta(actual, expected).abs();
+		assert!(delta < 1.0e-6, "angle {actual} differs from {expected} by {delta}");
+	}
+
 	#[test]
 	fn full_card_centers_sessions_and_hints() {
 		let rows = rows(Size::new(100, 21), 2_000);
-		// Card spans rows 3..=17 when centered in a 100x21 viewport.
-		assert!(rows[3].contains("omp v"), "title chip in the top border: {}", rows[3]);
-		assert!(rows[3].contains("rust-analyzer"), "LSP chip in the top border");
-		assert!(rows[5].contains("RECENT SESSIONS") && rows[5].contains("4 / LOCAL"));
-		assert!(rows[7].contains("Optimize custom status widget rendering"));
-		assert!(rows[15].contains("SHORTCUTS"), "divider labels the command rail");
-		assert!(rows[16].contains("actions") && rows[16].contains("resume"));
-		assert!(rows[17].contains('╰'), "bottom border closes the card");
-		assert!(has_lit_braille(&rows), "the disk renders lit braille cells");
+		// Card spans rows 2..=18 when centered in a 100x21 viewport.
+		assert!(rows[2].contains("omp v"), "title chip in the top border: {}", rows[2]);
+		assert!(rows[2].contains("LIVE"), "live state in the top border");
+		assert!(rows[4].contains("RECENT SESSIONS") && rows[4].contains("04 / LOCAL"));
+		assert!(rows[6].contains("Optimize custom status widget rendering"));
+		assert!(rows[16].contains("COMMAND DECK"), "divider labels the command rail");
+		assert!(rows[17].contains("actions") && rows[17].contains("resume"));
+		assert!(
+			!rows[15].contains("CPU RT")
+				&& !rows[15].contains("32 RAYS")
+				&& !rows[15].contains("LIVE"),
+			"aperture footer has no runtime status labels: {}",
+			rows[15]
+		);
+		assert!(rows[18].contains('└'), "bottom border closes the card");
+		assert!(has_lit_braille(&rows), "the aperture renders lit braille cells");
 	}
 
 	#[test]
@@ -790,7 +927,7 @@ mod tests {
 		let rows = rows(Size::new(40, CARD_ROWS), 2_000);
 		assert!(rows[0].contains("omp v"));
 		assert!(rows.iter().all(|row| !row.contains("RECENT SESSIONS")));
-		assert!(rows[13].contains("resume"));
+		assert!(rows[15].contains("resume"));
 		assert!(has_lit_braille(&rows));
 	}
 
@@ -798,13 +935,13 @@ mod tests {
 	fn bare_logo_survives_a_tiny_viewport() {
 		let rows = rows(Size::new(29, 11), 2_000);
 		assert!(has_lit_braille(&rows), "the logo still renders without the card");
-		assert!(rows.iter().all(|row| !row.contains('╭')), "no card chrome at this size");
+		assert!(rows.iter().all(|row| !row.contains('┌')), "no card chrome at this size");
 	}
 
 	#[test]
 	fn eclipse_backdrop_fills_the_margins() {
 		let rows = rows(Size::new(100, 21), 2_000);
-		// Card spans rows 3..=17; everything outside is half-block pixels.
+		// Card spans rows 2..=18; everything outside is half-block pixels.
 		assert!(rows[0].chars().all(|glyph| glyph == '▀'), "top margin is backdrop: {}", rows[0]);
 		assert!(rows[20].chars().all(|glyph| glyph == '▀'), "bottom margin is backdrop");
 	}
@@ -825,16 +962,42 @@ mod tests {
 		};
 
 		let mut orbited = Welcome::new(Charset::NerdFont);
-		// First render fixes the logo origin the pointer maps against; the
+		// First render fixes the card bounds the pointer maps against; the
 		// second, a full second later, lets the exponential chase converge.
 		orbited.render(viewport, settle);
-		orbited.point_at(0, 0);
+		orbited.point_at(98, 18);
 		let frame = orbited.render(viewport, sample);
 		let pointed: Vec<String> = (0..frame.size().height)
 			.map(|row| frame_row_text(frame, row))
 			.collect();
 
 		assert_ne!(baseline, pointed, "pointing away from the logo center orbits the camera");
+	}
+
+	#[test]
+	fn pointer_perimeter_maps_clockwise_from_the_top_left() {
+		let mut welcome = Welcome::new(Charset::NerdFont);
+		welcome.render(Size::new(100, 21), Duration::from_secs(1));
+		for ((column, row), expected) in
+			[((1, 2), 0.0), ((1, 18), PI * 0.5), ((98, 18), PI), ((98, 2), PI * 1.5)]
+		{
+			welcome.point_at(column, row);
+			assert_angle(welcome.camera_target.1, expected);
+		}
+
+		let rect = Rect::new(10, 20, 101, 51);
+		assert_angle(perimeter_angle(rect, 60, 21), PI * 1.75);
+		assert_angle(perimeter_angle(rect, 60, 69), PI * 0.75);
+		assert_angle(perimeter_angle(rect, 11, 45), PI * 0.25);
+		assert_angle(perimeter_angle(rect, 109, 45), PI * 1.25);
+	}
+
+	#[test]
+	fn pointer_orbit_crosses_zero_by_the_shortest_arc() {
+		let forward = shortest_angle_delta(TAU - 0.05, 0.05);
+		let backward = shortest_angle_delta(0.05, TAU - 0.05);
+		assert!((forward - 0.10).abs() < 1.0e-5);
+		assert!((backward + 0.10).abs() < 1.0e-5);
 	}
 
 	#[test]
@@ -846,13 +1009,29 @@ mod tests {
 		// Hover just under a bare stretch of the top border (clear of the
 		// title and panel labels): one frame starts the tween, a later
 		// frame samples it settled.
-		welcome.point_at(27, 4);
+		welcome.point_at(27, 3);
 		welcome.render(viewport, Duration::from_millis(1_050));
 		let frame = welcome.render(viewport, Duration::from_millis(2_000));
-		let near_pointer = frame_cell_style(frame, 27, 3).foreground_color();
-		let far_border = frame_cell_style(frame, 8, 17).foreground_color();
-		assert!(frame_row_text(frame, 3).contains('╭'), "the card stays on row 3 while hovered");
+		let near_pointer = frame_cell_style(frame, 27, 2).foreground_color();
+		let far_border = frame_cell_style(frame, 8, 18).foreground_color();
+		assert!(frame_row_text(frame, 2).contains('┌'), "the card stays on row 2 while hovered");
 		assert_ne!(near_pointer, CARD_BORDER, "border glows near the pointer");
 		assert_eq!(far_border, CARD_BORDER, "the glow stays local to the pointer");
+	}
+
+	#[test]
+	fn glass_ring_keeps_a_half_transparent_interior_and_solid_rim() {
+		let mut aperture = Aperture::new((0.0, 0.0));
+		aperture.activation = 1.0;
+		let (normal, tangent, _) = ring_basis();
+		let coverage_at = |radial: f32| {
+			let target = CORE_CENTER + tangent * radial;
+			Trace::shade(&aperture, Ray::new(target - normal * 2.0, normal)).1
+		};
+
+		let glass_radius = (RING_INNER_RADIUS + RING_OUTER_RADIUS - RING_RIM_WIDTH) * 0.5;
+		assert!((coverage_at(glass_radius) - RING_GLASS_OPACITY).abs() < 1.0e-6);
+		let rim_radius = RING_OUTER_RADIUS - RING_RIM_WIDTH * 0.5;
+		assert!((coverage_at(rim_radius) - 1.0).abs() < 1.0e-6);
 	}
 }

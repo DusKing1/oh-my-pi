@@ -1,194 +1,18 @@
 //! Typed component properties with allocation-free well-known slots.
 
-use std::{fmt, time::Duration};
+use std::{fmt, str::FromStr, time::Duration};
 
-use omp_core::{SparseMap, Str, sparse_index::TrySparseIndex};
-use strum::{Display, EnumIter, EnumString, FromRepr};
+use omp_core::Str;
+use strum::{Display, EnumIter, EnumString};
 
 use crate::{
 	anim::Easing,
 	context::Theme,
 	frame::{Color, Style},
-	markup::{Align, Border, Dim, Justify, Truncate, VAlign},
+	markup::{Align, Border, Dim, Justify, TextWrap, Truncate, VAlign},
 };
 
-/// A well-known component property.
-///
-/// The markup attribute name of every variant is its kebab-cased ident
-/// (`PadX` ⇒ `pad-x`), parsed by [`Props::prop_of`] and emitted by
-/// `Display`; `VAlign` alone overrides the derived `v-align` to keep the
-/// established `valign`.
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Display, EnumIter, EnumString, FromRepr)]
-#[strum(serialize_all = "kebab-case")]
-pub enum Prop {
-	/// Space between adjacent children.
-	Gap,
-	/// Shorthand padding applied to both axes.
-	Pad,
-	/// Horizontal inner padding.
-	PadX,
-	/// Vertical inner padding.
-	PadY,
-	/// Flexible share of remaining layout space.
-	Grow,
-	/// Preferred width in cells or percent.
-	W,
-	/// Minimum width or numeric field value.
-	Min,
-	/// Maximum width or numeric field value.
-	Max,
-	/// Preferred height in rows.
-	H,
-	/// Border glyph family.
-	Border,
-	/// Border color or gradient.
-	Bc,
-	/// Alternate name for the border color or gradient.
-	Edge,
-	/// Extends the background through border cells.
-	Bleed,
-	/// Display title for a container or step.
-	Title,
-	/// Horizontal placement of the border title.
-	TitleAlign,
-	/// Display footer on a framed container's bottom edge.
-	Footer,
-	/// Horizontal placement of the border footer.
-	FooterAlign,
-	/// Horizontal content alignment.
-	Align,
-	/// Vertical content alignment.
-	#[strum(serialize = "valign")]
-	VAlign,
-	/// Distribution of children along the layout axis.
-	Justify,
-	/// Foreground color, theme token, or gradient.
-	Fg,
-	/// Background color, theme token, or gradient.
-	Bg,
-	/// Shorthand background color, theme token, or gradient.
-	On,
-	/// Enables bold text.
-	Bold,
-	/// Enables dim text.
-	Dim,
-	/// Enables italic text.
-	Italic,
-	/// Enables underlined text.
-	Underline,
-	/// Swaps foreground and background colors.
-	Reverse,
-	/// Enables struck-through text.
-	Strike,
-	/// Enables wrapping rows; on text, a value selects the wrapping mode.
-	Wrap,
-	/// Enables text truncation.
-	Truncate,
-	/// Crops transparent image margins before cell sampling.
-	Trim,
-	/// Stable identifier used by updates and conditions.
-	Id,
-	/// Visibility condition referencing another component value.
-	When,
-	/// Initial or submitted field value.
-	Value,
-	/// Space-delimited choices for a selection field.
-	Options,
-	/// User-facing field or item label.
-	Label,
-	/// Supporting description for an option.
-	Desc,
-	/// Field control kind.
-	Kind,
-	/// Numeric increment or wizard step metadata.
-	Step,
-	/// Enables multiple selection.
-	Multi,
-	/// Enables interactive option filtering.
-	Filter,
-	/// Allows values outside the listed options.
-	Custom,
-	/// Obscures input contents.
-	Mask,
-	/// Marks an option as the recommended default.
-	Recommended,
-	/// Expands a tree node initially.
-	Open,
-	/// Requires a nonempty field value.
-	Required,
-	/// Pattern that a field value must satisfy.
-	Match,
-	/// Image or external content source.
-	Src,
-	/// Leading icon name.
-	Icon,
-	/// Compact status label.
-	Badge,
-	/// Emits a submit event when activated.
-	Submit,
-	/// Emits a cancel event when activated.
-	Cancel,
-	/// Requires a second activation before committing.
-	Confirm,
-	/// Hint shown by an empty input.
-	Placeholder,
-	/// Gradient direction in screen degrees.
-	Angle,
-	/// Applies accent styling to an action.
-	Accent,
-	/// Selects vertical rendering where supported.
-	Vertical,
-	/// Transition duration for animatable properties.
-	Anim,
-	/// Easing curve applied to `anim` transitions.
-	Ease,
-	/// Gradient rotation period.
-	Spin,
-	/// Border color or gradient applied while the pointer rests on the
-	/// component or one of its descendants.
-	Hover,
-	/// Rows the component rises toward while hovered.
-	Lift,
-	/// Opts the component into the keyboard focus ring.
-	Focus,
-	/// Tree guide connector family; a bare flag selects the square set.
-	Guides,
-	/// Task lifecycle state on a todo item.
-	Status,
-	/// Sweep period of the brightness crest across text content.
-	Shimmer,
-	/// Catch-up horizon for progressively revealed streamed text.
-	Reveal,
-}
-
-/// Invalid numeric property discriminant.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PropIndexError(usize);
-
-impl fmt::Display for PropIndexError {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "invalid property index {}", self.0)
-	}
-}
-impl std::error::Error for PropIndexError {}
-
-impl TrySparseIndex for Prop {
-	type Error = PropIndexError;
-
-	fn index(&self) -> usize {
-		*self as usize
-	}
-
-	fn try_from_index(index: usize) -> Result<Self, Self::Error> {
-		u8::try_from(index)
-			.ok()
-			.and_then(Self::from_repr)
-			.ok_or(PropIndexError(index))
-	}
-}
-
-/// A parsed component property value.
+/// A parsed component property value at the dynamic markup boundary.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PropValue {
 	/// Boolean flag.
@@ -215,10 +39,403 @@ pub enum PropValue {
 	VAlign(VAlign),
 	/// Child distribution along the layout axis.
 	Justify(Justify),
+	/// Text wrapping mode.
+	Wrap(TextWrap),
 	/// Uninterpreted textual value.
 	Str(Str),
 	/// Easing curve for `anim` transitions.
 	Easing(Easing),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum PropColor {
+	Solid(Color),
+	Token(Str),
+	Gradient(Str),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Number {
+	U16(u16),
+	F32(f32),
+	I64(i64),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Scalar {
+	Bool(bool),
+	U16(u16),
+	F32(f32),
+	I64(i64),
+	Str(Str),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Toggle<T> {
+	Off,
+	Flag(T),
+	Value(T),
+}
+
+impl<T> Toggle<T> {
+	fn value(&self) -> Option<&T> {
+		match self {
+			Self::Off => None,
+			Self::Flag(value) | Self::Value(value) => Some(value),
+		}
+	}
+}
+
+/// Value a toggle property assumes when written as a bare flag.
+trait BareFlag: Sized {
+	const ON: Self;
+}
+
+impl BareFlag for f32 {
+	/// `grow` claims one share.
+	const ON: Self = 1.0;
+}
+
+impl BareFlag for u16 {
+	/// `lift` rises one row.
+	const ON: Self = 1;
+}
+
+impl BareFlag for Truncate {
+	/// `truncate` clips the tail.
+	const ON: Self = Self::End;
+}
+
+impl BareFlag for Border {
+	/// `guides` draws the square connector set.
+	const ON: Self = Self::Square;
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum WrapValue {
+	Rows(bool),
+	Text(TextWrap),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum FilterValue {
+	Enabled(bool),
+	Query(Str),
+}
+
+/// Property duration in whole milliseconds; a bare flag selects `DEFAULT`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(transparent)]
+struct Ms<const DEFAULT: u64>(Duration);
+
+impl<const DEFAULT: u64> BareFlag for Ms<DEFAULT> {
+	const ON: Self = Self(Duration::from_millis(DEFAULT));
+}
+
+impl<const DEFAULT: u64> From<Ms<DEFAULT>> for Duration {
+	fn from(value: Ms<DEFAULT>) -> Self {
+		value.0
+	}
+}
+
+impl<const DEFAULT: u64> FromStr for Ms<DEFAULT> {
+	type Err = ();
+
+	/// Parses `250`, `250ms`, or `0.4s` into whole milliseconds.
+	fn from_str(value: &str) -> Result<Self, Self::Err> {
+		let value = value.trim();
+		let millis: u16 = if let Some(millis) = value.strip_suffix("ms") {
+			millis.trim().parse().map_err(|_| ())?
+		} else if let Some(seconds) = value.strip_suffix('s') {
+			let seconds: f32 = seconds.trim().parse().map_err(|_| ())?;
+			if !(0.0..=65.0).contains(&seconds) {
+				return Err(());
+			}
+			(seconds * 1000.0).round() as u16
+		} else {
+			value.parse().map_err(|_| ())?
+		};
+		Ok(Self(Duration::from_millis(u64::from(millis))))
+	}
+}
+
+/// Gradient direction wrapped into `0..360` screen degrees.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(transparent)]
+struct Angle(u16);
+
+impl From<Angle> for u16 {
+	fn from(value: Angle) -> Self {
+		value.0
+	}
+}
+
+impl FromStr for Angle {
+	type Err = ();
+
+	/// Parses `90`, `-90`, or `270deg`.
+	fn from_str(value: &str) -> Result<Self, Self::Err> {
+		let value = value.trim();
+		let value = value.strip_suffix("deg").unwrap_or(value);
+		let degrees: i32 = value.parse().map_err(|_| ())?;
+		Ok(Self(degrees.rem_euclid(360) as u16))
+	}
+}
+
+macro_rules! define_prop_getter {
+	($field:ident[ref $type:ty; $doc:literal]) => {
+		#[doc = $doc]
+		pub fn $field(&self) -> Option<&$type> {
+			self.$field.as_ref()
+		}
+	};
+	($field:ident[copy $type:ty; $doc:literal]) => {
+		#[doc = $doc]
+		pub fn $field(&self) -> Option<$type> {
+			self.$field
+		}
+	};
+	($field:ident[default $type:ty = $default:expr; $doc:literal]) => {
+		#[doc = $doc]
+		pub fn $field(&self) -> $type {
+			self.$field.map_or($default, Into::into)
+		}
+	};
+	($field:ident[toggle $type:ty; $doc:literal]) => {
+		#[doc = $doc]
+		pub fn $field(&self) -> Option<$type> {
+			self
+				.$field
+				.as_ref()
+				.and_then(Toggle::value)
+				.copied()
+				.map(Into::into)
+		}
+	};
+	($field:ident[toggle_default $type:ty = $default:expr; $doc:literal]) => {
+		#[doc = $doc]
+		pub fn $field(&self) -> $type {
+			self
+				.$field
+				.as_ref()
+				.and_then(Toggle::value)
+				.copied()
+				.map_or($default, Into::into)
+		}
+	};
+}
+
+macro_rules! define_props {
+	(
+		$(
+			$(#[$meta:meta])*
+			$variant:ident($name:literal)
+			$(@ $setter:ident)?
+			$(=> $field:ident: $type:ty $([$($getter:tt)+])?)?;
+		)+
+	) => {
+		/// A well-known component property used by markup and dynamic updates.
+		#[repr(u8)]
+		#[derive(Clone, Copy, Debug, Eq, PartialEq, Display, EnumIter, EnumString)]
+		pub enum Prop {
+			$(
+				$(#[$meta])*
+				#[strum(serialize = $name)]
+				$variant,
+			)+
+		}
+
+		/// Component attributes with one concrete slot per well-known property.
+		#[derive(Clone, Debug, Default)]
+		pub struct Props {
+			$($(	$field: Option<$type>,)?)+
+			rest: Vec<(Str, PropValue)>,
+		}
+
+		impl Props {
+			$($($(define_prop_getter!($field [$($getter)+]);)?)?)+
+
+			fn value(&self, prop: Prop) -> Option<PropValue> {
+				match prop {
+					$($(Prop::$variant => self.$field.as_ref().map(ToPropValue::to_prop_value),)?)+
+					$($(Prop::$variant => {
+						let _ = stringify!($setter);
+						None
+					},)?)+
+				}
+			}
+
+			fn contains_known(&self, prop: Prop) -> bool {
+				match prop {
+					$($(Prop::$variant => self.$field.is_some(),)?)+
+					$($(Prop::$variant => {
+						let _ = stringify!($setter);
+						false
+					},)?)+
+				}
+			}
+
+			fn store(&mut self, prop: Prop, value: PropValue) -> Result<(), PropError> {
+				match prop {
+					$($(
+						Prop::$variant => {
+							self.$field = Some(<$type as FromPropValue>::from_prop(prop, value)?);
+							Ok(())
+						},
+					)?)+
+					$($(Prop::$variant => self.$setter(value),)?)+
+				}
+			}
+
+			fn clear(&mut self, prop: Prop) {
+				match prop {
+					$($(Prop::$variant => self.$field = None,)?)+
+					$($(Prop::$variant => {
+						let _ = stringify!($setter);
+					},)?)+
+				}
+			}
+		}
+	};
+}
+
+define_props! {
+	/// Space between adjacent children.
+	Gap("gap") => gap: u16 [default u16 = 0; "Returns the inter-child spacing, defaulting to zero."];
+	/// Shorthand padding applied to both axes.
+	Pad("pad") @ set_pad;
+	/// Horizontal inner padding.
+	PadX("pad-x") => pad_x: u16;
+	/// Vertical inner padding.
+	PadY("pad-y") => pad_y: u16;
+	/// Flexible share of remaining layout space.
+	Grow("grow") => grow: Toggle<f32> [toggle f32; "Returns the flexible growth weight, with a bare flag meaning one."];
+	/// Preferred width in cells or percent.
+	W("w") => w: Dim [copy Dim; "Returns the preferred width as a cell or percentage dimension."];
+	/// Minimum width or numeric field value.
+	Min("min") => min: Number;
+	/// Maximum width or numeric field value.
+	Max("max") => max: Number;
+	/// Preferred height in rows.
+	H("h") => h: u16 [copy u16; "Returns the preferred height in rows."];
+	/// Border glyph family.
+	Border("border") => border: Border [copy Border; "Returns the selected border glyph family."];
+	/// Border color or gradient.
+	Bc("bc") => bc: PropColor;
+	/// Alternate name for the border color or gradient.
+	Edge("edge") => edge: PropColor;
+	/// Extends the background through border cells.
+	Bleed("bleed") => bleed: bool [default bool = false; "Reports whether the background extends through the border."];
+	/// Display title for a container or step.
+	Title("title") => title: Str [ref Str; "Returns the user-facing component title."];
+	/// Horizontal placement of the border title.
+	TitleAlign("title-align") => title_align: Align [default Align = Align::Start; "Returns the border-title placement, defaulting to the start edge."];
+	/// Display footer on a framed container's bottom edge.
+	Footer("footer") => footer: Str [ref Str; "Returns the footer shown on a framed container's bottom border."];
+	/// Horizontal placement of the border footer.
+	FooterAlign("footer-align") => footer_align: Align [default Align = Align::Start; "Returns the border-footer placement, defaulting to the start edge."];
+	/// Horizontal content alignment.
+	Align("align") => align: Align [default Align = Align::Start; "Returns horizontal alignment, defaulting to the start edge."];
+	/// Vertical content alignment.
+	VAlign("valign") => valign: VAlign [copy VAlign; "Returns the configured vertical alignment."];
+	/// Distribution of children along the layout axis.
+	Justify("justify") => justify: Justify;
+	/// Foreground color, theme token, or gradient.
+	Fg("fg") => fg: PropColor;
+	/// Background color, theme token, or gradient.
+	Bg("bg") => bg: PropColor;
+	/// Shorthand background color, theme token, or gradient.
+	On("on") => on: PropColor;
+	/// Enables bold text.
+	Bold("bold") => bold: bool;
+	/// Enables dim text.
+	Dim("dim") => dim: bool;
+	/// Enables italic text.
+	Italic("italic") => italic: bool;
+	/// Enables underlined text.
+	Underline("underline") => underline: bool;
+	/// Swaps foreground and background colors.
+	Reverse("reverse") => reverse: bool;
+	/// Enables struck-through text.
+	Strike("strike") => strike: bool;
+	/// Enables wrapping rows; on text, a value selects the wrapping mode.
+	Wrap("wrap") => wrap: WrapValue;
+	/// Enables text truncation.
+	Truncate("truncate") => truncate: Toggle<Truncate> [toggle Truncate; "Returns the configured truncation side, if truncation is enabled."];
+	/// Crops transparent image margins before cell sampling.
+	Trim("trim") => trim: bool;
+	/// Stable identifier used by updates and conditions.
+	Id("id") => id: Str [ref Str; "Returns the stable component identifier."];
+	/// Visibility condition referencing another component value.
+	When("when") => when: Str;
+	/// Initial or submitted field value.
+	Value("value") => value: Scalar;
+	/// Space-delimited choices for a selection field.
+	Options("options") => options: Str;
+	/// User-facing field or item label.
+	Label("label") => label: Str;
+	/// Supporting description for an option.
+	Desc("desc") => desc: Str;
+	/// Field control kind.
+	Kind("kind") => kind: Str;
+	/// Numeric increment or wizard step metadata.
+	Step("step") => step: i64;
+	/// Enables multiple selection.
+	Multi("multi") => multi: bool;
+	/// Enables interactive option filtering.
+	Filter("filter") => filter: FilterValue;
+	/// Allows values outside the listed options.
+	Custom("custom") => custom: bool;
+	/// Obscures input contents.
+	Mask("mask") => mask: bool;
+	/// Marks an option as the recommended default.
+	Recommended("recommended") => recommended: bool;
+	/// Expands a tree node initially.
+	Open("open") => open: bool;
+	/// Requires a nonempty field value.
+	Required("required") => required: bool;
+	/// Pattern that a field value must satisfy.
+	Match("match") => match_pattern: Str;
+	/// Image or external content source.
+	Src("src") => src: Str;
+	/// Leading icon name.
+	Icon("icon") => icon: Str;
+	/// Compact status label.
+	Badge("badge") => badge: Str;
+	/// Emits a submit event when activated.
+	Submit("submit") => submit: bool;
+	/// Emits a cancel event when activated.
+	Cancel("cancel") => cancel: bool;
+	/// Requires a second activation before committing.
+	Confirm("confirm") => confirm: bool;
+	/// Hint shown by an empty input.
+	Placeholder("placeholder") => placeholder: Str;
+	/// Gradient direction in screen degrees.
+	Angle("angle") => angle: Angle [default u16 = 0; "Returns the normalized gradient direction in screen degrees."];
+	/// Applies accent styling to an action.
+	Accent("accent") => accent: bool;
+	/// Selects vertical rendering where supported.
+	Vertical("vertical") => vertical: bool;
+	/// Transition duration for animatable properties.
+	Anim("anim") => anim: Toggle<Ms<200>> [toggle Duration; "Returns the transition duration, with a bare flag selecting 200ms."];
+	/// Easing curve applied to `anim` transitions.
+	Ease("ease") => ease: Easing [default Easing = Easing::EaseOut; "Returns the easing curve, defaulting to ease-out."];
+	/// Gradient rotation period.
+	Spin("spin") => spin: Toggle<Ms<3000>> [toggle Duration; "Returns the gradient rotation period, with a bare flag selecting 3s."];
+	/// Border color or gradient applied while the pointer rests on the component.
+	Hover("hover") => hover: PropColor;
+	/// Rows the component rises toward while hovered.
+	Lift("lift") => lift: Toggle<u16> [toggle_default u16 = 0; "Returns rows of hover elevation, with a bare flag meaning one."];
+	/// Opts the component into the keyboard focus ring.
+	Focus("focus") => focus: bool;
+	/// Tree guide connector family; a bare flag selects the square set.
+	Guides("guides") => guides: Toggle<Border> [toggle Border; "Returns the tree guide connector family; a bare flag means square."];
+	/// Task lifecycle state on a todo item.
+	Status("status") => status: Str;
+	/// Sweep period of the brightness crest across text content.
+	Shimmer("shimmer") => shimmer: Toggle<Ms<2000>> [toggle Duration; "Returns the shimmer period, with a bare flag selecting 2s."];
+	/// Catch-up horizon for progressively revealed streamed text.
+	Reveal("reveal") => reveal: Toggle<Ms<250>> [toggle Duration; "Returns the reveal horizon, with a bare flag selecting 250ms."];
 }
 
 /// A property value rejected by the key-aware parser.
@@ -235,11 +452,111 @@ impl fmt::Display for PropError {
 }
 impl std::error::Error for PropError {}
 
-/// Typed component attributes.
-#[derive(Clone, Debug, Default)]
-pub struct Props {
-	known:  SparseMap<Prop, PropValue>,
-	custom: Vec<(Str, PropValue)>,
+trait ToPropValue {
+	fn to_prop_value(&self) -> PropValue;
+}
+
+macro_rules! to_prop_value {
+	($type:ty, $variant:ident) => {
+		impl ToPropValue for $type {
+			fn to_prop_value(&self) -> PropValue {
+				PropValue::$variant(self.clone())
+			}
+		}
+	};
+}
+
+to_prop_value!(Color, Color);
+to_prop_value!(bool, Bool);
+to_prop_value!(u16, U16);
+to_prop_value!(f32, F32);
+to_prop_value!(i64, I64);
+to_prop_value!(Str, Str);
+to_prop_value!(Dim, Dim);
+to_prop_value!(Border, Border);
+to_prop_value!(Align, Align);
+to_prop_value!(VAlign, VAlign);
+to_prop_value!(Justify, Justify);
+to_prop_value!(TextWrap, Wrap);
+to_prop_value!(Easing, Easing);
+
+impl ToPropValue for PropColor {
+	fn to_prop_value(&self) -> PropValue {
+		match self {
+			Self::Solid(value) => PropValue::Color(*value),
+			Self::Token(value) => PropValue::Token(value.clone()),
+			Self::Gradient(value) => PropValue::Gradient(value.clone()),
+		}
+	}
+}
+
+impl ToPropValue for Number {
+	fn to_prop_value(&self) -> PropValue {
+		match self {
+			Self::U16(value) => PropValue::U16(*value),
+			Self::F32(value) => PropValue::F32(*value),
+			Self::I64(value) => PropValue::I64(*value),
+		}
+	}
+}
+
+impl ToPropValue for Scalar {
+	fn to_prop_value(&self) -> PropValue {
+		match self {
+			Self::Bool(value) => PropValue::Bool(*value),
+			Self::U16(value) => PropValue::U16(*value),
+			Self::F32(value) => PropValue::F32(*value),
+			Self::I64(value) => PropValue::I64(*value),
+			Self::Str(value) => PropValue::Str(value.clone()),
+		}
+	}
+}
+
+impl<T: ToPropValue> ToPropValue for Toggle<T> {
+	fn to_prop_value(&self) -> PropValue {
+		match self {
+			Self::Off => PropValue::Bool(false),
+			Self::Flag(_) => PropValue::Bool(true),
+			Self::Value(value) => value.to_prop_value(),
+		}
+	}
+}
+
+impl ToPropValue for WrapValue {
+	fn to_prop_value(&self) -> PropValue {
+		match self {
+			Self::Rows(value) => PropValue::Bool(*value),
+			Self::Text(value) => PropValue::Wrap(*value),
+		}
+	}
+}
+
+impl ToPropValue for FilterValue {
+	fn to_prop_value(&self) -> PropValue {
+		match self {
+			Self::Enabled(value) => PropValue::Bool(*value),
+			Self::Query(value) => PropValue::Str(value.clone()),
+		}
+	}
+}
+
+impl ToPropValue for Truncate {
+	fn to_prop_value(&self) -> PropValue {
+		PropValue::Str(Str::new_static((*self).into()))
+	}
+}
+
+impl ToPropValue for Angle {
+	fn to_prop_value(&self) -> PropValue {
+		PropValue::U16(self.0)
+	}
+}
+
+impl<const DEFAULT: u64> ToPropValue for Ms<DEFAULT> {
+	fn to_prop_value(&self) -> PropValue {
+		let millis = u16::try_from(self.0.as_millis()).expect("property durations fit in u16");
+		PropValue::U16(millis)
+	}
 }
 
 impl Props {
@@ -252,7 +569,7 @@ impl Props {
 	///
 	/// # Panics
 	///
-	/// Panics when a textual value is invalid for the selected property.
+	/// Panics when `value` is invalid for the selected property.
 	pub fn with(mut self, prop: Prop, value: impl Into<PropValue>) -> Self {
 		self.set(prop, value);
 		self
@@ -262,7 +579,7 @@ impl Props {
 	///
 	/// # Panics
 	///
-	/// Panics when a textual value is invalid for the selected property.
+	/// Panics when `value` is invalid for the selected property.
 	pub fn set(&mut self, prop: Prop, value: impl Into<PropValue>) {
 		if let Err(error) = self.try_set(prop, value.into()) {
 			panic!("{error}")
@@ -273,52 +590,30 @@ impl Props {
 	///
 	/// # Errors
 	///
-	/// Returns `PropError` when a textual value cannot be parsed for the
-	/// selected property.
+	/// Returns `PropError` when `value` is incompatible with the selected
+	/// typed slot.
 	pub fn try_set(&mut self, prop: Prop, value: PropValue) -> Result<(), PropError> {
-		if prop == Prop::Pad
-			&& let PropValue::Str(value) = &value
-		{
-			let mut parts = value.split_whitespace();
-			let y = parts
-				.next()
-				.unwrap_or("0")
-				.parse()
-				.map_err(|_| PropError { prop, value: value.clone() })?;
-			let x = match parts.next() {
-				Some(part) => part
-					.parse()
-					.map_err(|_| PropError { prop, value: value.clone() })?,
-				None => y,
-			};
-			if parts.next().is_some() {
-				return Err(PropError { prop, value: value.clone() });
-			}
-			self.known.insert(Prop::PadY, PropValue::U16(y));
-			self.known.insert(Prop::PadX, PropValue::U16(x));
-			return Ok(());
-		}
-		let value = match value {
-			PropValue::Str(value) => parse_str(prop, value)?,
-			value => value,
-		};
-		self.known.insert(prop, value);
-		Ok(())
+		self.store(prop, value)
 	}
 
-	/// Returns the typed value assigned to a known property.
-	pub fn get(&self, prop: Prop) -> Option<&PropValue> {
-		self.known.get(prop)
+	/// Returns the canonical dynamic value assigned to a known property.
+	pub fn get(&self, prop: Prop) -> Option<PropValue> {
+		self.value(prop)
+	}
+
+	/// Reports whether a known property has an assigned value.
+	pub fn contains(&self, prop: Prop) -> bool {
+		self.contains_known(prop)
 	}
 
 	/// Removes a known property, restoring its unset default.
 	pub fn unset(&mut self, prop: Prop) {
-		self.known.remove(prop);
+		self.clear(prop);
 	}
 
 	/// Formats a known property value using its markup representation.
 	pub fn get_str(&self, prop: Prop) -> Option<Str> {
-		self.get(prop).map(display_value)
+		self.get(prop).map(|value| display_value(&value))
 	}
 
 	/// Returns this collection with a custom property assigned.
@@ -331,240 +626,106 @@ impl Props {
 	pub fn set_custom(&mut self, name: impl Into<Str>, value: impl Into<PropValue>) {
 		let name = name.into();
 		let value = value.into();
-		if let Some((_, stored)) = self.custom.iter_mut().find(|(key, _)| key == &name) {
+		if let Some((_, stored)) = self.rest.iter_mut().find(|(key, _)| key == &name) {
 			*stored = value;
 		} else {
-			self.custom.push((name, value));
+			self.rest.push((name, value));
 		}
 	}
 
 	/// Returns a custom property by its literal name.
 	pub fn custom(&self, name: &str) -> Option<&PropValue> {
 		self
-			.custom
+			.rest
 			.iter()
 			.find(|(key, _)| key == name)
 			.map(|(_, value)| value)
 	}
 
 	/// Returns either a known or custom property by markup name.
-	pub fn named(&self, name: &str) -> Option<&PropValue> {
+	pub fn named(&self, name: &str) -> Option<PropValue> {
 		Self::prop_of(name)
 			.and_then(|prop| self.get(prop))
-			.or_else(|| self.custom(name))
+			.or_else(|| self.custom(name).cloned())
 	}
 
-	/// Resolves a markup attribute name to its well-known property — the
-	/// kebab-cased variant ident derived on [`Prop`].
+	/// Resolves a markup attribute name to its well-known property.
 	pub fn prop_of(name: &str) -> Option<Prop> {
 		name.parse().ok()
 	}
 
-	/// Returns the inter-child spacing, defaulting to zero.
-	pub fn gap(&self) -> u16 {
-		self.u16(Prop::Gap).unwrap_or(0)
-	}
-
 	/// Returns vertical and horizontal padding, defaulting to zero.
 	pub fn pad(&self) -> (u16, u16) {
-		(self.u16(Prop::PadY).unwrap_or(0), self.u16(Prop::PadX).unwrap_or(0))
+		(self.pad_y.unwrap_or(0), self.pad_x.unwrap_or(0))
 	}
 
-	/// Returns the flexible growth weight, with a bare flag meaning one.
-	pub fn grow(&self) -> Option<f32> {
-		match self.get(Prop::Grow) {
-			Some(PropValue::F32(value)) => Some(*value),
-			Some(PropValue::Bool(true)) => Some(1.0),
-			_ => None,
-		}
-	}
-
-	/// Returns the preferred width as a cell or percentage dimension.
-	pub fn w(&self) -> Option<Dim> {
-		match self.get(Prop::W) {
-			Some(PropValue::U16(value)) => Some(Dim::Cells(*value)),
-			Some(PropValue::Dim(value)) => Some(*value),
-			_ => None,
-		}
-	}
-
-	/// Returns the minimum width or numeric value.
+	/// Returns the minimum width when represented as an unsigned cell count.
 	pub fn min(&self) -> Option<u16> {
-		self.u16(Prop::Min)
+		match self.min {
+			Some(Number::U16(value)) => Some(value),
+			_ => None,
+		}
 	}
 
-	/// Returns the maximum width or numeric value.
+	/// Returns the maximum width when represented as an unsigned cell count.
 	pub fn max(&self) -> Option<u16> {
-		self.u16(Prop::Max)
-	}
-
-	/// Returns the preferred height in rows.
-	pub fn h(&self) -> Option<u16> {
-		self.u16(Prop::H)
-	}
-
-	/// Returns the truncation mode: a bare `truncate` flag clips the end,
-	/// `truncate=start` clips the beginning; `None` disables truncation.
-	pub fn truncate(&self) -> Option<Truncate> {
-		match self.get(Prop::Truncate) {
-			Some(PropValue::Bool(true)) => Some(Truncate::End),
-			Some(PropValue::Str(side)) if side == "start" => Some(Truncate::Start),
-			Some(PropValue::Str(_)) => Some(Truncate::End),
+		match self.max {
+			Some(Number::U16(value)) => Some(value),
 			_ => None,
 		}
 	}
 
-	/// Whether text flows grapheme-exact to the width (`wrap=char`) like a
-	/// bare terminal: every break is a byte-preserving soft wrap the
-	/// renderer re-joins for native copy. Defaults to word wrapping.
-	pub fn wrap_chars(&self) -> bool {
-		matches!(self.get(Prop::Wrap), Some(PropValue::Str(mode)) if mode == "char")
-	}
-
-	/// Returns the selected border glyph family.
-	pub fn border(&self) -> Option<Border> {
-		match self.get(Prop::Border) {
-			Some(PropValue::Border(value)) => Some(*value),
-			_ => None,
+	/// Returns the text wrapping mode, defaulting to word boundaries.
+	pub fn text_wrap(&self) -> TextWrap {
+		match self.wrap {
+			Some(WrapValue::Text(value)) => value,
+			_ => TextWrap::Word,
 		}
 	}
 
-	/// Returns the tree guide connector family; a bare flag means square.
-	pub fn guides(&self) -> Option<Border> {
-		match self.get(Prop::Guides) {
-			Some(PropValue::Border(value)) => Some(*value),
-			Some(PropValue::Bool(true)) => Some(Border::Square),
-			_ => None,
-		}
-	}
-
-	/// Reports whether the background extends through the border.
-	pub fn bleed(&self) -> bool {
-		self.flag(Prop::Bleed)
-	}
-
-	/// Returns horizontal alignment, defaulting to the start edge.
-	pub fn align(&self) -> Align {
-		self.align_slot(Prop::Align)
-	}
-
-	/// Returns the border-title placement, defaulting to the start edge.
-	pub fn title_align(&self) -> Align {
-		self.align_slot(Prop::TitleAlign)
-	}
-
-	/// Returns the border-footer placement, defaulting to the start edge.
-	pub fn footer_align(&self) -> Align {
-		self.align_slot(Prop::FooterAlign)
-	}
-
-	fn align_slot(&self, prop: Prop) -> Align {
-		match self.get(prop) {
-			Some(PropValue::Align(value)) => *value,
-			_ => Align::Start,
-		}
-	}
-
-	/// Returns the configured vertical alignment.
-	pub fn valign(&self) -> Option<VAlign> {
-		match self.get(Prop::VAlign) {
-			Some(PropValue::VAlign(value)) => Some(*value),
-			_ => None,
-		}
-	}
-
-	/// Returns the stable component identifier.
-	pub fn id(&self) -> Option<&Str> {
-		self.str_of(Prop::Id)
-	}
-
-	/// Returns the user-facing component title.
-	pub fn title(&self) -> Option<&Str> {
-		self.str_of(Prop::Title)
-	}
-
-	/// Returns the footer shown on a framed container's bottom border.
-	pub fn footer(&self) -> Option<&Str> {
-		self.str_of(Prop::Footer)
-	}
-
-	/// Normalized gradient direction in screen degrees.
-	pub fn angle(&self) -> u16 {
-		self.u16(Prop::Angle).unwrap_or(0)
-	}
-
-	/// Transition duration for animatable properties, when `anim` is set.
-	/// A bare `anim` flag selects 200ms.
-	pub fn anim(&self) -> Option<Duration> {
-		self.duration(Prop::Anim, 200)
-	}
-
-	/// Easing curve for `anim` transitions, defaulting to ease-out — the
-	/// natural shape for state changes that should land softly.
-	pub fn ease(&self) -> Easing {
-		match self.get(Prop::Ease) {
-			Some(PropValue::Easing(value)) => *value,
-			_ => Easing::EaseOut,
-		}
-	}
-
-	/// Gradient rotation period, when `spin` is set. A bare `spin` flag
-	/// selects one revolution every 3 seconds.
-	pub fn spin(&self) -> Option<Duration> {
-		self.duration(Prop::Spin, 3000)
-	}
-
-	/// Brightness-crest sweep period, when `shimmer` is set. A bare
-	/// `shimmer` flag selects one sweep every 2 seconds.
-	pub fn shimmer(&self) -> Option<Duration> {
-		self.duration(Prop::Shimmer, 2000)
-	}
-
-	/// Streamed-text reveal catch-up horizon, when `reveal` is set. A bare
-	/// `reveal` flag selects 250ms; `reveal=0` shows new text immediately.
-	pub fn reveal(&self) -> Option<Duration> {
-		self.duration(Prop::Reveal, 250)
-	}
-
-	/// Rows of hover elevation, with a bare flag meaning one.
-	pub fn lift(&self) -> u16 {
-		match self.get(Prop::Lift) {
-			Some(PropValue::U16(value)) => *value,
-			Some(PropValue::Bool(true)) => 1,
-			_ => 0,
-		}
-	}
-
-	/// Whether hover styling or elevation is declared — the gate for
-	/// registering a pointer zone and resolving hover chrome at paint time.
+	/// Reports whether hover styling or elevation is declared.
 	pub(crate) fn hover_decorated(&self) -> bool {
-		self.get(Prop::Hover).is_some() || self.lift() > 0
+		self.hover.is_some() || self.lift() > 0
 	}
 
-	fn duration(&self, prop: Prop, default_ms: u64) -> Option<Duration> {
-		match self.get(prop)? {
-			PropValue::U16(ms) => Some(Duration::from_millis(u64::from(*ms))),
-			PropValue::Bool(true) => Some(Duration::from_millis(default_ms)),
-			_ => None,
-		}
-	}
-
+	/// Returns a gradient payload for a color-bearing property.
 	pub(crate) fn gradient_of(&self, prop: Prop) -> Option<&Str> {
-		match self.get(prop) {
-			Some(PropValue::Gradient(value)) => Some(value),
+		match self.color_slot(prop) {
+			Some(PropColor::Gradient(value)) => Some(value),
 			_ => None,
 		}
 	}
 
-	/// Reports whether a boolean property is enabled.
+	/// Reports whether a boolean or bare-flag property is enabled.
 	pub fn flag(&self, prop: Prop) -> bool {
-		matches!(self.get(prop), Some(PropValue::Bool(true)))
+		matches!(self.value(prop), Some(PropValue::Bool(true)))
 	}
 
-	/// Returns the textual payload of a property.
+	/// Returns the borrowed textual payload of a property.
 	pub fn str_of(&self, prop: Prop) -> Option<&Str> {
-		match self.get(prop) {
-			Some(PropValue::Str(value)) => Some(value),
+		match prop {
+			Prop::Title => self.title.as_ref(),
+			Prop::Footer => self.footer.as_ref(),
+			Prop::Id => self.id.as_ref(),
+			Prop::When => self.when.as_ref(),
+			Prop::Value => match self.value.as_ref() {
+				Some(Scalar::Str(value)) => Some(value),
+				_ => None,
+			},
+			Prop::Options => self.options.as_ref(),
+			Prop::Label => self.label.as_ref(),
+			Prop::Desc => self.desc.as_ref(),
+			Prop::Kind => self.kind.as_ref(),
+			Prop::Filter => match self.filter.as_ref() {
+				Some(FilterValue::Query(value)) => Some(value),
+				_ => None,
+			},
+			Prop::Match => self.match_pattern.as_ref(),
+			Prop::Src => self.src.as_ref(),
+			Prop::Icon => self.icon.as_ref(),
+			Prop::Badge => self.badge.as_ref(),
+			Prop::Placeholder => self.placeholder.as_ref(),
+			Prop::Status => self.status.as_ref(),
 			_ => None,
 		}
 	}
@@ -575,7 +736,7 @@ impl Props {
 		if let Some(color) = self.color(Prop::Fg, theme) {
 			style = style.fg(color);
 		}
-		let background = if self.get(Prop::Bg).is_some() {
+		let background = if self.bg.is_some() {
 			self.color(Prop::Bg, theme)
 		} else {
 			self.color(Prop::On, theme)
@@ -583,22 +744,22 @@ impl Props {
 		if let Some(color) = background {
 			style = style.bg(color);
 		}
-		if self.flag(Prop::Bold) {
+		if self.bold == Some(true) {
 			style = style.bold();
 		}
-		if self.flag(Prop::Dim) {
+		if self.dim == Some(true) {
 			style = style.dim();
 		}
-		if self.flag(Prop::Italic) {
+		if self.italic == Some(true) {
 			style = style.italic();
 		}
-		if self.flag(Prop::Underline) {
+		if self.underline == Some(true) {
 			style = style.underline();
 		}
-		if self.flag(Prop::Reverse) {
+		if self.reverse == Some(true) {
 			style = style.reverse();
 		}
-		if self.flag(Prop::Strike) {
+		if self.strike == Some(true) {
 			style = style.strikethrough();
 		}
 		style
@@ -611,126 +772,230 @@ impl Props {
 			.or_else(|| self.color(Prop::Edge, theme))
 	}
 
-	fn u16(&self, prop: Prop) -> Option<u16> {
-		match self.get(prop) {
-			Some(PropValue::U16(value)) => Some(*value),
+	fn color_slot(&self, prop: Prop) -> Option<&PropColor> {
+		match prop {
+			Prop::Fg => self.fg.as_ref(),
+			Prop::Bg => self.bg.as_ref(),
+			Prop::On => self.on.as_ref(),
+			Prop::Bc => self.bc.as_ref(),
+			Prop::Edge => self.edge.as_ref(),
+			Prop::Hover => self.hover.as_ref(),
 			_ => None,
 		}
 	}
 
 	fn color(&self, prop: Prop, theme: &Theme) -> Option<Color> {
-		match self.get(prop) {
-			Some(PropValue::Color(value)) => Some(*value),
-			Some(PropValue::Token(value)) => theme.token(value),
-			_ => None,
+		match self.color_slot(prop)? {
+			PropColor::Solid(value) => Some(*value),
+			PropColor::Token(value) => theme.token(value),
+			PropColor::Gradient(_) => None,
+		}
+	}
+
+	fn set_pad(&mut self, value: PropValue) -> Result<(), PropError> {
+		let (y, x) = match value {
+			PropValue::U16(value) => (value, value),
+			PropValue::Str(value) => {
+				let mut parts = value.split_whitespace();
+				let y = parts
+					.next()
+					.map_or(Ok(0), str::parse)
+					.map_err(|_| PropError { prop: Prop::Pad, value: value.clone() })?;
+				let x = parts
+					.next()
+					.map_or(Ok(y), str::parse)
+					.map_err(|_| PropError { prop: Prop::Pad, value: value.clone() })?;
+				if parts.next().is_some() {
+					return Err(PropError { prop: Prop::Pad, value });
+				}
+				(y, x)
+			},
+			value => return Err(bad_value(Prop::Pad, &value)),
+		};
+		self.pad_y = Some(y);
+		self.pad_x = Some(x);
+		Ok(())
+	}
+}
+
+/// Converts a dynamic [`PropValue`] into a typed slot; string forms delegate
+/// to the slot type's [`FromStr`].
+trait FromPropValue: Sized {
+	fn from_prop(prop: Prop, value: PropValue) -> Result<Self, PropError>;
+}
+
+/// Accepts the slot's exact [`PropValue`] variant plus the string form via
+/// [`FromStr`].
+macro_rules! from_prop_value {
+	($type:ty, $variant:ident) => {
+		impl FromPropValue for $type {
+			fn from_prop(prop: Prop, value: PropValue) -> Result<Self, PropError> {
+				match value {
+					PropValue::$variant(value) => Ok(value),
+					PropValue::Str(value) => parse_as(prop, value),
+					value => Err(bad_value(prop, &value)),
+				}
+			}
+		}
+	};
+}
+
+from_prop_value!(u16, U16);
+from_prop_value!(f32, F32);
+from_prop_value!(Border, Border);
+from_prop_value!(Align, Align);
+from_prop_value!(VAlign, VAlign);
+from_prop_value!(Justify, Justify);
+from_prop_value!(TextWrap, Wrap);
+from_prop_value!(Easing, Easing);
+
+impl FromPropValue for bool {
+	fn from_prop(prop: Prop, value: PropValue) -> Result<Self, PropError> {
+		match value {
+			// Bare attribute presence; explicit strings must spell a bool.
+			PropValue::Bool(value) => Ok(value),
+			PropValue::Str(value) => parse_as(prop, value),
+			value => Err(bad_value(prop, &value)),
 		}
 	}
 }
 
-fn parse_str(prop: Prop, value: Str) -> Result<PropValue, PropError> {
-	let bad = || PropError { prop, value: value.clone() };
-	Ok(match prop {
-		Prop::Gap | Prop::PadX | Prop::PadY | Prop::Min | Prop::Max | Prop::H | Prop::Lift => {
-			PropValue::U16(value.parse().map_err(|_| bad())?)
-		},
-		Prop::W => {
-			if let Some(percent) = value.strip_suffix("%") {
-				PropValue::Dim(Dim::Pct(percent.parse().map_err(|_| bad())?))
-			} else {
-				PropValue::U16(value.parse().map_err(|_| bad())?)
-			}
-		},
-		Prop::Grow => PropValue::F32(value.parse().map_err(|_| bad())?),
-		Prop::Step => PropValue::I64(value.parse().map_err(|_| bad())?),
-		Prop::Border | Prop::Guides => PropValue::Border(match value.as_str() {
-			"square" => Border::Square,
-			"dash" => Border::Dash,
-			"round" => Border::Round,
-			"heavy" => Border::Heavy,
-			"double" => Border::Double,
-			_ => return Err(bad()),
-		}),
-		Prop::Align | Prop::TitleAlign | Prop::FooterAlign => {
-			PropValue::Align(match value.as_str() {
-				"start" | "left" => Align::Start,
-				"center" | "middle" => Align::Center,
-				"end" | "right" => Align::End,
-				_ => return Err(bad()),
-			})
-		},
-		Prop::VAlign => PropValue::VAlign(match value.as_str() {
-			"start" | "top" => VAlign::Start,
-			"center" | "middle" => VAlign::Center,
-			"end" | "bottom" => VAlign::End,
-			"stretch" | "fill" => VAlign::Stretch,
-			_ => return Err(bad()),
-		}),
-		Prop::Justify => PropValue::Justify(match value.as_str() {
-			"start" => Justify::Start,
-			"center" => Justify::Center,
-			"end" => Justify::End,
-			"between" => Justify::Between,
-			_ => return Err(bad()),
-		}),
-		Prop::Angle => PropValue::U16(parse_angle(&value).ok_or_else(bad)?),
-		Prop::Anim | Prop::Spin | Prop::Shimmer | Prop::Reveal => {
-			PropValue::U16(parse_duration_ms(&value).ok_or_else(bad)?)
-		},
-		// `truncate` keeps its bare-flag form (end clipping); a value picks
-		// the clipped side.
-		Prop::Truncate => match value.as_str() {
-			"start" | "end" => PropValue::Str(value),
-			_ => return Err(bad()),
-		},
-		// `wrap` stays a bare flag (wrapping rows); on text a value picks
-		// the mode — `wrap=char` flows grapheme-exact like a bare terminal.
-		Prop::Wrap => match value.as_str() {
-			"char" | "word" => PropValue::Str(value),
-			_ => return Err(bad()),
-		},
-		// A textual `filter` seeds the initial query besides enabling
-		// filtering; the bare flag stays a boolean.
-		Prop::Filter => PropValue::Str(value),
-		Prop::Ease => PropValue::Easing(match value.as_str() {
-			"linear" => Easing::Linear,
-			"in" => Easing::EaseIn,
-			"out" => Easing::EaseOut,
-			"in-out" => Easing::EaseInOut,
-			_ => return Err(bad()),
-		}),
-		Prop::Fg | Prop::Bg | Prop::On | Prop::Bc | Prop::Edge | Prop::Hover => {
-			if is_gradient(&value) {
-				PropValue::Gradient(value)
-			} else if is_theme_token(&value) {
-				PropValue::Token(value)
-			} else if let Some(color) = Color::parse(&value) {
-				PropValue::Color(color)
-			} else {
-				return Err(bad());
-			}
-		},
-		Prop::Bold
-		| Prop::Dim
-		| Prop::Italic
-		| Prop::Underline
-		| Prop::Reverse
-		| Prop::Strike
-		| Prop::Trim
-		| Prop::Bleed
-		| Prop::Multi
-		| Prop::Custom
-		| Prop::Mask
-		| Prop::Recommended
-		| Prop::Open
-		| Prop::Required
-		| Prop::Submit
-		| Prop::Cancel
-		| Prop::Confirm
-		| Prop::Accent
-		| Prop::Vertical
-		| Prop::Focus => PropValue::Bool(true),
-		_ => PropValue::Str(value),
-	})
+impl FromPropValue for Str {
+	fn from_prop(prop: Prop, value: PropValue) -> Result<Self, PropError> {
+		match value {
+			PropValue::Str(value) => Ok(value),
+			value => Err(bad_value(prop, &value)),
+		}
+	}
+}
+
+impl FromPropValue for i64 {
+	fn from_prop(prop: Prop, value: PropValue) -> Result<Self, PropError> {
+		match value {
+			PropValue::U16(value) => Ok(Self::from(value)),
+			PropValue::I64(value) => Ok(value),
+			PropValue::Str(value) => parse_as(prop, value),
+			value => Err(bad_value(prop, &value)),
+		}
+	}
+}
+
+impl FromPropValue for Dim {
+	fn from_prop(prop: Prop, value: PropValue) -> Result<Self, PropError> {
+		match value {
+			PropValue::Dim(value) => Ok(value),
+			PropValue::U16(value) => Ok(Self::Cells(value)),
+			PropValue::Str(value) => parse_as(prop, value),
+			value => Err(bad_value(prop, &value)),
+		}
+	}
+}
+
+impl FromPropValue for Truncate {
+	fn from_prop(prop: Prop, value: PropValue) -> Result<Self, PropError> {
+		match value {
+			PropValue::Str(value) => parse_as(prop, value),
+			value => Err(bad_value(prop, &value)),
+		}
+	}
+}
+
+impl FromPropValue for Angle {
+	fn from_prop(prop: Prop, value: PropValue) -> Result<Self, PropError> {
+		match value {
+			PropValue::U16(value) => Ok(Self(value % 360)),
+			PropValue::Str(value) => parse_as(prop, value),
+			value => Err(bad_value(prop, &value)),
+		}
+	}
+}
+
+impl<const DEFAULT: u64> FromPropValue for Ms<DEFAULT> {
+	fn from_prop(prop: Prop, value: PropValue) -> Result<Self, PropError> {
+		match value {
+			PropValue::U16(value) => Ok(Self(Duration::from_millis(u64::from(value)))),
+			PropValue::Str(value) => parse_as(prop, value),
+			value => Err(bad_value(prop, &value)),
+		}
+	}
+}
+
+impl FromPropValue for Number {
+	fn from_prop(prop: Prop, value: PropValue) -> Result<Self, PropError> {
+		match value {
+			PropValue::U16(value) => Ok(Self::U16(value)),
+			PropValue::F32(value) => Ok(Self::F32(value)),
+			PropValue::I64(value) => Ok(Self::I64(value)),
+			PropValue::Str(value) => parse_as(prop, value).map(Self::U16),
+			value => Err(bad_value(prop, &value)),
+		}
+	}
+}
+
+impl FromPropValue for Scalar {
+	fn from_prop(prop: Prop, value: PropValue) -> Result<Self, PropError> {
+		match value {
+			PropValue::Bool(value) => Ok(Self::Bool(value)),
+			PropValue::U16(value) => Ok(Self::U16(value)),
+			PropValue::F32(value) => Ok(Self::F32(value)),
+			PropValue::I64(value) => Ok(Self::I64(value)),
+			PropValue::Str(value) => Ok(Self::Str(value)),
+			value => Err(bad_value(prop, &value)),
+		}
+	}
+}
+
+impl FromPropValue for PropColor {
+	fn from_prop(prop: Prop, value: PropValue) -> Result<Self, PropError> {
+		match value {
+			PropValue::Color(value) => Ok(Self::Solid(value)),
+			PropValue::Token(value) => Ok(Self::Token(value)),
+			PropValue::Gradient(value) => Ok(Self::Gradient(value)),
+			PropValue::Str(value) if is_gradient(&value) => Ok(Self::Gradient(value)),
+			PropValue::Str(value) if is_theme_token(&value) => Ok(Self::Token(value)),
+			PropValue::Str(value) => Color::parse(&value)
+				.map(Self::Solid)
+				.ok_or_else(|| PropError { prop, value }),
+			value => Err(bad_value(prop, &value)),
+		}
+	}
+}
+
+impl FromPropValue for WrapValue {
+	fn from_prop(prop: Prop, value: PropValue) -> Result<Self, PropError> {
+		match value {
+			PropValue::Bool(value) => Ok(Self::Rows(value)),
+			value => TextWrap::from_prop(prop, value).map(Self::Text),
+		}
+	}
+}
+
+impl FromPropValue for FilterValue {
+	fn from_prop(prop: Prop, value: PropValue) -> Result<Self, PropError> {
+		match value {
+			PropValue::Bool(value) => Ok(Self::Enabled(value)),
+			PropValue::Str(value) => Ok(Self::Query(value)),
+			value => Err(bad_value(prop, &value)),
+		}
+	}
+}
+
+impl<T: BareFlag + FromPropValue> FromPropValue for Toggle<T> {
+	fn from_prop(prop: Prop, value: PropValue) -> Result<Self, PropError> {
+		match value {
+			PropValue::Bool(false) => Ok(Self::Off),
+			PropValue::Bool(true) => Ok(Self::Flag(T::ON)),
+			value => T::from_prop(prop, value).map(Self::Value),
+		}
+	}
+}
+
+fn parse_as<T: FromStr>(prop: Prop, value: Str) -> Result<T, PropError> {
+	value.parse().map_err(|_| PropError { prop, value })
+}
+
+fn bad_value(prop: Prop, value: &PropValue) -> PropError {
+	PropError { prop, value: display_value(value) }
 }
 
 fn is_theme_token(value: &str) -> bool {
@@ -748,28 +1013,6 @@ fn is_color(value: &str) -> bool {
 	is_theme_token(value) || Color::parse(value).is_some()
 }
 
-fn parse_angle(value: &str) -> Option<u16> {
-	let value = value.trim();
-	let value = value.strip_suffix("deg").unwrap_or(value);
-	Some(value.parse::<i32>().ok()?.rem_euclid(360) as u16)
-}
-
-/// Parses `250`, `250ms`, or `0.4s` into whole milliseconds.
-fn parse_duration_ms(value: &str) -> Option<u16> {
-	let value = value.trim();
-	if let Some(millis) = value.strip_suffix("ms") {
-		return millis.trim().parse().ok();
-	}
-	if let Some(seconds) = value.strip_suffix('s') {
-		let seconds: f32 = seconds.trim().parse().ok()?;
-		if !(0.0..=65.0).contains(&seconds) {
-			return None;
-		}
-		return Some((seconds * 1000.0).round() as u16);
-	}
-	value.parse().ok()
-}
-
 fn display_value(value: &PropValue) -> Str {
 	match value {
 		PropValue::Bool(value) => Str::new(if *value { "true" } else { "false" }),
@@ -780,38 +1023,14 @@ fn display_value(value: &PropValue) -> Str {
 		PropValue::Color(Color::Indexed(value)) => Str::from(value.to_string()),
 		PropValue::Color(Color::Rgb(r, g, b)) => Str::from(format!("#{r:02x}{g:02x}{b:02x}")),
 		PropValue::Token(value) | PropValue::Gradient(value) | PropValue::Str(value) => value.clone(),
-		PropValue::Easing(value) => Str::new_static(match value {
-			Easing::Linear => "linear",
-			Easing::EaseIn => "in",
-			Easing::EaseOut => "out",
-			Easing::EaseInOut => "in-out",
-		}),
+		PropValue::Easing(value) => Str::new_static((*value).into()),
 		PropValue::Dim(Dim::Cells(value)) => Str::from(value.to_string()),
 		PropValue::Dim(Dim::Pct(value)) => Str::from(format!("{value}%")),
-		PropValue::Border(value) => Str::new_static(match value {
-			Border::Square => "square",
-			Border::Dash => "dash",
-			Border::Round => "round",
-			Border::Heavy => "heavy",
-			Border::Double => "double",
-		}),
-		PropValue::Align(value) => Str::new_static(match value {
-			Align::Start => "start",
-			Align::Center => "center",
-			Align::End => "end",
-		}),
-		PropValue::VAlign(value) => Str::new_static(match value {
-			VAlign::Start => "start",
-			VAlign::Center => "center",
-			VAlign::End => "end",
-			VAlign::Stretch => "stretch",
-		}),
-		PropValue::Justify(value) => Str::new_static(match value {
-			Justify::Start => "start",
-			Justify::Center => "center",
-			Justify::End => "end",
-			Justify::Between => "between",
-		}),
+		PropValue::Border(value) => Str::new_static((*value).into()),
+		PropValue::Align(value) => Str::new_static((*value).into()),
+		PropValue::VAlign(value) => Str::new_static((*value).into()),
+		PropValue::Justify(value) => Str::new_static((*value).into()),
+		PropValue::Wrap(value) => Str::new_static((*value).into()),
 	}
 }
 
@@ -855,15 +1074,15 @@ mod tests {
 	fn known_values_parse_at_set_time() {
 		assert_eq!(
 			Props::new().with(Prop::Fg, "blue").get(Prop::Fg),
-			Some(&PropValue::Color(Color::Rgb(0, 0, 255)))
+			Some(PropValue::Color(Color::Rgb(0, 0, 255)))
 		);
 		assert_eq!(
 			Props::new().with(Prop::Fg, "accent").get(Prop::Fg),
-			Some(&PropValue::Token(Str::new("accent")))
+			Some(PropValue::Token(Str::new("accent")))
 		);
 		assert_eq!(
 			Props::new().with(Prop::Title, "x").get(Prop::Title),
-			Some(&PropValue::Str(Str::new("x")))
+			Some(PropValue::Str(Str::new("x")))
 		);
 	}
 
@@ -873,8 +1092,8 @@ mod tests {
 			.with(Prop::Bg, "accent..info")
 			.with(Prop::Fg, "#000000..#ffffff")
 			.with(Prop::Angle, "-90deg");
-		assert_eq!(props.get(Prop::Bg), Some(&PropValue::Gradient(Str::new("accent..info"))));
-		assert_eq!(props.get(Prop::Fg), Some(&PropValue::Gradient(Str::new("#000000..#ffffff"))));
+		assert_eq!(props.get(Prop::Bg), Some(PropValue::Gradient(Str::new("accent..info"))));
+		assert_eq!(props.get(Prop::Fg), Some(PropValue::Gradient(Str::new("#000000..#ffffff"))));
 		assert_eq!(props.angle(), 270);
 		assert!(Props::prop_of("gradient").is_none());
 		assert!(Props::prop_of("dir").is_none());
@@ -899,7 +1118,7 @@ mod tests {
 			.with_custom("data-x", "1");
 		assert_eq!(props.get_str(Prop::Gap).as_deref(), Some("2"));
 		assert_eq!(props.custom("data-x"), Some(&PropValue::Str(Str::new("1"))));
-		assert_eq!(props.named("data-x"), props.custom("data-x"));
+		assert_eq!(props.named("data-x"), props.custom("data-x").cloned());
 	}
 
 	#[test]
@@ -907,7 +1126,7 @@ mod tests {
 		let theme = Theme { accent: Color::Rgb(1, 2, 3), ..Theme::default() };
 		let props = Props::new().with(Prop::Fg, "accent").with(Prop::Bold, true);
 		assert_eq!(props.style(&theme).foreground_color(), Color::Rgb(1, 2, 3));
-		assert_eq!(props.get(Prop::Bold), Some(&PropValue::Bool(true)));
+		assert_eq!(props.get(Prop::Bold), Some(PropValue::Bool(true)));
 		assert!(props.flag(Prop::Bold));
 		assert!(!Props::new().with(Prop::Bold, false).flag(Prop::Bold));
 	}
@@ -956,11 +1175,52 @@ mod tests {
 	}
 
 	#[test]
-	fn prop_indices_round_trip_through_the_catalog() {
+	fn catalog_names_and_values_round_trip() {
 		use strum::IntoEnumIterator as _;
-		for (index, prop) in Prop::iter().enumerate() {
-			assert_eq!(prop as usize, index, "the catalog diverges from enum order at {prop:?}");
-			assert_eq!(Prop::try_from_index(index), Ok(prop));
+		let mut count = 0;
+		for prop in Prop::iter() {
+			let name = prop.to_string();
+			assert_eq!(name.parse(), Ok(prop));
+			count += 1;
 		}
+		assert_eq!(count, 68);
+	}
+
+	#[test]
+	fn typed_slots_validate_values_and_expand_padding() {
+		let mut props = Props::new();
+		assert!(
+			props
+				.try_set(Prop::Gap, PropValue::Color(Color::Default))
+				.is_err()
+		);
+		props.set(Prop::Pad, "2 3");
+		assert_eq!(props.pad(), (2, 3));
+		assert_eq!(props.get(Prop::PadY), Some(PropValue::U16(2)));
+		assert_eq!(props.get(Prop::PadX), Some(PropValue::U16(3)));
+	}
+
+	#[test]
+	fn step_slot_accepts_only_integers() {
+		let mut props = Props::new();
+		props.set(Prop::Step, 2_u16);
+		assert_eq!(props.get(Prop::Step), Some(PropValue::I64(2)));
+		props.set(Prop::Step, -3_i64);
+		assert_eq!(props.get(Prop::Step), Some(PropValue::I64(-3)));
+		assert!(props.try_set(Prop::Step, PropValue::F32(0.5)).is_err());
+	}
+
+	#[test]
+	fn bool_slots_parse_explicit_strings_strictly() {
+		// Bare flag and explicit spellings.
+		assert!(Props::new().with(Prop::Mask, true).flag(Prop::Mask));
+		assert!(Props::new().with(Prop::Mask, "true").flag(Prop::Mask));
+		assert!(!Props::new().with(Prop::Mask, "false").flag(Prop::Mask));
+		// Arbitrary text no longer reads as presence.
+		assert!(
+			Props::new()
+				.try_set(Prop::Mask, PropValue::from("nope"))
+				.is_err()
+		);
 	}
 }

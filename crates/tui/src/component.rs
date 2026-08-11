@@ -632,7 +632,7 @@ impl Cached {
 		}
 
 		if let Some((duration, easing)) = spec {
-			let bg_prop = if props.get(Prop::Bg).is_some() {
+			let bg_prop = if props.contains(Prop::Bg) {
 				Prop::Bg
 			} else {
 				Prop::On
@@ -705,9 +705,9 @@ impl Cached {
 	/// restore once the paint completes.
 	fn swap_hover_chrome(&mut self) -> Option<(Prop, Option<PropValue>)> {
 		let props = self.comp.props();
-		let hover = props.get(Prop::Hover).cloned()?;
+		let hover = props.get(Prop::Hover)?;
 		let slot = bc_slot(props);
-		let displaced = props.get(slot).cloned();
+		let displaced = props.get(slot);
 		self.comp.props_mut().set(slot, hover);
 		Some((slot, displaced))
 	}
@@ -856,10 +856,10 @@ enum ChannelTarget {
 /// [`Props::style`] and [`resolve_gradient`] will read it at paint time.
 fn color_target(ctx: &UiContext, props: &Props, prop: Prop) -> ChannelTarget {
 	match props.get(prop) {
-		Some(PropValue::Color(color)) => ChannelTarget::Solid(*color),
+		Some(PropValue::Color(color)) => ChannelTarget::Solid(color),
 		Some(PropValue::Token(token)) => ctx
 			.theme
-			.token(token)
+			.token(&token)
 			.map_or(ChannelTarget::None, ChannelTarget::Solid),
 		Some(PropValue::Gradient(value)) => {
 			let resolve = |color: &str| ctx.theme.token(color).or_else(|| Color::parse(color));
@@ -909,7 +909,7 @@ impl PaintAnim {
 			Channel::Empty => None,
 			Channel::Solid(tween) => {
 				if !tween.is_settled(now)
-					&& let Some(saved) = comp.props().get(prop).cloned()
+					&& let Some(saved) = comp.props().get(prop)
 				{
 					self.merge_wake(tween.settles_at().min(now.saturating_add(anim::FRAME)));
 					comp.props_mut().set(prop, tween.sample(now));
@@ -955,7 +955,7 @@ fn content_rect(rect: Rect, props: &Props, paints_border: bool) -> Rect {
 
 /// The border-color slot every chrome path reads: `bc` when set, else `edge`.
 fn bc_slot(props: &Props) -> Prop {
-	if props.get(Prop::Bc).is_some() {
+	if props.contains(Prop::Bc) {
 		Prop::Bc
 	} else {
 		Prop::Edge
@@ -1084,7 +1084,7 @@ pub fn paint_gradients(
 			background_bounds.width,
 			background_bottom.saturating_sub(background_bounds.y),
 		);
-		let bg_prop = if props.get(Prop::Bg).is_some() {
+		let bg_prop = if props.contains(Prop::Bg) {
 			Prop::Bg
 		} else {
 			Prop::On
@@ -1170,7 +1170,7 @@ fn paint_border(
 		base.fg(Color::Default)
 	} else if let Some(color) = props.edge(&pc.ctx.theme) {
 		base.fg(color)
-	} else if props.get(Prop::Fg).is_some() {
+	} else if props.contains(Prop::Fg) {
 		base.dim()
 	} else {
 		base.fg(pc.ctx.theme.border)

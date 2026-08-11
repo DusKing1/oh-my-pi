@@ -8,7 +8,7 @@ use crate::{
 	anim,
 	component::{Component, MemoKey, PaintCtx, Slot, next_slot},
 	frame::{Rect, Style},
-	markup::Truncate,
+	markup::{TextWrap, Truncate},
 	props::{Prop, PropValue, Props},
 	rich::{Pipeline, RichSink, RichText, cell_width},
 };
@@ -114,7 +114,7 @@ impl TextLeaf {
 				}
 				clip_start_runs(&mut self.rich, width, &runs);
 			},
-			None if self.props.wrap_chars() => {
+			None if self.props.text_wrap() == TextWrap::Char => {
 				// Terminal-exact flow: rows break grapheme-exact at the
 				// width and every boundary stays byte-joinable for copy.
 				let mut wrap = (&mut self.rich).wrap_chars(width);
@@ -179,7 +179,7 @@ impl Component for TextLeaf {
 		let natural = total.saturating_sub(1);
 		// Truncation can always collapse to a lone ellipsis, and char-wrap
 		// flows at any width, so neither blocks a column from shrinking.
-		if self.props.truncate().is_some() || self.props.wrap_chars() {
+		if self.props.truncate().is_some() || self.props.text_wrap() == TextWrap::Char {
 			return (natural.min(1), natural);
 		}
 		(widest_word, natural)
