@@ -11,6 +11,7 @@ use omp_core::{Str, fmts, str::StrExt};
 use omp_llm_types::Effort;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
+use strum::IntoStaticStr;
 use thiserror::Error;
 
 use crate::models::{ModelCard, ModelThinkingEffort, PriceUnit};
@@ -82,9 +83,21 @@ pub const FALLBACK_DIALECT: Dialect = Dialect::Xml;
 /// Model-authored prompt and in-band tool syntax owned by the dialect
 /// subsystem.
 #[derive(
-	Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+	Clone,
+	Copy,
+	Debug,
+	Default,
+	Deserialize,
+	Eq,
+	Hash,
+	IntoStaticStr,
+	Ord,
+	PartialEq,
+	PartialOrd,
+	Serialize,
 )]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "lowercase")]
 pub enum Dialect {
 	/// GLM XML-like tool syntax.
 	Glm,
@@ -131,20 +144,8 @@ impl Dialect {
 
 	/// Returns the canonical configuration spelling.
 	#[must_use]
-	pub const fn as_str(self) -> &'static str {
-		match self {
-			Self::Glm => "glm",
-			Self::Hermes => "hermes",
-			Self::Kimi => "kimi",
-			Self::Xml => "xml",
-			Self::Anthropic => "anthropic",
-			Self::DeepSeek => "deepseek",
-			Self::Harmony => "harmony",
-			Self::Qwen3 => "qwen3",
-			Self::Gemini => "gemini",
-			Self::Gemma => "gemma",
-			Self::MiniMax => "minimax",
-		}
+	pub fn as_str(self) -> &'static str {
+		self.into()
 	}
 }
 

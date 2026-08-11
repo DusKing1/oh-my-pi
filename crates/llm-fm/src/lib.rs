@@ -21,7 +21,6 @@
 //! ```
 
 use std::{
-	fmt,
 	pin::Pin,
 	task::{Context, Poll},
 	time::Duration,
@@ -29,6 +28,7 @@ use std::{
 
 use futures::{Stream, channel::mpsc};
 use omp_core::Str;
+use strum::Display;
 use tokio::task::JoinError;
 use tokio_util::sync::CancellationToken;
 
@@ -52,7 +52,8 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const CONTEXT_SIZE: u32 = 4096;
 
 /// Stable category attached to an [`AppleFmError`].
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Display, Eq, Hash, PartialEq)]
+#[strum(serialize_all = "snake_case")]
 pub enum AppleFmErrorCode {
 	/// The caller supplied an invalid request option.
 	InvalidInput,
@@ -83,29 +84,8 @@ pub enum AppleFmErrorCode {
 	/// Another process-local request is already active.
 	ConcurrentRequests,
 	/// The Foundation Models or Swift runtime failed unexpectedly.
+	#[strum(to_string = "runtime_error")]
 	Runtime,
-}
-
-impl fmt::Display for AppleFmErrorCode {
-	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		formatter.write_str(match self {
-			Self::InvalidInput => "invalid_input",
-			Self::Cancelled => "cancelled",
-			Self::TimedOut => "timed_out",
-			Self::ModelUnavailable => "model_unavailable",
-			Self::DeviceNotEligible => "device_not_eligible",
-			Self::AppleIntelligenceNotEnabled => "apple_intelligence_not_enabled",
-			Self::ModelNotReady => "model_not_ready",
-			Self::ContextOverflow => "context_overflow",
-			Self::GuardrailBlocked => "guardrail_blocked",
-			Self::UnsupportedGuide => "unsupported_guide",
-			Self::UnsupportedLocale => "unsupported_locale",
-			Self::DecodingFailure => "decoding_failure",
-			Self::RateLimited => "rate_limited",
-			Self::ConcurrentRequests => "concurrent_requests",
-			Self::Runtime => "runtime_error",
-		})
-	}
 }
 
 /// Error returned by Apple Foundation Models availability checks or generation.

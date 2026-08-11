@@ -1,5 +1,6 @@
 use omp_core::{Str, fmts};
 use smallvec::SmallVec;
+use strum::{EnumString, IntoStaticStr};
 
 use crate::{
 	component::{Component, PaintCtx, Slot, next_slot},
@@ -12,32 +13,30 @@ use crate::{
 
 /// Lifecycle state of a [`TodoTask`], mirroring the coding agent's todo
 /// tracker: open work, the one active item, and the three closed shapes.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, EnumString, Eq, IntoStaticStr, PartialEq)]
 pub enum TaskStatus {
 	/// Not started; renders dim with an empty checkbox.
 	#[default]
+	#[strum(to_string = "pending", serialize = "open")]
 	Pending,
 	/// Currently being worked; renders accent.
+	#[strum(to_string = "active", serialize = "in-progress", serialize = "in_progress")]
 	Active,
 	/// Finished; renders ok with a checked box and struck label.
+	#[strum(to_string = "done", serialize = "completed")]
 	Done,
 	/// Abandoned; renders err with a struck label.
+	#[strum(to_string = "dropped", serialize = "abandoned")]
 	Dropped,
 	/// Waiting on something external; renders warn with the blocker note.
+	#[strum(to_string = "blocked")]
 	Blocked,
 }
 
 impl TaskStatus {
 	/// Parses a markup `status=` value, accepting the agent-side aliases.
 	pub fn parse(name: &str) -> Option<Self> {
-		Some(match name {
-			"pending" | "open" => Self::Pending,
-			"active" | "in-progress" | "in_progress" => Self::Active,
-			"done" | "completed" => Self::Done,
-			"dropped" | "abandoned" => Self::Dropped,
-			"blocked" => Self::Blocked,
-			_ => return None,
-		})
+		name.parse().ok()
 	}
 }
 
@@ -78,13 +77,7 @@ impl TodoTask {
 
 	/// Sets the lifecycle state.
 	pub fn status(mut self, status: TaskStatus) -> Self {
-		let name = match status {
-			TaskStatus::Pending => "pending",
-			TaskStatus::Active => "active",
-			TaskStatus::Done => "done",
-			TaskStatus::Dropped => "dropped",
-			TaskStatus::Blocked => "blocked",
-		};
+		let name: &'static str = status.into();
 		self.props.set(Prop::Status, name);
 		self
 	}

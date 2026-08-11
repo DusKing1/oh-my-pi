@@ -16,31 +16,62 @@ pub const METER_NAME: &str = "@omp/coding-agent";
 #[error("invalid {0} telemetry vocabulary value")]
 pub struct ParseSemconvError(&'static str);
 
-/// Values of `gen_ai.operation.name` emitted by agent-loop spans.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum Operation {
-	/// A complete agent-loop invocation.
-	InvokeAgent,
-	/// One model chat request.
-	Chat,
-	/// One tool execution.
-	ExecuteTool,
-	/// A transition between named agents.
-	Handoff,
+macro_rules! vocab {
+	(
+		$(#[$enum_meta:meta])*
+		pub enum $name:ident($label:literal, $as_str_doc:literal) {
+			$(
+				$(#[$variant_meta:meta])*
+				$variant:ident => $wire:literal,
+			)*
+		}
+	) => {
+		$(#[$enum_meta])*
+		pub enum $name {
+			$(
+				$(#[$variant_meta])*
+				$variant,
+			)*
+		}
+
+		impl $name {
+			#[doc = $as_str_doc]
+			#[must_use]
+			pub const fn as_str(self) -> &'static str {
+				match self {
+					$(Self::$variant => $wire,)*
+				}
+			}
+		}
+
+		impl FromStr for $name {
+			type Err = ParseSemconvError;
+
+			fn from_str(value: &str) -> Result<Self, Self::Err> {
+				match value {
+					$($wire => Ok(Self::$variant),)*
+					_ => Err(ParseSemconvError($label)),
+				}
+			}
+		}
+	};
 }
 
-impl Operation {
-	/// Returns the byte-exact `gen_ai.operation.name` value.
-	#[must_use]
-	pub const fn as_str(self) -> &'static str {
-		match self {
-			Self::InvokeAgent => "invoke_agent",
-			Self::Chat => "chat",
-			Self::ExecuteTool => "execute_tool",
-			Self::Handoff => "handoff",
-		}
+vocab! {
+	/// Values of `gen_ai.operation.name` emitted by agent-loop spans.
+	#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+	pub enum Operation("operation", "Returns the byte-exact `gen_ai.operation.name` value.") {
+		/// A complete agent-loop invocation.
+		InvokeAgent => "invoke_agent",
+		/// One model chat request.
+		Chat => "chat",
+		/// One tool execution.
+		ExecuteTool => "execute_tool",
+		/// A transition between named agents.
+		Handoff => "handoff",
 	}
-
+}
+impl Operation {
 	/// Formats the span name exactly as pi does.
 	///
 	/// `primary` is the agent name for `invoke_agent`, model identifier for
@@ -70,139 +101,58 @@ impl Operation {
 	}
 }
 
-impl FromStr for Operation {
-	type Err = ParseSemconvError;
-
-	fn from_str(value: &str) -> Result<Self, Self::Err> {
-		match value {
-			"invoke_agent" => Ok(Self::InvokeAgent),
-			"chat" => Ok(Self::Chat),
-			"execute_tool" => Ok(Self::ExecuteTool),
-			"handoff" => Ok(Self::Handoff),
-			_ => Err(ParseSemconvError("operation")),
-		}
+vocab! {
+	/// Terminal status vocabulary for tool execution.
+	#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+	pub enum ToolStatus("tool status", "Returns the byte-exact terminal-status value.") {
+		/// The tool completed successfully.
+		Ok => "ok",
+		/// The tool failed.
+		Error => "error",
+		/// The tool was intentionally skipped.
+		Skipped => "skipped",
+		/// Policy or permissions blocked the tool.
+		Blocked => "blocked",
+		/// The tool exceeded its deadline.
+		Timeout => "timeout",
+		/// The tool was aborted.
+		Aborted => "aborted",
 	}
 }
 
-/// Terminal status vocabulary for tool execution.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum ToolStatus {
-	/// The tool completed successfully.
-	Ok,
-	/// The tool failed.
-	Error,
-	/// The tool was intentionally skipped.
-	Skipped,
-	/// Policy or permissions blocked the tool.
-	Blocked,
-	/// The tool exceeded its deadline.
-	Timeout,
-	/// The tool was aborted.
-	Aborted,
-}
-
-impl ToolStatus {
-	/// Returns the byte-exact terminal-status value.
-	#[must_use]
-	pub const fn as_str(self) -> &'static str {
-		match self {
-			Self::Ok => "ok",
-			Self::Error => "error",
-			Self::Skipped => "skipped",
-			Self::Blocked => "blocked",
-			Self::Timeout => "timeout",
-			Self::Aborted => "aborted",
-		}
+vocab! {
+	/// Values of the `gen_ai.token.type` metric dimension.
+	#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+	pub enum TokenType("token type", "Returns the byte-exact `gen_ai.token.type` value.") {
+		/// All input tokens, including cache buckets.
+		Input => "input",
+		/// Output tokens.
+		Output => "output",
+		/// Input plus output tokens.
+		Total => "total",
+		/// Cache-read input tokens.
+		CacheReadInput => "cache_read_input",
+		/// Cache-write input tokens.
+		CacheWriteInput => "cache_write_input",
+		/// Reasoning output tokens.
+		ReasoningOutput => "reasoning_output",
 	}
 }
 
-impl FromStr for ToolStatus {
-	type Err = ParseSemconvError;
-
-	fn from_str(value: &str) -> Result<Self, Self::Err> {
-		match value {
-			"ok" => Ok(Self::Ok),
-			"error" => Ok(Self::Error),
-			"skipped" => Ok(Self::Skipped),
-			"blocked" => Ok(Self::Blocked),
-			"timeout" => Ok(Self::Timeout),
-			"aborted" => Ok(Self::Aborted),
-			_ => Err(ParseSemconvError("tool status")),
-		}
+vocab! {
+	/// Message-content capture mode.
+	#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+	pub enum CaptureMode("content-capture mode", "Returns the byte-exact configuration value.") {
+		/// Do not attach message content.
+		#[default]
+		None => "none",
+		/// Attach bounded dashboard-friendly summaries.
+		Summary => "summary",
+		/// Attach summaries and full OpenTelemetry message payloads.
+		Full => "full",
 	}
 }
-
-/// Values of the `gen_ai.token.type` metric dimension.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum TokenType {
-	/// All input tokens, including cache buckets.
-	Input,
-	/// Output tokens.
-	Output,
-	/// Input plus output tokens.
-	Total,
-	/// Cache-read input tokens.
-	CacheReadInput,
-	/// Cache-write input tokens.
-	CacheWriteInput,
-	/// Reasoning output tokens.
-	ReasoningOutput,
-}
-
-impl TokenType {
-	/// Returns the byte-exact `gen_ai.token.type` value.
-	#[must_use]
-	pub const fn as_str(self) -> &'static str {
-		match self {
-			Self::Input => "input",
-			Self::Output => "output",
-			Self::Total => "total",
-			Self::CacheReadInput => "cache_read_input",
-			Self::CacheWriteInput => "cache_write_input",
-			Self::ReasoningOutput => "reasoning_output",
-		}
-	}
-}
-
-impl FromStr for TokenType {
-	type Err = ParseSemconvError;
-
-	fn from_str(value: &str) -> Result<Self, Self::Err> {
-		match value {
-			"input" => Ok(Self::Input),
-			"output" => Ok(Self::Output),
-			"total" => Ok(Self::Total),
-			"cache_read_input" => Ok(Self::CacheReadInput),
-			"cache_write_input" => Ok(Self::CacheWriteInput),
-			"reasoning_output" => Ok(Self::ReasoningOutput),
-			_ => Err(ParseSemconvError("token type")),
-		}
-	}
-}
-
-/// Message-content capture mode.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub enum CaptureMode {
-	/// Do not attach message content.
-	#[default]
-	None,
-	/// Attach bounded dashboard-friendly summaries.
-	Summary,
-	/// Attach summaries and full OpenTelemetry message payloads.
-	Full,
-}
-
 impl CaptureMode {
-	/// Returns the byte-exact configuration value.
-	#[must_use]
-	pub const fn as_str(self) -> &'static str {
-		match self {
-			Self::None => "none",
-			Self::Summary => "summary",
-			Self::Full => "full",
-		}
-	}
-
 	/// Parses `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` exactly as
 	/// pi.
 	///
@@ -228,47 +178,23 @@ impl CaptureMode {
 	}
 }
 
-impl FromStr for CaptureMode {
-	type Err = ParseSemconvError;
-
-	fn from_str(value: &str) -> Result<Self, Self::Err> {
-		match value {
-			"none" => Ok(Self::None),
-			"summary" => Ok(Self::Summary),
-			"full" => Ok(Self::Full),
-			_ => Err(ParseSemconvError("content-capture mode")),
-		}
+vocab! {
+	/// Stop-reason vocabulary received from pi providers.
+	#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+	pub enum StopReason("stop reason", "Returns the byte-exact pi stop-reason value.") {
+		/// The model stopped normally.
+		Stop => "stop",
+		/// The model reached a length limit.
+		Length => "length",
+		/// The model requested one or more tool calls.
+		ToolUse => "toolUse",
+		/// The provider reported an error.
+		Error => "error",
+		/// The request was aborted.
+		Aborted => "aborted",
 	}
 }
-
-/// Stop-reason vocabulary received from pi providers.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum StopReason {
-	/// The model stopped normally.
-	Stop,
-	/// The model reached a length limit.
-	Length,
-	/// The model requested one or more tool calls.
-	ToolUse,
-	/// The provider reported an error.
-	Error,
-	/// The request was aborted.
-	Aborted,
-}
-
 impl StopReason {
-	/// Returns the byte-exact pi stop-reason value.
-	#[must_use]
-	pub const fn as_str(self) -> &'static str {
-		match self {
-			Self::Stop => "stop",
-			Self::Length => "length",
-			Self::ToolUse => "toolUse",
-			Self::Error => "error",
-			Self::Aborted => "aborted",
-		}
-	}
-
 	/// Maps this pi stop reason to the finish reason emitted on chat spans.
 	#[must_use]
 	pub const fn finish_reason(self) -> FinishReason {
@@ -281,58 +207,18 @@ impl StopReason {
 	}
 }
 
-impl FromStr for StopReason {
-	type Err = ParseSemconvError;
-
-	fn from_str(value: &str) -> Result<Self, Self::Err> {
-		match value {
-			"stop" => Ok(Self::Stop),
-			"length" => Ok(Self::Length),
-			"toolUse" => Ok(Self::ToolUse),
-			"error" => Ok(Self::Error),
-			"aborted" => Ok(Self::Aborted),
-			_ => Err(ParseSemconvError("stop reason")),
-		}
-	}
-}
-
-/// Normalized values emitted in `gen_ai.response.finish_reasons`.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum FinishReason {
-	/// Normal completion (`stop`).
-	Stop,
-	/// Length-limited completion (`length`).
-	Length,
-	/// Completion requesting tools (`tool_calls`).
-	ToolCalls,
-	/// Errored or aborted completion (`error`).
-	Error,
-}
-
-impl FinishReason {
-	/// Returns the byte-exact finish-reason value.
-	#[must_use]
-	pub const fn as_str(self) -> &'static str {
-		match self {
-			Self::Stop => "stop",
-			Self::Length => "length",
-			Self::ToolCalls => "tool_calls",
-			Self::Error => "error",
-		}
-	}
-}
-
-impl FromStr for FinishReason {
-	type Err = ParseSemconvError;
-
-	fn from_str(value: &str) -> Result<Self, Self::Err> {
-		match value {
-			"stop" => Ok(Self::Stop),
-			"length" => Ok(Self::Length),
-			"tool_calls" => Ok(Self::ToolCalls),
-			"error" => Ok(Self::Error),
-			_ => Err(ParseSemconvError("finish reason")),
-		}
+vocab! {
+	/// Normalized values emitted in `gen_ai.response.finish_reasons`.
+	#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+	pub enum FinishReason("finish reason", "Returns the byte-exact finish-reason value.") {
+		/// Normal completion (`stop`).
+		Stop => "stop",
+		/// Length-limited completion (`length`).
+		Length => "length",
+		/// Completion requesting tools (`tool_calls`).
+		ToolCalls => "tool_calls",
+		/// Errored or aborted completion (`error`).
+		Error => "error",
 	}
 }
 
@@ -348,46 +234,32 @@ pub fn map_stop_reason(reason: &str) -> Option<&'static str> {
 		.map(FinishReason::as_str)
 }
 
-/// Fixed `error.type` classifications emitted by pi.
-///
-/// JavaScript error names and caller-supplied error types remain free-form and
-/// therefore are not represented by this bounded vocabulary.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum ErrorType {
-	/// A chat ended with stop reason `error`.
-	TerminalError,
-	/// A chat ended with stop reason `aborted`.
-	TerminalAborted,
-	/// A tool failed without a more specific thrown-error class.
-	ToolError,
-	/// A tool was skipped.
-	ToolSkipped,
-	/// A tool was blocked.
-	ToolBlocked,
-	/// A tool timed out.
-	ToolTimeout,
-	/// A tool was aborted.
-	ToolAborted,
-	/// Fallback classification when no JavaScript error class is available.
-	FallbackError,
-}
-
-impl ErrorType {
-	/// Returns the byte-exact `error.type` value.
-	#[must_use]
-	pub const fn as_str(self) -> &'static str {
-		match self {
-			Self::TerminalError => "error",
-			Self::TerminalAborted => "aborted",
-			Self::ToolError => "tool_error",
-			Self::ToolSkipped => "tool_skipped",
-			Self::ToolBlocked => "tool_blocked",
-			Self::ToolTimeout => "tool_timeout",
-			Self::ToolAborted => "tool_aborted",
-			Self::FallbackError => "Error",
-		}
+vocab! {
+	/// Fixed `error.type` classifications emitted by pi.
+	///
+	/// JavaScript error names and caller-supplied error types remain free-form and
+	/// therefore are not represented by this bounded vocabulary.
+	#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+	pub enum ErrorType("error type", "Returns the byte-exact `error.type` value.") {
+		/// A chat ended with stop reason `error`.
+		TerminalError => "error",
+		/// A chat ended with stop reason `aborted`.
+		TerminalAborted => "aborted",
+		/// A tool failed without a more specific thrown-error class.
+		ToolError => "tool_error",
+		/// A tool was skipped.
+		ToolSkipped => "tool_skipped",
+		/// A tool was blocked.
+		ToolBlocked => "tool_blocked",
+		/// A tool timed out.
+		ToolTimeout => "tool_timeout",
+		/// A tool was aborted.
+		ToolAborted => "tool_aborted",
+		/// Fallback classification when no JavaScript error class is available.
+		FallbackError => "Error",
 	}
-
+}
+impl ErrorType {
 	/// Returns pi's fixed error classification for a non-success tool status.
 	///
 	/// Successful tools have no `error.type`. A thrown error may replace the
@@ -401,24 +273,6 @@ impl ErrorType {
 			ToolStatus::Blocked => Some(Self::ToolBlocked),
 			ToolStatus::Timeout => Some(Self::ToolTimeout),
 			ToolStatus::Aborted => Some(Self::ToolAborted),
-		}
-	}
-}
-
-impl FromStr for ErrorType {
-	type Err = ParseSemconvError;
-
-	fn from_str(value: &str) -> Result<Self, Self::Err> {
-		match value {
-			"error" => Ok(Self::TerminalError),
-			"aborted" => Ok(Self::TerminalAborted),
-			"tool_error" => Ok(Self::ToolError),
-			"tool_skipped" => Ok(Self::ToolSkipped),
-			"tool_blocked" => Ok(Self::ToolBlocked),
-			"tool_timeout" => Ok(Self::ToolTimeout),
-			"tool_aborted" => Ok(Self::ToolAborted),
-			"Error" => Ok(Self::FallbackError),
-			_ => Err(ParseSemconvError("error type")),
 		}
 	}
 }

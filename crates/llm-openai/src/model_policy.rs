@@ -263,16 +263,16 @@ impl OpenAiModelPolicy {
 		}
 	}
 
+	/// Wire spelling for an effort, honoring per-model `effort_map` overrides.
+	///
+	/// `Effort::Off` maps to `"none"` — the only disable level the Responses
+	/// API defines (`"off"` is not a wire value and 400s everywhere).
 	pub(crate) fn mapped_effort(&self, effort: Effort) -> Str {
-		self.effort_map.get(&effort).cloned().unwrap_or_else(|| {
-			if effort == Effort::Off
-				&& self.compat.reasoning_wire_format == ReasoningWireFormat::OpenAiResponses
-			{
-				Str::new_static("off")
-			} else {
-				Str::new(effort_name(effort))
-			}
-		})
+		self
+			.effort_map
+			.get(&effort)
+			.cloned()
+			.unwrap_or_else(|| Str::new_static(effort_name(effort)))
 	}
 }
 

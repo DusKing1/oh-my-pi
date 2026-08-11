@@ -13,7 +13,6 @@ use ast_grep_core::{
 	meta_var::MetaVariable,
 	tree_sitter::{LanguageExt, StrDoc, TSLanguage, TSRange},
 };
-use phf::phf_map;
 
 /// Implements a stub language (no expando / `pre_process_pattern` needed).
 /// Use when the language grammar accepts `$VAR` as valid identifiers.
@@ -285,233 +284,189 @@ fn node_to_range<D: Doc>(node: &Node<D>) -> TSRange {
 
 // ── SupportLang enum ────────────────────────────────────────────────────
 
-/// All supported languages for ast-grep structural search/replace.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum SupportLang {
+macro_rules! define_support_langs {
+	(
+		$(
+			$(#[$meta:meta])*
+			$variant:ident => $canonical:literal $(| $alias:literal)*
+		),* $(,)?
+	) => {
+		/// All supported languages for ast-grep structural search/replace.
+		#[derive(
+			Clone,
+			Copy,
+			Debug,
+			PartialEq,
+			Eq,
+			Hash,
+			strum::EnumString,
+			strum::IntoStaticStr,
+		)]
+		#[strum(ascii_case_insensitive, const_into_str)]
+		pub enum SupportLang {
+			$(
+				$(#[$meta])*
+				#[strum(to_string = $canonical $(, serialize = $alias)*)]
+				$variant,
+			)*
+		}
+
+		const LANG_ALIASES: &[&str] = &[
+			$($canonical, $($alias,)*)*
+		];
+
+		impl SupportLang {
+			/// Returns every supported language in stable declaration order.
+			pub const fn all_langs() -> &'static [Self] {
+				&[$(Self::$variant),*]
+			}
+
+			/// The canonical lowercase name used as a stable key in alias maps,
+			/// file-type inference results, and error messages.
+			pub const fn canonical_name(self) -> &'static str {
+				self.into_str()
+			}
+
+			/// Resolves a case-insensitive language alias.
+			pub fn from_alias(value: &str) -> Option<Self> {
+				value.trim().parse().ok()
+			}
+
+			/// Infers a language from a path extension or filename.
+			pub fn from_path(path: &Path) -> Option<Self> {
+				from_extension(path)
+			}
+
+			/// Returns every accepted alias in sorted order.
+			pub fn sorted_aliases() -> &'static [&'static str] {
+				&SORTED_ALIASES
+			}
+		}
+	};
+}
+
+define_support_langs! {
 	/// Astro.
-	Astro,
+	Astro => "astro",
 	/// Bash.
-	Bash,
+	Bash => "bash" | "sh" | "zsh" | "ksh" | "bats",
 	/// C.
-	C,
+	C => "c" | "h",
 	/// `CMake`.
-	Cmake,
+	Cmake => "cmake",
 	/// C++.
-	Cpp,
+	Cpp => "cpp" | "c++" | "cc" | "cxx" | "hh" | "hpp" | "cu" | "ino",
 	/// C#.
-	CSharp,
+	CSharp => "csharp" | "c#" | "cs",
 	/// Dart.
-	Dart,
+	Dart => "dart",
 	/// Clojure.
-	Clojure,
+	Clojure => "clojure" | "clj" | "cljc" | "cljs" | "clojurescript" | "edn",
 	/// CSS.
-	Css,
+	Css => "css",
 	/// Unified diff.
-	Diff,
+	Diff => "diff" | "patch",
 	/// Dockerfile.
-	Dockerfile,
+	Dockerfile => "dockerfile" | "docker" | "containerfile",
 	/// Emacs Lisp.
-	EmacsLisp,
+	EmacsLisp => "emacs-lisp" | "emacslisp" | "elisp" | "el",
 	/// Elixir.
-	Elixir,
+	Elixir => "elixir" | "ex" | "exs",
 	/// Erlang.
-	Erlang,
+	Erlang => "erlang" | "erl" | "hrl",
 	/// Fortran.
-	Fortran,
+	Fortran => "fortran" | "f90" | "f95" | "f03" | "f08",
 	/// Go.
-	Go,
+	Go => "go" | "golang",
 	/// GraphQL.
-	Graphql,
+	Graphql => "graphql" | "gql",
 	/// Haskell.
-	Haskell,
+	Haskell => "haskell" | "hs",
 	/// HCL.
-	Hcl,
+	Hcl => "hcl" | "tf" | "tfvars" | "terraform",
 	/// HTML.
-	Html,
+	Html => "html" | "htm" | "xhtml",
 	/// INI.
-	Ini,
+	Ini => "ini" | "cfg" | "conf" | "config" | "properties",
 	/// Java.
-	Java,
+	Java => "java",
 	/// JavaScript.
-	JavaScript,
+	JavaScript => "javascript" | "js" | "jsx" | "mjs" | "cjs",
 	/// JSON.
-	Json,
+	Json => "json",
 	/// Just.
-	Just,
+	Just => "just" | "justfile",
 	/// Julia.
-	Julia,
+	Julia => "julia" | "jl",
 	/// Kotlin.
-	Kotlin,
+	Kotlin => "kotlin" | "kt" | "kts" | "ktm",
 	/// Lua.
-	Lua,
+	Lua => "lua",
 	/// Make.
-	Make,
+	Make => "make" | "makefile" | "gnumake" | "mk" | "mak",
 	/// Markdown.
-	Markdown,
+	Markdown => "markdown" | "md" | "mdx",
 	/// Nix.
-	Nix,
+	Nix => "nix",
 	/// Objective-C.
-	ObjC,
+	ObjC => "objc" | "obj-c" | "objective-c" | "m" | "mm",
 	/// OCaml.
-	Ocaml,
+	Ocaml => "ocaml" | "ml",
 	/// Odin.
-	Odin,
+	Odin => "odin",
 	/// PHP.
-	Php,
+	Php => "php",
 	/// PowerShell.
-	Powershell,
+	Powershell => "powershell" | "ps1" | "psm1",
 	/// Protocol Buffers.
-	Proto,
+	Proto => "protobuf" | "proto",
 	/// Python.
-	Python,
+	Python => "python" | "py" | "py3" | "pyi",
 	/// R.
-	R,
+	R => "r",
 	/// Regular expressions.
-	Regex,
+	Regex => "regex" | "re",
 	/// Ruby.
-	Ruby,
+	Ruby => "ruby" | "rb" | "rbw" | "gemspec",
 	/// Rust.
-	Rust,
+	Rust => "rust" | "rs",
 	/// Scala.
-	Scala,
+	Scala => "scala" | "sc" | "sbt",
 	/// Solidity.
-	Solidity,
+	Solidity => "solidity" | "sol",
 	/// SQL.
-	Sql,
+	Sql => "sql",
 	/// Starlark.
-	Starlark,
+	Starlark => "starlark" | "star" | "bzl" | "bazel" | "skylark",
 	/// Svelte.
-	Svelte,
+	Svelte => "svelte",
 	/// Swift.
-	Swift,
+	Swift => "swift",
 	/// TOML.
-	Toml,
+	Toml => "toml",
 	/// TLA+.
-	Tlaplus,
+	Tlaplus => "tlaplus" | "tla" | "tla+" | "pluscal" | "pcal",
 	/// TSX.
-	Tsx,
+	Tsx => "tsx",
 	/// TypeScript.
-	TypeScript,
+	TypeScript => "typescript" | "ts" | "mts" | "cts",
 	/// Verilog.
-	Verilog,
+	Verilog => "verilog" | "systemverilog" | "sv" | "svh" | "vh" | "v",
 	/// Vue.
-	Vue,
+	Vue => "vue",
 	/// XML.
-	Xml,
+	Xml => "xml" | "xsl" | "xslt" | "svg" | "plist",
 	/// YAML.
-	Yaml,
+	Yaml => "yaml" | "yml",
 	/// Zig.
-	Zig,
+	Zig => "zig",
 }
 
 static SORTED_ALIASES: LazyLock<Box<[&'static str]>> = LazyLock::new(|| {
-	let mut aliases = LANG_ALIASES.keys().copied().collect::<Box<[_]>>();
+	let mut aliases = LANG_ALIASES.to_vec().into_boxed_slice();
 	aliases.sort_unstable();
 	aliases
 });
-
-impl SupportLang {
-	/// Returns every supported language in stable declaration order.
-	pub const fn all_langs() -> &'static [Self] {
-		use SupportLang::*;
-		&[
-			Astro, Bash, C, Cmake, Cpp, CSharp, Dart, Clojure, Css, Diff, Dockerfile, EmacsLisp,
-			Elixir, Erlang, Fortran, Go, Graphql, Haskell, Hcl, Html, Ini, Java, JavaScript, Json,
-			Just, Julia, Kotlin, Lua, Make, Markdown, Nix, ObjC, Ocaml, Odin, Php, Powershell, Proto,
-			Python, R, Regex, Ruby, Rust, Scala, Solidity, Sql, Starlark, Svelte, Swift, Toml,
-			Tlaplus, Tsx, TypeScript, Verilog, Vue, Xml, Yaml, Zig,
-		]
-	}
-
-	/// The canonical lowercase name used as a stable key in alias maps,
-	/// file-type inference results, and error messages.
-	pub const fn canonical_name(self) -> &'static str {
-		match self {
-			Self::Astro => "astro",
-			Self::Bash => "bash",
-			Self::C => "c",
-			Self::Cmake => "cmake",
-			Self::Cpp => "cpp",
-			Self::CSharp => "csharp",
-			Self::Dart => "dart",
-			Self::Clojure => "clojure",
-			Self::Css => "css",
-			Self::Diff => "diff",
-			Self::Dockerfile => "dockerfile",
-			Self::EmacsLisp => "emacs-lisp",
-			Self::Elixir => "elixir",
-			Self::Erlang => "erlang",
-			Self::Fortran => "fortran",
-			Self::Go => "go",
-			Self::Graphql => "graphql",
-			Self::Haskell => "haskell",
-			Self::Hcl => "hcl",
-			Self::Html => "html",
-			Self::Ini => "ini",
-			Self::Java => "java",
-			Self::JavaScript => "javascript",
-			Self::Json => "json",
-			Self::Just => "just",
-			Self::Julia => "julia",
-			Self::Kotlin => "kotlin",
-			Self::Lua => "lua",
-			Self::Make => "make",
-			Self::Markdown => "markdown",
-			Self::Nix => "nix",
-			Self::ObjC => "objc",
-			Self::Ocaml => "ocaml",
-			Self::Odin => "odin",
-			Self::Php => "php",
-			Self::Powershell => "powershell",
-			Self::Proto => "protobuf",
-			Self::Python => "python",
-			Self::R => "r",
-			Self::Regex => "regex",
-			Self::Ruby => "ruby",
-			Self::Rust => "rust",
-			Self::Scala => "scala",
-			Self::Solidity => "solidity",
-			Self::Sql => "sql",
-			Self::Starlark => "starlark",
-			Self::Svelte => "svelte",
-			Self::Swift => "swift",
-			Self::Toml => "toml",
-			Self::Tlaplus => "tlaplus",
-			Self::Tsx => "tsx",
-			Self::TypeScript => "typescript",
-			Self::Verilog => "verilog",
-			Self::Vue => "vue",
-			Self::Xml => "xml",
-			Self::Yaml => "yaml",
-			Self::Zig => "zig",
-		}
-	}
-
-	/// Resolves a case-insensitive language alias.
-	pub fn from_alias(value: &str) -> Option<Self> {
-		let value = value.trim();
-		LANG_ALIASES
-			.get(value)
-			.or_else(|| {
-				value
-					.bytes()
-					.any(|byte| byte.is_ascii_uppercase())
-					.then(|| value.to_ascii_lowercase())
-					.and_then(|lowered| LANG_ALIASES.get(lowered.as_str()))
-			})
-			.copied()
-	}
-
-	/// Infers a language from a path extension or filename.
-	pub fn from_path(path: &Path) -> Option<Self> {
-		from_extension(path)
-	}
-
-	/// Returns every accepted alias in sorted order.
-	pub fn sorted_aliases() -> &'static [&'static str] {
-		&SORTED_ALIASES
-	}
-}
 
 impl fmt::Display for SupportLang {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -756,163 +711,3 @@ fn from_extension(path: &Path) -> Option<SupportLang> {
 		.copied()
 		.find(|&l| extensions(l).contains(&ext))
 }
-
-static LANG_ALIASES: phf::Map<&'static str, SupportLang> = phf_map! {
-"astro"          => SupportLang::Astro,
-"bash"           => SupportLang::Bash,
-"sh"             => SupportLang::Bash,
-"zsh"            => SupportLang::Bash,
-"ksh"            => SupportLang::Bash,
-"bats"           => SupportLang::Bash,
-"c"              => SupportLang::C,
-"h"              => SupportLang::C,
-"cmake"          => SupportLang::Cmake,
-"cpp"            => SupportLang::Cpp,
-"c++"            => SupportLang::Cpp,
-"cc"             => SupportLang::Cpp,
-"cxx"            => SupportLang::Cpp,
-"hh"             => SupportLang::Cpp,
-"hpp"            => SupportLang::Cpp,
-"cu"             => SupportLang::Cpp,
-"ino"            => SupportLang::Cpp,
-"csharp"         => SupportLang::CSharp,
-"c#"             => SupportLang::CSharp,
-"cs"             => SupportLang::CSharp,
-"dart"           => SupportLang::Dart,
-"css"            => SupportLang::Css,
-"clj"            => SupportLang::Clojure,
-"cljc"           => SupportLang::Clojure,
-"cljs"           => SupportLang::Clojure,
-"clojure"        => SupportLang::Clojure,
-"clojurescript"  => SupportLang::Clojure,
-"edn"            => SupportLang::Clojure,
-"diff"           => SupportLang::Diff,
-"patch"          => SupportLang::Diff,
-"docker"         => SupportLang::Dockerfile,
-"dockerfile"     => SupportLang::Dockerfile,
-"containerfile"  => SupportLang::Dockerfile,
-"emacs-lisp"     => SupportLang::EmacsLisp,
-"emacslisp"      => SupportLang::EmacsLisp,
-"elisp"          => SupportLang::EmacsLisp,
-"el"             => SupportLang::EmacsLisp,
-"elixir"         => SupportLang::Elixir,
-"ex"             => SupportLang::Elixir,
-"exs"            => SupportLang::Elixir,
-"erlang"         => SupportLang::Erlang,
-"erl"            => SupportLang::Erlang,
-"hrl"            => SupportLang::Erlang,
-"fortran"        => SupportLang::Fortran,
-"f90"            => SupportLang::Fortran,
-"f95"            => SupportLang::Fortran,
-"f03"            => SupportLang::Fortran,
-"f08"            => SupportLang::Fortran,
-"go"             => SupportLang::Go,
-"golang"         => SupportLang::Go,
-"graphql"        => SupportLang::Graphql,
-"gql"            => SupportLang::Graphql,
-"haskell"        => SupportLang::Haskell,
-"hs"             => SupportLang::Haskell,
-"hcl"            => SupportLang::Hcl,
-"tf"             => SupportLang::Hcl,
-"tfvars"         => SupportLang::Hcl,
-"terraform"      => SupportLang::Hcl,
-"html"           => SupportLang::Html,
-"htm"            => SupportLang::Html,
-"xhtml"          => SupportLang::Html,
-"ini"            => SupportLang::Ini,
-"cfg"            => SupportLang::Ini,
-"conf"           => SupportLang::Ini,
-"config"         => SupportLang::Ini,
-"properties"     => SupportLang::Ini,
-"java"           => SupportLang::Java,
-"javascript"     => SupportLang::JavaScript,
-"js"             => SupportLang::JavaScript,
-"jsx"            => SupportLang::JavaScript,
-"mjs"            => SupportLang::JavaScript,
-"cjs"            => SupportLang::JavaScript,
-"json"           => SupportLang::Json,
-"just"           => SupportLang::Just,
-"justfile"       => SupportLang::Just,
-"julia"          => SupportLang::Julia,
-"jl"             => SupportLang::Julia,
-"kotlin"         => SupportLang::Kotlin,
-"kt"             => SupportLang::Kotlin,
-"kts"            => SupportLang::Kotlin,
-"ktm"            => SupportLang::Kotlin,
-"lua"            => SupportLang::Lua,
-"make"           => SupportLang::Make,
-"makefile"       => SupportLang::Make,
-"gnumake"        => SupportLang::Make,
-"mk"             => SupportLang::Make,
-"mak"            => SupportLang::Make,
-"markdown"       => SupportLang::Markdown,
-"md"             => SupportLang::Markdown,
-"mdx"            => SupportLang::Markdown,
-"nix"            => SupportLang::Nix,
-"objc"           => SupportLang::ObjC,
-"obj-c"          => SupportLang::ObjC,
-"objective-c"    => SupportLang::ObjC,
-"m"              => SupportLang::ObjC,
-"mm"             => SupportLang::ObjC,
-"ocaml"          => SupportLang::Ocaml,
-"ml"             => SupportLang::Ocaml,
-"odin"           => SupportLang::Odin,
-"php"            => SupportLang::Php,
-"powershell"     => SupportLang::Powershell,
-"ps1"            => SupportLang::Powershell,
-"psm1"           => SupportLang::Powershell,
-"protobuf"       => SupportLang::Proto,
-"proto"          => SupportLang::Proto,
-"python"         => SupportLang::Python,
-"py"             => SupportLang::Python,
-"py3"            => SupportLang::Python,
-"pyi"            => SupportLang::Python,
-"r"              => SupportLang::R,
-"regex"          => SupportLang::Regex,
-"re"             => SupportLang::Regex,
-"ruby"           => SupportLang::Ruby,
-"rb"             => SupportLang::Ruby,
-"rbw"            => SupportLang::Ruby,
-"gemspec"        => SupportLang::Ruby,
-"rust"           => SupportLang::Rust,
-"rs"             => SupportLang::Rust,
-"scala"          => SupportLang::Scala,
-"sc"             => SupportLang::Scala,
-"sbt"            => SupportLang::Scala,
-"solidity"       => SupportLang::Solidity,
-"sol"            => SupportLang::Solidity,
-"sql"            => SupportLang::Sql,
-"starlark"       => SupportLang::Starlark,
-"star"           => SupportLang::Starlark,
-"bzl"            => SupportLang::Starlark,
-"bazel"          => SupportLang::Starlark,
-"skylark"        => SupportLang::Starlark,
-"svelte"         => SupportLang::Svelte,
-"swift"          => SupportLang::Swift,
-"toml"           => SupportLang::Toml,
-"tla"            => SupportLang::Tlaplus,
-"tla+"           => SupportLang::Tlaplus,
-"tlaplus"        => SupportLang::Tlaplus,
-"pluscal"        => SupportLang::Tlaplus,
-"pcal"           => SupportLang::Tlaplus,
-"tsx"            => SupportLang::Tsx,
-"typescript"     => SupportLang::TypeScript,
-"ts"             => SupportLang::TypeScript,
-"mts"            => SupportLang::TypeScript,
-"cts"            => SupportLang::TypeScript,
-"verilog"        => SupportLang::Verilog,
-"systemverilog"  => SupportLang::Verilog,
-"sv"             => SupportLang::Verilog,
-"svh"            => SupportLang::Verilog,
-"vh"             => SupportLang::Verilog,
-"v"              => SupportLang::Verilog,
-"vue"            => SupportLang::Vue,
-"xml"            => SupportLang::Xml,
-"xsl"            => SupportLang::Xml,
-"xslt"           => SupportLang::Xml,
-"svg"            => SupportLang::Xml,
-"plist"          => SupportLang::Xml,
-"yaml"           => SupportLang::Yaml,
-"yml"            => SupportLang::Yaml,
-"zig"            => SupportLang::Zig,
-};

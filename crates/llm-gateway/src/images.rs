@@ -11,19 +11,24 @@ use omp_core::Str;
 use omp_llm_egress::auth_inject::{CredentialLease, CredentialMetadataSource};
 use omp_llm_types::{GenerateImageRequest, ImageDone, ImageEvent, facet};
 use smallvec::SmallVec;
+use strum::{EnumString, IntoStaticStr};
 
 /// Image providers in the default Pi-compatible attempt order.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, EnumString, Eq, IntoStaticStr, PartialEq)]
+#[strum(serialize_all = "kebab-case")]
 pub enum ImageProvider {
 	/// `OpenAI` Responses image-generation tool.
+	#[strum(serialize = "openai")]
 	OpenAi,
 	/// ChatGPT/Codex Responses image-generation tool.
+	#[strum(serialize = "openai-codex")]
 	OpenAiCodex,
 	/// Google Cloud Code Antigravity image generation.
 	Antigravity,
 	/// xAI Grok Imagine images API.
 	Xai,
 	/// `OpenRouter` chat-completions image output.
+	#[strum(serialize = "openrouter")]
 	OpenRouter,
 	/// Google Gemini generate-content image output.
 	Gemini,
@@ -32,15 +37,8 @@ pub enum ImageProvider {
 impl ImageProvider {
 	/// Stable configuration identifier.
 	#[must_use]
-	pub const fn id(self) -> &'static str {
-		match self {
-			Self::OpenAi => "openai",
-			Self::OpenAiCodex => "openai-codex",
-			Self::Antigravity => "antigravity",
-			Self::Xai => "xai",
-			Self::OpenRouter => "openrouter",
-			Self::Gemini => "gemini",
-		}
+	pub fn id(self) -> &'static str {
+		self.into()
 	}
 
 	/// Canonical provider catalog and broker credential identifier.
@@ -59,15 +57,7 @@ impl ImageProvider {
 	/// Parses a stable provider identifier.
 	#[must_use]
 	pub fn from_id(id: &str) -> Option<Self> {
-		Some(match id {
-			"openai" => Self::OpenAi,
-			"openai-codex" => Self::OpenAiCodex,
-			"antigravity" => Self::Antigravity,
-			"xai" => Self::Xai,
-			"openrouter" => Self::OpenRouter,
-			"gemini" => Self::Gemini,
-			_ => return None,
-		})
+		id.parse().ok()
 	}
 }
 

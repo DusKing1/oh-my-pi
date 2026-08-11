@@ -2562,6 +2562,30 @@ mod tests {
 	}
 
 	#[test]
+	fn disabled_effort_encodes_as_none_on_the_wire() {
+		let user = Item::builder()
+			.seq(0)
+			.kind(ItemKind::Message(
+				Message::builder()
+					.role(Role::User)
+					.parts(vec![Part::Text(Str::new_static("think privately"))])
+					.build(),
+			))
+			.props(Props::default())
+			.build();
+		let mut req = request(vec![user]);
+		req.thinking = Some(
+			Feature::builder()
+				.value(Reasoning::builder().effort(Effort::Off).build())
+				.on_unsupported(Fallback::Ignore)
+				.build(),
+		);
+		req.model_policy = Some(Arc::new(policy(Props::default())));
+		// "none" is the only disable level the Responses API accepts; "off" 400s.
+		assert_eq!(encoded(&req)["reasoning"], json!({"effort":"none"}));
+	}
+
+	#[test]
 	fn model_policy_selects_native_or_fallback_computer_tool() {
 		let mut req = request(Vec::new());
 		let mut options = Props::default();

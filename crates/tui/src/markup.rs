@@ -236,17 +236,57 @@ pub fn parse_md_fragment_inheriting(
 	reason = "parser nodes move once into their final owners; boxing the larger variants would add \
 	          one allocation per parsed node"
 )]
+#[derive(IntoStaticStr)]
+#[strum(serialize_all = "lowercase", const_into_str)]
 enum Parsed {
-	Cached { cached: Box<Cached>, text: Option<Str>, at: usize, implicit: bool },
-	Option { option: SelectOption, at: usize },
-	Segment { segment: Segment, at: usize },
-	Tab { title: Str, children: Vec<Cached>, at: usize },
-	TreeItem { node: TreeNode, at: usize },
-	Task { task: TodoTask, at: usize },
-	Field { field: Field, at: usize },
-	Step { title: Str, children: Vec<Cached>, at: usize },
-	TableRow { row: Box<TableRow>, at: usize },
-	Cell { cell: TableCell, at: usize },
+	#[strum(to_string = "content")]
+	Cached {
+		cached:   Box<Cached>,
+		text:     Option<Str>,
+		at:       usize,
+		implicit: bool,
+	},
+	Option {
+		option: SelectOption,
+		at:     usize,
+	},
+	Segment {
+		segment: Segment,
+		at:      usize,
+	},
+	Tab {
+		title:    Str,
+		children: Vec<Cached>,
+		at:       usize,
+	},
+	#[strum(to_string = "node")]
+	TreeItem {
+		node: TreeNode,
+		at:   usize,
+	},
+	Task {
+		task: TodoTask,
+		at:   usize,
+	},
+	Field {
+		field: Field,
+		at:    usize,
+	},
+	Step {
+		title:    Str,
+		children: Vec<Cached>,
+		at:       usize,
+	},
+	#[strum(to_string = "tr")]
+	TableRow {
+		row: Box<TableRow>,
+		at:  usize,
+	},
+	#[strum(to_string = "td")]
+	Cell {
+		cell: TableCell,
+		at:   usize,
+	},
 }
 
 impl Parsed {
@@ -266,18 +306,7 @@ impl Parsed {
 	}
 
 	const fn name(&self) -> &'static str {
-		match self {
-			Self::Cached { .. } => "content",
-			Self::Option { .. } => "option",
-			Self::Segment { .. } => "segment",
-			Self::Tab { .. } => "tab",
-			Self::TreeItem { .. } => "node",
-			Self::Task { .. } => "task",
-			Self::Field { .. } => "field",
-			Self::Step { .. } => "step",
-			Self::TableRow { .. } => "tr",
-			Self::Cell { .. } => "td",
-		}
+		self.into_str()
 	}
 }
 
