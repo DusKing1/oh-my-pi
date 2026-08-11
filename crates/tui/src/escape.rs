@@ -37,7 +37,25 @@ macro_rules! esc {
 		esc!(@acc [$($output)* "\x07",] $($rest)*)
 	};
 
-	// DEC and xterm modes: bare sets, `!` resets, and `?` queries.
+	// ANSI, DEC, and xterm modes: bare sets, `!` resets, and `?` queries.
+	(@acc [$($output:tt)*] insert_mode $($rest:tt)*) => {
+		esc!(@acc [$($output)* "\x1b[4h",] $($rest)*)
+	};
+	(@acc [$($output:tt)*] ! insert_mode $($rest:tt)*) => {
+		esc!(@acc [$($output)* "\x1b[4l",] $($rest)*)
+	};
+	(@acc [$($output:tt)*] ? insert_mode $($rest:tt)*) => {
+		esc!(@acc [$($output)* "\x1b[4$p",] $($rest)*)
+	};
+	(@acc [$($output:tt)*] newline_mode $($rest:tt)*) => {
+		esc!(@acc [$($output)* "\x1b[20h",] $($rest)*)
+	};
+	(@acc [$($output:tt)*] ! newline_mode $($rest:tt)*) => {
+		esc!(@acc [$($output)* "\x1b[20l",] $($rest)*)
+	};
+	(@acc [$($output:tt)*] ? newline_mode $($rest:tt)*) => {
+		esc!(@acc [$($output)* "\x1b[20$p",] $($rest)*)
+	};
 	(@acc [$($output:tt)*] alt_screen $($rest:tt)*) => {
 		esc!(@acc [$($output)* "\x1b[?1049h",] $($rest)*)
 	};
@@ -342,6 +360,8 @@ mod tests {
 				cell_pixels_query,
 				background_color_query,
 				osc99_query,
+				?insert_mode,
+				?newline_mode,
 				?scroll_on_output,
 				?scroll_on_key_press,
 				?sync_output,
@@ -354,16 +374,21 @@ mod tests {
 				"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\",
 				"\x1b[?2;1;0S\x1b[16t\x1b]11;?\x07",
 				"\x1b]99;i=omp-tui:p=?;\x1b\\",
-				"\x1b[?1010$p\x1b[?1011$p\x1b[?2026$p\x1b[?2031$p\x1b[?2048$p",
+				"\x1b[4$p\x1b[20$p\x1b[?1010$p\x1b[?1011$p\x1b[?2026$p",
+				"\x1b[?2031$p\x1b[?2048$p",
 				"\x1b[?u\x1b[c",
 			)
 		);
 	}
 
 	#[test]
-	fn dec_private_modes_pair_set_and_reset_byte_exactly() {
+	fn stateful_modes_pair_set_and_reset_byte_exactly() {
 		assert_eq!(
 			esc!(
+				insert_mode,
+				!insert_mode,
+				newline_mode,
+				!newline_mode,
 				alt_screen,
 				!alt_screen,
 				cursor_visible,
@@ -396,6 +421,7 @@ mod tests {
 				!mouse_sgr,
 			),
 			concat!(
+				"\x1b[4h\x1b[4l\x1b[20h\x1b[20l",
 				"\x1b[?1049h\x1b[?1049l\x1b[?25h\x1b[?25l\x1b[?7h\x1b[?7l\x1b[?6h\x1b[?6l",
 				"\x1b[?2004h\x1b[?2004l\x1b[?2026h\x1b[?2026l\x1b[?2048h\x1b[?2048l",
 				"\x1b[?2031h\x1b[?2031l\x1b[?5522h\x1b[?5522l",

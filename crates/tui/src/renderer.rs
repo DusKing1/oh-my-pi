@@ -472,7 +472,10 @@ impl<W: Write> Renderer<W> {
 	/// Paints a logical document with an immutable leading-row boundary.
 	///
 	/// The caller must disable terminal autowrap and keep terminal geometry
-	/// fixed while the renderer is active. Advancing `stable_rows` is permanent,
+	/// fixed while the renderer is active; the renderer itself re-enables
+	/// DECAWM transiently to join flagged soft-wrap boundaries (see
+	/// [`Frame::set_soft_wrap`]) so native selection and scrollback copy
+	/// them as one unbroken line. Advancing `stable_rows` is permanent,
 	/// and committed history makes the document height a ratchet: between
 	/// rebuilds the document may only grow, so transient rows (pickers, extra
 	/// input lines) must be absorbed by the caller rather than shrinking the
@@ -744,9 +747,29 @@ impl<W: Write> Renderer<W> {
 		let commit_to =
 			scroll_append_to(previous_window, next_window, self.committed_rows, layout.stable_limit);
 		let newly_committed = commit_to - self.committed_rows;
+		let margin_rows = if self.margin_scrollback {
+			stable_rows
+				.saturating_sub(layout.window_top)
+				.max(newly_committed)
+				.max(2)
+		} else {
+			viewport_height
+		};
+		// Wrap-boundary metadata has no in-place VT rewrite: a live boundary
+		// flipping between hard and soft forces a viewport clear plus
+		// sequential repaint below, so every image placement must re-emit.
+		let wrap_flip = wrap_boundaries_changed(
+			&ComposedFrame { base: previous, layers: &self.layers },
+			previous_window,
+			&ComposedFrame { base: next, layers: &incoming },
+			next_window,
+			newly_committed,
+			margin_rows.min(viewport_height),
+		);
 		let mut stats = PaintStats {
 			committed_rows: newly_committed,
 			clipped_rows: layout.window_top.saturating_sub(commit_to),
+			full_repaint: wrap_flip,
 			..PaintStats::default()
 		};
 		// Direct-drawn image protocols consume the raw document. Only Kitty
@@ -756,7 +779,7 @@ impl<W: Write> Renderer<W> {
 			next_window,
 			Some((previous, previous_window)),
 			damaged,
-			previous_window.top != next_window.top,
+			wrap_flip || previous_window.top != next_window.top,
 		);
 		let kitty_direct = kitty_direct_output(
 			self.graphics,
@@ -765,7 +788,7 @@ impl<W: Write> Renderer<W> {
 			next_window,
 			Some((previous, previous_window)),
 			damaged,
-			false,
+			wrap_flip,
 			self.cell_pixel_width,
 			self.cell_pixel_height,
 			self.tmux_passthrough,
@@ -783,7 +806,7 @@ impl<W: Write> Renderer<W> {
 				height: previous_window.height,
 			})),
 			damaged,
-			false,
+			wrap_flip,
 			self.tmux_passthrough,
 		);
 
@@ -803,14 +826,6 @@ impl<W: Write> Renderer<W> {
 			// cover the scrolled rows and span the two rows DECSTBM requires;
 			// a seam at or below the screen bottom leaves nothing to pin and
 			// falls back to the whole-screen scroll.
-			let margin_rows = if self.margin_scrollback {
-				stable_rows
-					.saturating_sub(layout.window_top)
-					.max(newly_committed)
-					.max(2)
-			} else {
-				viewport_height
-			};
 			if margin_rows < viewport_height {
 				emit_margin_scroll_append(
 					&mut paint,
@@ -848,6 +863,22 @@ impl<W: Write> Renderer<W> {
 				self.graphics,
 				self.hyperlinks,
 				&mut stats,
+			);
+		}
+		// Wrap-boundary metadata has no in-place VT rewrite: a flipped
+		// boundary clears the viewport and repaints it sequentially with
+		// the desired joins. Image outputs were forced above and follow
+		// this paint in the output, so placements dropped by the clear
+		// re-emit immediately.
+		if wrap_flip {
+			paint.push_str(RESET_STYLE);
+			paint.push_str(CLEAR_VIEWPORT);
+			emit_rows(&mut paint, &next_view, 0..0, next_window, self.graphics, self.hyperlinks);
+			paint.push_str(RESET_STYLE);
+			paint.push('\r');
+			stats.runs += 1;
+			stats.changed_cells = stats.changed_cells.saturating_add(
+				usize::from(next.size().width).saturating_mul(usize::from(viewport_height)),
 			);
 		}
 
@@ -2091,6 +2122,43 @@ const fn scroll_append_to(
 	next_window.top
 }
 
+/// Whether any live wrap boundary must change between hard and soft this
+/// paint. VT offers no in-place line-attribute rewrite, so a flip forces a
+/// sequential viewport repaint. Boundaries the commit loop rewrites this
+/// paint are excluded; `scroll` is the number of newly committed rows and
+/// `region` the scrolled zone height (the full viewport without margin
+/// scrollback).
+fn wrap_boundaries_changed(
+	previous: &ComposedFrame<'_>,
+	previous_window: Window,
+	next: &ComposedFrame<'_>,
+	next_window: Window,
+	scroll: u16,
+	region: u16,
+) -> bool {
+	for boundary in 0..next_window.height.saturating_sub(1) {
+		let wanted = wrap_joinable(next, next_window.top.saturating_add(boundary));
+		let painted = if scroll == 0 {
+			wrap_joinable(previous, previous_window.top.saturating_add(boundary))
+		} else if boundary.saturating_add(1) < region.saturating_sub(scroll) {
+			// Retained rows scrolled up with their line attributes intact.
+			wrap_joinable(previous, next_window.top.saturating_add(boundary))
+		} else if boundary.saturating_add(1) == region {
+			// The commit scroll created the region's bottom line fresh.
+			false
+		} else if boundary >= region {
+			// Pinned rows below a margin region never moved.
+			wrap_joinable(previous, previous_window.top.saturating_add(boundary))
+		} else {
+			// The commit loop emits this boundary in its desired state.
+			continue;
+		};
+		if painted != wanted {
+			return true;
+		}
+	}
+	false
+}
 fn emit_scroll_append(
 	output: &mut String,
 	previous: &ComposedFrame<'_>,
@@ -2115,15 +2183,31 @@ fn emit_scroll_append(
 		stats,
 	);
 	output.push_str(VIEWPORT_BOTTOM);
-	for screen_y in next_window.height - scroll..next_window.height {
-		output.push_str("\r\n");
-		encode_frame_row(
-			output,
-			next,
-			next_window.top.saturating_add(screen_y),
-			graphics,
-			hyperlinks,
-		);
+	let first_new = next_window.height - scroll;
+	let any_join = (first_new..next_window.height).any(|screen_y| {
+		let row = next_window.top.saturating_add(screen_y);
+		row > 0 && wrap_joinable(next, row - 1)
+	});
+	if any_join {
+		output.push_str(esc!(autowrap));
+	}
+	for screen_y in first_new..next_window.height {
+		let row = next_window.top.saturating_add(screen_y);
+		if row > 0 && wrap_joinable(next, row - 1) {
+			// The first joined row rides a freshly armed pending wrap: the
+			// bottom line still shows last frame's paint, so its trailing
+			// glyph is re-printed under DECAWM. Every further full-width
+			// row printed below arms the pending wrap itself.
+			if screen_y == first_new {
+				arm_wrap_boundary(output, next, row - 1, hyperlinks);
+			}
+		} else {
+			output.push_str("\r\n");
+		}
+		encode_frame_row(output, next, row, graphics, hyperlinks);
+	}
+	if any_join {
+		output.push_str(esc!(!autowrap));
 	}
 	stats.runs += usize::from(scroll);
 	stats.changed_cells += usize::from(next.base.size().width).saturating_mul(usize::from(scroll));
@@ -2183,15 +2267,27 @@ fn emit_margin_scroll_append(
 	// DECSTBM homes the cursor into the region; CUD then parks on the
 	// bottom margin, where each newline commits the region's top row.
 	let _ = write!(output, esc!(scroll_region, cursor_down), region_rows, region_rows - 1);
-	for screen_y in region_rows - scroll..region_rows {
-		output.push_str("\r\n");
-		encode_frame_row(
-			output,
-			next,
-			next_window.top.saturating_add(screen_y),
-			graphics,
-			hyperlinks,
-		);
+	let first_new = region_rows - scroll;
+	let any_join = (first_new..region_rows).any(|screen_y| {
+		let row = next_window.top.saturating_add(screen_y);
+		row > 0 && wrap_joinable(next, row - 1)
+	});
+	if any_join {
+		output.push_str(esc!(autowrap));
+	}
+	for screen_y in first_new..region_rows {
+		let row = next_window.top.saturating_add(screen_y);
+		if row > 0 && wrap_joinable(next, row - 1) {
+			if screen_y == first_new {
+				arm_wrap_boundary(output, next, row - 1, hyperlinks);
+			}
+		} else {
+			output.push_str("\r\n");
+		}
+		encode_frame_row(output, next, row, graphics, hyperlinks);
+	}
+	if any_join {
+		output.push_str(esc!(!autowrap));
 	}
 	stats.runs += usize::from(scroll);
 	stats.changed_cells += usize::from(next.base.size().width).saturating_mul(usize::from(scroll));
@@ -2228,6 +2324,10 @@ fn emit_margin_scroll_append(
 	);
 }
 
+/// Emits `prefix` document rows then the window sequentially from the
+/// cursor's current line. Hard boundaries advance with `\r\n`; a joinable
+/// boundary between consecutive document rows is left to terminal
+/// autowrap, marking the pair as one soft-wrapped line for native copy.
 fn emit_rows(
 	output: &mut String,
 	frame: &ComposedFrame<'_>,
@@ -2236,21 +2336,34 @@ fn emit_rows(
 	graphics: Graphics,
 	hyperlinks: bool,
 ) {
-	let mut wrote_row = false;
-	for row in prefix {
-		if wrote_row {
-			output.push_str("\r\n");
+	let mut any_join = false;
+	let mut previous: Option<u16> = None;
+	for row in prefix
+		.clone()
+		.chain((0..window.height).map(|screen_y| window.top.saturating_add(screen_y)))
+	{
+		if previous.is_some_and(|p| row == p.saturating_add(1) && wrap_joinable(frame, p)) {
+			any_join = true;
+			break;
 		}
-		encode_row(output, frame, row, graphics, hyperlinks);
-		wrote_row = true;
+		previous = Some(row);
 	}
-	for screen_y in 0..window.height {
-		if wrote_row {
+	if any_join {
+		output.push_str(esc!(autowrap));
+	}
+	let mut previous: Option<u16> = None;
+	for row in prefix.chain((0..window.height).map(|screen_y| window.top.saturating_add(screen_y)))
+	{
+		if let Some(p) = previous
+			&& !(row == p.saturating_add(1) && wrap_joinable(frame, p))
+		{
 			output.push_str("\r\n");
 		}
-		let row = window.top.saturating_add(screen_y);
 		encode_frame_row(output, frame, row, graphics, hyperlinks);
-		wrote_row = true;
+		previous = Some(row);
+	}
+	if any_join {
+		output.push_str(esc!(!autowrap));
 	}
 }
 
@@ -2432,6 +2545,59 @@ fn emit_run(
 		}
 	}
 	close_active_link(output, active_style, hyperlinks);
+}
+/// Whether the boundary between document rows `row` and `row + 1` may be
+/// joined by terminal autowrap: the frame flagged it as a mid-word soft
+/// wrap, no overlay layer composites onto either row, and the row's
+/// content truly reaches the final column — so the join reproduces the
+/// source text exactly in native selection and scrollback copies.
+fn wrap_joinable(frame: &ComposedFrame<'_>, row: u16) -> bool {
+	frame.base.soft_wrap(row)
+		&& !frame.layers.iter().any(|layer| {
+			row.saturating_add(1) >= layer.document_y
+				&& row < layer.document_y.saturating_add(layer.rows)
+		})
+		&& trailing_glyph_start(frame, row).is_some()
+}
+
+/// Returns the head column of the glyph covering `row`'s final cell when
+/// the row's real content reaches the terminal's last column.
+fn trailing_glyph_start(frame: &ComposedFrame<'_>, row: u16) -> Option<u16> {
+	let width = frame.base.size().width;
+	let blank = Cell::blank(Style::default());
+	let mut x = width.checked_sub(1)?;
+	loop {
+		match &frame.base.cell_or(row, x, &blank).content {
+			CellContent::Continuation if x > 0 => x -= 1,
+			CellContent::Grapheme { width: glyph, .. } if x.saturating_add(*glyph) == width => {
+				return Some(x);
+			},
+			_ => return None,
+		}
+	}
+}
+
+/// Re-prints the trailing glyph of document row `row` on the cursor's
+/// current line, arming the terminal's pending-wrap state so the next
+/// printed glyph soft-wraps onto the following line. Requires DECAWM to be
+/// enabled and [`wrap_joinable`] to have passed for `row`.
+fn arm_wrap_boundary(output: &mut String, frame: &ComposedFrame<'_>, row: u16, hyperlinks: bool) {
+	let Some(x) = trailing_glyph_start(frame, row) else {
+		return;
+	};
+	output.push('\r');
+	if x > 0 {
+		let _ = write!(output, esc!(cursor_forward), x);
+	}
+	let blank = Cell::blank(Style::default());
+	let cell = frame.base.cell_or(row, x, &blank);
+	output.push_str(RESET_STYLE);
+	let mut active = Style::default();
+	emit_cell_style(output, cell.style, &mut active, hyperlinks);
+	if let CellContent::Grapheme { text, .. } = &cell.content {
+		output.push_str(text);
+	}
+	close_active_link(output, &mut active, hyperlinks);
 }
 fn encode_frame_row(
 	output: &mut String,

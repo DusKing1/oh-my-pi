@@ -9,6 +9,11 @@ repository.workspace = true
 description = "Retained-mode terminal UI components, rendering, input, and terminal integration for omp"
 
 [[example]]
+name = "gallery"
+path = "examples/gallery/main.rs"
+test = true
+
+[[example]]
 name = "chat"
 path = "examples/chat/main.rs"
 test = true
@@ -19,6 +24,7 @@ workspace = true
 [dependencies]
 arboard = { workspace = true }
 flume = { workspace = true }
+layout-rs = { workspace = true }
 mermaid-text = { workspace = true }
 omp-core = { workspace = true }
 omp-tui-macros = { workspace = true }

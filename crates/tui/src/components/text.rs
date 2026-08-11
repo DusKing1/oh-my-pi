@@ -114,6 +114,19 @@ impl TextLeaf {
 				}
 				clip_start_runs(&mut self.rich, width, &runs);
 			},
+			None if self.props.wrap_chars() => {
+				// Terminal-exact flow: rows break grapheme-exact at the
+				// width and every boundary stays byte-joinable for copy.
+				let mut wrap = (&mut self.rich).wrap_chars(width);
+				for (index, line) in visible.split('\n').enumerate() {
+					if index > 0 {
+						wrap.newline();
+					}
+					if !line.is_empty() {
+						wrap.run(style, line);
+					}
+				}
+			},
 			None => {
 				let mut wrap = (&mut self.rich).wrap(width);
 				// text is escape-free by contract: ANSI is parsed only at the
@@ -164,9 +177,9 @@ impl Component for TextLeaf {
 			total = total.saturating_add(width).saturating_add(1);
 		}
 		let natural = total.saturating_sub(1);
-		// Truncation can always collapse to a lone ellipsis, so a
-		// truncated leaf never blocks a column from shrinking.
-		if self.props.truncate().is_some() {
+		// Truncation can always collapse to a lone ellipsis, and char-wrap
+		// flows at any width, so neither blocks a column from shrinking.
+		if self.props.truncate().is_some() || self.props.wrap_chars() {
 			return (natural.min(1), natural);
 		}
 		(widest_word, natural)
@@ -566,10 +579,16 @@ pub(super) fn paint_rich(
 ) {
 	let right = rect.x.saturating_add(rect.width);
 	let clip = pc.clip.min(rect.y.saturating_add(rect.height));
+	// Only rows spanning the whole physical line can byte-join through
+	// terminal autowrap; narrower or offset rects keep hard boundaries.
+	let full_row = rect.x == 0 && rect.width == pc.frame.size().width;
 	for row in 0..RichText::rows(rich) {
 		let y = rect.y.saturating_add(row);
 		if y >= clip {
 			break;
+		}
+		if full_row && row > 0 && rich.row_soft_wrap(row - 1) {
+			pc.frame.set_soft_wrap(y - 1);
 		}
 		let slack = rect.width.saturating_sub(rich.row_width(row));
 		let mut x = rect.x.saturating_add(alignment_slack(align, slack));
@@ -593,10 +612,14 @@ fn paint_rich_shimmer(
 ) {
 	let right = rect.x.saturating_add(rect.width);
 	let clip = pc.clip.min(rect.y.saturating_add(rect.height));
+	let full_row = rect.x == 0 && rect.width == pc.frame.size().width;
 	for row in 0..RichText::rows(rich) {
 		let y = rect.y.saturating_add(row);
 		if y >= clip {
 			break;
+		}
+		if full_row && row > 0 && rich.row_soft_wrap(row - 1) {
+			pc.frame.set_soft_wrap(y - 1);
 		}
 		let slack = rect.width.saturating_sub(rich.row_width(row));
 		let start = rect.x.saturating_add(alignment_slack(align, slack));

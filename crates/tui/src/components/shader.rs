@@ -5,6 +5,7 @@ use crate::{
 	component::{Component, PaintCtx, Slot, next_slot},
 	context::UiContext,
 	frame::Rect,
+	markup::Dim,
 	props::{Prop, PropValue, Props},
 	shader::{Program, Surface},
 };
@@ -59,10 +60,28 @@ impl Shader {
 	}
 
 	/// Sets the viewport size in terminal cells.
+	///
+	/// A live `w` (in cells) or `h` prop overrides this, so a host resizes
+	/// the viewport with [`crate::Ui::set_prop`] / [`crate::Ui::set_height`]
+	/// instead of rebuilding the tree.
 	pub const fn size(mut self, cols: u16, rows: u16) -> Self {
 		self.cols = cols;
 		self.rows = rows;
 		self
+	}
+
+	/// Viewport columns: a cell-valued `w` prop wins over the built size.
+	/// A percentage `w` has no parent width at measure time and is ignored.
+	fn viewport_cols(&self) -> u16 {
+		match self.props.w() {
+			Some(Dim::Cells(cols)) => cols,
+			_ => self.cols,
+		}
+	}
+
+	/// Viewport rows: an `h` prop wins over the built size.
+	fn viewport_rows(&self) -> u16 {
+		self.props.h().unwrap_or(self.rows)
 	}
 
 	/// Paints once instead of animating — for programs that ignore the clock.
@@ -92,11 +111,12 @@ impl Component for Shader {
 	}
 
 	fn measure(&mut self, _ctx: &UiContext) -> (u16, u16) {
-		(self.cols, self.cols)
+		let cols = self.viewport_cols();
+		(cols, cols)
 	}
 
 	fn height(&mut self, _ctx: &UiContext, _width: u16) -> u16 {
-		self.rows
+		self.viewport_rows()
 	}
 
 	fn paint(&mut self, pc: &mut PaintCtx<'_>, rect: Rect) {
@@ -104,8 +124,8 @@ impl Component for Shader {
 			return;
 		}
 		let base = self.props.style(&pc.ctx.theme);
-		let cols = self.cols.min(rect.width);
-		let rows = self.rows.min(rect.height).min(pc.clip - rect.y);
+		let cols = self.viewport_cols().min(rect.width);
+		let rows = self.viewport_rows().min(rect.height).min(pc.clip - rect.y);
 		let frame = &mut *pc.frame;
 		let mut buffer = [0_u8; 4];
 		self

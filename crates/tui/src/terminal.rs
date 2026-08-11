@@ -540,13 +540,15 @@ mod platform {
 		}
 	}
 
-	pub(super) fn emergency_restore(payload: &[u8]) {
+	pub(super) fn emergency_restore(payloads: [&[u8]; 3]) {
 		close_resize_pipe();
 		let fd = TTY_FD.load(Ordering::Acquire);
 		if fd < 0 {
 			return;
 		}
-		raw_write_all(fd, payload);
+		for payload in payloads {
+			raw_write_all(fd, payload);
+		}
 		if RAW_VALID.swap(false, Ordering::AcqRel) {
 			// SAFETY: RAW_VALID publishes initialized termios while this emergency path
 			// owns restore.
@@ -913,27 +915,29 @@ mod platform {
 		FALSE
 	}
 
-	pub(super) fn emergency_restore(payload: &[u8]) {
+	pub(super) fn emergency_restore(payloads: [&[u8]; 3]) {
 		if !MODES_VALID.swap(false, Ordering::AcqRel) {
 			return;
 		}
 		let output = OUTPUT_HANDLE.load(Ordering::Acquire);
-		let mut remaining = payload;
-		while !remaining.is_empty() {
-			let mut written = 0;
-			if unsafe {
-				WriteConsoleA(
-					output,
-					remaining.as_ptr(),
-					remaining.len().min(u32::MAX as usize) as u32,
-					&mut written,
-					ptr::null(),
-				)
-			} == 0 || written == 0
-			{
-				break;
+		for mut remaining in payloads {
+			while !remaining.is_empty() {
+				let mut written = 0;
+				if unsafe {
+					WriteConsoleA(
+						output,
+						remaining.as_ptr(),
+						remaining.len().min(u32::MAX as usize) as u32,
+						&mut written,
+						ptr::null(),
+					)
+				} == 0
+					|| written == 0
+				{
+					break;
+				}
+				remaining = &remaining[written as usize..];
 			}
-			remaining = &remaining[written as usize..];
 		}
 		let input = INPUT_HANDLE.load(Ordering::Acquire);
 		let _ = unsafe { SetConsoleMode(input, INPUT_MODE.load(Ordering::Acquire)) };
@@ -984,10 +988,10 @@ const PROGRESS_KEEPALIVE: Duration = Duration::from_millis(1_000);
 const PROGRESS_CLEAR: &[u8] = esc!(progress_clear).as_bytes();
 const TITLE_PUSH: &[u8] = esc!(title_push).as_bytes();
 const TITLE_POP: &[u8] = esc!(title_pop).as_bytes();
-/// Every mode that makes the terminal *send* input: SGR mouse encoding, all
-/// three mouse trackers, bracketed paste, and OSC 5522 enhanced-paste
-/// offers. Written before the teardown drain so in-flight reports die there
-/// instead of echoing into the shell.
+/// Fixed modes that make the terminal *send* input. Capability-gated
+/// appearance and resize notification resets are appended by
+/// [`compose_input_reports_off`]. Written before the teardown drain so
+/// in-flight reports die there instead of echoing into the shell.
 const INPUT_REPORTS_OFF: &[u8] = esc!(
 	!mouse_sgr,
 	!mouse_any_event,
@@ -1031,8 +1035,6 @@ macro_rules! emergency_restore {
 			!app_cursor_keys,
 			!app_keypad,
 			!bracketed_paste,
-			!appearance_notifications,
-			!in_band_resize,
 			$($scroll,)*
 			!paste_events,
 			kitty_keyboard_pop,
@@ -1049,6 +1051,10 @@ macro_rules! emergency_restore {
 }
 const XTERM_SCROLL_ON_OUTPUT: u8 = 1;
 const XTERM_SCROLL_ON_KEY_PRESS: u8 = 2;
+const ANSI_INSERT_MODE: u8 = 1;
+const ANSI_NEWLINE_MODE: u8 = 2;
+const APPEARANCE_NOTIFICATIONS_MODE: u8 = 1;
+const IN_BAND_RESIZE_MODE: u8 = 2;
 #[cfg(any(windows, test))]
 const UTF8_CODEPAGE: u32 = 65001;
 
@@ -1092,6 +1098,8 @@ pub fn terminal_write_all<W: io::Write>(writer: &mut W, bytes: &[u8]) -> io::Res
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static ALT_SCREEN_ACTIVE: AtomicBool = AtomicBool::new(false);
 static XTERM_SCROLL_RESTORE_MODES: AtomicU8 = AtomicU8::new(0);
+static ANSI_MODE_RESTORE_MODES: AtomicU8 = AtomicU8::new(0);
+static OWNED_NOTIFICATION_MODES: AtomicU8 = AtomicU8::new(0);
 static RESIZE_GENERATION: AtomicU64 = AtomicU64::new(0);
 static HOOKS: LazyLock<Result<(), i32>> = LazyLock::new(platform::install_handlers);
 static PANIC_HOOK: Once = Once::new();
@@ -1189,8 +1197,8 @@ impl TerminalOptions {
 		}
 	}
 
-	/// Carries bytes preserved by an earlier [`crate::negotiate`] call into the
-	/// terminal's live input decoder.
+	/// Carries replies and preserved input from an earlier [`crate::negotiate`]
+	/// call into terminal mode restoration and the live decoder.
 	pub fn probe_results(mut self, probe: ProbeResults) -> Self {
 		self.probe = probe;
 		self
@@ -1278,6 +1286,8 @@ pub struct Terminal {
 	keyboard: KeyboardMode,
 	cursor_style: Option<CursorStyle>,
 	xterm_scroll_restore_modes: u8,
+	ansi_mode_restore_modes: u8,
+	owned_notification_modes: u8,
 	mouse: bool,
 	cursor_visible: Option<bool>,
 	alt_screen: bool,
@@ -1353,11 +1363,16 @@ impl Terminal {
 
 		let keyboard = keyboard_mode(caps.kitty_keyboard);
 		let xterm_scroll_restore_modes = xterm_scroll_restore_modes(caps);
+		let ansi_mode_restore_modes = ansi_mode_restore_modes(&probe);
+		let owned_notification_modes = owned_notification_modes(caps, &probe);
 		XTERM_SCROLL_RESTORE_MODES.store(xterm_scroll_restore_modes, Ordering::Release);
+		ANSI_MODE_RESTORE_MODES.store(ansi_mode_restore_modes, Ordering::Release);
+		OWNED_NOTIFICATION_MODES.store(owned_notification_modes, Ordering::Release);
 		let batch = compose_enter(
 			keyboard,
 			options.cursor_style,
 			xterm_scroll_restore_modes,
+			owned_notification_modes,
 			options.mouse,
 			caps.paste_events,
 		);
@@ -1400,6 +1415,8 @@ impl Terminal {
 			keyboard,
 			cursor_style: options.cursor_style,
 			xterm_scroll_restore_modes,
+			ansi_mode_restore_modes,
+			owned_notification_modes,
 			mouse: options.mouse,
 			cursor_visible: Some(false),
 			alt_screen: false,
@@ -1487,7 +1504,8 @@ impl Terminal {
 			record_error(self.leave_alt(), &mut first_error);
 		}
 		record_error(terminal_write_all(&mut self.tty, self.keyboard.leave()), &mut first_error);
-		record_error(terminal_write_all(&mut self.tty, INPUT_REPORTS_OFF), &mut first_error);
+		let input_reports_off = compose_input_reports_off(self.owned_notification_modes);
+		record_error(terminal_write_all(&mut self.tty, &input_reports_off), &mut first_error);
 		record_error(self.tty.flush(), &mut first_error);
 		record_error(self.stop_progress(false), &mut first_error);
 		// The pump thread reads the same handle; stop it before the drain
@@ -1499,7 +1517,11 @@ impl Terminal {
 		);
 
 		record_error(terminal_write_all(&mut self.tty, PROGRESS_CLEAR), &mut first_error);
-		let tail = compose_leave(self.cursor_style.is_some(), self.xterm_scroll_restore_modes);
+		let tail = compose_leave(
+			self.cursor_style.is_some(),
+			self.xterm_scroll_restore_modes,
+			self.ansi_mode_restore_modes,
+		);
 		record_error(terminal_write_all(&mut self.tty, &tail), &mut first_error);
 		record_error(self.tty.flush(), &mut first_error);
 		self.cursor_visible = Some(true);
@@ -2119,16 +2141,41 @@ fn xterm_scroll_restore_modes(caps: TerminalCaps) -> u8 {
 		| (u8::from(caps.xterm_scroll_to_bottom_on_key_press) * XTERM_SCROLL_ON_KEY_PRESS)
 }
 
+fn ansi_mode_restore_modes(probe: &ProbeResults) -> u8 {
+	(u8::from(probe.insert_mode_set) * ANSI_INSERT_MODE)
+		| (u8::from(probe.newline_mode_set) * ANSI_NEWLINE_MODE)
+}
+
+fn owned_notification_modes(caps: TerminalCaps, probe: &ProbeResults) -> u8 {
+	(u8::from(caps.appearance_notifications && !probe.appearance_notifications_set)
+		* APPEARANCE_NOTIFICATIONS_MODE)
+		| (u8::from(caps.in_band_resize && !probe.in_band_resize_set) * IN_BAND_RESIZE_MODE)
+}
+
+fn compose_input_reports_off(owned_notification_modes: u8) -> SmallVec<u8, 96> {
+	let mut batch = SmallVec::new();
+	batch.extend_from_slice(INPUT_REPORTS_OFF);
+	if owned_notification_modes & APPEARANCE_NOTIFICATIONS_MODE != 0 {
+		batch.extend_from_slice(esc!(!appearance_notifications).as_bytes());
+	}
+	if owned_notification_modes & IN_BAND_RESIZE_MODE != 0 {
+		batch.extend_from_slice(esc!(!in_band_resize).as_bytes());
+	}
+	batch
+}
+
 fn compose_enter(
 	keyboard: KeyboardMode,
 	cursor_style: Option<CursorStyle>,
 	xterm_scroll_restore_modes: u8,
+	owned_notification_modes: u8,
 	mouse: bool,
 	paste_events: bool,
 ) -> SmallVec<u8, 160> {
 	let mut batch = SmallVec::new();
 	batch.extend_from_slice(TITLE_PUSH);
 	batch.extend_from_slice(esc!(!cursor_visible).as_bytes());
+	batch.extend_from_slice(esc!(!insert_mode, !newline_mode).as_bytes());
 	if xterm_scroll_restore_modes & XTERM_SCROLL_ON_OUTPUT != 0 {
 		batch.extend_from_slice(esc!(!scroll_on_output).as_bytes());
 	}
@@ -2142,6 +2189,12 @@ fn compose_enter(
 		esc!(!autowrap, !origin, margins_reset, !app_cursor_keys, !app_keypad, bracketed_paste)
 			.as_bytes(),
 	);
+	if owned_notification_modes & APPEARANCE_NOTIFICATIONS_MODE != 0 {
+		batch.extend_from_slice(esc!(appearance_notifications).as_bytes());
+	}
+	if owned_notification_modes & IN_BAND_RESIZE_MODE != 0 {
+		batch.extend_from_slice(esc!(in_band_resize).as_bytes());
+	}
 	if paste_events {
 		batch.extend_from_slice(esc!(paste_events).as_bytes());
 	}
@@ -2152,7 +2205,11 @@ fn compose_enter(
 	batch
 }
 
-fn compose_leave(reset_cursor_style: bool, xterm_scroll_restore_modes: u8) -> SmallVec<u8, 160> {
+fn compose_leave(
+	reset_cursor_style: bool,
+	xterm_scroll_restore_modes: u8,
+	ansi_mode_restore_modes: u8,
+) -> SmallVec<u8, 160> {
 	let mut batch = SmallVec::new();
 	batch.extend_from_slice(esc!(!sync_output).as_bytes());
 	if xterm_scroll_restore_modes & XTERM_SCROLL_ON_OUTPUT != 0 {
@@ -2178,6 +2235,12 @@ fn compose_leave(reset_cursor_style: bool, xterm_scroll_restore_modes: u8) -> Sm
 	}
 	batch.extend_from_slice(TITLE_POP);
 	batch.extend_from_slice(esc!(cursor_visible).as_bytes());
+	if ansi_mode_restore_modes & ANSI_INSERT_MODE != 0 {
+		batch.extend_from_slice(esc!(insert_mode).as_bytes());
+	}
+	if ansi_mode_restore_modes & ANSI_NEWLINE_MODE != 0 {
+		batch.extend_from_slice(esc!(newline_mode).as_bytes());
+	}
 	batch
 }
 
@@ -2262,8 +2325,32 @@ fn emergency_restore_inner() {
 	}
 	let alt_screen = ALT_SCREEN_ACTIVE.swap(false, Ordering::AcqRel);
 	let xterm_scroll_restore_modes = XTERM_SCROLL_RESTORE_MODES.swap(0, Ordering::AcqRel);
-	let payload = emergency_restore_payload(alt_screen, xterm_scroll_restore_modes);
-	platform::emergency_restore(payload);
+	let ansi_mode_restore_modes = ANSI_MODE_RESTORE_MODES.swap(0, Ordering::AcqRel);
+	let owned_notification_modes = OWNED_NOTIFICATION_MODES.swap(0, Ordering::AcqRel);
+	let payloads = [
+		notification_modes_off_payload(owned_notification_modes),
+		emergency_restore_payload(alt_screen, xterm_scroll_restore_modes),
+		ansi_mode_restore_payload(ansi_mode_restore_modes),
+	];
+	platform::emergency_restore(payloads);
+}
+
+const fn notification_modes_off_payload(modes: u8) -> &'static [u8] {
+	match modes & (APPEARANCE_NOTIFICATIONS_MODE | IN_BAND_RESIZE_MODE) {
+		0 => b"",
+		APPEARANCE_NOTIFICATIONS_MODE => esc!(!appearance_notifications).as_bytes(),
+		IN_BAND_RESIZE_MODE => esc!(!in_band_resize).as_bytes(),
+		_ => esc!(!appearance_notifications, !in_band_resize).as_bytes(),
+	}
+}
+
+const fn ansi_mode_restore_payload(modes: u8) -> &'static [u8] {
+	match modes & (ANSI_INSERT_MODE | ANSI_NEWLINE_MODE) {
+		0 => b"",
+		ANSI_INSERT_MODE => esc!(insert_mode).as_bytes(),
+		ANSI_NEWLINE_MODE => esc!(newline_mode).as_bytes(),
+		_ => esc!(insert_mode, newline_mode).as_bytes(),
+	}
 }
 
 const fn emergency_restore_payload(
@@ -2286,6 +2373,8 @@ fn deactivate_emergency_state() {
 	ACTIVE.store(false, Ordering::Release);
 	ALT_SCREEN_ACTIVE.store(false, Ordering::Release);
 	XTERM_SCROLL_RESTORE_MODES.store(0, Ordering::Release);
+	ANSI_MODE_RESTORE_MODES.store(0, Ordering::Release);
+	OWNED_NOTIFICATION_MODES.store(0, Ordering::Release);
 	platform::deactivate();
 }
 
@@ -3209,6 +3298,8 @@ mod tests {
 			keyboard: KeyboardMode::Kitty(esc!(csi, ">5u")),
 			cursor_style: None,
 			xterm_scroll_restore_modes: 0,
+			ansi_mode_restore_modes: 0,
+			owned_notification_modes: 0,
 			mouse: false,
 			cursor_visible: None,
 			alt_screen: false,

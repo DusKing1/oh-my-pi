@@ -81,7 +81,7 @@ pub enum Prop {
 	Reverse,
 	/// Enables struck-through text.
 	Strike,
-	/// Enables text wrapping.
+	/// Enables wrapping rows; on text, a value selects the wrapping mode.
 	Wrap,
 	/// Enables text truncation.
 	Truncate,
@@ -413,7 +413,12 @@ impl Props {
 			_ => None,
 		}
 	}
-
+	/// Whether text flows grapheme-exact to the width (`wrap=char`) like a
+	/// bare terminal: every break is a byte-preserving soft wrap the
+	/// renderer re-joins for native copy. Defaults to word wrapping.
+	pub fn wrap_chars(&self) -> bool {
+		matches!(self.get(Prop::Wrap), Some(PropValue::Str(mode)) if mode == "char")
+	}
 	/// Returns the selected border glyph family.
 	pub fn border(&self) -> Option<Border> {
 		match self.get(Prop::Border) {
@@ -675,6 +680,12 @@ fn parse_str(prop: Prop, value: Str) -> Result<PropValue, PropError> {
 			"start" | "end" => PropValue::Str(value),
 			_ => return Err(bad()),
 		},
+		// `wrap` stays a bare flag (wrapping rows); on text a value picks
+		// the mode — `wrap=char` flows grapheme-exact like a bare terminal.
+		Prop::Wrap => match value.as_str() {
+			"char" | "word" => PropValue::Str(value),
+			_ => return Err(bad()),
+		},
 		// A textual `filter` seeds the initial query besides enabling
 		// filtering; the bare flag stays a boolean.
 		Prop::Filter => PropValue::Str(value),
@@ -702,7 +713,6 @@ fn parse_str(prop: Prop, value: Str) -> Result<PropValue, PropError> {
 		| Prop::Underline
 		| Prop::Reverse
 		| Prop::Strike
-		| Prop::Wrap
 		| Prop::Trim
 		| Prop::Bleed
 		| Prop::Multi

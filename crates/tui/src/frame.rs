@@ -5,6 +5,7 @@ use std::sync::{
 
 use omp_core::Str;
 use parking_lot::Mutex;
+use smol_bitmap::SmolBitmap;
 use xutf::{Text, width_char};
 
 static NEXT_FRAME_ID: AtomicU64 = AtomicU64::new(1);
@@ -419,6 +420,9 @@ pub struct Frame {
 	may_have_images: bool,
 	source_id:       u64,
 	revision:        u64,
+	/// Soft row boundaries: bit `y` set means row `y` wraps onto row
+	/// `y + 1` mid-word, forming one logical line broken only by width.
+	soft_wraps:      SmolBitmap,
 }
 
 impl Frame {
@@ -431,8 +435,10 @@ impl Frame {
 			may_have_images: false,
 			source_id: NEXT_FRAME_ID.fetch_add(1, Ordering::Relaxed),
 			revision: 0,
+			soft_wraps: SmolBitmap::new(),
 		}
 	}
+
 
 	/// Changes the document height, preserving retained rows and filling growth
 	/// with styled blanks.
@@ -443,10 +449,37 @@ impl Frame {
 		self.touch();
 		let area = usize::from(self.size.width).saturating_mul(usize::from(height));
 		self.cells.resize(area, Cell::blank(style));
+		// Boundary flags at and beyond the new final row are meaningless;
+		// drop them so a later regrowth cannot resurrect stale joins.
+		let first_invalid = usize::from(height.saturating_sub(1));
+		self.soft_wraps.retain(|index| index < first_invalid);
 		self.size.height = height;
 		if self.cursor.is_some_and(|(_, y)| y >= height) {
 			self.cursor = None;
 		}
+	}
+
+	/// Flags row `y` as soft-wrapping onto row `y + 1`: the pair renders as
+	/// one logical line broken mid-word only by the frame width. The
+	/// renderer may join the boundary with terminal autowrap so native
+	/// selection copies it unbroken, provided the row's content truly
+	/// reaches the final column.
+	///
+	/// Ignored unless both rows exist. Cleared by [`Frame::clear`],
+	/// [`Frame::resize_height`] shrinkage, and every rebuild — the flag is
+	/// layout metadata, not cell content.
+	pub fn set_soft_wrap(&mut self, y: u16) {
+		if y.saturating_add(1) >= self.size.height {
+			return;
+		}
+		self.touch();
+		self.soft_wraps.insert(usize::from(y));
+	}
+
+	/// Whether row `y` was flagged as soft-wrapping onto row `y + 1`.
+	#[inline]
+	pub fn soft_wrap(&self, y: u16) -> bool {
+		y.saturating_add(1) < self.size.height && self.soft_wraps.get(usize::from(y))
 	}
 
 	#[inline]
@@ -482,6 +515,7 @@ impl Frame {
 	pub fn clear(&mut self, style: Style) {
 		self.touch();
 		self.cells.fill(Cell::blank(style));
+		self.soft_wraps.clear();
 	}
 
 	/// Fills a clipped rectangle with styled blanks.
@@ -723,7 +757,10 @@ impl Frame {
 	}
 
 	pub(crate) fn same_grid(&self, other: &Self) -> bool {
-		self.size == other.size && self.cursor == other.cursor && self.cells == other.cells
+		self.size == other.size
+			&& self.cursor == other.cursor
+			&& self.soft_wraps == other.soft_wraps
+			&& self.cells == other.cells
 	}
 
 	pub(super) fn row_equals(&self, row: u16, other: &Self, other_row: u16) -> bool {
@@ -737,6 +774,7 @@ impl Frame {
 		let start = usize::from(row) * width;
 		let other_start = usize::from(other_row) * width;
 		self.cells[start..start + width] == other.cells[other_start..other_start + width]
+			&& self.soft_wrap(row) == other.soft_wrap(other_row)
 	}
 
 	/// Copies one row's cells from `src` (same width required). The
@@ -750,7 +788,20 @@ impl Frame {
 		let width = usize::from(self.size.width);
 		let start = usize::from(row) * width;
 		self.cells[start..start + width].clone_from_slice(&src.cells[start..start + width]);
+		// A row's paint also owns its wrap boundaries: the bit onto the next
+		// row and the bit carrying the previous row onto this one.
+		self.assign_soft_wrap(row, src.soft_wrap(row));
+		if let Some(previous) = row.checked_sub(1) {
+			self.assign_soft_wrap(previous, src.soft_wrap(previous));
+		}
 		self.may_have_images |= src.may_have_images;
+	}
+
+	fn assign_soft_wrap(&mut self, y: u16, value: bool) {
+		if y.saturating_add(1) >= self.size.height {
+			return;
+		}
+		self.soft_wraps.set(usize::from(y), value);
 	}
 
 	/// Copies a cell region from `src` into this frame — the scroll

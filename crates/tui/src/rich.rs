@@ -113,6 +113,17 @@ pub trait RichSink {
 
 	/// Completes the current row and starts another logical row.
 	fn newline(&mut self);
+
+	/// Completes the current row at a mid-word soft wrap: the text continues
+	/// on the next row purely because it hit the layout width, with no
+	/// whitespace collapsed at the break.
+	///
+	/// Provenance-tracking sinks keep the boundary joinable so the renderer
+	/// can re-join it with terminal autowrap; the default treats it as a
+	/// [`RichSink::newline`].
+	fn soft_wrap(&mut self) {
+		self.newline();
+	}
 }
 
 /// ANSI-materializing boundary sink.
@@ -296,6 +307,8 @@ struct Run {
 struct RowMeta {
 	run_end: u32,
 	width:   u16,
+	/// The row ended at a mid-word soft wrap and joins onto the next row.
+	soft:    bool,
 }
 
 /// Flat rendered rich text with coalesced styled runs and row metadata.
@@ -396,12 +409,22 @@ impl RichText {
 			})
 	}
 
+	/// Whether `row` soft-wraps onto the following row: it was broken
+	/// mid-word by width alone, so the pair forms one logical line.
+	pub fn row_soft_wrap(&self, row: u16) -> bool {
+		self.rows.get(usize::from(row)).is_some_and(|meta| meta.soft)
+	}
+
 	/// Replays every row, preserving completed versus trailing partial rows.
 	pub fn replay(&self, sink: &mut dyn RichSink) {
 		for row in 0..self.rows() {
 			self.replay_row(row, sink);
 			if usize::from(row) < self.rows.len() {
-				sink.newline();
+				if self.row_soft_wrap(row) {
+					sink.soft_wrap();
+				} else {
+					sink.newline();
+				}
 			}
 		}
 	}
@@ -442,9 +465,19 @@ impl RichSink for RichText {
 	}
 
 	fn newline(&mut self) {
+		self.end_row(false);
+	}
+
+	fn soft_wrap(&mut self) {
+		self.end_row(true);
+	}
+}
+impl RichText {
+	fn end_row(&mut self, soft: bool) {
 		self.rows.push(RowMeta {
 			run_end: u32::try_from(self.runs.len()).expect("rich text has too many runs"),
-			width:   self.current_width,
+			width: self.current_width,
+			soft,
 		});
 		self.current_width = 0;
 		self.open = false;
@@ -566,6 +599,10 @@ impl<S: RichSink + ?Sized> RichSink for &mut S {
 	fn newline(&mut self) {
 		(**self).newline();
 	}
+
+	fn soft_wrap(&mut self) {
+		(**self).soft_wrap();
+	}
 }
 
 /// Functional adapters available on every rich sink.
@@ -584,6 +621,12 @@ pub trait Pipeline: RichSink + Sized {
 	/// Word-wraps output without prefixes.
 	fn wrap(self, width: u16) -> Wrap<'static, Self> {
 		self.wrap_prefixed(width, Prefix::empty_ref(), Prefix::empty_ref())
+	}
+	/// Flows output grapheme-exact to `width` like a bare terminal: every
+	/// width break is a byte-preserving [`RichSink::soft_wrap`], so joined
+	/// rows reproduce the source exactly in native copy.
+	fn wrap_chars(self, width: u16) -> CharWrap<Self> {
+		CharWrap { inner: self, width: width.max(1), used: 0 }
 	}
 
 	/// Word-wraps output using first-row and continuation prefixes.
@@ -608,6 +651,43 @@ pub trait Pipeline: RichSink + Sized {
 }
 
 impl<S: RichSink> Pipeline for S {}
+/// A terminal-exact wrapping sink adapter.
+///
+/// Graphemes flow to the exact width with all whitespace preserved and
+/// every width break emitted as a soft wrap — the wrapping a bare terminal
+/// performs, so the renderer can re-join rows byte-for-byte.
+pub struct CharWrap<S: RichSink> {
+	inner: S,
+	width: u16,
+	used:  u16,
+}
+
+impl<S: RichSink> RichSink for CharWrap<S> {
+	fn run(&mut self, style: Style, text: &str) {
+		for grapheme in text.graphemes() {
+			let grapheme_width = cell_width(grapheme);
+			if grapheme_width > self.width {
+				continue;
+			}
+			if grapheme_width > 0 && self.used.saturating_add(grapheme_width) > self.width {
+				self.inner.soft_wrap();
+				self.used = 0;
+			}
+			self.inner.run(style, grapheme);
+			self.used = self.used.saturating_add(grapheme_width);
+		}
+	}
+
+	fn newline(&mut self) {
+		self.inner.newline();
+		self.used = 0;
+	}
+
+	fn soft_wrap(&mut self) {
+		self.inner.soft_wrap();
+		self.used = 0;
+	}
+}
 
 /// A word-wrapping rich sink adapter.
 pub struct Wrap<'p, S: RichSink> {
@@ -661,9 +741,15 @@ impl<'p, S: RichSink> Wrap<'p, S> {
 		self.emitted = true;
 	}
 
-	fn break_row(&mut self) {
+	fn break_row(&mut self, soft: bool) {
 		self.start_row();
-		self.inner.newline();
+		// A prefixed continuation never starts at the break column, so the
+		// boundary is only joinable when continuation rows are bare.
+		if soft && self.cont.is_empty() {
+			self.inner.soft_wrap();
+		} else {
+			self.inner.newline();
+		}
 		self.line_width = 0;
 		self.emitted = false;
 		self.content = false;
@@ -734,7 +820,7 @@ impl<'p, S: RichSink> Wrap<'p, S> {
 				.saturating_add(word_width)
 				> self.width
 		{
-			self.break_row();
+			self.break_row(false);
 			self.start_row();
 		} else if self.content {
 			self.emit_gap();
@@ -746,7 +832,7 @@ impl<'p, S: RichSink> Wrap<'p, S> {
 			for grapheme in word[start..*end as usize].graphemes() {
 				let grapheme_width = cell_width(grapheme);
 				if self.content && self.line_width.saturating_add(grapheme_width) > self.width {
-					self.break_row();
+					self.break_row(true);
 					self.start_row();
 				}
 				if self.line_width.saturating_add(grapheme_width) <= self.width || self.width != 0 {
@@ -787,7 +873,7 @@ impl<S: RichSink> RichSink for Wrap<'_, S> {
 
 	fn newline(&mut self) {
 		self.flush_word();
-		self.break_row();
+		self.break_row(false);
 		self.clear_gap();
 	}
 }
@@ -864,6 +950,15 @@ impl<S: RichSink> RichSink for Clip<S> {
 		self.done = false;
 		self.pending = None;
 	}
+	fn soft_wrap(&mut self) {
+		if !self.done {
+			self.flush_pending();
+		}
+		self.inner.soft_wrap();
+		self.used = 0;
+		self.done = false;
+		self.pending = None;
+	}
 }
 
 impl<S: RichSink> Drop for Clip<S> {
@@ -906,6 +1001,14 @@ impl<S: RichSink> RichSink for Rows<S> {
 			self.truncated = true;
 		}
 	}
+	fn soft_wrap(&mut self) {
+		if self.seen < self.max {
+			self.inner.soft_wrap();
+			self.seen = self.seen.saturating_add(1);
+		} else {
+			self.truncated = true;
+		}
+	}
 }
 
 /// A sink adapter that forwards and copies all output.
@@ -924,6 +1027,10 @@ impl<S: RichSink> RichSink for Tee<'_, S> {
 		self.inner.newline();
 		self.copy.newline();
 	}
+	fn soft_wrap(&mut self) {
+		self.inner.soft_wrap();
+		self.copy.soft_wrap();
+	}
 }
 
 /// A sink adapter that transforms every style.
@@ -939,6 +1046,9 @@ impl<S: RichSink, F: Fn(Style) -> Style> RichSink for Restyle<S, F> {
 
 	fn newline(&mut self) {
 		self.inner.newline();
+	}
+	fn soft_wrap(&mut self) {
+		self.inner.soft_wrap();
 	}
 }
 
@@ -980,6 +1090,8 @@ impl<S: RichSink> RichSink for Prefixed<'_, S> {
 		self.row = self.row.saturating_add(1);
 		self.at_start = true;
 	}
+	// A prefixed continuation row can never be byte-joined to its
+	// predecessor, so a soft wrap degrades to a hard row break.
 }
 
 #[cfg(test)]

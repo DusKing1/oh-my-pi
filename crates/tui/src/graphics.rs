@@ -248,12 +248,20 @@ pub struct ProbeResults {
 	pub background: Option<(u16, u16, u16)>,
 	/// Whether Kitty OSC 99 capability probing confirmed rich notifications.
 	pub osc99_confirmed: bool,
+	/// Whether DEC mode 2031 was already set before the session.
+	pub appearance_notifications_set: bool,
 	/// Whether DECRQM reported DEC mode 2031 as supported.
 	pub appearance_notifications: bool,
+	/// Whether DEC mode 2048 was already set before the session.
+	pub in_band_resize_set: bool,
 	/// Whether DECRQM reported DEC mode 2048 as supported.
 	pub in_band_resize: bool,
 	/// Whether DECRQM reported DEC mode 5522 (kitty enhanced paste) as settable.
 	pub paste_events: bool,
+	/// Whether DECRQM reported ANSI insert mode 4 as set and changeable.
+	pub insert_mode_set: bool,
+	/// Whether DECRQM reported ANSI new-line mode 20 as set and changeable.
+	pub newline_mode_set: bool,
 	/// Whether DECRQM reported xterm mode 1010 as set and changeable.
 	///
 	/// Status 3 is permanently set, so it is deliberately not changed.
@@ -487,8 +495,9 @@ impl ProbeParser {
 				true
 			},
 			b'y' => {
-				let Some(parameters) = body.strip_prefix(b"?") else {
-					return false;
+				let (private, parameters) = match body.strip_prefix(b"?") {
+					Some(parameters) => (true, parameters),
+					None => (false, body),
 				};
 				let Some(parameters) = parameters.strip_suffix(b"$") else {
 					return false;
@@ -503,13 +512,28 @@ impl ProbeParser {
 				if fields.next().is_some() {
 					return false;
 				}
-				match mode {
-					1010 => self.results.xterm_scroll_to_bottom_on_output = status == 1,
-					1011 => self.results.xterm_scroll_to_bottom_on_key_press = status == 1,
-					2026 => self.results.sync_output = Some(matches!(status, 1 | 2)),
-					2031 => self.results.appearance_notifications = matches!(status, 1..=3),
-					2048 => self.results.in_band_resize = matches!(status, 1..=3),
-					5522 => self.results.paste_events = matches!(status, 1 | 2),
+				match (private, mode) {
+					(false, 4) => self.results.insert_mode_set = status == 1,
+					(false, 20) => self.results.newline_mode_set = status == 1,
+					(true, 1010) => {
+						self.results.xterm_scroll_to_bottom_on_output = status == 1;
+					},
+					(true, 1011) => {
+						self.results.xterm_scroll_to_bottom_on_key_press = status == 1;
+					},
+					(true, 2026) => self.results.sync_output = Some(matches!(status, 1 | 2)),
+					(true, mode @ (2031 | 2048)) => {
+						let supported = matches!(status, 1..=3);
+						let set = matches!(status, 1 | 3);
+						if mode == 2031 {
+							self.results.appearance_notifications = supported;
+							self.results.appearance_notifications_set = set;
+						} else {
+							self.results.in_band_resize = supported;
+							self.results.in_band_resize_set = set;
+						}
+					},
+					(true, 5522) => self.results.paste_events = matches!(status, 1 | 2),
 					_ => return false,
 				}
 				true
@@ -577,6 +601,8 @@ const PROBE_BATCH: &[u8] = esc!(
 	cell_pixels_query,
 	background_color_query,
 	osc99_query,
+	?insert_mode,
+	?newline_mode,
 	?scroll_on_output,
 	?scroll_on_key_press,
 	?sync_output,
@@ -592,6 +618,8 @@ const PROBE_BATCH_NO_OSC99: &[u8] = esc!(
 	sixel_color_registers_query,
 	cell_pixels_query,
 	background_color_query,
+	?insert_mode,
+	?newline_mode,
 	?scroll_on_output,
 	?scroll_on_key_press,
 	?sync_output,
@@ -772,15 +800,7 @@ fn probe_polled(
 	}
 	let timed_out = !parser.is_complete();
 	parser.finish(&mut preserved);
-	let results = parser.into_results(preserved, timed_out);
-	if results.appearance_notifications {
-		let _ = tty.write_all(esc!(appearance_notifications).as_bytes());
-	}
-	if results.in_band_resize {
-		let _ = tty.write_all(esc!(in_band_resize).as_bytes());
-	}
-	let _ = tty.flush();
-	results
+	parser.into_results(preserved, timed_out)
 }
 
 /// Detects terminal graphics capabilities from the process environment.
@@ -1278,6 +1298,7 @@ mod tests {
 			"\x1b_Gi=31;OK\x1b\\\x1b[?2;1;256S\x1b[6;20;10t",
 			"\x1b]11;rgb:1/345/abcd\x07",
 			"\x1b]99;i=omp-tui:p=?;p=title,body;\x1b\\",
+			"\x1b[4;1$y\x1b[20;2$y",
 			"\x1b[?1010;1$y\x1b[?1011;2$y\x1b[?2026;2$y\x1b[?2031;1$y\x1b[?2048;2$y",
 			"\x1b[?5522;2$y",
 			"\x1b[?5u\x1b[?1;2;4c",
@@ -1294,8 +1315,12 @@ mod tests {
 		assert_eq!(results.kitty_keyboard, Some(5));
 		assert_eq!(results.background, Some((0x1111, 0x3453, 0xabcd)));
 		assert!(results.osc99_confirmed);
+		assert!(results.insert_mode_set);
+		assert!(!results.newline_mode_set);
 		assert!(results.appearance_notifications);
+		assert!(results.appearance_notifications_set);
 		assert!(results.in_band_resize);
+		assert!(!results.in_band_resize_set);
 		assert!(results.paste_events);
 		assert!(results.xterm_scroll_to_bottom_on_output);
 		assert!(!results.xterm_scroll_to_bottom_on_key_press);
@@ -1307,7 +1332,8 @@ mod tests {
 	fn parser_accepts_every_response_split_one_byte_at_a_time() {
 		let responses = concat!(
 			"\x1b_Gi=31;OK\x1b\\\x1b[?2;1;1024S\x1b[6;18;9t",
-			"\x1b]11;rgba:11/22/33\x1b\\\x1b[?2031;2$y\x1b[?2048;1$y\x1b[?5522;2$y\x1b[?1;4c",
+			"\x1b]11;rgba:11/22/33\x1b\\\x1b[4;2$y\x1b[20;1$y",
+			"\x1b[?2031;2$y\x1b[?2048;1$y\x1b[?5522;2$y\x1b[?1;4c",
 		)
 		.as_bytes();
 		let (results, preserved) = parse(responses.iter().map(|byte| vec![*byte]));
@@ -1315,8 +1341,12 @@ mod tests {
 		assert_eq!(results.sixel_color_registers, Some(1024));
 		assert_eq!(results.cell_px, Some((9, 18)));
 		assert_eq!(results.background, Some((0x1111, 0x2222, 0x3333)));
+		assert!(!results.insert_mode_set);
+		assert!(results.newline_mode_set);
 		assert!(results.appearance_notifications);
+		assert!(!results.appearance_notifications_set);
 		assert!(results.in_band_resize);
+		assert!(results.in_band_resize_set);
 		assert!(results.paste_events);
 		assert!(results.supports_sixel());
 		assert_eq!(preserved, [] as [u8; 0]);
@@ -1370,6 +1400,60 @@ mod tests {
 			let (probe, preserved) = parse([response]);
 			assert_eq!(probe.sync_output, Some(false));
 			assert_eq!(preserved, [] as [u8; 0]);
+		}
+	}
+
+	#[test]
+	fn ansi_mode_probes_only_record_set_changeable_modes() {
+		for mode in [4, 20] {
+			for status in 0..=4 {
+				let response = format!("\x1b[{mode};{status}$y").into_bytes();
+				let (probe, preserved) = parse([response]);
+				assert_eq!(preserved, [] as [u8; 0]);
+				assert_eq!(
+					probe.insert_mode_set,
+					mode == 4 && status == 1,
+					"mode {mode}, status {status}"
+				);
+				assert_eq!(
+					probe.newline_mode_set,
+					mode == 20 && status == 1,
+					"mode {mode}, status {status}"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn notification_mode_probes_preserve_support_and_prior_state() {
+		for mode in [2031, 2048] {
+			for status in 0..=4 {
+				let response = format!("\x1b[?{mode};{status}$y").into_bytes();
+				let (probe, preserved) = parse([response]);
+				let supported = matches!(status, 1..=3);
+				let set = matches!(status, 1 | 3);
+				assert_eq!(preserved, [] as [u8; 0]);
+				assert_eq!(
+					probe.appearance_notifications,
+					mode == 2031 && supported,
+					"mode {mode}, status {status}"
+				);
+				assert_eq!(
+					probe.appearance_notifications_set,
+					mode == 2031 && set,
+					"mode {mode}, status {status}"
+				);
+				assert_eq!(
+					probe.in_band_resize,
+					mode == 2048 && supported,
+					"mode {mode}, status {status}"
+				);
+				assert_eq!(
+					probe.in_band_resize_set,
+					mode == 2048 && set,
+					"mode {mode}, status {status}"
+				);
+			}
 		}
 	}
 

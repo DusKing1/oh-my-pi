@@ -240,6 +240,7 @@ pub struct AppOptions {
 	graphics:       Option<GraphicsOverride>,
 	cursor_style:   Option<CursorStyle>,
 	quit:           SmallVec<Key, 4>,
+	hotkeys:        SmallVec<Key, 4>,
 	quit_on_cancel: bool,
 	mouse:          bool,
 	hold_alt:       bool,
@@ -255,6 +256,7 @@ impl AppOptions {
 			graphics: None,
 			cursor_style: None,
 			quit,
+			hotkeys: SmallVec::new(),
 			quit_on_cancel: true,
 			mouse: false,
 			hold_alt: false,
@@ -299,6 +301,19 @@ impl AppOptions {
 		self
 	}
 
+	/// Reserves chords for the host, checked after the quit chords and
+	/// before widget routing, and surfaced as [`AppEvent::Key`].
+	///
+	/// Use this for scene-level shortcuts that must win over a focused
+	/// widget's own binding — `Ctrl+K` opening a switcher while a text
+	/// input would otherwise kill to end of line. Chords stay reserved
+	/// until [`App::set_hotkeys`] replaces them, so scope them to the
+	/// screen that needs them rather than reserving them globally.
+	pub fn hotkeys(mut self, chords: impl IntoIterator<Item = Key>) -> Self {
+		self.hotkeys = chords.into_iter().collect();
+		self
+	}
+
 	/// Starts with the alternate screen held: the very first frame paints
 	/// there and the inline transcript stays untouched underneath until
 	/// [`App::hold_alt`] releases it. Fullscreen opening scenes — a welcome
@@ -326,7 +341,8 @@ impl AppOptions {
 	///
 	/// Propagates terminal, input, capability, and renderer failures.
 	pub async fn start(self, build: impl FnOnce(AppEnv) -> Ui + Send) -> io::Result<App> {
-		let Self { probe, graphics, cursor_style, quit, quit_on_cancel, mouse, hold_alt } = self;
+		let Self { probe, graphics, cursor_style, quit, hotkeys, quit_on_cancel, mouse, hold_alt } =
+			self;
 		let (base, probe) = match probe {
 			Some(timeout) => negotiate_async(timeout).await,
 			None => (detect(), ProbeResults::default()),
@@ -372,6 +388,7 @@ impl AppOptions {
 			caps,
 			viewport,
 			quit,
+			hotkeys,
 			quit_on_cancel,
 			#[cfg(unix)]
 			resize_wait: None,
@@ -416,6 +433,10 @@ pub struct AppEnv {
 pub enum AppEvent {
 	/// Routed input changed the tree; the next [`App::next`] call presents it.
 	Updated,
+	/// A key no widget claimed: routed through the tree without damage,
+	/// quit chords, or a clipboard chord. Hosts use it for scene-level
+	/// hotkeys without intercepting the widget path.
+	Key(Key),
 	/// The focused widget submitted.
 	Submitted,
 	/// An ID-carrying button fired.
@@ -464,6 +485,7 @@ pub struct App {
 	caps:           TerminalCaps,
 	viewport:       Size,
 	quit:           SmallVec<Key, 4>,
+	hotkeys:        SmallVec<Key, 4>,
 	quit_on_cancel: bool,
 	resize_wait:    Option<tokio::time::Instant>,
 	resize_settle:  Option<tokio::time::Instant>,
@@ -489,6 +511,12 @@ impl App {
 	/// Mutably borrows the retained UI between host events.
 	pub const fn ui_mut(&mut self) -> &mut Ui {
 		&mut self.ui
+	}
+
+	/// Replaces the reserved host chords, scoping [`AppOptions::hotkeys`]
+	/// to the screen that is actually showing.
+	pub fn set_hotkeys(&mut self, chords: impl IntoIterator<Item = Key>) {
+		self.hotkeys = chords.into_iter().collect();
 	}
 
 	/// Creates a remote that can update or stop this host.
@@ -885,7 +913,8 @@ impl App {
 	}
 
 	fn route_key(&mut self, key: Key) -> Routed {
-		let routed = route_key_event(&mut self.ui, key, &self.quit, self.quit_on_cancel);
+		let routed =
+			route_key_event(&mut self.ui, key, &self.quit, &self.hotkeys, self.quit_on_cancel);
 		if matches!(routed, Routed::Stop) {
 			self.cancel.cancel();
 		}
@@ -929,8 +958,10 @@ impl App {
 				Routed::Continue => {
 					if let Some(scope) = ClipboardRead::for_key(key) {
 						self.begin_clipboard_read(scope);
+						Routed::Continue
+					} else {
+						Routed::Event(AppEvent::Key(key))
 					}
-					Routed::Continue
 				},
 				routed => routed,
 			},
@@ -1051,9 +1082,20 @@ impl Drop for App {
 /// Any [`UiEvent::Cancel`] surfacing from a visible modal overlay — Escape
 /// or a `<button cancel>` — dismisses that layer before the quit policy runs,
 /// following the layered-dismissal contract on [`Key::Esc`].
-fn route_key_event(ui: &mut Ui, key: Key, quit: &[Key], quit_on_cancel: bool) -> Routed {
+fn route_key_event(
+	ui: &mut Ui,
+	key: Key,
+	quit: &[Key],
+	hotkeys: &[Key],
+	quit_on_cancel: bool,
+) -> Routed {
 	if quit.contains(&key) {
 		return Routed::Stop;
+	}
+	// Reserved before routing: a focused widget must not shadow a scene
+	// shortcut the host claimed.
+	if hotkeys.contains(&key) {
+		return Routed::Event(AppEvent::Key(key));
 	}
 	match ui.handle_key(key) {
 		UiEvent::Cancel if ui.has_overlay() => {
@@ -1277,20 +1319,20 @@ mod tests {
 
 		// A quit chord outranks any open layer.
 		let quit = [Key::Ctrl('c')];
-		assert_eq!(route_key_event(&mut ui, Key::Ctrl('c'), &quit, true), Routed::Stop);
+		assert_eq!(route_key_event(&mut ui, Key::Ctrl('c'), &quit, &[], true), Routed::Stop);
 
 		// Escape targets the visible layer, not the hidden stack top.
 		assert_eq!(
-			route_key_event(&mut ui, Key::Esc, &quit, true),
+			route_key_event(&mut ui, Key::Esc, &quit, &[], true),
 			Routed::Event(AppEvent::OverlayClosed(lower)),
 		);
 		assert!(ui.overlay(lower).is_none(), "the dismissed layer is gone");
 		assert!(ui.overlay(upper).is_some(), "the hidden layer is untouched");
 
 		// Every remaining layer is hidden, so Escape falls back to the policy.
-		assert_eq!(route_key_event(&mut ui, Key::Esc, &quit, true), Routed::Stop);
+		assert_eq!(route_key_event(&mut ui, Key::Esc, &quit, &[], true), Routed::Stop);
 		assert_eq!(
-			route_key_event(&mut ui, Key::Esc, &quit, false),
+			route_key_event(&mut ui, Key::Esc, &quit, &[], false),
 			Routed::Event(AppEvent::Updated),
 			"a swallowed cancel still reports pending overlay damage",
 		);
@@ -1300,10 +1342,36 @@ mod tests {
 		let dialog =
 			ui.show_overlay(dom! { <button cancel>{"Cancel"}</button> }, OverlayOptions::default());
 		assert_eq!(
-			route_key_event(&mut ui, Key::Enter, &quit, true),
+			route_key_event(&mut ui, Key::Enter, &quit, &[], true),
 			Routed::Event(AppEvent::OverlayClosed(dialog)),
 		);
 		assert!(ui.overlay(dialog).is_none());
+	}
+
+	/// `Ctrl+K` is an input's kill-to-end-of-line; a host that reserves it
+	/// for a scene shortcut must win, or the chord dies at the focused
+	/// widget.
+	#[test]
+	fn a_reserved_hotkey_outranks_the_focused_widgets_own_binding() {
+		use super::{AppEvent, Routed, route_key_event};
+		use crate::Key;
+
+		let mut ui = Ui::from_markup("<input id=composer value=hello/>", 40, UiContext::default())
+			.unwrap();
+		ui.handle_key(Key::Home);
+		let quit = [Key::Ctrl('c')];
+
+		assert_eq!(
+			route_key_event(&mut ui, Key::Ctrl('k'), &quit, &[Key::Ctrl('k')], true),
+			Routed::Event(AppEvent::Key(Key::Ctrl('k'))),
+		);
+		assert_eq!(ui.values()["composer"], "hello", "the input never saw the reserved chord");
+
+		// Unreserved, the same chord stays the input's kill-line.
+		assert_eq!(route_key_event(&mut ui, Key::Ctrl('k'), &quit, &[], true), Routed::Event(
+			AppEvent::Updated
+		));
+		assert_eq!(ui.values()["composer"], "");
 	}
 
 	#[test]
@@ -1316,7 +1384,7 @@ mod tests {
 			ui.show_overlay(dom! { <text>{"rail"}</text> }, OverlayOptions::default().non_modal());
 		let quit = [Key::Ctrl('c')];
 		assert_eq!(
-			route_key_event(&mut ui, Key::Esc, &quit, true),
+			route_key_event(&mut ui, Key::Esc, &quit, &[], true),
 			Routed::Stop,
 			"a non-modal layer never soaks up the cancel",
 		);
@@ -1334,7 +1402,7 @@ mod tests {
 		let dialog = ui.show_overlay(dom! { <text>{"confirm"}</text> }, OverlayOptions::default());
 		let quit = [Key::Ctrl('c')];
 		assert_eq!(
-			route_key_event(&mut ui, Key::Esc, &quit, true),
+			route_key_event(&mut ui, Key::Esc, &quit, &[], true),
 			Routed::Event(AppEvent::OverlayClosed(dialog)),
 			"the cancel dismisses the modal that routed it, not the stack top",
 		);

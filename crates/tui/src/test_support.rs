@@ -45,8 +45,11 @@ pub fn frame_cell_style(frame: &Frame, x: u16, y: u16) -> Style {
 /// exactly the sequences the renderer emits: CR, LF (scrolls at the bottom
 /// margin; a top-anchored region pushes the scrolled-out row into
 /// `history`, matching the emulators behind `margin_scrollback`),
-/// CUU/CUD/CUF, CUP, DECSTBM, `2J`/`3J`. Writing over either half of a
-/// wide glyph blanks the partner cell, matching hardware terminals.
+/// CUU/CUD/CUF, CUP, DECSTBM, `2J`/`3J`, and DECAWM with pending-wrap
+/// semantics: a soft-wrapped row is flagged as continuing its predecessor
+/// and joins it when scrolled into `history`, matching native copy.
+/// Writing over either half of a wide glyph blanks the partner cell, as
+/// hardware terminals do.
 pub struct TerminalModel {
 	width:         usize,
 	height:        usize,
@@ -58,7 +61,13 @@ pub struct TerminalModel {
 	margin_bottom: usize,
 	/// `None` marks the continuation cell of the preceding wide glyph.
 	screen:        Vec<Vec<Option<String>>>,
-	/// Rows scrolled into native scrollback, oldest first.
+	/// Whether each screen row was created by autowrap and continues the
+	/// line above it, as native selection would join it.
+	wrapped:       Vec<bool>,
+	autowrap:      bool,
+	pending_wrap:  bool,
+	/// Rows scrolled into native scrollback, oldest first; a soft-wrapped
+	/// row extends the previous entry instead of starting a new one.
 	pub history:   Vec<String>,
 }
 
@@ -73,6 +82,9 @@ impl TerminalModel {
 			margin_top: 0,
 			margin_bottom: height - 1,
 			screen: vec![Self::blank_row(width); height],
+			wrapped: vec![false; height],
+			autowrap: false,
+			pending_wrap: false,
 			history: Vec::new(),
 		}
 	}
@@ -100,9 +112,11 @@ impl TerminalModel {
 				},
 				'\r' => {
 					self.cursor_col = 0;
+					self.pending_wrap = false;
 					index += 1;
 				},
 				'\n' => {
+					self.pending_wrap = false;
 					self.line_feed();
 					index += 1;
 				},
@@ -126,6 +140,14 @@ impl TerminalModel {
 		if width == 0 {
 			return;
 		}
+		if self.pending_wrap {
+			self.pending_wrap = false;
+			if self.autowrap {
+				self.line_feed();
+				self.cursor_col = 0;
+				self.wrapped[self.cursor_row] = true;
+			}
+		}
 		if self.cursor_col + width > self.width {
 			return;
 		}
@@ -138,7 +160,11 @@ impl TerminalModel {
 				self.screen[self.cursor_row][self.cursor_col + offset] = None;
 			}
 		}
-		self.cursor_col = (self.cursor_col + width).min(self.width - 1);
+		let end = self.cursor_col + width;
+		if end >= self.width {
+			self.pending_wrap = true;
+		}
+		self.cursor_col = end.min(self.width - 1);
 	}
 
 	/// Blanks both halves of any wide glyph occupying `col`, as hardware
@@ -169,10 +195,18 @@ impl TerminalModel {
 					.unwrap_or(1);
 				self.cursor_row = row.saturating_sub(1).min(self.height - 1);
 				self.cursor_col = column.saturating_sub(1).min(self.width - 1);
+				self.pending_wrap = false;
+			},
+			'h' if parameters == "?7" => {
+				self.autowrap = true;
+			},
+			'l' if parameters == "?7" => {
+				self.autowrap = false;
 			},
 			'A' => {
 				let distance = parameters.parse::<usize>().unwrap_or(1);
 				self.cursor_row = self.cursor_row.saturating_sub(distance);
+				self.pending_wrap = false;
 			},
 			'B' => {
 				let distance = parameters.parse::<usize>().unwrap_or(1);
@@ -182,10 +216,12 @@ impl TerminalModel {
 					self.height - 1
 				};
 				self.cursor_row = self.cursor_row.saturating_add(distance).min(limit);
+				self.pending_wrap = false;
 			},
 			'C' => {
 				let distance = parameters.parse::<usize>().unwrap_or(1);
 				self.cursor_col = self.cursor_col.saturating_add(distance).min(self.width - 1);
+				self.pending_wrap = false;
 			},
 			'J' if parameters == "3" => {
 				self.history.clear();
@@ -194,6 +230,7 @@ impl TerminalModel {
 				for row in &mut self.screen {
 					*row = Self::blank_row(self.width);
 				}
+				self.wrapped.fill(false);
 			},
 			'r' => {
 				let mut values = parameters.split(';');
@@ -212,6 +249,7 @@ impl TerminalModel {
 				self.margin_bottom = bottom;
 				self.cursor_row = 0;
 				self.cursor_col = 0;
+				self.pending_wrap = false;
 			},
 			_ => {},
 		}
@@ -220,17 +258,28 @@ impl TerminalModel {
 	fn line_feed(&mut self) {
 		if self.cursor_row == self.margin_bottom {
 			let row = self.screen.remove(self.margin_top);
+			let joined = self.wrapped.remove(self.margin_top);
 			if self.margin_top == 0 {
-				self.history.push(Self::row_text(&row));
+				let text = Self::row_text(&row);
+				match self.history.last_mut() {
+					Some(previous) if joined => previous.push_str(&text),
+					_ => self.history.push(text),
+				}
 			}
 			self
 				.screen
 				.insert(self.margin_bottom, Self::blank_row(self.width));
+			self.wrapped.insert(self.margin_bottom, false);
 			return;
 		}
 		if self.cursor_row + 1 < self.height {
 			self.cursor_row += 1;
 		}
+	}
+
+	/// Whether `row` was soft-wrapped from the line above by autowrap.
+	pub fn row_wrapped(&self, row: usize) -> bool {
+		self.wrapped.get(row).copied().unwrap_or(false)
 	}
 
 	/// Resets the model to a blank screen at new geometry.
@@ -242,6 +291,8 @@ impl TerminalModel {
 		self.margin_top = 0;
 		self.margin_bottom = height - 1;
 		self.screen = vec![Self::blank_row(width); height];
+		self.wrapped = vec![false; height];
+		self.pending_wrap = false;
 	}
 
 	fn row_text(row: &[Option<String>]) -> String {
