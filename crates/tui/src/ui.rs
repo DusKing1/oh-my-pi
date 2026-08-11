@@ -674,13 +674,21 @@ impl Ui {
 	/// [`Ui::focus_overlay`] or a click — falling back to the base tree's
 	/// focused component with focus-ring fallback.
 	pub fn handle_key(&mut self, key: Key) -> UiEvent {
+		self.handle_key_claimed(key).0
+	}
+
+	/// [`Ui::handle_key`] plus whether the key was claimed: consumed by a
+	/// component, or spent moving focus. An unclaimed key routed through
+	/// the tree untouched — pending damage from animations or unrelated
+	/// components never counts as a claim.
+	pub(crate) fn handle_key_claimed(&mut self, key: Key) -> (UiEvent, bool) {
 		if let Some(index) = self.key_target() {
 			let modal = self.overlays[index].options.modal;
 			let had_focus = self.overlays[index].ui.focus.is_some();
-			let event = self.overlays[index].ui.handle_key(key);
+			let (event, claimed) = self.overlays[index].ui.handle_key_claimed(key);
 			if modal && event == UiEvent::None && !had_focus && matches!(key, Key::Esc) {
 				// A focus-free overlay must still be dismissible.
-				return UiEvent::Cancel;
+				return (UiEvent::Cancel, true);
 			}
 			if !modal
 				&& (event == UiEvent::Cancel
@@ -690,9 +698,9 @@ impl Ui {
 				// dismissing: an unconsumed Esc (or a cancel surfacing from
 				// inside it) blurs the layer and the base tree resumes.
 				self.blur_overlay();
-				return UiEvent::None;
+				return (UiEvent::None, true);
 			}
-			return event;
+			return (event, claimed);
 		}
 		self.set_keyboard(true);
 		if let Some((slot, _)) = self.hover.take() {
@@ -700,23 +708,25 @@ impl Ui {
 		}
 		let Some(focus) = self.focus else {
 			self.move_focus(true);
-			return UiEvent::None;
+			// Seeding the ring is a side effect: only navigation keys are
+			// spent on it, anything else stays the host's to observe.
+			return (UiEvent::None, Self::is_focus_nav(key));
 		};
 		let Some((flow, layout, old_measure, old_rect)) = self.key_component(focus, key) else {
 			self.focus = None;
 			self.move_focus(true);
-			return UiEvent::None;
+			return (UiEvent::None, Self::is_focus_nav(key));
 		};
 		match flow {
 			Flow::Consumed => {
 				self.refresh_routed(focus, layout, old_measure, old_rect);
-				UiEvent::None
+				(UiEvent::None, true)
 			},
 			// An event usually follows a state change (a select committing
 			// or re-filtering), so the emitter repaints before surfacing it.
 			Flow::Event(event) => {
 				self.refresh_routed(focus, layout, old_measure, old_rect);
-				event
+				(event, true)
 			},
 			Flow::Skip => {
 				match key {
@@ -724,12 +734,20 @@ impl Ui {
 					Key::BackTab | Key::Left => self.move_focus(false),
 					Key::Down => self.move_focus_vertical(true),
 					Key::Up => self.move_focus_vertical(false),
-					Key::Esc => return UiEvent::Cancel,
-					_ => {},
+					Key::Esc => return (UiEvent::Cancel, false),
+					_ => return (UiEvent::None, false),
 				}
-				UiEvent::None
+				(UiEvent::None, true)
 			},
 		}
+	}
+
+	/// Whether `key` drives focus-ring navigation when no component takes it.
+	const fn is_focus_nav(key: Key) -> bool {
+		matches!(
+			key,
+			Key::Tab | Key::BackTab | Key::Enter | Key::Left | Key::Right | Key::Up | Key::Down
+		)
 	}
 
 	/// Routes sanitized paste text to the focused component; the returned

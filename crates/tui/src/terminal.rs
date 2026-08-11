@@ -931,8 +931,7 @@ mod platform {
 						&mut written,
 						ptr::null(),
 					)
-				} == 0
-					|| written == 0
+				} == 0 || written == 0
 				{
 					break;
 				}
@@ -2174,8 +2173,8 @@ fn compose_enter(
 ) -> SmallVec<u8, 160> {
 	let mut batch = SmallVec::new();
 	batch.extend_from_slice(TITLE_PUSH);
-	batch.extend_from_slice(esc!(!cursor_visible).as_bytes());
 	batch.extend_from_slice(esc!(!insert_mode, !newline_mode).as_bytes());
+	batch.extend_from_slice(esc!(!cursor_visible).as_bytes());
 	if xterm_scroll_restore_modes & XTERM_SCROLL_ON_OUTPUT != 0 {
 		batch.extend_from_slice(esc!(!scroll_on_output).as_bytes());
 	}
@@ -2402,16 +2401,19 @@ mod tests {
 	use parking_lot::Mutex;
 
 	use super::{
-		ACTIVE, AltScreenUse, ConsoleCodepage, CursorStyle, INPUT_REPORTS_OFF, KeyboardMode,
+		ACTIVE, ANSI_INSERT_MODE, ANSI_NEWLINE_MODE, APPEARANCE_NOTIFICATIONS_MODE, AltScreenUse,
+		ConsoleCodepage, CursorStyle, IN_BAND_RESIZE_MODE, INPUT_REPORTS_OFF, KeyboardMode,
 		MOUSE_TRACKING_ON, OSC11_QUERY, Progress, RESIZE_GENERATION, TITLE_POP, TITLE_PUSH, Terminal,
-		UTF8_CODEPAGE, XTERM_SCROLL_ON_KEY_PRESS, XTERM_SCROLL_ON_OUTPUT, base64, compose_enter,
-		compose_leave, compose_progress, compose_title, emergency_restore_payload,
-		ensure_console_utf8, ensure_restore_hooks, keyboard_mode, platform, progress_state,
-		reconcile_in_band_geometry, rounded_cell_pixels,
+		UTF8_CODEPAGE, XTERM_SCROLL_ON_KEY_PRESS, XTERM_SCROLL_ON_OUTPUT, ansi_mode_restore_modes,
+		ansi_mode_restore_payload, base64, compose_enter, compose_input_reports_off, compose_leave,
+		compose_progress, compose_title, emergency_restore_payload, ensure_console_utf8,
+		ensure_restore_hooks, keyboard_mode, notification_modes_off_payload,
+		owned_notification_modes, platform, progress_state, reconcile_in_band_geometry,
+		rounded_cell_pixels,
 	};
 	use crate::{
-		Appearance, InputDecoder, InputEvent, Key, Mods, Mouse, MouseButton, MouseReport, Renderer,
-		Size, TerminalResponse, escape::esc, paste::Pasted,
+		Appearance, InputDecoder, InputEvent, Key, Mods, Mouse, MouseButton, MouseReport,
+		ProbeResults, Renderer, Size, TerminalResponse, escape::esc, paste::Pasted,
 	};
 
 	fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -2528,6 +2530,8 @@ mod tests {
 		// opting in appends the tracking set before the keyboard mode.
 		const PREFIX: &[u8] = esc!(
 			title_push,
+			!insert_mode,
+			!newline_mode,
 			!cursor_visible,
 			!autowrap,
 			!origin,
@@ -2539,6 +2543,8 @@ mod tests {
 		.as_bytes();
 		const PREFIX_MOUSE: &[u8] = esc!(
 			title_push,
+			!insert_mode,
+			!newline_mode,
 			!cursor_visible,
 			!autowrap,
 			!origin,
@@ -2552,22 +2558,49 @@ mod tests {
 		)
 		.as_bytes();
 		for (reported, keyboard) in cases {
-			let batch = compose_enter(keyboard_mode(reported), None, 0, false, false);
+			let batch = compose_enter(keyboard_mode(reported), None, 0, 0, false, false);
 			assert_eq!(batch.as_slice(), [PREFIX, keyboard].concat());
-			let batch = compose_enter(keyboard_mode(reported), None, 0, true, false);
+			let batch = compose_enter(keyboard_mode(reported), None, 0, 0, true, false);
 			assert_eq!(batch.as_slice(), [PREFIX_MOUSE, keyboard].concat());
 		}
 	}
 
 	#[test]
-	fn teardown_disables_input_reports_before_drain_and_raw_restore_boundary() {
+	fn inherited_modes_drive_entry_ownership_and_restoration() {
+		let mut caps = crate::detect();
+		caps.appearance_notifications = true;
+		caps.in_band_resize = true;
+		let probe = ProbeResults {
+			insert_mode_set: true,
+			newline_mode_set: true,
+			appearance_notifications_set: true,
+			..ProbeResults::default()
+		};
+		let ansi_modes = ansi_mode_restore_modes(&probe);
+		let notification_modes = owned_notification_modes(caps, &probe);
+		assert_eq!(ansi_modes, ANSI_INSERT_MODE | ANSI_NEWLINE_MODE);
+		assert_eq!(notification_modes, IN_BAND_RESIZE_MODE);
+
+		let keyboard = KeyboardMode::Kitty(esc!(csi, ">5u"));
+		let enter = compose_enter(keyboard, None, 0, notification_modes, false, false);
+		assert!(contains(&enter, esc!(!insert_mode, !newline_mode).as_bytes()));
+		assert!(!contains(&enter, esc!(appearance_notifications).as_bytes()));
+		assert!(contains(&enter, esc!(in_band_resize).as_bytes()));
+		let leave = compose_leave(false, 0, ansi_modes);
+		assert!(
+			leave.ends_with(esc!(title_pop, cursor_visible, insert_mode, newline_mode).as_bytes())
+		);
+	}
+
+	#[test]
+	fn teardown_disables_owned_input_reports_before_drain_and_raw_restore() {
 		let keyboard = KeyboardMode::Kitty(esc!(csi, ">5u")).leave();
 		assert_eq!(keyboard, esc!(kitty_keyboard_pop).as_bytes());
-		// Keyboard pop plus INPUT_REPORTS_OFF are flushed before the teardown
-		// drain, so late key-release and mouse-motion reports die in the drain
-		// instead of echoing into the parent shell.
+		assert_eq!(compose_input_reports_off(0).as_slice(), INPUT_REPORTS_OFF);
+		let reports_off =
+			compose_input_reports_off(APPEARANCE_NOTIFICATIONS_MODE | IN_BAND_RESIZE_MODE);
 		assert_eq!(
-			INPUT_REPORTS_OFF,
+			reports_off.as_slice(),
 			esc!(
 				!mouse_sgr,
 				!mouse_any_event,
@@ -2575,14 +2608,16 @@ mod tests {
 				!mouse_vt200,
 				!bracketed_paste,
 				!paste_events,
+				!appearance_notifications,
+				!in_band_resize,
 			)
 			.as_bytes()
 		);
-		let tail = compose_leave(true, 0);
+		let tail = compose_leave(true, 0, 0);
 		assert!(tail.starts_with(esc!(!sync_output).as_bytes()));
 		assert!(tail.ends_with(esc!(cursor_style_default, title_pop, cursor_visible).as_bytes()));
-		// Terminal::leave calls restore_raw only after this entire tail is
-		// flushed.
+		// Terminal::leave flushes keyboard and report shutdown before draining,
+		// then flushes this tail before restoring raw mode.
 	}
 
 	#[test]
@@ -2613,7 +2648,7 @@ mod tests {
 	#[test]
 	fn xterm_scroll_to_bottom_modes_are_composed_in_order() {
 		let keyboard = KeyboardMode::Kitty(esc!(csi, ">5u"));
-		let enter_prefix = esc!(title_push, !cursor_visible).as_bytes();
+		let enter_prefix = esc!(title_push, !insert_mode, !newline_mode, !cursor_visible).as_bytes();
 		let enter_suffix = esc!(
 			!autowrap,
 			!origin,
@@ -2660,11 +2695,11 @@ mod tests {
 			),
 		] {
 			assert_eq!(
-				compose_enter(keyboard, None, modes, true, false).as_slice(),
+				compose_enter(keyboard, None, modes, 0, true, false).as_slice(),
 				[enter_prefix, enter_modes, enter_suffix].concat()
 			);
 			assert_eq!(
-				compose_leave(false, modes).as_slice(),
+				compose_leave(false, modes, 0).as_slice(),
 				[leave_prefix, leave_modes, leave_suffix].concat()
 			);
 		}
@@ -2686,8 +2721,6 @@ mod tests {
 				!app_cursor_keys,
 				!app_keypad,
 				!bracketed_paste,
-				!appearance_notifications,
-				!in_band_resize,
 				!paste_events,
 				kitty_keyboard_pop,
 				!modify_other_keys,
@@ -2709,8 +2742,6 @@ mod tests {
 				!app_cursor_keys,
 				!app_keypad,
 				!bracketed_paste,
-				!appearance_notifications,
-				!in_band_resize,
 				scroll_on_output,
 				!paste_events,
 				kitty_keyboard_pop,
@@ -2727,6 +2758,29 @@ mod tests {
 			)
 			.as_bytes()
 		);
+	}
+
+	#[test]
+	fn emergency_owned_mode_deltas_are_byte_exact() {
+		for (modes, expected) in [
+			(0, esc!().as_bytes()),
+			(APPEARANCE_NOTIFICATIONS_MODE, esc!(!appearance_notifications).as_bytes()),
+			(IN_BAND_RESIZE_MODE, esc!(!in_band_resize).as_bytes()),
+			(
+				APPEARANCE_NOTIFICATIONS_MODE | IN_BAND_RESIZE_MODE,
+				esc!(!appearance_notifications, !in_band_resize).as_bytes(),
+			),
+		] {
+			assert_eq!(notification_modes_off_payload(modes), expected);
+		}
+		for (modes, expected) in [
+			(0, esc!().as_bytes()),
+			(ANSI_INSERT_MODE, esc!(insert_mode).as_bytes()),
+			(ANSI_NEWLINE_MODE, esc!(newline_mode).as_bytes()),
+			(ANSI_INSERT_MODE | ANSI_NEWLINE_MODE, esc!(insert_mode, newline_mode).as_bytes()),
+		] {
+			assert_eq!(ansi_mode_restore_payload(modes), expected);
+		}
 	}
 
 	#[test]
@@ -2837,10 +2891,10 @@ mod tests {
 			esc!(osc, "0;omp]2;bad title", bel).as_bytes()
 		);
 		assert!(
-			compose_enter(KeyboardMode::Kitty(esc!(csi, ">5u")), None, 0, false, false)
+			compose_enter(KeyboardMode::Kitty(esc!(csi, ">5u")), None, 0, 0, false, false)
 				.starts_with(TITLE_PUSH)
 		);
-		assert!(contains(&compose_leave(false, 0), TITLE_POP));
+		assert!(contains(&compose_leave(false, 0, 0), TITLE_POP));
 		assert_eq!(
 			compose_progress(progress_state(Progress::Value(42))).as_slice(),
 			esc!(osc, "9;4;1;42", bel).as_bytes()
@@ -2869,6 +2923,7 @@ mod tests {
 			KeyboardMode::Kitty(esc!(csi, ">5u")),
 			Some(CursorStyle::BlinkingBar),
 			0,
+			0,
 			false,
 			false,
 		);
@@ -2878,9 +2933,9 @@ mod tests {
 	#[test]
 	fn enter_batch_enables_enhanced_paste_only_when_supported() {
 		let keyboard = KeyboardMode::Kitty(esc!(csi, ">5u"));
-		let without = compose_enter(keyboard, None, 0, false, false);
+		let without = compose_enter(keyboard, None, 0, 0, false, false);
 		assert!(!contains(&without, esc!(paste_events).as_bytes()));
-		let with = compose_enter(keyboard, None, 0, false, true);
+		let with = compose_enter(keyboard, None, 0, 0, false, true);
 		// Mode 5522 rides directly after bracketed paste so a supporting
 		// terminal switches paste delivery before any input can arrive.
 		assert!(contains(&with, esc!(bracketed_paste, paste_events).as_bytes()));

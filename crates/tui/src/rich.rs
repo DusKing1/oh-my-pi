@@ -412,7 +412,10 @@ impl RichText {
 	/// Whether `row` soft-wraps onto the following row: it was broken
 	/// mid-word by width alone, so the pair forms one logical line.
 	pub fn row_soft_wrap(&self, row: u16) -> bool {
-		self.rows.get(usize::from(row)).is_some_and(|meta| meta.soft)
+		self
+			.rows
+			.get(usize::from(row))
+			.is_some_and(|meta| meta.soft)
 	}
 
 	/// Replays every row, preserving completed versus trailing partial rows.
@@ -950,6 +953,7 @@ impl<S: RichSink> RichSink for Clip<S> {
 		self.done = false;
 		self.pending = None;
 	}
+
 	fn soft_wrap(&mut self) {
 		if !self.done {
 			self.flush_pending();
@@ -1001,6 +1005,7 @@ impl<S: RichSink> RichSink for Rows<S> {
 			self.truncated = true;
 		}
 	}
+
 	fn soft_wrap(&mut self) {
 		if self.seen < self.max {
 			self.inner.soft_wrap();
@@ -1027,6 +1032,7 @@ impl<S: RichSink> RichSink for Tee<'_, S> {
 		self.inner.newline();
 		self.copy.newline();
 	}
+
 	fn soft_wrap(&mut self) {
 		self.inner.soft_wrap();
 		self.copy.soft_wrap();
@@ -1047,6 +1053,7 @@ impl<S: RichSink, F: Fn(Style) -> Style> RichSink for Restyle<S, F> {
 	fn newline(&mut self) {
 		self.inner.newline();
 	}
+
 	fn soft_wrap(&mut self) {
 		self.inner.soft_wrap();
 	}
@@ -1211,6 +1218,53 @@ mod tests {
 		assert_eq!(texts(&output), ["> a", "  b"]);
 	}
 
+	#[test]
+	fn mid_word_overflow_records_soft_rows() {
+		let mut output = RichText::default();
+		let mut wrap = (&mut output).wrap(3);
+		wrap.run(Style::new(), "abcdef gh");
+		wrap.finish();
+		assert_eq!(texts(&output), ["abc", "def", "gh"]);
+		assert!(output.row_soft_wrap(0), "a width break inside a word is soft");
+		assert!(!output.row_soft_wrap(1), "a word-boundary break collapsed whitespace");
+		assert!(!output.row_soft_wrap(2));
+	}
+
+	#[test]
+	fn prefixed_continuations_never_record_soft_rows() {
+		let mut cont = Prefix::default();
+		cont.push(Style::new(), "> ");
+		let mut output = RichText::default();
+		let mut wrap = (&mut output).wrap_prefixed(4, Prefix::empty_ref(), &cont);
+		wrap.run(Style::new(), "abcdefgh");
+		wrap.finish();
+		assert!(RichText::rows(&output) > 1);
+		assert!((0..RichText::rows(&output)).all(|row| !output.row_soft_wrap(row)));
+	}
+
+	#[test]
+	fn char_wrap_flows_exact_and_preserves_whitespace() {
+		let mut output = RichText::default();
+		{
+			let mut wrap = (&mut output).wrap_chars(3);
+			wrap.run(Style::new(), "ab cdef");
+		}
+		assert_eq!(texts(&output), ["ab ", "cde", "f"]);
+		assert!(output.row_soft_wrap(0) && output.row_soft_wrap(1));
+	}
+
+	#[test]
+	fn replay_preserves_soft_rows() {
+		let mut original = RichText::default();
+		{
+			let mut wrap = (&mut original).wrap_chars(3);
+			wrap.run(Style::new(), "abcdef");
+		}
+		let mut copy = RichText::default();
+		original.replay(&mut copy);
+		assert_eq!(texts(&copy), texts(&original));
+		assert!(copy.row_soft_wrap(0));
+	}
 	#[test]
 	fn restyle_composes_with_wrap() {
 		let changed = Style::new().fg(Color::Indexed(4));

@@ -191,6 +191,15 @@ async fn main() -> io::Result<()> {
 			_ => {},
 		}
 		render::sync_preview(app.ui_mut(), &mut synced);
+		// Reserve the Overlay tab's chords only while it is showing, so the
+		// focused composer can't spend Ctrl+K on kill-line — and the Live
+		// tab's editor keeps it.
+		let chords: &[Key] = if active_tab(app.ui()) == "Overlay" {
+			&[Key::Ctrl('k'), Key::Ctrl('g')]
+		} else {
+			&[]
+		};
+		app.set_hotkeys(chords.iter().copied());
 	}
 	Ok(())
 }

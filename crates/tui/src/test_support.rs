@@ -45,9 +45,10 @@ pub fn frame_cell_style(frame: &Frame, x: u16, y: u16) -> Style {
 /// exactly the sequences the renderer emits: CR, LF (scrolls at the bottom
 /// margin; a top-anchored region pushes the scrolled-out row into
 /// `history`, matching the emulators behind `margin_scrollback`),
-/// CUU/CUD/CUF, CUP, DECSTBM, `2J`/`3J`, and DECAWM with pending-wrap
-/// semantics: a soft-wrapped row is flagged as continuing its predecessor
-/// and joins it when scrolled into `history`, matching native copy.
+/// CUU/CUD/CUF, CUP, DECSTBM, `2J`/`3J`, `2K`, and DECAWM with
+/// pending-wrap semantics: a soft-wrapped row is flagged as continuing its
+/// predecessor and joins it when scrolled into `history`, matching native
+/// copy; erasing a line clears that flag, as mainstream emulators do.
 /// Writing over either half of a wide glyph blanks the partner cell, as
 /// hardware terminals do.
 pub struct TerminalModel {
@@ -226,6 +227,10 @@ impl TerminalModel {
 			'J' if parameters == "3" => {
 				self.history.clear();
 			},
+			'K' if parameters.is_empty() || parameters == "2" => {
+				self.screen[self.cursor_row] = Self::blank_row(self.width);
+				self.wrapped[self.cursor_row] = false;
+			},
 			'J' if parameters == "2" => {
 				for row in &mut self.screen {
 					*row = Self::blank_row(self.width);
@@ -260,7 +265,15 @@ impl TerminalModel {
 			let row = self.screen.remove(self.margin_top);
 			let joined = self.wrapped.remove(self.margin_top);
 			if self.margin_top == 0 {
-				let text = Self::row_text(&row);
+				// A row continuing onto the (new) top row keeps its
+				// trailing cells: they are real source content, which is
+				// exactly what native copy preserves across a soft wrap.
+				let continues = self.wrapped.first().copied().unwrap_or(false);
+				let text = if continues {
+					row.iter().flatten().map(String::as_str).collect()
+				} else {
+					Self::row_text(&row)
+				};
 				match self.history.last_mut() {
 					Some(previous) if joined => previous.push_str(&text),
 					_ => self.history.push(text),

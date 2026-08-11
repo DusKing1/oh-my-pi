@@ -439,7 +439,6 @@ impl Frame {
 		}
 	}
 
-
 	/// Changes the document height, preserving retained rows and filling growth
 	/// with styled blanks.
 	pub fn resize_height(&mut self, height: u16, style: Style) {
@@ -459,15 +458,21 @@ impl Frame {
 		}
 	}
 
-	/// Flags row `y` as soft-wrapping onto row `y + 1`: the pair renders as
-	/// one logical line broken mid-word only by the frame width. The
-	/// renderer may join the boundary with terminal autowrap so native
-	/// selection copies it unbroken, provided the row's content truly
-	/// reaches the final column.
+	/// Flags row `y` as soft-wrapping onto row `y + 1`: the pair is one
+	/// logical line broken only by the frame width. The renderer joins the
+	/// boundary with terminal autowrap so native selection copies it
+	/// unbroken.
+	///
+	/// The flag is a certification the renderer cannot re-verify: the
+	/// caller MUST guarantee the row's source content exactly fills every
+	/// column — a written trailing space counts (it is stored as a blank
+	/// cell, indistinguishable from padding), layout padding never does.
+	/// Painters gate on their recorded row width before flagging.
 	///
 	/// Ignored unless both rows exist. Cleared by [`Frame::clear`],
-	/// [`Frame::resize_height`] shrinkage, and every rebuild — the flag is
-	/// layout metadata, not cell content.
+	/// [`Frame::resize_height`] shrinkage, [`Frame::fill`], rewritten by
+	/// [`Frame::blit`], and reset by every rebuild — the flag is layout
+	/// metadata, not cell content.
 	pub fn set_soft_wrap(&mut self, y: u16) {
 		if y.saturating_add(1) >= self.size.height {
 			return;
@@ -528,6 +533,9 @@ impl Frame {
 			return;
 		}
 		self.touch();
+		// Blanking any part of a row invalidates its exact joinability;
+		// painters re-flag when they redraw.
+		self.clear_soft_wraps_touching(top, bottom);
 
 		let blank = Cell::blank(style);
 		for y in top..bottom {
@@ -788,20 +796,17 @@ impl Frame {
 		let width = usize::from(self.size.width);
 		let start = usize::from(row) * width;
 		self.cells[start..start + width].clone_from_slice(&src.cells[start..start + width]);
-		// A row's paint also owns its wrap boundaries: the bit onto the next
-		// row and the bit carrying the previous row onto this one.
-		self.assign_soft_wrap(row, src.soft_wrap(row));
-		if let Some(previous) = row.checked_sub(1) {
-			self.assign_soft_wrap(previous, src.soft_wrap(previous));
-		}
 		self.may_have_images |= src.may_have_images;
 	}
 
-	fn assign_soft_wrap(&mut self, y: u16, value: bool) {
-		if y.saturating_add(1) >= self.size.height {
-			return;
+	/// Mirrors `src`'s soft-wrap boundary flags wholesale — the snapshot
+	/// primitive for damage-based presenters: flags are layout metadata
+	/// that can change on rows no cell damage covers.
+	pub(crate) fn sync_soft_wraps(&mut self, src: &Self) {
+		if self.soft_wraps != src.soft_wraps {
+			self.touch();
+			self.soft_wraps.clone_from(&src.soft_wraps);
 		}
-		self.soft_wraps.set(usize::from(y), value);
 	}
 
 	/// Copies a cell region from `src` into this frame — the scroll
@@ -826,12 +831,14 @@ impl Frame {
 				self.cursor = Some((dst_x.saturating_add(cx), to_y));
 			}
 		}
+		let mut copied = 0u16;
 		for row in 0..rows {
 			let from_y = src_top.saturating_add(row);
 			let to_y = dst_y.saturating_add(row);
 			if from_y >= src.size.height || to_y >= self.size.height {
 				break;
 			}
+			copied = row + 1;
 			let mut x = 0u16;
 			while x < width {
 				let cell = src.cell(x, from_y);
@@ -872,6 +879,25 @@ impl Frame {
 					},
 				}
 			}
+		}
+		// Wrap boundaries: a full-width copy carries its interior
+		// boundaries; anything else conservatively hardens the touched
+		// rows, since exact joinability cannot survive a partial rewrite.
+		self.clear_soft_wraps_touching(dst_y, dst_y.saturating_add(copied));
+		if dst_x == 0 && width == self.size.width && width == src.size.width {
+			for offset in 0..copied.saturating_sub(1) {
+				if src.soft_wrap(src_top.saturating_add(offset)) {
+					self.set_soft_wrap(dst_y.saturating_add(offset));
+				}
+			}
+		}
+	}
+
+	/// Drops every wrap boundary touching rows `[top, bottom)`: bit `y`
+	/// spans rows `y` and `y + 1`, so the range widens one row upward.
+	fn clear_soft_wraps_touching(&mut self, top: u16, bottom: u16) {
+		for index in usize::from(top.saturating_sub(1))..usize::from(bottom.min(self.size.height)) {
+			self.soft_wraps.set(index, false);
 		}
 	}
 
@@ -974,7 +1000,7 @@ impl Frame {
 
 #[cfg(test)]
 mod tests {
-	use super::{CellContent, Frame, Size, Style};
+	use super::{CellContent, Frame, Rect, Size, Style};
 
 	#[test]
 	fn overwriting_wide_grapheme_clears_its_continuation() {
@@ -1037,6 +1063,56 @@ mod tests {
 		assert_eq!(frame.cursor(), None);
 	}
 
+	#[test]
+	fn soft_wrap_flags_are_layout_metadata() {
+		let mut frame = Frame::new(Size::new(4, 3));
+		frame.set_soft_wrap(0);
+		frame.set_soft_wrap(2);
+		assert!(frame.soft_wrap(0));
+		assert!(!frame.soft_wrap(2), "a flag without a following row is ignored");
+
+		let mut other = frame.clone();
+		assert!(frame.row_equals(0, &other, 0));
+		other.clear(Style::default());
+		assert!(!other.soft_wrap(0), "clear drops boundary flags");
+		assert!(!frame.row_equals(0, &other, 0), "row equality includes the boundary bit");
+
+		frame.resize_height(1, Style::default());
+		assert!(!frame.soft_wrap(0), "shrinking drops stale flags");
+		frame.resize_height(3, Style::default());
+		assert!(!frame.soft_wrap(0), "regrowth does not resurrect them");
+	}
+
+	#[test]
+	fn fill_clears_wrap_boundaries_it_touches() {
+		let mut frame = Frame::new(Size::new(4, 4));
+		frame.set_soft_wrap(0);
+		frame.set_soft_wrap(2);
+		// Filling row 3 also drops the boundary reaching it from row 2,
+		// while the untouched pair above keeps its flag.
+		frame.fill(Rect::new(0, 3, 4, 1), Style::default());
+		assert!(frame.soft_wrap(0));
+		assert!(!frame.soft_wrap(2));
+	}
+
+	#[test]
+	fn blit_carries_full_width_wrap_boundaries_and_hardens_partial_copies() {
+		let mut source = Frame::new(Size::new(4, 3));
+		source.put(0, 0, "abcd", Style::default());
+		source.put(0, 1, "ef", Style::default());
+		source.set_soft_wrap(0);
+
+		let mut full = Frame::new(Size::new(4, 4));
+		full.set_soft_wrap(2);
+		full.blit(&source, 0, 3, 0, 1);
+		assert!(full.soft_wrap(1), "a full-width blit carries interior boundaries");
+		assert!(!full.soft_wrap(2), "boundaries under the copy are replaced, not kept");
+
+		let mut partial = Frame::new(Size::new(6, 4));
+		partial.set_soft_wrap(1);
+		partial.blit(&source, 0, 3, 1, 1);
+		assert!(!partial.soft_wrap(1), "an offset copy hardens the rows it rewrites");
+	}
 	#[test]
 	fn blit_translates_cursor_from_copied_region() {
 		let mut source = Frame::new(Size::new(8, 6));

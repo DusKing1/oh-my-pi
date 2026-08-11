@@ -252,6 +252,9 @@ macro_rules! esc {
 	(@acc [$($output:tt)*] erase_display $($rest:tt)*) => {
 		esc!(@acc [$($output)* "\x1b[2J",] $($rest)*)
 	};
+	(@acc [$($output:tt)*] erase_line $($rest:tt)*) => {
+		esc!(@acc [$($output)* "\x1b[2K",] $($rest)*)
+	};
 	(@acc [$($output:tt)*] erase_scrollback $($rest:tt)*) => {
 		esc!(@acc [$($output)* "\x1b[3J",] $($rest)*)
 	};
@@ -441,6 +444,7 @@ mod tests {
 				cursor_down,
 				cursor_forward,
 				erase_display,
+				erase_line,
 				erase_scrollback,
 				screen_to_scrollback,
 				margins_reset,
@@ -455,7 +459,7 @@ mod tests {
 				progress_clear,
 			),
 			concat!(
-				"\x1b[H\x1b[{}A\x1b[{}B\x1b[{}C\x1b[2J\x1b[3J\x1b[22J\x1b[r\x1b[1;{}r",
+				"\x1b[H\x1b[{}A\x1b[{}B\x1b[{}C\x1b[2J\x1b[2K\x1b[3J\x1b[22J\x1b[r\x1b[1;{}r",
 				"\x1b[0\x1b[0m\x1b[65535B\r\x1b[999;1H\r\n",
 				"\x1b[22;0t\x1b[23;0t\x1b[<u\x1b]9;4;0;\x07",
 			)

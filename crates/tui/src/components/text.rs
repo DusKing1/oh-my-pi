@@ -587,7 +587,8 @@ pub(super) fn paint_rich(
 		if y >= clip {
 			break;
 		}
-		if full_row && row > 0 && rich.row_soft_wrap(row - 1) {
+		if full_row && row > 0 && rich.row_soft_wrap(row - 1) && rich.row_width(row - 1) == rect.width
+		{
 			pc.frame.set_soft_wrap(y - 1);
 		}
 		let slack = rect.width.saturating_sub(rich.row_width(row));
@@ -618,7 +619,8 @@ fn paint_rich_shimmer(
 		if y >= clip {
 			break;
 		}
-		if full_row && row > 0 && rich.row_soft_wrap(row - 1) {
+		if full_row && row > 0 && rich.row_soft_wrap(row - 1) && rich.row_width(row - 1) == rect.width
+		{
 			pc.frame.set_soft_wrap(y - 1);
 		}
 		let slack = rect.width.saturating_sub(rich.row_width(row));
@@ -641,7 +643,6 @@ fn paint_rich_shimmer(
 		}
 	}
 }
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -664,6 +665,45 @@ mod tests {
 		frame
 	}
 
+	#[test]
+	fn full_width_overflow_marks_soft_wrap_boundaries() {
+		let mut text = TextLeaf::new().text("abcdefghij");
+		let frame = paint(&mut text, 8, 2);
+		assert!(frame.soft_wrap(0), "a mid-word wrap at full width is joinable");
+	}
+
+	#[test]
+	fn char_wrap_prop_flows_terminal_exact() {
+		let mut text = TextLeaf::new().with(Prop::Wrap, "char").text("ab cdefgh x");
+		let frame = paint(&mut text, 8, 2);
+		assert_eq!(frame_row_text(&frame, 0), "ab cdefg");
+		assert_eq!(frame_row_text(&frame, 1), "h x");
+		assert!(frame.soft_wrap(0));
+	}
+
+	#[test]
+	fn offset_rects_keep_hard_boundaries() {
+		let ctx = UiContext::default();
+		let mut frame = Frame::new(Size::new(9, 2));
+		let mut hits = Vec::new();
+		let mut wakes = Vec::new();
+		let mut pc = PaintCtx::new(&mut frame, &ctx, &mut hits, &mut wakes);
+		let mut text = TextLeaf::new().text("abcdefghij");
+		text.paint(&mut pc, Rect::new(1, 0, 8, 2));
+		drop(pc);
+		assert!(!frame.soft_wrap(0), "offset text cannot byte-join through autowrap");
+	}
+	#[test]
+	fn short_rows_are_never_certified_joinable() {
+		// The wide glyph cannot straddle the boundary, so the first row
+		// ends one column short of the width: the break is soft in the
+		// layout but not byte-joinable, and the painter must not flag it.
+		let mut text = TextLeaf::new().with(Prop::Wrap, "char").text("abc界de");
+		let frame = paint(&mut text, 4, 2);
+		assert_eq!(frame_row_text(&frame, 0), "abc");
+		assert_eq!(frame_row_text(&frame, 1), "界de");
+		assert!(!frame.soft_wrap(0), "a row short of the margin cannot arm autowrap");
+	}
 	#[test]
 	fn text_wraps_and_aligns_rows() {
 		let mut text = TextLeaf::new()

@@ -433,8 +433,9 @@ pub struct AppEnv {
 pub enum AppEvent {
 	/// Routed input changed the tree; the next [`App::next`] call presents it.
 	Updated,
-	/// A key no widget claimed: routed through the tree without damage,
-	/// quit chords, or a clipboard chord. Hosts use it for scene-level
+	/// A key no component claimed: it routed through the tree untouched —
+	/// pending damage from animations or other components never masks it —
+	/// and matched no quit or clipboard chord. Hosts use it for scene-level
 	/// hotkeys without intercepting the widget path.
 	Key(Key),
 	/// The focused widget submitted.
@@ -716,7 +717,8 @@ impl App {
 			// event per host turn, before polling for anything new.
 			if let Some(event) = self.clipboard.drain() {
 				match self.dispatch_input(event) {
-					Routed::Continue => continue,
+					// `dispatch_input` already resolved `Unclaimed` fallbacks.
+					Routed::Continue | Routed::Unclaimed => continue,
 					Routed::Event(event) => return Ok(Some(event)),
 					Routed::Stop => return Ok(None),
 				}
@@ -779,7 +781,8 @@ impl App {
 						}
 						if let Some(event) = self.clipboard.admit(event, &self.quit) {
 							match self.dispatch_input(event) {
-								Routed::Continue => {},
+								// `dispatch_input` already resolved `Unclaimed` fallbacks.
+								Routed::Continue | Routed::Unclaimed => {},
 								Routed::Event(event) => return Ok(Some(event)),
 								Routed::Stop => return Ok(None),
 							}
@@ -952,10 +955,10 @@ impl App {
 		self.ui.tick(self.epoch.elapsed());
 		match event {
 			InputEvent::Key(key) => match self.route_key(key) {
-				// Unclaimed paste chords fall back to the host clipboard
-				// read; components that consume them (damage or an event)
-				// keep the key.
-				Routed::Continue => {
+				// A key nobody claimed falls back to the host: unclaimed
+				// paste chords start a clipboard read, everything else
+				// surfaces as [`AppEvent::Key`].
+				Routed::Unclaimed => {
 					if let Some(scope) = ClipboardRead::for_key(key) {
 						self.begin_clipboard_read(scope);
 						Routed::Continue
@@ -1097,7 +1100,8 @@ fn route_key_event(
 	if hotkeys.contains(&key) {
 		return Routed::Event(AppEvent::Key(key));
 	}
-	match ui.handle_key(key) {
+	let (event, claimed) = ui.handle_key_claimed(key);
+	match event {
 		UiEvent::Cancel if ui.has_overlay() => {
 			let id = ui
 				.close_active_overlay()
@@ -1111,6 +1115,10 @@ fn route_key_event(
 		@ (UiEvent::Highlighted { .. } | UiEvent::Changed { .. } | UiEvent::Filtered { .. }) => {
 			Routed::Event(select_event(event).expect("select events map to app events"))
 		},
+		// The claim bit, not global damage, decides whether the key falls
+		// through: animation ticks leave damage pending on every frame and
+		// must not swallow the host's scene keys.
+		UiEvent::None | UiEvent::Cancel if !claimed => Routed::Unclaimed,
 		UiEvent::None | UiEvent::Cancel if ui.has_damage() => Routed::Event(AppEvent::Updated),
 		UiEvent::None | UiEvent::Cancel => Routed::Continue,
 	}
@@ -1129,8 +1137,14 @@ fn select_event(event: UiEvent) -> Result<AppEvent, UiEvent> {
 
 #[derive(Debug, Eq, PartialEq)]
 enum Routed {
+	/// The tree consumed the input; nothing to surface.
 	Continue,
+	/// No component claimed the key; [`App::dispatch_input`] resolves the
+	/// host fallback (clipboard chord or [`AppEvent::Key`]).
+	Unclaimed,
+	/// Surface this event to the host.
 	Event(AppEvent),
+	/// A quit chord (or quit-policy cancel) ends the app.
 	Stop,
 }
 
@@ -1333,8 +1347,8 @@ mod tests {
 		assert_eq!(route_key_event(&mut ui, Key::Esc, &quit, &[], true), Routed::Stop);
 		assert_eq!(
 			route_key_event(&mut ui, Key::Esc, &quit, &[], false),
-			Routed::Event(AppEvent::Updated),
-			"a swallowed cancel still reports pending overlay damage",
+			Routed::Unclaimed,
+			"a swallowed cancel falls back to the host as an unclaimed key",
 		);
 
 		// A `<button cancel>` inside a dialog dismisses the dialog, never the
@@ -1356,8 +1370,8 @@ mod tests {
 		use super::{AppEvent, Routed, route_key_event};
 		use crate::Key;
 
-		let mut ui = Ui::from_markup("<input id=composer value=hello/>", 40, UiContext::default())
-			.unwrap();
+		let mut ui =
+			Ui::from_markup("<input id=composer value=hello/>", 40, UiContext::default()).unwrap();
 		ui.handle_key(Key::Home);
 		let quit = [Key::Ctrl('c')];
 
@@ -1368,10 +1382,28 @@ mod tests {
 		assert_eq!(ui.values()["composer"], "hello", "the input never saw the reserved chord");
 
 		// Unreserved, the same chord stays the input's kill-line.
-		assert_eq!(route_key_event(&mut ui, Key::Ctrl('k'), &quit, &[], true), Routed::Event(
-			AppEvent::Updated
-		));
+		assert_eq!(
+			route_key_event(&mut ui, Key::Ctrl('k'), &quit, &[], true),
+			Routed::Event(AppEvent::Updated)
+		);
 		assert_eq!(ui.values()["composer"], "");
+	}
+
+	/// Animation ticks leave damage pending on every frame; a scene key no
+	/// widget claimed must still reach the host instead of dissolving into
+	/// [`AppEvent::Updated`].
+	#[test]
+	fn an_unclaimed_key_surfaces_despite_pending_damage() {
+		use super::{Routed, route_key_event};
+		use crate::Key;
+
+		let mut ui =
+			Ui::from_markup("<text id=status>idle</text>", 40, UiContext::default()).unwrap();
+		ui.set_text("status", "running");
+		assert!(ui.has_damage(), "the text write left damage pending");
+
+		let quit = [Key::Ctrl('c')];
+		assert_eq!(route_key_event(&mut ui, Key::Char('m'), &quit, &[], true), Routed::Unclaimed);
 	}
 
 	#[test]

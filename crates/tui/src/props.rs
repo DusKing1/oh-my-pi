@@ -413,12 +413,14 @@ impl Props {
 			_ => None,
 		}
 	}
+
 	/// Whether text flows grapheme-exact to the width (`wrap=char`) like a
 	/// bare terminal: every break is a byte-preserving soft wrap the
 	/// renderer re-joins for native copy. Defaults to word wrapping.
 	pub fn wrap_chars(&self) -> bool {
 		matches!(self.get(Prop::Wrap), Some(PropValue::Str(mode)) if mode == "char")
 	}
+
 	/// Returns the selected border glyph family.
 	pub fn border(&self) -> Option<Border> {
 		match self.get(Prop::Border) {
