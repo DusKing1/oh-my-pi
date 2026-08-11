@@ -74,7 +74,7 @@ pub(crate) fn normalized_file_xxh32(exact: &[u8]) -> u32 {
 	hasher.digest()
 }
 
-/// Computes the uppercase four-hex xxHash32 snapshot tag used by `/work/pi`.
+/// Computes the uppercase four-hex xxHash32 snapshot tag.
 pub fn compute_file_hash(text: &str) -> SmolStr {
 	format_smol!("{:04X}", normalized_file_xxh32(text.as_bytes()) & 0xffff)
 }

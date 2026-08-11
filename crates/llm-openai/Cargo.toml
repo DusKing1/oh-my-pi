@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "OpenAI chat, Responses, embeddings, and audio transport codecs for Oh My Pi"
+description = "OpenAI chat, Responses, embeddings, and audio transport codecs for omp"
 
 [dependencies]
 base64 = { workspace = true }

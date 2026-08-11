@@ -25,6 +25,7 @@ use omp_llm_broker::{
 	usage::{UsageError, UsageHttp, UsageHttpResponse, UsageManager},
 };
 use omp_llm_catalog::{
+	codex::{CODEX_CLIENT_VERSION, CODEX_ORIGINATOR},
 	discovery::{
 		Account, Error as DiscoveryError, HttpClient as DiscoveryClient, HttpResponse,
 		discovered_card, parse_cca_models, parse_codex_models, parse_gitlab_duo_models,
@@ -188,14 +189,17 @@ where
 				let base = provider.base_url.trim_end_matches('/');
 				let mut headers = vec![
 					("OpenAI-Beta", "responses=experimental"),
-					("originator", "pi"),
-					("version", "0.144.1"),
+					("originator", CODEX_ORIGINATOR),
+					("version", CODEX_CLIENT_VERSION),
 				];
 				if let Some(account_id) = account.account_id.as_deref() {
 					headers.push(("chatgpt-account-id", account_id));
 				}
 				let mut last_error = None;
-				for path in ["/codex/models?client_version=0.144.1", "/models?client_version=0.144.1"] {
+				for path in [
+					format!("/codex/models?client_version={CODEX_CLIENT_VERSION}"),
+					format!("/models?client_version={CODEX_CLIENT_VERSION}"),
+				] {
 					match self
 						.send_request(
 							provider,

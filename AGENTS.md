@@ -307,7 +307,7 @@ negotiable:
   dispatch tables. Keyboard input instantly clears mouse-hover state; there is
   only ever one visible cursor/focus.
 
-## Porting from pi (/work/pi)
+## Porting Subsystems
 omp is a Rust rewrite of pi. When porting any subsystem:
 
 1. **Read pi's implementation in extreme detail first** — including

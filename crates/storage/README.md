@@ -1,6 +1,6 @@
 # omp-storage
 
-`omp-storage` provides persistent session storage for Oh My Pi. It combines a filesystem-backed, BLAKE3-addressed blob store for binary and large payloads with the transcript v4 append-only event journal.
+`omp-storage` provides persistent session storage for omp. It combines a filesystem-backed, BLAKE3-addressed blob store for binary and large payloads with the transcript v4 append-only event journal.
 
 ## Structure
 

@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Append-only session transcripts and content-addressed blob storage for Oh My Pi"
+description = "Append-only session transcripts and content-addressed blob storage for omp"
 
 [dependencies]
 blake3 = { workspace = true }

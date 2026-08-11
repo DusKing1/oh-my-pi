@@ -29,7 +29,7 @@ authorize_url = "https://auth.openai.com/oauth/authorize"
 token_url = "https://auth.openai.com/oauth/token"
 scopes = ["openid", "profile", "email", "offline_access", "api.connectors.read", "api.connectors.invoke"]
 callback_port = 1455
-extra_auth_params = { id_token_add_organizations = "true", codex_cli_simplified_flow = "true", originator = "codex_cli_rs", callback_host = "localhost", callback_path = "/auth/callback" }
+extra_auth_params = { id_token_add_organizations = "true", codex_cli_simplified_flow = "true", originator = "omp", callback_host = "localhost", callback_path = "/auth/callback" }
 exchange = "open-ai-codex-claims"
 
 [[provider]]
@@ -137,7 +137,7 @@ authorize_url = "https://chat.z.ai/api/oauth/authorize"
 token_url = "https://zcode.z.ai/api/v1/oauth/token"
 scopes = []
 callback_port = 54548
-extra_auth_params = { business_login_url = "https://api.z.ai/api/auth/z/login", key_name = "oh-my-pi", callback_host = "localhost", callback_path = "/callback" }
+extra_auth_params = { business_login_url = "https://api.z.ai/api/auth/z/login", key_name = "omp", callback_host = "localhost", callback_path = "/callback" }
 exchange = "zai-api-key"
 
 [[provider]]

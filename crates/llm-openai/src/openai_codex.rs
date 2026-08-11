@@ -8,7 +8,11 @@ use std::{collections::BTreeMap, fmt};
 
 use bytes::Bytes;
 use omp_core::SmolStr;
-use omp_llm_catalog::{TransportId, compat::Compat};
+use omp_llm_catalog::{
+	TransportId,
+	codex::{CODEX_CLIENT_VERSION, CODEX_ORIGINATOR},
+	compat::Compat,
+};
 use omp_llm_transport::{DecodeState, Frame, Transport};
 use omp_llm_types::{ChatRequest, Error, Unsupported};
 use serde_json::Value;
@@ -22,12 +26,6 @@ use crate::{
 	},
 	openai_responses::OpenAiResponsesCodec,
 };
-
-/// Codex client version mirrored in the subscription request fingerprint.
-pub const CODEX_CLIENT_VERSION: &str = "0.144.1";
-
-/// Originator value shared by Codex OAuth authorization and inference.
-pub const CODEX_ORIGINATOR: &str = "pi";
 
 /// Resolves the ChatGPT Codex Responses endpoint from a configured base URL.
 #[must_use]

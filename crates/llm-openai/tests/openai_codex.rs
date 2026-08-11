@@ -70,7 +70,7 @@ fn header_plan_uses_subscription_fingerprint_without_exposing_secrets() {
 		plan.get("openai-beta").map(|value| value.as_bytes()),
 		Some(b"responses_websockets=2026-02-06".as_slice())
 	);
-	assert_eq!(plan.get("originator").map(|value| value.as_bytes()), Some(b"pi".as_slice()));
+	assert_eq!(plan.get("originator").map(|value| value.as_bytes()), Some(b"omp".as_slice()));
 	assert!(plan.get("authorization").is_none());
 	assert!(plan.get("x-api-key").is_none());
 	assert!(plan.get("chatgpt-account-id").unwrap().is_sensitive());

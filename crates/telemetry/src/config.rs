@@ -45,8 +45,8 @@ use crate::{
 	span::Span,
 };
 
-/// Pi's default instrumentation-library name.
-pub const DEFAULT_TRACER_NAME: &str = "@oh-my-pi/pi-agent-core";
+/// Default instrumentation-library name.
+pub const DEFAULT_TRACER_NAME: &str = "@omp/agent-core";
 
 /// A result returned by a host telemetry callback.
 pub type HookResult<T = ()> = Result<T, SmolStr>;
@@ -595,7 +595,7 @@ impl TelemetryConfig {
 		}
 		string_attribute(
 			content::request_attributes(CaptureMode::Summary, request),
-			crate::attrs::pi_gen_ai::REQUEST_MESSAGES,
+			crate::attrs::omp_gen_ai::REQUEST_MESSAGES,
 		)
 	}
 
@@ -607,7 +607,7 @@ impl TelemetryConfig {
 		}
 		string_attribute(
 			content::response_attributes(CaptureMode::Summary, response),
-			crate::attrs::pi_gen_ai::RESPONSE_TEXT,
+			crate::attrs::omp_gen_ai::RESPONSE_TEXT,
 		)
 	}
 
@@ -619,7 +619,7 @@ impl TelemetryConfig {
 		}
 		string_attribute(
 			content::response_attributes(CaptureMode::Summary, response),
-			crate::attrs::pi_gen_ai::RESPONSE_TOOL_CALLS,
+			crate::attrs::omp_gen_ai::RESPONSE_TOOL_CALLS,
 		)
 	}
 

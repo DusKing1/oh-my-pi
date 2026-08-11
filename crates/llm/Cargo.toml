@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Unified facade for Oh My Pi LLM providers, transports, runtimes, and services"
+description = "Unified facade for omp LLM providers, transports, runtimes, and services"
 
 [dependencies]
 omp-llm-anthropic = { workspace = true }

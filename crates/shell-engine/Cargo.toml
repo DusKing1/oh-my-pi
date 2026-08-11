@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Standalone Bash parser and execution engine for Oh My Pi"
+description = "Standalone Bash parser and execution engine for omp"
 
 [lints]
 workspace = true

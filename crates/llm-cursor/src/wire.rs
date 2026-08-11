@@ -1,6 +1,6 @@
 //! Generated prost bindings for Cursor's `agent.v1` wire schema.
 //!
-//! Pinned from `/work/pi/packages/ai/src/providers/cursor/proto/agent.proto`.
+//! Pinned from `packages/ai/src/providers/cursor/proto/agent.proto`.
 
 #![allow(
 	missing_docs,

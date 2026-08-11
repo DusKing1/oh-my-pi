@@ -1,4 +1,4 @@
-//! Recreates oh-my-pi's on-device "tiny model" flows on `omp-llm-local`.
+//! Recreates omp's on-device "tiny model" flows on `omp-llm-local`.
 //!
 //! pi routes four background jobs through small local models
 //! (`packages/coding-agent/src/tiny/` in the pi repo):

@@ -1,6 +1,6 @@
 # omp-llm
 
-`omp-llm` is the unified facade for Oh My Pi's language-model integration crates. It gives callers one import surface for provider codecs, shared types, transport and egress infrastructure, gateway services, credential handling, middleware, and local runtimes.
+`omp-llm` is the unified facade for omp's language-model integration crates. It gives callers one import surface for provider codecs, shared types, transport and egress infrastructure, gateway services, credential handling, middleware, and local runtimes.
 
 ## Structure
 

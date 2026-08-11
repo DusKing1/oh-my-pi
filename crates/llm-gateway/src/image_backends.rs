@@ -13,7 +13,10 @@ use http::{Method, Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Body as HyperBody;
 use omp_core::{SmolStr, base64};
-use omp_llm_catalog::provider::ProviderCatalog;
+use omp_llm_catalog::{
+	codex::{CODEX_CLIENT_VERSION, CODEX_ORIGINATOR},
+	provider::ProviderCatalog,
+};
 use omp_llm_egress::{
 	auth_inject::{AuthContext, AuthInjectLayer, CredentialMetadataSource},
 	client::{Body, EgressClient},
@@ -239,7 +242,8 @@ impl EgressImageBackend {
 		let mut headers = Vec::new();
 		if codex {
 			headers.push(("openai-beta", "responses=experimental".to_owned()));
-			headers.push(("originator", "codex_cli_rs".to_owned()));
+			headers.push(("originator", CODEX_ORIGINATOR.to_owned()));
+			headers.push(("version", CODEX_CLIENT_VERSION.to_owned()));
 			if let Some(account) = &credential.account_id {
 				headers.push(("chatgpt-account-id", account.to_string()));
 			}
@@ -423,7 +427,7 @@ impl EgressImageBackend {
 				&url,
 				&[
 					("http-referer", "https://omp.sh/".to_owned()),
-					("x-openrouter-title", "Oh-My-Pi".to_owned()),
+					("x-openrouter-title", "omp".to_owned()),
 					("x-openrouter-categories", "cli-agent".to_owned()),
 				],
 				json!({"model":model, "messages":[{"role":"user", "content":content}]}),

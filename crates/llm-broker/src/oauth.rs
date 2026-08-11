@@ -1243,7 +1243,7 @@ impl OAuthEngine {
 	async fn github_copilot_exchange(&self, github_token: &Secret) -> Result<TokenSet, OAuthError> {
 		let mut headers = HeaderMap::new();
 		headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-		headers.insert(USER_AGENT, HeaderValue::from_static("oh-my-pi"));
+		headers.insert(USER_AGENT, HeaderValue::from_static("omp"));
 		let mut bearer = Vec::with_capacity(7 + github_token.expose().len());
 		bearer.extend_from_slice(b"Bearer ");
 		bearer.extend_from_slice(github_token.expose());
@@ -2706,7 +2706,7 @@ mod tests {
 				200,
 				serde_json::json!({
 					"code": 200,
-					"data": [{ "name": "oh-my-pi", "apiKey": "key-id" }],
+					"data": [{ "name": "omp", "apiKey": "key-id" }],
 				}),
 			),
 			response(

@@ -7,7 +7,7 @@
 //! serialized [`ModelCard`] values. Provider authentication and unrecognized
 //! agent configuration remain outside the accepted input schema.
 //!
-//! The Rust importer in `src/bin/import_pi.rs` is the only writer of the
+//! The Rust importer in `src/bin/import_catalog.rs` is the only writer of the
 //! checked-in payload. Its closed schema makes newly added source fields fail
 //! generation instead of being silently discarded.
 

@@ -10,7 +10,7 @@ use opentelemetry::{
 use serde_json::Value as JsonValue;
 
 use crate::{
-	attrs::{gen_ai, openai, pi_aggregate, pi_gen_ai},
+	attrs::{gen_ai, omp_aggregate, omp_gen_ai, openai},
 	collector::{RunCollector, RunCoverage, RunSummary},
 	content::{self, RequestContent, ResponseContent},
 	semconv::{self, CaptureMode, Operation, ToolStatus},
@@ -187,7 +187,7 @@ pub fn start_chat(
 	context: SpanContext<'_>,
 ) -> Span {
 	let mut attributes = envelope_attributes(Operation::Chat, Some(model), Some(provider), context);
-	attributes.push(KeyValue::new(pi_gen_ai::AGENT_STEP_NUMBER, step_number as i64));
+	attributes.push(KeyValue::new(omp_gen_ai::AGENT_STEP_NUMBER, step_number as i64));
 	attributes.push(KeyValue::new(gen_ai::OUTPUT_TYPE, "text"));
 	attributes.push(KeyValue::new(gen_ai::REQUEST_STREAM, true));
 	push_option(
@@ -216,11 +216,11 @@ pub fn start_chat(
 			request.service_tier.unwrap_or_default().to_owned(),
 		));
 	}
-	push_str(&mut attributes, pi_gen_ai::REQUEST_REASONING_EFFORT, request.reasoning_effort);
-	push_str(&mut attributes, pi_gen_ai::REQUEST_TOOL_CHOICE, request.tool_choice);
+	push_str(&mut attributes, omp_gen_ai::REQUEST_REASONING_EFFORT, request.reasoning_effort);
+	push_str(&mut attributes, omp_gen_ai::REQUEST_TOOL_CHOICE, request.tool_choice);
 	if !request.available_tools.is_empty() {
 		attributes.push(KeyValue::new(
-			pi_gen_ai::REQUEST_AVAILABLE_TOOLS,
+			omp_gen_ai::REQUEST_AVAILABLE_TOOLS,
 			string_array(request.available_tools.iter().copied()),
 		));
 	}
@@ -271,7 +271,7 @@ pub fn finish_invoke_agent(
 	coverage: Option<&RunCoverage>,
 	error: Option<SpanError<'_>>,
 ) {
-	span.set_attribute(KeyValue::new(pi_gen_ai::AGENT_STEP_COUNT, step_count as i64));
+	span.set_attribute(KeyValue::new(omp_gen_ai::AGENT_STEP_COUNT, step_count as i64));
 	if let (Some(summary), Some(coverage)) = (summary, coverage) {
 		apply_aggregate_attributes(span, summary, coverage);
 	}
@@ -320,7 +320,7 @@ pub fn finish_execute_tool(span: &mut Span, outcome: ToolOutcome<'_>) {
 	} else {
 		ToolStatus::Ok
 	});
-	span.set_attribute(KeyValue::new(pi_gen_ai::TOOL_STATUS, status.as_str()));
+	span.set_attribute(KeyValue::new(omp_gen_ai::TOOL_STATUS, status.as_str()));
 	if status != ToolStatus::Ok {
 		let error_type = if status == ToolStatus::Error {
 			outcome.error.map_or("tool_error", |error| error.error_type)
@@ -360,11 +360,11 @@ pub fn record_handoff(
 	let name = Operation::Handoff.span_name(from.and_then(|agent| agent.name), to.name);
 	let mut attributes = envelope_attributes(Operation::Handoff, None, None, context);
 	if let Some(from) = from {
-		push_str(&mut attributes, pi_gen_ai::HANDOFF_FROM_AGENT_NAME, from.name);
-		push_str(&mut attributes, pi_gen_ai::HANDOFF_FROM_AGENT_ID, from.id);
+		push_str(&mut attributes, omp_gen_ai::HANDOFF_FROM_AGENT_NAME, from.name);
+		push_str(&mut attributes, omp_gen_ai::HANDOFF_FROM_AGENT_ID, from.id);
 	}
-	push_str(&mut attributes, pi_gen_ai::HANDOFF_TO_AGENT_NAME, to.name);
-	push_str(&mut attributes, pi_gen_ai::HANDOFF_TO_AGENT_ID, to.id);
+	push_str(&mut attributes, omp_gen_ai::HANDOFF_TO_AGENT_NAME, to.name);
+	push_str(&mut attributes, omp_gen_ai::HANDOFF_TO_AGENT_ID, to.id);
 	let mut span = start_span(name, SpanKind::Internal, &mut attributes, context.parent);
 	span.end();
 }
@@ -427,7 +427,7 @@ fn envelope_attributes(
 fn apply_chat_response_attributes(span: &mut Span, outcome: &ChatOutcome<'_>) {
 	span.set_attribute(KeyValue::new(gen_ai::RESPONSE_MODEL, outcome.model.to_owned()));
 	push_span_str(span, gen_ai::RESPONSE_ID, outcome.response_id);
-	push_span_str(span, pi_gen_ai::RESPONSE_UPSTREAM_PROVIDER, outcome.upstream_provider);
+	push_span_str(span, omp_gen_ai::RESPONSE_UPSTREAM_PROVIDER, outcome.upstream_provider);
 	if let Some(ttft_ms) = outcome.ttft_ms {
 		// pi-ai reports milliseconds; pi divides by 1,000 because this OTEL key is
 		// seconds.
@@ -443,7 +443,7 @@ fn apply_usage_attributes(span: &mut Span, usage: ChatUsage) {
 	span.set_attribute(KeyValue::new(gen_ai::USAGE_INPUT_TOKENS, input as i64));
 	span.set_attribute(KeyValue::new(gen_ai::USAGE_OUTPUT_TOKENS, usage.output as i64));
 	span.set_attribute(KeyValue::new(
-		pi_gen_ai::USAGE_TOTAL_TOKENS,
+		omp_gen_ai::USAGE_TOTAL_TOKENS,
 		usage.total.unwrap_or(input + usage.output) as i64,
 	));
 	push_span_option(
@@ -463,15 +463,15 @@ fn apply_usage_attributes(span: &mut Span, usage: ChatUsage) {
 	);
 	let server_tools = usage.server_web_search + usage.server_web_fetch;
 	if server_tools > 0 {
-		span.set_attribute(KeyValue::new(pi_gen_ai::USAGE_SERVER_SIDE_TOOLS, server_tools as i64));
+		span.set_attribute(KeyValue::new(omp_gen_ai::USAGE_SERVER_SIDE_TOOLS, server_tools as i64));
 	}
 }
 
 fn apply_cost_attributes(span: &mut Span, cost: ChatCost<'_>) {
-	push_span_option(span, pi_gen_ai::COST_ESTIMATED_USD, cost.estimated_usd);
-	push_span_option(span, pi_gen_ai::COST_INPUT_USD, cost.input_usd);
-	push_span_option(span, pi_gen_ai::COST_OUTPUT_USD, cost.output_usd);
-	push_span_str(span, pi_gen_ai::COST_UNAVAILABLE_REASON, cost.unavailable_reason);
+	push_span_option(span, omp_gen_ai::COST_ESTIMATED_USD, cost.estimated_usd);
+	push_span_option(span, omp_gen_ai::COST_INPUT_USD, cost.input_usd);
+	push_span_option(span, omp_gen_ai::COST_OUTPUT_USD, cost.output_usd);
+	push_span_str(span, omp_gen_ai::COST_UNAVAILABLE_REASON, cost.unavailable_reason);
 }
 
 fn apply_gateway_attributes(span: &mut Span, headers: &[(&str, &str)], base_url: Option<&str>) {
@@ -500,10 +500,10 @@ fn apply_gateway_attributes(span: &mut Span, headers: &[(&str, &str)], base_url:
 			.map(|id| ("openrouter", Some(id), None))
 	};
 	if let Some((name, call_id, routed_to)) = gateway {
-		span.set_attribute(KeyValue::new(pi_gen_ai::GATEWAY_NAME, name));
-		push_span_str(span, pi_gen_ai::GATEWAY_ENDPOINT, base_url);
-		push_span_str(span, pi_gen_ai::GATEWAY_CALL_ID, call_id);
-		push_span_str(span, pi_gen_ai::GATEWAY_ROUTED_TO, routed_to);
+		span.set_attribute(KeyValue::new(omp_gen_ai::GATEWAY_NAME, name));
+		push_span_str(span, omp_gen_ai::GATEWAY_ENDPOINT, base_url);
+		push_span_str(span, omp_gen_ai::GATEWAY_CALL_ID, call_id);
+		push_span_str(span, omp_gen_ai::GATEWAY_ROUTED_TO, routed_to);
 	}
 	if let Some(status) = get("cf-aig-cache-status") {
 		let status = status.trim();
@@ -516,76 +516,76 @@ fn apply_gateway_attributes(span: &mut Span, headers: &[(&str, &str)], base_url:
 		} else {
 			"unknown"
 		};
-		span.set_attribute(KeyValue::new(pi_gen_ai::GATEWAY_RESPONSE_CACHE_STATUS, status));
+		span.set_attribute(KeyValue::new(omp_gen_ai::GATEWAY_RESPONSE_CACHE_STATUS, status));
 	}
 }
 
 fn apply_aggregate_attributes(span: &mut Span, summary: &RunSummary, coverage: &RunCoverage) {
-	span.set_attribute(KeyValue::new(pi_aggregate::CHATS_COUNT, summary.chats.total as i64));
+	span.set_attribute(KeyValue::new(omp_aggregate::CHATS_COUNT, summary.chats.total as i64));
 	span.set_attribute(KeyValue::new(
-		pi_aggregate::CHATS_TOTAL_LATENCY_MS,
+		omp_aggregate::CHATS_TOTAL_LATENCY_MS,
 		summary.chats.total_latency_ms,
 	));
 	for (reason, count) in &summary.chats.by_stop_reason {
-		span.set_attribute(KeyValue::new(pi_aggregate::chats_stop_reason(reason), *count as i64));
+		span.set_attribute(KeyValue::new(omp_aggregate::chats_stop_reason(reason), *count as i64));
 	}
-	span.set_attribute(KeyValue::new(pi_aggregate::TOOLS_COUNT, summary.tools.total as i64));
-	span.set_attribute(KeyValue::new(pi_aggregate::TOOLS_OK_COUNT, summary.tools.ok as i64));
-	span.set_attribute(KeyValue::new(pi_aggregate::TOOLS_ERROR_COUNT, summary.tools.error as i64));
+	span.set_attribute(KeyValue::new(omp_aggregate::TOOLS_COUNT, summary.tools.total as i64));
+	span.set_attribute(KeyValue::new(omp_aggregate::TOOLS_OK_COUNT, summary.tools.ok as i64));
+	span.set_attribute(KeyValue::new(omp_aggregate::TOOLS_ERROR_COUNT, summary.tools.error as i64));
 	span.set_attribute(KeyValue::new(
-		pi_aggregate::TOOLS_SKIPPED_COUNT,
+		omp_aggregate::TOOLS_SKIPPED_COUNT,
 		summary.tools.skipped as i64,
 	));
 	span.set_attribute(KeyValue::new(
-		pi_aggregate::TOOLS_BLOCKED_COUNT,
+		omp_aggregate::TOOLS_BLOCKED_COUNT,
 		summary.tools.blocked as i64,
 	));
 	span.set_attribute(KeyValue::new(
-		pi_aggregate::TOOLS_TIMEOUT_COUNT,
+		omp_aggregate::TOOLS_TIMEOUT_COUNT,
 		summary.tools.timeout as i64,
 	));
 	span.set_attribute(KeyValue::new(
-		pi_aggregate::TOOLS_ABORTED_COUNT,
+		omp_aggregate::TOOLS_ABORTED_COUNT,
 		summary.tools.aborted as i64,
 	));
 	span.set_attribute(KeyValue::new(
-		pi_aggregate::TOOLS_TOTAL_LATENCY_MS,
+		omp_aggregate::TOOLS_TOTAL_LATENCY_MS,
 		summary.tools.total_latency_ms,
 	));
-	push_string_array(span, pi_aggregate::TOOLS_INVOKED, &coverage.tools_invoked);
-	push_string_array(span, pi_aggregate::TOOLS_AVAILABLE, &coverage.tools_available);
-	push_string_array(span, pi_aggregate::TOOLS_UNUSED, &coverage.tools_unused);
+	push_string_array(span, omp_aggregate::TOOLS_INVOKED, &coverage.tools_invoked);
+	push_string_array(span, omp_aggregate::TOOLS_AVAILABLE, &coverage.tools_available);
+	push_string_array(span, omp_aggregate::TOOLS_UNUSED, &coverage.tools_unused);
 	span.set_attribute(KeyValue::new(
-		pi_aggregate::USAGE_INPUT_TOKENS_TOTAL,
+		omp_aggregate::USAGE_INPUT_TOKENS_TOTAL,
 		summary.usage.input as i64,
 	));
 	span.set_attribute(KeyValue::new(
-		pi_aggregate::USAGE_OUTPUT_TOKENS_TOTAL,
+		omp_aggregate::USAGE_OUTPUT_TOKENS_TOTAL,
 		summary.usage.output as i64,
 	));
 	span.set_attribute(KeyValue::new(
-		pi_aggregate::USAGE_CACHE_READ_INPUT_TOKENS_TOTAL,
+		omp_aggregate::USAGE_CACHE_READ_INPUT_TOKENS_TOTAL,
 		summary.usage.cached_input as i64,
 	));
 	span.set_attribute(KeyValue::new(
-		pi_aggregate::USAGE_CACHE_CREATION_INPUT_TOKENS_TOTAL,
+		omp_aggregate::USAGE_CACHE_CREATION_INPUT_TOKENS_TOTAL,
 		summary.usage.cache_write as i64,
 	));
 	span.set_attribute(KeyValue::new(
-		pi_aggregate::USAGE_REASONING_OUTPUT_TOKENS_TOTAL,
+		omp_aggregate::USAGE_REASONING_OUTPUT_TOKENS_TOTAL,
 		summary.usage.reasoning_output as i64,
 	));
 	span.set_attribute(KeyValue::new(
-		pi_aggregate::USAGE_TOTAL_TOKENS_TOTAL,
+		omp_aggregate::USAGE_TOTAL_TOKENS_TOTAL,
 		summary.usage.total as i64,
 	));
 	if summary.cost.estimated_usd > 0.0 {
 		span.set_attribute(KeyValue::new(
-			pi_aggregate::COST_ESTIMATED_USD_TOTAL,
+			omp_aggregate::COST_ESTIMATED_USD_TOTAL,
 			summary.cost.estimated_usd,
 		));
 	}
-	span.set_attribute(KeyValue::new(pi_aggregate::ERRORS_COUNT, summary.errors.total as i64));
+	span.set_attribute(KeyValue::new(omp_aggregate::ERRORS_COUNT, summary.errors.total as i64));
 }
 
 fn push_string_array(span: &mut Span, key: &'static str, values: &[omp_core::SmolStr]) {

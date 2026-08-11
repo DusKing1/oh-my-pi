@@ -7,9 +7,9 @@
 use std::str::FromStr;
 
 /// Default OpenTelemetry tracer name used by the agent loop.
-pub const TRACER_NAME: &str = "@oh-my-pi/pi-agent-core";
+pub const TRACER_NAME: &str = "@omp/agent-core";
 /// OpenTelemetry meter name used by the coding-agent exporter.
-pub const METER_NAME: &str = "@oh-my-pi/pi-coding-agent";
+pub const METER_NAME: &str = "@omp/coding-agent";
 
 /// Error returned when a string is not part of a bounded telemetry vocabulary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

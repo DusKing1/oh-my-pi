@@ -14,10 +14,9 @@ mod responses_tool_repair;
 pub use audio::{EncodedAudioRequest, OpenAiAudioCodec, OpenAiAudioError, OpenAiAudioProfile};
 pub use openai_chat::OpenAiChatCodec;
 pub use openai_codex::{
-	CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, CodexAttestation, CodexCredentialMetadata,
-	CodexHeaderContext, CodexHeaderPlan, CodexHeaderValue, CodexRequestIdentity, CodexWireTransport,
-	OpenAiCodexCodec, apply_codex_client_metadata, build_codex_header_plan,
-	resolve_codex_responses_url,
+	CodexAttestation, CodexCredentialMetadata, CodexHeaderContext, CodexHeaderPlan,
+	CodexHeaderValue, CodexRequestIdentity, CodexWireTransport, OpenAiCodexCodec,
+	apply_codex_client_metadata, build_codex_header_plan, resolve_codex_responses_url,
 };
 pub use openai_codex_attestation::{
 	CodexAttestationError, CodexAttestationSignals, CodexAttestor, CodexDeviceCheckResult,

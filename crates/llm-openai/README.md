@@ -1,6 +1,6 @@
 # omp-llm-openai
 
-OpenAI transport codecs for Oh My Pi's shared LLM request and event types. The crate supports both the Chat Completions (`/v1/chat/completions`) protocol and the Responses (`/v1/responses`) item and typed-event protocol.
+OpenAI transport codecs for omp's shared LLM request and event types. The crate supports both the Chat Completions (`/v1/chat/completions`) protocol and the Responses (`/v1/responses`) item and typed-event protocol.
 
 ## Structure
 

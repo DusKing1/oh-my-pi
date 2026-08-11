@@ -16,7 +16,7 @@ import * as net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-/** Minimal slice of the host schema builder (`pi.zod`) this tool uses. */
+/** Minimal slice of the host schema builder (`omp.zod`) this tool uses. */
 interface Schema {
 	describe(text: string): Schema;
 	optional(): Schema;
@@ -367,7 +367,7 @@ function unescapeBytes(text: string): Buffer {
 
 // ─── Tool ────────────────────────────────────────────────────────────────────
 
-const factory = (pi: ToolHost) => {
+const factory = (omp: ToolHost) => {
 	const startSession = async (
 		params: TuiParams,
 		onUpdate?: (update: ToolUpdate) => void,
@@ -383,14 +383,14 @@ const factory = (pi: ToolHost) => {
 		if (params.build !== false) {
 			onUpdate?.({ content: [{ type: "text", text: `building ${target}…` }] });
 			const kind = params.example ? "--example" : "--bin";
-			const built = await pi.exec("cargo", ["build", kind, target], { cwd: pi.cwd });
+			const built = await omp.exec("cargo", ["build", kind, target], { cwd: omp.cwd });
 			if (built.code !== 0) {
 				throw new Error(`cargo build failed:\n${built.stderr.slice(-4000)}`);
 			}
 		}
 		const binary = params.example
-			? join(pi.cwd, "target", "debug", "examples", target)
-			: join(pi.cwd, "target", "debug", target);
+			? join(omp.cwd, "target", "debug", "examples", target)
+			: join(omp.cwd, "target", "debug", target);
 
 		const rows = params.rows ?? 30;
 		const cols = params.cols ?? 100;
@@ -401,7 +401,7 @@ const factory = (pi: ToolHost) => {
 		// binding is assigned before the first chunk can arrive.
 		let session: Session;
 		const proc: Child = Bun.spawn([binary, ...(params.args ?? [])], {
-			cwd: pi.cwd,
+			cwd: omp.cwd,
 			env: {
 				...process.env,
 				OMP_TUI_DEBUG: sockPath,
@@ -489,36 +489,36 @@ const factory = (pi: ToolHost) => {
 			"escape-sequence stats + escaped tail via peek, clear resets), stop, list. " +
 			"Sessions persist across calls; input injected via keys/type/mouse routes " +
 			"through the app's real input path.",
-		parameters: pi.zod.object({
-			op: pi.zod
+		parameters: omp.zod.object({
+			op: omp.zod
 				.string()
 				.describe(
-					"start|stop|list|text|frame|tree|values|info|keys|type|paste|mouse|send|resize|raw",
+					"operation: start | stop | text | tree | values | keys | event | mouse | resize | list | logs",
 				),
-			name: pi.zod.string().optional().describe("session name (default: main)"),
-			example: pi.zod.string().optional().describe("start: cargo example name"),
-			bin: pi.zod.string().optional().describe("start: cargo bin name"),
-			args: pi.zod.array(pi.zod.string()).optional().describe("start: program argv"),
-			rows: pi.zod.number().optional().describe("start/resize: pty rows (default 30)"),
-			cols: pi.zod.number().optional().describe("start/resize: pty cols (default 100)"),
-			build: pi.zod
+			name: omp.zod.string().optional().describe("session name (default: main)"),
+			example: omp.zod.string().optional().describe("start: cargo example name"),
+			bin: omp.zod.string().optional().describe("start: cargo bin name"),
+			args: omp.zod.array(omp.zod.string()).optional().describe("start: program argv"),
+			rows: omp.zod.number().optional().describe("start/resize: pty rows (default 30)"),
+			cols: omp.zod.number().optional().describe("start/resize: pty cols (default 100)"),
+			build: omp.zod
 				.boolean()
 				.optional()
 				.describe("start: cargo build first (default true)"),
-			keys: pi.zod
+			keys: omp.zod
 				.string()
 				.optional()
 				.describe("keys: spec, e.g. \"tab tab enter C-c pgdn 'hello'\""),
-			text: pi.zod.string().optional().describe("type/paste/send: payload text"),
-			x: pi.zod.number().optional().describe("mouse: zero-based column"),
-			y: pi.zod.number().optional().describe("mouse: zero-based viewport row"),
-			action: pi.zod.string().optional().describe("mouse: gesture (default click)"),
-			peek: pi.zod
+			text: omp.zod.string().optional().describe("type/paste/send: payload text"),
+			x: omp.zod.number().optional().describe("mouse: zero-based column"),
+			y: omp.zod.number().optional().describe("mouse: zero-based viewport row"),
+			action: omp.zod.string().optional().describe("mouse: gesture (default click)"),
+			peek: omp.zod
 				.number()
 				.optional()
 				.describe("raw: tail bytes to show (default 2000)"),
-			clear: pi.zod.boolean().optional().describe("raw: reset capture after reading"),
-			timeout: pi.zod
+			clear: omp.zod.boolean().optional().describe("raw: reset capture after reading"),
+			timeout: omp.zod
 				.number()
 				.optional()
 				.describe("start: socket wait seconds (default 15)"),

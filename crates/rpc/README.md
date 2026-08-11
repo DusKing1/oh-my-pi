@@ -1,6 +1,6 @@
 # omp-rpc
 
-`omp-rpc` provides the transport and protocol-negotiation plumbing for Oh My Pi's gRPC services. It supports owner-only local Unix-domain sockets and TCP connections secured with mutual TLS, performs a schema-aware hello handshake, and exposes standard gRPC health reporting.
+`omp-rpc` provides the transport and protocol-negotiation plumbing for omp's gRPC services. It supports owner-only local Unix-domain sockets and TCP connections secured with mutual TLS, performs a schema-aware hello handshake, and exposes standard gRPC health reporting.
 
 ## Structure
 

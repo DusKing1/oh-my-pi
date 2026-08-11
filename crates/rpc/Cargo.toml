@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "gRPC transport, handshake, health, TLS, and Unix-socket plumbing for Oh My Pi"
+description = "gRPC transport, handshake, health, TLS, and Unix-socket plumbing for omp"
 
 [dependencies]
 hyper-util = { workspace = true }

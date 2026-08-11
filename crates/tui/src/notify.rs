@@ -16,9 +16,9 @@ use smallvec::SmallVec;
 use crate::{NotifyProtocol, TerminalCaps, escape::esc, kitty::append_tmux_passthrough};
 
 const OSC99_MAX_PAYLOAD_BYTES: usize = 2048;
-const OSC99_APP_NAME: &str = "Oh My Pi";
+const OSC99_APP_NAME: &str = "omp";
 const DBUS_APP_NAME: &str = "omp";
-const DEFAULT_TITLE: &str = "Oh My Pi";
+const DEFAULT_TITLE: &str = "omp";
 static NEXT_OSC99_ID: AtomicU64 = AtomicU64::new(1);
 
 /// The importance assigned to a desktop notification.
@@ -639,8 +639,8 @@ mod tests {
 		let mut actual = Vec::new();
 		notify_with_system(&mut actual, &caps, &notification, &MockSystem::default()).unwrap();
 
-		let metadata = "i=job7:f=T2ggTXkgUGk=:a=focus,report:u=2:t=YnVpbGQ=:t=Y29tcGxldGU=:n=b21w:\
-		                s=d2FybmluZw==:w=2500";
+		let metadata =
+			"i=job7:f=b21w:a=focus,report:u=2:t=YnVpbGQ=:t=Y29tcGxldGU=:n=b21w:s=d2FybmluZw==:w=2500";
 		let expected = format!(
 			"\x1b]99;{metadata}:d=0;{}\x1b\\\x1b]99;{metadata}:d=0;éZ\x1b\\\x1b]99;i=job7:p=body:e=1;\
 			 Ym9keQo=\x1b\\",

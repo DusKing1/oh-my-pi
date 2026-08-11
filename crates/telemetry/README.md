@@ -1,6 +1,6 @@
 # omp-telemetry
 
-`omp-telemetry` provides OpenTelemetry instrumentation for OMP's agent loop. It preserves the established telemetry wire contract, including span names, attribute keys, metric instruments, log-record shapes, environment-variable controls, and the existing `pi.gen_ai.*` and `pi.omp.*` extensions.
+`omp-telemetry` provides OpenTelemetry instrumentation for OMP's agent loop. It preserves the established telemetry wire contract, including span names, attribute keys, metric instruments, log-record shapes, environment-variable controls, and the `omp.gen_ai.*` and `omp.*` extensions.
 
 ## Structure
 

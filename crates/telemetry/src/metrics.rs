@@ -74,42 +74,42 @@ impl MetricRecorder {
 				.with_unit("{token}")
 				.build(),
 			chat_cost_usd:    meter
-				.f64_counter("pi.omp.agent.chat.cost.estimated_usd")
+				.f64_counter("omp.agent.chat.cost.estimated_usd")
 				.with_description("Estimated USD cost for completed chat calls.")
 				.with_unit("USD")
 				.build(),
 			runs:             meter
-				.u64_counter("pi.omp.agent.runs")
+				.u64_counter("omp.agent.runs")
 				.with_description("Completed agent runs.")
 				.with_unit("{run}")
 				.build(),
 			steps:            meter
-				.u64_counter("pi.omp.agent.steps")
+				.u64_counter("omp.agent.steps")
 				.with_description("Agent loop steps completed inside a run.")
 				.with_unit("{step}")
 				.build(),
 			chat_calls:       meter
-				.u64_counter("pi.omp.agent.chat.calls")
+				.u64_counter("omp.agent.chat.calls")
 				.with_description("Chat calls completed inside agent runs.")
 				.with_unit("{call}")
 				.build(),
 			chat_duration_ms: meter
-				.f64_histogram("pi.omp.agent.chat.duration")
+				.f64_histogram("omp.agent.chat.duration")
 				.with_description("Total chat latency observed in an agent run.")
 				.with_unit("ms")
 				.build(),
 			tool_calls:       meter
-				.u64_counter("pi.omp.agent.tool.calls")
+				.u64_counter("omp.agent.tool.calls")
 				.with_description("Tool calls completed inside agent runs.")
 				.with_unit("{call}")
 				.build(),
 			tool_duration_ms: meter
-				.f64_histogram("pi.omp.agent.tool.duration")
+				.f64_histogram("omp.agent.tool.duration")
 				.with_description("Total tool latency observed in an agent run.")
 				.with_unit("ms")
 				.build(),
 			errors:           meter
-				.u64_counter("pi.omp.agent.errors")
+				.u64_counter("omp.agent.errors")
 				.with_description("Errors observed in chat and tool execution.")
 				.with_unit("{error}")
 				.build(),
@@ -122,7 +122,7 @@ impl MetricRecorder {
 		let mut attrs: SmallVec<KeyValue, 8> = smallvec![
 			KeyValue::new("gen_ai.operation.name", "chat"),
 			string_attr("gen_ai.request.model", &event.model),
-			string_attr("pi.gen_ai.usage.accuracy", &event.usage_accuracy),
+			string_attr("omp.gen_ai.usage.accuracy", &event.usage_accuracy),
 		];
 		if let Some(provider) = &event.provider {
 			attrs.push(string_attr("gen_ai.provider.name", provider));
@@ -132,10 +132,10 @@ impl MetricRecorder {
 		}
 		if let Some(agent) = &event.agent {
 			if let Some(id) = &agent.id {
-				attrs.push(string_attr("pi.gen_ai.agent.id", id));
+				attrs.push(string_attr("omp.gen_ai.agent.id", id));
 			}
 			if let Some(name) = &agent.name {
-				attrs.push(string_attr("pi.gen_ai.agent.name", name));
+				attrs.push(string_attr("omp.gen_ai.agent.name", name));
 			}
 		}
 
@@ -153,11 +153,11 @@ impl MetricRecorder {
 	/// Records one completed run using pi's common run-level attribute set.
 	pub fn record_run(&self, summary: &RunSummary, coverage: &RunCoverage) {
 		let run_attrs: SmallVec<KeyValue, 5> = smallvec![
-			count_attr("pi.omp.agent.models_used.count", coverage.models_used.len()),
-			count_attr("pi.omp.agent.providers_used.count", coverage.providers_used.len()),
-			count_attr("pi.omp.agent.tools_available.count", coverage.tools_available.len()),
-			count_attr("pi.omp.agent.tools_invoked.count", coverage.tools_invoked.len()),
-			count_attr("pi.omp.agent.tools_unused.count", coverage.tools_unused.len()),
+			count_attr("omp.agent.models_used.count", coverage.models_used.len()),
+			count_attr("omp.agent.providers_used.count", coverage.providers_used.len()),
+			count_attr("omp.agent.tools_available.count", coverage.tools_available.len()),
+			count_attr("omp.agent.tools_invoked.count", coverage.tools_invoked.len()),
+			count_attr("omp.agent.tools_unused.count", coverage.tools_unused.len()),
 		];
 
 		self.runs.add(1, &run_attrs);
@@ -211,7 +211,7 @@ impl MetricRecorder {
 			return;
 		}
 		let mut attrs: SmallVec<KeyValue, 7> = tool_attrs.iter().cloned().collect();
-		attrs.push(KeyValue::new("pi.omp.tool.status", status));
+		attrs.push(KeyValue::new("omp.tool.status", status));
 		self.tool_calls.add(count, &attrs);
 	}
 }

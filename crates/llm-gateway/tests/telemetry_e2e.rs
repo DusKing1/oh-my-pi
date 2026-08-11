@@ -219,7 +219,7 @@ async fn turn_exports_pi_contract_and_telemetry_failures_are_open() {
 		"gen_ai.response.model",
 		"gen_ai.usage.input_tokens",
 		"gen_ai.usage.output_tokens",
-		"pi.gen_ai.cost.estimated_usd",
+		"omp.gen_ai.cost.estimated_usd",
 	] {
 		assert!(
 			chat
@@ -264,7 +264,7 @@ async fn turn_exports_pi_contract_and_telemetry_failures_are_open() {
 					token_types.push(token_type.value.as_str().into_owned());
 				}
 			},
-			"pi.omp.agent.chat.cost.estimated_usd" => saw_cost = true,
+			"omp.agent.chat.cost.estimated_usd" => saw_cost = true,
 			_ => {},
 		}
 	}

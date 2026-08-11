@@ -1,7 +1,7 @@
 //! Hand-written `prost` wire types for Devin Cascade (Exa / Codeium API).
 //!
 //! Pinned source provenance:
-//! `/work/pi/packages/ai/src/providers/devin/proto/`
+//! `packages/ai/src/providers/devin/proto/`
 //!
 //! Excludes unused `buf.validate` and `cel.expr` schema types.
 #![allow(

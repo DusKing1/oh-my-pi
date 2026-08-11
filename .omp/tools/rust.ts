@@ -48,7 +48,7 @@ const NOT_CRATES: Record<string, true> = {
 	isize: true,
 };
 
-/** Minimal slice of the host schema builder (`pi.zod`) this tool uses. */
+/** Minimal slice of the host schema builder (`omp.zod`) this tool uses. */
 interface Schema {
 	describe(text: string): Schema;
 	optional(): Schema;
@@ -361,10 +361,10 @@ function resultText(result: RunResult): string {
 }
 
 /** Creates the project-local direct-rustc scratch tool. */
-const factory = (pi: ToolHost) => {
+const factory = (omp: ToolHost) => {
 	let artifactIndex: Promise<ArtifactIndex> | undefined;
 	const loadArtifactIndex = (refresh = false): Promise<ArtifactIndex> => {
-		if (refresh || !artifactIndex) artifactIndex = buildArtifactIndex(pi.cwd);
+		if (refresh || !artifactIndex) artifactIndex = buildArtifactIndex(omp.cwd);
 		return artifactIndex;
 	};
 
@@ -379,19 +379,19 @@ const factory = (pi: ToolHost) => {
 			"linkable artifacts already under `target/debug`; Cargo is never invoked and " +
 			"missing dependencies are never built or downloaded. Program stdout/stderr is " +
 			"returned; non-zero exit, compile errors, and timeouts surface as tool errors.",
-		parameters: pi.zod.object({
-			code: pi.zod
+		parameters: omp.zod.object({
+			code: omp.zod
 				.string()
 				.describe("Rust source: full program or bare statements"),
-			args: pi.zod
-				.array(pi.zod.string())
+			args: omp.zod
+				.array(omp.zod.string())
 				.optional()
 				.describe("argv passed to the program"),
-			release: pi.zod
+			release: omp.zod
 				.boolean()
 				.optional()
 				.describe("optimize scratch code (default true)"),
-			timeout: pi.zod
+			timeout: omp.zod
 				.number()
 				.optional()
 				.describe("compile+run timeout in seconds (default 300)"),
@@ -404,7 +404,7 @@ const factory = (pi: ToolHost) => {
 			_ctx: unknown,
 			signal?: AbortSignal,
 		) {
-			const root = pi.cwd;
+			const root = omp.cwd;
 			const available = await collectCrates(root);
 			const used: UsedCrate[] = [];
 			for (const ident of crateRefs(params.code)) {

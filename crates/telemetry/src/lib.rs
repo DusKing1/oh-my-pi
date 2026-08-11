@@ -5,8 +5,8 @@
 //! instruments, log-record shapes, and environment-variable knobs are
 //! **identical** to `pi`'s, so existing dashboards, collectors, and alerts
 //! keep working across the rewrite. Where `pi` extends the OpenTelemetry
-//! `GenAI` semantic conventions it does so under the `pi.gen_ai.*` /
-//! `pi.omp.*` prefixes; those prefixes are preserved verbatim rather than
+//! `GenAI` semantic conventions it does so under the `omp.gen_ai.*` /
+//! `omp.*` prefixes.
 //! renamed.
 //!
 //! Layering mirrors the original split:

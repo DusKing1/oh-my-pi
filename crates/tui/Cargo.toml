@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Retained-mode terminal UI components, rendering, input, and terminal integration for Oh My Pi"
+description = "Retained-mode terminal UI components, rendering, input, and terminal integration for omp"
 
 [[example]]
 name = "chat"

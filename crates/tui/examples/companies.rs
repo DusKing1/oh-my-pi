@@ -29,7 +29,7 @@ struct Provider {
 	name: &'static str,
 }
 
-// Literal getOAuthProviders() order from @oh-my-pi/pi-ai's provider
+// Literal getOAuthProviders() order from @omp/ai's provider
 // registry; names shortened to fit one grid card.
 const PROVIDERS: &[Provider] = &[
 	Provider { id: "openai-codex", name: "Codex" },

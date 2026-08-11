@@ -1,6 +1,6 @@
 # omp-ast
 
-`omp-ast` provides Tree-sitter-backed source understanding and structural editing for Oh My Pi. It centralizes supported-language selection and inference, AST-aware block resolution, structural search and rewrite operations, and compact source summaries.
+`omp-ast` provides Tree-sitter-backed source understanding and structural editing for omp. It centralizes supported-language selection and inference, AST-aware block resolution, structural search and rewrite operations, and compact source summaries.
 
 ## Structure
 

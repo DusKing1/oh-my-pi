@@ -6,6 +6,7 @@
 //! limits. Keeping those sources separate makes provider quirks reviewable
 //! while model metadata can be regenerated without hand-editing runtime policy.
 
+pub mod codex;
 pub mod compat;
 pub mod discovery;
 pub mod identity;

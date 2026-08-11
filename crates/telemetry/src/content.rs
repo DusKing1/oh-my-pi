@@ -21,7 +21,7 @@ use opentelemetry::KeyValue;
 use serde_json::{Map, Value, json};
 
 use crate::{
-	attrs::{gen_ai, pi_gen_ai},
+	attrs::{gen_ai, omp_gen_ai},
 	redact::redact_sensitive_credentials,
 	semconv::CaptureMode,
 };
@@ -66,7 +66,7 @@ pub fn request_attributes(mode: CaptureMode, request: RequestContent<'_>) -> Vec
 	}
 	let mut attributes = Vec::with_capacity(if mode == CaptureMode::Full { 3 } else { 1 });
 	if let Some(summary) = serialize_request_summary(request) {
-		attributes.push(KeyValue::new(pi_gen_ai::REQUEST_MESSAGES, summary));
+		attributes.push(KeyValue::new(omp_gen_ai::REQUEST_MESSAGES, summary));
 	}
 	if mode == CaptureMode::Full {
 		if let Some(instructions) = serialize_full_system_instructions(request.system_prompt) {
@@ -101,7 +101,7 @@ pub fn response_attributes(mode: CaptureMode, response: ResponseContent<'_>) -> 
 		.filter_map(|part| part.get("text").and_then(Value::as_str));
 	if texts.clone().next().is_some() {
 		attributes.push(KeyValue::new(
-			pi_gen_ai::RESPONSE_TEXT,
+			omp_gen_ai::RESPONSE_TEXT,
 			json_string(&Value::Array(summarize_texts(texts))),
 		));
 	}
@@ -119,7 +119,7 @@ pub fn response_attributes(mode: CaptureMode, response: ResponseContent<'_>) -> 
 		.collect::<Vec<_>>();
 	if !calls.is_empty() {
 		attributes.push(KeyValue::new(
-			pi_gen_ai::RESPONSE_TOOL_CALLS,
+			omp_gen_ai::RESPONSE_TOOL_CALLS,
 			json_string(&Value::Array(limit_tool_calls(calls))),
 		));
 	}
@@ -515,7 +515,7 @@ mod tests {
 				.iter()
 				.map(|attribute| attribute.key.as_str())
 				.collect::<Vec<_>>(),
-			[pi_gen_ai::REQUEST_MESSAGES]
+			[omp_gen_ai::REQUEST_MESSAGES]
 		);
 		let full = request_attributes(CaptureMode::Full, request);
 		assert_eq!(
@@ -523,7 +523,7 @@ mod tests {
 				.iter()
 				.map(|attribute| attribute.key.as_str())
 				.collect::<Vec<_>>(),
-			[pi_gen_ai::REQUEST_MESSAGES, gen_ai::SYSTEM_INSTRUCTIONS, gen_ai::INPUT_MESSAGES]
+			[omp_gen_ai::REQUEST_MESSAGES, gen_ai::SYSTEM_INSTRUCTIONS, gen_ai::INPUT_MESSAGES]
 		);
 
 		let parts = [
@@ -539,7 +539,7 @@ mod tests {
 				.iter()
 				.map(|attribute| attribute.key.as_str())
 				.collect::<Vec<_>>(),
-			[pi_gen_ai::RESPONSE_TEXT, pi_gen_ai::RESPONSE_TOOL_CALLS]
+			[omp_gen_ai::RESPONSE_TEXT, omp_gen_ai::RESPONSE_TOOL_CALLS]
 		);
 		let full = response_attributes(CaptureMode::Full, response);
 		assert_eq!(
@@ -547,7 +547,7 @@ mod tests {
 				.iter()
 				.map(|attribute| attribute.key.as_str())
 				.collect::<Vec<_>>(),
-			[pi_gen_ai::RESPONSE_TEXT, pi_gen_ai::RESPONSE_TOOL_CALLS, gen_ai::OUTPUT_MESSAGES]
+			[omp_gen_ai::RESPONSE_TEXT, omp_gen_ai::RESPONSE_TOOL_CALLS, gen_ai::OUTPUT_MESSAGES]
 		);
 		assert_eq!(attribute_json(&full, gen_ai::OUTPUT_MESSAGES)[0]["finish_reason"], "tool_calls");
 
@@ -636,7 +636,7 @@ mod tests {
 				messages:      &messages,
 			});
 			assert_eq!(
-				attribute_json(&captured, pi_gen_ai::REQUEST_MESSAGES)[0]["content"],
+				attribute_json(&captured, omp_gen_ai::REQUEST_MESSAGES)[0]["content"],
 				"before [REDACTED] after",
 				"{token}"
 			);
@@ -665,7 +665,7 @@ mod tests {
 			messages:      &messages,
 		});
 		assert_eq!(
-			attribute_json(&captured, pi_gen_ai::REQUEST_MESSAGES)[0]["content"],
+			attribute_json(&captured, omp_gen_ai::REQUEST_MESSAGES)[0]["content"],
 			format!("{prefix} [REDACTED]")
 		);
 	}
@@ -689,7 +689,7 @@ mod tests {
 			messages:      &messages,
 		});
 		assert_eq!(
-			attribute_json(&captured, pi_gen_ai::REQUEST_MESSAGES)[0]["content"],
+			attribute_json(&captured, omp_gen_ai::REQUEST_MESSAGES)[0]["content"],
 			format!("{short} {adjacent}")
 		);
 	}
@@ -708,6 +708,6 @@ mod tests {
 			system_prompt: None,
 			messages:      &messages,
 		});
-		assert_eq!(attribute_json(&captured, pi_gen_ai::REQUEST_MESSAGES)[0]["content"], token);
+		assert_eq!(attribute_json(&captured, omp_gen_ai::REQUEST_MESSAGES)[0]["content"], token);
 	}
 }

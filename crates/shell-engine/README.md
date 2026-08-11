@@ -1,6 +1,6 @@
 # omp-shell-engine
 
-`omp-shell-engine` is the standalone Bash parser and execution engine used by Oh My Pi. It provides the `Shell` and `ShellBuilder` API together with execution contexts, shell values, source locations, extension hooks, and structured execution results.
+`omp-shell-engine` is the standalone Bash parser and execution engine used by omp. It provides the `Shell` and `ShellBuilder` API together with execution contexts, shell values, source locations, extension hooks, and structured execution results.
 
 This crate was ported from [`brush-core` 0.5.0 and `brush-parser` 0.4.0](https://github.com/reubeno/brush), licensed under MIT.
 

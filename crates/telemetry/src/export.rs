@@ -36,7 +36,7 @@ use crate::{
 
 /// Interval at which long-lived hosts force buffered telemetry out.
 pub const FLUSH_INTERVAL_MS: u64 = 30_000;
-const SERVICE_NAME: &str = "oh-my-pi";
+const SERVICE_NAME: &str = "omp";
 
 /// OTLP log filtering level parsed from `OTEL_LOG_LEVEL`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -96,7 +96,7 @@ pub struct ExportConfig {
 	pub logs_protocol:       Option<String>,
 	/// Effective metric protocol; the per-signal value takes precedence.
 	pub metrics_protocol:    Option<String>,
-	/// Effective service name, defaulting literally to `oh-my-pi`.
+	/// Effective service name, defaulting literally to `omp`.
 	pub service_name:        String,
 	/// Raw `OTEL_RESOURCE_ATTRIBUTES`; values are percent-decoded per the
 	/// OpenTelemetry environment detector used by `pi`.
@@ -508,7 +508,7 @@ fn shutdown_sync() {
 	state.logger = None;
 }
 
-/// Severity accepted by the `pi.omp.log` logger forwarder.
+/// Severity accepted by the `omp.log` logger forwarder.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ForwardedLogLevel {
 	/// Debug (OpenTelemetry severity number 5).
@@ -550,72 +550,72 @@ impl ForwardedLogLevel {
 	}
 }
 
-/// Emits the completed-run record with the exact `pi.omp.agent.*` shape used
+/// Emits the completed-run record with the exact `omp.agent.*` shape used
 /// by existing dashboards.
 pub fn emit_run_summary_log(summary: &RunSummary, coverage: &RunCoverage) {
 	if !should_emit(ForwardedLogLevel::Info) {
 		return;
 	}
 	let attributes = vec![
-		(Key::from_static_str("pi.omp.agent.step_count"), integer(summary.step_count)),
-		(Key::from_static_str("pi.omp.agent.chats.total"), integer(summary.chats.total)),
+		(Key::from_static_str("omp.agent.step_count"), integer(summary.step_count)),
+		(Key::from_static_str("omp.agent.chats.total"), integer(summary.chats.total)),
 		(
-			Key::from_static_str("pi.omp.agent.chats.total_latency_ms"),
+			Key::from_static_str("omp.agent.chats.total_latency_ms"),
 			AnyValue::Double(summary.chats.total_latency_ms),
 		),
-		(Key::from_static_str("pi.omp.agent.tools.total"), integer(summary.tools.total)),
-		(Key::from_static_str("pi.omp.agent.tools.ok"), integer(summary.tools.ok)),
-		(Key::from_static_str("pi.omp.agent.tools.error"), integer(summary.tools.error)),
-		(Key::from_static_str("pi.omp.agent.tools.skipped"), integer(summary.tools.skipped)),
-		(Key::from_static_str("pi.omp.agent.tools.blocked"), integer(summary.tools.blocked)),
-		(Key::from_static_str("pi.omp.agent.tools.timeout"), integer(summary.tools.timeout)),
-		(Key::from_static_str("pi.omp.agent.tools.aborted"), integer(summary.tools.aborted)),
+		(Key::from_static_str("omp.agent.tools.total"), integer(summary.tools.total)),
+		(Key::from_static_str("omp.agent.tools.ok"), integer(summary.tools.ok)),
+		(Key::from_static_str("omp.agent.tools.error"), integer(summary.tools.error)),
+		(Key::from_static_str("omp.agent.tools.skipped"), integer(summary.tools.skipped)),
+		(Key::from_static_str("omp.agent.tools.blocked"), integer(summary.tools.blocked)),
+		(Key::from_static_str("omp.agent.tools.timeout"), integer(summary.tools.timeout)),
+		(Key::from_static_str("omp.agent.tools.aborted"), integer(summary.tools.aborted)),
 		(
-			Key::from_static_str("pi.omp.agent.tools.total_latency_ms"),
+			Key::from_static_str("omp.agent.tools.total_latency_ms"),
 			AnyValue::Double(summary.tools.total_latency_ms),
 		),
-		(Key::from_static_str("pi.omp.agent.usage.input_tokens"), integer(summary.usage.input)),
-		(Key::from_static_str("pi.omp.agent.usage.output_tokens"), integer(summary.usage.output)),
+		(Key::from_static_str("omp.agent.usage.input_tokens"), integer(summary.usage.input)),
+		(Key::from_static_str("omp.agent.usage.output_tokens"), integer(summary.usage.output)),
 		(
-			Key::from_static_str("pi.omp.agent.usage.cached_input_tokens"),
+			Key::from_static_str("omp.agent.usage.cached_input_tokens"),
 			integer(summary.usage.cached_input),
 		),
 		(
-			Key::from_static_str("pi.omp.agent.usage.cache_write_tokens"),
+			Key::from_static_str("omp.agent.usage.cache_write_tokens"),
 			integer(summary.usage.cache_write),
 		),
 		(
-			Key::from_static_str("pi.omp.agent.usage.reasoning_output_tokens"),
+			Key::from_static_str("omp.agent.usage.reasoning_output_tokens"),
 			integer(summary.usage.reasoning_output),
 		),
-		(Key::from_static_str("pi.omp.agent.usage.total_tokens"), integer(summary.usage.total)),
+		(Key::from_static_str("omp.agent.usage.total_tokens"), integer(summary.usage.total)),
 		(
-			Key::from_static_str("pi.omp.agent.cost.estimated_usd"),
+			Key::from_static_str("omp.agent.cost.estimated_usd"),
 			AnyValue::Double(summary.cost.estimated_usd),
 		),
 		(
-			Key::from_static_str("pi.omp.agent.cost.unavailable_reasons"),
+			Key::from_static_str("omp.agent.cost.unavailable_reasons"),
 			AnyValue::from(join_strings(&summary.cost.unavailable_reasons)),
 		),
-		(Key::from_static_str("pi.omp.agent.errors.total"), integer(summary.errors.total)),
+		(Key::from_static_str("omp.agent.errors.total"), integer(summary.errors.total)),
 		(
-			Key::from_static_str("pi.omp.agent.coverage.tools_available"),
+			Key::from_static_str("omp.agent.coverage.tools_available"),
 			AnyValue::from(join_strings(&coverage.tools_available)),
 		),
 		(
-			Key::from_static_str("pi.omp.agent.coverage.tools_invoked"),
+			Key::from_static_str("omp.agent.coverage.tools_invoked"),
 			AnyValue::from(join_strings(&coverage.tools_invoked)),
 		),
 		(
-			Key::from_static_str("pi.omp.agent.coverage.tools_unused"),
+			Key::from_static_str("omp.agent.coverage.tools_unused"),
 			AnyValue::from(join_strings(&coverage.tools_unused)),
 		),
 		(
-			Key::from_static_str("pi.omp.agent.coverage.models_used"),
+			Key::from_static_str("omp.agent.coverage.models_used"),
 			AnyValue::from(join_strings(&coverage.models_used)),
 		),
 		(
-			Key::from_static_str("pi.omp.agent.coverage.providers_used"),
+			Key::from_static_str("omp.agent.coverage.providers_used"),
 			AnyValue::from(join_strings(&coverage.providers_used)),
 		),
 	];
@@ -623,7 +623,7 @@ pub fn emit_run_summary_log(summary: &RunSummary, coverage: &RunCoverage) {
 		ForwardedLogLevel::Info,
 		"agent run completed",
 		attributes,
-		"pi.omp.agent.run.completed",
+		"omp.agent.run.completed",
 		SystemTime::now(),
 	);
 }

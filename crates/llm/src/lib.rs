@@ -1,4 +1,4 @@
-//! Unified access to Oh My Pi's LLM types, providers, runtimes, and services.
+//! Unified access to omp's LLM types, providers, runtimes, and services.
 
 /// Anthropic Messages transport codec.
 pub use omp_llm_anthropic as anthropic;

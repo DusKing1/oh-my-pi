@@ -35,8 +35,10 @@ use omp_llm_broker::{
 	store::Store,
 };
 use omp_llm_catalog::{
+	codex::{CODEX_CLIENT_VERSION, CODEX_ORIGINATOR},
 	compat::{Compat, StreamProtocol},
 	models::{Availability, Modality, ModelCard, ModelCatalog, Source},
+	oauth_params,
 	provider::{AuthSpec, Facet, ProviderCatalog, ProviderEntry, TransportId, load_builtin},
 	registry::{CredentialView, Registry},
 };
@@ -378,9 +380,24 @@ fn verify_request(transport: TransportId, path: &str, headers: &HeaderMap, body:
 			let encoded: serde_json::Value =
 				serde_json::from_slice(body).expect("HTTP provider request JSON");
 			match transport {
+				TransportId::OpenAiCodex => {
+					assert_eq!(encoded["model"], "matrix-model");
+					let login = oauth_params::load_embedded().expect("bundled OAuth rows");
+					let row = oauth_params::lookup(&login, "openai-codex").expect("Codex login row");
+					let authorized = row
+						.extra_auth_params
+						.get("originator")
+						.expect("Codex login authorizes an originator");
+					assert_eq!(
+						headers["originator"],
+						*authorized.as_str(),
+						"Codex requests must present the originator its credential was minted for"
+					);
+					assert_eq!(headers["originator"], CODEX_ORIGINATOR);
+					assert_eq!(headers["version"], CODEX_CLIENT_VERSION);
+				},
 				TransportId::OpenAiChat
 				| TransportId::OpenAiResponses
-				| TransportId::OpenAiCodex
 				| TransportId::AnthropicMessages => {
 					assert_eq!(encoded["model"], "matrix-model");
 				},

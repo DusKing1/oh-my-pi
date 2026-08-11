@@ -138,7 +138,7 @@ async fn daemon_composition_mounts_catalog_facets_and_drains_cleanly() {
 			 process-smoke\"}}}}"
 		),
 	)
-	.expect("write Pi auth migration fixture");
+	.expect("write omp auth migration fixture");
 
 	let (requests_tx, mut requests_rx) = mpsc::unbounded_channel();
 	let chat_requests = Arc::new(AtomicUsize::new(0));
