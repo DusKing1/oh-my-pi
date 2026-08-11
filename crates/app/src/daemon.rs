@@ -529,7 +529,9 @@ impl DaemonHandle {
 				cache: cache_policy(provider.transport),
 				..RouteStackConfig::default()
 			},
-			move |provider| provider_route(provider, &registration_adc_routes, &registration_aws_region),
+			move |provider| {
+				provider_route(provider, &registration_adc_routes, &registration_aws_region)
+			},
 			specialized,
 		)?;
 
@@ -1304,14 +1306,12 @@ impl RouteCredentialRefresher for BrokerRouteRefresher {
 					.refresh_into(sink)
 					.await
 					.map_err(|error| RefreshFailure::new(error.to_string())),
-				RouteRefresh::Aws { engine, sink } => {
-					if force {
-						engine.refresh_into(sink).await
-					} else {
-						engine.authorize_into(sink).await
-					}
-					.map_err(|error| RefreshFailure::new(error.to_string()))
-				},
+				RouteRefresh::Aws { engine, sink } => if force {
+					engine.refresh_into(sink).await
+				} else {
+					engine.authorize_into(sink).await
+				}
+				.map_err(|error| RefreshFailure::new(error.to_string())),
 				RouteRefresh::Static => {
 					Err(RefreshFailure::new("provider credential is not refreshable"))
 				},
