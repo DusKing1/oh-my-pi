@@ -447,8 +447,7 @@ where
 			}
 			let first_event_timeout = matches!(codec.as_ref(), HttpCodec::GoogleCca(_))
 				.then(|| cca_first_event_timeout(model.as_str()));
-			let mut fallback_attempts: SmallVec<(Request<Body>, Arc<HttpCodec>), 2> =
-				SmallVec::new();
+			let mut fallback_attempts: SmallVec<(Request<Body>, Arc<HttpCodec>), 2> = SmallVec::new();
 			if let HttpCodec::GoogleCca(cca) = codec.as_ref()
 				&& cca.is_antigravity()
 			{
@@ -485,24 +484,16 @@ where
 						shared.provider.id.clone(),
 						model.clone(),
 					);
-					match tokio::time::timeout(
-						first_event_timeout,
-						establish_first_wire_event(machine),
-					)
-					.await
+					match tokio::time::timeout(first_event_timeout, establish_first_wire_event(machine))
+						.await
 					{
 						Ok(Ok(machine)) => return establish_commit(machine).await,
 						Ok(Err(error)) => return Err(error),
 						Err(_) => {
-							let Some((fallback_request, fallback_codec)) =
-								fallback_attempts.next()
-							else {
+							let Some((fallback_request, fallback_codec)) = fallback_attempts.next() else {
 								return Err(ProviderAttemptError::FirstEventTimeout);
 							};
-							egress
-								.ready()
-								.await
-								.map_err(ProviderAttemptError::Egress)?;
+							egress.ready().await.map_err(ProviderAttemptError::Egress)?;
 							response = egress
 								.call(fallback_request)
 								.await
@@ -889,10 +880,8 @@ fn model_headers(request: &ChatRequest, transport: TransportId) -> Result<Header
 		// Bedrock caller headers are added to the request before the sealed egress
 		// layer signs it. Drop fields whose wire value is generated or replaced by
 		// SigV4/fetch so the signer cannot cover bytes different from those sent.
-		if matches!(
-			transport,
-			TransportId::AnthropicBedrock | TransportId::BedrockConverse
-		) && bedrock_transport_owned_header(name.as_str())
+		if matches!(transport, TransportId::AnthropicBedrock | TransportId::BedrockConverse)
+			&& bedrock_transport_owned_header(name.as_str())
 		{
 			continue;
 		}
@@ -1625,7 +1614,10 @@ where
 			return Ok(machine);
 		}
 		let frame = futures::future::poll_fn(|cx| {
-			let body = machine.body.as_mut().expect("body remains before first event");
+			let body = machine
+				.body
+				.as_mut()
+				.expect("body remains before first event");
 			Pin::new(body).poll_frame(cx)
 		})
 		.await;

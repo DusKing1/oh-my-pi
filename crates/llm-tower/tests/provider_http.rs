@@ -240,7 +240,11 @@ impl Service<Request<Body>> for SequenceService {
 
 	fn call(&mut self, request: Request<Body>) -> Self::Future {
 		self.uris.lock().push(Str::new(request.uri().to_string()));
-		let body = self.bodies.lock().pop_front().expect("response body remains");
+		let body = self
+			.bodies
+			.lock()
+			.pop_front()
+			.expect("response body remains");
 		ready(Ok(Response::builder()
 			.header(header::CONTENT_TYPE, "text/event-stream")
 			.body(body)
@@ -996,10 +1000,7 @@ async fn antigravity_flash_headers_only_stall_fails_over_before_commit() {
 	let mut options = Props::default();
 	for (name, value) in [
 		("agent_id", Value::String("agent-id".to_owned())),
-		(
-			"request_id",
-			Value::String("agent/agent-id/1700000000000/trajectory-id/2".to_owned()),
-		),
+		("request_id", Value::String("agent/agent-id/1700000000000/trajectory-id/2".to_owned())),
 		("trajectory_id", Value::String("trajectory-id".to_owned())),
 		("step_index", Value::from(2_u64)),
 	] {
@@ -1015,24 +1016,21 @@ async fn antigravity_flash_headers_only_stall_fails_over_before_commit() {
 		organization_id: None,
 	};
 
-	let attempt = adapter
-		.ready()
-		.await
-		.unwrap()
-		.call(Routed::new(native.into(), Some(lease), Some(credential)));
+	let attempt = adapter.ready().await.unwrap().call(Routed::new(
+		native.into(),
+		Some(lease),
+		Some(credential),
+	));
 	let task = tokio::spawn(attempt);
 	tokio::task::yield_now().await;
 	tokio::time::advance(Duration::from_secs(61)).await;
 	let mut stream = task.await.unwrap().unwrap();
 	assert!(stream.next().await.is_some());
 	assert!(stalled_control.dropped());
-	assert_eq!(
-		uris.lock().as_slice(),
-		[
-			"https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
-			"https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse",
-		]
-	);
+	assert_eq!(uris.lock().as_slice(), [
+		"https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+		"https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+	]);
 }
 
 #[tokio::test]

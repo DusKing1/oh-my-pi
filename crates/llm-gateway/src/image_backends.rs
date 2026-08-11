@@ -257,8 +257,10 @@ impl EgressImageBackend {
 				headers.push(("session_id", session.to_owned()));
 			}
 		}
-		let header_refs: SmallVec<(&str, &str), 6> =
-			headers.iter().map(|(name, value)| (*name, value.as_str())).collect();
+		let header_refs: SmallVec<(&str, &str), 6> = headers
+			.iter()
+			.map(|(name, value)| (*name, value.as_str()))
+			.collect();
 		let payload = self
 			.post_json(provider, credential, &url, &header_refs, body)
 			.await?;
