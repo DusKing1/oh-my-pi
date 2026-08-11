@@ -17,8 +17,8 @@
 
 use omp_core::{Str, StrMut, fmts};
 use omp_tui::{
-	Charset, Color, Dim, Icon, Key, Layer, Mouse, OverlayAnchor, OverlayOptions, Prop, Size, Ui,
-	UiContext, UiEvent, dom,
+	Charset, Color, Component, Dim, Icon, IntoComponent as _, Key, Layer, Mouse, OverlayAnchor,
+	OverlayOptions, Prop, Size, Ui, UiContext, UiEvent, dom,
 };
 
 const GREEN: Color = Color::Rgb(81, 196, 112);
@@ -370,17 +370,23 @@ impl ModelPicker {
 	/// Points the facts line and role chips at `model`; `None` (no match)
 	/// blanks the details while keeping the frame height stable.
 	fn show_detail(&mut self, model: Option<usize>) {
-		let facts = model.map_or_else(|| Str::new_static(" "), |index| facts(&MODELS[index]));
-		self.ui.set_text("facts", facts);
-		// Hide before show: the document must never transiently exceed its
-		// steady height — a raw-frame layer's retained frame keeps the
-		// high-water mark, which would leave a stale extra row.
-		for index in (0..MODELS.len()).filter(|&index| model != Some(index)) {
-			self.ui.set_visible(&fmts!("chips-{index}"), false);
-		}
-		if let Some(index) = model {
-			self.ui.set_visible(&fmts!("chips-{index}"), true);
-		}
+		show_detail_on(&mut self.ui, model);
+	}
+}
+
+/// Points the facts line and role chips of any Ui hosting the picker tree
+/// at `model`; `None` blanks the details while keeping the height stable.
+pub fn show_detail_on(ui: &mut Ui, model: Option<usize>) {
+	let facts = model.map_or_else(|| Str::new_static(" "), |index| facts(&MODELS[index]));
+	ui.set_text("facts", facts);
+	// Hide before show: the document must never transiently exceed its
+	// steady height — a raw-frame layer's retained frame keeps the
+	// high-water mark, which would leave a stale extra row.
+	for index in (0..MODELS.len()).filter(|&index| model != Some(index)) {
+		ui.set_visible(&fmts!("chips-{index}"), false);
+	}
+	if let Some(index) = model {
+		ui.set_visible(&fmts!("chips-{index}"), true);
 	}
 }
 
@@ -512,6 +518,13 @@ fn chips(model: usize, current: usize, charset: Charset) -> Vec<Chip> {
 	chips
 }
 
+/// The models-catalog picker pane at full perf tier for `width`: the tree
+/// behind [`ModelPicker`], reusable as inline content by other examples.
+#[allow(dead_code, reason = "consumed by the gallery example's #[path] include of this module")]
+pub fn models_pane(current: usize, rows: u16, width: u16, charset: Charset) -> Box<dyn Component> {
+	tree(Mode::Models, PerfTier::of(width), current, "", rows, charset)
+}
+
 /// Builds the retained overlay tree for one catalog mode.
 fn build(
 	mode: Mode,
@@ -522,7 +535,18 @@ fn build(
 	width: u16,
 	ctx: &UiContext,
 ) -> Ui {
-	let charset = ctx.charset;
+	Ui::from_root(tree(mode, tier, current, query, rows, ctx.charset), width, ctx.clone())
+}
+
+/// The picker component tree for one catalog mode.
+fn tree(
+	mode: Mode,
+	tier: PerfTier,
+	current: usize,
+	query: &str,
+	rows: u16,
+	charset: Charset,
+) -> Box<dyn Component> {
 	let list = match mode {
 		Mode::Models => model_rows(tier, current, charset),
 		Mode::Roles => role_rows(tier, current, charset),
@@ -538,8 +562,7 @@ fn build(
 	let current_dot = fmts!(" {}", charset.icon(Icon::Enabled));
 	let seed = Str::from(query);
 	let height = rows.saturating_add(1);
-	Ui::from_root(
-		dom! {
+	dom! {
 			<box border=round title="Switch Model" pad-x=1>
 				<col>
 					<text fg=muted truncate>{status}</text>
@@ -579,10 +602,8 @@ fn build(
 					<text dim truncate>{hint}</text>
 				</col>
 			</box>
-		},
-		width,
-		ctx.clone(),
-	)
+	}
+	.into_component()
 }
 
 #[cfg(test)]

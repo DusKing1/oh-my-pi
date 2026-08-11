@@ -343,9 +343,10 @@ Verbatim text. It does not parse Markdown.
 
 #### `<md>`
 
-Markdown with tables, links, code highlighting, math, and Mermaid rendering.
+Markdown with tables, links, code highlighting, math, Mermaid, and Graphviz rendering.
 
 - **Content:** Markdown source.
+- **Diagram fences:** `mermaid`, plus `dot`/`graphviz`/`gv`; Graphviz rendering is pure Rust and never shells out to `dot`.
 - **Props:** Shared; text-style props; `align`; `truncate`.
 - **Runtime detail:** Noninteractive catalog or custom blocks can be embedded at line starts. Interactive tags are rejected inside Markdown.
 - **Macro detail:** `dom!` accepts only string/expression content inside `<md>`; build embedded components with `Markdown`’s Rust builder.
@@ -1181,7 +1182,7 @@ resizes, and raw byte-stream statistics as one session-based tool.
 cargo run -p omp-tui --example gallery
 cargo run -p omp-tui --example chat
 cargo run -p omp-tui --example companies
-cargo run -p omp-tui --example anim
+cargo run -p omp-tui --example footers
 ```
 
-Start with `gallery`: it demonstrates `dom!`, Markdown, LaTeX, Mermaid, an editor-driven preview, retained updates, mouse input, resize handling, and differential rendering in one compact application.
+`gallery` is one tabbed application hosting every showcase pane: Markdown, Math, Mermaid, and Graphviz rendering, a `dom!`-built macro pane, a live editor-driven preview, the `Anim` prop-tween lab (autoplaying, with scene hotkeys), the `Overlay` modal demo (`Ctrl+K`/`Ctrl+G`), the fullscreen `Eclipse` shader, and the chat example's model `Picker` inline. It demonstrates `dom!`, retained updates, unclaimed-key routing (`AppEvent::Key`), mouse input, resize handling, and differential rendering in one compact application. `chat` remains the standalone interactive chat demo with its picker, sidebar, and alt-screen welcome scene.

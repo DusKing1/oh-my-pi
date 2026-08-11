@@ -1301,11 +1301,9 @@ impl Demo {
 		}
 		let bottom = frame.size().height;
 		let spans = Self::message_spans(message);
-		let used = draw_wrapped(
-			frame,
-			Rect::new(margin + 1, y, content_width.saturating_sub(2), bottom.saturating_sub(y)),
-			&spans,
-		);
+		// Prose flows edge-to-edge grapheme-exact — no side pads — so every
+		// wrapped row re-joins byte-for-byte in native selection.
+		let used = draw_flowed(frame, Rect::new(0, y, width, bottom.saturating_sub(y)), &spans);
 		used.saturating_add(1)
 	}
 
@@ -1698,59 +1696,39 @@ fn draw_line(frame: &mut Frame, x: u16, y: u16, width: u16, spans: &[Span<'_>]) 
 	column
 }
 
-fn draw_wrapped(frame: &mut Frame, rect: Rect, spans: &[Span<'_>]) -> u16 {
+/// Flows `spans` grapheme-exact across the rect like a bare terminal,
+/// preserving all whitespace and flagging each exactly-filled row boundary
+/// soft so native selection copies the paragraph as one unbroken line.
+/// Returns the rows used.
+fn draw_flowed(frame: &mut Frame, rect: Rect, spans: &[Span<'_>]) -> u16 {
 	if rect.width == 0 || rect.height == 0 {
 		return 0;
 	}
-
-	let mut row = 0;
-	let mut column = 0;
-	let mut pending_space = false;
-	let mut space_style = base_style();
+	let full_row = rect.x == 0 && rect.width == frame.size().width;
+	let mut row = 0_u16;
+	let mut column = 0_u16;
 	let mut drew_anything = false;
 
 	for span in spans {
-		for token in split_word_bounds(span.text) {
-			if token.chars().all(char::is_whitespace) {
-				pending_space = column > 0;
-				space_style = span.style;
+		for grapheme in xutf::graphemes_str(span.text) {
+			let grapheme_width = visible_width(grapheme);
+			if grapheme_width == 0 || grapheme_width > rect.width {
 				continue;
 			}
-
-			let token_width = visible_width(token);
-			let needed = token_width.saturating_add(u16::from(pending_space && column > 0));
-			if column > 0 && needed > rect.width - column {
+			if column.saturating_add(grapheme_width) > rect.width {
+				// Only an exactly-filled row is byte-joinable by autowrap.
+				if full_row && column == rect.width {
+					frame.set_soft_wrap(rect.y.saturating_add(row));
+				}
 				row += 1;
 				column = 0;
-				pending_space = false;
 			}
 			if row >= rect.height {
 				return rect.height;
 			}
-			if pending_space && column > 0 {
-				frame.put(rect.x + column, rect.y + row, " ", space_style);
-				column += 1;
-			}
-			pending_space = false;
-
-			for grapheme in xutf::graphemes_str(token) {
-				let Ok(grapheme_width) = u16::try_from(xutf::width_str(grapheme)) else {
-					continue;
-				};
-				if grapheme_width == 0 || grapheme_width > rect.width {
-					continue;
-				}
-				if column > 0 && grapheme_width > rect.width - column {
-					row += 1;
-					column = 0;
-				}
-				if row >= rect.height {
-					return rect.height;
-				}
-				frame.put(rect.x + column, rect.y + row, grapheme, span.style);
-				column += grapheme_width;
-				drew_anything = true;
-			}
+			frame.put(rect.x + column, rect.y + row, grapheme, span.style);
+			column += grapheme_width;
+			drew_anything = true;
 		}
 	}
 
@@ -1759,23 +1737,6 @@ fn draw_wrapped(frame: &mut Frame, rect: Rect, spans: &[Span<'_>]) -> u16 {
 
 fn visible_width(text: &str) -> u16 {
 	u16::try_from(xutf::width_str(text)).unwrap_or(u16::MAX)
-}
-
-fn split_word_bounds(text: &str) -> impl Iterator<Item = &str> {
-	let mut indices = text.char_indices().peekable();
-	std::iter::from_fn(move || {
-		let (idx, ch) = indices.next()?;
-		let is_ws = ch.is_whitespace();
-		let tok_start = idx;
-		while let Some(&(_, next_ch)) = indices.peek() {
-			if next_ch.is_whitespace() != is_ws {
-				break;
-			}
-			indices.next();
-		}
-		let tok_end = indices.peek().map_or(text.len(), |&(next_idx, _)| next_idx);
-		Some(&text[tok_start..tok_end])
-	})
 }
 
 /// Finds the first `<ref image=N/>` tag in submitted text: its byte range
