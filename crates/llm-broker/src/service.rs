@@ -1685,6 +1685,6 @@ mod tests {
 			.observer()
 			.record_terminal_usage(None)
 			.expect("cancellation is a no-op");
-		assert!(store.client_usage(0).expect("client usage").is_empty());
+		assert_eq!(store.client_usage(0).expect("client usage"), [] as [store::ClientUsage; 0]);
 	}
 }

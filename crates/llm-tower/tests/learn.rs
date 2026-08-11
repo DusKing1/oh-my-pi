@@ -10,6 +10,7 @@ use std::{
 };
 
 use futures::StreamExt;
+use omp_core::fmts;
 use omp_llm_error::{Classification, Feature, Kind};
 use omp_llm_tower::{
 	learn::{LearnLayer, RequestRepair, ScopeFn},
@@ -88,7 +89,7 @@ fn is_tagged(req: &TurnRequest) -> bool {
 		.is_some_and(|params| params.provider_options.is_some())
 }
 
-fn bool_value(value: bool) -> Value {
+const fn bool_value(value: bool) -> Value {
 	Value { kind: Some(value::Kind::Bool(value)) }
 }
 
@@ -290,7 +291,7 @@ async fn scope_isolates_endpoints_serving_the_same_model() {
 			.as_ref()
 			.map(|meta| meta.session_id.as_str())
 			.unwrap_or_default();
-		Some(omp_core::Str::new(format!("{}@{}", params.model, session)))
+		Some(fmts!("{}@{}", params.model, session))
 	});
 	let scoped_req = |endpoint: &str| {
 		let mut request = req("model");

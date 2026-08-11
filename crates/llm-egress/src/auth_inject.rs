@@ -53,10 +53,7 @@ impl SensitiveQuery {
 	/// Seals one query parameter for late insertion by the final egress client.
 	#[must_use]
 	pub fn new(parameter: impl AsRef<str>, value: &[u8]) -> Self {
-		Self {
-			parameter: Str::new(parameter.as_ref()),
-			value:     Zeroizing::new(value.to_vec()),
-		}
+		Self { parameter: Str::new(parameter.as_ref()), value: Zeroizing::new(value.to_vec()) }
 	}
 
 	pub(crate) fn apply(self, uri: &mut Uri) -> Result<(), ()> {
@@ -232,7 +229,7 @@ pub enum CredentialAuthKind {
 	ApiKey,
 	/// Broker-managed OAuth access token.
 	OAuth,
-	/// AWS access key used by SigV4.
+	/// AWS access key used by `SigV4`.
 	Aws,
 	/// Google Application Default Credentials.
 	GoogleAdc,

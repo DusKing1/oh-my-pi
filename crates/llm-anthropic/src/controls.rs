@@ -7,7 +7,7 @@ use serde_json::{Map, Value, value::RawValue};
 
 /// Anthropic's structured-output JSON Schema shape.
 #[derive(Serialize)]
-pub(crate) struct JsonSchemaFormat<'a> {
+pub struct JsonSchemaFormat<'a> {
 	pub(crate) r#type: &'static str,
 	pub(crate) name:   &'a str,
 	pub(crate) schema: &'a RawValue,
@@ -18,14 +18,14 @@ pub(crate) struct JsonSchemaFormat<'a> {
 /// Canonical JSON Schema or a provider-native future format retained verbatim.
 #[derive(Serialize)]
 #[serde(untagged)]
-pub(crate) enum OutputFormat<'a> {
+pub enum OutputFormat<'a> {
 	JsonSchema(JsonSchemaFormat<'a>),
 	Native(&'a Value),
 }
 
 /// Anthropic output controls shared by structured output and thinking effort.
 #[derive(Serialize)]
-pub(crate) struct OutputConfig<'a> {
+pub struct OutputConfig<'a> {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub(crate) effort:      Option<&'a str>,
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -35,7 +35,7 @@ pub(crate) struct OutputConfig<'a> {
 }
 
 /// Native Messages controls projected from the Anthropic provider namespace.
-pub(crate) struct ControlProjection<'a> {
+pub struct ControlProjection<'a> {
 	pub(crate) disable_parallel_tool_use: Option<bool>,
 	pub(crate) eager_input_streaming:     Option<bool>,
 	pub(crate) cache_control:             Option<super::CacheControl>,
@@ -49,7 +49,7 @@ pub(crate) struct ControlProjection<'a> {
 
 /// Projects provider-only Anthropic controls without silently discarding
 /// malformed values.
-pub(crate) fn project<'a>(
+pub fn project<'a>(
 	format: &'a Option<Feature<ResponseFormat>>,
 	meta: &'a Option<RequestMeta>,
 	props: &'a Props,
@@ -207,47 +207,44 @@ fn output_config<'a>(
 		));
 	}
 	let task_budget = provider.and_then(|value| value.get("task_budget"));
-	let format = match format {
-		Some(feature) => match &feature.value.kind {
-			ResponseFormatKind::JsonSchema(schema) => {
-				Some(OutputFormat::JsonSchema(JsonSchemaFormat {
-					r#type: "json_schema",
-					name:   &schema.name,
-					schema: serde_json::from_slice(&schema.schema_json).map_err(super::json_error)?,
-					strict: schema.strict,
-				}))
-			},
-			ResponseFormatKind::Grammar(_) => {
-				super::feature_report(
-					unsupported,
-					feature.on_unsupported,
-					"response_format.grammar",
-					"Anthropic Messages only supports JSON Schema structured output",
-				)?;
-				None
-			},
-			_ => {
-				super::feature_report(
-					unsupported,
-					feature.on_unsupported,
-					"response_format",
-					"Anthropic Messages does not support this response format",
-				)?;
-				None
-			},
-		},
-		None => {
-			let native = props
-				.get_ns("anthropic", "output_config.format")
-				.or_else(|| provider.and_then(|value| value.get("format")));
-			if let Some(value) = native
-				&& !value.is_object()
-			{
-				return Err(provider_error("anthropic/output_config.format must be an object"));
-			}
-			native.map(OutputFormat::Native)
-		},
-	};
+	let format = if let Some(feature) = format { match &feature.value.kind {
+ 			ResponseFormatKind::JsonSchema(schema) => {
+ 				Some(OutputFormat::JsonSchema(JsonSchemaFormat {
+ 					r#type: "json_schema",
+ 					name:   &schema.name,
+ 					schema: serde_json::from_slice(&schema.schema_json).map_err(super::json_error)?,
+ 					strict: schema.strict,
+ 				}))
+ 			},
+ 			ResponseFormatKind::Grammar(_) => {
+ 				super::feature_report(
+ 					unsupported,
+ 					feature.on_unsupported,
+ 					"response_format.grammar",
+ 					"Anthropic Messages only supports JSON Schema structured output",
+ 				)?;
+ 				None
+ 			},
+ 			_ => {
+ 				super::feature_report(
+ 					unsupported,
+ 					feature.on_unsupported,
+ 					"response_format",
+ 					"Anthropic Messages does not support this response format",
+ 				)?;
+ 				None
+ 			},
+ 		} } else {
+ 			let native = props
+ 				.get_ns("anthropic", "output_config.format")
+ 				.or_else(|| provider.and_then(|value| value.get("format")));
+ 			if let Some(value) = native
+ 				&& !value.is_object()
+ 			{
+ 				return Err(provider_error("anthropic/output_config.format must be an object"));
+ 			}
+ 			native.map(OutputFormat::Native)
+ 		};
 	Ok((effort.is_some() || task_budget.is_some() || format.is_some()).then_some(OutputConfig {
 		effort,
 		task_budget,
@@ -281,7 +278,7 @@ fn object_option<'a>(props: &'a Props, name: &'static str) -> Result<Option<&'a 
 	}
 }
 
-fn container<'a>(props: &'a Props) -> Result<Option<&'a Value>, Error> {
+fn container(props: &Props) -> Result<Option<&Value>, Error> {
 	let Some(value) = props.get_ns("anthropic", "container") else {
 		return Ok(None);
 	};
@@ -307,7 +304,7 @@ fn service_tier(props: &Props) -> Result<(Option<&str>, Option<&'static str>), E
 }
 
 /// Returns whether the option is consumed by this codec or its header selector.
-pub(crate) fn is_known_option(key: &str) -> bool {
+pub fn is_known_option(key: &str) -> bool {
 	matches!(
 		key,
 		"anthropic/server_tools"

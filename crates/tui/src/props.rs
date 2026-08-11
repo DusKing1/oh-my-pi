@@ -2,7 +2,7 @@
 
 use std::{fmt, time::Duration};
 
-use omp_core::{Str, SparseMap, sparse_index::TrySparseIndex};
+use omp_core::{SparseMap, Str, sparse_index::TrySparseIndex};
 use strum::{Display, EnumIter, EnumString, FromRepr};
 
 use crate::{

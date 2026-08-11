@@ -15,7 +15,7 @@ use smallvec::SmallVec;
 /// Image providers in the default Pi-compatible attempt order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImageProvider {
-	/// OpenAI Responses image-generation tool.
+	/// `OpenAI` Responses image-generation tool.
 	OpenAi,
 	/// ChatGPT/Codex Responses image-generation tool.
 	OpenAiCodex,
@@ -23,7 +23,7 @@ pub enum ImageProvider {
 	Antigravity,
 	/// xAI Grok Imagine images API.
 	Xai,
-	/// OpenRouter chat-completions image output.
+	/// `OpenRouter` chat-completions image output.
 	OpenRouter,
 	/// Google Gemini generate-content image output.
 	Gemini,
@@ -90,7 +90,7 @@ pub struct ImageCredential {
 	pub auth_provider: Str,
 	/// Google Cloud project for Antigravity.
 	pub project_id:    Option<Str>,
-	/// ChatGPT account id used by the Codex endpoint.
+	/// `ChatGPT` account id used by the Codex endpoint.
 	pub account_id:    Option<Str>,
 }
 

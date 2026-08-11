@@ -21,7 +21,7 @@ fn every_advertised_audio_row_has_a_production_codec() {
 		register_production_audio_routes(providers.values(), egress, |_| ProviderRoute::default())
 			.expect("every advertised audio transport must have an adapter");
 	assert_eq!(facets.speech_routes, 3, "Azure, LiteLLM, and OpenAI speech");
-	assert_eq!(facets.transcription_routes, 4, "Azure, LiteLLM, OpenAI, and Groq transcription",);
+	assert_eq!(facets.transcription_routes, 4, "Azure, LiteLLM, OpenAI, and Groq transcription");
 	assert!(facets.speak.is_some());
 	assert!(facets.transcribe.is_some());
 }

@@ -212,7 +212,7 @@ async fn codex_websocket_executes_continues_cancels_and_falls_back_before_output
 					)
 					.await;
 					let closed = socket.next().await;
-					assert!(matches!(closed, None | Some(Ok(Message::Close(_))) | Some(Err(_))));
+					assert!(matches!(closed, None | Some(Ok(Message::Close(_)) | Err(_))));
 					let _ = cancelled_tx.take().expect("single cancellation").send(());
 				},
 				3 => {

@@ -296,7 +296,7 @@ fn stack_with_config(
 	Stack { svc, script, leases_seen, blocks }
 }
 
-fn assert_provider_request_service<S, St>(_service: &S)
+const fn assert_provider_request_service<S, St>(_service: &S)
 where
 	S: Service<ProviderRequest, Response = St>,
 {
@@ -901,7 +901,7 @@ async fn route_stack_injects_cache_policy_and_owns_refresh_lifecycle() {
 	// A real turn re-reads the prefix itself, so the loop must not outlive it.
 	drive_request(&mut stack, session_request("conversation")).await;
 	let after_real = stack.script.calls.lock().len();
-	tokio::time::sleep(Duration::from_secs(1_200)).await;
+	tokio::time::sleep(Duration::from_mins(20)).await;
 	tokio::task::yield_now().await;
 	assert_eq!(stack.script.calls.lock().len(), after_real, "refresh outlived its turn");
 }
@@ -920,7 +920,7 @@ async fn a_default_route_neither_rewrites_the_hint_nor_refreshes() {
 	assert_eq!(hint.retention, cache_hint::Retention::Unspecified as i32);
 	assert_eq!(hint.session_key, "conversation", "the client's key must survive");
 
-	tokio::time::sleep(Duration::from_secs(1_800)).await;
+	tokio::time::sleep(Duration::from_mins(30)).await;
 	tokio::task::yield_now().await;
 	assert_eq!(stack.script.calls.lock().len(), 1, "default route scheduled a refresh");
 }

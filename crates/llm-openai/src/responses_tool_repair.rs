@@ -11,31 +11,28 @@ const ORPHAN_TOOL_CALL_PLACEHOLDER: &str =
 
 /// Responses tool-pair family. A call and its output pair only within one kind.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) enum ToolKind {
+pub enum ToolKind {
 	Function,
 	Custom,
 	Computer,
 }
 
 /// Wire identity of a tool call already delivered to the server.
-pub(crate) type SentCall = (ToolKind, Str);
+pub type SentCall = (ToolKind, Str);
 
 /// Applies pi's directional orphan repair to a Responses `input` array.
 ///
 /// `sent_calls` names the tool calls that a stateful continuation already
 /// delivered under `previous_response_id`; their outputs in `input` are
 /// correctly paired and must not be folded into assistant notes.
-pub(crate) fn repair_responses_tool_pairs(
+pub fn repair_responses_tool_pairs(
 	input: &mut Vec<Value>,
 	sent_calls: &BTreeSet<SentCall>,
 ) -> Vec<Unsupported> {
 	let mut unsupported = Vec::new();
 	let mut preceding_calls = sent_calls.clone();
 	for item in input.iter_mut() {
-		let call_id = item
-			.get("call_id")
-			.and_then(Value::as_str)
-			.map(Str::from);
+		let call_id = item.get("call_id").and_then(Value::as_str).map(Str::from);
 		if let (Some(kind), Some(call_id)) = (tool_call_kind(item), call_id.as_ref()) {
 			preceding_calls.insert((kind, call_id.clone()));
 		}
@@ -92,11 +89,7 @@ pub(crate) fn repair_responses_tool_pairs(
 			repaired.push(item);
 			continue;
 		}
-		let Some(call_id) = item
-			.get("call_id")
-			.and_then(Value::as_str)
-			.map(Str::from)
-		else {
+		let Some(call_id) = item.get("call_id").and_then(Value::as_str).map(Str::from) else {
 			repaired.push(item);
 			continue;
 		};
@@ -175,7 +168,7 @@ fn tool_output_kind(item: &Value) -> Option<ToolKind> {
 }
 
 /// Maps a Responses item type to the tool-call family it belongs to.
-pub(crate) fn call_kind_of(type_name: &str) -> Option<ToolKind> {
+pub fn call_kind_of(type_name: &str) -> Option<ToolKind> {
 	tool_call_kind(&json!({ "type": type_name }))
 }
 
@@ -195,7 +188,7 @@ mod tests {
 			json!({"type":"function_call_output","call_id":"call_a","output":"ok","id":"out_1"}),
 		];
 		let before = serde_json::to_vec(&input).unwrap();
-		assert!(repair_responses_tool_pairs(&mut input, &BTreeSet::new()).is_empty());
+		assert_eq!(repair_responses_tool_pairs(&mut input, &BTreeSet::new()), [] as [omp_llm_types::Unsupported; 0]);
 		assert_eq!(serde_json::to_vec(&input).unwrap(), before);
 	}
 
@@ -208,7 +201,7 @@ mod tests {
 			json!({"type":"message","role":"user","content":"between"}),
 			json!({"type":"function_call_output","call_id":"b","output":"B"}),
 		];
-		assert!(repair_responses_tool_pairs(&mut input, &BTreeSet::new()).is_empty());
+		assert_eq!(repair_responses_tool_pairs(&mut input, &BTreeSet::new()), [] as [omp_llm_types::Unsupported; 0]);
 		let call_ids = input
 			.iter()
 			.map(|item| item.get("call_id").cloned().unwrap_or(Value::Null))
@@ -221,7 +214,7 @@ mod tests {
 		let mut input =
 			vec![json!({"type":"function_call_output","call_id":"call_sent","output":"Sunny"})];
 		let sent = BTreeSet::from([(ToolKind::Function, Str::new_static("call_sent"))]);
-		assert!(repair_responses_tool_pairs(&mut input, &sent).is_empty());
+		assert_eq!(repair_responses_tool_pairs(&mut input, &sent), [] as [omp_llm_types::Unsupported; 0]);
 		assert_eq!(input[0]["type"], "function_call_output");
 
 		let mut unsent = input.clone();

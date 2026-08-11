@@ -590,10 +590,7 @@ fn encode_tools(
 		.iter()
 		.map(|tool| {
 			let mut schema: Value = serde_json::from_slice(&tool.schema_json).map_err(|error| {
-				Error::Provider(Str::from(format!(
-					"invalid tool schema for {}: {error}",
-					tool.name
-				)))
+				Error::Provider(Str::from(format!("invalid tool schema for {}: {error}", tool.name)))
 			})?;
 			let (normalized, reports) = normalize_schema(compat.tool_schema_flavor, &schema);
 			schema = normalized;
@@ -1265,9 +1262,7 @@ fn finish_stream(state: &mut ChatDecodeState) -> SmallVec<TurnEvent, 2> {
 		}
 		if !choice.text.is_empty() {
 			let text = std::mem::take(&mut choice.text).freeze();
-			parts.push(Part::Text(
-				Str::from_utf8_owned(text).expect("JSON content deltas are UTF-8"),
-			));
+			parts.push(Part::Text(Str::from_utf8_owned(text).expect("JSON content deltas are UTF-8")));
 		}
 		if !parts.is_empty() || has_message_metadata {
 			output.push(
@@ -1670,9 +1665,7 @@ fn reasoning_detail_value(signature: &[u8], wire_id: &str) -> Value {
 	if let Ok(value) = serde_json::from_slice(signature) {
 		return value;
 	}
-	let data = std::str::from_utf8(signature)
-		.map(str::to_owned)
-		.unwrap_or_else(|_| base64(signature));
+	let data = std::str::from_utf8(signature).map_or_else(|_| base64(signature), str::to_owned);
 	if wire_id.is_empty() {
 		json!({"type":"reasoning.encrypted","data":data})
 	} else {
@@ -1779,10 +1772,7 @@ mod tests {
 		assert_eq!(unsupported[0].what, "message.blob");
 	}
 
-	fn model_policy(
-		compat: Props,
-		effort_map: BTreeMap<Effort, Str>,
-	) -> Arc<ResolvedModelPolicy> {
+	fn model_policy(compat: Props, effort_map: BTreeMap<Effort, Str>) -> Arc<ResolvedModelPolicy> {
 		Arc::new(ResolvedModelPolicy {
 			thinking: Some(ResolvedThinkingPolicy {
 				mode: ResolvedThinkingMode::Effort,
@@ -2551,7 +2541,7 @@ mod tests {
 				_ => {},
 			}
 		}
-		assert!(thinking.is_empty());
+		assert_eq!(thinking, "");
 		assert_eq!(text, "<think>Need to inspect</think>Answer.\n");
 		let call = call.expect("tool markup became a tool call");
 		assert_eq!(call.name, "read");
@@ -2659,7 +2649,7 @@ mod tests {
 				.build(),
 		);
 		let (wire, unsupported) = OpenAiChatCodec.encode(&req, &Compat::default()).unwrap();
-		assert!(unsupported.is_empty());
+		assert_eq!(unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		let wire: Value = serde_json::from_slice(&wire).unwrap();
 		let schema = &wire["response_format"]["json_schema"];
 		assert_eq!(schema["strict"], true);

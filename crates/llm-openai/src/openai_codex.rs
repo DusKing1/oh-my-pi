@@ -1,4 +1,4 @@
-//! ChatGPT subscription Codex Responses codec and request fingerprint.
+//! `ChatGPT` subscription Codex Responses codec and request fingerprint.
 //!
 //! Bearer credentials never enter this crate. The codec produces JSON and an
 //! authorization-free header plan; the production egress/auth lease attaches
@@ -27,7 +27,7 @@ use crate::{
 	openai_responses::OpenAiResponsesCodec,
 };
 
-/// Resolves the ChatGPT Codex Responses endpoint from a configured base URL.
+/// Resolves the `ChatGPT` Codex Responses endpoint from a configured base URL.
 #[must_use]
 pub fn resolve_codex_responses_url(base_url: &str) -> String {
 	let normalized = base_url.trim().trim_end_matches('/');
@@ -49,7 +49,7 @@ pub enum CodexWireTransport {
 	WebSocket,
 }
 
-/// Opaque DeviceCheck attestation envelope.
+/// Opaque `DeviceCheck` attestation envelope.
 ///
 /// Debug output is always redacted. The egress layer may access the bytes only
 /// while applying a just-in-time request header.
@@ -191,7 +191,7 @@ impl fmt::Debug for CodexRequestIdentity {
 /// Credential metadata released by the broker without releasing bearer bytes.
 #[derive(Clone, Default, Eq, PartialEq)]
 pub struct CodexCredentialMetadata {
-	/// ChatGPT account/workspace id recovered from broker-held OAuth claims.
+	/// `ChatGPT` account/workspace id recovered from broker-held OAuth claims.
 	pub account_id: Option<Str>,
 }
 
@@ -217,7 +217,7 @@ pub struct CodexHeaderContext<'a> {
 	pub attestation:    Option<&'a CodexAttestation>,
 	/// Per-turn continuation value learned from the server.
 	pub turn_state:     Option<&'a str>,
-	/// Models ETag learned from handshake or response metadata.
+	/// Models `ETag` learned from handshake or response metadata.
 	pub models_etag:    Option<&'a str>,
 	/// Whether this attempt uses Responses Lite.
 	pub responses_lite: bool,
@@ -333,7 +333,7 @@ pub fn apply_codex_client_metadata(
 	Ok(())
 }
 
-/// OpenAI Responses codec with Codex subscription request transformation.
+/// `OpenAI` Responses codec with Codex subscription request transformation.
 #[derive(Debug)]
 pub struct OpenAiCodexCodec {
 	responses:              OpenAiResponsesCodec,
@@ -363,9 +363,7 @@ impl OpenAiCodexCodec {
 			.and_then(|props| props.get_ns(CODEX_PROVIDER_NAMESPACE, RESPONSES_LITE_OPTION))
 		{
 			Some(Value::Bool(value)) => Ok(*value),
-			Some(_) => {
-				Err(Error::Provider(Str::new("openai-codex/responses_lite must be a boolean")))
-			},
+			Some(_) => Err(Error::Provider(Str::new("openai-codex/responses_lite must be a boolean"))),
 			None => Ok(req
 				.model_policy
 				.as_deref()

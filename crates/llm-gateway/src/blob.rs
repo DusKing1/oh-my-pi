@@ -262,7 +262,7 @@ struct ChunkReader {
 }
 
 impl ChunkReader {
-	fn new(receiver: mpsc::Receiver<UploadMessage>) -> Self {
+	const fn new(receiver: mpsc::Receiver<UploadMessage>) -> Self {
 		Self { receiver, chunk: Bytes::new(), ended: false }
 	}
 }

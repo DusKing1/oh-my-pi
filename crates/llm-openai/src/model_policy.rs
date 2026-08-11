@@ -8,7 +8,7 @@ use omp_llm_types::{ChatRequest, Effort, ResolvedThinkingMode, Unsupported, Unsu
 use serde_json::{Map, Value};
 
 #[derive(Debug)]
-pub(crate) struct OpenAiModelPolicy {
+pub struct OpenAiModelPolicy {
 	pub compat: Compat,
 	pub supports_tool_choice: bool,
 	pub supports_developer_role: bool,
@@ -70,13 +70,10 @@ impl OpenAiModelPolicy {
 				if !thinking_enabled {
 					return None;
 				}
-				match value.as_object() {
-					Some(value) => Some(value),
-					None => {
-						unsupported.push(malformed("when_thinking", "must be a JSON object"));
-						None
-					},
-				}
+				if let Some(value) = value.as_object() { Some(value) } else {
+    						unsupported.push(malformed("when_thinking", "must be a JSON object"));
+    						None
+    					}
 			});
 		let value = |name: &str| {
 			overlay
@@ -84,13 +81,10 @@ impl OpenAiModelPolicy {
 				.or_else(|| policy.compat.get_ns("wire", name))
 		};
 		let boolean = |name: &str, default: bool, unsupported: &mut Vec<Unsupported>| {
-			value(name).map_or(default, |value| match value.as_bool() {
-				Some(value) => value,
-				None => {
-					unsupported.push(malformed(name, "must be a boolean"));
-					default
-				},
-			})
+			value(name).map_or(default, |value| if let Some(value) = value.as_bool() { value } else {
+   					unsupported.push(malformed(name, "must be a boolean"));
+   					default
+   				})
 		};
 
 		compat.usage_in_streaming =
@@ -109,7 +103,7 @@ impl OpenAiModelPolicy {
 					compat.thinking_tool_choice_conflict = ThinkingToolChoiceConflict::None;
 				},
 				None => {
-					unsupported.push(malformed("disable_reasoning_on_tool_choice", "must be a boolean"))
+					unsupported.push(malformed("disable_reasoning_on_tool_choice", "must be a boolean"));
 				},
 			}
 		}
@@ -137,7 +131,7 @@ impl OpenAiModelPolicy {
 						ReasoningWireFormat::OpenAi
 					}
 				},
-				Some("openai_responses") | Some("openai-responses") => {
+				Some("openai_responses" | "openai-responses") => {
 					ReasoningWireFormat::OpenAiResponses
 				},
 				Some("openrouter") => {
@@ -149,7 +143,7 @@ impl OpenAiModelPolicy {
 				},
 				Some("zai") => ReasoningWireFormat::Zai,
 				Some("qwen") => ReasoningWireFormat::QwenEnableThinking,
-				Some("qwen_chat_template") | Some("qwen-chat-template") => {
+				Some("qwen_chat_template" | "qwen-chat-template") => {
 					ReasoningWireFormat::NvidiaChatTemplateKwargs
 				},
 				_ => {
@@ -160,18 +154,15 @@ impl OpenAiModelPolicy {
 			};
 		}
 		let reasoning_content_field =
-			value("reasoning_content_field").and_then(|value| match value.as_str() {
-				Some("reasoning") | Some("reasoning_content") | Some("reasoning_text") => {
-					Some(Str::from(value.as_str().expect("matched string")))
-				},
-				_ => {
-					unsupported.push(malformed(
-						"reasoning_content_field",
-						"must be reasoning, reasoning_content, or reasoning_text",
-					));
-					None
-				},
-			});
+			value("reasoning_content_field").and_then(|value| if let Some("reasoning" | "reasoning_content" | "reasoning_text") = value.as_str() {
+   					Some(Str::from(value.as_str().expect("matched string")))
+   				} else {
+   					unsupported.push(malformed(
+   						"reasoning_content_field",
+   						"must be reasoning, reasoning_content, or reasoning_text",
+   					));
+   					None
+   				});
 		let mut effort_map = policy
 			.thinking
 			.as_ref()
@@ -203,13 +194,10 @@ impl OpenAiModelPolicy {
 				unsupported.push(malformed("reasoning_effort_map", "must be a JSON object"));
 			}
 		}
-		let extra_body = value("extra_body").and_then(|value| match value.as_object() {
-			Some(value) => Some(value.clone()),
-			None => {
-				unsupported.push(malformed("extra_body", "must be a JSON object"));
-				None
-			},
-		});
+		let extra_body = value("extra_body").and_then(|value| if let Some(value) = value.as_object() { Some(value.clone()) } else {
+  				unsupported.push(malformed("extra_body", "must be a JSON object"));
+  				None
+  			});
 		let omit_reasoning_effort = boolean("omit_reasoning_effort", false, unsupported);
 		let supports_reasoning_effort = boolean("supports_reasoning_effort", true, unsupported);
 
@@ -271,7 +259,7 @@ impl OpenAiModelPolicy {
 	}
 }
 
-pub(crate) const fn effort_name(value: Effort) -> &'static str {
+pub const fn effort_name(value: Effort) -> &'static str {
 	match value {
 		Effort::Off => "none",
 		Effort::Minimal => "minimal",

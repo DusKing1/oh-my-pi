@@ -713,17 +713,11 @@ fn cancelled_path_operation(path: &Path, operation: &'static str) -> Error {
 }
 
 fn precondition_failed(path: &Path, reason: &str) -> Error {
-	Error::PreconditionFailed {
-		target: Str::new(path.to_string_lossy()),
-		reason: Str::new(reason),
-	}
+	Error::PreconditionFailed { target: Str::new(path.to_string_lossy()), reason: Str::new(reason) }
 }
 
 fn invalid_target(path: &Path, reason: &str) -> Error {
-	Error::InvalidTarget {
-		target: Str::new(path.to_string_lossy()),
-		reason: Str::new(reason),
-	}
+	Error::InvalidTarget { target: Str::new(path.to_string_lossy()), reason: Str::new(reason) }
 }
 
 #[cfg(test)]

@@ -35,6 +35,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(target_os = "macos")]
 mod abi;
 mod chat;
+pub mod discovery;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(not(target_os = "macos"))]
@@ -47,6 +48,8 @@ use macos as platform;
 use unsupported as platform;
 
 const RUN_TIMEOUT: Duration = Duration::from_secs(30);
+/// Apple's documented on-device context budget from TN3193.
+pub(crate) const CONTEXT_SIZE: u32 = 4096;
 
 /// Stable category attached to an [`AppleFmError`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

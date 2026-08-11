@@ -27,14 +27,14 @@ pub struct EncodedAudioRequest {
 	pub body:         Bytes,
 }
 
-/// Protocol-level OpenAI audio failure.
+/// Protocol-level `OpenAI` audio failure.
 #[derive(Clone, Debug, thiserror::Error, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum OpenAiAudioError {
 	/// A required request value was absent or outside provider limits.
 	#[error("invalid audio request: {0}")]
 	Invalid(Str),
-	/// A canonical control has no faithful OpenAI wire representation.
+	/// A canonical control has no faithful `OpenAI` wire representation.
 	#[error("unsupported audio control: {0}")]
 	Unsupported(Str),
 	/// The provider response was not valid for the selected operation.
@@ -45,7 +45,7 @@ pub enum OpenAiAudioError {
 /// Data-selected request differences within OpenAI-compatible audio APIs.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum OpenAiAudioProfile {
-	/// Standard OpenAI `/v1/audio` request bodies.
+	/// Standard `OpenAI` `/v1/audio` request bodies.
 	#[default]
 	Standard,
 	/// A deployment-scoped endpoint where the model lives only in the URL.
@@ -57,7 +57,7 @@ pub enum OpenAiAudioProfile {
 pub struct OpenAiAudioCodec;
 
 impl OpenAiAudioCodec {
-	/// Encodes a standard OpenAI speech request.
+	/// Encodes a standard `OpenAI` speech request.
 	pub fn encode_speech(
 		&self,
 		request: &SpeakRequest,
@@ -126,7 +126,7 @@ impl OpenAiAudioCodec {
 		})
 	}
 
-	/// Encodes an inline recording as OpenAI multipart form data.
+	/// Encodes an inline recording as `OpenAI` multipart form data.
 	pub fn encode_transcription(
 		&self,
 		request: &TranscribeRequest,

@@ -3,6 +3,8 @@
 
 use std::fmt::{Display, Write};
 
+use omp_core::Str;
+
 use crate::parser::{SourceSpan, tokenizer};
 
 const DISPLAY_INDENT: &str = "    ";
@@ -1766,7 +1768,7 @@ impl Display for BinaryPredicate {
 #[cfg_attr(test, derive(PartialEq, Eq, serde::Serialize, serde::Deserialize))]
 pub struct Word {
 	/// Raw text of the word.
-	pub value: omp_core::Str,
+	pub value: Str,
 	/// Location of the word
 	pub loc:   Option<SourceSpan>,
 }

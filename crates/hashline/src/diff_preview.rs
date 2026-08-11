@@ -86,9 +86,8 @@ pub fn build_compact_diff_preview(diff: &str, options: CompactDiffOptions) -> Co
 	while formatted.last().is_some_and(|line| is_separator(line)) {
 		formatted.pop();
 	}
-	let mut preview = StrMut::with_capacity(
-		formatted.iter().map(Str::len).sum::<usize>() + formatted.len(),
-	);
+	let mut preview =
+		StrMut::with_capacity(formatted.iter().map(Str::len).sum::<usize>() + formatted.len());
 	for (index, line) in formatted.iter().enumerate() {
 		if index > 0 {
 			preview.push('\n');

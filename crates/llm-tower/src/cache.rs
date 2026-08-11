@@ -188,7 +188,7 @@ fn apply(request: &mut TurnRequest, policy: CachePolicy) -> Option<Str> {
 	(!hint.session_key.is_empty()).then(|| Str::new(&hint.session_key))
 }
 /// Whether this frame ends the turn because the model called a tool.
-fn stopped_on_tool_use(frame: &TurnEvent) -> bool {
+const fn stopped_on_tool_use(frame: &TurnEvent) -> bool {
 	matches!(
 		&frame.event,
 		Some(turn_event::Event::Outcome(outcome)) if outcome.stop == StopReason::StopToolUse as i32
@@ -197,7 +197,7 @@ fn stopped_on_tool_use(frame: &TurnEvent) -> bool {
 
 /// Whether this frame could only have been authored by the provider, which
 /// means the prompt was prefilled and the cache read is already billed.
-fn provider_answered(frame: &TurnEvent) -> bool {
+const fn provider_answered(frame: &TurnEvent) -> bool {
 	matches!(
 		&frame.event,
 		Some(
@@ -510,7 +510,7 @@ mod tests {
 		let mut service = Cache::new(script.clone(), policy);
 
 		drain(&mut service, request("session", cache_hint::Breakpoint::Unspecified)).await;
-		tokio::time::sleep(Duration::from_secs(1_800)).await;
+		tokio::time::sleep(Duration::from_mins(30)).await;
 		tokio::task::yield_now().await;
 
 		// Waiting on a human has no known return time; pinging through it burns
@@ -638,9 +638,9 @@ mod tests {
 
 		let hint = seen(&script, 0);
 		assert_eq!(hint.breakpoint, cache_hint::Breakpoint::TailTwo as i32);
-		assert!(hint.session_key.is_empty());
+		assert_eq!(hint.session_key, "");
 
-		tokio::time::sleep(Duration::from_secs(1_800)).await;
+		tokio::time::sleep(Duration::from_mins(30)).await;
 		tokio::task::yield_now().await;
 		assert_eq!(script.calls.lock().len(), 1, "a keyless turn armed a refresh");
 	}

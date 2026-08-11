@@ -43,7 +43,7 @@ pub fn write_inband_tool_prompt<W: fmt::Write + ?Sized>(
 	out.write_str(dialect_guide(dialect).trim())
 }
 
-const ANTHROPIC: &str = r###"## Format guide
+const ANTHROPIC: &str = r#"## Format guide
 
 A call is a `<function_calls>` block wrapping one or more `<invoke>` blocks, each holding `<parameter>` children:
 
@@ -74,9 +74,9 @@ Results arrive later in a `<function_results>` block, one `<result>` per call (f
 - NEVER use the legacy `<tool_name>`/`<parameters>` call syntax.
 - Read each `<result>`/`<error>` in call order. NEVER emit `<function_results>` yourself.
 - Emit the stop sequence ONLY after the call is fully written — NEVER announce a tool then stop (e.g. halting at "Let's run `cargo clippy`" with no `<invoke>` emitted). Write the complete call, THEN the stop sequence, THEN halt.
-"###;
+"#;
 
-const DEEPSEEK: &str = r###"## Format guide
+const DEEPSEEK: &str = r#"## Format guide
 
 A tool call wraps the function name, a separator, and one JSON object of arguments in fixed tokens. Emit them exactly:
 
@@ -100,9 +100,9 @@ Results arrive as output tokens:
 - Private reasoning, when needed, goes in `<think>...</think>` before the tokens.
 - Read each output token in call order. NEVER emit output tokens yourself.
 - Emit the stop sequence ONLY after the call is fully written — NEVER announce a tool then stop (e.g. halting at "Let's run `cargo clippy`" with no `<｜tool▁call▁begin｜>` emitted). Write the complete call, THEN the stop sequence, THEN halt.
-"###;
+"#;
 
-const GEMINI: &str = r###"## Format guide
+const GEMINI: &str = r#"## Format guide
 
 Emit tool calls as Python inside a fenced ` ```tool_code ` block. Call each function as a method on `default_api`:
 
@@ -146,9 +146,9 @@ brief reasoning
 - Put private reasoning in a ` ```thinking ` block before the ` ```tool_code ` block, never inside ` ```tool_code `.
 - Read each ` ```tool_outputs ` block in call order. NEVER write a ` ```tool_outputs ` block yourself.
 - Emit the ` ```tool_code ` block in full, THEN stop and halt — NEVER announce a tool then stop (e.g. halting at "Let's run `cargo clippy`" with no ` ```tool_code ` block emitted).
-"###;
+"#;
 
-const GEMMA: &str = r###"## Format guide
+const GEMMA: &str = r#"## Format guide
 
 Emit each tool call as one `<|tool_call>` block. The body is `call:NAME{key:value,...}`; wrap every string value in the `<|"|>` token:
 
@@ -181,9 +181,9 @@ brief reasoning
 - Private reasoning goes in a `<|channel>thought…<channel|>` block before any call; NEVER put tool calls inside it.
 - Read each `<|tool_response>` block in call order. NEVER write a `<|tool_response>` block yourself.
 - Write each call in full, THEN stop and halt — NEVER announce a tool then stop (e.g. halting at "Let's run `cargo clippy`" with no `<|tool_call>` block emitted).
-"###;
+"#;
 
-const GLM: &str = r###"## Format guide
+const GLM: &str = r#"## Format guide
 
 Emit each call as a `<tool_call>` block. The function name goes on the same line as the opening tag, followed by one `<arg_key>`/`<arg_value>` pair per argument, closed by `</tool_call>`:
 
@@ -215,9 +215,9 @@ verbatim tool result
 - Private reasoning goes in `<think>…</think>`; NEVER put tool calls inside `<think>`.
 - Read each `<tool_response>` in call order. NEVER emit `<tool_response>` yourself.
 - Emit the stop sequence ONLY after the call is fully written — NEVER announce a tool then stop (e.g. halting at "Let's run `cargo clippy`" with no `<tool_call>` emitted). Write the complete call, THEN the stop sequence, THEN halt.
-"###;
+"#;
 
-const HARMONY: &str = r###"## Format guide
+const HARMONY: &str = r#"## Format guide
 
 Each function call is one assistant message on the `commentary` channel addressed to the function, emitted as text:
 
@@ -248,9 +248,9 @@ Tool results arrive as messages authored by the function, addressed back to the 
 - NEVER wrap calls in Markdown/code fences.
 - Read each tool-result message in call order. NEVER emit tool-result messages yourself.
 - Emit the stop sequence ONLY after the call is fully written — NEVER announce a tool then stop (e.g. halting at "Let's run `cargo clippy`" with no `<|call|>` message emitted). Write the complete call, THEN the stop sequence, THEN halt.
-"###;
+"#;
 
-const HERMES: &str = r###"## Format guide
+const HERMES: &str = r#"## Format guide
 
 Emit each tool call as a `<tool_call>` block wrapping a single-line JSON object with `name` and `arguments`:
 
@@ -275,9 +275,9 @@ verbatim tool result
 - Emit multiple calls as consecutive `<tool_call>` blocks; keep any prose outside them.
 - Read each `<tool_response>` in call order. NEVER emit `<tool_response>` yourself.
 - Emit the stop sequence ONLY after the call is fully written — NEVER announce a tool then stop (e.g. halting at "Let's run `cargo clippy`" with no `<tool_call>` emitted). Write the complete call, THEN the stop sequence, THEN halt.
-"###;
+"#;
 
-const KIMI: &str = r###"## Format guide
+const KIMI: &str = r#"## Format guide
 
 Emit every call of a turn inside one section. Each call is an id of the fixed form `functions.NAME:INDEX` followed by one JSON arguments object:
 
@@ -301,9 +301,9 @@ verbatim tool result<|im_end|>
 - Private reasoning, when supported, goes in `<think>…</think>` before the tool-call section; NEVER put tool calls inside `<think>`.
 - Read each result turn in call order. NEVER emit result turns yourself.
 - Emit the stop sequence ONLY after the call is fully written — NEVER announce a tool then stop (e.g. halting at "Let's run `cargo clippy`" with no `<|tool_call_begin|>` emitted). Write the complete call, THEN the stop sequence, THEN halt.
-"###;
+"#;
 
-const MINIMAX: &str = r###"## Format guide
+const MINIMAX: &str = r#"## Format guide
 
 A call is a `<minimax:tool_call>` block wrapping one or more `<invoke>` blocks, each holding `<parameter>` children:
 
@@ -334,9 +334,9 @@ Results arrive later in a `<function_results>` block, one `<result>` per call (f
 - NEVER use `<function_calls>` or the legacy `<tool_name>`/`<parameters>` call syntax.
 - Read each `<result>`/`<error>` in call order. NEVER emit `<function_results>` yourself.
 - Emit the stop sequence ONLY after the call is fully written — NEVER announce a tool then stop (e.g. halting at "Let's run `cargo clippy`" with no `<invoke>` emitted). Write the complete call, THEN the stop sequence, THEN halt.
-"###;
+"#;
 
-const QWEN3: &str = r###"## Format guide
+const QWEN3: &str = r#"## Format guide
 
 Emit each tool call as one `<tool_call>` block wrapping a single-line JSON object with `name` and a nested `arguments` object:
 
@@ -364,9 +364,9 @@ verbatim tool result
 - NEVER put tool calls inside `<think>`.
 - Read each `<tool_response>` in call order. NEVER emit `<tool_response>` yourself.
 - Emit the stop sequence ONLY after the call is fully written — NEVER announce a tool then stop (e.g. halting at "Let's run `cargo clippy`" with no `<tool_call>` emitted). Write the complete call, THEN the stop sequence, THEN halt.
-"###;
+"#;
 
-const XML: &str = r###"## Format guide
+const XML: &str = r#"## Format guide
 
 A call is one `<invoke>` element whose `<parameter>` children carry its arguments:
 
@@ -388,7 +388,7 @@ verbatim tool result
 - Parameter values are read literally by regex (delimiter matching), NOT a real XML parser: write them verbatim and never HTML-escape (emit `a & b`, never `a &amp; b`; `<`/`>` stay literal too). Only the body's own `</parameter>` closing tag is reserved. Non-string values are JSON; add `string="false"` to a parameter only to force JSON parsing of a value the schema treats as a string.
 - Read each `<tool_response>` in call order. NEVER emit `<tool_response>` yourself.
 - Emit the stop sequence ONLY after the call is fully written — NEVER announce a tool then stop (e.g. halting at "Let's run `cargo clippy`" with no `<invoke>` emitted). Write the complete call, THEN the stop sequence, THEN halt.
-"###;
+"#;
 
 #[cfg(test)]
 mod tests {

@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-//! Official OpenAI and Anthropic SDK process-level integration coverage.
+//! Official `OpenAI` and Anthropic SDK process-level integration coverage.
 
 use std::{path::PathBuf, process::Command};
 

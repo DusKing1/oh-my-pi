@@ -494,9 +494,11 @@ fn unify(spec: &EngineSpec, result: EngineResult, query: &ParsedQuery) -> Search
 	};
 	let filtered = apply_query_constraints(sources, query);
 	let mut warnings = result.warnings;
-	warnings.extend(filtered.relaxed.into_iter().map(|label| {
-		Str::from(format!("no results matched `{label}`; the constraint was relaxed"))
-	}));
+	warnings.extend(
+		filtered.relaxed.into_iter().map(|label| {
+			Str::from(format!("no results matched `{label}`; the constraint was relaxed"))
+		}),
+	);
 	SearchResponse::builder()
 		.engine(Str::from(spec.id))
 		.answer(answer)

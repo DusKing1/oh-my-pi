@@ -102,7 +102,7 @@ pub fn validate_edits(base_len: u64, edits: &[ByteEdit]) -> Result<()> {
 	for edit in edits {
 		let range = edit.range.validate(base_len)?;
 		if let Some(prior) = previous
-			&& (range.start() < prior.end() || range.start() == prior.start())
+			&& (range.end() < prior.end() || range.start() == prior.start())
 		{
 			return Err(invalid_edits(
 				"byte edits must be sorted, non-overlapping, and have distinct starts",

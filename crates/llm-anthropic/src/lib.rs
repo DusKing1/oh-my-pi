@@ -731,11 +731,10 @@ fn build_body<'a>(
 		)?;
 		thinking = None;
 		budget = None;
-		if projection.effort.is_some() {
-			if let Some(output_config) = controls.output_config.as_mut() {
+		if projection.effort.is_some()
+			&& let Some(output_config) = controls.output_config.as_mut() {
 				output_config.effort = None;
 			}
-		}
 		if controls
 			.output_config
 			.as_ref()
@@ -1117,7 +1116,7 @@ fn message_blocks<'a>(
 	Ok(blocks)
 }
 
-fn server_history_block<'a>(props: &'a Props) -> Result<Option<Block<'a>>, Error> {
+fn server_history_block(props: &Props) -> Result<Option<Block<'_>>, Error> {
 	let Some(value) = props.get_ns("anthropic", "server_tool_block") else {
 		return Ok(None);
 	};
@@ -1585,9 +1584,9 @@ fn parse_block(raw: &RawValue) -> Result<IncomingBlock<'_>, Error> {
 			}
 			Ok(IncomingBlock::Server { raw })
 		},
-		kind => Err(Error::Provider(Str::from(format!(
-			"unknown Anthropic content block type `{kind}`"
-		)))),
+		kind => {
+			Err(Error::Provider(Str::from(format!("unknown Anthropic content block type `{kind}`"))))
+		},
 	}
 }
 
@@ -1639,9 +1638,9 @@ fn parse_delta(raw: &RawValue) -> Result<IncomingDelta<'_>, Error> {
 			let delta: Delta<'_> = serde_json::from_str(raw.get()).map_err(json_error)?;
 			Ok(IncomingDelta::Citation { citation: delta.citation })
 		},
-		kind => Err(Error::Provider(Str::from(format!(
-			"unknown Anthropic content delta type `{kind}`"
-		)))),
+		kind => {
+			Err(Error::Provider(Str::from(format!("unknown Anthropic content delta type `{kind}`"))))
+		},
 	}
 }
 #[derive(Default)]
@@ -1767,9 +1766,7 @@ fn decode_event(
 				let Some(DecodedBlock::Thinking { signature: target, .. }) =
 					state.blocks.get_mut(&index)
 				else {
-					return Err(Error::Provider(Str::from(
-						"signature delta for a non-thinking block",
-					)));
+					return Err(Error::Provider(Str::from("signature delta for a non-thinking block")));
 				};
 				target.extend_from_slice(signature.as_bytes());
 			},
@@ -2365,7 +2362,7 @@ mod tests {
 				.build(),
 		);
 		let (wire, unsupported) = encoded(&media, &compat);
-		assert!(unsupported.is_empty());
+		assert_eq!(unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		assert_eq!(wire["messages"][0]["content"][0]["source"], fixture["image"]["source"]);
 		assert_eq!(
 			wire["messages"][0]["content"][1]["source"],
@@ -2396,7 +2393,7 @@ mod tests {
 			json!([{"type":"url","url":"https://example.test/image.png"}]),
 		);
 		let (wire, unsupported) = encoded(&request(vec![native_url]), &compat);
-		assert!(unsupported.is_empty());
+		assert_eq!(unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		assert_eq!(
 			wire["messages"][0]["content"][0]["source"],
 			json!({"type":"url","url":"https://example.test/image.png"})
@@ -2415,7 +2412,7 @@ mod tests {
 		);
 		let native_file_request = request(vec![native_file]);
 		let (wire, unsupported) = encoded(&native_file_request, &compat);
-		assert!(unsupported.is_empty());
+		assert_eq!(unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		assert_eq!(
 			wire["messages"][0]["content"][0]["source"],
 			json!({"type":"file","file_id":"file_012345"})
@@ -2725,7 +2722,7 @@ mod tests {
 			.build();
 		let (wire, unsupported) =
 			encoded(&request(vec![item(ItemKind::ToolResult(result))]), &Compat::default());
-		assert!(unsupported.is_empty());
+		assert_eq!(unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		assert_eq!(wire["messages"][0]["content"][0]["content"], fixture["content"]);
 	}
 
@@ -3091,7 +3088,7 @@ mod tests {
 				.build(),
 		));
 		let (wire, unsupported) = encoded(&request(vec![inline]), &Compat::default());
-		assert!(unsupported.is_empty());
+		assert_eq!(unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		assert_eq!(wire["messages"][0]["content"][0], fixture["documents"]["base64"]);
 
 		let mut mixed = item(ItemKind::Message(
@@ -3119,7 +3116,7 @@ mod tests {
 		);
 		let mut remote_request = request(vec![mixed]);
 		let (wire, unsupported) = encoded(&remote_request, &Compat::default());
-		assert!(unsupported.is_empty());
+		assert_eq!(unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		assert_eq!(wire["messages"][0]["content"][0], fixture["documents"]["url"]);
 		assert_eq!(
 			wire["messages"][0]["content"][1]["source"],
@@ -3133,7 +3130,7 @@ mod tests {
 				.build(),
 		);
 		let (wire, unsupported) = encoded(&remote_request, &Compat::default());
-		assert!(unsupported.is_empty());
+		assert_eq!(unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		assert_eq!(
 			wire["messages"][0]["content"][2]["cache_control"],
 			json!({"type":"ephemeral","ttl":"1h"})

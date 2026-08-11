@@ -10,7 +10,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::BoxFuture;
-use http::{Method, Request, Response, header::ACCEPT};
+use http::{Request, Response};
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::Incoming;
 use omp_core::Str;
@@ -25,12 +25,7 @@ use omp_llm_broker::{
 	usage::{UsageError, UsageHttp, UsageHttpResponse, UsageManager},
 };
 use omp_llm_catalog::{
-	codex::{CODEX_CLIENT_VERSION, CODEX_ORIGINATOR},
-	discovery::{
-		Account, Error as DiscoveryError, HttpClient as DiscoveryClient, HttpResponse,
-		discovered_card, parse_cca_models, parse_codex_models, parse_gitlab_duo_models,
-	},
-	models::{Modality, ModelCard},
+	discovery::{Account, DiscoveryHttp, Error as DiscoveryError, HttpResponse, SealedBody},
 	provider::{AuthSpec, ProviderEntry, RegistryMapping},
 };
 use omp_llm_egress::{
@@ -111,20 +106,20 @@ impl UsageHttp for BrokerHttp {
 /// Account keys are non-secret database ids. Requests carry an exact
 /// [`CredentialLease`] extension, so the shared auth-injection stack can never
 /// substitute a sibling account.
-pub(crate) struct CatalogDiscoveryHttp<S> {
+pub(crate) struct BrokerDiscoveryHttp<S> {
 	egress: S,
 	store:  Arc<Store>,
 	source: BrokerCredentialSource,
 }
 
-impl<S> CatalogDiscoveryHttp<S> {
+impl<S> BrokerDiscoveryHttp<S> {
 	pub(crate) const fn new(egress: S, store: Arc<Store>, source: BrokerCredentialSource) -> Self {
 		Self { egress, store, source }
 	}
 }
 
 #[async_trait]
-impl<S> DiscoveryClient for CatalogDiscoveryHttp<S>
+impl<S> DiscoveryHttp for BrokerDiscoveryHttp<S>
 where
 	S: Service<Request<Body>, Response = Response<Incoming>> + Clone + Send + Sync + 'static,
 	S::Future: Send,
@@ -139,488 +134,116 @@ where
 				states:   &[CredentialState::Active, CredentialState::Blocked],
 				now_ms:   current_epoch_ms(),
 			})
-			.map_err(discovery_transport)?;
+			.map_err(DiscoveryError::transport)?;
 		if credentials.is_empty()
 			&& matches!(&provider.auth, AuthSpec::None | AuthSpec::OptionalBearer { .. })
 		{
 			return Ok(vec![Account::provider_default()]);
 		}
+		let region = deployment_region(provider);
 		let mut accounts = Vec::with_capacity(credentials.len());
 		for credential in credentials {
 			let lease = self
 				.store
 				.lease(credential.id)
-				.map_err(discovery_transport)?
-				.ok_or_else(|| DiscoveryError::Transport("discovery account lease is stale".into()))?;
-			let metadata = self.source.metadata(&lease).map_err(discovery_transport)?;
+				.map_err(DiscoveryError::transport)?
+				.ok_or_else(|| DiscoveryError::transport("discovery account lease is stale"))?;
+			let metadata = self
+				.source
+				.metadata(&lease)
+				.map_err(DiscoveryError::transport)?;
 			accounts.push(
 				Account::new(credential.id.to_string(), credential.identity)
 					.with_account_id(metadata.account_id)
-					.with_scope(metadata.organization_id, metadata.project_id),
+					.with_scope(metadata.organization_id, metadata.project_id)
+					.with_region(region.clone()),
 			);
 		}
 		Ok(accounts)
 	}
 
-	async fn get(
-		&self,
-		provider: &ProviderEntry,
-		url: &str,
-	) -> Result<HttpResponse, DiscoveryError> {
-		self.send(provider, &Account::provider_default(), url).await
-	}
-
-	async fn get_for_account(
+	async fn execute(
 		&self,
 		provider: &ProviderEntry,
 		account: &Account,
-		url: &str,
+		request: Request<Bytes>,
 	) -> Result<HttpResponse, DiscoveryError> {
-		self.send(provider, account, url).await
-	}
-
-	async fn discover_specialized(
-		&self,
-		provider: &ProviderEntry,
-		account: &Account,
-	) -> Result<Vec<ModelCard>, DiscoveryError> {
-		match provider.id.as_str() {
-			"openai-codex" | "openai-codex-device" => {
-				let base = provider.base_url.trim_end_matches('/');
-				let mut headers = vec![
-					("OpenAI-Beta", "responses=experimental"),
-					("originator", CODEX_ORIGINATOR),
-					("version", CODEX_CLIENT_VERSION),
-				];
-				if let Some(account_id) = account.account_id.as_deref() {
-					headers.push(("chatgpt-account-id", account_id));
-				}
-				let mut last_error = None;
-				for path in [
-					format!("/codex/models?client_version={CODEX_CLIENT_VERSION}"),
-					format!("/models?client_version={CODEX_CLIENT_VERSION}"),
-				] {
-					match self
-						.send_request(
-							provider,
-							account,
-							Method::GET,
-							&format!("{base}{path}"),
-							Bytes::new(),
-							&headers,
-						)
-						.await
-					{
-						Ok(response) if (200..300).contains(&response.status) => {
-							return parse_codex_models(provider, &response.body);
-						},
-						Ok(response) => {
-							last_error = Some(DiscoveryError::HttpStatus {
-								provider: provider.id.clone(),
-								status:   response.status,
-							});
-						},
-						Err(error) => last_error = Some(error),
-					}
-				}
-				Err(last_error.unwrap_or_else(|| {
-					DiscoveryError::Transport("Codex discovery had no endpoint".into())
-				}))
-			},
-			"cursor" => {
-				let response = self
-					.send_request(
-						provider,
-						account,
-						Method::POST,
-						&format!(
-							"{}/agent.v1.AgentService/GetUsableModels",
-							provider.base_url.trim_end_matches('/')
-						),
-						omp_llm_cursor::model_discovery_request(),
-						&[
-							("content-type", "application/proto"),
-							("accept", "application/proto"),
-							("te", "trailers"),
-							("x-ghost-mode", "true"),
-							("x-cursor-client-version", "cli-2026.07.23-e383d2b"),
-							("x-cursor-client-type", "cli"),
-						],
-					)
-					.await?;
-				if !(200..300).contains(&response.status) {
-					return Err(DiscoveryError::HttpStatus {
-						provider: provider.id.clone(),
-						status:   response.status,
-					});
-				}
-				omp_llm_cursor::decode_model_discovery(&response.body)
-					.map_err(discovery_transport)
-					.map(|models| {
-						models
-							.into_iter()
-							.map(|model| {
-								let family = model
-									.id
-									.as_str()
-									.split(['/', '-'])
-									.next()
-									.unwrap_or(model.id.as_str());
-								let mut card = discovered_card(
-									provider,
-									model.id.as_str(),
-									model.name.as_str(),
-									family,
-								);
-								card.reasoning = model.reasoning;
-								card.context_window = if model.max_mode { 1_000_000 } else { 200_000 };
-								card.max_output_tokens = 64_000;
-								if model.id.contains("claude")
-									|| model.id.contains("gemini")
-									|| model.id.contains("gpt-")
-									|| model.id.contains("codex")
-								{
-									card.inputs.push(Modality::Image);
-								}
-								card
-							})
-							.collect()
-					})
-			},
-			"devin" => {
-				let response = self.send_devin_discovery(provider, account).await?;
-				if !(200..300).contains(&response.status) {
-					return Err(DiscoveryError::HttpStatus {
-						provider: provider.id.clone(),
-						status:   response.status,
-					});
-				}
-				omp_llm_devin::decode_model_discovery(&response.body)
-					.map_err(discovery_transport)
-					.map(|models| {
-						models
-							.into_iter()
-							.map(|model| {
-								let mut card = discovered_card(
-									provider,
-									model.id.as_str(),
-									model.name.as_str(),
-									model
-										.id
-										.as_str()
-										.split(['-', '_'])
-										.next()
-										.unwrap_or(model.id.as_str()),
-								);
-								card.reasoning = model.reasoning;
-								card.context_window = model.context_window;
-								card.max_output_tokens = model.max_output_tokens;
-								if model.supports_images {
-									card.inputs.push(Modality::Image);
-								}
-								card
-							})
-							.collect()
-					})
-			},
-			"gitlab-duo-agent" => self.discover_gitlab_duo(provider, account).await,
-			"google-antigravity" | "google-gemini-cli" => {
-				let mut endpoints = Vec::with_capacity(1 + provider.fallback_base_urls.len());
-				endpoints.push(provider.base_url.as_str());
-				endpoints.extend(provider.fallback_base_urls.iter().map(Str::as_str));
-				let mut last_error = None;
-				for endpoint in endpoints {
-					match self
-						.send_request(
-							provider,
-							account,
-							Method::POST,
-							&format!("{}/v1internal:fetchAvailableModels", endpoint.trim_end_matches('/')),
-							Bytes::from_static(b"{}"),
-							&[("content-type", "application/json")],
-						)
-						.await
-					{
-						Ok(response) if (200..300).contains(&response.status) => {
-							return parse_cca_models(provider, &response.body);
-						},
-						Ok(response) => {
-							last_error = Some(DiscoveryError::HttpStatus {
-								provider: provider.id.clone(),
-								status:   response.status,
-							});
-						},
-						Err(error) => last_error = Some(error),
-					}
-				}
-				Err(last_error.unwrap_or_else(|| {
-					DiscoveryError::Transport("CCA discovery had no endpoint".into())
-				}))
-			},
-			_ => Err(DiscoveryError::UnsupportedProvider(provider.id.clone())),
-		}
-	}
-}
-
-impl<S> CatalogDiscoveryHttp<S>
-where
-	S: Service<Request<Body>, Response = Response<Incoming>> + Clone + Send + Sync + 'static,
-	S::Future: Send,
-	S::Error: Display + Send + Sync,
-{
-	async fn send(
-		&self,
-		provider: &ProviderEntry,
-		account: &Account,
-		url: &str,
-	) -> Result<HttpResponse, DiscoveryError> {
-		self
-			.send_request(provider, account, Method::GET, url, Bytes::new(), &[])
-			.await
-	}
-
-	async fn send_request(
-		&self,
-		provider: &ProviderEntry,
-		account: &Account,
-		method: Method,
-		url: &str,
-		body: Bytes,
-		extra_headers: &[(&str, &str)],
-	) -> Result<HttpResponse, DiscoveryError> {
-		let mut request = Request::builder()
-			.method(method)
-			.uri(url)
-			.header(ACCEPT, "application/json")
-			.body(Full::new(body))
-			.map_err(discovery_transport)?;
-		if provider.id == "cursor" {
-			*request.version_mut() = http::Version::HTTP_2;
-		}
+		let sealed_body = request.extensions().get::<SealedBody>().is_some();
+		let (parts, body) = request.into_parts();
+		let mut request = Request::from_parts(parts, Full::new(body));
 		for (name, value) in &provider.headers {
-			let name = http::HeaderName::try_from(name.as_str()).map_err(discovery_transport)?;
-			let value = http::HeaderValue::try_from(value.as_str()).map_err(discovery_transport)?;
+			let name = http::HeaderName::try_from(name.as_str()).map_err(DiscoveryError::transport)?;
+			if request.headers().contains_key(&name) {
+				continue;
+			}
+			let value =
+				http::HeaderValue::try_from(value.as_str()).map_err(DiscoveryError::transport)?;
 			request.headers_mut().insert(name, value);
 		}
-		for (name, value) in extra_headers {
-			let name = http::HeaderName::try_from(*name).map_err(discovery_transport)?;
-			let value = http::HeaderValue::try_from(*value).map_err(discovery_transport)?;
-			request.headers_mut().insert(name, value);
-		}
-		if account.key.is_empty() {
+		if sealed_body {
+			// The protocol could not build its own body: the credential lives
+			// inside the payload, so only the broker may write it.
+			if account.key.is_empty() {
+				return Err(DiscoveryError::transport(
+					"sealed-body discovery requires an account credential",
+				));
+			}
+			self
+				.source
+				.apply_sealed_discovery_body(&self.lease(provider, account)?, &mut request)
+				.map_err(DiscoveryError::transport)?;
+		} else if account.key.is_empty() {
+			// No enumerated account: the shared auth stack selects the
+			// provider-wide credential.
 			request
 				.extensions_mut()
 				.insert(AuthContext::new(credential_provider(provider)));
 		} else {
-			let id = account
-				.key
-				.parse::<u64>()
-				.map_err(|_| DiscoveryError::Transport("invalid discovery account key".into()))?;
-			let lease = self
-				.store
-				.lease(id)
-				.map_err(discovery_transport)?
-				.filter(|lease| lease.provider() == credential_provider(provider))
-				.ok_or_else(|| DiscoveryError::Transport("discovery account lease is stale".into()))?;
-			request.extensions_mut().insert::<CredentialLease>(lease);
+			request
+				.extensions_mut()
+				.insert::<CredentialLease>(self.lease(provider, account)?);
 		}
 		let response = self
 			.egress
 			.clone()
 			.oneshot(request)
 			.await
-			.map_err(discovery_transport)?;
+			.map_err(DiscoveryError::transport)?;
 		let status = response.status().as_u16();
 		let body = response
 			.into_body()
 			.collect()
 			.await
-			.map_err(discovery_transport)?
+			.map_err(DiscoveryError::transport)?
 			.to_bytes();
 		Ok(HttpResponse::new(status, body))
 	}
+}
 
-	async fn send_devin_discovery(
+impl<S> BrokerDiscoveryHttp<S> {
+	/// Resolves the lease named by a non-secret discovery account key.
+	///
+	/// The key is a database id, never credential material. A lease belonging
+	/// to a different provider is rejected rather than substituted, so a
+	/// specialized protocol can never list a sibling account's models.
+	fn lease(
 		&self,
 		provider: &ProviderEntry,
 		account: &Account,
-	) -> Result<HttpResponse, DiscoveryError> {
+	) -> Result<CredentialLease, DiscoveryError> {
 		let id = account
 			.key
 			.parse::<u64>()
-			.map_err(|_| DiscoveryError::Transport("invalid Devin discovery account key".into()))?;
-		let lease = self
+			.map_err(|_| DiscoveryError::transport("invalid discovery account key"))?;
+		self
 			.store
 			.lease(id)
-			.map_err(discovery_transport)?
+			.map_err(DiscoveryError::transport)?
 			.filter(|lease| lease.provider() == credential_provider(provider))
-			.ok_or_else(|| {
-				DiscoveryError::Transport("Devin discovery account lease is stale".into())
-			})?;
-		let mut request = Request::builder()
-			.method(Method::POST)
-			.uri(format!(
-				"{}/exa.api_server_pb.ApiServerService/GetCliModelConfigs",
-				provider.base_url.trim_end_matches('/')
-			))
-			.header(ACCEPT, "*/*")
-			.header("content-type", "application/proto")
-			.header("connect-protocol-version", "1")
-			.body(Full::new(Bytes::new()))
-			.map_err(discovery_transport)?;
-		self
-			.source
-			.apply_devin_discovery(&lease, &mut request)
-			.map_err(discovery_transport)?;
-		let response = self
-			.egress
-			.clone()
-			.oneshot(request)
-			.await
-			.map_err(discovery_transport)?;
-		let status = response.status().as_u16();
-		let body = response
-			.into_body()
-			.collect()
-			.await
-			.map_err(discovery_transport)?
-			.to_bytes();
-		Ok(HttpResponse::new(status, body))
-	}
-
-	async fn discover_gitlab_duo(
-		&self,
-		provider: &ProviderEntry,
-		account: &Account,
-	) -> Result<Vec<ModelCard>, DiscoveryError> {
-		if let Some(namespace) = account.organization_id.as_deref() {
-			let cards = self
-				.gitlab_namespace_models(provider, account, namespace)
-				.await?;
-			if !cards.is_empty() {
-				return Ok(cards);
-			}
-		}
-		if let Some(project) = account.project_id.as_deref() {
-			if let Some(namespace) = self
-				.gitlab_project_namespace(provider, account, project)
-				.await?
-			{
-				let cards = self
-					.gitlab_namespace_models(provider, account, &namespace)
-					.await?;
-				if !cards.is_empty() {
-					return Ok(cards);
-				}
-			}
-		}
-		for page in 1..=50 {
-			let url = format!(
-				"{}/api/v4/groups?top_level_only=true&per_page=100&page={page}",
-				provider.base_url.trim_end_matches('/')
-			);
-			let response = self
-				.send_request(provider, account, Method::GET, &url, Bytes::new(), &[])
-				.await?;
-			if !(200..300).contains(&response.status) {
-				return Err(DiscoveryError::HttpStatus {
-					provider: provider.id.clone(),
-					status:   response.status,
-				});
-			}
-			let groups: Vec<serde_json::Value> =
-				serde_json::from_slice(&response.body).map_err(discovery_transport)?;
-			let count = groups.len();
-			for group in groups {
-				let Some(namespace) = group.get("id").and_then(serde_json::Value::as_u64) else {
-					continue;
-				};
-				let cards = self
-					.gitlab_namespace_models(provider, account, &namespace.to_string())
-					.await?;
-				if !cards.is_empty() {
-					return Ok(cards);
-				}
-			}
-			if count < 100 {
-				break;
-			}
-		}
-		Err(DiscoveryError::InvalidPayload {
-			provider: provider.id.clone(),
-			detail:   "no GitLab namespace exposes Duo models".into(),
-		})
-	}
-
-	async fn gitlab_project_namespace(
-		&self,
-		provider: &ProviderEntry,
-		account: &Account,
-		project: &str,
-	) -> Result<Option<String>, DiscoveryError> {
-		let encoded = url::form_urlencoded::byte_serialize(project.as_bytes()).collect::<String>();
-		let url = format!("{}/api/v4/projects/{encoded}", provider.base_url.trim_end_matches('/'));
-		let response = self
-			.send_request(provider, account, Method::GET, &url, Bytes::new(), &[])
-			.await?;
-		if !(200..300).contains(&response.status) {
-			return Err(DiscoveryError::HttpStatus {
-				provider: provider.id.clone(),
-				status:   response.status,
-			});
-		}
-		let payload: serde_json::Value =
-			serde_json::from_slice(&response.body).map_err(discovery_transport)?;
-		Ok(payload
-			.pointer("/namespace/root_ancestor/id")
-			.or_else(|| payload.pointer("/namespace/id"))
-			.and_then(|value| {
-				value
-					.as_str()
-					.map(ToOwned::to_owned)
-					.or_else(|| value.as_u64().map(|value| value.to_string()))
-			}))
-	}
-
-	async fn gitlab_namespace_models(
-		&self,
-		provider: &ProviderEntry,
-		account: &Account,
-		namespace: &str,
-	) -> Result<Vec<ModelCard>, DiscoveryError> {
-		const QUERY: &str = "query lsp_aiChatAvailableModels($rootNamespaceId: GroupID!) { \
-		                     aiChatAvailableModels(rootNamespaceId: $rootNamespaceId) { \
-		                     defaultModel { name ref } selectableModels { name ref } pinnedModel { \
-		                     name ref } } }";
-		let root_namespace_id = if namespace.bytes().all(|byte| byte.is_ascii_digit()) {
-			format!("gid://gitlab/Group/{namespace}")
-		} else {
-			namespace.to_owned()
-		};
-		let body = serde_json::to_vec(&serde_json::json!({
-			"query": QUERY,
-			"variables": { "rootNamespaceId": root_namespace_id },
-		}))
-		.map_err(discovery_transport)?;
-		let response = self
-			.send_request(
-				provider,
-				account,
-				Method::POST,
-				&format!("{}/api/graphql", provider.base_url.trim_end_matches('/')),
-				Bytes::from(body),
-				&[("content-type", "application/json")],
-			)
-			.await?;
-		if !(200..300).contains(&response.status) {
-			return Err(DiscoveryError::HttpStatus {
-				provider: provider.id.clone(),
-				status:   response.status,
-			});
-		}
-		parse_gitlab_duo_models(provider, &response.body)
+			.ok_or_else(|| DiscoveryError::transport("discovery account lease is stale"))
 	}
 }
+
 fn current_epoch_ms() -> u64 {
 	let millis = SystemTime::now()
 		.duration_since(UNIX_EPOCH)
@@ -636,8 +259,21 @@ fn credential_provider(provider: &ProviderEntry) -> &str {
 	}
 }
 
-fn discovery_transport(error: impl Display) -> DiscoveryError {
-	DiscoveryError::Transport(Str::from(error.to_string()))
+/// Reads the cloud region a provider's signing scheme needs from the process
+/// environment.
+///
+/// Discovery protocols receive this through [`Account::region`] so they never
+/// perform environment lookups of their own. Only AWS `SigV4` providers carry a
+/// region today; every other scheme resolves its endpoint from catalog data.
+fn deployment_region(provider: &ProviderEntry) -> Option<Str> {
+	if !matches!(&provider.auth, AuthSpec::AwsSigV4) {
+		return None;
+	}
+	["AWS_REGION", "AWS_DEFAULT_REGION"]
+		.into_iter()
+		.find_map(|name| std::env::var(name).ok())
+		.filter(|region| !region.is_empty())
+		.map(Str::from)
 }
 
 fn oauth_error(error: String, transient: bool) -> HttpError {

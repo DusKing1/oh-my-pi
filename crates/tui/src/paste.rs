@@ -484,7 +484,7 @@ fn percent_decode(text: &str) -> Str {
 			index += 1;
 		}
 	}
-	Str::from(String::from_utf8_lossy(&output).as_ref())
+	Str::from_utf8_lossy(&output)
 }
 
 fn shell_unescape(text: &str) -> Str {

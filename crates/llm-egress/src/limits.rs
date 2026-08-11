@@ -552,7 +552,7 @@ mod tests {
 
 	#[test]
 	fn response_observation_classifies_auth_throttle_and_reset_headers() {
-		let now = UNIX_EPOCH + Duration::from_millis(1_000_000);
+		let now = UNIX_EPOCH + Duration::from_secs(1000);
 		let mut headers = HeaderMap::new();
 		headers.insert("x-ratelimit-reset-ms", http::HeaderValue::from_static("2500"));
 		for status in [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN, StatusCode::TOO_MANY_REQUESTS]

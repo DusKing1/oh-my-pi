@@ -17,7 +17,7 @@ use std::{
 use futures::{StreamExt, future::join_all, stream::BoxStream};
 use omp_core::Str;
 use omp_llm_catalog::{
-	discovery::{self, Account, HttpClient},
+	discovery::{self, Account, Discovery},
 	models::{Availability, Modality, ModelCard, PriceUnit, Source},
 	provider::{AuthSpec, Facet, ProviderCatalog, ProviderEntry},
 	registry::{Cursor, ListFilter, ListSnapshot, ModelEvent, Registry},
@@ -40,7 +40,7 @@ pub type WatchModelsStream = BoxStream<'static, Result<pb::ModelEvent, Status>>;
 pub struct DiscoveryService {
 	registry:      Arc<RwLock<Registry>>,
 	providers:     Arc<ProviderCatalog>,
-	http:          Option<Arc<dyn HttpClient>>,
+	discovery:     Option<Discovery>,
 	refresh_locks: Arc<Mutex<BTreeMap<Str, Arc<AsyncMutex<()>>>>>,
 	_maintenance:  Arc<Maintenance>,
 }
@@ -82,14 +82,14 @@ impl DiscoveryService {
 	/// Creates a discovery service over a configured joined registry.
 	#[must_use]
 	pub fn new(registry: Registry, providers: ProviderCatalog) -> Self {
-		let http = registry.discovery_client();
+		let discovery = registry.discovery();
 		let interval_ms = (registry.source_ttl_ms() / 2).clamp(1, 30_000);
 		let registry = Arc::new(RwLock::new(registry));
 		let maintenance = Arc::new(Maintenance::start(&registry, interval_ms));
 		Self {
 			registry,
 			providers: Arc::new(providers),
-			http,
+			discovery,
 			refresh_locks: Arc::new(Mutex::new(BTreeMap::new())),
 			_maintenance: maintenance,
 		}
@@ -101,17 +101,17 @@ impl DiscoveryService {
 	pub fn from_shared(
 		registry: Arc<RwLock<Registry>>,
 		providers: Arc<ProviderCatalog>,
-		http: Arc<dyn HttpClient>,
+		discovery: Discovery,
 	) -> Self {
 		registry
 			.write()
-			.configure_discovery(providers.as_ref().clone(), Arc::clone(&http));
+			.configure_discovery(providers.as_ref().clone(), discovery.clone());
 		let interval_ms = (registry.read().source_ttl_ms() / 2).clamp(1, 30_000);
 		let maintenance = Arc::new(Maintenance::start(&registry, interval_ms));
 		Self {
 			registry,
 			providers,
-			http: Some(http),
+			discovery: Some(discovery),
 			refresh_locks: Arc::new(Mutex::new(BTreeMap::new())),
 			_maintenance: maintenance,
 		}
@@ -228,9 +228,10 @@ impl DiscoveryService {
 	) -> Result<Response<pb::ListModelsResponse>, Status> {
 		let requested = request.into_inner().provider;
 		let targets = self.refresh_targets(requested.as_str())?;
-		let http = self.http.clone().ok_or_else(|| {
-			Status::failed_precondition("model discovery HTTP client is not configured")
-		})?;
+		let discovery = self
+			.discovery
+			.clone()
+			.ok_or_else(|| Status::failed_precondition("model discovery is not configured"))?;
 		let locks = targets
 			.iter()
 			.map(|entry| self.provider_refresh_lock(entry.id.as_str()))
@@ -243,7 +244,7 @@ impl DiscoveryService {
 		let gathered = join_all(
 			targets
 				.into_iter()
-				.map(|entry| gather_provider(Arc::clone(&http), entry)),
+				.map(|entry| gather_provider(discovery.clone(), entry)),
 		)
 		.await;
 		let explicitly_requested = !requested.is_empty();
@@ -333,8 +334,8 @@ struct GatheredProvider {
 	first_error: Option<discovery::Error>,
 }
 
-async fn gather_provider(http: Arc<dyn HttpClient>, entry: ProviderEntry) -> GatheredProvider {
-	let mut accounts = match http.accounts(&entry).await {
+async fn gather_provider(discovery: Discovery, entry: ProviderEntry) -> GatheredProvider {
+	let mut accounts = match discovery.accounts(&entry).await {
 		Ok(accounts) => accounts,
 		Err(error) => {
 			return GatheredProvider {
@@ -348,10 +349,10 @@ async fn gather_provider(http: Arc<dyn HttpClient>, entry: ProviderEntry) -> Gat
 	accounts.sort();
 	let account_keys = accounts.iter().map(|account| account.key.clone()).collect();
 	let results = join_all(accounts.into_iter().map(|account| {
-		let http = Arc::clone(&http);
+		let discovery = discovery.clone();
 		let entry = entry.clone();
 		async move {
-			let result = discovery::discover_account(&entry, &account, http.as_ref()).await;
+			let result = discovery.discover(&entry, &account).await;
 			(account, result)
 		}
 	}))
@@ -538,7 +539,9 @@ const fn source_to_proto(value: Source) -> i32 {
 
 fn discovery_status(error: discovery::Error) -> Status {
 	match error {
-		discovery::Error::UnsupportedProvider(_) => Status::invalid_argument(error.to_string()),
+		discovery::Error::UnsupportedProvider(_) | discovery::Error::UnregisteredProtocol { .. } => {
+			Status::invalid_argument(error.to_string())
+		},
 		discovery::Error::Transport(_) | discovery::Error::HttpStatus { .. } => {
 			Status::unavailable(error.to_string())
 		},
@@ -565,7 +568,7 @@ mod tests {
 	use futures::StreamExt;
 	use omp_core::Str;
 	use omp_llm_catalog::{
-		discovery::{Error, HttpClient, HttpResponse},
+		discovery::{Account, Discovery, DiscoveryHttp, Error, HttpResponse},
 		models::{Availability, ModelCard},
 		provider::{ProviderCatalog, ProviderEntry, load_providers},
 		registry::{CredentialView, Registry},
@@ -776,8 +779,13 @@ facets = ["chat"]
 	struct OllamaHttp;
 
 	#[async_trait]
-	impl HttpClient for OllamaHttp {
-		async fn get(&self, _provider: &ProviderEntry, _url: &str) -> Result<HttpResponse, Error> {
+	impl DiscoveryHttp for OllamaHttp {
+		async fn execute(
+			&self,
+			_provider: &ProviderEntry,
+			_account: &Account,
+			_request: http::Request<Bytes>,
+		) -> Result<HttpResponse, Error> {
 			Ok(HttpResponse::new(200, Bytes::from_static(br#"{"models":[{"name":"fresh:latest"}]}"#)))
 		}
 	}
@@ -799,7 +807,7 @@ facets = ["chat"]
 			Availability::Available,
 		)])));
 		let mut registry = Registry::from_cards(&[], credentials);
-		registry.configure_discovery(providers.clone(), Arc::new(OllamaHttp));
+		registry.configure_discovery(providers.clone(), Discovery::new(Arc::new(OllamaHttp)));
 		let response = DiscoveryService::new(registry, providers)
 			.refresh_models(Request::new(pb::RefreshModelsRequest { provider: "ollama".to_owned() }))
 			.await
@@ -814,8 +822,13 @@ facets = ["chat"]
 	}
 
 	#[async_trait]
-	impl HttpClient for BlockingHttp {
-		async fn get(&self, _provider: &ProviderEntry, _url: &str) -> Result<HttpResponse, Error> {
+	impl DiscoveryHttp for BlockingHttp {
+		async fn execute(
+			&self,
+			_provider: &ProviderEntry,
+			_account: &Account,
+			_request: http::Request<Bytes>,
+		) -> Result<HttpResponse, Error> {
 			self.started.notify_one();
 			pending().await
 		}
@@ -843,7 +856,7 @@ facets = ["chat"]
 		);
 		registry.configure_discovery(
 			providers.clone(),
-			Arc::new(BlockingHttp { started: Arc::clone(&started) }),
+			Discovery::new(Arc::new(BlockingHttp { started: Arc::clone(&started) })),
 		);
 		let service = DiscoveryService::new(registry, providers);
 		let refresh = {

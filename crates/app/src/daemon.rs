@@ -78,7 +78,7 @@ use tokio::task::JoinHandle;
 use tower::Layer as _;
 use zeroize::Zeroizing;
 
-use crate::auth_backend::{BrokerHttp, CatalogDiscoveryHttp};
+use crate::auth_backend::{BrokerDiscoveryHttp, BrokerHttp};
 
 const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(30);
 const GATEWAY_TOKEN_ENV: &str = "OMP_GATEWAY_TOKEN";
@@ -298,7 +298,7 @@ pub enum DaemonError {
 /// `TailTwo` placement and short retention are Anthropic's breakpoint
 /// semantics, measured cheapest over a 1.2k-session replay. Other transports
 /// read the same [`omp_proto::inference::v1::CacheHint`] fields differently —
-/// the OpenAI Responses dialect projects `session_key` into `prompt_cache_key`
+/// the `OpenAI` Responses dialect projects `session_key` into `prompt_cache_key`
 /// — so they keep the inert default and behave exactly as before.
 ///
 /// Keep-alive refreshes stay off. They are worth about a thirtieth of what
@@ -312,6 +312,9 @@ fn cache_policy(transport: TransportId) -> CachePolicy {
 	}
 }
 
+/// Running daemon listeners and their shared broker state.
+///
+/// Dropping the handle releases listener controls and background tasks.
 pub struct DaemonHandle {
 	readiness: DaemonReadiness,
 	controls:  Vec<ListenerControl>,
@@ -329,6 +332,9 @@ struct DaemonState {
 impl DaemonHandle {
 	/// Builds the complete inference runtime, binds every requested listener,
 	/// and returns only after all reported endpoints are ready.
+	///
+	/// Provider-owned discovery protocols are registered here as the single
+	/// application wiring point for new discovery transports.
 	pub async fn start(config: DaemonConfig) -> Result<Self, DaemonError> {
 		if config.listeners.is_empty() {
 			return Err(DaemonError::MissingListener);
@@ -402,11 +408,11 @@ impl DaemonHandle {
 			.layer(client.as_ref().clone());
 		let egress = AuthInjectLayer::new(credential_source.clone()).layer(limits);
 		let chat_egress = CodexWebSocketEgress::new(egress.clone(), credential_source.clone());
-		let discovery_http = Arc::new(CatalogDiscoveryHttp::new(
+		let discovery = crate::discovery::register(Arc::new(BrokerDiscoveryHttp::new(
 			egress.clone(),
 			Arc::clone(&store),
 			credential_source.clone(),
-		));
+		)));
 		let route_providers = usable_providers(&providers, &store, &adc_routes, apple_fm_available);
 		let mut specialized = config.specialized;
 		mount_apple_chat(&mut specialized, apple_chat);
@@ -566,7 +572,7 @@ impl DaemonHandle {
 		let discovery = DiscoveryService::from_shared(
 			Arc::clone(&resolver_registry),
 			Arc::clone(&providers),
-			discovery_http,
+			discovery,
 		);
 		let media = MediaFacets::from_facets(
 			Arc::clone(&blobs),
@@ -996,10 +1002,7 @@ fn route_dependencies(
 	}
 }
 
-fn provider_route(
-	provider: &ProviderEntry,
-	adc_routes: &BTreeMap<Str, AdcRoute>,
-) -> ProviderRoute {
+fn provider_route(provider: &ProviderEntry, adc_routes: &BTreeMap<Str, AdcRoute>) -> ProviderRoute {
 	let mut route = ProviderRoute {
 		project:    env_str(&["GOOGLE_CLOUD_PROJECT", "CLOUDSDK_CORE_PROJECT"]),
 		region:     env_str(&[

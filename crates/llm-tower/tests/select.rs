@@ -108,7 +108,7 @@ fn service(script: RoutedScript, blocks: Arc<Mutex<BlockTable>>) -> Select<Route
 	Select::new(script, Arc::new(TwoCredentials), Arc::new(FixedLeases), blocks)
 }
 
-fn lease_id(routed: &Routed) -> u64 {
+const fn lease_id(routed: &Routed) -> u64 {
 	routed
 		.lease
 		.as_ref()

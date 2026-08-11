@@ -1681,10 +1681,7 @@ async fn receive_callback(
 	parsed
 }
 
-fn parse_callback_request(
-	request: &[u8],
-	expected_state: &str,
-) -> Result<(Str, Str), OAuthError> {
+fn parse_callback_request(request: &[u8], expected_state: &str) -> Result<(Str, Str), OAuthError> {
 	let request = std::str::from_utf8(request)
 		.map_err(|_| OAuthError::InvalidCallback("callback is not UTF-8".into()))?;
 	let target = request
@@ -1697,10 +1694,7 @@ fn parse_callback_request(
 	callback_values(&url, expected_state)
 }
 
-fn parse_pasted_code(
-	input: &str,
-	expected_state: &str,
-) -> Result<(Str, Option<Str>), OAuthError> {
+fn parse_pasted_code(input: &str, expected_state: &str) -> Result<(Str, Option<Str>), OAuthError> {
 	if let Ok(url) = Url::parse(input) {
 		let (code, state) = callback_values(&url, expected_state)?;
 		Ok((code, Some(state)))
@@ -2451,7 +2445,7 @@ mod tests {
 			.filter(|params| matches!(params.exchange, Some(CustomExchange::ApiKeyPaste)))
 			.map(|params| (params.provider.clone(), params.credential_provider.clone()))
 			.collect::<Vec<_>>();
-		assert!(!api_key_providers.is_empty());
+		assert_ne!(api_key_providers, [] as [(omp_core::Str, omp_core::Str); 0]);
 		for (flow_provider, credential_provider) in api_key_providers {
 			let login = engine
 				.begin_login(flow_provider.as_str(), 1_000)

@@ -190,11 +190,9 @@ impl From<ContextError> for TurnError {
 				Str::from("context unknown or evicted; full thread required"),
 				None,
 			),
-			ContextError::Busy => (
-				TurnErrorKind::Overloaded,
-				Str::from("context already has an in-flight turn"),
-				None,
-			),
+			ContextError::Busy => {
+				(TurnErrorKind::Overloaded, Str::from("context already has an in-flight turn"), None)
+			},
 			ContextError::AlreadyExists => {
 				(TurnErrorKind::Conflict, Str::from("context already exists"), None)
 			},
@@ -203,11 +201,9 @@ impl From<ContextError> for TurnError {
 				Str::from("truncate target is beyond the preconditioned head"),
 				None,
 			),
-			ContextError::TurnIdReuse => (
-				TurnErrorKind::Conflict,
-				Str::from("turn_id was reused with different input"),
-				None,
-			),
+			ContextError::TurnIdReuse => {
+				(TurnErrorKind::Conflict, Str::from("turn_id was reused with different input"), None)
+			},
 			ContextError::DedupWindowFull => {
 				(TurnErrorKind::Overloaded, Str::from("turn_id deduplication window is full"), None)
 			},

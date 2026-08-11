@@ -7,7 +7,7 @@ use futures::{StreamExt, stream};
 use http::{Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, StreamBody};
 use hyper::body::{Body, Frame};
-use omp_core::{Str, base64};
+use omp_core::{Str, base64, fmts};
 use omp_llm_types::{
 	AudioEncoding, BlobPart, Props, SpeakEvent, SpeakRequest, TranscribeRequest, TranscribeResponse,
 	TranscriptionGranularity,
@@ -290,9 +290,7 @@ where
 	transcription_response(response, parsed.response_format.as_str(), translate)
 }
 
-fn parse_json_transcription(
-	wire: JsonTranscriptionRequest,
-) -> Result<ParsedTranscription, Str> {
+fn parse_json_transcription(wire: JsonTranscriptionRequest) -> Result<ParsedTranscription, Str> {
 	let (encoded, mime) = match wire.file {
 		JsonAudio::Base64(data) => (data, wire.mime_type),
 		JsonAudio::Object { data, mime_type } => (data, mime_type.unwrap_or(wire.mime_type)),
@@ -324,12 +322,12 @@ where
 		.and_then(|value| value.to_str().ok())
 		.ok_or_else(|| Str::new("multipart Content-Type is required"))?;
 	let boundary = multer::parse_boundary(content_type)
-		.map_err(|error| Str::new(format!("invalid multipart boundary: {error}")))?;
+		.map_err(|error| fmts!("invalid multipart boundary: {error}"))?;
 	let bytes = request
 		.into_body()
 		.collect()
 		.await
-		.map_err(|error| Str::new(format!("failed to read multipart body: {error}")))?
+		.map_err(|error| fmts!("failed to read multipart body: {error}"))?
 		.to_bytes();
 	let source = stream::once(async move { Ok::<Bytes, Infallible>(bytes) });
 	let mut multipart = multer::Multipart::new(source, boundary);
@@ -344,7 +342,7 @@ where
 	while let Some(field) = multipart
 		.next_field()
 		.await
-		.map_err(|error| Str::new(format!("invalid multipart body: {error}")))?
+		.map_err(|error| fmts!("invalid multipart body: {error}"))?
 	{
 		let name = field.name().unwrap_or_default().to_owned();
 		let mime = field
@@ -353,7 +351,7 @@ where
 		let data = field
 			.bytes()
 			.await
-			.map_err(|error| Str::new(format!("invalid multipart field: {error}")))?;
+			.map_err(|error| fmts!("invalid multipart field: {error}"))?;
 		match name.as_str() {
 			"file" => audio = Some(blob_part(data, mime)),
 			"model" => model = Some(text_field(data, "model")?),
@@ -398,8 +396,7 @@ fn parse_granularities(values: &[Str]) -> Result<Vec<TranscriptionGranularity>, 
 }
 
 fn text_field(bytes: Bytes, name: &str) -> Result<Str, Str> {
-	let text =
-		std::str::from_utf8(&bytes).map_err(|_| Str::new(format!("{name} must be UTF-8")))?;
+	let text = std::str::from_utf8(&bytes).map_err(|_| fmts!("{name} must be UTF-8"))?;
 	Ok(Str::from(text))
 }
 
@@ -407,7 +404,7 @@ fn bool_field(bytes: Bytes, name: &str) -> Result<bool, Str> {
 	match text_field(bytes, name)?.as_str() {
 		"true" | "1" => Ok(true),
 		"false" | "0" => Ok(false),
-		_ => Err(Str::new(format!("{name} must be true or false"))),
+		_ => Err(fmts!("{name} must be true or false")),
 	}
 }
 

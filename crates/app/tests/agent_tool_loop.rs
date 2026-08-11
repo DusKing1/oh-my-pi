@@ -397,7 +397,7 @@ async fn production_dialect_runs_one_native_tool_and_serializes_the_follow_up() 
 		})
 		.collect::<Vec<_>>();
 	assert!(wire_images.iter().any(|blob| blob.hash == [7; 32]));
-	assert!(wire_images.iter().any(|blob| *blob == &tool_image));
+	assert!(wire_images.contains(&&tool_image));
 }
 
 #[tokio::test]

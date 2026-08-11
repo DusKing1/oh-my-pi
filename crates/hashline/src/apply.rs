@@ -125,11 +125,7 @@ fn indent(text: &str) -> &str {
 	&text[..text.len() - text.trim_start_matches([' ', '\t']).len()]
 }
 
-fn repair_replacement_indentation(
-	edits: &mut [Edit],
-	lines: &[Str],
-	warnings: &mut Vec<Str>,
-) {
+fn repair_replacement_indentation(edits: &mut [Edit], lines: &[Str], warnings: &mut Vec<Str>) {
 	let mut at = 0;
 	let mut repaired = false;
 	while at < edits.len() {
@@ -214,7 +210,7 @@ fn repair_replacement_indentation(
 			if let Edit::Insert { text, .. } = edit
 				&& !text.trim().is_empty()
 			{
-				*text = Str::new(format!("{shift}{text}"));
+				*text = fmts!("{shift}{text}");
 			}
 		}
 		repaired = true;
@@ -295,10 +291,10 @@ fn repair_landings(edits: &mut [Edit], lines: &[Str], warnings: &mut Vec<Str>) {
 					*cursor = Cursor::AfterAnchor { anchor: crate::types::Anchor { line: landing } };
 				}
 			}
-			warnings.push(Str::new(format!(
+			warnings.push(fmts!(
 				"after-line insertion shifted from line {anchor} to {landing} across {crossed} closer \
 				 line(s)"
-			)));
+			));
 		}
 	}
 }

@@ -14,7 +14,7 @@ use std::{
 };
 
 use futures::{Stream, StreamExt};
-use omp_core::{Str, SparseSet};
+use omp_core::{SparseSet, Str};
 use omp_llm_error::{Classification, Feature, Kind};
 use omp_proto::{
 	inference::v1::{
@@ -28,7 +28,7 @@ use tower::{Layer, Service, ServiceExt};
 
 use crate::{envelope::TurnRequestEnvelope, recovery::classify_turn_error};
 
-const DEFAULT_LEARN_EXPIRY: Duration = Duration::from_secs(6 * 60 * 60);
+const DEFAULT_LEARN_EXPIRY: Duration = Duration::from_hours(6);
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct LearningScope {
@@ -102,7 +102,7 @@ impl LearnLayer {
 	/// Sets the lifetime of learned failures. Zero disables persistence while
 	/// retaining same-turn bounded repair.
 	#[must_use]
-	pub fn with_expiry(mut self, expiry: Duration) -> Self {
+	pub const fn with_expiry(mut self, expiry: Duration) -> Self {
 		self.expiry = expiry;
 		self
 	}
@@ -355,9 +355,7 @@ fn apply_learned(
 	entries.retain(|_, failure| failure.expires_at > now);
 	let mut repairs: Vec<_> = entries
 		.iter()
-		.filter_map(|((learned_scope, key), failure)| {
-			(learned_scope == scope).then(|| (*key, failure.classification.clone()))
-		})
+		.filter(|&((learned_scope, _key), _failure)| learned_scope == scope).map(|((_learned_scope, key), failure)| (*key, failure.classification.clone()))
 		.collect();
 	drop(entries);
 	repairs.sort_unstable_by_key(|(key, _)| *key);
@@ -543,7 +541,7 @@ fn llama_tool_parse_rewrite(req: &TurnRequest) -> Option<TurnRequest> {
 	};
 	match repaired.input.as_mut()? {
 		turn_request::Input::Seed(seed) => {
-			seed.thread.get_or_insert_default().items.push(instruction)
+			seed.thread.get_or_insert_default().items.push(instruction);
 		},
 		turn_request::Input::Incremental(incremental) => incremental
 			.delta
@@ -579,7 +577,7 @@ fn repair_key(classification: &Classification) -> Option<u8> {
 		})
 }
 
-fn repair_reason(classification: &Classification) -> &'static str {
+const fn repair_reason(classification: &Classification) -> &'static str {
 	match classification.feature {
 		Some(Feature::StrictTools) => "disabled unsupported StrictTools (grammar downgrade)",
 		Some(Feature::StructuredOutputs) => "disabled unsupported StructuredOutputs",

@@ -214,7 +214,7 @@ impl EgressImageBackend {
 			},
 		);
 		let url =
-			format!("{}/{}responses", base.trim_end_matches('/'), if codex { "codex/" } else { "" },);
+			format!("{}/{}responses", base.trim_end_matches('/'), if codex { "codex/" } else { "" });
 		let model = model(request, provider, if codex { "gpt-5.5" } else { "gpt-image-2" });
 		let mut content = vec![json!({"type":"input_text", "text":request.prompt})];
 		for image in &request.input_images {
@@ -446,11 +446,10 @@ impl EgressImageBackend {
 						if let Some(text) = part.get("text").and_then(Value::as_str) {
 							texts.push(text);
 						}
-					} else if part.get("type").and_then(Value::as_str) == Some("image_url") {
-						if let Some(url) = part.pointer("/image_url/url").and_then(Value::as_str) {
+					} else if part.get("type").and_then(Value::as_str) == Some("image_url")
+						&& let Some(url) = part.pointer("/image_url/url").and_then(Value::as_str) {
 							urls.push(url);
 						}
-					}
 				}
 			},
 			_ => {},
@@ -639,7 +638,7 @@ fn size_name(size: ImageSize) -> String {
 	format!("{}x{}", size.width, size.height)
 }
 
-fn format_name(format: ImageFormat) -> &'static str {
+const fn format_name(format: ImageFormat) -> &'static str {
 	match format {
 		ImageFormat::Png => "png",
 		ImageFormat::Webp => "webp",
@@ -649,7 +648,7 @@ fn format_name(format: ImageFormat) -> &'static str {
 	}
 }
 
-fn format_mime(format: ImageFormat) -> &'static str {
+const fn format_mime(format: ImageFormat) -> &'static str {
 	match format {
 		ImageFormat::Png => "image/png",
 		ImageFormat::Webp => "image/webp",
@@ -732,8 +731,8 @@ fn collect_gemini_parts(
 				texts.push(text.to_owned());
 			}
 			let inline = part.get("inlineData").or_else(|| part.get("inline_data"));
-			if let Some(inline) = inline {
-				if let (Some(data), Some(mime)) = (
+			if let Some(inline) = inline
+				&& let (Some(data), Some(mime)) = (
 					inline.get("data").and_then(Value::as_str),
 					inline
 						.get("mimeType")
@@ -742,7 +741,6 @@ fn collect_gemini_parts(
 				) {
 					images.push(decode_blob(provider, data, mime)?);
 				}
-			}
 		}
 	}
 	Ok(())
@@ -764,11 +762,10 @@ fn last_sse_response(provider: ImageProvider, body: &[u8]) -> Result<Value, Imag
 		if matches!(
 			event.get("type").and_then(Value::as_str),
 			Some("response.completed" | "response.done")
-		) {
-			if let Some(response) = event.get("response") {
+		)
+			&& let Some(response) = event.get("response") {
 				return Ok(response.clone());
 			}
-		}
 	}
 	let output = values
 		.iter()
@@ -792,11 +789,7 @@ fn provider_message(body: &[u8]) -> Str {
 		.unwrap_or_else(|| String::from_utf8_lossy(body).into_owned().into())
 }
 
-fn status_error(
-	provider: ImageProvider,
-	status: StatusCode,
-	message: Str,
-) -> ImageAttemptError {
+fn status_error(provider: ImageProvider, status: StatusCode, message: Str) -> ImageAttemptError {
 	ImageProviderError {
 		provider: provider.id().into(),
 		kind: ImageProviderErrorKind::Status(status.as_u16()),

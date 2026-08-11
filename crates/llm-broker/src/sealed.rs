@@ -149,9 +149,9 @@ impl AppliedAuth {
 		Ok(())
 	}
 
-	/// Builds Devin's pinned discovery protobuf body without exposing the
-	/// credential to its caller.
-	pub fn apply_devin_discovery(self, request: &mut Request<Body>) {
+	/// Fills a discovery request body whose credential is embedded in the
+	/// payload, without exposing that credential to the caller.
+	pub fn apply_sealed_discovery_body(self, request: &mut Request<Body>) {
 		*request.body_mut() =
 			http_body_util::Full::new(omp_llm_devin::model_discovery_request(self.secret.expose()));
 	}

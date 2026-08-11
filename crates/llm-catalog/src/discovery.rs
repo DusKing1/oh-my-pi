@@ -1,17 +1,35 @@
-//! Live model discovery behind the gateway's injected HTTP stack.
+//! Live model discovery, split along the credential boundary.
+//!
+//! - [`DiscoveryHttp`] is implemented once by the runtime. It selects an
+//!   account's credential and injects it during dispatch, so no discovery
+//!   protocol ever sees credential bytes.
+//! - [`DiscoveryProtocol`] is implemented by each provider's own `omp-llm-*`
+//!   crate, keeping endpoint choice, headers, request bodies, and payload
+//!   decoding beside the wire protocol they belong to.
+//!
+//! [`Discovery`] joins the two. Listing conventions shared by many providers
+//! (`OpenAI` `GET /models`, Ollama tags, Google pagination) stay in this module
+//! and are selected by [`DiscoveryKind`]; a provider declaring
+//! [`DiscoveryKind::Specialized`] is dispatched to the [`DiscoveryProtocol`]
+//! registered for its [`TransportId`].
+//!
+//! Neither trait is a "transport" in this workspace's sense: a [`TransportId`]
+//! names a provider's wire protocol, and specialized discovery is keyed by one.
 //!
 //! `ollama`, `vllm`, `lm-studio`, and `litellm` are deliberately absent from
 //! the bundled catalog: their model sets and localhost endpoints exist only at
-//! runtime. Discovery is therefore required, rather than an optional catalog
-//! enhancement. The same path also serves authenticated OpenAI-compatible
-//! account listings; [`HttpClient`] receives the provider so the gateway can
-//! inject a credential without this crate depending on the broker.
+//! runtime, so discovery is required rather than an optional enhancement.
 
-use std::collections::BTreeMap;
+use std::{
+	collections::BTreeMap,
+	fmt::{self, Display},
+	sync::Arc,
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use omp_core::Str;
+use http::{Method, Request, header::ACCEPT};
+use omp_core::{Str, fmts};
 use omp_llm_types::{Effort, Props};
 use serde_json::Value;
 use smallvec::SmallVec;
@@ -38,10 +56,28 @@ impl HttpResponse {
 	pub const fn new(status: u16, body: Bytes) -> Self {
 		Self { status, body }
 	}
+
+	/// Returns whether the provider answered with a 2xx status.
+	#[must_use]
+	pub const fn is_success(&self) -> bool {
+		self.status >= 200 && self.status < 300
+	}
+
+	/// Borrows the body of a successful response.
+	///
+	/// # Errors
+	///
+	/// Returns [`Error::HttpStatus`] for any non-2xx status.
+	pub fn ensure_success(&self, provider: &ProviderEntry) -> Result<&Bytes, Error> {
+		if self.is_success() {
+			return Ok(&self.body);
+		}
+		Err(Error::status(provider, self.status))
+	}
 }
 /// Non-secret identity of one credential/account discovery source.
 ///
-/// `key` is opaque to the catalog and is passed back to [`HttpClient`] for
+/// `key` is opaque to the catalog and is passed back to [`Transport`] for
 /// credential selection. It must never contain credential material.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
@@ -56,6 +92,11 @@ pub struct Account {
 	pub organization_id: Option<Str>,
 	/// Provider project id, when broker metadata supplies one.
 	pub project_id:      Option<Str>,
+	/// Cloud region this source is scoped to, when the runtime resolved one.
+	///
+	/// Deployment facts like an AWS region are read by the runtime, never by a
+	/// [`DiscoveryProtocol`], so protocols stay free of environment lookups.
+	pub region:          Option<Str>,
 }
 
 impl Account {
@@ -68,6 +109,7 @@ impl Account {
 			account_id:      None,
 			organization_id: None,
 			project_id:      None,
+			region:          None,
 		}
 	}
 
@@ -80,18 +122,21 @@ impl Account {
 
 	/// Attaches client-safe organization and project scope.
 	#[must_use]
-	pub fn with_scope(
-		mut self,
-		organization_id: Option<Str>,
-		project_id: Option<Str>,
-	) -> Self {
+	pub fn with_scope(mut self, organization_id: Option<Str>, project_id: Option<Str>) -> Self {
 		self.organization_id = organization_id;
 		self.project_id = project_id;
 		self
 	}
 
+	/// Attaches the cloud region the runtime resolved for this source.
+	#[must_use]
+	pub fn with_region(mut self, region: Option<Str>) -> Self {
+		self.region = region;
+		self
+	}
+
 	/// Returns the provider-wide source used when account enumeration is not
-	/// supported by a transport.
+	/// supported by the discovery executor.
 	#[must_use]
 	pub const fn provider_default() -> Self {
 		Self {
@@ -100,45 +145,241 @@ impl Account {
 			account_id:      None,
 			organization_id: None,
 			project_id:      None,
+			region:          None,
 		}
 	}
 }
 
-/// Minimal authenticated transport required by model discovery.
+/// Authenticated HTTP execution for model discovery, owned by the runtime.
 ///
-/// The provider and opaque account arguments are intentional: production
-/// implementations select and inject a sealed credential without this crate
-/// receiving or storing credential bytes. Existing provider-wide transports
-/// need only implement [`Self::get`]; account-aware and specialized transports
-/// override the other methods.
+/// The provider and opaque account arguments are deliberate: implementations
+/// select and inject a sealed credential, so neither this crate nor any
+/// [`DiscoveryProtocol`] receives or stores credential bytes.
 #[async_trait]
-pub trait HttpClient: Send + Sync {
+pub trait DiscoveryHttp: Send + Sync {
 	/// Lists the client-safe credential/account sources visible to `provider`.
+	///
+	/// Transports without account enumeration keep the single provider-wide
+	/// source.
 	async fn accounts(&self, _provider: &ProviderEntry) -> Result<Vec<Account>, Error> {
 		Ok(vec![Account::provider_default()])
 	}
 
-	/// Performs an authenticated, cancellable `GET` for `provider`.
-	async fn get(&self, provider: &ProviderEntry, url: &str) -> Result<HttpResponse, Error>;
-
-	/// Performs a `GET` using exactly `account`, never another credential.
-	async fn get_for_account(
+	/// Executes `request` with exactly `account`'s credential, never a
+	/// sibling's.
+	///
+	/// Headers already present on `request` win over `provider.headers`. A
+	/// request carrying the [`SealedBody`] extension has its body written
+	/// inside its credential boundary.
+	async fn execute(
 		&self,
 		provider: &ProviderEntry,
-		_account: &Account,
+		account: &Account,
+		request: Request<Bytes>,
+	) -> Result<HttpResponse, Error>;
+
+	/// Executes a JSON `GET` for `account`.
+	///
+	/// # Errors
+	///
+	/// Returns [`Error::Transport`] for an invalid URL or a failed dispatch.
+	async fn get(
+		&self,
+		provider: &ProviderEntry,
+		account: &Account,
 		url: &str,
 	) -> Result<HttpResponse, Error> {
-		self.get(provider, url).await
+		let request = Request::builder()
+			.method(Method::GET)
+			.uri(url)
+			.header(ACCEPT, "application/json")
+			.body(Bytes::new())
+			.map_err(Error::transport)?;
+		self.execute(provider, account, request).await
 	}
+}
 
-	/// Runs a provider-owned discovery protocol (for example Cursor Connect,
-	/// Devin protobuf, Codex metadata, or Cloud Code Assist).
-	async fn discover_specialized(
+/// Request extension marking a protocol that carries its credential inside the
+/// request body rather than a header.
+///
+/// The protocol leaves the body empty and the [`Transport`] fills it within its
+/// credential boundary. Devin's protobuf discovery is the only user today.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SealedBody;
+
+/// A provider-owned model discovery protocol.
+///
+/// Implemented inside the provider's own `omp-llm-*` crate and registered with
+/// [`Discovery::with`], so teaching the runtime a new listing protocol never
+/// edits this crate or the application. Implementations issue requests through
+/// the injected [`Transport`] and never handle credentials.
+///
+/// ```ignore
+/// struct CursorDiscovery;
+///
+/// #[async_trait]
+/// impl DiscoveryProtocol for CursorDiscovery {
+///    fn transports(&self) -> &'static [TransportId] {
+///       &[TransportId::Cursor]
+///    }
+///
+///    async fn discover(
+///       &self,
+///       provider: &ProviderEntry,
+///       account: &Account,
+///       http: &dyn DiscoveryHttp,
+///    ) -> Result<Vec<ModelCard>, Error> {
+///       // build a request, hand it to `http`, decode the reply
+///    }
+/// }
+/// ```
+#[async_trait]
+pub trait DiscoveryProtocol: Send + Sync {
+	/// Transports whose listing protocol this implementation speaks.
+	///
+	/// Discovery is keyed by transport rather than provider id: every
+	/// `providers.toml` row naming one of these transports and declaring
+	/// [`DiscoveryKind::Specialized`] is served without a code change.
+	fn transports(&self) -> &'static [TransportId];
+
+	/// Lists the models visible to exactly one account.
+	///
+	/// # Errors
+	///
+	/// Returns the transport, status, or payload failure raised by the
+	/// provider's own listing protocol.
+	async fn discover(
 		&self,
 		provider: &ProviderEntry,
-		_account: &Account,
+		account: &Account,
+		http: &dyn DiscoveryHttp,
+	) -> Result<Vec<ModelCard>, Error>;
+}
+
+/// The runtime's discovery entry point: one authenticated [`Transport`] plus
+/// the [`DiscoveryProtocol`] protocols registered for specialized providers.
+#[derive(Clone)]
+pub struct Discovery {
+	http:        Arc<dyn DiscoveryHttp>,
+	specialized: SmallVec<&'static dyn DiscoveryProtocol, 8>,
+}
+
+impl Discovery {
+	/// Creates discovery over `transport` with no specialized protocols.
+	#[must_use]
+	pub fn new(http: Arc<dyn DiscoveryHttp>) -> Self {
+		Self { http, specialized: SmallVec::new() }
+	}
+
+	/// Registers one provider-owned protocol.
+	#[must_use]
+	pub fn with(mut self, protocol: &'static dyn DiscoveryProtocol) -> Self {
+		self.specialized.push(protocol);
+		self
+	}
+
+	/// Returns the authenticated HTTP executor shared by every protocol.
+	#[must_use]
+	pub fn http(&self) -> &dyn DiscoveryHttp {
+		self.http.as_ref()
+	}
+
+	/// Lists the client-safe account sources visible to `provider`.
+	///
+	/// # Errors
+	///
+	/// Returns the executor's account-enumeration failure.
+	pub async fn accounts(&self, provider: &ProviderEntry) -> Result<Vec<Account>, Error> {
+		self.http.accounts(provider).await
+	}
+
+	/// Discovers models through the provider-wide default credential source.
+	///
+	/// Account-aware runtimes should enumerate [`Self::accounts`] and call
+	/// [`Self::discover`] once per source.
+	///
+	/// # Errors
+	///
+	/// Returns an error for unsupported providers, invalid endpoints, transport
+	/// or HTTP failures, and malformed payloads.
+	pub async fn discover_provider(
+		&self,
+		provider: &ProviderEntry,
 	) -> Result<Vec<ModelCard>, Error> {
-		Err(Error::UnsupportedProvider(provider.id.clone()))
+		self.discover(provider, &Account::provider_default()).await
+	}
+
+	/// Discovers the models visible to exactly one non-secret account source.
+	///
+	/// # Errors
+	///
+	/// Returns [`Error::UnregisteredProtocol`] when the provider declares
+	/// [`DiscoveryKind::Specialized`] and no matching [`DiscoveryProtocol`] is
+	/// registered, plus any transport, status, or payload failure.
+	pub async fn discover(
+		&self,
+		provider: &ProviderEntry,
+		account: &Account,
+	) -> Result<Vec<ModelCard>, Error> {
+		let http = self.http.as_ref();
+		let kind = endpoint_kind(provider)?;
+		match kind {
+			EndpointKind::Specialized => {
+				self
+					.protocol(provider.transport)
+					.ok_or_else(|| Error::UnregisteredProtocol {
+						provider:  provider.id.clone(),
+						transport: provider.transport,
+					})?
+					.discover(provider, account, http)
+					.await
+			},
+			EndpointKind::Google => discover_google_pages(provider, account, http).await,
+			EndpointKind::Ollama | EndpointKind::OpenAi | EndpointKind::AccountModels => {
+				let url = discovery_url(provider, kind)?;
+				let response = http.get(provider, account, &url).await?;
+				let body = response.ensure_success(provider)?;
+				if matches!(kind, EndpointKind::Ollama) {
+					parse_ollama_tags(provider, body)
+				} else {
+					parse_openai(provider, body)
+				}
+			},
+		}
+	}
+
+	/// Returns whether a protocol is registered for `transport`.
+	///
+	/// A provider declaring [`DiscoveryKind::Specialized`] on an unregistered
+	/// transport fails at listing time with [`Error::UnregisteredProtocol`];
+	/// this lets a runtime assert its coverage up front instead.
+	#[must_use]
+	pub fn serves(&self, transport: TransportId) -> bool {
+		self.protocol(transport).is_some()
+	}
+
+	fn protocol(&self, transport: TransportId) -> Option<&'static dyn DiscoveryProtocol> {
+		self
+			.specialized
+			.iter()
+			.copied()
+			.find(|protocol| protocol.transports().contains(&transport))
+	}
+}
+
+impl fmt::Debug for Discovery {
+	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+		formatter
+			.debug_struct("Discovery")
+			.field(
+				"transports",
+				&self
+					.specialized
+					.iter()
+					.flat_map(|protocol| protocol.transports().iter().copied())
+					.collect::<Vec<_>>(),
+			)
+			.finish_non_exhaustive()
 	}
 }
 
@@ -178,6 +419,38 @@ pub enum Error {
 		/// Decode detail.
 		detail:   Str,
 	},
+	/// The provider declares a specialized protocol but the runtime registered
+	/// no [`DiscoveryProtocol`] for its transport.
+	#[error("no discovery protocol is registered for {provider} (transport {transport:?})")]
+	UnregisteredProtocol {
+		/// Provider id.
+		provider:  Str,
+		/// Transport the provider declares.
+		transport: TransportId,
+	},
+}
+
+impl Error {
+	/// Wraps a transport, URI, or request-construction failure.
+	#[must_use]
+	pub fn transport(error: impl Display) -> Self {
+		Self::Transport(Str::from(error.to_string()))
+	}
+
+	/// Reports a payload from `provider` that its protocol cannot decode.
+	#[must_use]
+	pub fn payload(provider: &ProviderEntry, detail: impl Display) -> Self {
+		Self::InvalidPayload {
+			provider: provider.id.clone(),
+			detail:   Str::from(detail.to_string()),
+		}
+	}
+
+	/// Reports a non-success discovery status from `provider`.
+	#[must_use]
+	pub fn status(provider: &ProviderEntry, status: u16) -> Self {
+		Self::HttpStatus { provider: provider.id.clone(), status }
+	}
 }
 
 /// Returns whether `provider` declares or infers a live-listing convention.
@@ -187,57 +460,6 @@ pub fn supports(provider: &ProviderEntry) -> bool {
 		|| matches!(provider.id.as_str(), "ollama" | "vllm" | "lm-studio" | "litellm")
 		|| ((is_openai_compatible(provider) || provider.transport == TransportId::GoogleGenAi)
 			&& !matches!(&provider.auth, AuthSpec::None))
-}
-
-/// Discovers models through the provider-wide default credential source.
-///
-/// Account-aware runtimes should enumerate [`HttpClient::accounts`] and call
-/// [`discover_account`] once per source.
-///
-/// # Errors
-///
-/// Returns an error for unsupported providers, invalid endpoints, transport or
-/// HTTP failures, and malformed payloads.
-pub async fn discover(
-	provider: &ProviderEntry,
-	http: &dyn HttpClient,
-) -> Result<Vec<ModelCard>, Error> {
-	discover_account(provider, &Account::provider_default(), http).await
-}
-
-/// Discovers the models visible to exactly one non-secret account source.
-///
-/// Specialized protocols are delegated to the injected production client;
-/// shared HTTP protocols remain implemented and decoded in this crate.
-///
-/// # Errors
-///
-/// Returns an error when the protocol is unsupported or its transport/payload
-/// fails.
-pub async fn discover_account(
-	provider: &ProviderEntry,
-	account: &Account,
-	http: &dyn HttpClient,
-) -> Result<Vec<ModelCard>, Error> {
-	let kind = endpoint_kind(provider)?;
-	if matches!(kind, EndpointKind::Specialized) {
-		return http.discover_specialized(provider, account).await;
-	}
-	if matches!(kind, EndpointKind::Google) {
-		return discover_google_pages(provider, account, http).await;
-	}
-	let url = discovery_url(provider, kind)?;
-	let response = http.get_for_account(provider, account, &url).await?;
-	if !(200..300).contains(&response.status) {
-		return Err(Error::HttpStatus { provider: provider.id.clone(), status: response.status });
-	}
-
-	match kind {
-		EndpointKind::Ollama => parse_ollama(provider, &response.body),
-		EndpointKind::OpenAi | EndpointKind::AccountModels => parse_openai(provider, &response.body),
-		EndpointKind::Google => unreachable!("Google pagination returned above"),
-		EndpointKind::Specialized => unreachable!("specialized discovery returned above"),
-	}
 }
 
 #[derive(Clone, Copy)]
@@ -312,13 +534,21 @@ fn discovery_url(provider: &ProviderEntry, kind: EndpointKind) -> Result<String,
 	Ok(url.to_string())
 }
 
-fn parse_ollama(provider: &ProviderEntry, body: &[u8]) -> Result<Vec<ModelCard>, Error> {
+/// Parses Ollama's native `GET /api/tags` listing.
+///
+/// Shared by the bundled local-Ollama convention and by Ollama Cloud's
+/// provider-owned protocol.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidPayload`] when the response has no models array.
+pub fn parse_ollama_tags(provider: &ProviderEntry, body: &[u8]) -> Result<Vec<ModelCard>, Error> {
 	let payload: Value =
-		serde_json::from_slice(body).map_err(|error| invalid_payload(provider, error))?;
+		serde_json::from_slice(body).map_err(|error| Error::payload(provider, error))?;
 	let entries = payload
 		.get("models")
 		.and_then(Value::as_array)
-		.ok_or_else(|| invalid_payload(provider, "missing models array"))?;
+		.ok_or_else(|| Error::payload(provider, "missing models array"))?;
 	let mut cards = BTreeMap::new();
 	for entry in entries {
 		let Some(model) = entry
@@ -342,9 +572,9 @@ fn parse_ollama(provider: &ProviderEntry, body: &[u8]) -> Result<Vec<ModelCard>,
 
 fn parse_openai(provider: &ProviderEntry, body: &[u8]) -> Result<Vec<ModelCard>, Error> {
 	let payload: Value =
-		serde_json::from_slice(body).map_err(|error| invalid_payload(provider, error))?;
+		serde_json::from_slice(body).map_err(|error| Error::payload(provider, error))?;
 	let entries = find_model_array(&payload)
-		.ok_or_else(|| invalid_payload(provider, "missing data/models/result/items array"))?;
+		.ok_or_else(|| Error::payload(provider, "missing data/models/result/items array"))?;
 	let copilot = provider.id == "github-copilot";
 	let mut cards = BTreeMap::new();
 	let mut variants = Vec::new();
@@ -445,9 +675,9 @@ fn apply_copilot_metadata(entry: &Value, card: &mut ModelCard) -> Option<ModelCa
 
 	let mut variant = card.clone();
 	let wire_model = card.model.clone();
-	variant.model = omp_core::fmts!("{wire_model}-1m");
-	variant.id = omp_core::fmts!("{}/{}", card.provider, variant.model);
-	variant.name = omp_core::fmts!("{} (1M)", card.name);
+	variant.model = fmts!("{wire_model}-1m");
+	variant.id = fmts!("{}/{}", card.provider, variant.model);
+	variant.name = fmts!("{} (1M)", card.name);
 	variant.context_window = variant_context;
 	if let Some(pricing) = copilot_pricing(long_tier) {
 		variant.pricing = pricing;
@@ -495,11 +725,11 @@ fn copilot_price(unit: PriceUnit, hundredths_usd: u64) -> Option<Price> {
 
 fn parse_google(provider: &ProviderEntry, body: &[u8]) -> Result<Vec<ModelCard>, Error> {
 	let payload: Value =
-		serde_json::from_slice(body).map_err(|error| invalid_payload(provider, error))?;
+		serde_json::from_slice(body).map_err(|error| Error::payload(provider, error))?;
 	let entries = payload
 		.get("models")
 		.and_then(Value::as_array)
-		.ok_or_else(|| invalid_payload(provider, "missing models array"))?;
+		.ok_or_else(|| Error::payload(provider, "missing models array"))?;
 	let mut cards = BTreeMap::new();
 	for entry in entries {
 		let Some(wire_name) = entry
@@ -541,13 +771,10 @@ fn parse_google(provider: &ProviderEntry, body: &[u8]) -> Result<Vec<ModelCard>,
 async fn discover_google_pages(
 	provider: &ProviderEntry,
 	account: &Account,
-	http: &dyn HttpClient,
+	http: &dyn DiscoveryHttp,
 ) -> Result<Vec<ModelCard>, Error> {
 	let mut url = Url::parse(&discovery_url(provider, EndpointKind::Google)?).map_err(|error| {
-		Error::InvalidUrl {
-			provider: provider.id.clone(),
-			detail:   Str::from(error.to_string()),
-		}
+		Error::InvalidUrl { provider: provider.id.clone(), detail: Str::from(error.to_string()) }
 	})?;
 	let mut cards = BTreeMap::new();
 	let mut seen_tokens = std::collections::BTreeSet::new();
@@ -560,20 +787,12 @@ async fn discover_google_pages(
 				query.append_pair("pageToken", token);
 			}
 		}
-		let response = http
-			.get_for_account(provider, account, url.as_str())
-			.await?;
-		if !(200..300).contains(&response.status) {
-			return Err(Error::HttpStatus {
-				provider: provider.id.clone(),
-				status:   response.status,
-			});
-		}
-		for card in parse_google(provider, &response.body)? {
+		let response = http.get(provider, account, url.as_str()).await?;
+		for card in parse_google(provider, response.ensure_success(provider)?)? {
 			cards.insert(card.id.clone(), card);
 		}
-		let payload: Value = serde_json::from_slice(&response.body)
-			.map_err(|error| invalid_payload(provider, error))?;
+		let payload: Value =
+			serde_json::from_slice(&response.body).map_err(|error| Error::payload(provider, error))?;
 		let token = payload
 			.get("nextPageToken")
 			.and_then(Value::as_str)
@@ -590,7 +809,12 @@ async fn discover_google_pages(
 	Ok(cards.into_values().collect())
 }
 
-fn find_model_array(payload: &Value) -> Option<&[Value]> {
+/// Finds the first array of model entries in a provider payload.
+///
+/// Accepts a bare array or the common `data`/`models`/`result`/`items`
+/// envelopes, searched recursively.
+#[must_use]
+pub fn find_model_array(payload: &Value) -> Option<&[Value]> {
 	if let Some(entries) = payload.as_array() {
 		return Some(entries);
 	}
@@ -604,161 +828,6 @@ fn find_model_array(payload: &Value) -> Option<&[Value]> {
 		}
 	}
 	None
-}
-/// Parses OpenAI Codex's account-scoped model registry response.
-///
-/// # Errors
-///
-/// Returns [`Error::InvalidPayload`] when the response has no model array.
-pub fn parse_codex_models(provider: &ProviderEntry, body: &[u8]) -> Result<Vec<ModelCard>, Error> {
-	let payload: Value =
-		serde_json::from_slice(body).map_err(|error| invalid_payload(provider, error))?;
-	let entries = find_model_array(&payload)
-		.ok_or_else(|| invalid_payload(provider, "missing models/data array"))?;
-	let mut cards = BTreeMap::new();
-	for entry in entries {
-		let Some(model) = entry
-			.get("slug")
-			.or_else(|| entry.get("id"))
-			.and_then(Value::as_str)
-			.filter(|value| !value.is_empty())
-		else {
-			continue;
-		};
-		if matches!(entry.get("visibility").and_then(Value::as_str), Some("hide" | "hidden")) {
-			continue;
-		}
-		let name = entry
-			.get("display_name")
-			.and_then(Value::as_str)
-			.filter(|value| !value.is_empty())
-			.unwrap_or(model);
-		let mut card = discovered_card(provider, model, name, infer_family(model));
-		card.context_window = entry
-			.get("context_window")
-			.and_then(Value::as_u64)
-			.unwrap_or(272_000);
-		card.max_output_tokens = 128_000.min(card.context_window);
-		card.reasoning = entry
-			.get("default_reasoning_level")
-			.and_then(Value::as_str)
-			.is_some_and(|level| !matches!(level, "none" | "off"))
-			|| entry
-				.get("supported_reasoning_levels")
-				.and_then(Value::as_array)
-				.is_some_and(|levels| !levels.is_empty());
-		if entry
-			.get("input_modalities")
-			.and_then(Value::as_array)
-			.is_some_and(|modalities| {
-				modalities
-					.iter()
-					.any(|value| value.as_str() == Some("image"))
-			}) {
-			card.inputs.push(Modality::Image);
-		}
-		cards.insert(card.id.clone(), card);
-	}
-	Ok(cards.into_values().collect())
-}
-
-/// Parses Cloud Code Assist/Antigravity `fetchAvailableModels`.
-///
-/// # Errors
-///
-/// Returns [`Error::InvalidPayload`] when the response lacks its model map.
-pub fn parse_cca_models(provider: &ProviderEntry, body: &[u8]) -> Result<Vec<ModelCard>, Error> {
-	let payload: Value =
-		serde_json::from_slice(body).map_err(|error| invalid_payload(provider, error))?;
-	let models = payload
-		.get("models")
-		.and_then(Value::as_object)
-		.ok_or_else(|| invalid_payload(provider, "missing models object"))?;
-	let mut cards = BTreeMap::new();
-	for (id, entry) in models {
-		if id.is_empty()
-			|| matches!(id.as_str(), "chat_20706" | "chat_23310" | "gemini-2.5-pro")
-			|| entry.get("isInternal").and_then(Value::as_bool) == Some(true)
-		{
-			continue;
-		}
-		let name = entry
-			.get("displayName")
-			.and_then(Value::as_str)
-			.filter(|value| !value.is_empty())
-			.unwrap_or(id);
-		let mut card = discovered_card(provider, id, name, infer_family(id));
-		card.reasoning = entry
-			.get("supportsThinking")
-			.and_then(Value::as_bool)
-			.unwrap_or(false);
-		card.context_window = entry
-			.get("maxTokens")
-			.and_then(Value::as_u64)
-			.unwrap_or(200_000);
-		card.max_output_tokens = entry
-			.get("maxOutputTokens")
-			.and_then(Value::as_u64)
-			.unwrap_or(64_000);
-		if entry.get("supportsImages").and_then(Value::as_bool) == Some(true) {
-			card.inputs.push(Modality::Image);
-		}
-
-		cards.insert(card.id.clone(), card);
-	}
-	Ok(cards.into_values().collect())
-}
-/// Parses GitLab Duo's `aiChatAvailableModels` GraphQL payload.
-///
-/// # Errors
-/// Returns [`Error::InvalidPayload`] for malformed JSON. A successful GraphQL
-/// response with no availability yields an empty source.
-pub fn parse_gitlab_duo_models(
-	provider: &ProviderEntry,
-	body: &[u8],
-) -> Result<Vec<ModelCard>, Error> {
-	let payload: Value =
-		serde_json::from_slice(body).map_err(|error| invalid_payload(provider, error))?;
-	let Some(availability) = payload
-		.pointer("/data/aiChatAvailableModels")
-		.and_then(Value::as_object)
-	else {
-		return Ok(Vec::new());
-	};
-	let entries = availability
-		.get("selectableModels")
-		.and_then(Value::as_array)
-		.into_iter()
-		.flatten()
-		.chain(availability.get("defaultModel"))
-		.chain(availability.get("pinnedModel"));
-	let mut models = BTreeMap::new();
-	for entry in entries {
-		let Some(model) = entry
-			.get("ref")
-			.and_then(Value::as_str)
-			.filter(|value| !value.is_empty())
-		else {
-			continue;
-		};
-		let name = entry
-			.get("name")
-			.and_then(Value::as_str)
-			.filter(|value| !value.is_empty())
-			.unwrap_or(model);
-		let mut card = discovered_card(provider, model, name, infer_family(model));
-		card.context_window =
-			if model.contains("opus") || model.contains("sonnet") || model.contains("gemini") {
-				1_000_000
-			} else if model.contains("gpt-5") {
-				400_000
-			} else {
-				200_000
-			};
-		card.max_output_tokens = 0;
-		models.insert(card.id.clone(), card);
-	}
-	Ok(models.into_values().collect())
 }
 
 /// Creates a normalized discovered card for a provider-owned protocol.
@@ -801,18 +870,13 @@ pub fn discovered_card(
 	}
 }
 
-fn infer_family(model: &str) -> &str {
+/// Infers a model family from a model id when the provider names none.
+#[must_use]
+pub fn infer_family(model: &str) -> &str {
 	model
 		.split(['/', '-', ':'])
 		.find(|part| !part.is_empty())
 		.unwrap_or(model)
-}
-
-fn invalid_payload(provider: &ProviderEntry, detail: impl std::fmt::Display) -> Error {
-	Error::InvalidPayload {
-		provider: provider.id.clone(),
-		detail:   Str::from(detail.to_string()),
-	}
 }
 
 #[cfg(test)]
@@ -833,11 +897,52 @@ mod tests {
 	}
 
 	#[async_trait]
-	impl HttpClient for FixtureHttp {
-		async fn get(&self, _provider: &ProviderEntry, url: &str) -> Result<HttpResponse, Error> {
-			*self.requested.lock() = Some(url.to_owned());
-			Ok(HttpResponse { status: 200, body: Bytes::from_static(self.body.as_bytes()) })
+	impl DiscoveryHttp for FixtureHttp {
+		async fn execute(
+			&self,
+			_provider: &ProviderEntry,
+			_account: &Account,
+			request: Request<Bytes>,
+		) -> Result<HttpResponse, Error> {
+			*self.requested.lock() = Some(request.uri().to_string());
+			Ok(HttpResponse::new(200, Bytes::from_static(self.body.as_bytes())))
 		}
+	}
+
+	/// Stands in for a provider crate's own `DiscoveryProtocol` implementation.
+	struct FixtureProtocol;
+
+	#[async_trait]
+	impl DiscoveryProtocol for FixtureProtocol {
+		fn transports(&self) -> &'static [TransportId] {
+			&[TransportId::Cursor]
+		}
+
+		async fn discover(
+			&self,
+			provider: &ProviderEntry,
+			_account: &Account,
+			_http: &dyn DiscoveryHttp,
+		) -> Result<Vec<ModelCard>, Error> {
+			Ok(vec![discovered_card(provider, "only", "Only", "only")])
+		}
+	}
+
+	static FIXTURE_PROTOCOL: FixtureProtocol = FixtureProtocol;
+
+	fn specialized(id: &str, transport: TransportId) -> ProviderEntry {
+		let mut entry = provider(id, "https://example.invalid");
+		entry.transport = transport;
+		entry.discovery = Some(crate::provider::DiscoverySpec {
+			kind:          DiscoveryKind::Specialized,
+			label:         Str::new_static("fixture"),
+			authoritative: false,
+		});
+		entry
+	}
+
+	fn fixture_discovery() -> Discovery {
+		Discovery::new(Arc::new(FixtureHttp { body: "{}", requested: Mutex::new(None) }))
 	}
 
 	fn provider(id: &str, base_url: &str) -> ProviderEntry {
@@ -869,11 +974,12 @@ mod tests {
 	#[tokio::test]
 	async fn parses_ollama_tags() {
 		let provider = provider("ollama", "http://127.0.0.1:11434/v1");
-		let http = FixtureHttp {
+		let http = Arc::new(FixtureHttp {
 			body:      r#"{"models":[{"name":"qwen3:8b","model":"qwen3:8b","details":{"family":"qwen3"}}]}"#,
 			requested: Mutex::new(None),
-		};
-		let cards = discover(&provider, &http)
+		});
+		let cards = Discovery::new(http.clone())
+			.discover_provider(&provider)
 			.await
 			.expect("fixture should parse");
 		assert_eq!(cards.len(), 1);
@@ -886,11 +992,12 @@ mod tests {
 	#[tokio::test]
 	async fn parses_openai_models() {
 		let provider = provider("vllm", "http://127.0.0.1:8000/v1");
-		let http = FixtureHttp {
+		let http = Arc::new(FixtureHttp {
 			body:      r#"{"object":"list","data":[{"id":"Qwen/Qwen3-8B","owned_by":"qwen"}]}"#,
 			requested: Mutex::new(None),
-		};
-		let cards = discover(&provider, &http)
+		});
+		let cards = Discovery::new(http.clone())
+			.discover_provider(&provider)
 			.await
 			.expect("fixture should parse");
 		assert_eq!(cards.len(), 1);
@@ -942,10 +1049,7 @@ mod tests {
 		assert_eq!(variant.name, "Claude Opus 4.7 (1M)");
 		assert_eq!(variant.context_window, 1_000_000);
 		assert_eq!(
-			variant
-				.effort_routing
-				.get(&Effort::Off)
-				.map(Str::as_str),
+			variant.effort_routing.get(&Effort::Off).map(Str::as_str),
 			Some("claude-opus-4.7")
 		);
 		assert_eq!(
@@ -981,59 +1085,6 @@ mod tests {
 		assert_eq!(served.context_window, 999_000);
 		assert!(served.effort_routing.is_empty());
 	}
-	#[test]
-	fn codex_parser_filters_hidden_rows_and_keeps_native_limits() {
-		let provider = provider("openai-codex", "https://chatgpt.com/backend-api");
-		let cards = parse_codex_models(
-			&provider,
-			br#"{"models":[
-				{"slug":"gpt-5.6","display_name":"GPT-5.6","context_window":372000,
-				 "supported_reasoning_levels":[{"effort":"high"}],"input_modalities":["text","image"]},
-				{"slug":"retired","visibility":"hidden"}
-			]}"#,
-		)
-		.expect("Codex response");
-		assert_eq!(cards.len(), 1);
-		assert_eq!(cards[0].id, "openai-codex/gpt-5.6");
-		assert_eq!(cards[0].context_window, 372_000);
-		assert!(cards[0].reasoning);
-		assert!(cards[0].inputs.contains(&Modality::Image));
-	}
-
-	#[test]
-	fn cca_parser_filters_internal_and_denylisted_rows() {
-		let provider = provider("google-antigravity", "https://daily-cloudcode-pa.googleapis.com");
-		let cards = parse_cca_models(
-			&provider,
-			br#"{"models":{
-				"gemini-3.1-pro":{"displayName":"Gemini 3.1 Pro","supportsImages":true,
-					"supportsThinking":true,"maxTokens":1000000,"maxOutputTokens":65536},
-				"internal":{"isInternal":true},
-				"chat_20706":{"displayName":"Denied"}
-			}}"#,
-		)
-		.expect("CCA response");
-		assert_eq!(cards.len(), 1);
-		assert_eq!(cards[0].model, "gemini-3.1-pro");
-		assert_eq!(cards[0].max_output_tokens, 65_536);
-		assert!(cards[0].reasoning);
-	}
-
-	#[test]
-	fn gitlab_parser_merges_default_selectable_and_pinned_refs() {
-		let provider = provider("gitlab-duo-agent", "https://gitlab.com");
-		let cards = parse_gitlab_duo_models(
-			&provider,
-			br#"{"data":{"aiChatAvailableModels":{
-				"defaultModel":{"name":"Sonnet","ref":"claude_sonnet_4_6_vertex"},
-				"selectableModels":[{"name":"Opus","ref":"claude_opus_4_8"}],
-				"pinnedModel":{"name":"Sonnet pinned","ref":"claude_sonnet_4_6_vertex"}
-			}}}"#,
-		)
-		.expect("GitLab GraphQL fixture");
-		assert_eq!(cards.len(), 2);
-		assert!(cards.iter().all(|card| card.context_window == 1_000_000));
-	}
 
 	#[test]
 	fn every_declared_discovery_mode_has_dispatch() {
@@ -1056,5 +1107,44 @@ mod tests {
 			*kinds.entry(index).or_insert(0usize) += 1;
 		}
 		assert_eq!(kinds.keys().copied().collect::<Vec<_>>(), [0, 1, 3, 4]);
+	}
+
+	#[tokio::test]
+	async fn specialized_dispatch_selects_a_protocol_by_transport() {
+		let discovery = fixture_discovery().with(&FIXTURE_PROTOCOL);
+		let cards = discovery
+			.discover_provider(&specialized("cursor", TransportId::Cursor))
+			.await
+			.expect("registered protocol should serve its transport");
+		assert_eq!(cards.len(), 1);
+		assert_eq!(cards[0].id.as_str(), "cursor/only");
+	}
+
+	#[tokio::test]
+	async fn a_new_provider_row_reuses_a_registered_transport() {
+		// Providers are data: a second row naming an already-registered
+		// transport must discover without any code change.
+		let discovery = fixture_discovery().with(&FIXTURE_PROTOCOL);
+		let cards = discovery
+			.discover_provider(&specialized("cursor-enterprise", TransportId::Cursor))
+			.await
+			.expect("an unseen provider id on a registered transport must dispatch");
+		assert_eq!(cards[0].id.as_str(), "cursor-enterprise/only");
+	}
+
+	#[tokio::test]
+	async fn an_unregistered_transport_names_itself() {
+		let error = fixture_discovery()
+			.discover_provider(&specialized("devin", TransportId::Devin))
+			.await
+			.expect_err("an unregistered specialized transport must not silently succeed");
+		assert!(
+			matches!(
+				&error,
+				Error::UnregisteredProtocol { provider, transport }
+					if provider == "devin" && *transport == TransportId::Devin
+			),
+			"{error:?}"
+		);
 	}
 }

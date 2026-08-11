@@ -10,6 +10,7 @@ use std::{
 use anyhow::{Context as _, bail};
 use clap::{Args, Parser, Subcommand};
 use futures::{StreamExt as _, stream};
+use omp_core::Str;
 use omp_llm_broker::cli::{self as broker_cli, AuthCli, AuthCommand};
 use omp_llm_catalog::models::import_catalog_zstd;
 use omp_llm_gateway::local::LocalEndpoint;
@@ -70,10 +71,10 @@ pub struct InferArgs {
 	pub endpoint: LocalEndpoint,
 	/// Catalog model id, alias, or role.
 	#[arg(long)]
-	pub model:    omp_core::Str,
+	pub model:    Str,
 	/// User prompt for the stateless turn.
 	#[arg(long)]
-	pub prompt:   omp_core::Str,
+	pub prompt:   Str,
 }
 
 /// Broker command and durable-state options.
@@ -133,10 +134,10 @@ pub enum LocalCommand {
 pub struct LocalInferArgs {
 	/// Backend selection: `auto`, `foundation`, or a local GGUF path.
 	#[arg(long, default_value = "auto", value_name = "BACKEND_OR_GGUF")]
-	pub model:  omp_core::Str,
+	pub model:  Str,
 	/// User prompt.
 	#[arg(long)]
-	pub prompt: omp_core::Str,
+	pub prompt: Str,
 }
 
 #[cfg(test)]
@@ -224,7 +225,7 @@ async fn infer(args: InferArgs) -> anyhow::Result<()> {
 	Ok(())
 }
 
-fn user_item(prompt: omp_core::Str) -> Item {
+fn user_item(prompt: Str) -> Item {
 	Item::builder()
 		.seq(0)
 		.kind(ItemKind::Message(
@@ -310,7 +311,7 @@ async fn local_infer(args: LocalInferArgs) -> anyhow::Result<()> {
 	let inference = Arc::new(Inference::builder().text(selection).build().await?);
 	let embedded = Embedded::new(Arc::clone(&inference));
 	let request = ChatRequest::builder()
-		.model(omp_core::Str::new_static("local/default"))
+		.model(Str::new_static("local/default"))
 		.thread(
 			Thread::builder()
 				.items(vec![user_item(args.prompt)])

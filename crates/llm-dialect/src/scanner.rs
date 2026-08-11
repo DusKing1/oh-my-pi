@@ -28,7 +28,7 @@ pub enum Scanner {
 	Xml(XmlScanner),
 	/// Anthropic invoke/parameter calls.
 	Anthropic(XmlScanner),
-	/// DeepSeek token and DSML calls.
+	/// `DeepSeek` token and DSML calls.
 	DeepSeek(DeepSeekScanner),
 	/// Harmony control-token messages.
 	Harmony(HarmonyScanner),
@@ -38,7 +38,7 @@ pub enum Scanner {
 	Gemini(GeminiScanner),
 	/// Gemma token-delimited calls.
 	Gemma(GemmaScanner),
-	/// MiniMax wrapped XML calls.
+	/// `MiniMax` wrapped XML calls.
 	MiniMax(XmlScanner),
 }
 
@@ -219,11 +219,10 @@ fn parse_json_object(raw: &[u8]) -> Map<String, Value> {
 	let Ok(mut value) = serde_json::from_slice::<Value>(trim_ascii(raw)) else {
 		return Map::new();
 	};
-	if let Value::String(encoded) = &value {
-		if let Ok(decoded) = serde_json::from_str(encoded) {
+	if let Value::String(encoded) = &value
+		&& let Ok(decoded) = serde_json::from_str(encoded) {
 			value = decoded;
 		}
-	}
 	as_object(value)
 }
 
@@ -238,7 +237,7 @@ fn trim_ascii(mut value: &[u8]) -> &[u8] {
 }
 
 fn decode_text(raw: &[u8]) -> Str {
-	Str::from(String::from_utf8_lossy(raw).trim())
+	Str::from_utf8_lossy(raw).trim()
 }
 
 // ---- Anthropic / XML / MiniMax
@@ -246,7 +245,7 @@ fn decode_text(raw: &[u8]) -> Str {
 
 const MAX_PARAMETER_BYTES: usize = 1_000_000;
 
-/// Anthropic-compatible invoke/parameter scanner shared by XML and MiniMax.
+/// Anthropic-compatible invoke/parameter scanner shared by XML and `MiniMax`.
 #[derive(Debug)]
 pub struct XmlScanner {
 	buffer:           Buffer,
@@ -707,7 +706,7 @@ impl XmlScanner {
 }
 
 impl XmlReturn {
-	fn into_state(self) -> XmlState {
+	const fn into_state(self) -> XmlState {
 		match self {
 			Self::Outside => XmlState::Outside,
 			Self::Section => XmlState::Section,
@@ -788,12 +787,7 @@ fn parse_xml_tag(raw: &[u8]) -> Option<ParsedXmlTag> {
 		attrs.push((Str::from(name), Str::from(value)));
 		rest = tail;
 	}
-	Some(ParsedXmlTag {
-		local: Str::from(local.to_ascii_lowercase()),
-		closing,
-		self_closing,
-		attrs,
-	})
+	Some(ParsedXmlTag { local: Str::from(local.to_ascii_lowercase()), closing, self_closing, attrs })
 }
 
 fn is_xml_name(name: &str) -> bool {
@@ -1055,7 +1049,7 @@ impl GlmScanner {
 				},
 				GlmState::Thinking => {
 					if consume_reasoning(&mut self.buffer, THINK_CLOSE, final_chunk, &mut out) {
-						self.state = GlmState::Outside
+						self.state = GlmState::Outside;
 					} else {
 						self.state = GlmState::Thinking;
 						break;
@@ -1071,9 +1065,9 @@ impl GlmScanner {
 					let Some(end) = [newline, key, close].into_iter().flatten().min() else {
 						if final_chunk {
 							self.buffer.clear();
-							self.state = GlmState::Outside
+							self.state = GlmState::Outside;
 						} else {
-							self.state = GlmState::Name
+							self.state = GlmState::Name;
 						}
 						break;
 					};
@@ -1100,18 +1094,18 @@ impl GlmScanner {
 						let b = self.buffer.take(1);
 						let mut call = call;
 						call.raw.push(&b);
-						self.state = GlmState::Body(call)
+						self.state = GlmState::Body(call);
 					} else if key == Some(end) {
 						self.buffer.discard(KEY_OPEN.len());
 						let mut call = call;
 						call.raw.push(KEY_OPEN);
-						self.state = GlmState::Key(call)
+						self.state = GlmState::Key(call);
 					} else {
 						self.buffer.discard(CLOSE.len());
 						let mut call = call;
 						call.raw.push(CLOSE);
 						end_glm(call, &mut out);
-						self.state = GlmState::Outside
+						self.state = GlmState::Outside;
 					}
 				},
 				GlmState::Body(mut call) => {
@@ -1127,12 +1121,12 @@ impl GlmScanner {
 					if self.buffer.bytes().starts_with(KEY_OPEN) {
 						self.buffer.discard(KEY_OPEN.len());
 						call.raw.push(KEY_OPEN);
-						self.state = GlmState::Key(call)
+						self.state = GlmState::Key(call);
 					} else if self.buffer.bytes().starts_with(CLOSE) {
 						self.buffer.discard(CLOSE.len());
 						call.raw.push(CLOSE);
 						end_glm(call, &mut out);
-						self.state = GlmState::Outside
+						self.state = GlmState::Outside;
 					} else if !final_chunk
 						&& partial_suffix_overlap_any(self.buffer.bytes(), &[KEY_OPEN, CLOSE])
 							== self.buffer.bytes().len()
@@ -1145,7 +1139,7 @@ impl GlmScanner {
 					} else {
 						let b = self.buffer.take(1);
 						call.raw.push(&b);
-						self.state = GlmState::Body(call)
+						self.state = GlmState::Body(call);
 					}
 				},
 				GlmState::Key(mut call) => {
@@ -1153,9 +1147,9 @@ impl GlmScanner {
 					let Some(end) = find(&self.buffer.bytes()[..valid], KEY_CLOSE) else {
 						if final_chunk {
 							self.buffer.clear();
-							self.state = GlmState::Outside
+							self.state = GlmState::Outside;
 						} else {
-							self.state = GlmState::Key(call)
+							self.state = GlmState::Key(call);
 						}
 						break;
 					};
@@ -1164,7 +1158,7 @@ impl GlmScanner {
 					call.raw.push(&raw);
 					self.buffer.discard(KEY_CLOSE.len());
 					call.raw.push(KEY_CLOSE);
-					self.state = GlmState::AfterKey(call)
+					self.state = GlmState::AfterKey(call);
 				},
 				GlmState::AfterKey(mut call) => {
 					while self
@@ -1180,7 +1174,7 @@ impl GlmScanner {
 						self.buffer.discard(VALUE_OPEN.len());
 						call.raw.push(VALUE_OPEN);
 						call.value.clear();
-						self.state = GlmState::Value(call)
+						self.state = GlmState::Value(call);
 					} else if !final_chunk && VALUE_OPEN.starts_with(self.buffer.bytes()) {
 						self.state = GlmState::AfterKey(call);
 						break;
@@ -1190,7 +1184,7 @@ impl GlmScanner {
 					} else {
 						let b = self.buffer.take(1);
 						call.raw.push(&b);
-						self.state = GlmState::AfterKey(call)
+						self.state = GlmState::AfterKey(call);
 					}
 				},
 				GlmState::Value(mut call) => {
@@ -1210,13 +1204,13 @@ impl GlmScanner {
 						if healed {
 							let value = String::from_utf8_lossy(&call.value).trim_end().to_owned();
 							finish_glm_value(&self.shapes, &mut call, &value);
-							self.state = GlmState::Body(call)
+							self.state = GlmState::Body(call);
 						} else {
 							self.buffer.discard(tag.len());
 							call.raw.push(tag);
 							let value = String::from_utf8_lossy(&call.value).into_owned();
 							finish_glm_value(&self.shapes, &mut call, &value);
-							self.state = GlmState::Body(call)
+							self.state = GlmState::Body(call);
 						}
 					} else if final_chunk {
 						self.buffer.clear();
@@ -1299,7 +1293,7 @@ const DS_OUTSIDE_NO_THINK: &[&[u8]] = &[
 	"<｜User｜>".as_bytes(),
 ];
 
-/// DeepSeek scanner supporting native special tokens, legacy fenced calls, and
+/// `DeepSeek` scanner supporting native special tokens, legacy fenced calls, and
 /// both DSML alphabets.
 #[derive(Debug)]
 pub struct DeepSeekScanner {
@@ -1744,8 +1738,8 @@ impl KimiScanner {
 					self.buffer.discard(K_CALL_CLOSE.len());
 					let id = decode_text(trim_ascii(&header));
 					let name = Str::from(normalize_kimi_function_name(&id));
-					if !id.is_empty() && !name.is_empty() {
-						if let Some(arguments) = strict_json_object(&body) {
+					if !id.is_empty() && !name.is_empty()
+						&& let Some(arguments) = strict_json_object(&body) {
 							out.push(ScanEvent::ToolStart { id: id.clone(), name: name.clone() });
 							let args_json = json_bytes(Value::Object(arguments));
 							out.push(ScanEvent::ToolArgumentDelta {
@@ -1765,7 +1759,6 @@ impl KimiScanner {
 								]),
 							});
 						}
-					}
 					self.state = KimiState::Section;
 				},
 			}
@@ -1887,8 +1880,7 @@ impl HarmonyScanner {
 					let (mode, id, name) = if !assistant {
 						(HarmonyMode::Skip, Str::default(), Str::default())
 					} else if !recipient.is_empty() && recipient != "assistant" {
-						let name =
-							Str::from(recipient.strip_prefix("functions.").unwrap_or(&recipient));
+						let name = Str::from(recipient.strip_prefix("functions.").unwrap_or(&recipient));
 						let id = mint_tool_call_id();
 						out.push(ScanEvent::ToolStart { id: id.clone(), name: name.clone() });
 						(HarmonyMode::Tool, id, name)

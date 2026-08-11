@@ -1,4 +1,4 @@
-//! ChatGPT Codex Responses Lite request shaping.
+//! `ChatGPT` Codex Responses Lite request shaping.
 //!
 //! This module only transforms JSON wire bodies. Authentication and HTTP
 //! dispatch remain owned by the gateway egress stack.
@@ -18,7 +18,7 @@ pub const CODEX_PROVIDER_NAMESPACE: &str = "openai-codex";
 pub const RESPONSES_LITE_OPTION: &str = "responses_lite";
 
 /// Applies the Codex Responses contract and, when requested, the Responses Lite
-/// rewrite to an encoded OpenAI Responses request.
+/// rewrite to an encoded `OpenAI` Responses request.
 ///
 /// The rewrite is intentionally lossless for conversation items while removing
 /// fields rejected by the subscription endpoint. Lite requests move top-level

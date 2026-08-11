@@ -169,9 +169,8 @@ impl Inference for TerminalGateway {
 						tokio::time::sleep(Duration::from_millis(5)).await;
 						yield delta(b"x");
 					}
-				} else {
-					yield outcome();
 				}
+    					yield outcome();
 			}
 		};
 		Ok(Response::new(Box::pin(events)))

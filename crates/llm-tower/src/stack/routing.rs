@@ -59,7 +59,7 @@ pub struct ProviderRouter {
 impl ProviderRouter {
 	/// Creates an empty candidate registry over immutable catalogs.
 	#[must_use]
-	pub fn new(models: Arc<ModelCatalog>, providers: Arc<ProviderCatalog>) -> Self {
+	pub const fn new(models: Arc<ModelCatalog>, providers: Arc<ProviderCatalog>) -> Self {
 		Self { models, providers, candidates: BTreeMap::new() }
 	}
 
@@ -99,18 +99,20 @@ impl ProviderRouter {
 			.models
 			.get(provider_id, model_id)
 			.ok_or_else(|| Error::Provider(fmts!("unknown catalog model {selector}")))?;
-		let provider = self.providers.get(model.provider.as_str()).ok_or_else(|| {
-			Error::Provider(fmts!("unknown catalog provider {}", model.provider))
-		})?;
+		let provider = self
+			.providers
+			.get(model.provider.as_str())
+			.ok_or_else(|| Error::Provider(fmts!("unknown catalog provider {}", model.provider)))?;
 		if !model.facets.contains(&facet) || !provider.facets.contains(&facet) {
 			return Err(Error::Unsupported(vec![unsupported(
 				"model",
 				"the catalog route does not advertise the requested facet",
 			)]));
 		}
-		let candidates = self.candidates.get(provider.id.as_str()).ok_or_else(|| {
-			Error::Provider(fmts!("provider route unavailable for {}", provider.id))
-		})?;
+		let candidates = self
+			.candidates
+			.get(provider.id.as_str())
+			.ok_or_else(|| Error::Provider(fmts!("provider route unavailable for {}", provider.id)))?;
 		Ok((model, provider, candidates))
 	}
 }
@@ -218,9 +220,10 @@ impl CountRouter {
 			.models
 			.get(provider_id, model_id)
 			.ok_or_else(|| Error::Provider(fmts!("unknown catalog model {selector}")))?;
-		let provider = self.providers.get(model.provider.as_str()).ok_or_else(|| {
-			Error::Provider(fmts!("unknown catalog provider {}", model.provider))
-		})?;
+		let provider = self
+			.providers
+			.get(model.provider.as_str())
+			.ok_or_else(|| Error::Provider(fmts!("unknown catalog provider {}", model.provider)))?;
 		Ok((model, provider))
 	}
 }
@@ -363,9 +366,9 @@ where
 		for (name, value) in &self.shared.provider.headers {
 			builder = builder.header(name.as_str(), value.as_str());
 		}
-		let mut outbound = builder.body(Body::new(encoded)).map_err(|error| {
-			Error::Provider(fmts!("invalid token-count HTTP request: {error}"))
-		})?;
+		let mut outbound = builder
+			.body(Body::new(encoded))
+			.map_err(|error| Error::Provider(fmts!("invalid token-count HTTP request: {error}")))?;
 		outbound
 			.extensions_mut()
 			.insert(AuthContext::new(self.shared.provider.id.as_str()));
@@ -375,9 +378,7 @@ where
 			egress
 				.ready()
 				.await
-				.map_err(|error| {
-					Error::Transport(fmts!("token-count egress not ready: {error}"))
-				})?
+				.map_err(|error| Error::Transport(fmts!("token-count egress not ready: {error}")))?
 				.call(outbound)
 				.await
 				.map_err(|error| Error::Transport(fmts!("token-count egress failed: {error}")))?
@@ -610,9 +611,9 @@ where
 		for (name, value) in &self.shared.provider.headers {
 			builder = builder.header(name.as_str(), value.as_str());
 		}
-		let mut outbound = builder.body(Body::new(encoded)).map_err(|error| {
-			Error::Provider(fmts!("invalid embedding HTTP request: {error}"))
-		})?;
+		let mut outbound = builder
+			.body(Body::new(encoded))
+			.map_err(|error| Error::Provider(fmts!("invalid embedding HTTP request: {error}")))?;
 		outbound
 			.extensions_mut()
 			.insert(AuthContext::new(self.shared.provider.id.as_str()));
@@ -632,9 +633,7 @@ where
 			.into_body()
 			.collect()
 			.await
-			.map_err(|error| {
-				Error::Transport(fmts!("embedding response body failed: {error}"))
-			})?
+			.map_err(|error| Error::Transport(fmts!("embedding response body failed: {error}")))?
 			.to_bytes();
 		if !status.is_success() {
 			let message = self
@@ -809,9 +808,10 @@ impl EmbedRouter {
 			.models
 			.get(provider_id, model_id)
 			.ok_or_else(|| Error::Provider(fmts!("unknown catalog model {selector}")))?;
-		let provider = self.providers.get(model.provider.as_str()).ok_or_else(|| {
-			Error::Provider(fmts!("unknown catalog provider {}", model.provider))
-		})?;
+		let provider = self
+			.providers
+			.get(model.provider.as_str())
+			.ok_or_else(|| Error::Provider(fmts!("unknown catalog provider {}", model.provider)))?;
 		if !model.facets.contains(&CatalogFacet::Embeddings)
 			|| !provider.facets.contains(&CatalogFacet::Embeddings)
 		{
@@ -926,7 +926,7 @@ fn attach_embedding_cost(
 				priced = true;
 			},
 			_ => {},
-		};
+		}
 		let quantity = match price.unit {
 			PriceUnit::MtokInput => u128::from(usage.input_tokens),
 			PriceUnit::McharInput => u128::from(characters),
@@ -1071,7 +1071,7 @@ mod tests {
 		family: &str,
 	) -> (Arc<ModelCatalog>, Arc<ProviderCatalog>) {
 		let model = ModelCard::builder()
-			.id(Str::new(format!("vendor/{model_id}")))
+			.id(fmts!("vendor/{model_id}"))
 			.provider(Str::from("vendor"))
 			.model(Str::new(model_id))
 			.name(Str::new(model_id))
@@ -1113,7 +1113,7 @@ mod tests {
 
 	fn count_request_for_model(model_id: &str) -> CountRequest {
 		CountRequest::builder()
-			.model(Str::new(format!("vendor/{model_id}")))
+			.model(fmts!("vendor/{model_id}"))
 			.input(CountInput::Thread(
 				Thread::builder()
 					.items(vec![

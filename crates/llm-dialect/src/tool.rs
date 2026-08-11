@@ -5,7 +5,7 @@ use serde_json::{Map, Number, Value};
 use smallvec::SmallVec;
 
 /// Parses every complete Python call expression in a Gemini `tool_code` body.
-pub(crate) fn parse_python_calls(body: &[u8]) -> SmallVec<(Str, Map<String, Value>), 2> {
+pub fn parse_python_calls(body: &[u8]) -> SmallVec<(Str, Map<String, Value>), 2> {
 	let Ok(body) = std::str::from_utf8(body) else {
 		return SmallVec::new();
 	};
@@ -398,7 +398,7 @@ fn is_identifier(bytes: &[u8]) -> bool {
 }
 
 /// Parses one complete Gemma token-delimited tool body.
-pub(crate) fn parse_gemma_call(body: &[u8]) -> Option<(Str, Map<String, Value>)> {
+pub fn parse_gemma_call(body: &[u8]) -> Option<(Str, Map<String, Value>)> {
 	let Ok(body) = std::str::from_utf8(body) else {
 		return None;
 	};

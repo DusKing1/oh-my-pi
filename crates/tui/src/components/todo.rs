@@ -1,4 +1,4 @@
-use omp_core::Str;
+use omp_core::{Str, fmts};
 use smallvec::SmallVec;
 
 use crate::{
@@ -71,7 +71,7 @@ impl TodoTask {
 		if self.label.is_empty() {
 			self.label = suffix;
 		} else {
-			self.label = omp_core::fmts!("{}{}", self.label, suffix);
+			self.label = fmts!("{}{}", self.label, suffix);
 		}
 		self
 	}
@@ -298,7 +298,7 @@ fn paint_tasks(
 			if status == TaskStatus::Blocked {
 				let note = task.props.str_of(Prop::Desc).map_or_else(
 					|| Str::new_static(" (blocked)"),
-					|reason| omp_core::fmts!(" (blocked: {reason})"),
+					|reason| fmts!(" (blocked: {reason})"),
 				);
 				pc.frame.put(x, *y, &note, Style::new().dim());
 			}
@@ -309,7 +309,7 @@ fn paint_tasks(
 			x = pc
 				.frame
 				.put(x, *y, label, Style::new().fg(pc.ctx.theme.fg).bold());
-			let counter = omp_core::fmts!(" {done}/{total}");
+			let counter = fmts!(" {done}/{total}");
 			pc.frame.put(x, *y, &counter, Style::new().dim());
 		}
 		*y = y.saturating_add(1);

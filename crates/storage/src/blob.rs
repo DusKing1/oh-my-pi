@@ -180,7 +180,7 @@ impl BlobStore {
 		let (mut file, temporary) = self.create_temp()?;
 		let mut hasher = blake3::Hasher::new();
 		let mut size = 0_u64;
-		let mut buffer = Box::new([0_u8; COPY_BUFFER_SIZE]);
+		let mut buffer = vec![0_u8; COPY_BUFFER_SIZE].into_boxed_slice();
 
 		loop {
 			let read = match reader.read(&mut *buffer) {
@@ -262,7 +262,7 @@ impl BlobStore {
 		let mut file = File::open(self.path(reference)).map_err(map_read_error)?;
 		let mut hasher = blake3::Hasher::new();
 		let mut size = 0_u64;
-		let mut buffer = Box::new([0_u8; COPY_BUFFER_SIZE]);
+		let mut buffer = vec![0_u8; COPY_BUFFER_SIZE].into_boxed_slice();
 
 		loop {
 			let read = match file.read(&mut *buffer) {

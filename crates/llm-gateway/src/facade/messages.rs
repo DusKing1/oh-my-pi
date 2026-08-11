@@ -999,7 +999,7 @@ mod tests {
 			model: Str::from("test"),
 			messages: vec![
 				json!({"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"q":"omp"},"cache_control":{"type":"ephemeral"}}]}),
-				json!({"role":"user","content":[outer.clone()]}),
+				json!({"role":"user","content":[outer]}),
 			],
 			max_tokens: Some(128),
 			..WireRequest::default()

@@ -25,7 +25,7 @@ pub struct ResolvedModelPolicy {
 	pub cursor_max_mode:        Option<bool>,
 	/// Suppress the provider's maximum-output-token field.
 	pub omit_max_output_tokens: Option<bool>,
-	/// OpenAI apply-patch tool encoding.
+	/// `OpenAI` apply-patch tool encoding.
 	pub apply_patch_shape:      Option<ApplyPatchShape>,
 	/// Exact Copilot premium multiplier scaled by 1,000,000.
 	pub premium_millionths:     Option<u64>,
@@ -91,7 +91,7 @@ pub struct ResolvedModelCapabilities {
 	pub computer_use_config: Option<bool>,
 }
 
-/// OpenAI apply-patch tool encoding.
+/// `OpenAI` apply-patch tool encoding.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ApplyPatchShape {
@@ -218,7 +218,7 @@ pub struct ChatParams {
 	pub service_tier_by_family: Option<ServiceTierByFamily>,
 	/// Advisory token budget for the complete agent task.
 	pub task_budget:            Option<TaskBudget>,
-	/// OpenAI Responses fields requested verbatim. `Some([])` explicitly
+	/// `OpenAI` Responses fields requested verbatim. `Some([])` explicitly
 	/// requests no includes and remains distinct from absence.
 	pub responses_include:      Option<Vec<ResponseInclude>>,
 }
@@ -262,7 +262,7 @@ pub struct ChatRequest {
 	pub service_tier_by_family: Option<ServiceTierByFamily>,
 	/// Advisory token budget for the complete agent task.
 	pub task_budget:            Option<TaskBudget>,
-	/// OpenAI Responses fields requested verbatim. `Some([])` explicitly
+	/// `OpenAI` Responses fields requested verbatim. `Some([])` explicitly
 	/// requests no includes and remains distinct from absence.
 	pub responses_include:      Option<Vec<ResponseInclude>>,
 }
@@ -377,7 +377,7 @@ pub struct TaskBudget {
 	pub remaining_tokens: Option<u64>,
 }
 
-/// OpenAI Responses fields that callers may request verbatim.
+/// `OpenAI` Responses fields that callers may request verbatim.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ResponseInclude {
@@ -453,7 +453,7 @@ pub enum Effort {
 	Medium,
 	/// High reasoning allocation.
 	High,
-	/// OpenAI's extra-high reasoning tier.
+	/// `OpenAI`'s extra-high reasoning tier.
 	XHigh,
 	/// Provider-defined maximum reasoning allocation.
 	Max,

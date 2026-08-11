@@ -467,9 +467,8 @@ fn merge_same_path_sections(sections: Vec<RawSection>) -> Result<Vec<RawSection>
 	for path in order {
 		let entry = entries.remove(&path).unwrap();
 		debug_assert_eq!(entry.index, merged.len());
-		let mut diff = StrMut::with_capacity(
-			entry.diffs.iter().map(Str::len).sum::<usize>() + entry.diffs.len(),
-		);
+		let mut diff =
+			StrMut::with_capacity(entry.diffs.iter().map(Str::len).sum::<usize>() + entry.diffs.len());
 		for (index, section) in entry.diffs.iter().enumerate() {
 			if index > 0 {
 				diff.push('\n');

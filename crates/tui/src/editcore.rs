@@ -6,7 +6,7 @@
 
 use std::{cell::Cell, cmp::Reverse, collections::HashMap, sync::LazyLock};
 
-use omp_core::{Str, str::IntoStr};
+use omp_core::{Str, fmts, str::IntoStr};
 use smallvec::SmallVec;
 use xutf::Text;
 
@@ -1838,7 +1838,7 @@ impl SlashCommands {
 			score = score.max(description_score);
 			if score > 0 {
 				ranked.push((score, Suggestion {
-					value:       omp_core::fmts!("/{selected_name} "),
+					value:       fmts!("/{selected_name} "),
 					display:     SuggestionDisplay::Text(selected_name.clone()),
 					description: Some(command.description.clone()),
 					hint:        command.hint.clone(),
@@ -1874,7 +1874,7 @@ impl SlashCommands {
 			let score = command_score(&query, &arg.name);
 			if score > 0 {
 				ranked.push((score, Suggestion {
-					value:       omp_core::fmts!("{} ", arg.name),
+					value:       fmts!("{} ", arg.name),
 					display:     SuggestionDisplay::Text(arg.name.clone()),
 					description: Some(arg.description.clone()),
 					hint:        None,
@@ -1926,7 +1926,7 @@ impl EditorCompletion for SlashCommands {
 					.find(|arg| arg.name.starts_with(&prefix))?;
 				let remaining = &matched.name.as_str()[prefix.len()..];
 				match &matched.usage {
-					Some(usage) => Some(omp_core::fmts!("{remaining} {usage}")),
+					Some(usage) => Some(fmts!("{remaining} {usage}")),
 					None if remaining.is_empty() => None,
 					None => Some(Str::new(remaining)),
 				}
@@ -2547,7 +2547,7 @@ mod tests {
 			let items = ["alice", "bob"]
 				.iter()
 				.filter(|name| !query.is_empty() && name.starts_with(query))
-				.map(|name| Suggestion::new(omp_core::fmts!("@{name} "), *name))
+				.map(|name| Suggestion::new(fmts!("@{name} "), *name))
 				.collect::<SuggestionList>();
 			(!items.is_empty()).then_some(Suggestions { prefix_start: at, items })
 		}

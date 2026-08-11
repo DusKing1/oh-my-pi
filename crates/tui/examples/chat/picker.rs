@@ -487,10 +487,7 @@ struct Chip {
 fn chips(model: usize, current: usize, charset: Charset) -> Vec<Chip> {
 	let mut chips = Vec::new();
 	if model == current {
-		chips.push(Chip {
-			text:  fmts!("{} current", charset.icon(Icon::Enabled)),
-			color: GREEN,
-		});
+		chips.push(Chip { text: fmts!("{} current", charset.icon(Icon::Enabled)), color: GREEN });
 	}
 	for role in ROLES.iter().filter(|role| role.model == model) {
 		let dot = if role.configured {

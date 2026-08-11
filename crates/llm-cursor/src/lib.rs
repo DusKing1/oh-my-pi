@@ -31,6 +31,7 @@ use smallvec::{SmallVec, smallvec};
 use tokio::{sync::oneshot, task::JoinHandle};
 use tower::Service as _;
 
+pub mod discovery;
 pub mod wire;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
@@ -1368,9 +1369,7 @@ impl ConnectDecoder {
 			let payload = bytes.split_to(len);
 			if flags & CONNECT_END_STREAM != 0 {
 				if payload.windows(7).any(|window| window == b"\"error\"") {
-					return Err(Error::Transport(Str::new_static(
-						"Cursor Connect end-stream error",
-					)));
+					return Err(Error::Transport(Str::new_static("Cursor Connect end-stream error")));
 				}
 			} else {
 				messages.push(payload);
@@ -1398,9 +1397,7 @@ impl ConnectDecoder {
 			let payload = self.buffer.split_to(len).freeze();
 			if flags & CONNECT_END_STREAM != 0 {
 				if payload.windows(7).any(|window| window == b"\"error\"") {
-					return Err(Error::Transport(Str::new_static(
-						"Cursor Connect end-stream error",
-					)));
+					return Err(Error::Transport(Str::new_static("Cursor Connect end-stream error")));
 				}
 			} else {
 				messages.push(payload);

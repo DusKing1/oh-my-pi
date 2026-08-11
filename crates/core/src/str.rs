@@ -101,6 +101,19 @@ impl Str {
 		Ok(Self::new(str::from_utf8(u)?))
 	}
 
+	/// Constructs a `Str` from bytes, replacing invalid UTF-8 sequences with
+	/// `U+FFFD`.
+	///
+	/// When repairs are needed, the repaired string allocation is transferred
+	/// into the result.
+	#[inline]
+	pub fn from_utf8_lossy(u: &[u8]) -> Self {
+		match String::from_utf8_lossy(u) {
+			Cow::Borrowed(text) => Self::new(text),
+			Cow::Owned(text) => Self::from(text),
+		}
+	}
+
 	/// Constructs an inline variant of `Str`.
 	///
 	/// This never allocates.
@@ -1321,7 +1334,8 @@ impl StrMut {
 					let cap = cap.next_power_of_two();
 					// SAFETY: A newly allocated BytesMut with capacity is empty, and an
 					// empty byte buffer is trivially valid UTF-8.
-					let mut heap = unsafe { BytesStrMut::from_inner_unchecked(BytesMut::with_capacity(cap)) };
+					let mut heap =
+						unsafe { BytesStrMut::from_inner_unchecked(BytesMut::with_capacity(cap)) };
 					heap.push_str(buf.as_str());
 					*self = Self(Repr::Heap(heap));
 				}
@@ -1520,7 +1534,7 @@ pub trait IntoStr: fmt::Display {
 	}
 
 	/// Convert value to [`StrMut`].
-	fn to_str_mut(&self) -> StrMut {
+	fn to_strmut(&self) -> StrMut {
 		self.to_str().into()
 	}
 }
@@ -1542,7 +1556,7 @@ impl IntoStr for &str {
 	}
 
 	#[inline]
-	fn to_str_mut(&self) -> StrMut {
+	fn to_strmut(&self) -> StrMut {
 		StrMut::new(self)
 	}
 }
@@ -1564,7 +1578,7 @@ impl IntoStr for &mut str {
 	}
 
 	#[inline]
-	fn to_str_mut(&self) -> StrMut {
+	fn to_strmut(&self) -> StrMut {
 		StrMut::new(self)
 	}
 }
@@ -1586,7 +1600,7 @@ impl IntoStr for Str {
 	}
 
 	#[inline]
-	fn to_str_mut(&self) -> StrMut {
+	fn to_strmut(&self) -> StrMut {
 		StrMut::new(self.as_str())
 	}
 }
@@ -1608,12 +1622,12 @@ impl IntoStr for StrMut {
 	}
 
 	#[inline]
-	fn to_str_mut(&self) -> StrMut {
+	fn to_strmut(&self) -> StrMut {
 		self.clone()
 	}
 }
 
-impl IntoStr for CowStr {
+impl IntoStr for CowStr<'_> {
 	#[inline]
 	fn into_str(self) -> Str {
 		match self {
@@ -1636,7 +1650,7 @@ impl IntoStr for CowStr {
 	}
 
 	#[inline]
-	fn to_str_mut(&self) -> StrMut {
+	fn to_strmut(&self) -> StrMut {
 		StrMut::new(self.as_str())
 	}
 }
@@ -1662,7 +1676,7 @@ impl IntoStr for String {
 	}
 
 	#[inline]
-	fn to_str_mut(&self) -> StrMut {
+	fn to_strmut(&self) -> StrMut {
 		self.as_str().into()
 	}
 }
@@ -1686,7 +1700,7 @@ impl IntoStr for BytesStr {
 	}
 
 	#[inline]
-	fn to_str_mut(&self) -> StrMut {
+	fn to_strmut(&self) -> StrMut {
 		self.deref().into()
 	}
 }
@@ -1717,7 +1731,7 @@ impl IntoStr for Cow<'_, str> {
 	}
 
 	#[inline]
-	fn to_str_mut(&self) -> StrMut {
+	fn to_strmut(&self) -> StrMut {
 		match self {
 			Cow::Borrowed(s) => StrMut::new(s),
 			Cow::Owned(s) => s.into_str_mut(),
@@ -1746,7 +1760,7 @@ impl IntoStr for Box<str> {
 	}
 
 	#[inline]
-	fn to_str_mut(&self) -> StrMut {
+	fn to_strmut(&self) -> StrMut {
 		StrMut::new(self.as_ref())
 	}
 }
@@ -1771,7 +1785,7 @@ impl IntoStr for Arc<str> {
 	}
 
 	#[inline]
-	fn to_str_mut(&self) -> StrMut {
+	fn to_strmut(&self) -> StrMut {
 		StrMut::new(self.as_ref())
 	}
 }
@@ -1795,7 +1809,7 @@ where
 	}
 
 	#[inline]
-	default fn to_str_mut(&self) -> StrMut {
+	default fn to_strmut(&self) -> StrMut {
 		fmts_mut!("{}", *self)
 	}
 }
@@ -1880,44 +1894,46 @@ impl From<String> for StrMut {
 	}
 }
 
-impl From<&BytesStr>StrolStr {
+impl From<&BytesStr> for Str {
 	#[inline]
 	fn from(s: &BytesStr) -> Self {
 		Self(Repr::Heap(s.clone()))
 	}
 }
 
-impl From<&BytesStr>StrMuttrMut {
+impl From<&BytesStr> for StrMut {
 	#[inline]
 	fn from(s: &BytesStr) -> Self {
 		Self::new(&**s)
 	}
 }
 
-impl From<BytesStr>StrolStr {
+impl From<BytesStr> for Str {
 	#[inline(always)]
 	fn from(text: BytesStr) -> Self {
 		Self(Repr::Heap(text))
 	}
 }
 
-impl From<BytesStr>StrMuttrMut {
+impl From<BytesStr> for StrMut {
 	#[inline(always)]
 	fn from(text: BytesStr) -> Self {
 		// SAFETY: BytesStr guarantees its contents are valid UTF-8. Converting
 		// to BytesMut preserves the UTF-8 bytes.
-		Self(Repr::Heap(unsafe { BytesStrMut::from_inner_unchecked(BytesMut::from(text.into_inner())) }))
+		Self(Repr::Heap(unsafe {
+			BytesStrMut::from_inner_unchecked(BytesMut::from(text.into_inner()))
+		}))
 	}
 }
 
-impl From<BytesStrMut>StrolStr {
+impl From<BytesStrMut> for Str {
 	#[inline]
 	fn from(value: BytesStrMut) -> Self {
 		Self(Repr::Heap(value.freeze()))
 	}
 }
 
-impl From<BytesStrMut>StrMuttrMut {
+impl From<BytesStrMut> for StrMut {
 	#[inline]
 	fn from(value: BytesStrMut) -> Self {
 		Self(Repr::Heap(value))
@@ -2046,7 +2062,7 @@ impl From<StrMut> for Str {
 	}
 }
 
-impl From<Str> for StrMut
+impl From<Str> for StrMut {
 	#[inline]
 	fn from(value: Str) -> Self {
 		match value.0 {
@@ -2488,7 +2504,7 @@ impl<'a> CowStr<'a> {
 	}
 }
 
-impl AsMut<StrMut> for CowStr {
+impl AsMut<StrMut> for CowStr<'_> {
 	fn as_mut(&mut self) -> &mut StrMut {
 		match self {
 			CowStr::Borrowed(s) => {
@@ -2514,14 +2530,14 @@ impl<'a> From<&'a str> for CowStr<'a> {
 	}
 }
 
-impl From<StrMut> for CowStr {
+impl From<StrMut> for CowStr<'_> {
 	#[inline]
 	fn from(s: StrMut) -> Self {
 		CowStr::Owned(s)
 	}
 }
 
-impl From<Str> for CowStr {
+impl From<Str> for CowStr<'_> {
 	#[inline]
 	fn from(s: Str) -> Self {
 		CowStr::Owned(StrMut::from(s))
@@ -2680,7 +2696,7 @@ impl PartialEq<CowStr<'_>> for String {
 	}
 }
 
-impl PartialEq<Str> for CowStr {
+impl PartialEq<Str> for CowStr<'_> {
 	#[inline]
 	fn eq(&self, other: &Str) -> bool {
 		self.as_str() == other.as_str()
@@ -2694,7 +2710,7 @@ impl PartialEq<CowStr<'_>> for Str {
 	}
 }
 
-impl PartialEq<StrMut> for CowStr {
+impl PartialEq<StrMut> for CowStr<'_> {
 	#[inline]
 	fn eq(&self, other: &StrMut) -> bool {
 		self.as_str() == other.as_str()
@@ -3429,6 +3445,15 @@ mod tests {
 
 		let invalid = &[0xc0, 0x80]; // Overlong encoding
 		assert!(Str::from_utf8(invalid).is_err());
+	}
+
+	#[test]
+	fn test_from_utf8_lossy() {
+		let valid = Str::from_utf8_lossy("hello 世界".as_bytes());
+		assert_eq!(valid.as_str(), "hello 世界");
+
+		let invalid = Str::from_utf8_lossy(b"hello \xff world");
+		assert_eq!(invalid.as_str(), "hello � world");
 	}
 
 	#[test]
@@ -4256,14 +4281,14 @@ mod tests {
 	#[test]
 	fn test_str_to_str() {
 		let s = Str::new("hello");
-		let str_ref: bytes_utils::BytesStr = s.into();
+		let str_ref: bytes_utils::Str = s.into();
 		assert_eq!(&*str_ref, "hello");
 	}
 
 	#[test]
 	fn test_strmut_to_strmut() {
 		let m = StrMut::new("hello world hello world");
-		let str_mut: bytes_utils::BytesStrMut = m.into();
+		let str_mut: bytes_utils::StrMut = m.into();
 		assert_eq!(&*str_mut, "hello world hello world");
 	}
 }

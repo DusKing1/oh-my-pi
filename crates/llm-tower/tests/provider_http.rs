@@ -17,6 +17,7 @@ use futures::{StreamExt, task::AtomicWaker};
 use http::{Request, Response, header};
 use http_body_util::BodyExt;
 use hyper::body::{Body as HttpBody, Frame};
+use omp_core::Str;
 use omp_llm_catalog::{
 	compat::StreamProtocol,
 	provider::{CodexTransportPreference, ProviderEntry, TransportId, load_builtin},
@@ -285,7 +286,7 @@ fn content_chunk(text: &str) -> Bytes {
 	))
 }
 
-fn terminal_chunk() -> Bytes {
+const fn terminal_chunk() -> Bytes {
 	Bytes::from_static(
 		b"data: {\"id\":\"chatcmpl_test\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
 	)
@@ -468,7 +469,7 @@ async fn safe_model_headers_override_statics_before_request_dynamic_headers() {
 	native.meta = Some(
 		RequestMeta::builder()
 			.initiator("user".into())
-			.session_id(omp_core::Str::new_static(""))
+			.session_id(Str::new_static(""))
 			.telemetry(BTreeMap::new())
 			.build(),
 	);
@@ -1105,7 +1106,7 @@ async fn ndjson_and_raw_json_are_incrementally_framed() {
 		while let Some(event) = stream.next().await {
 			if matches!(
 				event.event,
-				Some(turn_event::Event::Outcome(_)) | Some(turn_event::Event::Error(_))
+				Some(turn_event::Event::Outcome(_) | turn_event::Event::Error(_))
 			) {
 				terminal += 1;
 			}

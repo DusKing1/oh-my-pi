@@ -39,6 +39,7 @@ omp-llm-google.workspace = true
 omp-llm-gitlab.workspace = true
 omp-llm-local.workspace = true
 omp-llm-ollama.workspace = true
+omp-llm-openai.workspace = true
 omp-llm-types.workspace = true
 omp-llm-tower.workspace = true
 omp-proto = { workspace = true, features = ["tonic"] }

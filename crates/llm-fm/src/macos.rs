@@ -17,13 +17,13 @@ use parking_lot::{Condvar, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-	AppleFmAvailability, AppleFmError, AppleFmErrorCode, AppleFmGeneration, AppleFmOptions, Result,
+	AppleFmAvailability, AppleFmError, AppleFmErrorCode, AppleFmGeneration, AppleFmOptions,
+	CONTEXT_SIZE, Result,
 };
 
 const FRAMEWORK_PATH: &CStr =
 	c"/System/Library/Frameworks/FoundationModels.framework/FoundationModels";
 const UTF8: u32 = 0x0800_0100;
-const CONTEXT_SIZE: u32 = 4096;
 const TASK_ENQUEUE_JOB: usize = 1 << 12;
 // The closure context is a raw Rust allocation, not a Swift object.
 const TASK_IS_FUNCTION_CONSUMED: usize = 1 << 15;

@@ -2,6 +2,7 @@
 
 pub mod adc;
 pub mod cca;
+pub mod discovery;
 pub mod embeddings;
 pub mod leak_filter;
 mod request;
@@ -605,9 +606,7 @@ fn encode_policy_thinking(
 				};
 				let level = policy
 					.effort_map
-					.get(&floor)
-					.map(Str::as_str)
-					.unwrap_or_else(|| thinking_level(floor));
+					.get(&floor).map_or_else(|| thinking_level(floor), Str::as_str);
 				thinking.insert("thinkingLevel".into(), Value::String(level.into()));
 			},
 			_ => {
@@ -638,9 +637,7 @@ fn encode_policy_thinking(
 			if let Some(effort) = reasoning.effort {
 				let level = policy
 					.effort_map
-					.get(&effort)
-					.map(Str::as_str)
-					.unwrap_or_else(|| thinking_level(effort));
+					.get(&effort).map_or_else(|| thinking_level(effort), Str::as_str);
 				thinking.insert("thinkingLevel".into(), Value::String(level.into()));
 			}
 		},
@@ -897,11 +894,7 @@ fn decode_response(
 						)));
 						return Ok(events);
 					};
-					if part
-						.thought_signature
-						.as_ref()
-						.is_some_and(Str::is_empty)
-					{
+					if part.thought_signature.as_ref().is_some_and(Str::is_empty) {
 						state.completed = true;
 						events.push(TurnEvent::Error(turn_error(
 							"Google functionCall carried an empty thoughtSignature".into(),

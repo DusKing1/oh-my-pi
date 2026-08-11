@@ -10,9 +10,12 @@ description = "Amazon Bedrock Converse Stream wire codec for OMP"
 
 [dependencies]
 base64 = { workspace = true }
+async-trait = { workspace = true }
 bytes = { workspace = true }
+http = { workspace = true }
 omp-core = { workspace = true }
 omp-llm-catalog = { workspace = true }
+omp-llm-egress = { workspace = true }
 omp-llm-transport = { workspace = true }
 omp-llm-types = { workspace = true }
 serde = { workspace = true }

@@ -71,12 +71,7 @@ impl Transport for VertexCodec {
 ///
 /// `base_url` may be empty, in which case a regional location uses its
 /// location-prefixed host and `global` uses `aiplatform.googleapis.com`.
-pub fn endpoint(
-	base_url: &str,
-	project: &str,
-	location: &str,
-	model: &str,
-) -> Result<Str, Error> {
+pub fn endpoint(base_url: &str, project: &str, location: &str, model: &str) -> Result<Str, Error> {
 	for (name, value) in [("project", project), ("location", location), ("model", model)] {
 		if value.is_empty() {
 			return Err(provider_error(format!("Vertex Anthropic {name} must not be empty")));

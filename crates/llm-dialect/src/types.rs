@@ -75,7 +75,7 @@ pub enum XmlTagset {
 	/// Anthropic-compatible `tool_use` and `tool_result` tags.
 	#[default]
 	Anthropic,
-	/// DeepSeek markup-language tool tags.
+	/// `DeepSeek` markup-language tool tags.
 	Dsml,
 }
 

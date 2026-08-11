@@ -112,7 +112,7 @@ impl Default for RouteStackConfig {
 			timeout:              PhaseTimeoutConfig::default(),
 			cache:                CachePolicy::default(),
 			learn_scope:          None,
-			learn_expiry:         Duration::from_secs(6 * 60 * 60),
+			learn_expiry:         Duration::from_hours(6),
 		}
 	}
 }

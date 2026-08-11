@@ -605,11 +605,13 @@ fn decode_frame(bytes: &[u8]) -> Decoded {
 			let end = sequence.len().saturating_sub(2);
 			let payload = &sequence[2..end];
 			if let Some(payload) = payload.strip_prefix(b"G") {
-				Decoded::Event(InputEvent::Response(TerminalResponse::KittyGraphics(decode_text(payload))))
-			} else {
-				Decoded::Event(InputEvent::Response(TerminalResponse::ApplicationProgramCommand(decode_text(
+				Decoded::Event(InputEvent::Response(TerminalResponse::KittyGraphics(decode_text(
 					payload,
 				))))
+			} else {
+				Decoded::Event(InputEvent::Response(TerminalResponse::ApplicationProgramCommand(
+					decode_text(payload),
+				)))
 			}
 		},
 		_ => decode_plain(&sequence[1..], true).map_or(Decoded::None, Decoded::Chord),
@@ -618,7 +620,9 @@ fn decode_frame(bytes: &[u8]) -> Decoded {
 
 fn decode_csi(body: &[u8], final_byte: u8, meta: bool) -> Decoded {
 	if final_byte == b'c' && matches!(body.first(), Some(b'?' | b'>')) {
-		return Decoded::Event(InputEvent::Response(TerminalResponse::DeviceAttributes(decode_text(body))));
+		return Decoded::Event(InputEvent::Response(TerminalResponse::DeviceAttributes(
+			decode_text(body),
+		)));
 	}
 	if final_byte == b'y'
 		&& let Some(fields) = body
@@ -656,7 +660,9 @@ fn decode_csi(body: &[u8], final_byte: u8, meta: bool) -> Decoded {
 		}));
 	}
 	if matches!(final_byte, b'n' | b'R') {
-		return Decoded::Event(InputEvent::Response(TerminalResponse::DeviceStatus(decode_text(body))));
+		return Decoded::Event(InputEvent::Response(TerminalResponse::DeviceStatus(decode_text(
+			body,
+		))));
 	}
 	if body.is_empty() && matches!(final_byte, b'I' | b'O') {
 		return Decoded::Event(InputEvent::Focus(final_byte == b'I'));
@@ -924,7 +930,7 @@ fn parse_decimal_u8(bytes: &[u8]) -> Option<u8> {
 }
 
 fn decode_text(bytes: &[u8]) -> Str {
-	Str::from(String::from_utf8_lossy(bytes).as_ref())
+	Str::from_utf8_lossy(bytes)
 }
 fn parse_appearance_response(body: &[u8]) -> Option<u8> {
 	let mut fields = body.strip_prefix(b"?997;")?.split(|byte| *byte == b';');
@@ -1666,7 +1672,7 @@ mod tests {
 		events.clear();
 		decoder.keymap_mut().disable(chord);
 		decoder.feed(b"\x1bf", start, &mut events);
-		assert!(events.is_empty());
+		assert_eq!(events, [] as [input::InputEvent; 0]);
 
 		decoder.keymap_mut().bind(chord, Key::PageDown);
 		decoder.feed(b"\x1bf", start, &mut events);
@@ -1724,7 +1730,7 @@ mod tests {
 		decoder.set_kitty_keyboard(true);
 		decoder.feed(b"\x1b", start, &mut events);
 		decoder.tick(start + Duration::from_millis(224), &mut events);
-		assert!(events.is_empty());
+		assert_eq!(events, [] as [input::InputEvent; 0]);
 		decoder.tick(start + Duration::from_millis(225), &mut events);
 		assert_eq!(events, [InputEvent::Key(Key::Esc)]);
 	}
@@ -1736,7 +1742,7 @@ mod tests {
 		assert_eq!(decoder.deadline(), None);
 
 		decoder.feed(b"\x1b[", start, &mut events);
-		assert!(events.is_empty());
+		assert_eq!(events, [] as [input::InputEvent; 0]);
 		assert_eq!(decoder.deadline(), Some(start + Duration::from_millis(75)));
 
 		decoder.tick(start + Duration::from_millis(75), &mut events);

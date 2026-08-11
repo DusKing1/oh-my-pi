@@ -581,7 +581,7 @@ fn decode_url_component(value: &str) -> Str {
 			cursor += 1;
 		}
 	}
-	Str::new(String::from_utf8_lossy(&decoded))
+	Str::from_utf8_lossy(&decoded)
 }
 
 const fn hex_digit(value: u8) -> Option<u8> {

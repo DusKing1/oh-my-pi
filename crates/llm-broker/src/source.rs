@@ -178,7 +178,7 @@ impl<R> BrokerCredentialSource<R> {
 
 	/// Returns the underlying daemon credential store.
 	#[must_use]
-	pub fn store(&self) -> &Arc<Store> {
+	pub const fn store(&self) -> &Arc<Store> {
 		&self.store
 	}
 
@@ -199,10 +199,12 @@ impl<R> BrokerCredentialSource<R> {
 		Ok(self.store.lease_provider(provider, now_ms)?)
 	}
 
-	/// Applies a lease as Devin's embedded protobuf discovery credential.
+	/// Fills a discovery request body whose credential is embedded in the
+	/// payload.
 	///
-	/// The token is redeemed and encoded entirely inside the broker boundary.
-	pub fn apply_devin_discovery(
+	/// The credential is redeemed and encoded entirely inside the broker
+	/// boundary.
+	pub fn apply_sealed_discovery_body(
 		&self,
 		lease: &CredentialLease,
 		request: &mut Request<Body>,
@@ -216,7 +218,7 @@ impl<R> BrokerCredentialSource<R> {
 			lease.credential_id(),
 			lease.generation(),
 			|_kind, auth| {
-				auth.apply_devin_discovery(request);
+				auth.apply_sealed_discovery_body(request);
 				Ok(())
 			},
 		)?;

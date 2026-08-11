@@ -235,15 +235,14 @@ pub fn validate_provider_links(
 			AuthSpec::OAuth { flow } => Some(flow),
 			_ => None,
 		};
-		if let (Some(auth_flow), Some(login_flow)) = (auth_flow, provider.oauth_flow.as_ref()) {
-			if auth_flow != login_flow {
+		if let (Some(auth_flow), Some(login_flow)) = (auth_flow, provider.oauth_flow.as_ref())
+			&& auth_flow != login_flow {
 				return Err(OAuthLinkError::ConflictingFlow {
 					provider:   provider.id.clone(),
 					auth_flow:  auth_flow.clone(),
 					login_flow: login_flow.clone(),
 				});
 			}
-		}
 
 		for flow in [auth_flow, provider.oauth_flow.as_ref()]
 			.into_iter()

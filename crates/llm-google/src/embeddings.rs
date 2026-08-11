@@ -154,9 +154,10 @@ fn decode_vector(values: Option<&Value>) -> Result<EmbeddingVector, Error> {
 	let values = values
 		.iter()
 		.map(|value| {
-			let number = value.as_f64().ok_or_else(|| {
-				Error::Provider(Str::from("embedding vector contains a non-number"))
-			})? as f32;
+			let number = value
+				.as_f64()
+				.ok_or_else(|| Error::Provider(Str::from("embedding vector contains a non-number")))?
+				as f32;
 			if !number.is_finite() {
 				return Err(Error::Provider(Str::from(
 					"embedding vector contains a non-finite component",

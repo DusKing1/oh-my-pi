@@ -351,7 +351,7 @@ pub(crate) fn error_response(vendor: Vendor, error: FacadeError) -> FacadeRespon
 	response
 }
 
-fn public_turn_message(kind: TurnErrorKind) -> Str {
+const fn public_turn_message(kind: TurnErrorKind) -> Str {
 	match kind {
 		TurnErrorKind::Auth => Str::new_static("provider authentication failed"),
 		TurnErrorKind::RateLimited | TurnErrorKind::Overloaded => {

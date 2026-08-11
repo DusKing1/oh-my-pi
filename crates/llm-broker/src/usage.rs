@@ -12,7 +12,7 @@ use http::{
 	header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue},
 };
 use jiff::Timestamp;
-use omp_core::Str;
+use omp_core::{Str, fmts};
 use omp_llm_egress::{
 	auth_inject::CredentialLease,
 	limits::{BlockSink, CredentialBlock as EgressCredentialBlock},
@@ -275,7 +275,7 @@ pub enum UsageError {
 	},
 }
 
-/// Outcome returned by OpenAI Codex saved-reset consumption.
+/// Outcome returned by `OpenAI` Codex saved-reset consumption.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodexResetConsume {
 	/// `true` only when the provider reports that a reset was applied.
@@ -299,7 +299,7 @@ pub struct BrokerObserver {
 impl BrokerObserver {
 	/// Creates an observer over the daemon-owned durable store.
 	#[must_use]
-	pub fn new(store: Arc<Store>) -> Self {
+	pub const fn new(store: Arc<Store>) -> Self {
 		Self { store }
 	}
 
@@ -536,7 +536,7 @@ impl UsageManager {
 			.rolling_spend(provider, credential_id, account, since_ms, until_ms)?)
 	}
 
-	/// Consumes one OpenAI Codex saved rate-limit reset credit.
+	/// Consumes one `OpenAI` Codex saved rate-limit reset credit.
 	///
 	/// `redeem_request_id` is the caller's idempotency key and must be reused
 	/// when retrying an uncertain response. Secret bearer material remains
@@ -752,7 +752,7 @@ fn minimax_report(provider: &str, credential_id: u64, now_ms: u64, payload: Valu
 				};
 				if let Some(used_percent) = used {
 					windows.push(UsageWindow {
-						label: Str::new(format!("{model}:{suffix}")),
+						label: fmts!("{model}:{suffix}"),
 						used_percent,
 						resets_at_ms: bucket.get(reset_name).and_then(timestamp_ms).unwrap_or(0),
 					});

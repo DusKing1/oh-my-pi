@@ -1,4 +1,4 @@
-//! ChatGPT Codex WebSocket framing, continuation, and HTTP fallback policy.
+//! `ChatGPT` Codex WebSocket framing, continuation, and HTTP fallback policy.
 //!
 //! Network I/O is deliberately absent. The production egress service owns the
 //! socket and credential lease; these types shape frames and enforce the replay
@@ -90,7 +90,7 @@ impl CodexFrameRouter {
 
 	/// Marks the request cancelled. The egress owner must drop the upstream body
 	/// immediately; subsequent frames are discarded by [`Self::route`].
-	pub fn cancel(&mut self) {
+	pub const fn cancel(&mut self) {
 		self.cancelled = true;
 	}
 
@@ -205,14 +205,14 @@ impl CodexContinuationState {
 		self.turn_state.as_deref()
 	}
 
-	/// Returns the current models ETag learned from the service.
+	/// Returns the current models `ETag` learned from the service.
 	#[must_use]
 	pub fn models_etag(&self) -> Option<&str> {
 		self.models_etag.as_deref()
 	}
 
 	/// Starts a new user turn while preserving the append baseline. Codex turn
-	/// state is scoped to one turn; the models ETag remains connection-scoped.
+	/// state is scoped to one turn; the models `ETag` remains connection-scoped.
 	pub fn start_new_turn(&mut self) {
 		self.turn_state = None;
 	}
@@ -225,9 +225,7 @@ impl CodexContinuationState {
 		current: &Value,
 	) -> Result<Value, CodexWebSocketProtocolError> {
 		let current_object = current.as_object().ok_or_else(|| {
-			CodexWebSocketProtocolError(Str::new(
-				"Codex response.create body must be a JSON object",
-			))
+			CodexWebSocketProtocolError(Str::new("Codex response.create body must be a JSON object"))
 		})?;
 		let mut wire = current_object.clone();
 		if let (Some(previous), Some(response_id)) =

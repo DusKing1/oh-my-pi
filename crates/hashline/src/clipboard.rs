@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, error::Error, fmt};
 
-use omp_core::Str;
+use omp_core::{Str, fmts};
 
 use crate::types::{Anchor, Cursor, Edit, InsertMode, ParsedRange, PasteTarget};
 
@@ -91,7 +91,7 @@ fn cut_description(range: ParsedRange, register: Option<&str>) -> Str {
 	} else {
 		format!("{}.={}", range.start.line, range.end.line)
 	};
-	Str::new(format!("CUT {span}{}", register.map_or(String::new(), |r| format!(" @{r}"))))
+	fmts!("CUT {span}{}", register.map_or(String::new(), |r| format!(" @{r}")))
 }
 
 fn read_register(
@@ -112,11 +112,10 @@ fn read_register(
 		if span {
 			return Err(ClipboardError {
 				line_num,
-				message: Str::new(format!("register @{name} is empty; refusing to delete a span")),
+				message: fmts!("register @{name} is empty; refusing to delete a span"),
 			});
 		}
-		warnings
-			.push(Str::new(format!("line {line_num}: register @{name} is empty; pasted nothing")));
+		warnings.push(fmts!("line {line_num}: register @{name} is empty; pasted nothing"));
 		return Ok(Some(Vec::new()));
 	}
 	if clipboard.pending_anonymous_cuts.len() > 1 {
@@ -125,7 +124,7 @@ fn read_register(
 		}
 		return Err(ClipboardError {
 			line_num,
-			message: Str::new(format!(
+			message: fmts!(
 				"anonymous paste is ambiguous after cuts: {}",
 				clipboard
 					.pending_anonymous_cuts
@@ -133,17 +132,14 @@ fn read_register(
 					.map(AsRef::as_ref)
 					.collect::<Vec<_>>()
 					.join(", ")
-			)),
+			),
 		});
 	}
 	let Some(lines) = clipboard.anonymous.clone() else {
 		if mode == EmptyPasteMode::Drop {
 			return Ok(None);
 		}
-		return Err(ClipboardError {
-			line_num,
-			message: Str::new("anonymous register is empty"),
-		});
+		return Err(ClipboardError { line_num, message: Str::new("anonymous register is empty") });
 	};
 	clipboard.pending_anonymous_cuts.clear();
 	Ok(Some(lines))
@@ -168,12 +164,12 @@ pub fn resolve_clipboard_edits(
 				if !range_ok(*range, original_lines.len()) {
 					return Err(ClipboardError {
 						line_num: *line_num,
-						message:  Str::new(format!(
+						message:  fmts!(
 							"cut {}..={} is out of range (file has {} lines)",
 							range.start.line,
 							range.end.line,
 							original_lines.len()
-						)),
+						),
 					});
 				}
 				let captured = original_lines[range.start.line - 1..range.end.line].to_vec();
@@ -217,12 +213,12 @@ pub fn resolve_clipboard_edits(
 						if !range_ok(*range, original_lines.len()) {
 							return Err(ClipboardError {
 								line_num: *line_num,
-								message:  Str::new(format!(
+								message:  fmts!(
 									"paste span {}..={} is out of range (file has {} lines)",
 									range.start.line,
 									range.end.line,
 									original_lines.len()
-								)),
+								),
 							});
 						}
 						for text in lines {

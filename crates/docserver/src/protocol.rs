@@ -430,9 +430,7 @@ async fn open_document(
 					let frame = document_event_stream_error_frame(
 						protocol_minor,
 						lease_id,
-						DocumentEventStreamError::Synchronization {
-							message: Str::new(error.message),
-						},
+						DocumentEventStreamError::Synchronization { message: Str::new(error.message) },
 					);
 					close_owned_lease(&event_session, lease_id).await;
 					let _ = events_sender.send_async(frame).await;

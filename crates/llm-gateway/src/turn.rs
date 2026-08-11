@@ -139,7 +139,7 @@ pub struct ChatResolver {
 impl ChatResolver {
 	/// Creates an empty resolver over the live catalog registry.
 	#[must_use]
-	pub fn new(registry: Arc<RwLock<Registry>>) -> Self {
+	pub const fn new(registry: Arc<RwLock<Registry>>) -> Self {
 		Self {
 			registry,
 			routes: RwLock::new(BTreeMap::new()),

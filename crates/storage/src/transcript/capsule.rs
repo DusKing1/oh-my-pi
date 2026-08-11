@@ -210,8 +210,7 @@ impl Dialect for Ant {
 /// so no reserved marker can accidentally reach provider wire output.
 pub fn split_markers(
 	f: &BTreeMap<Str, Box<RawValue>>,
-) -> (Markers, impl Clone + DoubleEndedIterator<Item = (&Str, &RawValue)> + FusedIterator + '_)
-{
+) -> (Markers, impl Clone + DoubleEndedIterator<Item = (&Str, &RawValue)> + FusedIterator + '_) {
 	let omit = f
 		.get("~omit")
 		.and_then(|raw| serde_json::from_str(raw.get()).ok())

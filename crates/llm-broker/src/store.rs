@@ -44,7 +44,7 @@ struct RankedCredential {
 }
 
 impl RankedCredential {
-	fn is_blocked(&self) -> bool {
+	const fn is_blocked(&self) -> bool {
 		self.blocked_until.is_some()
 	}
 
@@ -101,7 +101,7 @@ impl RankedCredential {
 	}
 }
 
-fn finite_percent(value: f64) -> f64 {
+const fn finite_percent(value: f64) -> f64 {
 	if value.is_finite() {
 		value.clamp(0.0, 100.0)
 	} else {
@@ -237,7 +237,7 @@ pub enum CredentialKind {
 	ApiKey,
 	/// An OAuth or minted ADC bearer credential.
 	OAuth,
-	/// An AWS access-key credential used only for in-broker SigV4 signing.
+	/// An AWS access-key credential used only for in-broker `SigV4` signing.
 	Aws,
 }
 impl CredentialKind {
@@ -650,7 +650,7 @@ impl Store {
 		)
 	}
 
-	/// Inserts or replaces AWS SigV4 access, secret, and optional session
+	/// Inserts or replaces AWS `SigV4` access, secret, and optional session
 	/// material at the broker's one-way secret ingress.
 	pub fn upsert_aws(
 		&self,
@@ -757,13 +757,10 @@ impl Store {
 		};
 		let lease = CredentialLease::new(provider, selected.id, selected.generation);
 		if provider == "anthropic" && !selected.is_blocked() {
-			self
-				.warm
-				.lock()
-				.insert(Str::new(provider), WarmSelection {
-					credential_id: selected.id,
-					last_used_ms:  now_ms,
-				});
+			self.warm.lock().insert(Str::new(provider), WarmSelection {
+				credential_id: selected.id,
+				last_used_ms:  now_ms,
+			});
 		}
 		Ok(Some(lease))
 	}
@@ -1218,8 +1215,7 @@ impl Store {
 			|row| {
 				Ok((
 					row.get::<_, Option<SqlU64>>(0)?
-						.map(|value| value.0)
-						.unwrap_or(0),
+						.map_or(0, |value| value.0),
 					row.get::<_, Option<SqlU64>>(1)?.map(|value| value.0),
 				))
 			},
@@ -1253,8 +1249,7 @@ impl Store {
 			|row| {
 				Ok((
 					row.get::<_, Option<SqlU64>>(0)?
-						.map(|value| value.0)
-						.unwrap_or(0),
+						.map_or(0, |value| value.0),
 					row.get::<_, Option<SqlU64>>(1)?.map(|value| value.0),
 				))
 			},
@@ -2389,6 +2384,6 @@ mod tests {
 		let credentials = store
 			.list_credentials(&CredentialFilter { now_ms: 20, ..CredentialFilter::default() })
 			.expect("list");
-		assert!(credentials.is_empty());
+		assert_eq!(credentials, [] as [store::CredentialMeta; 0]);
 	}
 }

@@ -136,7 +136,7 @@ struct Observation {
 	calls:           Vec<ObservedCall>,
 }
 
-fn matrix_tool<'a>(schema: &'a Value) -> InbandTool<'a> {
+const fn matrix_tool(schema: &Value) -> InbandTool<'_> {
 	InbandTool::new(
 		"matrix_probe",
 		Some("Probe every dialect with structured arguments."),

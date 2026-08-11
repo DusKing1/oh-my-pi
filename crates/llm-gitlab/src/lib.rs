@@ -4,6 +4,8 @@
 //! redeem a canonical broker lease directly into request headers. This crate
 //! never accepts a raw token or returns credential material.
 
+pub mod discovery;
+
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
@@ -52,7 +54,7 @@ pub trait WorkflowSocket: Send {
 	async fn close(&mut self);
 }
 
-/// Creates authenticated workflow WebSockets.
+/// Creates authenticated workflow `WebSockets`.
 #[async_trait]
 pub trait WorkflowSocketConnector: Send + Sync {
 	/// Opens one socket using request-ready headers.
@@ -187,7 +189,7 @@ impl Chat for GitLabDuoChat {
 	) -> Result<BoxStream<'static, TurnEvent>, Error> {
 		let start = build_start_request(&request, &self.config)?;
 		let unsupported = validate_request(&request)?;
-		let model = request.model.clone();
+		let model = request.model;
 		let config = self.config.clone();
 		let auth = Arc::clone(&self.auth);
 		let connector = Arc::clone(&self.connector);
@@ -213,7 +215,7 @@ impl Chat for GitLabDuoChat {
 				  let received = tokio::time::timeout(config.idle_timeout, socket.receive_text()).await;
 				  let frame = match received {
 						Ok(Ok(Some(frame))) => frame,
-						Ok(Ok(None)) | Ok(Err(_)) if reconnects < config.max_reconnects => {
+						Ok(Ok(None) | Err(_)) if reconnects < config.max_reconnects => {
 							 reconnects += 1;
 							 yield TurnEvent::Attempt {
 								  number: reconnects + 1,
@@ -532,7 +534,7 @@ fn record_feature(
 	}
 }
 
-/// Renders canonical history as the flat ChatML goal used when a workflow is
+/// Renders canonical history as the flat `ChatML` goal used when a workflow is
 /// created or restarted.
 pub fn render_chatml(request: &ChatRequest) -> Result<String, Error> {
 	let replay = request
@@ -593,7 +595,7 @@ fn workflow_system_prompt(request: &ChatRequest) -> String {
 		.join("\n\n")
 }
 
-fn role_name(role: Role) -> &'static str {
+const fn role_name(role: Role) -> &'static str {
 	match role {
 		Role::System => "system",
 		Role::User => "user",
@@ -750,9 +752,7 @@ fn decode_frame(frame: &str, state: &mut DecodeState) -> Result<DecodedFrame, Er
 	}
 	if matches!(status, Some("FAILED" | "STOPPED")) {
 		let detail = string_at(event, &["error", "message"]).unwrap_or(status.unwrap_or("FAILED"));
-		return Err(Error::Provider(Str::from(format!(
-			"GitLab Duo Workflow {status:?}: {detail}"
-		))));
+		return Err(Error::Provider(Str::from(format!("GitLab Duo Workflow {status:?}: {detail}"))));
 	}
 	Ok(DecodedFrame { events, action, terminal })
 }
@@ -763,7 +763,7 @@ struct ActionRef<'a> {
 	arguments:  Value,
 }
 
-fn extract_action<'a>(event: &'a Map<String, Value>) -> Result<Option<ActionRef<'a>>, Error> {
+fn extract_action(event: &Map<String, Value>) -> Result<Option<ActionRef<'_>>, Error> {
 	let wrapped = event
 		.get("action")
 		.or_else(|| event.get("workflowAction"))
@@ -828,9 +828,7 @@ fn map_action<'a>(
 }
 
 fn malformed_action(action: &str, detail: &str) -> Error {
-	Error::Provider(Str::from(format!(
-		"malformed GitLab Duo Workflow action `{action}`: {detail}"
-	)))
+	Error::Provider(Str::from(format!("malformed GitLab Duo Workflow action `{action}`: {detail}")))
 }
 
 fn checkpoint_text(event: &Map<String, Value>) -> Result<Option<String>, Error> {
@@ -864,9 +862,7 @@ fn checkpoint_text(event: &Map<String, Value>) -> Result<Option<String>, Error> 
 		.unwrap_or(checkpoint);
 	let checkpoint = if let Some(text) = serialized.as_str() {
 		serde_json::from_str::<Value>(text).map_err(|error| {
-			Error::Provider(Str::from(format!(
-				"malformed GitLab Duo Workflow checkpoint: {error}"
-			)))
+			Error::Provider(Str::from(format!("malformed GitLab Duo Workflow checkpoint: {error}")))
 		})?
 	} else {
 		serialized.clone()

@@ -4318,6 +4318,7 @@ dependencies = [
  "omp-llm-google",
  "omp-llm-local",
  "omp-llm-ollama",
+ "omp-llm-openai",
  "omp-llm-tower",
  "omp-llm-types",
  "omp-proto",
@@ -4521,10 +4522,13 @@ dependencies = [
 name = "omp-llm-bedrock"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64 0.22.1",
  "bytes",
+ "http",
  "omp-core",
  "omp-llm-catalog",
+ "omp-llm-egress",
  "omp-llm-transport",
  "omp-llm-types",
  "serde",
@@ -4579,6 +4583,7 @@ dependencies = [
  "bon",
  "bytes",
  "futures",
+ "http",
  "omp-core",
  "omp-llm-types",
  "parking_lot",
@@ -4609,6 +4614,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "omp-core",
+ "omp-llm-catalog",
  "omp-llm-egress",
  "omp-llm-types",
  "parking_lot",
@@ -4630,6 +4636,7 @@ dependencies = [
  "futures",
  "http",
  "omp-core",
+ "omp-llm-catalog",
  "omp-llm-types",
  "prost",
  "serde_json",
@@ -4695,8 +4702,10 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures",
+ "http",
  "libc",
  "omp-core",
+ "omp-llm-catalog",
  "omp-llm-types",
  "parking_lot",
  "thiserror 2.0.20",
@@ -4771,6 +4780,7 @@ dependencies = [
  "futures",
  "http",
  "omp-core",
+ "omp-llm-catalog",
  "omp-llm-types",
  "parking_lot",
  "serde",
@@ -4784,6 +4794,7 @@ dependencies = [
 name = "omp-llm-google"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64 0.22.1",
  "bytes",
  "http",
@@ -4842,24 +4853,29 @@ dependencies = [
 name = "omp-llm-ollama"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64 0.22.1",
  "bytes",
+ "http",
  "omp-core",
  "omp-llm-catalog",
  "omp-llm-transport",
  "omp-llm-types",
  "serde_json",
  "smallvec 2.0.0-alpha.12",
+ "tokio",
 ]
 
 [[package]]
 name = "omp-llm-openai"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64 0.22.1",
  "blake3",
  "block2",
  "bytes",
+ "http",
  "objc2-device-check",
  "objc2-foundation",
  "omp-core",

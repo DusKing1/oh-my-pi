@@ -19,6 +19,7 @@ use prost::Message as ProstMessage;
 use smallvec::SmallVec;
 use tonic::transport::Channel;
 
+pub mod discovery;
 pub mod wire;
 
 use wire::{
@@ -292,9 +293,7 @@ fn build_request(req: &ChatRequest) -> Result<(GetChatMessageRequest, Vec<Unsupp
 						.to_string(),
 					name:           call.name.to_string(),
 					arguments_json: std::str::from_utf8(&call.args_json)
-						.map_err(|_| {
-							Error::Provider(Str::from("Devin tool arguments are not UTF-8"))
-						})?
+						.map_err(|_| Error::Provider(Str::from("Devin tool arguments are not UTF-8")))?
 						.to_owned(),
 				};
 				if let Some(prompt) = prompts

@@ -69,7 +69,7 @@ impl SemanticRetryBudget {
 
 	/// Permanently disables retries after cancellation; the owner must then drop
 	/// the upstream body.
-	pub fn cancel(&mut self) {
+	pub const fn cancel(&mut self) {
 		self.cancelled = true;
 	}
 }

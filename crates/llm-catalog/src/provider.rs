@@ -86,7 +86,7 @@ pub enum CredentialPlacement {
 		param: Str,
 	},
 }
-/// Preferred wire path for ChatGPT Codex Responses requests.
+/// Preferred wire path for `ChatGPT` Codex Responses requests.
 ///
 /// This is catalog data rather than an application-provider name check. The
 /// HTTP path remains the replay-safe baseline for rows that do not opt in.
@@ -171,10 +171,10 @@ pub enum TransportId {
 	/// Anthropic Messages API.
 	AnthropicMessages,
 	/// Anthropic Messages adapted to AWS Bedrock
-	/// `InvokeModelWithResponseStream`/EventStream.
+	/// `InvokeModelWithResponseStream`/`EventStream`.
 	AnthropicBedrock,
 	/// Amazon Bedrock model-independent `ConverseStream` API over AWS
-	/// EventStream.
+	/// `EventStream`.
 	BedrockConverse,
 	/// Anthropic Messages adapted to Vertex `streamRawPredict`.
 	AnthropicVertex,
@@ -182,7 +182,7 @@ pub enum TransportId {
 	OpenAiChat,
 	/// `OpenAI` Responses API.
 	OpenAiResponses,
-	/// ChatGPT subscription Codex Responses transport.
+	/// `ChatGPT` subscription Codex Responses transport.
 	OpenAiCodex,
 	/// Public Google Generative Language API.
 	GoogleGenAi,
@@ -418,10 +418,7 @@ pub fn load_builtin() -> Result<ProviderCatalog, ProviderLoadError> {
 /// Expansion is bounded to 16 substitutions and an 8 KiB output. Values are
 /// inserted verbatim, so callers must provide URL path-safe identifiers. Any
 /// other placeholder is rejected rather than silently passed through.
-pub fn expand_base_url(
-	template: &str,
-	vars: BaseUrlVars<'_>,
-) -> Result<Str, BaseUrlTemplateError> {
+pub fn expand_base_url(template: &str, vars: BaseUrlVars<'_>) -> Result<Str, BaseUrlTemplateError> {
 	if !template.contains('{') {
 		if template.len() > MAX_EXPANDED_BASE_URL_LEN {
 			return Err(BaseUrlTemplateError::UrlTooLong);
@@ -512,10 +509,7 @@ mod tests {
 		let cases = [
 			(AuthSpec::None, "none"),
 			(AuthSpec::Bearer { env: smallvec![Str::new_static("TOKEN")] }, "bearer"),
-			(
-				AuthSpec::OptionalBearer { env: smallvec![Str::new_static("TOKEN")] },
-				"optional-bearer",
-			),
+			(AuthSpec::OptionalBearer { env: smallvec![Str::new_static("TOKEN")] }, "optional-bearer"),
 			(
 				AuthSpec::Header {
 					name: Str::new_static("x-api-key"),

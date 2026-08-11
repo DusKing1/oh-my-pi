@@ -60,12 +60,7 @@ pub struct AntigravityRequestMetadata {
 impl AntigravityRequestMetadata {
 	/// Creates required metadata for one Antigravity trajectory step.
 	#[must_use]
-	pub const fn new(
-		session_id: Str,
-		request_id: Str,
-		trajectory_id: Str,
-		step_index: u64,
-	) -> Self {
+	pub const fn new(session_id: Str, request_id: Str, trajectory_id: Str, step_index: u64) -> Self {
 		Self {
 			session_id,
 			request_id,
@@ -174,7 +169,7 @@ impl std::fmt::Debug for CcaCodec {
 impl CcaCodec {
 	/// Creates a Gemini CLI codec using the credential's resolved project id.
 	#[must_use]
-	pub fn new(project: Str) -> Self {
+	pub const fn new(project: Str) -> Self {
 		Self {
 			project,
 			flavor: CcaFlavor::GeminiCli,
@@ -191,7 +186,7 @@ impl CcaCodec {
 
 	/// Creates an Antigravity codec for one immutable trajectory step.
 	#[must_use]
-	pub fn antigravity(project: Str, metadata: AntigravityRequestMetadata) -> Self {
+	pub const fn antigravity(project: Str, metadata: AntigravityRequestMetadata) -> Self {
 		Self {
 			project,
 			flavor: CcaFlavor::Antigravity,
@@ -256,10 +251,7 @@ impl CcaCodec {
 
 	/// Enables Flash planning-leak suppression with the active tool names.
 	#[must_use]
-	pub fn with_planning_leak_filter(
-		mut self,
-		tool_names: impl IntoIterator<Item = Str>,
-	) -> Self {
+	pub fn with_planning_leak_filter(mut self, tool_names: impl IntoIterator<Item = Str>) -> Self {
 		self.leak_filter_enabled = true;
 		self.tool_names = tool_names.into_iter().collect();
 		self
@@ -339,9 +331,8 @@ impl Transport for CcaCodec {
 				finish_cca_stream(state)?
 			},
 			Frame::Data(data) | Frame::Event { data, .. } => {
-				let value: Value = serde_json::from_slice(data).map_err(|error| {
-					Error::Provider(fmts!("invalid CCA response JSON: {error}"))
-				})?;
+				let value: Value = serde_json::from_slice(data)
+					.map_err(|error| Error::Provider(fmts!("invalid CCA response JSON: {error}")))?;
 				let mut response = response_or_error(value)?;
 				filter_visible_parts(
 					&mut response,
@@ -581,19 +572,19 @@ fn filter_visible_parts(
 				Error::Provider(fmts!("truncated UTF-8 in CCA visible text: {error}"))
 			})?;
 			let visible = join_chunks(chunks);
-			if !visible.is_empty() {
-				let mut part = Map::new();
-				part.insert(
-					"text".into(),
-					Value::String(String::from_utf8(visible.to_vec()).expect("filter returns UTF-8")),
-				);
-				if let Some(signature) = pending_signature.take() {
-					part.insert("thoughtSignature".into(), Value::String(signature.to_string()));
-				}
-				parts.push(Value::Object(part));
-			} else {
-				*pending_signature = None;
-			}
+			if visible.is_empty() {
+   				*pending_signature = None;
+   			} else {
+   				let mut part = Map::new();
+   				part.insert(
+   					"text".into(),
+   					Value::String(String::from_utf8(visible.to_vec()).expect("filter returns UTF-8")),
+   				);
+   				if let Some(signature) = pending_signature.take() {
+   					part.insert("thoughtSignature".into(), Value::String(signature.to_string()));
+   				}
+   				parts.push(Value::Object(part));
+   			}
 		}
 	}
 	Ok(())
@@ -1025,9 +1016,8 @@ mod tests {
 		.unwrap();
 		assert_eq!(envelope, expected);
 
-		let leased =
-			CcaCodec::antigravity(Str::from("catalog-placeholder"), antigravity_metadata())
-				.with_project_id(Str::from("project-a"));
+		let leased = CcaCodec::antigravity(Str::from("catalog-placeholder"), antigravity_metadata())
+			.with_project_id(Str::from("project-a"));
 		assert!(
 			leased
 				.request_headers("gemini-3.5-flash", false)
@@ -1046,8 +1036,7 @@ mod tests {
 				.contains(&("X-Goog-User-Project", Str::from("billing-project")))
 		);
 
-		let cli =
-			CcaCodec::new(Str::from("project-a")).request_headers("gemini-3.5-flash", false);
+		let cli = CcaCodec::new(Str::from("project-a")).request_headers("gemini-3.5-flash", false);
 		assert!(
 			cli.user_agent
 				.starts_with("GeminiCLI/0.46.0/gemini-3.5-flash (")
@@ -1280,7 +1269,7 @@ mod tests {
 		);
 		assert_eq!(
 			plan
-				.clone()
+				
 				.with_mode(CcaEndpointMode::Auto, Some("https://sandbox.example"))
 				.endpoints()
 				.collect::<Vec<_>>(),
@@ -1390,7 +1379,7 @@ mod tests {
 		}));
 		let (level_body, level_unsupported) = codec.encode(&request, &Compat::default()).unwrap();
 		let level_body: Value = serde_json::from_slice(&level_body).unwrap();
-		assert!(level_unsupported.is_empty());
+		assert_eq!(level_unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		assert_eq!(
 			level_body["request"]["generationConfig"]["thinkingConfig"],
 			json!({"includeThoughts": false, "thinkingLevel": "LOW"})
@@ -1417,7 +1406,7 @@ mod tests {
 		}));
 		let (budget_body, budget_unsupported) = codec.encode(&request, &Compat::default()).unwrap();
 		let budget_body: Value = serde_json::from_slice(&budget_body).unwrap();
-		assert!(budget_unsupported.is_empty());
+		assert_eq!(budget_unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		assert_eq!(
 			budget_body["request"]["generationConfig"]["thinkingConfig"],
 			json!({"includeThoughts": false, "thinkingBudget": 0})

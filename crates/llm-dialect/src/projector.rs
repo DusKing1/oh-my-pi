@@ -108,12 +108,8 @@ impl StreamProjector {
 				&& valid == chunk.len()
 				&& !chunk.iter().any(|byte| matches!(byte, b'<' | b'`'))
 			{
-				let index = self.open_part(
-					StreamPartKind::Text,
-					Str::default(),
-					Str::default(),
-					&mut out,
-				);
+				let index =
+					self.open_part(StreamPartKind::Text, Str::default(), Str::default(), &mut out);
 				out.push(Projection::Event(TurnEvent::PartDelta { index, chunk }));
 				return out;
 			}
@@ -153,12 +149,7 @@ impl StreamProjector {
 	/// Begins a provider-native tool call. Empty names are ignored and do not
 	/// reserve the native channel. Non-canonical or zero provider IDs are
 	/// replaced once with a nonzero canonical ID for the emitted lifecycle.
-	pub fn native_tool_start(
-		&mut self,
-		source_index: u32,
-		id: Str,
-		name: Str,
-	) -> ProjectionBatch {
+	pub fn native_tool_start(&mut self, source_index: u32, id: Str, name: Str) -> ProjectionBatch {
 		let mut out = ProjectionBatch::new();
 		if self.stopped || name.trim().is_empty() || self.channel == Some(ToolChannel::Inband) {
 			return out;
@@ -235,20 +226,11 @@ impl StreamProjector {
 					out.push(Projection::Event(TurnEvent::PartDelta { index, chunk }));
 				},
 				ScanEvent::ThinkingStart => {
-					self.open_part(
-						StreamPartKind::Thinking,
-						Str::default(),
-						Str::default(),
-						out,
-					);
+					self.open_part(StreamPartKind::Thinking, Str::default(), Str::default(), out);
 				},
 				ScanEvent::ThinkingDelta(chunk) => {
-					let index = self.open_part(
-						StreamPartKind::Thinking,
-						Str::default(),
-						Str::default(),
-						out,
-					);
+					let index =
+						self.open_part(StreamPartKind::Thinking, Str::default(), Str::default(), out);
 					out.push(Projection::Event(TurnEvent::PartDelta { index, chunk }));
 				},
 				ScanEvent::ThinkingEnd { signature } => {
@@ -339,7 +321,7 @@ impl StreamProjector {
 		}
 	}
 
-	fn allocate_index(&mut self) -> u32 {
+	const fn allocate_index(&mut self) -> u32 {
 		let index = self.next_index;
 		self.next_index = self.next_index.saturating_add(1);
 		index
@@ -348,9 +330,7 @@ impl StreamProjector {
 
 fn canonical_call_id(id: Str) -> Str {
 	let valid = id
-		.parse::<CallId>()
-		.ok()
-		.is_some_and(|id| id.as_ulid().to_bytes() != [0; 16]);
+		.parse::<CallId>().is_ok_and(|id| id.as_ulid().to_bytes() != [0; 16]);
 	if valid {
 		id
 	} else {
@@ -369,7 +349,7 @@ fn first_token_index(text: &[u8], tokens: &[&[u8]]) -> Option<usize> {
 		.min()
 }
 
-fn valid_utf8_prefix(bytes: &[u8]) -> usize {
+const fn valid_utf8_prefix(bytes: &[u8]) -> usize {
 	match std::str::from_utf8(bytes) {
 		Ok(_) => bytes.len(),
 		Err(error) => error.valid_up_to(),

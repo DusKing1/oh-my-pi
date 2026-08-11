@@ -268,7 +268,7 @@ async fn malformed_frame_is_classified_once_and_stream_drop_closes_socket() {
 			.expect("malformed frame");
 		let closed = socket.next().await;
 		assert!(
-			matches!(closed, Some(Ok(WsMessage::Close(_))) | None | Some(Err(_))),
+			matches!(closed, Some(Ok(WsMessage::Close(_)) | Err(_)) | None),
 			"client closes after terminal classification"
 		);
 	});
@@ -321,7 +321,7 @@ async fn dropping_turn_stream_closes_the_socket_without_fallback() {
 			.expect("started frame");
 		let closed = socket.next().await;
 		let _ =
-			observed_tx.send(matches!(closed, Some(Ok(WsMessage::Close(_))) | None | Some(Err(_))));
+			observed_tx.send(matches!(closed, Some(Ok(WsMessage::Close(_)) | Err(_)) | None));
 	});
 	let config = WorkflowConfig::new(format!("ws://{address}"), "workflow-cancel", "session-cancel");
 	let chat = GitLabDuoChat::new(config, Arc::new(FixtureAuth));

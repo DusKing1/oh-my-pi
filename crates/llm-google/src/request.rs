@@ -1,4 +1,4 @@
-//! Gemini request projection helpers shared by public GenAI and Vertex codecs.
+//! Gemini request projection helpers shared by public `GenAI` and Vertex codecs.
 
 use bytes::Bytes;
 use omp_core::Str;
@@ -10,7 +10,7 @@ use omp_llm_types::{
 };
 use serde_json::{Map, Value, json};
 
-pub(crate) const NAMESPACE: &str = "google";
+pub const NAMESPACE: &str = "google";
 
 const CACHED_CONTENT: &str = "cached_content";
 const SAFETY_SETTINGS: &str = "safety_settings";
@@ -19,10 +19,10 @@ const GOOGLE_SEARCH: &str = "google_search";
 const CODE_EXECUTION: &str = "code_execution";
 const FILE_DATA: &str = "file_data";
 
-pub(crate) const REQUEST_OPTION_NAMES: &[&str] =
+pub const REQUEST_OPTION_NAMES: &[&str] =
 	&[CACHED_CONTENT, SAFETY_SETTINGS, RESPONSE_MODALITIES, GOOGLE_SEARCH, CODE_EXECUTION];
 
-pub(crate) fn project_response_format(
+pub fn project_response_format(
 	req: &ChatRequest,
 	_compat: &Compat,
 	generation: &mut Map<String, Value>,
@@ -58,7 +58,7 @@ pub(crate) fn project_response_format(
 	Ok(())
 }
 
-pub(crate) fn project_provider_options(
+pub fn project_provider_options(
 	req: &ChatRequest,
 	body: &mut Map<String, Value>,
 	unsupported: &mut Vec<Unsupported>,
@@ -106,9 +106,9 @@ pub(crate) fn project_provider_options(
 		let Some(enabled) = options.get_ns(NAMESPACE, name) else {
 			continue;
 		};
-		let enabled = enabled.as_bool().ok_or_else(|| {
-			Error::Provider(Str::from(format!("google/{name} must be a boolean")))
-		})?;
+		let enabled = enabled
+			.as_bool()
+			.ok_or_else(|| Error::Provider(Str::from(format!("google/{name} must be a boolean"))))?;
 		if enabled {
 			body
 				.entry("tools")
@@ -141,7 +141,7 @@ pub(crate) fn project_provider_options(
 	Ok(())
 }
 
-pub(crate) fn normalize_tool_schema(compat: &Compat, schema: &Value) -> (Value, Vec<Unsupported>) {
+pub fn normalize_tool_schema(compat: &Compat, schema: &Value) -> (Value, Vec<Unsupported>) {
 	let (mut schema, reports) = normalize::normalize(compat.tool_schema_flavor, schema);
 	if compat.tool_schema_flavor == ToolSchemaFlavor::Google {
 		normalize_google_schema(&mut schema);
@@ -197,7 +197,7 @@ fn normalize_google_schema(schema: &mut Value) {
 	}
 }
 
-pub(crate) fn project_file_data(
+pub fn project_file_data(
 	blob: &BlobPart,
 	index: usize,
 	props: &Props,
@@ -228,7 +228,7 @@ pub(crate) fn project_file_data(
 	Ok(Some(json!({ "fileData": { "mimeType": mime, "fileUri": uri } })))
 }
 
-pub(crate) fn encode_inline(blob: &BlobPart) -> Value {
+pub fn encode_inline(blob: &BlobPart) -> Value {
 	json!({ "inlineData": { "mimeType": blob.mime, "data": base64(&blob.inline) } })
 }
 
@@ -330,7 +330,7 @@ mod tests {
 		let mut compat = Compat::default();
 		compat.tool_schema_flavor = ToolSchemaFlavor::Google;
 		let (schema, reports) = normalize_tool_schema(&compat, &schema);
-		assert!(reports.is_empty());
+		assert_eq!(reports, [] as [omp_llm_types::Unsupported; 0]);
 		assert_eq!(schema, fixture["wire"]["generationConfig"]["responseJsonSchema"]);
 	}
 
@@ -355,7 +355,7 @@ mod tests {
 		let mut body = Map::new();
 		let mut unsupported = Vec::new();
 		project_provider_options(&request(options), &mut body, &mut unsupported).unwrap();
-		assert!(unsupported.is_empty());
+		assert_eq!(unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		assert_eq!(
 			body["generationConfig"]["responseModalities"],
 			fixture["wire"]["generationConfig"]["responseModalities"]

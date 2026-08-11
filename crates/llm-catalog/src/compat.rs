@@ -106,7 +106,7 @@ pub enum AudioApiVersion {
 	/// The endpoint does not require an API-version query.
 	#[default]
 	None,
-	/// Azure OpenAI's April 2025 preview audio contract.
+	/// Azure `OpenAI`'s April 2025 preview audio contract.
 	#[serde(rename = "2025-04-01-preview")]
 	V2025_04_01Preview,
 }

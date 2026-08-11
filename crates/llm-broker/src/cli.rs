@@ -185,7 +185,7 @@ impl BrokerCliBackend {
 
 	/// Creates a backend sharing the daemon's OAuth engine.
 	#[must_use]
-	pub fn with_shared_oauth(
+	pub const fn with_shared_oauth(
 		store: Arc<Store>,
 		oauth: Option<Arc<OAuthEngine>>,
 		usage: UsageManager,
@@ -261,7 +261,7 @@ impl AuthCliBackend for BrokerCliBackend {
 				return self
 					.store
 					.delete_credential(id, now_ms)
-					.map(|deleted| if deleted { 1 } else { 0 })
+					.map(usize::from)
 					.map_err(backend_error);
 			}
 			let credentials = self

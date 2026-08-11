@@ -436,7 +436,7 @@ impl MediaFacets {
 	}
 }
 
-fn unsupported_media() -> FacetError {
+const fn unsupported_media() -> FacetError {
 	FacetError::Unsupported(Vec::new())
 }
 
@@ -483,7 +483,7 @@ fn fail_job(job: &Job, error: FacetError) {
 	job.status.send_replace(failed);
 }
 
-fn public_failure_detail(_error: &FacetError) -> Str {
+const fn public_failure_detail(_error: &FacetError) -> Str {
 	Str::new_static("media generation failed")
 }
 

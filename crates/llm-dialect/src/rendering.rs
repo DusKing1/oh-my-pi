@@ -182,7 +182,7 @@ pub fn render_transcript<W: fmt::Write + ?Sized>(
 ) -> DialectResult<()> {
 	match dialect {
 		Dialect::Anthropic | Dialect::MiniMax | Dialect::Xml => {
-			write_legacy_transcript(out, dialect, thread, options)?
+			write_legacy_transcript(out, dialect, thread, options)?;
 		},
 		Dialect::Hermes | Dialect::Qwen3 => write_chatml_transcript(out, dialect, thread, options)?,
 		Dialect::DeepSeek => write_deepseek_transcript(out, thread, options)?,
@@ -970,7 +970,7 @@ fn write_canonical_result<W: fmt::Write + ?Sized>(
 			out.write_str("<|im_system|>")?;
 			out.write_str(result.name.as_str())?;
 			out.write_str("<|im_middle|>## Return of ")?;
-			write!(out, "functions.{}:{index}\n", result.name)?;
+			writeln!(out, "functions.{}:{index}", result.name)?;
 			write_result_parts(out, &result.parts, false, include_images)?;
 			out.write_str("<|im_end|>")
 		},
@@ -1016,9 +1016,9 @@ pub(crate) fn write_assistant_parts<W: fmt::Write + ?Sized>(
 		match part {
 			Part::Text(text) => {
 				if dialect == Dialect::Harmony {
-					write_escaped_harmony_text(out, text.as_str())?
+					write_escaped_harmony_text(out, text.as_str())?;
 				} else {
-					out.write_str(text.as_str())?
+					out.write_str(text.as_str())?;
 				}
 			},
 			Part::Blob(blob) => write_blob_marker(out, blob.mime.as_str())?,
@@ -1046,16 +1046,16 @@ fn write_parts_text<W: fmt::Write + ?Sized>(
 		match part {
 			Part::Text(text) => {
 				if harmony_escape {
-					write_escaped_harmony_text(out, text.as_str())?
+					write_escaped_harmony_text(out, text.as_str())?;
 				} else {
-					out.write_str(text.as_str())?
+					out.write_str(text.as_str())?;
 				}
 			},
 			Part::Thinking(thinking) => {
 				if harmony_escape {
-					write_escaped_harmony_text(out, thinking.text.as_str())?
+					write_escaped_harmony_text(out, thinking.text.as_str())?;
 				} else {
-					out.write_str(thinking.text.as_str())?
+					out.write_str(thinking.text.as_str())?;
 				}
 			},
 			Part::Blob(blob) => write_blob_marker(out, blob.mime.as_str())?,
@@ -1103,14 +1103,14 @@ fn write_blob_marker<W: fmt::Write + ?Sized>(out: &mut W, mime: &str) -> fmt::Re
 	}
 }
 
-fn call_run_end(items: &[Item], mut index: usize) -> usize {
+const fn call_run_end(items: &[Item], mut index: usize) -> usize {
 	while index < items.len() && matches!(&items[index].kind, ItemKind::ToolCall(_)) {
 		index += 1;
 	}
 	index
 }
 
-fn result_run_end(items: &[Item], mut index: usize) -> usize {
+const fn result_run_end(items: &[Item], mut index: usize) -> usize {
 	while index < items.len() && matches!(&items[index].kind, ItemKind::ToolResult(_)) {
 		index += 1;
 	}
@@ -1118,7 +1118,7 @@ fn result_run_end(items: &[Item], mut index: usize) -> usize {
 }
 
 fn write_chatml_open<W: fmt::Write + ?Sized>(out: &mut W, role: &str) -> fmt::Result {
-	write!(out, "<|im_start|>{role}\n")
+	writeln!(out, "<|im_start|>{role}")
 }
 
 fn write_xml_invoke<W: fmt::Write + ?Sized>(

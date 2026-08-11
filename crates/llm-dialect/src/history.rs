@@ -147,14 +147,14 @@ fn projected_message(source: &Item, role: Role, parts: Vec<Part>) -> Item {
 		.build()
 }
 
-fn call_run_end(items: &[Item], mut index: usize) -> usize {
+const fn call_run_end(items: &[Item], mut index: usize) -> usize {
 	while index < items.len() && matches!(&items[index].kind, ItemKind::ToolCall(_)) {
 		index += 1;
 	}
 	index
 }
 
-fn result_run_end(items: &[Item], mut index: usize) -> usize {
+const fn result_run_end(items: &[Item], mut index: usize) -> usize {
 	while index < items.len() && matches!(&items[index].kind, ItemKind::ToolResult(_)) {
 		index += 1;
 	}

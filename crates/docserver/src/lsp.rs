@@ -6,7 +6,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use globset::{Glob, GlobMatcher};
-use omp_core::Str;
+use omp_core::{Str, fmts};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -202,7 +202,7 @@ impl LspCapabilities {
 			Some("utf-32") => PositionEncoding::Utf32,
 			Some(encoding) => {
 				return Err(LspError::InvalidCapabilities {
-					reason: Str::new(format!("unsupported position encoding {encoding}")),
+					reason: fmts!("unsupported position encoding {encoding}"),
 				});
 			},
 		};
@@ -329,7 +329,7 @@ fn required_string(value: &Value, field: &'static str) -> Result<Str, LspError> 
 		.and_then(Value::as_str)
 		.map(Str::new)
 		.ok_or_else(|| LspError::InvalidRegistration {
-			reason: Str::new(format!("registration field {field} must be a string")),
+			reason: fmts!("registration field {field} must be a string"),
 		})
 }
 
@@ -368,14 +368,8 @@ impl DocumentSelector {
 				.ok_or_else(|| LspError::InvalidRegistration {
 					reason: Str::new_static("document selector entries must be objects"),
 				})?;
-			let language = object
-				.get("language")
-				.and_then(Value::as_str)
-				.map(Str::new);
-			let scheme = object
-				.get("scheme")
-				.and_then(Value::as_str)
-				.map(Str::new);
+			let language = object.get("language").and_then(Value::as_str).map(Str::new);
+			let scheme = object.get("scheme").and_then(Value::as_str).map(Str::new);
 			let pattern = object
 				.get("pattern")
 				.map(SelectorPattern::compile)
@@ -457,9 +451,7 @@ impl SelectorPattern {
 			},
 		};
 		let matcher = Glob::new(pattern)
-			.map_err(|error| LspError::InvalidRegistration {
-				reason: Str::new(error.to_string()),
-			})?
+			.map_err(|error| LspError::InvalidRegistration { reason: Str::new(error.to_string()) })?
 			.compile_matcher();
 		Ok(Self { matcher, base_uri })
 	}

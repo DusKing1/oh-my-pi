@@ -72,7 +72,7 @@ impl PlanningLeakFilter {
 		if !self.probe.is_empty() {
 			match consume_planning_buffer(&self.probe, &self.tool_names, true) {
 				PlanningResult::Plain(text) | PlanningResult::Leak(text) => {
-					push_visible(text, &mut visible)
+					push_visible(text, &mut visible);
 				},
 				PlanningResult::Incomplete => {},
 			}

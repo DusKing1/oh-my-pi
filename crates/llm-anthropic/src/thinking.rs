@@ -260,7 +260,7 @@ fn item_contains_file_source(item: &Item) -> bool {
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum WireThinking {
+pub enum WireThinking {
 	Adaptive {
 		#[serde(skip_serializing_if = "Option::is_none")]
 		display: Option<&'static str>,
@@ -274,13 +274,13 @@ pub(crate) enum WireThinking {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct ReasoningProjection<'a> {
+pub struct ReasoningProjection<'a> {
 	pub(crate) thinking: Option<WireThinking>,
 	pub(crate) effort:   Option<&'a str>,
 	pub(crate) budget:   Option<u64>,
 }
 
-pub(crate) fn reasoning_projection(request: &ChatRequest) -> ReasoningProjection<'_> {
+pub fn reasoning_projection(request: &ChatRequest) -> ReasoningProjection<'_> {
 	reasoning_projection_for(
 		&request.model,
 		&request.thinking,
@@ -289,7 +289,7 @@ pub(crate) fn reasoning_projection(request: &ChatRequest) -> ReasoningProjection
 	)
 }
 
-pub(crate) fn reasoning_projection_for<'a>(
+pub fn reasoning_projection_for<'a>(
 	model: &'a str,
 	thinking: &'a Option<Feature<Reasoning>>,
 	provider_options: &'a Option<Props>,
@@ -394,14 +394,13 @@ pub(crate) fn reasoning_projection_for<'a>(
 			.and_then(|effort| policy_mode?.effort_budgets.get(&effort).copied())
 			.unwrap_or_else(|| {
 				requested_effort
-					.map(|effort| {
+					.map_or(1024, |effort| {
 						if policy_mode.is_some() {
 							effort_budget(effort)
 						} else {
 							legacy_effort_budget(effort)
 						}
 					})
-					.unwrap_or(1024)
 			})
 	});
 	ReasoningProjection {
@@ -473,7 +472,7 @@ const fn legacy_effort_budget(effort: Effort) -> u64 {
 	}
 }
 
-pub(crate) const fn effort_budget(effort: Effort) -> u64 {
+pub const fn effort_budget(effort: Effort) -> u64 {
 	match effort {
 		Effort::Off => 0,
 		Effort::Minimal => 1_024,
@@ -486,14 +485,14 @@ pub(crate) const fn effort_budget(effort: Effort) -> u64 {
 	}
 }
 
-pub(crate) enum HistoryProjection<'a> {
+pub enum HistoryProjection<'a> {
 	Native { text: &'a str, signature: &'a str },
 	Redacted { data: &'a str },
 	Demoted(Cow<'a, str>),
 	Drop,
 }
 
-pub(crate) fn project_history<'a>(
+pub fn project_history<'a>(
 	thinking: &'a Thinking,
 	item_props: &Props,
 	target_model: &str,
@@ -524,7 +523,7 @@ pub(crate) fn project_history<'a>(
 		_ => demoted(target_model, &thinking.text),
 	}
 }
-pub(crate) fn signing_endpoint(
+pub fn signing_endpoint(
 	model: &str,
 	provider_options: Option<&Props>,
 	model_policy: Option<&ResolvedModelPolicy>,
@@ -547,7 +546,7 @@ fn demoted<'a>(target_model: &str, text: &'a str) -> HistoryProjection<'a> {
 	}
 }
 
-pub(crate) fn policy_bool(
+pub fn policy_bool(
 	model_policy: Option<&ResolvedModelPolicy>,
 	name: &str,
 	thinking_enabled: bool,
@@ -582,7 +581,7 @@ fn has_mid_conversation_system(request: &ChatRequest) -> bool {
 	false
 }
 
-pub(crate) fn claude_code_system_prelude_for(
+pub fn claude_code_system_prelude_for(
 	thread: &omp_llm_types::Thread,
 	provider_options: &Option<Props>,
 ) -> Option<[String; 2]> {
@@ -623,7 +622,7 @@ fn first_user_text(thread: &omp_llm_types::Thread) -> &str {
 		.unwrap_or("")
 }
 
-pub(crate) fn patch_billing_attestation(body: Bytes) -> Bytes {
+pub fn patch_billing_attestation(body: Bytes) -> Bytes {
 	let Some(marker) = find_bytes(&body, BILLING_MARKER) else {
 		return body;
 	};
@@ -648,7 +647,7 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 		.windows(needle.len())
 		.position(|window| window == needle)
 }
-pub(crate) fn is_known_option(key: &str) -> bool {
+pub fn is_known_option(key: &str) -> bool {
 	matches!(
 		key,
 		"anthropic/claude_code"
@@ -667,7 +666,7 @@ fn option_bool(options: Option<&Props>, name: &str) -> Option<bool> {
 fn option_str<'a>(options: Option<&'a Props>, name: &str) -> Option<&'a str> {
 	options?.get_ns("anthropic", name)?.as_str()
 }
-pub(crate) fn validate_options(options: &Props) -> Result<(), omp_llm_types::Error> {
+pub fn validate_options(options: &Props) -> Result<(), omp_llm_types::Error> {
 	for name in
 		["claude_code", "thinking_supported", "disable_adaptive_thinking", "signing_endpoint"]
 	{
@@ -688,11 +687,10 @@ pub(crate) fn validate_options(options: &Props) -> Result<(), omp_llm_types::Err
 			return Err(provider_error("Anthropic header option must be a non-empty string"));
 		}
 	}
-	if let Some(mode) = options.get_ns("anthropic", "thinking_mode") {
-		if !matches!(mode.as_str(), Some("adaptive" | "budget")) {
+	if let Some(mode) = options.get_ns("anthropic", "thinking_mode")
+		&& !matches!(mode.as_str(), Some("adaptive" | "budget")) {
 			return Err(provider_error("anthropic/thinking_mode must be adaptive or budget"));
 		}
-	}
 	if let Some(betas) = options.get_ns("anthropic", "betas") {
 		let valid = betas.is_string()
 			|| betas

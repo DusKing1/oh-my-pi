@@ -75,13 +75,7 @@ impl CommandPalette {
 			.anchor(OverlayAnchor::Top)
 			.offset_y(1)
 			.z(10);
-		Self {
-			ui: build("", 8, 100, ctx),
-			ctx: ctx.clone(),
-			options,
-			query: Str::default(),
-			rows: 8,
-		}
+		Self { ui: build("", 8, 100, ctx), ctx: ctx.clone(), options, query: Str::default(), rows: 8 }
 	}
 
 	/// Routes a key through the retained tree and maps the surfaced event.

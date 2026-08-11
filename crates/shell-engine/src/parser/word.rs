@@ -11,6 +11,8 @@
 
 use std::fmt::{Debug, Display};
 
+use omp_core::Str;
+
 use crate::parser::{ParserOptions, SourceSpan, ast, error};
 
 /// Encapsulates a `WordPiece` together with its position in the string it came
@@ -569,7 +571,7 @@ pub(crate) fn parse_assignment_word(
 
 pub(crate) fn parse_array_assignment(
 	word: &str,
-	elements: &[&omp_core::Str],
+	elements: &[&Str],
 ) -> Result<ast::Assignment, &'static str> {
 	let (assignment_name, append) = expansion_parser::name_equals(word, &ParserOptions::default())
 		.map_err(|_| "not array assignment word")?;

@@ -9,7 +9,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use omp_core::Str;
+use omp_core::{Str, fmts};
 use parking_lot::{Mutex, MutexGuard};
 use rand::RngExt as _;
 use tokio::sync::{Mutex as AsyncMutex, broadcast, oneshot};
@@ -2485,7 +2485,7 @@ fn random_id_bytes() -> [u8; 16] {
 }
 
 fn join_error(error: tokio::task::JoinError) -> Error {
-	Error::Protocol { reason: Str::new(format!("document worker failed: {error}")) }
+	Error::Protocol { reason: fmts!("document worker failed: {error}") }
 }
 
 const fn actor_unavailable() -> Error {

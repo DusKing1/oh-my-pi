@@ -1,6 +1,6 @@
 //! Width-aware Markdown rendering into styled terminal lines.
 
-use omp_core::{Str, StrMut};
+use omp_core::{Str, StrMut, fmts};
 use smallvec::SmallVec;
 
 use crate::{
@@ -488,7 +488,7 @@ fn render_fenced_code(
 	let top = if language.is_empty() {
 		Str::new_static("```")
 	} else {
-		omp_core::fmts!("```{language}")
+		fmts!("```{language}")
 	};
 	clipped_row(sink, width, theme.code_border, top.as_str());
 
@@ -597,7 +597,7 @@ fn bare_math_end(lines: &[&str], index: usize) -> Option<usize> {
 	if !crate::latex::is_bare_math_environment(environment) {
 		return None;
 	}
-	let end_token = omp_core::fmts!("\\end{{{environment}}}");
+	let end_token = fmts!("\\end{{{environment}}}");
 	for (offset, candidate) in lines[index..].iter().enumerate() {
 		if offset > 0 && candidate.trim().is_empty() {
 			return None;
@@ -772,7 +772,7 @@ fn render_list(
 		let marker_text = if ordered {
 			let value = ordinal;
 			ordinal = ordinal.saturating_add(1);
-			omp_core::fmts!("{value}. ")
+			fmts!("{value}. ")
 		} else {
 			Str::new_static("- ")
 		};
@@ -921,7 +921,7 @@ fn render_list_fenced_code(
 	let top = if language.is_empty() {
 		Str::new_static("```")
 	} else {
-		omp_core::fmts!("```{language}")
+		fmts!("```{language}")
 	};
 	{
 		let clipped = (&mut *sink).clip(width, None);
@@ -1190,8 +1190,7 @@ fn replace_tabs(source: &Str) -> Str {
 		.bytes()
 		.filter(|byte| *byte == b'\t')
 		.count();
-	let mut output =
-		StrMut::with_capacity(source.len().saturating_add(tab_count.saturating_mul(2)));
+	let mut output = StrMut::with_capacity(source.len().saturating_add(tab_count.saturating_mul(2)));
 	let mut start = 0;
 	for (offset, character) in source.as_str().char_indices() {
 		if character == '\t' {
@@ -1317,7 +1316,7 @@ fn normalize_html_chunk(raw: &str, output: &mut StrMut) {
 							}
 							if let Some(list) = lists.last_mut() {
 								if list.ordered {
-									output.push_str(omp_core::fmts!("{}. ", list.next).as_str());
+									output.push_str(fmts!("{}. ", list.next).as_str());
 									list.next = list.next.saturating_add(1);
 								} else {
 									output.push_str("- ");

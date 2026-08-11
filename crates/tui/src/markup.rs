@@ -1093,12 +1093,7 @@ fn boxed_component<T: Component + 'static>(mut component: T, props: Props) -> Bo
 	Box::new(component)
 }
 
-fn build(
-	tag: &str,
-	props: Props,
-	children: Vec<Cached>,
-	body: &Str,
-) -> Option<Box<dyn Component>> {
+fn build(tag: &str, props: Props, children: Vec<Cached>, body: &Str) -> Option<Box<dyn Component>> {
 	macro_rules! configured {
 		($component:expr) => {{
 			let mut component = $component;
@@ -1217,10 +1212,7 @@ fn finish_element(
 			Ok(Parsed::Segment { segment, at })
 		},
 		"tab" => {
-			let title = props
-				.title()
-				.cloned()
-				.unwrap_or_else(|| Str::new("tab"));
+			let title = props.title().cloned().unwrap_or_else(|| Str::new("tab"));
 			let children = cached_children(parts, "tab")?;
 			Ok(Parsed::Tab { title, children, at })
 		},
@@ -1284,10 +1276,7 @@ fn finish_element(
 			Ok(Parsed::Field { field, at })
 		},
 		"step" => {
-			let title = props
-				.title()
-				.cloned()
-				.unwrap_or_else(|| Str::new("step"));
+			let title = props.title().cloned().unwrap_or_else(|| Str::new("step"));
 			let children = cached_children(parts, "step")?;
 			Ok(Parsed::Step { title, children, at })
 		},
@@ -1649,10 +1638,7 @@ mod tests {
 		}
 		let root =
 			parse(&Str::new("<box title='say \"hi\" now'><text>x</text></box>"), &ctx).unwrap();
-		assert_eq!(
-			child(&root, 0).comp().props().title().map(Str::as_str),
-			Some("say \"hi\" now")
-		);
+		assert_eq!(child(&root, 0).comp().props().title().map(Str::as_str), Some("say \"hi\" now"));
 	}
 
 	#[test]

@@ -1,4 +1,4 @@
-//! ChatGPT Codex client identity.
+//! `ChatGPT` Codex client identity.
 //!
 //! The Codex backend fingerprints a client by the `originator` it presents.
 //! Authorization mints credentials for the originator named in the authorize

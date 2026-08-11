@@ -19,6 +19,7 @@ use futures::{
 };
 use http::{Request, StatusCode, header};
 use http_body_util::{BodyExt, Full};
+use omp_core::Str;
 use omp_llm_catalog::{
 	models::Availability,
 	registry::{CredentialView, Registry},
@@ -243,7 +244,7 @@ fn usage() -> Usage {
 		.build()
 }
 
-fn outcome(model: omp_core::Str) -> ChatOutcome {
+fn outcome(model: Str) -> ChatOutcome {
 	ChatOutcome::builder()
 		.output(Vec::new())
 		.stop(StopReason::EndTurn)

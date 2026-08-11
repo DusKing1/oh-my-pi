@@ -356,8 +356,7 @@ fn infer_language(language: Option<&str>, path: &Path) -> Option<Str> {
 		.map(str::trim)
 		.filter(|language| !language.is_empty())
 	{
-		return SupportLang::from_alias(language)
-			.map(|lang| Str::new_static(lang.canonical_name()));
+		return SupportLang::from_alias(language).map(|lang| Str::new_static(lang.canonical_name()));
 	}
 	SupportLang::from_path(path).map(|lang| Str::new_static(lang.canonical_name()))
 }

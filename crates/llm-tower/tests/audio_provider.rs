@@ -260,7 +260,7 @@ async fn multipart_transcription_decodes_timestamps_diarization_and_usage() {
 	let response = attempt.transcribe(request).await.expect("transcription");
 	assert_eq!(response.duration_ms, 1250);
 	assert_eq!(response.segments[0].speaker, Some(0));
-	assert!(response.words.is_empty());
+	assert_eq!(response.words, [] as [omp_llm_types::TranscriptWord; 0]);
 	assert_eq!(response.usage.as_ref().map(|usage| usage.input_tokens), Some(12));
 	let request = captured
 		.lock()

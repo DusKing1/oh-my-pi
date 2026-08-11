@@ -146,7 +146,7 @@ pub enum ModelThinkingEffort {
 	Medium,
 	/// High reasoning.
 	High,
-	/// OpenAI's extra-high reasoning tier.
+	/// `OpenAI`'s extra-high reasoning tier.
 	XHigh,
 	/// A provider's maximum reasoning tier.
 	Max,
@@ -215,7 +215,7 @@ pub struct ModelThinking {
 	pub requires_effort:   Option<bool>,
 }
 
-/// OpenAI apply-patch tool encoding selected for a model.
+/// `OpenAI` apply-patch tool encoding selected for a model.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[non_exhaustive]
 #[serde(rename_all = "lowercase")]
@@ -226,7 +226,7 @@ pub enum ApplyPatchToolType {
 	Function,
 }
 
-/// OpenAI Responses reasoning serving mode.
+/// `OpenAI` Responses reasoning serving mode.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[non_exhaustive]
 #[serde(rename_all = "lowercase")]
@@ -354,7 +354,7 @@ pub struct ModelBehavior {
 	pub cursor_max_mode: Option<bool>,
 	/// Suppress the native maximum-output-token field.
 	pub omit_max_output_tokens: Option<bool>,
-	/// OpenAI apply-patch encoding.
+	/// `OpenAI` apply-patch encoding.
 	pub apply_patch_tool_type: Option<ApplyPatchToolType>,
 	/// Preferred logical model after context promotion.
 	pub context_promotion_target: Option<Str>,
@@ -364,7 +364,7 @@ pub struct ModelBehavior {
 	pub remote_compaction: Option<ModelRemoteCompaction>,
 	/// Exact Copilot premium request multiplier.
 	pub premium_multiplier: Option<PremiumMultiplier>,
-	/// OpenAI Responses reasoning serving mode.
+	/// `OpenAI` Responses reasoning serving mode.
 	pub reasoning_mode: Option<ModelReasoningMode>,
 	/// Use the Codex Responses Lite request shape.
 	pub use_responses_lite: Option<bool>,
@@ -774,11 +774,11 @@ pub fn load_catalog_json(bytes: &[u8]) -> Result<ModelCatalog, CatalogError> {
 ///
 /// Provider/model keys are trimmed. Typed `api`/`baseUrl` routing and inference
 /// behavior are retained server-side, while authentication and unknown agent
-/// fields are rejected by the closed input schema. Pi does not place OpenAI's
+/// fields are rejected by the closed input schema. Pi does not place `OpenAI`'s
 /// embedding cards in its `openai` bucket, so the importer promotes
-/// Pi's exact ZenMux copies (pricing and limits) to direct OpenAI identities.
-/// Their native dimensions are OpenAI's published 1,536/3,072 widths; OMP's
-/// curated OpenAI provider entry and remote embedding policy are the capability
+/// Pi's exact `ZenMux` copies (pricing and limits) to direct `OpenAI` identities.
+/// Their native dimensions are `OpenAI`'s published 1,536/3,072 widths; OMP's
+/// curated `OpenAI` provider entry and remote embedding policy are the capability
 /// sources for the direct route and custom dimensions. The serialized provider
 /// map remains a source snapshot plus those two documented promotions; loading
 /// it applies family detection, reseller-reference inheritance, and

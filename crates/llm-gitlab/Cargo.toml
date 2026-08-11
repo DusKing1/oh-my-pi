@@ -17,6 +17,7 @@ flume.workspace = true
 futures.workspace = true
 http.workspace = true
 omp-core.workspace = true
+omp-llm-catalog.workspace = true
 omp-llm-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true

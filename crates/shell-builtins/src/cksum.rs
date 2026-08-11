@@ -12,6 +12,7 @@ use std::{
 };
 
 use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint, builder::ValueParser};
+use omp_core::encoding::hex::decode;
 use os_display::Quotable;
 use uucore::{
 	checksum::{
@@ -1241,7 +1242,7 @@ fn get_raw_expected_digest(checksum: &str, bit_len_hint: Option<usize>) -> Optio
 	// If the length of the string matches the one to be expected (in case it's
 	// given) AND the digest can be decoded as hexadecimal, just go with it.
 	if checks_hint(checksum.len() / 2)
-		&& let Ok(raw_ck) = omp_core::encoding::hex::decode(checksum).collect::<Result<Vec<u8>, _>>()
+		&& let Ok(raw_ck) = decode(checksum).collect::<Result<Vec<u8>, _>>()
 	{
 		return Some(raw_ck);
 	}
@@ -1921,11 +1922,9 @@ mod tests {
 
 		assert_eq!(
 			result.unwrap(),
-			omp_core::encoding::hex::decode(
-				b"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-			)
-			.collect::<Result<Vec<u8>, _>>()
-			.unwrap()
+			decode(b"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",)
+				.collect::<Result<Vec<u8>, _>>()
+				.unwrap()
 		);
 	}
 

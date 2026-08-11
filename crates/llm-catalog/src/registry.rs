@@ -20,7 +20,7 @@ use tokio::sync::broadcast;
 use ulid::Ulid;
 
 use super::{
-	discovery::{self, HttpClient},
+	discovery::{self, Discovery},
 	models::{Availability, ModelCard, ModelCatalog, Source},
 	provider::{Facet, ProviderCatalog, ProviderEntry},
 };
@@ -319,7 +319,7 @@ pub struct Registry {
 	credentials:   Arc<dyn CredentialView>,
 	roles:         RoleConfig,
 	providers:     ProviderCatalog,
-	http:          Option<Arc<dyn HttpClient>>,
+	discovery:     Option<Discovery>,
 	source_ttl_ms: u64,
 	watch:         Arc<WatchHub>,
 }
@@ -358,7 +358,7 @@ impl Registry {
 			credentials,
 			roles: RoleConfig::default(),
 			providers: ProviderCatalog::new(),
-			http: None,
+			discovery: None,
 			source_ttl_ms: DEFAULT_SOURCE_TTL_MS,
 			watch: Arc::new(WatchHub::new(retention)),
 		};
@@ -366,18 +366,18 @@ impl Registry {
 		registry
 	}
 
-	/// Installs provider data and the injected HTTP implementation used by
+	/// Installs provider data and the discovery stack used by
 	/// [`refresh`](Self::refresh).
-	pub fn configure_discovery(&mut self, providers: ProviderCatalog, http: Arc<dyn HttpClient>) {
+	pub fn configure_discovery(&mut self, providers: ProviderCatalog, discovery: Discovery) {
 		self.providers = providers;
-		self.http = Some(http);
+		self.discovery = Some(discovery);
 	}
 
-	/// Returns the configured discovery client, if production discovery is
+	/// Returns the configured discovery stack, if production discovery is
 	/// enabled for this registry.
 	#[must_use]
-	pub fn discovery_client(&self) -> Option<Arc<dyn HttpClient>> {
-		self.http.clone()
+	pub fn discovery(&self) -> Option<Discovery> {
+		self.discovery.clone()
 	}
 
 	/// Returns the configured source freshness window.
@@ -526,8 +526,8 @@ impl Registry {
 	/// is unknown/unsupported, or every source for an explicitly requested
 	/// provider fails.
 	pub async fn refresh(&mut self, provider: Option<&str>) -> Result<Cursor, discovery::Error> {
-		let http = self.http.clone().ok_or_else(|| {
-			discovery::Error::Transport(Str::from("model discovery HTTP client is not configured"))
+		let discovery = self.discovery.clone().ok_or_else(|| {
+			discovery::Error::Transport(Str::from("model discovery is not configured"))
 		})?;
 		let targets: Vec<ProviderEntry> = match provider {
 			Some(id) if !id.is_empty() => {
@@ -555,7 +555,7 @@ impl Registry {
 		let mut enumerated = Vec::new();
 		let mut batch = Vec::new();
 		for entry in targets {
-			let mut accounts = match http.accounts(&entry).await {
+			let mut accounts = match discovery.accounts(&entry).await {
 				Ok(accounts) => accounts,
 				Err(error) => {
 					first_error.get_or_insert(error);
@@ -573,9 +573,9 @@ impl Registry {
 			let authoritative = entry
 				.discovery
 				.as_ref()
-				.is_some_and(|discovery| discovery.authoritative);
+				.is_some_and(|spec| spec.authoritative);
 			for account in accounts {
-				match discovery::discover_account(&entry, &account, http.as_ref()).await {
+				match discovery.discover(&entry, &account).await {
 					Ok(cards) => {
 						batch.push((entry.id.clone(), account.key, cards, authoritative));
 					},
@@ -646,7 +646,7 @@ impl Registry {
 	) {
 		for card in &mut cards {
 			card.provider = Str::from(provider);
-			card.id = omp_core::fmts!("{provider}/{}", card.model);
+			card.id = fmts!("{provider}/{}", card.model);
 			card.source = Source::Discovered;
 		}
 		let key = SourceKey { provider: provider.into(), account: account.into() };
@@ -671,7 +671,7 @@ impl Registry {
 	pub fn apply_federated(&mut self, provider: &str, mut cards: Vec<ModelCard>) {
 		for card in &mut cards {
 			card.provider = Str::from(provider);
-			card.id = omp_core::fmts!("{provider}/{}", card.model);
+			card.id = fmts!("{provider}/{}", card.model);
 			card.source = Source::Discovered;
 		}
 		let key = SourceKey { provider: provider.into(), account: "__federated".into() };

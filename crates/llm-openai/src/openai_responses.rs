@@ -107,7 +107,7 @@ impl Transport for OpenAiResponsesCodec {
 			.and_then(|props| props.get_ns("openai", "previous_response_id"))
 			.and_then(Value::as_str);
 		let previous_response_id =
-			option_previous_response_id.or_else(|| self.previous_response_id.as_deref());
+			option_previous_response_id.or(self.previous_response_id.as_deref());
 		let boundary_value = req
 			.provider_options
 			.as_ref()
@@ -580,9 +580,7 @@ fn slot_matches_wire_id(slot: &OutputSlot, wire_id: &str) -> bool {
 fn part_start(index: u32, slot: &OutputSlot) -> Option<TurnEvent> {
 	let (kind, tool_call_id, tool_name) = match slot {
 		OutputSlot::Text { .. } => (StreamPartKind::Text, Str::default(), Str::default()),
-		OutputSlot::Thinking { .. } => {
-			(StreamPartKind::Thinking, Str::default(), Str::default())
-		},
+		OutputSlot::Thinking { .. } => (StreamPartKind::Thinking, Str::default(), Str::default()),
 		OutputSlot::Tool { id, name, .. } => {
 			(StreamPartKind::ToolCall, Str::from(id.to_string()), name.clone())
 		},
@@ -591,7 +589,7 @@ fn part_start(index: u32, slot: &OutputSlot) -> Option<TurnEvent> {
 	Some(TurnEvent::PartStart { index, kind, tool_call_id, tool_name })
 }
 
-fn is_stream_part(slot: &OutputSlot) -> bool {
+const fn is_stream_part(slot: &OutputSlot) -> bool {
 	matches!(slot, OutputSlot::Text { .. } | OutputSlot::Thinking { .. } | OutputSlot::Tool { .. })
 }
 
@@ -599,15 +597,13 @@ fn close_open_parts(state: &mut ResponsesDecodeState, out: &mut SmallVec<TurnEve
 	let pending: Vec<(u32, Bytes)> = state
 		.outputs
 		.iter()
-		.filter_map(|(index, slot)| {
-			(!state.ended.contains(index) && is_stream_part(slot)).then(|| {
+		.filter(|&(index, slot)| !state.ended.contains(index) && is_stream_part(slot)).map(|(index, slot)| {
 				let signature = match slot {
 					OutputSlot::Thinking { encrypted, .. } => encrypted.clone(),
 					_ => Bytes::new(),
 				};
 				(*index, signature)
 			})
-		})
 		.collect();
 	for (index, signature) in pending {
 		state.ended.insert(index);
@@ -907,9 +903,7 @@ fn build_outcome(
 						.role(Role::Assistant)
 						.parts(vec![Part::Thinking(
 							Thinking::builder()
-								.text(
-									Str::from_utf8_owned(text).expect("JSON reasoning deltas are UTF-8"),
-								)
+								.text(Str::from_utf8_owned(text).expect("JSON reasoning deltas are UTF-8"))
 								.signature(std::mem::take(encrypted))
 								.redacted(redacted)
 								.build(),
@@ -1653,13 +1647,10 @@ fn encode_tools(
 			}));
 			continue;
 		}
-		let mut parameters = match serde_json::from_slice(&tool.schema_json) {
-			Ok(value) => value,
-			Err(_) => {
-				unsupported.push(dropped("tools.schema_json", "tool schema is not valid JSON"));
-				Value::Object(Map::new())
-			},
-		};
+		let mut parameters = if let Ok(value) = serde_json::from_slice(&tool.schema_json) { value } else {
+  				unsupported.push(dropped("tools.schema_json", "tool schema is not valid JSON"));
+  				Value::Object(Map::new())
+  			};
 		let (normalized, reports) = normalize_schema(compat.tool_schema_flavor, &parameters);
 		parameters = normalized;
 		unsupported.extend(reports);
@@ -1819,19 +1810,16 @@ fn encode_format(
 	};
 	match &format.value.kind {
 		ResponseFormatKind::JsonSchema(schema) => {
-			let mut parsed = match serde_json::from_slice(&schema.schema_json) {
-				Ok(value) => value,
-				Err(_) => {
-					report(
-						unsupported,
-						"response_format.json_schema",
-						"JSON schema bytes are not valid JSON",
-						format.on_unsupported,
-						fail_closed,
-					);
-					return;
-				},
-			};
+			let mut parsed = if let Ok(value) = serde_json::from_slice(&schema.schema_json) { value } else {
+   					report(
+   						unsupported,
+   						"response_format.json_schema",
+   						"JSON schema bytes are not valid JSON",
+   						format.on_unsupported,
+   						fail_closed,
+   					);
+   					return;
+   				};
 			let (normalized, reports) = normalize_schema(compat.tool_schema_flavor, &parsed);
 			parsed = normalized;
 			unsupported.extend(reports.into_iter().map(|report| {
@@ -2084,7 +2072,7 @@ fn decode_base64(encoded: &[u8]) -> Option<Vec<u8>> {
 		return None;
 	}
 	let mut out = Vec::with_capacity(encoded.len() / 4 * 3);
-	for (chunk_index, chunk) in encoded.chunks_exact(4).enumerate() {
+	for (chunk_index, chunk) in encoded.as_chunks::<4>().0.iter().enumerate() {
 		let mut values = [0_u8; 4];
 		let mut padding = 0;
 		for (index, byte) in chunk.iter().copied().enumerate() {
@@ -2216,7 +2204,7 @@ mod tests {
 			.encode(&request(vec![call]), &Compat::default())
 			.unwrap();
 		let wire: Value = serde_json::from_slice(&wire).unwrap();
-		assert!(unsupported.is_empty());
+		assert_eq!(unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		assert_eq!(wire["input"][0]["type"], "function_call");
 		assert_eq!(
 			wire["input"][1],
@@ -2577,7 +2565,7 @@ mod tests {
 		let (gateway_wire, unsupported) = OpenAiResponsesCodec::new()
 			.encode(&gateway_request, &enabled)
 			.unwrap();
-		assert!(unsupported.is_empty());
+		assert_eq!(unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		let gateway_wire: Value = serde_json::from_slice(&gateway_wire).unwrap();
 		assert_eq!(gateway_wire["previous_response_id"], "resp_gateway_REDACTED");
 	}
@@ -2611,7 +2599,7 @@ mod tests {
 		let (wire, unsupported) = OpenAiResponsesCodec::new()
 			.encode(&chained, &compat)
 			.unwrap();
-		assert!(unsupported.is_empty());
+		assert_eq!(unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		let wire: Value = serde_json::from_slice(&wire).unwrap();
 		assert_eq!(wire["previous_response_id"], "resp_first");
 		assert_eq!(
@@ -2949,7 +2937,7 @@ mod tests {
 		let (replayed, unsupported) = codec
 			.encode(&request(vec![outcome.output[0].clone()]), &Compat::default())
 			.unwrap();
-		assert!(unsupported.is_empty());
+		assert_eq!(unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		let replayed: Value = serde_json::from_slice(&replayed).unwrap();
 		assert_eq!(replayed["input"][0]["type"], "web_search_call");
 		assert!(
@@ -3105,7 +3093,7 @@ mod tests {
 		let (wire, unsupported) = OpenAiResponsesCodec::new()
 			.encode(&req, &Compat::default())
 			.unwrap();
-		assert!(unsupported.is_empty());
+		assert_eq!(unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		let wire: Value = serde_json::from_slice(&wire).unwrap();
 		assert_eq!(wire["tools"][0]["strict"], true);
 		assert_eq!(wire["text"]["format"]["strict"], true);

@@ -253,12 +253,7 @@ mod tests {
 	use crate::{Part, StreamPartKind, TurnEvent, ids::CallId};
 
 	fn start(index: u32, kind: StreamPartKind) -> TurnEvent {
-		TurnEvent::PartStart {
-			index,
-			kind,
-			tool_call_id: Str::from(""),
-			tool_name: Str::from(""),
-		}
+		TurnEvent::PartStart { index, kind, tool_call_id: Str::from(""), tool_name: Str::from("") }
 	}
 
 	fn delta(index: u32, chunk: &'static [u8]) -> TurnEvent {
@@ -299,7 +294,7 @@ mod tests {
 					&& value.signature == Bytes::from_static(b"signed-thinking")
 		));
 		assert_eq!(accumulator.tool_calls()[0].id, call_id);
-		assert!(accumulator.completed_tool_calls().is_empty());
+		assert_eq!(accumulator.completed_tool_calls(), [] as [thread::ToolCall; 0]);
 	}
 
 	#[test]

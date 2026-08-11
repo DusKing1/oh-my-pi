@@ -15,6 +15,7 @@ use std::{
 	time::{Duration, SystemTime},
 };
 
+use omp_core::Str;
 use opentelemetry::{
 	Key, KeyValue, global,
 	logs::{AnyValue, LogRecord as _, Logger as _, LoggerProvider as _, Severity},
@@ -632,7 +633,7 @@ fn integer(value: u64) -> AnyValue {
 	AnyValue::Int(i64::try_from(value).unwrap_or(i64::MAX))
 }
 
-fn join_strings(values: &[omp_core::Str]) -> String {
+fn join_strings(values: &[Str]) -> String {
 	let capacity =
 		values.iter().map(|value| value.len()).sum::<usize>() + values.len().saturating_sub(1);
 	let mut joined = String::with_capacity(capacity);

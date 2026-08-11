@@ -1,12 +1,12 @@
-//! Catalog-selected prompt token counting for OpenAI model families.
+//! Catalog-selected prompt token counting for `OpenAI` model families.
 //!
-//! Rank selection follows OpenAI's published `tiktoken` model table. Catalog
+//! Rank selection follows `OpenAI`'s published `tiktoken` model table. Catalog
 //! metadata may pin an encoding with `openai/tokenizer`; otherwise the
 //! provider-local model id selects the ranks. Selection is deliberately gated
-//! to catalog cards classified as OpenAI or GPT-OSS so an OpenAI-compatible
+//! to catalog cards classified as `OpenAI` or GPT-OSS so an OpenAI-compatible
 //! transport cannot accidentally apply these ranks to Anthropic or Gemini.
 
-use omp_core::Str;
+use omp_core::{Str, fmts};
 use omp_llm_catalog::models::ModelCard;
 use omp_llm_types::{
 	CountInput, CountRequest, ImageDetail, ItemKind, Part, Role, Thread, ToolDef, facet::Error,
@@ -42,7 +42,7 @@ pub trait Tokenizer: Send + Sync + 'static {
 	fn count(&self, request: &CountRequest) -> Result<u64, Error>;
 }
 
-/// OpenAI tokenizer ranks and prompt-framing rules selected for one model card.
+/// `OpenAI` tokenizer ranks and prompt-framing rules selected for one model card.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OpenAiTokenizer {
 	ranks:   RankTokenizer,
@@ -121,14 +121,14 @@ impl OpenAiTokenizer {
 		}
 	}
 
-	fn message_overhead(self) -> u64 {
+	const fn message_overhead(self) -> u64 {
 		match self.framing {
 			PromptFraming::Modern => MESSAGE_OVERHEAD,
 			PromptFraming::Gpt35Turbo0301 => 4,
 		}
 	}
 
-	fn add_name_overhead(self, tokens: u64) -> u64 {
+	const fn add_name_overhead(self, tokens: u64) -> u64 {
 		match self.framing {
 			PromptFraming::Modern => tokens.saturating_add(NAME_OVERHEAD),
 			PromptFraming::Gpt35Turbo0301 => tokens.saturating_sub(1),
@@ -214,13 +214,12 @@ impl OpenAiTokenizer {
 		let mut tokens = 0u64;
 		let mut line = String::new();
 		for tool in tools {
-			let schema: Value = serde_json::from_slice(&tool.schema_json).map_err(|error| {
-				Error::Provider(Str::new(format!("invalid tool JSON Schema: {error}")))
-			})?;
+			let schema: Value = serde_json::from_slice(&tool.schema_json)
+				.map_err(|error| Error::Provider(fmts!("invalid tool JSON Schema: {error}")))?;
 			tokens = tokens.saturating_add(self.function_initialization());
 			line.clear();
 			line.push_str(tool.name.as_str());
-			line.push_str(":");
+			line.push(':');
 			line.push_str(tool.description.trim_end_matches('.'));
 			tokens = tokens.saturating_add(self.token_count(line.as_str()));
 
@@ -240,11 +239,11 @@ impl OpenAiTokenizer {
 					}
 					line.clear();
 					line.push_str(name);
-					line.push_str(":");
+					line.push(':');
 					if let Some(kind) = property.get("type").and_then(Value::as_str) {
 						line.push_str(kind);
 					}
-					line.push_str(":");
+					line.push(':');
 					if let Some(description) = property.get("description").and_then(Value::as_str) {
 						line.push_str(description.trim_end_matches('.'));
 					}

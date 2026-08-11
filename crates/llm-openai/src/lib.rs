@@ -1,6 +1,7 @@
 //! `OpenAI` chat, Responses, embeddings, and audio transport codecs.
 
 pub mod audio;
+pub mod discovery;
 pub mod embeddings;
 mod model_policy;
 pub mod openai_chat;

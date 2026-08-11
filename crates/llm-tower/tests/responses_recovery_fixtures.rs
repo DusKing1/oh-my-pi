@@ -1,4 +1,4 @@
-//! Recorded-wire recovery corpus for OpenAI Responses continuation failures.
+//! Recorded-wire recovery corpus for `OpenAI` Responses continuation failures.
 
 use std::{
 	collections::VecDeque,

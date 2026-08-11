@@ -11,7 +11,7 @@
 //! leaves the inline mouse to the terminal for native text selection, so
 //! that path is live during alternate-screen scenes.
 
-use std::time::Strn;fmts
+use std::time::Duration;
 
 use omp_core::{Str, fmts};
 use omp_tui::{
@@ -45,7 +45,7 @@ pub struct Sidebar {
 	options:         OverlayOptions,
 	/// Whether the rail is composited at all (`Ctrl+B`).
 	open:            bool,
-	/// WhethStrrail holds the keyboard (arrow keys drive the file list).
+	/// Whether the rail holds the keyboard (arrow keys drive the file list).
 	focused:         bool,
 	elapsed_seconds: u64,
 	height:          u16,
@@ -62,7 +62,7 @@ impl Sidebar {
 		let mut ui = build(model, ctx);
 		// The rail starts without the keyboard: no focus chrome or frame
 		// cursor until `toggle` or a click hands it over.
-		ui.blur();Str
+		ui.blur();
 		Self { ui, options, open: true, focused: false, elapsed_seconds: 0, height: 0 }
 	}
 
@@ -153,9 +153,9 @@ impl Sidebar {
 			self.ui.set_text("elapsed", elapsed_label(seconds));
 		}
 		Some(Layer { frame: self.ui.frame(), options: &self.options, active: self.focused })
-	}Str
+	}
 
-	fmtst self) {
+	fn blur(&mut self) {
 		self.focused = false;
 		self.ui.blur();
 	}

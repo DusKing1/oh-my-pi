@@ -3,7 +3,7 @@
 use std::{error::Error, fmt};
 
 use omp_ast::block::{BlockRangeOptions, block_range_at};
-use omp_core::Str;
+use omp_core::{Str, fmts};
 
 use crate::types::{
 	Anchor, BlockMode, BlockResolution, Cursor, Edit, InsertMode, ParsedRange, PasteTarget,
@@ -95,7 +95,7 @@ pub fn resolve_block_edits(
 				let closer = lines
 					.get(anchor.line.saturating_sub(1))
 					.is_some_and(|line| structural_closer(line));
-				warnings.push(Str::new(format!(
+				warnings.push(fmts!(
 					"line {line_num}: block at line {} could not be resolved{}; lowered to after-line \
 					 insertion",
 					anchor.line,
@@ -104,7 +104,7 @@ pub fn resolve_block_edits(
 					} else {
 						""
 					}
-				)));
+				));
 				let cursor = Cursor::AfterAnchor { anchor: *anchor };
 				if *block_mode == BlockMode::PasteAfter {
 					out.push(Edit::Paste {
@@ -135,10 +135,7 @@ pub fn resolve_block_edits(
 			}
 			return Err(BlockError {
 				line_num: *line_num,
-				message:  Str::new(format!(
-					"no multi-line syntactic block begins on line {}",
-					anchor.line
-				)),
+				message:  fmts!("no multi-line syntactic block begins on line {}", anchor.line),
 			});
 		};
 		let start = span.start_line as usize;
@@ -149,10 +146,10 @@ pub fn resolve_block_edits(
 			}
 			return Err(BlockError {
 				line_num: *line_num,
-				message:  Str::new(format!(
+				message:  fmts!(
 					"line {} is a single-line statement, not a multi-line block",
 					anchor.line
-				)),
+				),
 			});
 		}
 		resolutions.push(BlockResolution { anchor_line: anchor.line, start, end, mode: *block_mode });

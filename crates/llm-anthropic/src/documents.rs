@@ -18,7 +18,7 @@ pub enum MediaKind {
 ///
 /// MIME matching is ASCII-case-insensitive and ignores surrounding whitespace;
 /// `image/jpg` is normalized to Anthropic's canonical `image/jpeg`.
-pub(crate) fn media_kind(blob: &BlobPart) -> Result<(MediaKind, &'static str), &'static str> {
+pub fn media_kind(blob: &BlobPart) -> Result<(MediaKind, &'static str), &'static str> {
 	let mime = blob.mime.trim();
 	if mime.eq_ignore_ascii_case("image/jpeg") || mime.eq_ignore_ascii_case("image/jpg") {
 		Ok((MediaKind::Image, "image/jpeg"))
@@ -37,13 +37,13 @@ pub(crate) fn media_kind(blob: &BlobPart) -> Result<(MediaKind, &'static str), &
 
 /// A validated inline media payload ready for wire serialization.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct InlineMedia<'a> {
+pub struct InlineMedia<'a> {
 	pub(crate) media_type: &'static str,
 	pub(crate) data:       &'a [u8],
 }
 
 /// Validates the inline bytes of a supported canonical media blob.
-pub(crate) fn inline_media(blob: &BlobPart) -> Result<InlineMedia<'_>, &'static str> {
+pub fn inline_media(blob: &BlobPart) -> Result<InlineMedia<'_>, &'static str> {
 	let (_, media_type) = media_kind(blob)?;
 	if blob.inline.is_empty() {
 		return Err("Anthropic base64 media projection requires non-empty resolved inline bytes");
@@ -57,7 +57,7 @@ pub(crate) fn inline_media(blob: &BlobPart) -> Result<InlineMedia<'_>, &'static 
 /// Anthropic media sources shared by image and document blocks.
 #[derive(Clone, Copy, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum MediaSource<'a> {
+pub enum MediaSource<'a> {
 	Base64 { media_type: &'static str, data: Base64<'a> },
 	Url { url: &'a str },
 	File { file_id: &'a str },
@@ -69,7 +69,7 @@ impl<'a> MediaSource<'a> {
 	}
 }
 /// Validates an Anthropic URL media source without resolving the payload.
-pub(crate) fn url_source(value: &str) -> Result<&str, &'static str> {
+pub fn url_source(value: &str) -> Result<&str, &'static str> {
 	if value.is_empty() || value.trim() != value {
 		return Err("Anthropic URL source must be non-empty and contain no surrounding whitespace");
 	}
@@ -83,7 +83,7 @@ pub(crate) fn url_source(value: &str) -> Result<&str, &'static str> {
 }
 
 /// Validates an Anthropic Files API identifier without resolving the payload.
-pub(crate) fn file_source(value: &str) -> Result<&str, &'static str> {
+pub fn file_source(value: &str) -> Result<&str, &'static str> {
 	let Some(suffix) = value.strip_prefix("file_") else {
 		return Err("Anthropic file source must use a non-empty `file_` identifier");
 	};
@@ -99,7 +99,7 @@ pub(crate) fn file_source(value: &str) -> Result<&str, &'static str> {
 
 /// Borrowed bytes serialized as canonical padded base64 without allocating.
 #[derive(Clone, Copy)]
-pub(crate) struct Base64<'a>(pub(crate) &'a [u8]);
+pub struct Base64<'a>(pub(crate) &'a [u8]);
 
 impl Serialize for Base64<'_> {
 	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

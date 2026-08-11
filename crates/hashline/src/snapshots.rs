@@ -396,11 +396,7 @@ impl SnapshotStore {
 	}
 
 	/// Moves retained history and provenance to another canonical path.
-	pub fn relocate(
-		&mut self,
-		from: &str,
-		to: impl Into<Str>,
-	) -> Result<(), SnapshotStoreError> {
+	pub fn relocate(&mut self, from: &str, to: impl Into<Str>) -> Result<(), SnapshotStoreError> {
 		let to = to.into();
 		if from == to.as_str() {
 			return Ok(());

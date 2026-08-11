@@ -17,10 +17,7 @@ pub fn opt_raw_eq(a: Option<&RawValue>, b: Option<&RawValue>) -> bool {
 	}
 }
 
-pub fn map_raw_eq(
-	a: &BTreeMap<Str, Box<RawValue>>,
-	b: &BTreeMap<Str, Box<RawValue>>,
-) -> bool {
+pub fn map_raw_eq(a: &BTreeMap<Str, Box<RawValue>>, b: &BTreeMap<Str, Box<RawValue>>) -> bool {
 	a.len() == b.len()
 		&& a
 			.iter()

@@ -12,7 +12,7 @@ use std::{
 	time::{Duration, Instant},
 };
 
-use omp_core::{Str, fmts};
+use omp_core::{Str, base64, fmts};
 use smallvec::SmallVec;
 #[cfg(windows)]
 use windows_sys::Win32::System::Console::{GetConsoleOutputCP, SetConsoleOutputCP};
@@ -1814,7 +1814,7 @@ impl Terminal {
 	/// [`crate::paste::write_clipboard_text`] for local sessions whose
 	/// terminal ignores OSC 52.
 	pub fn copy_to_clipboard(&mut self, text: &str) -> io::Result<()> {
-		let encoded = omp_core::base64::encode(text.as_bytes()).into_string();
+		let encoded = base64::encode(text.as_bytes()).into_string();
 		let mut sequence = String::with_capacity(esc!(osc, "52;c;").len() + encoded.len() + 1);
 		sequence.push_str(esc!(osc, "52;c;"));
 		sequence.push_str(&encoded);
@@ -2315,7 +2315,7 @@ mod tests {
 	use super::{
 		ACTIVE, AltScreenUse, ConsoleCodepage, CursorStyle, INPUT_REPORTS_OFF, KeyboardMode,
 		MOUSE_TRACKING_ON, OSC11_QUERY, Progress, RESIZE_GENERATION, TITLE_POP, TITLE_PUSH, Terminal,
-		UTF8_CODEPAGE, XTERM_SCROLL_ON_KEY_PRESS, XTERM_SCROLL_ON_OUTPUT, compose_enter,
+		UTF8_CODEPAGE, XTERM_SCROLL_ON_KEY_PRESS, XTERM_SCROLL_ON_OUTPUT, base64, compose_enter,
 		compose_leave, compose_progress, compose_title, emergency_restore_payload,
 		ensure_console_utf8, ensure_restore_hooks, keyboard_mode, platform, progress_state,
 		reconcile_in_band_geometry, rounded_cell_pixels,
@@ -2349,7 +2349,7 @@ mod tests {
 			.expect("tty opens");
 		let mut terminal = test_terminal(tty);
 		let mut renderer = Renderer::new(Vec::new());
-		let mime = omp_core::base64::encode(b"text/plain").into_string();
+		let mime = base64::encode(b"text/plain").into_string();
 
 		// Unrelated OSC replies stay application input.
 		assert!(
@@ -2376,7 +2376,7 @@ mod tests {
 		assert!(request.contains(&mime));
 
 		// Payload chunk + DONE completes the paste.
-		let chunk = omp_core::base64::encode(b"hello").into_string();
+		let chunk = base64::encode(b"hello").into_string();
 		for body in [
 			format!("5522;type=read:status=DATA:mime={mime};{chunk}"),
 			"5522;type=read:status=DONE".to_owned(),

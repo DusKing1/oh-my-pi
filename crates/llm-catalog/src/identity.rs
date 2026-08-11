@@ -7,7 +7,7 @@ use std::{
 	str::FromStr,
 };
 
-use omp_core::{Str, str::StrExt};
+use omp_core::{Str, fmts, str::StrExt};
 use omp_llm_types::Effort;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -90,17 +90,17 @@ pub enum Dialect {
 	Glm,
 	/// Hermes tool-call syntax.
 	Hermes,
-	/// Kimi ChatML tool syntax.
+	/// Kimi `ChatML` tool syntax.
 	Kimi,
 	/// Generic XML fallback syntax.
 	#[default]
 	Xml,
 	/// Anthropic-style in-band function syntax.
 	Anthropic,
-	/// DeepSeek markup language syntax.
+	/// `DeepSeek` markup language syntax.
 	#[serde(rename = "deepseek")]
 	DeepSeek,
-	/// OpenAI Harmony channel syntax.
+	/// `OpenAI` Harmony channel syntax.
 	Harmony,
 	/// Qwen 3 tool-call syntax.
 	Qwen3,
@@ -108,7 +108,7 @@ pub enum Dialect {
 	Gemini,
 	/// Gemma control-token syntax.
 	Gemma,
-	/// MiniMax XML-like function syntax.
+	/// `MiniMax` XML-like function syntax.
 	#[serde(rename = "minimax")]
 	MiniMax,
 }
@@ -481,8 +481,7 @@ pub fn collapse_effort_variants_across_providers(models: Vec<ModelCard>) -> Vec<
 		.enumerate()
 		.map(|(index, model)| ((model.provider.clone(), model.model.clone()), index))
 		.collect();
-	let mut thinking_variants: BTreeMap<(Str, Str), SmallVec<(usize, Str), 2>> =
-		BTreeMap::new();
+	let mut thinking_variants: BTreeMap<(Str, Str), SmallVec<(usize, Str), 2>> = BTreeMap::new();
 	type TierVariants = BTreeMap<(Str, Str), SmallVec<(usize, Effort, Str), 6>>;
 	let mut tier_variants: TierVariants = BTreeMap::new();
 	for (index, model) in models.iter().enumerate() {
@@ -591,15 +590,10 @@ pub fn collapse_effort_variants_across_providers(models: Vec<ModelCard>) -> Vec<
 	output
 }
 
-fn merge_family(
-	models: &[ModelCard],
-	indices: &[usize],
-	logical: &Str,
-	first: usize,
-) -> ModelCard {
+fn merge_family(models: &[ModelCard], indices: &[usize], logical: &Str, first: usize) -> ModelCard {
 	let mut card = models[first].clone();
 	card.model.clone_from(logical);
-	card.id = omp_core::fmts!("{}/{}", card.provider, logical);
+	card.id = fmts!("{}/{}", card.provider, logical);
 	card.reasoning = true;
 	card.context_window = indices
 		.iter()
@@ -914,7 +908,7 @@ fn strip_thinking_variant_token(value: &str) -> Option<Str> {
 				.next()
 				.is_none_or(|character| !character.is_ascii_alphanumeric())
 			{
-				return Some(omp_core::fmts!("{}{}", &value[..start], &value[end..]));
+				return Some(fmts!("{}{}", &value[..start], &value[end..]));
 			}
 			offset = end;
 		}
@@ -988,7 +982,7 @@ mod tests {
 
 	fn card(provider: &str, model: &str) -> ModelCard {
 		ModelCard {
-			id:                Str::new(format!("{provider}/{model}")),
+			id:                fmts!("{provider}/{model}"),
 			provider:          Str::new(provider),
 			model:             Str::new(model),
 			name:              Str::new(model),

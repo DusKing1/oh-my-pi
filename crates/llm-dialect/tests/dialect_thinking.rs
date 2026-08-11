@@ -65,7 +65,7 @@ fn disabled_thinking_parsing_keeps_literal_envelopes_visible() {
 	] {
 		let (visible, thinking, starts, ends) = scan(dialect, input, false);
 		assert!(visible.contains(marker), "{dialect}: {visible:?}");
-		assert!(thinking.is_empty());
+		assert_eq!(thinking, "");
 		assert_eq!((starts, ends), (0, 0));
 	}
 }

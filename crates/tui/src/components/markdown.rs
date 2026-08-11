@@ -222,9 +222,7 @@ mod tests {
 	fn set_text_regrafts_static_markup_in_document_order() {
 		let ctx = UiContext::default();
 		let mut markdown = Markdown::text_of("old");
-		assert!(
-			markdown.set_text(&ctx, Str::new("before\n<box><text>inside</text></box>\nafter"),)
-		);
+		assert!(markdown.set_text(&ctx, Str::new("before\n<box><text>inside</text></box>\nafter"),));
 		assert!(markdown.text.is_empty());
 		assert_eq!(markdown.embedded.len(), 3);
 	}

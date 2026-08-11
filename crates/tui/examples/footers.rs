@@ -18,7 +18,6 @@
 //! jump, the mouse wheel scrolls, and `q`, Escape, or Ctrl-C quits.
 
 use std::{
-	future::Future,
 	io,
 	time::{Duration, Instant},
 };

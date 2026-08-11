@@ -54,7 +54,7 @@ pub struct Routed {
 impl Routed {
 	/// Pairs a canonical request with its broker-owned routing values.
 	#[must_use]
-	pub fn new(
+	pub const fn new(
 		request: TurnRequest,
 		lease: Option<CredentialLease>,
 		credential_metadata: Option<CredentialMetadata>,

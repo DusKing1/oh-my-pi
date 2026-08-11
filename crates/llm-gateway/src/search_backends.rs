@@ -117,14 +117,10 @@ impl ProductionSearchBackend {
 		Self { client: Arc::new(AuthenticatedHttp(client)), endpoints: Arc::new(BTreeMap::new()) }
 	}
 
-	/// Overrides one provider endpoint, primarily for private SearXNG and
+	/// Overrides one provider endpoint, primarily for private `SearXNG` and
 	/// Firecrawl deployments and deterministic integration tests.
 	#[must_use]
-	pub fn with_endpoint(
-		mut self,
-		provider: impl Into<Str>,
-		endpoint: impl Into<Str>,
-	) -> Self {
+	pub fn with_endpoint(mut self, provider: impl Into<Str>, endpoint: impl Into<Str>) -> Self {
 		Arc::make_mut(&mut self.endpoints).insert(provider.into(), endpoint.into());
 		self
 	}
@@ -279,35 +275,35 @@ fn build_request(
 			body = json!({"query": request.query.as_str()});
 		},
 		"perplexity" => {
-			body = json!({"model":"sonar", "messages":[{"role":"user","content":request.query.as_str()}], "search_recency_filter": recency(request.recency)})
+			body = json!({"model":"sonar", "messages":[{"role":"user","content":request.query.as_str()}], "search_recency_filter": recency(request.recency)});
 		},
 		"gemini" => {
 			body = json!({"contents":[{"parts":[{"text":request.query.as_str()}]}],"tools":[{"google_search":{}}]});
 		},
 		"anthropic" => {
-			body = json!({"model":"claude-sonnet-4-20250514","max_tokens":4096,"messages":[{"role":"user","content":request.query.as_str()}],"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":limit}]})
+			body = json!({"model":"claude-sonnet-4-20250514","max_tokens":4096,"messages":[{"role":"user","content":request.query.as_str()}],"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":limit}]});
 		},
 		"codex" => {
-			body = json!({"model":"gpt-5.2-codex","input":request.query.as_str(),"tools":[{"type":"web_search_preview"}]})
+			body = json!({"model":"gpt-5.2-codex","input":request.query.as_str(),"tools":[{"type":"web_search_preview"}]});
 		},
 		"xai" => {
-			body = json!({"model":"grok-4.5","input":request.query.as_str(),"tools":[{"type":"web_search"}]})
+			body = json!({"model":"grok-4.5","input":request.query.as_str(),"tools":[{"type":"web_search"}]});
 		},
 		"zai" => {
-			body = json!({"jsonrpc":"2.0","id":"omp-search","method":"tools/call","params":{"name":"web_search_prime","arguments":{"query":request.query.as_str(),"count":limit}}})
+			body = json!({"jsonrpc":"2.0","id":"omp-search","method":"tools/call","params":{"name":"web_search_prime","arguments":{"query":request.query.as_str(),"count":limit}}});
 		},
 		"kimi" => {
-			body = json!({"text_query":request.query.as_str(),"limit":limit,"enable_page_crawling":false,"timeout_seconds":30})
+			body = json!({"text_query":request.query.as_str(),"limit":limit,"enable_page_crawling":false,"timeout_seconds":30});
 		},
 		"exa" => {
-			body = json!({"query":request.query.as_str(),"numResults":limit,"contents":{"text":true},"includeDomains":request.allowed_domains,"excludeDomains":request.excluded_domains,"startPublishedDate":nonempty(&request.after),"endPublishedDate":nonempty(&request.before)})
+			body = json!({"query":request.query.as_str(),"numResults":limit,"contents":{"text":true},"includeDomains":request.allowed_domains,"excludeDomains":request.excluded_domains,"startPublishedDate":nonempty(&request.after),"endPublishedDate":nonempty(&request.before)});
 		},
 		"tavily" => {
-			body = json!({"query":request.query.as_str(),"max_results":limit,"search_depth":"basic","include_answer":"advanced","include_domains":request.allowed_domains,"exclude_domains":request.excluded_domains})
+			body = json!({"query":request.query.as_str(),"max_results":limit,"search_depth":"basic","include_answer":"advanced","include_domains":request.allowed_domains,"exclude_domains":request.excluded_domains});
 		},
 		"firecrawl" => body = json!({"query":request.query.as_str(),"limit":limit}),
 		"parallel" => {
-			body = json!({"objective":request.query.as_str(),"search_queries":[request.query.as_str()],"max_results":limit})
+			body = json!({"objective":request.query.as_str(),"search_queries":[request.query.as_str()],"max_results":limit});
 		},
 		"synthetic" => body = json!({"query":request.query.as_str()}),
 		"kagi" => body = json!({"query":request.query.as_str(),"workflow":"search","limit":limit}),
@@ -583,7 +579,7 @@ fn recency(value: Option<SearchRecency>) -> Option<&'static str> {
 		_ => "month",
 	})
 }
-fn safe_search(value: Option<SafeSearch>) -> &'static str {
+const fn safe_search(value: Option<SafeSearch>) -> &'static str {
 	match value {
 		Some(SafeSearch::Off) => "off",
 		Some(SafeSearch::Strict) => "strict",
@@ -635,11 +631,11 @@ fn strip_tags(value: &str) -> String {
 		.collect::<Vec<_>>()
 		.join(" ");
 	let (kept, _) = xutf::truncate_measured_str(&normalized, 8_000);
-	if kept.len() != normalized.len() {
-		format!("{kept}…")
-	} else {
-		normalized
-	}
+	if kept.len() == normalized.len() {
+ 		normalized
+ 	} else {
+ 		format!("{kept}…")
+ 	}
 }
 fn unwrap_search_url(value: &str) -> &str {
 	value

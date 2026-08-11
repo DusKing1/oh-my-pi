@@ -397,7 +397,7 @@ pub struct Cell {
 }
 
 impl Cell {
-	pub(super) fn blank(style: Style) -> Self {
+	pub(super) const fn blank(style: Style) -> Self {
 		Self { content: CellContent::Blank, style }
 	}
 

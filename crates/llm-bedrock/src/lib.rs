@@ -1,7 +1,11 @@
-//! Amazon Bedrock `ConverseStream` wire codec.
+//! Amazon Bedrock `ConverseStream` wire codec and model discovery.
 //!
-//! AWS EventStream framing and SigV4 request mutation intentionally remain in
-//! the shared Bedrock infrastructure. This crate only owns Converse JSON.
+//! AWS `EventStream` framing and `SigV4` request mutation intentionally remain in
+//! the shared Bedrock infrastructure; this crate owns Converse JSON and the
+//! `ListFoundationModels` control-plane listing in [`discovery`], which
+//! attaches non-secret signing context but never signs.
+
+pub mod discovery;
 
 use std::{
 	borrow::Cow,
@@ -182,9 +186,7 @@ fn encode_request(req: &ChatRequest, compat: &Compat) -> Result<(Value, Vec<Unsu
 					.to_owned();
 				wire_ids.insert(canonical, wire.clone());
 				let input: Value = serde_json::from_slice(&call.args_json).map_err(|error| {
-					Error::Provider(Str::from(format!(
-						"Bedrock tool arguments are not JSON: {error}"
-					)))
+					Error::Provider(Str::from(format!("Bedrock tool arguments are not JSON: {error}")))
 				})?;
 				let name = escaped_tool_name(&call.name, escape_tool_names);
 				append_message(&mut messages, "assistant", vec![json!({
@@ -693,10 +695,8 @@ fn report_unhandled(req: &ChatRequest, unsupported: &mut Vec<Unsupported>) -> Re
 						| "amazon-bedrock/thinking_supports_display"
 						| "amazon-bedrock/interleaved_thinking"
 				) {
-				unsupported.push(dropped(
-					Str::from(key.as_str()),
-					"Unknown Amazon Bedrock provider option",
-				));
+				unsupported
+					.push(dropped(Str::from(key.as_str()), "Unknown Amazon Bedrock provider option"));
 			}
 		}
 	}
@@ -1022,7 +1022,7 @@ fn outcome(stop: StopReason, state: &BedrockDecodeState) -> Result<ChatOutcome, 
 	for part in state.parts.values() {
 		match part {
 			DecodedPart::Text { text, .. } if !text.is_empty() => {
-				output.push(assistant_item(Part::Text(text.as_str().into())))
+				output.push(assistant_item(Part::Text(text.as_str().into())));
 			},
 			DecodedPart::Thinking { text, signature, .. }
 				if !text.is_empty() || !signature.is_empty() =>
@@ -1155,7 +1155,7 @@ fn policy_bool(
 	compat.get_ns("wire", name).and_then(Value::as_bool)
 }
 
-fn escaped_tool_name<'a>(name: &'a str, escape: bool) -> Cow<'a, str> {
+fn escaped_tool_name(name: &str, escape: bool) -> Cow<'_, str> {
 	if escape {
 		Cow::Owned(format!("_{name}"))
 	} else {
@@ -1386,7 +1386,7 @@ mod tests {
 		let (wire, unsupported) = BedrockConverseCodec
 			.encode(&req, &Compat::default())
 			.expect("encode");
-		assert!(unsupported.is_empty());
+		assert_eq!(unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		let body: Value = serde_json::from_slice(&wire).expect("wire JSON");
 		assert_eq!(
 			body["messages"][1]["content"][0]["reasoningContent"]["reasoningText"]["signature"],
@@ -1447,7 +1447,7 @@ mod tests {
 		let (wire, unsupported) = BedrockConverseCodec
 			.encode(&req, &Compat::default())
 			.expect("encode");
-		assert!(unsupported.is_empty());
+		assert_eq!(unsupported, [] as [omp_llm_types::Unsupported; 0]);
 		let body: Value = serde_json::from_slice(&wire).expect("wire JSON");
 		assert_eq!(
 			body["additionalModelRequestFields"]["thinking"],

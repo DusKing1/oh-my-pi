@@ -55,9 +55,7 @@ pub fn decode(body: &[u8], estimated_input_tokens: u64) -> Result<EmbedResponse,
 			.get("index")
 			.and_then(Value::as_u64)
 			.and_then(|index| usize::try_from(index).ok())
-			.ok_or_else(|| {
-				Error::Provider(Str::from("embedding response item has no valid index"))
-			})?;
+			.ok_or_else(|| Error::Provider(Str::from("embedding response item has no valid index")))?;
 		if index >= ordered.len() || ordered[index].is_some() {
 			return Err(Error::Provider(Str::from(
 				"embedding response contains an out-of-range or duplicate index",
@@ -102,9 +100,9 @@ fn vector(values: &[Value]) -> Result<Vec<f32>, Error> {
 	values
 		.iter()
 		.map(|value| {
-			let number = value.as_f64().ok_or_else(|| {
-				Error::Provider(Str::from("embedding vector contains a non-number"))
-			})?;
+			let number = value
+				.as_f64()
+				.ok_or_else(|| Error::Provider(Str::from("embedding vector contains a non-number")))?;
 			let number = number as f32;
 			if !number.is_finite() {
 				return Err(Error::Provider(Str::from(

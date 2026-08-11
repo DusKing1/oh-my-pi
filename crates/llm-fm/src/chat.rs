@@ -26,7 +26,7 @@ pub trait AppleFmEngine: Send + Sync + 'static {
 
 impl AppleFmEngine for AppleFm {
 	fn stream(&self, options: AppleFmOptions) -> Result<BoxStream<'static, Result<AppleFmEvent>>> {
-		AppleFm::stream(self, options).map(|stream| Box::pin(stream) as BoxStream<'static, _>)
+		Self::stream(self, options).map(|stream| Box::pin(stream) as BoxStream<'static, _>)
 	}
 }
 
@@ -251,7 +251,7 @@ fn drive(
 	})
 }
 
-fn part_start() -> TurnEvent {
+const fn part_start() -> TurnEvent {
 	TurnEvent::PartStart {
 		index:        0,
 		kind:         StreamPartKind::Text,

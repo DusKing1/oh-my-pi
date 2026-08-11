@@ -1,4 +1,4 @@
-//! Replay-safe ChatGPT Codex WebSocket execution in front of HTTP egress.
+//! Replay-safe `ChatGPT` Codex WebSocket execution in front of HTTP egress.
 //!
 //! The wrapper consumes the typed marker attached by the Codex provider
 //! adapter. Every other request passes through unchanged. Credentials remain
@@ -50,7 +50,7 @@ pub struct CodexWebSocketRequest {
 	pub session_key:    Str,
 	/// Dynamic Codex session/window/turn identity.
 	pub identity:       CodexRequestIdentity,
-	/// Broker-released ChatGPT account id.
+	/// Broker-released `ChatGPT` account id.
 	pub account_id:     Option<Str>,
 	/// Whether the transformed body is Responses Lite compatible.
 	pub responses_lite: bool,
@@ -528,11 +528,7 @@ fn is_observable(value: &Value) -> bool {
 	)
 }
 
-fn update_metadata(
-	value: &Value,
-	turn_state: &mut Option<Str>,
-	models_etag: &mut Option<Str>,
-) {
+fn update_metadata(value: &Value, turn_state: &mut Option<Str>, models_etag: &mut Option<Str>) {
 	if value.get("type").and_then(Value::as_str) != Some("response.metadata") {
 		return;
 	}
@@ -630,7 +626,7 @@ async fn pump_socket(
 	loop {
 		tokio::select! {
 			biased;
-			_ = tx.closed() => {
+			() = tx.closed() => {
 				router.cancel();
 				session.lock().reset();
 				let _ = socket.close(None).await;

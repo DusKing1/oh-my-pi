@@ -861,7 +861,7 @@ const fn response_include_to_proto(value: ResponseInclude) -> i32 {
 	}
 }
 
-fn response_include_from_proto(value: i32) -> Result<ResponseInclude, ConvertError> {
+const fn response_include_from_proto(value: i32) -> Result<ResponseInclude, ConvertError> {
 	use pb::responses_include::Field;
 	match value {
 		x if x == Field::Unspecified as i32 => {
@@ -2847,13 +2847,13 @@ mod tests {
 		let mut success = outcome();
 		success.diagnostics.clear();
 		let wire: pb::Outcome = success.clone().into();
-		assert!(wire.diagnostics.is_empty());
+		assert_eq!(wire.diagnostics, [] as [omp_proto::inference::v1::Diagnostic; 0]);
 		assert_eq!(ChatOutcome::try_from(wire).expect("outcome converts"), success);
 
 		let mut failure = turn_error();
 		failure.diagnostics.clear();
 		let wire: pb::TurnError = failure.clone().into();
-		assert!(wire.diagnostics.is_empty());
+		assert_eq!(wire.diagnostics, [] as [omp_proto::inference::v1::Diagnostic; 0]);
 		assert_eq!(TurnError::try_from(wire).expect("turn error converts"), failure);
 	}
 

@@ -4023,7 +4023,7 @@ mod tests {
 
 		let stats = renderer.present(fully_visible, 4, 0).unwrap();
 		assert_eq!(stats.bytes, 0);
-		assert!(renderer.writer_mut().is_empty());
+		assert_eq!(renderer.writer_mut().as_slice(), []);
 
 		let mut tmux = Renderer::new(Vec::new());
 		tmux.set_graphics(Graphics::Sixel);

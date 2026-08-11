@@ -16,7 +16,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use flume::{Receiver, Sender};
-use omp_core::Str;
+use omp_core::{Str, fmts};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, value::RawValue};
@@ -115,16 +115,14 @@ impl LspTransportSettings {
 		validate_limit("max_pending_requests", self.max_pending_requests, MAX_PENDING_REQUESTS)?;
 		if self.initialize_timeout_ms == 0 || self.initialize_timeout_ms > MAX_INITIALIZE_TIMEOUT_MS {
 			return Err(LspProcessError::InvalidConfig {
-				reason: Str::new(format!(
+				reason: fmts!(
 					"initialize_timeout_ms must be between 1 and {MAX_INITIALIZE_TIMEOUT_MS}"
-				)),
+				),
 			});
 		}
 		if self.shutdown_timeout_ms == 0 || self.shutdown_timeout_ms > MAX_SHUTDOWN_TIMEOUT_MS {
 			return Err(LspProcessError::InvalidConfig {
-				reason: Str::new(format!(
-					"shutdown_timeout_ms must be between 1 and {MAX_SHUTDOWN_TIMEOUT_MS}"
-				)),
+				reason: fmts!("shutdown_timeout_ms must be between 1 and {MAX_SHUTDOWN_TIMEOUT_MS}"),
 			});
 		}
 		Ok(())
@@ -845,7 +843,7 @@ struct RpcError {
 
 impl RpcError {
 	fn method_not_found(method: &str) -> Self {
-		Self { code: -32601, message: Str::new(format!("method not found: {method}")) }
+		Self { code: -32601, message: fmts!("method not found: {method}") }
 	}
 
 	fn invalid_params(message: impl AsRef<str>) -> Self {
@@ -873,7 +871,7 @@ async fn writer_loop<W>(
 		let result = write_frame(&mut writer, &command.payload)
 			.await
 			.map_err(|error| LspTransportError::Closed {
-				message: Str::new(format!("cannot write LSP frame: {error}")),
+				message: fmts!("cannot write LSP frame: {error}"),
 			});
 		let failed = result.is_err();
 		let failure = result.as_ref().err().cloned();
@@ -1023,7 +1021,7 @@ async fn read_frame<R: AsyncRead + Unpin>(
 				}
 				header.push(byte[0]);
 			},
-			Err(error) => return Err(Str::new(format!("cannot read LSP frame header: {error}"))),
+			Err(error) => return Err(fmts!("cannot read LSP frame header: {error}")),
 		}
 		if header.ends_with(b"\r\n\r\n") {
 			break;
@@ -1063,7 +1061,7 @@ async fn read_frame<R: AsyncRead + Unpin>(
 	reader
 		.read_exact(&mut payload)
 		.await
-		.map_err(|error| Str::new(format!("cannot read complete LSP frame payload: {error}")))?;
+		.map_err(|error| fmts!("cannot read complete LSP frame payload: {error}"))?;
 	Ok(Bytes::from(payload))
 }
 
@@ -1104,7 +1102,7 @@ fn invalid_response(error: serde_json::Error) -> LspTransportError {
 fn validate_limit(name: &str, value: usize, maximum: usize) -> Result<(), LspProcessError> {
 	if value == 0 || value > maximum {
 		return Err(LspProcessError::InvalidConfig {
-			reason: Str::new(format!("{name} must be between 1 and {maximum}")),
+			reason: fmts!("{name} must be between 1 and {maximum}"),
 		});
 	}
 	Ok(())

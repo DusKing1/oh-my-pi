@@ -9,6 +9,8 @@
 //! Liveness and per-service readiness use the standard `grpc.health.v1`
 //! protocol.
 
+use omp_core::Str;
+
 pub mod health;
 pub mod hello;
 pub mod tls;
@@ -28,7 +30,7 @@ pub enum Error {
 	/// A gRPC request failed after the transport was established.
 	Rpc(tonic::Status),
 	/// TLS material was invalid or could not be configured.
-	Tls(omp_core::Str),
+	Tls(Str),
 	/// The server schema is older than the client schema.
 	SchemaTooOld {
 		/// Revision advertised by the server.

@@ -1,7 +1,7 @@
-//! DeviceCheck attestation envelope encoding for ChatGPT Codex.
+//! `DeviceCheck` attestation envelope encoding for `ChatGPT` Codex.
 //!
 //! The native attestor mints a fresh single-use token for each eligible
-//! ChatGPT OAuth request. The deterministic encoder never accepts bearer
+//! `ChatGPT` OAuth request. The deterministic encoder never accepts bearer
 //! credentials, and all token/envelope buffers zeroize on drop.
 
 use std::fmt;
@@ -16,12 +16,12 @@ use crate::CodexAttestation;
 
 const CHATGPT_BUNDLE_ID: &str = "com.openai.codex";
 
-/// Opaque platform-issued DeviceCheck token.
+/// Opaque platform-issued `DeviceCheck` token.
 #[derive(Clone, Eq, PartialEq)]
 pub struct CodexDeviceToken(Zeroizing<Vec<u8>>);
 
 impl CodexDeviceToken {
-	/// Wraps a non-empty base64 token returned by the native DeviceCheck API.
+	/// Wraps a non-empty base64 token returned by the native `DeviceCheck` API.
 	#[must_use]
 	pub fn new(token_base64: impl AsRef<[u8]>) -> Option<Self> {
 		let token = token_base64.as_ref();
@@ -39,12 +39,12 @@ impl fmt::Debug for CodexDeviceToken {
 	}
 }
 
-/// Native DeviceCheck result projected into the Codex attestation payload.
+/// Native `DeviceCheck` result projected into the Codex attestation payload.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CodexDeviceCheckResult {
-	/// Whether DeviceCheck is supported on the current platform.
+	/// Whether `DeviceCheck` is supported on the current platform.
 	pub supported:  bool,
-	/// Platform token, when DeviceCheck minted one successfully.
+	/// Platform token, when `DeviceCheck` minted one successfully.
 	pub token:      Option<CodexDeviceToken>,
 	/// Native token-generation latency in milliseconds.
 	pub latency_ms: Option<f64>,
@@ -67,18 +67,18 @@ pub enum CodexAttestationError {
 	/// A CBOR collection or string exceeded the supported 32-bit length.
 	#[error("Codex attestation field is too large")]
 	FieldTooLarge,
-	/// The native DeviceCheck token was not UTF-8 text.
+	/// The native `DeviceCheck` token was not UTF-8 text.
 	#[error("Codex DeviceCheck token is not UTF-8")]
 	InvalidToken,
 }
 
-/// Just-in-time platform attestor for ChatGPT Codex requests.
+/// Just-in-time platform attestor for `ChatGPT` Codex requests.
 ///
 /// The enum is concrete so the request hot path never allocates a boxed
 /// callback future. Unsupported platforms select [`Self::Unavailable`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CodexAttestor {
-	/// Apple DeviceCheck on macOS arm64.
+	/// Apple `DeviceCheck` on macOS arm64.
 	DeviceCheck,
 	/// No platform attestation implementation is available.
 	Unavailable,
@@ -98,7 +98,7 @@ impl CodexAttestor {
 	/// Mints one fresh attestation envelope.
 	///
 	/// Unavailable platform integration produces `None`, matching Pi's
-	/// omission rule. A supported DeviceCheck call that returns no token is a
+	/// omission rule. A supported `DeviceCheck` call that returns no token is a
 	/// valid attestation with error code 4. OAuth material is never observed.
 	pub async fn generate(self) -> Option<CodexAttestation> {
 		match self {
@@ -234,7 +234,7 @@ mod platform {
 
 /// Builds the complete `x-oai-attestation` JSON envelope.
 ///
-/// Unsupported DeviceCheck is encoded with error code 3; supported DeviceCheck
+/// Unsupported `DeviceCheck` is encoded with error code 3; supported `DeviceCheck`
 /// without a token uses error code 4. A token is never included in debug
 /// output.
 pub fn build_codex_attestation(

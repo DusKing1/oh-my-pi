@@ -4,6 +4,7 @@
 //! intermediate tree. [`Value`] is just one visitor: [`parse`] is
 //! `from_str::<Value>`.
 
+use omp_core::CowStr;
 use serde::{
 	de::{
 		self, DeserializeSeed, Unexpected, Visitor,
@@ -86,10 +87,10 @@ impl<'de> Deserializer<'de> {
 	fn map_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<K::Value, ParseError> {
 		if let Some(quote @ (b'"' | b'\'')) = self.p.peek() {
 			match self.p.string(quote)? {
-				omp_core::CowStr::Borrowed(key) => {
+				CowStr::Borrowed(key) => {
 					seed.deserialize(BorrowedStrDeserializer::<ParseError>::new(key))
 				},
-				omp_core::CowStr::Owned(key) => {
+				CowStr::Owned(key) => {
 					seed.deserialize(StrDeserializer::<ParseError>::new(key.as_str()))
 				},
 			}
@@ -138,8 +139,8 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
 				out
 			},
 			quote @ (b'"' | b'\'') => match self.p.string(quote)? {
-				omp_core::CowStr::Borrowed(text) => visitor.visit_borrowed_str(text),
-				omp_core::CowStr::Owned(text) => visitor.visit_str(text.as_str()),
+				CowStr::Borrowed(text) => visitor.visit_borrowed_str(text),
+				CowStr::Owned(text) => visitor.visit_str(text.as_str()),
 			},
 			b'-' | b'+' | b'.' | b'0'..=b'9' => {
 				// JS-only NaN / Infinity are deliberately not accepted: a tool must

@@ -534,7 +534,7 @@ async fn local_chat_auto_keeps_native_tools_and_completes_owned_tool_result_turn
 		.unwrap()
 		.collect::<Vec<_>>()
 		.await;
-	assert!(forced_script.calls.lock()[0].tools.is_empty());
+	assert_eq!(forced_script.calls.lock()[0].tools, [] as [omp_llm_types::ToolDef; 0]);
 }
 
 #[tokio::test]
@@ -739,7 +739,7 @@ async fn fabricated_result_drops_upstream_and_native_selection_is_passthrough() 
 		.collect::<Vec<_>>()
 		.await;
 	let sent = &unknown_script.calls.lock()[0];
-	assert!(sent.params.as_ref().unwrap().tools.is_empty());
+	assert_eq!(sent.params.as_ref().unwrap().tools, [] as [omp_proto::inference::v1::ToolDef; 0]);
 	let thread = match sent.input.as_ref().unwrap() {
 		turn_request::Input::Seed(seed) => seed.thread.clone().unwrap(),
 		turn_request::Input::Incremental(_) => panic!("unexpected incremental input"),

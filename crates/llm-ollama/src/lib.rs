@@ -1,5 +1,7 @@
 //! Native Ollama `/api/chat` request and NDJSON stream codec.
 
+pub mod discovery;
+
 use std::collections::BTreeMap;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -127,9 +129,7 @@ impl Transport for OllamaChatCodec {
 					unsupported.push(
 						Unsupported::builder()
 							.what(Str::new_static("sampling.max_output_tokens"))
-							.detail(Str::new_static(
-								"Ollama Cloud caps generated output at 65,536 tokens",
-							))
+							.detail(Str::new_static("Ollama Cloud caps generated output at 65,536 tokens"))
 							.action(UnsupportedAction::Clamped)
 							.build(),
 					);
@@ -276,9 +276,7 @@ fn encode_reasoning(
 		Some(Effort::Off) => Some(Value::Bool(false)),
 		Some(effort) => {
 			let mapped = thinking_policy
-				.and_then(|policy| policy.effort_map.get(&effort))
-				.map(Str::as_str)
-				.unwrap_or_else(|| ollama_effort(effort));
+				.and_then(|policy| policy.effort_map.get(&effort)).map_or_else(|| ollama_effort(effort), Str::as_str);
 			Some(Value::String(mapped.into()))
 		},
 		None => None,
@@ -738,7 +736,7 @@ fn outcome(stop: StopReason, state: &OllamaDecodeState) -> ChatOutcome {
 	for part in state.parts.values() {
 		match part {
 			DecodedPart::Text(text) if !text.is_empty() => {
-				output.push(assistant_item(Part::Text(Str::from(text.as_str()))))
+				output.push(assistant_item(Part::Text(Str::from(text.as_str()))));
 			},
 			DecodedPart::Thinking(text) if !text.is_empty() => {
 				output.push(assistant_item(Part::Thinking(
@@ -747,7 +745,7 @@ fn outcome(stop: StopReason, state: &OllamaDecodeState) -> ChatOutcome {
 						.signature(Bytes::new())
 						.redacted(false)
 						.build(),
-				)))
+				)));
 			},
 			DecodedPart::ToolCall { id, name, args } => output.push(
 				Item::builder()

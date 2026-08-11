@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use bytes::Bytes;
+use omp_core::Str;
 use omp_llm_catalog::compat::ToolSchemaFlavor;
 use omp_llm_types::{StopReason, ToolDef, Unsupported, UnsupportedAction};
 use serde_json::{Map, Value, json};
@@ -45,7 +46,7 @@ const ANTHROPIC_KEYWORDS: &[&str] = &[
 	"maxProperties",
 ];
 
-fn report(what: impl Into<omp_core::Str>, detail: impl Into<omp_core::Str>) -> Unsupported {
+fn report(what: impl Into<Str>, detail: impl Into<Str>) -> Unsupported {
 	Unsupported::builder()
 		.what(what.into())
 		.detail(detail.into())
@@ -721,7 +722,6 @@ pub fn normalize_tools(
 
 #[cfg(test)]
 mod tests {
-	use omp_core::Str;
 	#[test]
 	fn terminal_precedence_is_content_filter_then_tools_then_length() {
 		assert_eq!(
@@ -813,7 +813,7 @@ mod tests {
 		] {
 			let (actual, reports) = normalize(flavor, &input);
 			if matches!(flavor, ToolSchemaFlavor::JsonSchema | ToolSchemaFlavor::Anthropic) {
-				assert!(reports.is_empty());
+				assert_eq!(reports, [] as [omp_llm_types::Unsupported; 0]);
 			} else {
 				assert!(!reports.is_empty(), "{flavor:?} silently discarded an incompatible construct");
 				assert!(

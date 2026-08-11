@@ -23,6 +23,7 @@ use std::{
 	time::Duration,
 };
 
+use omp_core::{Str, fmts};
 use omp_tui::{
 	Border, Charset, Color, Frame, Icon, Rect, Size, Style,
 	anim::{Easing, Lerp, Tween},
@@ -141,7 +142,7 @@ type LogoGrid = [[Option<(char, Color)>; LOGO_COLS]; LOGO_ROWS];
 /// drives it until the user resumes into the chat demo.
 pub struct Welcome {
 	frame:          Frame,
-	title:          omp_core::Str,
+	title:          Str,
 	/// Detected glyph tier for the card chrome.
 	charset:        Charset,
 	camera:         (f32, f32),
@@ -167,11 +168,7 @@ impl Welcome {
 		Self {
 			charset,
 			frame: Frame::new(Size::new(0, 0)),
-			title: omp_core::fmts!(
-				" {} omp v{} ",
-				charset.icon(Icon::Omp),
-				env!("CARGO_PKG_VERSION")
-			),
+			title: fmts!(" {} omp v{} ", charset.icon(Icon::Omp), env!("CARGO_PKG_VERSION")),
 			camera: (0.0, 0.0),
 			camera_target: (0.0, 0.0),
 			last_elapsed: 0.0,
@@ -358,7 +355,7 @@ impl Welcome {
 		frame.fill(Rect::new(left + 1, footer, cols - 2, 1), on_footer(TEXT));
 		if full {
 			frame.put(left + 3, divider, " SHORTCUTS ", on_card(FAINT));
-			let dot = omp_core::fmts!(" {} ", self.charset.icon(Icon::Enabled));
+			let dot = fmts!(" {} ", self.charset.icon(Icon::Enabled));
 			let x = frame.put(left + cols - 21, top, &dot, on_card(GREEN));
 			frame.put(x, top, "rust-analyzer ", on_card(MUTED));
 			draw_full_hints(frame, left, footer);

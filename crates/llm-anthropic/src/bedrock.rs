@@ -1,7 +1,7 @@
 //! Anthropic Messages over Amazon Bedrock Runtime.
 //!
 //! This module owns Bedrock's model route, cloud body projection, AWS
-//! EventStream deframing, and non-secret SigV4 request context. Secret AWS
+//! `EventStream` deframing, and non-secret `SigV4` request context. Secret AWS
 //! material never enters the codec: the shared egress credential source redeems
 //! the request's lease and signs the fully buffered request in place.
 
@@ -22,11 +22,11 @@ use crate::{
 	compat::{CloudMessages, cloud_betas, project_cloud_request},
 };
 
-/// SigV4 service name for Amazon Bedrock Runtime requests.
+/// `SigV4` service name for Amazon Bedrock Runtime requests.
 pub const SIGV4_SERVICE: &str = "bedrock";
-/// Bedrock response media type carrying AWS EventStream messages.
+/// Bedrock response media type carrying AWS `EventStream` messages.
 pub const EVENTSTREAM_CONTENT_TYPE: &str = "application/vnd.amazon.eventstream";
-/// Bedrock model response payload type nested inside EventStream chunks.
+/// Bedrock model response payload type nested inside `EventStream` chunks.
 pub const MODEL_CONTENT_TYPE: &str = "application/json";
 
 const MAX_EVENTSTREAM_MESSAGE_LEN: usize = 16 * 1024 * 1024;
@@ -118,12 +118,7 @@ pub fn endpoint(base_url: &str, region: &str, model: &str) -> Result<Str, Error>
 pub fn converse_endpoint(base_url: &str, region: &str, model: &str) -> Result<Str, Error> {
 	endpoint_for(base_url, region, model, "converse-stream")
 }
-fn endpoint_for(
-	base_url: &str,
-	region: &str,
-	model: &str,
-	operation: &str,
-) -> Result<Str, Error> {
+fn endpoint_for(base_url: &str, region: &str, model: &str, operation: &str) -> Result<Str, Error> {
 	if model.is_empty() {
 		return Err(provider_error("Bedrock model must not be empty"));
 	}
@@ -208,7 +203,7 @@ fn endpoint_region(base_url: &str) -> Option<&str> {
 	(!region.is_empty()).then_some(region)
 }
 
-/// Adds Bedrock media headers and non-secret SigV4 metadata to a request.
+/// Adds Bedrock media headers and non-secret `SigV4` metadata to a request.
 ///
 /// This function does not sign and cannot access credentials. The production
 /// auth layer observes [`AwsSigV4Context`] after routing has attached a
@@ -238,7 +233,7 @@ pub fn attach_sigv4<B>(
 	});
 }
 
-/// Incremental decoder for AWS EventStream response framing.
+/// Incremental decoder for AWS `EventStream` response framing.
 ///
 /// Every returned byte string is one model JSON event. Bedrock exception and
 /// error messages are converted to Anthropic-shaped typed error events so each
@@ -276,8 +271,7 @@ impl BedrockEventStreamDecoder {
 				self.buffer[4..8].try_into().expect("four-byte prefix"),
 			))
 			.expect("u32 fits usize");
-			if total_len < 16
-				|| total_len > MAX_EVENTSTREAM_MESSAGE_LEN
+			if !(16..=MAX_EVENTSTREAM_MESSAGE_LEN).contains(&total_len)
 				|| headers_len > MAX_EVENTSTREAM_HEADERS_LEN
 				|| headers_len > total_len - 16
 			{
@@ -303,7 +297,7 @@ impl BedrockEventStreamDecoder {
 		Ok(output)
 	}
 
-	/// Validates that the response ended on an EventStream frame boundary.
+	/// Validates that the response ended on an `EventStream` frame boundary.
 	pub fn finish(&self) -> Result<(), Error> {
 		if self.buffer.is_empty() || self.terminal {
 			Ok(())

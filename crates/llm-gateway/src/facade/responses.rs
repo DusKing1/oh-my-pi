@@ -374,17 +374,14 @@ fn streaming(
 					kinds.insert(index, kind);
 					match kind {
 						StreamPartKind::Text => {
-							let (output_index, item_id) = match &text_item {
-								Some((output_index, item_id)) => (*output_index, item_id.clone()),
-								None => {
-									let output_index = next_output_index;
-									next_output_index += 1;
-									let item_id = format!("msg_{}", ulid::Ulid::generate());
-									yield sse_named("response.output_item.added", &json!({"type":"response.output_item.added","output_index":output_index,"item":{"type":"message","id":item_id,"status":"in_progress","role":"assistant","content":[]}}));
-									text_item = Some((output_index, item_id.clone()));
-									(output_index, item_id)
-								},
-							};
+							let (output_index, item_id) = if let Some((output_index, item_id)) = &text_item { (*output_index, item_id.clone()) } else {
+       									let output_index = next_output_index;
+       									next_output_index += 1;
+       									let item_id = format!("msg_{}", ulid::Ulid::generate());
+       									yield sse_named("response.output_item.added", &json!({"type":"response.output_item.added","output_index":output_index,"item":{"type":"message","id":item_id,"status":"in_progress","role":"assistant","content":[]}}));
+       									text_item = Some((output_index, item_id.clone()));
+       									(output_index, item_id)
+       								};
 							let content_index = next_content_index;
 							next_content_index += 1;
 							output_indices.insert(index, output_index);

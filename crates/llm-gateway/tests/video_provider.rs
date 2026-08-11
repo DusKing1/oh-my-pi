@@ -1,4 +1,4 @@
-//! End-to-end proofs for the durable OpenAI video generation backend.
+//! End-to-end proofs for the durable `OpenAI` video generation backend.
 
 use std::{
 	future::{Future, ready},

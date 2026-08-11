@@ -1,4 +1,4 @@
-//! Durable production adapter for OpenAI's asynchronous Sora video API.
+//! Durable production adapter for `OpenAI`'s asynchronous Sora video API.
 //!
 //! Provider job ids and non-secret credential identities are persisted beside
 //! the blob store. Completed bytes cross the blob-store durability barrier
@@ -45,7 +45,7 @@ const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// submitted it. Implementations redeem no secrets here; the egress auth layer
 /// receives the returned canonical lease on each request.
 pub trait VideoCredentialLeases: Send + Sync {
-	/// Selects the credential for a new OpenAI video job.
+	/// Selects the credential for a new `OpenAI` video job.
 	fn select(&self) -> Result<CredentialLease, VideoError>;
 	/// Refreshes the current generation of the credential that owns a job.
 	fn by_id(&self, credential_id: u64) -> Result<CredentialLease, VideoError>;
@@ -59,7 +59,7 @@ pub enum VideoInitError {
 	Io(#[from] std::io::Error),
 }
 
-/// Typed OpenAI video adapter failure.
+/// Typed `OpenAI` video adapter failure.
 #[derive(Debug, thiserror::Error)]
 pub enum VideoError {
 	/// A typed request control is not supported by the selected Sora path.
@@ -98,7 +98,7 @@ pub enum VideoError {
 	Persistence(Str),
 }
 
-/// OpenAI Sora job adapter over the daemon-owned egress stack.
+/// `OpenAI` Sora job adapter over the daemon-owned egress stack.
 ///
 /// `S` is normally `AuthInject<BrokerCredentialSource, ...>`. Every request is
 /// tagged with both `AuthContext("openai")` and the persisted credential lease,
@@ -880,7 +880,7 @@ impl StoredJob {
 	}
 }
 
-fn is_terminal(state: GenerationState) -> bool {
+const fn is_terminal(state: GenerationState) -> bool {
 	matches!(
 		state,
 		GenerationState::Completed | GenerationState::Failed | GenerationState::Cancelled

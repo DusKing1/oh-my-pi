@@ -735,11 +735,7 @@ fn turn_params(model: &str, session: &str) -> pb::ChatParams {
 	ChatParams::builder()
 		.model(Str::new(model))
 		.tools(Vec::new())
-		.cache(
-			CacheHint::builder()
-				.session_key(Str::new(session))
-				.build(),
-		)
+		.cache(CacheHint::builder().session_key(Str::new(session)).build())
 		.build()
 		.into()
 }

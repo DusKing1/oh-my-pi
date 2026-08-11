@@ -126,10 +126,8 @@ mod tests {
 		let incoming = uds::listen(path).await.expect("test UDS should bind");
 		let (reporter, health) = health_service();
 		reporter.set_serving::<GatewayServer<HelloService>>().await;
-		let hello = HelloService::new("test-server", vec![
-			"inference.turn".into_str(),
-			"blob.v1".into_str(),
-		]);
+		let hello =
+			HelloService::new("test-server", vec!["inference.turn".into_str(), "blob.v1".into_str()]);
 		tokio::spawn(async move {
 			Server::builder()
 				.add_service(health)

@@ -15,7 +15,7 @@ use std::{
 use async_stream::stream;
 use bytes::{Buf, Bytes, BytesMut};
 use futures::{Stream, StreamExt, TryFutureExt, pin_mut};
-use omp_core::Str;
+use omp_core::{Str, fmts};
 use omp_llm_catalog::compat::{Compat, LeakedThinkingHealer};
 use omp_llm_types::{StreamPartKind, TurnError, TurnErrorKind, TurnEvent, ids::CallId};
 use omp_proto::{
@@ -90,9 +90,7 @@ where
 					yield TurnEvent::Error(
 						TurnError::builder()
 							.kind(TurnErrorKind::Upstream)
-							.detail(Str::new(format!(
-								"invalid canonical stream event: {error}"
-							)))
+							.detail(fmts!("invalid canonical stream event: {error}"))
 							.unsupported(Vec::new())
 							.retry_after_ms(0)
 							.build(),
@@ -398,7 +396,7 @@ fn request_for_strategy<R: TurnRequestEnvelope>(
 	};
 	match request.request_mut().input.as_mut()? {
 		omp_proto::inference::v1::turn_request::Input::Seed(seed) => {
-			seed.thread.get_or_insert_default().items.push(instruction)
+			seed.thread.get_or_insert_default().items.push(instruction);
 		},
 		omp_proto::inference::v1::turn_request::Input::Incremental(incremental) => incremental
 			.delta
@@ -578,7 +576,7 @@ where
 			let next_number = guarded_attempt + 1;
 			yield TurnEvent::Attempt {
 				number: next_number,
-				reason: Str::new(format!("thinking loop: {detail}")),
+				reason: fmts!("thinking loop: {detail}"),
 			};
 			if next_is_guarded {
 				let shift = guarded_attempt.saturating_sub(1).min(31);
@@ -657,9 +655,7 @@ fn loop_error(detail: &str) -> TurnEvent {
 	TurnEvent::Error(
 		TurnError::builder()
 			.kind(TurnErrorKind::Upstream)
-			.detail(Str::new(format!(
-				"thinking loop detected: {detail}; treating as a stream stall"
-			)))
+			.detail(fmts!("thinking loop detected: {detail}; treating as a stream stall"))
 			.unsupported(Vec::new())
 			.retry_after_ms(0)
 			.build(),
@@ -783,13 +779,7 @@ impl TextProjection {
 				MarkupEvent::Text(chunk) => self.delta(StreamPartKind::Text, chunk, next, out),
 				MarkupEvent::ThinkingStart => {
 					self.close(out);
-					self.start(
-						StreamPartKind::Thinking,
-						Str::default(),
-						Str::default(),
-						next,
-						out,
-					);
+					self.start(StreamPartKind::Thinking, Str::default(), Str::default(), next, out);
 				},
 				MarkupEvent::Thinking(chunk) => self.delta(StreamPartKind::Thinking, chunk, next, out),
 				MarkupEvent::ThinkingEnd => self.close(out),
@@ -1532,10 +1522,10 @@ impl LoopDetector {
 			self.tail.drain(..start);
 		}
 		if let Some((unit, count)) = detect_verbatim_repetition(self.tail.as_bytes()) {
-			return Some(Str::new(format!(
+			return Some(fmts!(
 				"repeated {:?} {count} times back-to-back",
 				String::from_utf8_lossy(unit).trim()
-			)));
+			));
 		}
 
 		self.pending.push_str(delta);
@@ -1585,7 +1575,7 @@ impl LoopDetector {
 			fingerprint.insert(Str::new(normalized.as_str()));
 		} else {
 			for triple in words.windows(3) {
-				fingerprint.insert(Str::new(format!("{} {} {}", triple[0], triple[1], triple[2])));
+				fingerprint.insert(fmts!("{} {} {}", triple[0], triple[1], triple[2]));
 			}
 		}
 		let cluster = 1
@@ -1626,15 +1616,15 @@ impl LoopDetector {
 		self.segment_count += 1;
 		if self.segment_count >= SEGMENT_MIN_COUNT {
 			if cluster >= SEGMENT_MIN_CLUSTER {
-				return Some(Str::new(format!(
+				return Some(fmts!(
 					"{cluster} near-identical segments within the last {SEGMENT_WINDOW}"
-				)));
+				));
 			}
 			if self.stall_run >= NOVELTY_STALL_RUN {
-				return Some(Str::new(format!(
+				return Some(fmts!(
 					"{} low-information segments recycling recent wording",
 					self.stall_run
-				)));
+				));
 			}
 		}
 		None

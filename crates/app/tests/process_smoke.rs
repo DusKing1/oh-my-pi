@@ -421,7 +421,7 @@ async fn daemon_composition_mounts_catalog_facets_and_drains_cleanly() {
 					panic!("native Turn emitted an event after its terminal outcome")
 				},
 				Some(pb::TurnEvent { event: Some(pb::turn_event::Event::Outcome(outcome)) }) => {
-					terminal = Some(outcome)
+					terminal = Some(outcome);
 				},
 				Some(pb::TurnEvent { event: Some(pb::turn_event::Event::Error(error)) }) => {
 					return Err(error.detail);

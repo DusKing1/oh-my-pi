@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 use bytes::Bytes;
 use http::{Request, Response};
 use hyper::body::Body as HttpBody;
+use omp_core::Str;
 use omp_llm_catalog::{
 	identity::{DIALECT_ENV, DialectSelection},
 	provider::{Facet, ProviderEntry, TransportId},
@@ -28,7 +29,7 @@ use crate::turn::{ChatResolver, ChatRouteKey};
 pub struct SpecializedChats {
 	/// Provider-keyed specialized implementations for rows that cannot share
 	/// transport-global endpoint or credential state.
-	pub by_provider:         BTreeMap<omp_core::Str, Arc<dyn Chat>>,
+	pub by_provider:         BTreeMap<Str, Arc<dyn Chat>>,
 	/// Cursor's Connect/gRPC agent implementation.
 	pub cursor:              Option<Arc<dyn Chat>>,
 	/// Devin's Connect server-streaming implementation.
@@ -55,7 +56,7 @@ pub enum RouteRegistrationError {
 	#[error("chat provider {provider} requires an injected {transport:?} transport")]
 	MissingSpecialized {
 		/// Provider catalog id that could not be registered.
-		provider:  omp_core::Str,
+		provider:  Str,
 		/// Specialized transport required by the catalog row.
 		transport: TransportId,
 	},
@@ -63,7 +64,7 @@ pub enum RouteRegistrationError {
 	#[error("chat provider {provider} could not be assembled: {source}")]
 	Provider {
 		/// Provider catalog id that could not be registered.
-		provider: omp_core::Str,
+		provider: Str,
 		/// Concrete adapter construction failure.
 		source:   ProviderBuildError,
 	},
@@ -115,7 +116,7 @@ where
 		return Err(RouteRegistrationError::NoUsableRoutes);
 	}
 
-	let omp_dialect = std::env::var(DIALECT_ENV).ok().map(omp_core::Str::from);
+	let omp_dialect = std::env::var(DIALECT_ENV).ok().map(Str::from);
 	let mut assembled = Vec::with_capacity(providers.len());
 	for provider in providers {
 		let default =
@@ -139,7 +140,7 @@ where
 					})?;
 					if effective.transport == TransportId::Embedded {
 						let dialect =
-							OwnedDialectConfig::new(DialectSelection::Auto, effective.compat.clone())
+							OwnedDialectConfig::new(DialectSelection::Auto, effective.compat)
 								.with_override(omp_dialect.clone());
 						let wrapped = if effective.id == "apple-intelligence" {
 							OwnedDialectChat::latest_user(chat, dialect)

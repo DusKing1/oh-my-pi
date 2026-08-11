@@ -145,7 +145,7 @@ struct FixtureBody {
 }
 
 impl FixtureBody {
-	fn complete() -> Self {
+	const fn complete() -> Self {
 		Self { chunks: VecDeque::new(), hangs: false, cancelled: None }
 	}
 

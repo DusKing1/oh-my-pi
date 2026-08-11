@@ -238,7 +238,7 @@ fn malformed_native_order_and_nameless_ghosts_cannot_create_or_end_a_call() {
 	));
 	trace.extend(projector.native_tool_delta(12, Bytes::from_static(b"ghost")));
 	trace.extend(projector.native_tool_end(12));
-	assert!(trace.events.is_empty());
+	assert_eq!(trace.events, [] as [omp_llm_types::TurnEvent; 0]);
 
 	let real_id = CallId::new();
 	feed_native_call(&mut projector, &mut trace, 13, real_id, b"\"real\"}");

@@ -26,7 +26,7 @@ use hyper_util::{
 	client::legacy::{Client, connect::HttpConnector},
 	rt::{TokioExecutor, TokioIo},
 };
-use omp_core::Str;
+use omp_core::{Str, fmts};
 use omp_llm_broker::{
 	source::{
 		BrokerCredentialSource, CredentialRefresher as BrokerCredentialRefresher,
@@ -516,7 +516,7 @@ fn response_frames(
 			} else {
 				devin_wire::StopReason::StopPattern as i32
 			},
-			usage: (!cancelling).then(|| devin_wire::ModelUsageStats {
+			usage: (!cancelling).then_some(devin_wire::ModelUsageStats {
 				input_tokens:       3,
 				output_tokens:      2,
 				cache_write_tokens: 0,
@@ -856,7 +856,7 @@ async fn spawn_websocket_fixture() -> (String, tokio::task::JoinHandle<()>) {
 					.await
 					.expect("GitLab cancel delta");
 				assert!(
-					matches!(socket.next().await, Some(Ok(WsMessage::Close(_))) | None | Some(Err(_))),
+					matches!(socket.next().await, Some(Ok(WsMessage::Close(_)) | Err(_)) | None),
 					"GitLab socket closes on stream drop"
 				);
 			} else {
@@ -870,10 +870,8 @@ async fn spawn_websocket_fixture() -> (String, tokio::task::JoinHandle<()>) {
 fn provider(id: &'static str, transport: TransportId, base_url: String) -> ProviderEntry {
 	let mut headers = BTreeMap::new();
 	if HTTP_TRANSPORTS.contains(&transport) {
-		headers.insert(
-			Str::new_static("x-matrix-transport"),
-			Str::new(transport_name_owned(transport)),
-		);
+		headers
+			.insert(Str::new_static("x-matrix-transport"), Str::new(transport_name_owned(transport)));
 	}
 	let auth = if matches!(transport, TransportId::AnthropicBedrock | TransportId::BedrockConverse) {
 		AuthSpec::AwsSigV4
@@ -901,7 +899,7 @@ fn provider(id: &'static str, transport: TransportId, base_url: String) -> Provi
 
 fn card(provider: &'static str) -> ModelCard {
 	ModelCard::builder()
-		.id(Str::new(format!("{provider}/model")))
+		.id(fmts!("{provider}/model"))
 		.provider(Str::new_static(provider))
 		.model(Str::new_static("matrix-model"))
 		.name(Str::new_static("matrix-model"))
@@ -935,7 +933,7 @@ fn request(provider: &'static str) -> ChatRequest {
 		.props(Props::default())
 		.build();
 	ChatRequest::builder()
-		.model(Str::new(format!("{provider}/model")))
+		.model(fmts!("{provider}/model"))
 		.thread(Thread::builder().items(vec![item]).build())
 		.tools(Vec::new())
 		.provider_options(Props::default())

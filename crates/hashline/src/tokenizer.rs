@@ -1,6 +1,6 @@
 //! Stateful line tokenization.
 
-use omp_core::Str;
+use omp_core::{Str, StrMut};
 
 use crate::{
 	format::{
@@ -366,7 +366,7 @@ fn try_parse_header(line: &str) -> Option<(Str, Option<Str>)> {
 		{
 			return None;
 		}
-		let mut uppercase = omp_core::StrMut::with_capacity(HL_FILE_HASH_LENGTH);
+		let mut uppercase = StrMut::with_capacity(HL_FILE_HASH_LENGTH);
 		for byte in tag.bytes() {
 			uppercase.push(char::from(byte.to_ascii_uppercase()));
 		}

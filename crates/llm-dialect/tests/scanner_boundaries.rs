@@ -37,7 +37,7 @@ struct OpenTool {
 	argument_stream: Vec<u8>,
 }
 
-fn cases() -> [Case; 11] {
+const fn cases() -> [Case; 11] {
 	[
 		Case {
 			dialect:       Dialect::Glm,

@@ -187,8 +187,7 @@ impl Settings {
 		let refresh_skew = env
 			.get("GOOGLE_VERTEX_REFRESH_SKEW_MS")
 			.and_then(|value| value.parse::<u64>().ok())
-			.map(Duration::from_millis)
-			.unwrap_or(DEFAULT_REFRESH_SKEW);
+			.map_or(DEFAULT_REFRESH_SKEW, Duration::from_millis);
 		Self {
 			env: Arc::new(env),
 			application_default_path,
@@ -337,9 +336,7 @@ impl<E: AdcEgress> AdcEngine<E> {
 		let path = self
 			.settings
 			.env
-			.get("GOOGLE_APPLICATION_CREDENTIALS")
-			.map(PathBuf::from)
-			.unwrap_or_else(|| self.settings.application_default_path.clone());
+			.get("GOOGLE_APPLICATION_CREDENTIALS").map_or_else(|| self.settings.application_default_path.clone(), PathBuf::from);
 		let Some(source) = self
 			.read_optional_credentials(&path, "project-discovery")
 			.await?
@@ -645,7 +642,7 @@ mod tests {
 
 	use super::*;
 
-	const TEST_RSA_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+	const TEST_RSA_KEY: &str = r"-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQClLQ9oJWuxPRVr
 xVrG1tCi2GEE/2oee5KtJA4REC4fI2bnmU9MJusfUx0k1g4XkiYJ+4CErJIZDr7T
 j9bclMyLx5jII5nzBeRtg4aA65NfZVeQ1qgd9Z3QO8dFVJVC7asaA0ydBpxx2ZvR
@@ -672,7 +669,7 @@ S0sKhv0GXfbz33xbyi3MayAtFjTtJOtOaAO6/qCblQKBgFruLcu0g17WzSf6pFN6
 El3lKjmLHAEhMJYEG29rWkHPVDzyQtstiCYJEu7zPrIdm0PwYEv3zLTiz1kBHfjC
 4cRPorNhVA8fFhXKyiPiWy5SWm7cXo6lo2ZiNQBW947RmjPfj4+D7W7KSkK3zDBT
 SoiVr2PnTe/N9FN9ZNov5wmt
------END PRIVATE KEY-----"#;
+-----END PRIVATE KEY-----";
 
 	#[derive(Clone, Default)]
 	struct MockEgress {

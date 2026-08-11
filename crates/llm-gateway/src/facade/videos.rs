@@ -408,9 +408,7 @@ mod tests {
 	impl VideoGen for FakeVideo {
 		async fn submit(&self, request: GenerateVideoRequest) -> Result<GenerationHandle, Error> {
 			assert_eq!(request.prompt, "ocean");
-			Ok(GenerationHandle::builder()
-				.id(Str::new("video-1"))
-				.build())
+			Ok(GenerationHandle::builder().id(Str::new("video-1")).build())
 		}
 
 		async fn get(&self, handle: GenerationHandle) -> Result<GenerationStatus, Error> {

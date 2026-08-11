@@ -4,7 +4,7 @@
 use std::{collections::HashMap, path::Path, sync::Arc};
 
 use bytes::Bytes;
-use omp_core::Str;
+use omp_core::{Str, fmts};
 use omp_hashline::{
 	ApplyMode, ApplyOptions, Clipboard, Patch, RecoveryEdit, ReplaceOptions, RevisionToken,
 	SnapshotStore, apply_parsed_patch, apply_replace, loop_guard::NoopLoopGuard, recover_exact,
@@ -129,11 +129,7 @@ impl EditAdapterRegistry {
 
 	/// Registers one format for this session, rejecting empty or duplicate
 	/// names.
-	pub fn register(
-		&self,
-		format: impl Into<Str>,
-		adapter: Arc<dyn TextEditAdapter>,
-	) -> Result<()> {
+	pub fn register(&self, format: impl Into<Str>, adapter: Arc<dyn TextEditAdapter>) -> Result<()> {
 		let format = format.into();
 		if format.is_empty() {
 			return Err(Error::InvalidTarget {
@@ -233,7 +229,7 @@ impl TextEditAdapter for HashlineAdapter {
 			.snapshots
 			.record(path, revision, snapshot.content().clone(), seen_lines)
 			.map_err(|error| Error::Protocol {
-				reason: Str::new(format!("could not retain hashline read snapshot: {error}")),
+				reason: fmts!("could not retain hashline read snapshot: {error}"),
 			})?;
 		Ok(())
 	}
@@ -248,23 +244,19 @@ impl TextEditAdapter for HashlineAdapter {
 		parse_hashline_options(&options_json)?;
 		let path = path_key(path)?;
 		let text = std::str::from_utf8(&payload).map_err(|error| Error::Protocol {
-			reason: Str::new(format!("omp.hashline payload is not UTF-8: {error}")),
+			reason: fmts!("omp.hashline payload is not UTF-8: {error}"),
 		})?;
 		let patch = Patch::parse_default(text).map_err(hashline_content_error)?;
 		if patch.sections.len() != 1 {
 			return Err(Error::InvalidContent {
-				reason: Str::new_static(
-					"omp.hashline payload must contain exactly one file section",
-				),
+				reason: Str::new_static("omp.hashline payload must contain exactly one file section"),
 			});
 		}
 		let section = &patch.sections[0];
 		if section.path != path {
 			return Err(Error::InvalidTarget {
 				target: section.path.clone(),
-				reason: Str::new(format!(
-					"hashline section path does not match transaction path {path}"
-				)),
+				reason: fmts!("hashline section path does not match transaction path {path}"),
 			});
 		}
 		let tag = section
@@ -296,9 +288,9 @@ impl TextEditAdapter for HashlineAdapter {
 		{
 			return Err(Error::InvalidTarget {
 				target: path.clone(),
-				reason: Str::new(format!(
+				reason: fmts!(
 					"hashline line {unseen} was not present in this session's read of {path}#{tag}"
-				)),
+				),
 			});
 		}
 
@@ -387,15 +379,14 @@ impl TextEditAdapter for ReplaceAdapter {
 		payload: Bytes,
 		options_json: Bytes,
 	) -> Result<Vec<ByteEdit>> {
-		let payload: ReplacePayload =
-			serde_json::from_slice(&payload).map_err(|error| Error::Protocol {
-				reason: Str::new(format!("malformed omp.replace payload JSON: {error}")),
-			})?;
+		let payload: ReplacePayload = serde_json::from_slice(&payload).map_err(|error| {
+			Error::Protocol { reason: fmts!("malformed omp.replace payload JSON: {error}") }
+		})?;
 		let options = if options_json.is_empty() {
 			ReplaceAdapterOptions::default()
 		} else {
 			serde_json::from_slice(&options_json).map_err(|error| Error::Protocol {
-				reason: Str::new(format!("malformed omp.replace options JSON: {error}")),
+				reason: fmts!("malformed omp.replace options JSON: {error}"),
 			})?
 		};
 		let result = apply_replace(
@@ -409,7 +400,7 @@ impl TextEditAdapter for ReplaceAdapter {
 			},
 		)
 		.map_err(|error| Error::InvalidContent {
-			reason: Str::new(format!("omp.replace could not be applied: {error}")),
+			reason: fmts!("omp.replace could not be applied: {error}"),
 		})?;
 		result
 			.edits
@@ -434,7 +425,7 @@ fn parse_hashline_options(options: &[u8]) -> Result<()> {
 	serde_json::from_slice::<HashlineOptions>(options)
 		.map(|_| ())
 		.map_err(|error| Error::Protocol {
-			reason: Str::new(format!("malformed omp.hashline options JSON: {error}")),
+			reason: fmts!("malformed omp.hashline options JSON: {error}"),
 		})
 }
 
@@ -482,9 +473,7 @@ fn selected_lines(content: &Bytes, selection: &ReadSelection) -> Result<Vec<usiz
 }
 
 fn hashline_content_error(error: impl std::fmt::Display) -> Error {
-	Error::InvalidContent {
-		reason: Str::new(format!("omp.hashline could not be applied: {error}")),
-	}
+	Error::InvalidContent { reason: fmts!("omp.hashline could not be applied: {error}") }
 }
 
 #[cfg(test)]

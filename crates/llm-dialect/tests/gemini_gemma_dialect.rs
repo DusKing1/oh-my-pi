@@ -79,6 +79,6 @@ fn gemma_token_calls_accept_json5_shapes_and_stream_identically() {
 
 #[test]
 fn prose_outside_owned_blocks_is_not_fabricated_into_calls() {
-	assert!(calls(Dialect::Gemini, "default_api.search(query='outside')", true).is_empty());
-	assert!(calls(Dialect::Gemma, "call:search{query:'outside'}", true).is_empty());
+	assert_eq!(calls(Dialect::Gemini, "default_api.search(query='outside')", true), [] as [(std::string::String, serde_json::Value); 0]);
+	assert_eq!(calls(Dialect::Gemma, "call:search{query:'outside'}", true), [] as [(std::string::String, serde_json::Value); 0]);
 }

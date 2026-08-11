@@ -259,14 +259,10 @@ impl Inference {
 			unsupported_error("embed", "the local embeddings facet was not configured")
 		})?;
 		if request.texts.is_empty() {
-			return Err(native::Error::Provider(Str::new(
-				"at least one embedding text is required",
-			)));
+			return Err(native::Error::Provider(Str::new("at least one embedding text is required")));
 		}
 		if request.dimensions == Some(0) {
-			return Err(native::Error::Provider(Str::new(
-				"embedding dimensions must be non-zero",
-			)));
+			return Err(native::Error::Provider(Str::new("embedding dimensions must be non-zero")));
 		}
 		let input_tokens = request
 			.texts
@@ -695,9 +691,7 @@ fn decode_inline_audio(blob: &native::BlobPart) -> std::result::Result<Audio, na
 	let data =
 		data.ok_or_else(|| native::Error::Provider(Str::new("inline WAV has no data chunk")))?;
 	if !data.len().is_multiple_of(2) {
-		return Err(native::Error::Provider(Str::new(
-			"inline PCM16 WAV contains a partial sample",
-		)));
+		return Err(native::Error::Provider(Str::new("inline PCM16 WAV contains a partial sample")));
 	}
 	let samples = data
 		.as_chunks::<2>()
@@ -878,9 +872,7 @@ fn gguf_options(
 	let max_tokens = match sampling.max_output_tokens {
 		None => GenerationOptions::default().max_tokens,
 		Some(0) => {
-			return Err(native::Error::Provider(Str::new(
-				"maximum output tokens must be non-zero",
-			)));
+			return Err(native::Error::Provider(Str::new("maximum output tokens must be non-zero")));
 		},
 		Some(max) => usize::try_from(max).map_err(|_| {
 			native::Error::Provider(Str::new("maximum output tokens exceed this platform"))

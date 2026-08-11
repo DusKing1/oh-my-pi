@@ -13,7 +13,7 @@ use std::{
 
 use bytes::Bytes;
 use cap_std::fs::{Dir, Metadata, OpenOptions};
-use omp_core::Str;
+use omp_core::{Str, fmts};
 #[cfg(test)]
 use parking_lot::Mutex;
 
@@ -400,11 +400,11 @@ impl LocalFs {
 	fn ensure_document_size(&self, path: &Path, byte_length: u64) -> Result<()> {
 		if byte_length > self.inner.max_document_bytes {
 			return Err(Error::InvalidContent {
-				reason: Str::new(format!(
+				reason: fmts!(
 					"document {} is {byte_length} bytes; the configured limit is {} bytes",
 					path.display(),
 					self.inner.max_document_bytes
-				)),
+				),
 			});
 		}
 		Ok(())
@@ -1338,9 +1338,7 @@ impl LocalFs {
 				if symlinks > 40 {
 					return Err(Error::InvalidTarget {
 						target: Str::new(identity.to_string_lossy()),
-						reason: Str::new_static(
-							"symbolic-link resolution exceeded the traversal limit",
-						),
+						reason: Str::new_static("symbolic-link resolution exceeded the traversal limit"),
 					});
 				}
 				let target = self
@@ -1424,9 +1422,7 @@ impl LocalFs {
 		{
 			return Err(Error::InvalidTarget {
 				target: Str::new(identity.to_string_lossy()),
-				reason: Str::new_static(
-					"recursive directory creation requires a normalized target",
-				),
+				reason: Str::new_static("recursive directory creation requires a normalized target"),
 			});
 		}
 		let components: Vec<OsString> = relative
@@ -1764,9 +1760,7 @@ impl LocalFs {
 					if components.pop().is_none() {
 						return Err(Error::InvalidTarget {
 							target: Str::new(identity.to_string_lossy()),
-							reason: Str::new_static(
-								"symbolic-link target escapes the Environment root",
-							),
+							reason: Str::new_static("symbolic-link target escapes the Environment root"),
 						});
 					}
 				},
@@ -1860,7 +1854,7 @@ impl LocalFs {
 		}
 		Err(Error::InvalidTarget {
 			target: Str::new(path.to_string_lossy()),
-			reason: Str::new(format!("prepared {operation} belongs to another filesystem root")),
+			reason: fmts!("prepared {operation} belongs to another filesystem root"),
 		})
 	}
 
@@ -2539,10 +2533,7 @@ impl LocalFs {
 	}
 
 	fn invalid_argument(path: &Path, reason: &str) -> Error {
-		Error::InvalidTarget {
-			target: Str::new(path.to_string_lossy()),
-			reason: Str::new(reason),
-		}
+		Error::InvalidTarget { target: Str::new(path.to_string_lossy()), reason: Str::new(reason) }
 	}
 }
 

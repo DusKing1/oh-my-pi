@@ -4,7 +4,6 @@
 //! Runs hands-free; keys retarget individual scenes.
 
 use std::{
-	future::Future,
 	io,
 	time::{Duration, Instant},
 };
