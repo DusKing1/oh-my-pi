@@ -9,6 +9,7 @@ pub mod openai_codex_attestation;
 pub mod openai_codex_responses_lite;
 pub mod openai_codex_websocket;
 pub mod openai_responses;
+mod responses_tool_repair;
 
 pub use audio::{EncodedAudioRequest, OpenAiAudioCodec, OpenAiAudioError, OpenAiAudioProfile};
 pub use openai_chat::OpenAiChatCodec;

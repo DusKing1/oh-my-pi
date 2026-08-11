@@ -524,6 +524,10 @@ fn encode_message(
 					}
 				}
 			}
+			Part::Blob(blob) if !blob.mime.as_str().starts_with("image/") => unsupported.push(dropped(
+				"message.blob",
+				"Chat Completions content accepts image blobs only",
+			)),
 			Part::Blob(blob) => match compat.image_encoding_format {
 				ImageEncodingFormat::OpenAiUrl if !blob.inline.is_empty() => content.push(json!({"type":"image_url","image_url":{"url":format!("data:{};base64,{}", blob.mime, base64(&blob.inline))}})),
 				ImageEncodingFormat::AnthropicSource if !blob.inline.is_empty() => content.push(json!({"type":"image","source":{"type":"base64","media_type":blob.mime.as_str(),"data":base64(&blob.inline)}})),
@@ -1751,6 +1755,28 @@ mod tests {
 		))
 		.unwrap();
 		assert_eq!(actual, fixture["wire_body"]);
+	}
+
+	#[test]
+	fn non_image_blob_is_reported_instead_of_encoded_as_an_image() {
+		let mut req = request();
+		if let ItemKind::Message(message) = &mut req.thread.items[0].kind {
+			message.parts.push(Part::Blob(
+				BlobPart::builder()
+					.hash([7; 32])
+					.mime(SmolStr::from("audio/wav"))
+					.size(4)
+					.inline(Bytes::from_static(b"RIFF"))
+					.build(),
+			));
+		}
+		let (body, unsupported) = OpenAiChatCodec.encode(&req, &Compat::default()).unwrap();
+		let wire: Value = serde_json::from_slice(&body).unwrap();
+		let content = wire["messages"][0]["content"].to_string();
+		assert!(!content.contains("image_url"), "audio must not ride the image wire: {content}");
+		assert!(!content.contains("RIFF"));
+		assert_eq!(unsupported.len(), 1);
+		assert_eq!(unsupported[0].what, "message.blob");
 	}
 
 	fn model_policy(

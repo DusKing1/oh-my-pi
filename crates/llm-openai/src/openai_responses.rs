@@ -22,7 +22,10 @@ use omp_llm_types::{
 use serde_json::{Map, Value, json};
 use smallvec::SmallVec;
 
-use crate::model_policy::OpenAiModelPolicy;
+use crate::{
+	model_policy::OpenAiModelPolicy,
+	responses_tool_repair::{SentCall, ToolKind, call_kind_of, repair_responses_tool_pairs},
+};
 
 /// `OpenAI` Responses codec configured with gateway-held state for one turn.
 ///
@@ -1095,6 +1098,7 @@ fn encode_input(
 	let mut deferred_media = Vec::new();
 	let custom_names = custom_tool_names(req);
 	let mut replay_calls: BTreeMap<CallId, (SmolStr, bool)> = BTreeMap::new();
+	let sent_calls = seed_sent_calls(req, start, mapper, &custom_names, &mut replay_calls);
 	for item in req.thread.items.iter().skip(start) {
 		if matches!(&item.kind, ItemKind::Message(_)) {
 			input.append(&mut deferred_media);
@@ -1202,7 +1206,62 @@ fn encode_input(
 		report_unknown_item_props(&item.props, unsupported);
 	}
 	input.append(&mut deferred_media);
+	unsupported.extend(repair_responses_tool_pairs(&mut input, &sent_calls));
 	input
+}
+
+/// Records the tool calls a stateful continuation already delivered.
+///
+/// Their outputs stay valid on the wire even though the matching call is not
+/// re-sent, so orphan repair must treat them as paired. `replay_calls` is
+/// seeded from the same pass so a post-boundary result keeps the wire call id
+/// and the custom/function shape its pre-boundary call was sent with.
+fn seed_sent_calls(
+	req: &ChatRequest,
+	start: usize,
+	mapper: &CallIdMapper,
+	custom_names: &BTreeSet<SmolStr>,
+	replay_calls: &mut BTreeMap<CallId, (SmolStr, bool)>,
+) -> BTreeSet<SentCall> {
+	let mut sent = BTreeSet::new();
+	for item in req.thread.items.iter().take(start) {
+		let wire_id = item
+			.props
+			.get_ns("openai", "call_id")
+			.and_then(Value::as_str)
+			.map(SmolStr::from);
+		match &item.kind {
+			ItemKind::ToolCall(call) => {
+				let call_id =
+					wire_id.unwrap_or_else(|| mapper.to_wire(&call.id, ToolCallIdProfile::OpenAi));
+				let custom = is_custom(&item.props) || custom_names.contains(&call.name);
+				let kind = if custom {
+					ToolKind::Custom
+				} else {
+					ToolKind::Function
+				};
+				sent.insert((kind, call_id.clone()));
+				replay_calls.insert(call.id, (call_id, custom));
+			},
+			ItemKind::Message(_) => {
+				let Some(native) = item.props.get_ns("openai", "server_tool_item") else {
+					continue;
+				};
+				let Some(kind) = native
+					.get("type")
+					.and_then(Value::as_str)
+					.and_then(call_kind_of)
+				else {
+					continue;
+				};
+				if let Some(call_id) = native.get("call_id").and_then(Value::as_str) {
+					sent.insert((kind, SmolStr::from(call_id)));
+				}
+			},
+			_ => {},
+		}
+	}
+	sent
 }
 
 fn encode_message(
@@ -1420,6 +1479,11 @@ fn encode_blob(
 			}
 		}
 		return Some(Value::Object(image));
+	}
+
+	if blob.mime.starts_with("audio/") || blob.mime.starts_with("video/") {
+		unsupported.push(dropped(path, "Responses input accepts image and document blobs only"));
+		return None;
 	}
 
 	let mut file = Map::new();
@@ -2081,8 +2145,8 @@ mod tests {
 		ApplyPatchShape, BlobPart, CacheHint, CacheRetention, ChatOutcome, ChatRequest, Effort,
 		Fallback, Feature, Item, ItemKind, JsonSchema, Message, Part, Props, Reasoning,
 		ResolvedModelCapabilities, ResolvedModelPolicy, ResolvedReasoningMode, ResponseFormat,
-		ResponseFormatKind, Role, StopReason, Thinking, Thread, ToolCall, ToolDef, TurnErrorKind,
-		TurnEvent, ids::CallId,
+		ResponseFormatKind, Role, StopReason, Thinking, Thread, ToolCall, ToolDef, ToolResult,
+		TurnErrorKind, TurnEvent, UnsupportedAction, ids::CallId,
 	};
 	use serde_json::{Value, json};
 
@@ -2096,6 +2160,73 @@ mod tests {
 			.build()
 	}
 
+	#[test]
+	fn standard_encode_repairs_orphan_tool_output_as_pi_note() {
+		let call_id = CallId::new();
+		let mut props = Props::default();
+		props.insert_ns("openai", "call_id", json!("call_orphan"));
+		let result = Item::builder()
+			.seq(0)
+			.kind(ItemKind::ToolResult(
+				ToolResult::builder()
+					.call_id(call_id)
+					.name(SmolStr::new_static("lookup"))
+					.parts(vec![Part::Text(SmolStr::new_static("not found"))])
+					.is_error(false)
+					.build(),
+			))
+			.props(props)
+			.build();
+		let (wire, unsupported) = OpenAiResponsesCodec::new()
+			.encode(&request(vec![result]), &Compat::default())
+			.unwrap();
+		let wire: Value = serde_json::from_slice(&wire).unwrap();
+		assert_eq!(
+			wire["input"],
+			json!([{
+				"type": "message",
+				"role": "assistant",
+				"content": "[Orphan tool result; call_id=call_orphan]: not found",
+			}]),
+		);
+		assert_eq!(unsupported.len(), 1);
+		assert_eq!(unsupported[0].what, "thread.tool_result");
+		assert_eq!(unsupported[0].action, UnsupportedAction::Emulated);
+	}
+
+	#[test]
+	fn standard_encode_appends_pi_placeholder_to_orphan_tool_call() {
+		let call = Item::builder()
+			.seq(0)
+			.kind(ItemKind::ToolCall(
+				ToolCall::builder()
+					.id(CallId::new())
+					.name(SmolStr::new_static("lookup"))
+					.args_json(Bytes::from_static(b"{}"))
+					.thought_signature(Bytes::new())
+					.build(),
+			))
+			.props({
+				let mut props = Props::default();
+				props.insert_ns("openai", "call_id", json!("call_orphan"));
+				props
+			})
+			.build();
+		let (wire, unsupported) = OpenAiResponsesCodec::new()
+			.encode(&request(vec![call]), &Compat::default())
+			.unwrap();
+		let wire: Value = serde_json::from_slice(&wire).unwrap();
+		assert!(unsupported.is_empty());
+		assert_eq!(wire["input"][0]["type"], "function_call");
+		assert_eq!(
+			wire["input"][1],
+			json!({
+				"type": "function_call_output",
+				"call_id": "call_orphan",
+				"output": "[No tool output recorded: the tool call was interrupted before it produced a result.]",
+			}),
+		);
+	}
 	fn encoded(req: &ChatRequest) -> Value {
 		let mut compat = Compat::default();
 		compat.reasoning_wire_format = ReasoningWireFormat::OpenAiResponses;
@@ -2104,6 +2235,37 @@ mod tests {
 
 	fn policy(compat: Props) -> ResolvedModelPolicy {
 		ResolvedModelPolicy { compat, ..ResolvedModelPolicy::default() }
+	}
+
+	#[test]
+	fn audio_blob_is_reported_instead_of_encoded_as_an_input_file() {
+		let audio = Item::builder()
+			.seq(0)
+			.kind(ItemKind::Message(
+				Message::builder()
+					.role(Role::User)
+					.parts(vec![Part::Blob(
+						BlobPart::builder()
+							.hash([9; 32])
+							.mime(SmolStr::from("audio/wav"))
+							.size(4)
+							.inline(Bytes::from_static(b"RIFF"))
+							.build(),
+					)])
+					.build(),
+			))
+			.props(Props::default())
+			.build();
+		let mut compat = Compat::default();
+		compat.reasoning_wire_format = ReasoningWireFormat::OpenAiResponses;
+		let (body, unsupported) = OpenAiResponsesCodec::new()
+			.encode(&request(vec![audio]), &compat)
+			.unwrap();
+		let wire = String::from_utf8(body.to_vec()).unwrap();
+		assert!(!wire.contains("input_file"), "audio must not ride the file wire: {wire}");
+		assert!(!wire.contains("RIFF"));
+		assert_eq!(unsupported.len(), 1);
+		assert_eq!(unsupported[0].what, "thread.message.blob");
 	}
 
 	#[test]
@@ -2194,6 +2356,30 @@ mod tests {
 						.build(),
 				))
 				.props(history_props)
+				.build(),
+		);
+		let mut output_props = Props::default();
+		output_props.insert_ns(
+			"openai",
+			"server_tool_item",
+			json!({
+				"type":"computer_call_output",
+				"call_id":"call_1",
+				"output":{"type":"computer_screenshot","image_url":"data:image/png;base64,aW1n"},
+				"acknowledged_safety_checks":[],
+				"status":"completed"
+			}),
+		);
+		req.thread.items.push(
+			Item::builder()
+				.seq(0)
+				.kind(ItemKind::Message(
+					Message::builder()
+						.role(Role::User)
+						.parts(Vec::new())
+						.build(),
+				))
+				.props(output_props)
 				.build(),
 		);
 		let mut native_history = policy(Props::default());
@@ -2433,6 +2619,59 @@ mod tests {
 			json!([{"role":"user","content":[{"type":"input_text","text":"Follow up"}]}]),
 		);
 		assert_eq!(chained.thread.items.len(), 3, "encoding retains the full canonical thread");
+	}
+
+	#[test]
+	fn result_of_a_pre_boundary_custom_call_keeps_its_wire_shape_and_is_not_repaired() {
+		let call_id = CallId::new();
+		let mut call_props = Props::default();
+		call_props.insert_ns("openai", "custom_tool", Value::Bool(true));
+		call_props.insert_ns("openai", "call_id", json!("call_shell"));
+		let call = Item::builder()
+			.seq(0)
+			.kind(ItemKind::ToolCall(
+				ToolCall::builder()
+					.id(call_id)
+					.name(SmolStr::from("shell"))
+					.args_json(Bytes::from_static(b"ls"))
+					.thought_signature(Bytes::new())
+					.build(),
+			))
+			.props(call_props)
+			.build();
+		let result = Item::builder()
+			.seq(0)
+			.kind(ItemKind::ToolResult(
+				ToolResult::builder()
+					.call_id(call_id)
+					.name(SmolStr::from("shell"))
+					.parts(vec![Part::Text(SmolStr::new_static("README.md"))])
+					.is_error(false)
+					.build(),
+			))
+			.props(Props::default())
+			.build();
+		let mut options = Props::default();
+		options.insert_ns("openai", "previous_response_id", json!("resp_first"));
+		options.insert_ns("openai", "previous_response_item_count", json!(1));
+		let mut chained = request(vec![call, result]);
+		chained.provider_options = Some(options);
+		let mut compat = Compat::default();
+		compat.stateful_response_chaining = true;
+
+		let (wire, unsupported) = OpenAiResponsesCodec::new()
+			.encode(&chained, &compat)
+			.unwrap();
+		assert!(unsupported.is_empty(), "{unsupported:?}");
+		let wire: Value = serde_json::from_slice(&wire).unwrap();
+		assert_eq!(
+			wire["input"],
+			json!([{
+				"type":"custom_tool_call_output",
+				"call_id":"call_shell",
+				"output":"README.md",
+			}]),
+		);
 	}
 
 	#[test]

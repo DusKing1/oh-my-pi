@@ -21,7 +21,11 @@ fn responses_lite_matches_the_codex_fixture() {
 	let expected: Value =
 		serde_json::from_slice(include_bytes!("fixtures/openai_codex/expect.responses_lite.json"))
 			.unwrap();
-	transform_codex_request(&mut request, true).unwrap();
+	assert!(
+		transform_codex_request(&mut request, true)
+			.unwrap()
+			.is_empty()
+	);
 	assert_eq!(request, expected);
 }
 

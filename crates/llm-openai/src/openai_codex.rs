@@ -389,10 +389,10 @@ impl OpenAiCodexCodec {
 		if let Some(options) = delegated.provider_options.as_mut() {
 			options.0.remove("openai-codex/responses_lite");
 		}
-		let (body, unsupported) = self.responses.encode(&delegated, compat)?;
+		let (body, mut unsupported) = self.responses.encode(&delegated, compat)?;
 		let mut body: Value = serde_json::from_slice(&body)
 			.map_err(|error| Error::Provider(SmolStr::from(error.to_string())))?;
-		transform_codex_request(&mut body, responses_lite)?;
+		unsupported.extend(transform_codex_request(&mut body, responses_lite)?);
 		let mut ignored = Vec::new();
 		let policy = OpenAiModelPolicy::resolve(req, compat, &mut ignored);
 		let explicit_encrypted_reasoning = req

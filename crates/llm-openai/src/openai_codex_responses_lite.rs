@@ -3,11 +3,13 @@
 //! This module only transforms JSON wire bodies. Authentication and HTTP
 //! dispatch remain owned by the gateway egress stack.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use omp_core::SmolStr;
-use omp_llm_types::Error;
+use omp_llm_types::{Error, Unsupported};
 use serde_json::{Map, Value, json};
+
+use crate::responses_tool_repair::repair_responses_tool_pairs;
 
 /// Provider-option namespace for Codex-only controls.
 pub const CODEX_PROVIDER_NAMESPACE: &str = "openai-codex";
@@ -22,7 +24,13 @@ pub const RESPONSES_LITE_OPTION: &str = "responses_lite";
 /// fields rejected by the subscription endpoint. Lite requests move top-level
 /// instructions and tool declarations into leading developer input items, force
 /// serial tool use, and leave image detail selection to the server.
-pub fn transform_codex_request(body: &mut Value, responses_lite: bool) -> Result<(), Error> {
+///
+/// The returned records describe orphan outputs whose wire item shape had to be
+/// emulated as an assistant note.
+pub fn transform_codex_request(
+	body: &mut Value,
+	responses_lite: bool,
+) -> Result<Vec<Unsupported>, Error> {
 	let object = body
 		.as_object_mut()
 		.ok_or_else(|| Error::Provider(SmolStr::new("Codex request body must be a JSON object")))?;
@@ -31,12 +39,16 @@ pub fn transform_codex_request(body: &mut Value, responses_lite: bool) -> Result
 	include_encrypted_reasoning(object);
 	remove_rejected_controls(object);
 	filter_replayed_items(object);
-	repair_tool_pairs(object);
+	let sent_calls = BTreeSet::new();
+	let unsupported = object
+		.get_mut("input")
+		.and_then(Value::as_array_mut)
+		.map_or_else(Vec::new, |input| repair_responses_tool_pairs(input, &sent_calls));
 	ensure_visible_input(object);
 	if responses_lite {
 		apply_responses_lite(object);
 	}
-	Ok(())
+	Ok(unsupported)
 }
 
 fn include_encrypted_reasoning(object: &mut Map<String, Value>) {
@@ -87,66 +99,6 @@ fn filter_replayed_items(object: &mut Map<String, Value>) {
 	}
 }
 
-fn repair_tool_pairs(object: &mut Map<String, Value>) {
-	let Some(input) = object.get_mut("input").and_then(Value::as_array_mut) else {
-		return;
-	};
-	let mut calls = BTreeMap::new();
-	let mut outputs = BTreeMap::new();
-	for item in input.iter() {
-		let Some(call_id) = item.get("call_id").and_then(Value::as_str) else {
-			continue;
-		};
-		if let Some(kind) = tool_call_kind(item.get("type").and_then(Value::as_str)) {
-			calls.insert(call_id.to_owned(), kind);
-		}
-		if let Some(kind) = tool_output_kind(item.get("type").and_then(Value::as_str)) {
-			outputs.insert(call_id.to_owned(), kind);
-		}
-	}
-	let mut repaired = Vec::with_capacity(input.len());
-	for item in std::mem::take(input) {
-		let call_id = item
-			.get("call_id")
-			.and_then(Value::as_str)
-			.map(str::to_owned);
-		let call_kind = tool_call_kind(item.get("type").and_then(Value::as_str));
-		let output_kind = tool_output_kind(item.get("type").and_then(Value::as_str));
-		if let (Some(call_id), Some(output_kind)) = (call_id.as_deref(), output_kind)
-			&& calls.get(call_id).copied() != Some(output_kind)
-		{
-			let output = item.get("output").cloned().unwrap_or(Value::Null);
-			repaired.push(json!({
-				"type": "message",
-				"role": "assistant",
-				"content": format!("[Previous tool result; call_id={call_id}]: {output}"),
-			}));
-			continue;
-		}
-		if let (Some(call_id), Some(call_kind)) = (call_id.as_deref(), call_kind)
-			&& outputs.get(call_id).copied() != Some(call_kind)
-		{
-			if call_kind == "computer" {
-				repaired.push(json!({
-					"type": "message",
-					"role": "assistant",
-					"content": format!("[Computer call interrupted before a screenshot was recorded; call_id={call_id}]"),
-				}));
-			} else {
-				repaired.push(item);
-				repaired.push(json!({
-					"type": if call_kind == "custom" { "custom_tool_call_output" } else { "function_call_output" },
-					"call_id": call_id,
-					"output": "[No tool output recorded: the tool call was interrupted before it produced a result.]",
-				}));
-			}
-			continue;
-		}
-		repaired.push(item);
-	}
-	*input = repaired;
-}
-
 fn ensure_visible_input(object: &mut Map<String, Value>) {
 	let instruction = object
 		.get("instructions")
@@ -173,24 +125,6 @@ fn ensure_visible_input(object: &mut Map<String, Value>) {
 		"role": "user",
 		"content": [{"type": "input_text", "text": instruction}],
 	}));
-}
-
-fn tool_call_kind(kind: Option<&str>) -> Option<&'static str> {
-	match kind {
-		Some("function_call") => Some("function"),
-		Some("custom_tool_call") => Some("custom"),
-		Some("computer_call") => Some("computer"),
-		_ => None,
-	}
-}
-
-fn tool_output_kind(kind: Option<&str>) -> Option<&'static str> {
-	match kind {
-		Some("function_call_output") => Some("function"),
-		Some("custom_tool_call_output") => Some("custom"),
-		Some("computer_call_output") => Some("computer"),
-		_ => None,
-	}
 }
 
 fn apply_responses_lite(object: &mut Map<String, Value>) {
@@ -286,5 +220,59 @@ fn strip_image_detail(value: &mut Value) {
 			}
 		},
 		_ => {},
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use omp_llm_types::UnsupportedAction;
+	use serde_json::json;
+
+	use super::transform_codex_request;
+
+	#[test]
+	fn codex_transform_uses_shared_pi_pair_repair() {
+		let mut body = json!({
+			"input": [
+				{
+					"type": "function_call_output",
+					"call_id": "orphan_output",
+					"output": "failed",
+				},
+				{
+					"type": "function_call",
+					"call_id": "orphan_call",
+					"name": "lookup",
+					"arguments": "{}",
+				},
+			],
+		});
+		let unsupported = transform_codex_request(&mut body, true).unwrap();
+		assert_eq!(
+			&body["input"].as_array().unwrap()[1..],
+			json!([
+				{
+					"type": "message",
+					"role": "assistant",
+					"content": "[Orphan tool result; call_id=orphan_output]: failed",
+				},
+				{
+					"type": "function_call",
+					"call_id": "orphan_call",
+					"name": "lookup",
+					"arguments": "{}",
+				},
+				{
+					"type": "function_call_output",
+					"call_id": "orphan_call",
+					"output": "[No tool output recorded: the tool call was interrupted before it produced a result.]",
+				},
+			])
+			.as_array()
+			.unwrap(),
+		);
+		assert_eq!(unsupported.len(), 1);
+		assert_eq!(unsupported[0].what, "thread.tool_result");
+		assert_eq!(unsupported[0].action, UnsupportedAction::Emulated);
 	}
 }
