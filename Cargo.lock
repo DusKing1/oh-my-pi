@@ -4932,6 +4932,7 @@ dependencies = [
  "tiktoken-rs",
  "tokio",
  "tokio-tungstenite",
+ "tokio-util",
  "tower",
 ]
 

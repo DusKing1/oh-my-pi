@@ -33,11 +33,11 @@ use omp_llm_openai::{
 };
 use parking_lot::Mutex;
 use serde_json::Value;
-use tokio::sync::watch;
 use tokio_tungstenite::{
 	MaybeTlsStream, WebSocketStream, connect_async,
 	tungstenite::{Message, client::IntoClientRequest as _},
 };
+use tokio_util::sync::CancellationToken;
 use tower::Service;
 
 const MAX_CODEX_SESSIONS: usize = 1_024;
@@ -583,7 +583,8 @@ fn websocket_response<B: HttpBody<Data = Bytes> + Unpin + 'static>(
 	full_request: Value,
 ) -> Response<CodexEgressBody<B>> {
 	let (tx, rx) = flume::bounded(64);
-	let (cancellation, cancelled) = watch::channel(());
+	let cancellation = CancellationToken::new();
+	let cancelled = cancellation.clone();
 	for value in &opened.buffered {
 		let _ = tx.try_send(Ok(sse_frame(value)));
 	}
@@ -613,10 +614,7 @@ fn websocket_response<B: HttpBody<Data = Bytes> + Unpin + 'static>(
 	Response::builder()
 		.status(StatusCode::OK)
 		.header(header::CONTENT_TYPE, "text/event-stream")
-		.body(CodexEgressBody::WebSocket(CodexChannelBody {
-			stream:        rx.into_stream(),
-			_cancellation: cancellation,
-		}))
+		.body(CodexEgressBody::WebSocket(CodexChannelBody { stream: rx.into_stream(), cancellation }))
 		.expect("static Codex WebSocket response is valid")
 }
 
@@ -624,7 +622,7 @@ async fn pump_socket(
 	mut socket: Socket,
 	mut router: CodexFrameRouter,
 	tx: Sender<Result<Bytes, CodexBodyError>>,
-	mut cancelled: watch::Receiver<()>,
+	cancelled: CancellationToken,
 	session: Arc<Mutex<CodexContinuationState>>,
 	full_request: Value,
 	mut turn_state: Option<Str>,
@@ -633,7 +631,7 @@ async fn pump_socket(
 	loop {
 		tokio::select! {
 			biased;
-			_ = cancelled.changed() => {
+			() = cancelled.cancelled() => {
 				router.cancel();
 				session.lock().reset();
 				let _ = socket.close(None).await;
@@ -762,10 +760,16 @@ impl<E: fmt::Display> fmt::Display for CodexEgressBodyError<E> {
 
 impl<E> std::error::Error for CodexEgressBodyError<E> where E: std::error::Error + 'static {}
 
-/// Bounded WebSocket frame receiver.
+/// Bounded WebSocket frame receiver that cancels its pump when dropped.
 pub struct CodexChannelBody {
-	stream:        flume::r#async::RecvStream<'static, Result<Bytes, CodexBodyError>>,
-	_cancellation: watch::Sender<()>,
+	stream:       flume::r#async::RecvStream<'static, Result<Bytes, CodexBodyError>>,
+	cancellation: CancellationToken,
+}
+
+impl Drop for CodexChannelBody {
+	fn drop(&mut self) {
+		self.cancellation.cancel();
+	}
 }
 
 impl HttpBody for CodexChannelBody {
