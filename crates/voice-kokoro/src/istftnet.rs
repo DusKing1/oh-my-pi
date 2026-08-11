@@ -1,4 +1,4 @@
-//! iSTFTNet decoder: Generator with harmonic source, AdaINResBlock1 with snake
+//! iSTFTNet decoder: Generator with harmonic source, `AdaINResBlock1` with snake
 //! activation.
 //!
 //! Ported from kokoro/istftnet.py
@@ -64,6 +64,7 @@ fn snake_activation(x: &Tensor, alpha: &Tensor) -> Result<Tensor> {
 // AdaINResBlock1 — Generator residual block with snake activation
 // ---------------------------------------------------------------------------
 
+/// Style-conditioned residual block used by the iSTFT vocoder generator.
 pub struct AdaINResBlock1 {
 	convs1: Vec<nn::Conv1d>,
 	convs2: Vec<nn::Conv1d>,
@@ -74,6 +75,7 @@ pub struct AdaINResBlock1 {
 }
 
 impl AdaINResBlock1 {
+	/// Loads the block's convolutions, adaptive normalizations, and Snake parameters.
 	pub fn load(
 		channels: usize,
 		kernel_size: usize,
@@ -120,7 +122,7 @@ impl AdaINResBlock1 {
 		Ok(Self { convs1, convs2, adain1, adain2, alpha1, alpha2 })
 	}
 
-	/// x: [B, C, T], s: [B, style_dim]
+	/// x: [B, C, T], s: [B, `style_dim`]
 	pub fn forward(&self, x: &Tensor, s: &Tensor) -> Result<Tensor> {
 		let mut x = x.clone();
 		for i in 0..self.convs1.len() {
@@ -150,7 +152,7 @@ struct SineGen {
 }
 
 impl SineGen {
-	fn new(
+	const fn new(
 		sampling_rate: usize,
 		upsample_scale: usize,
 		harmonic_num: usize,
@@ -169,7 +171,7 @@ impl SineGen {
 	}
 
 	/// f0: [B, T, 1]
-	/// Returns: (sine_waves: [B, T, dim], uv: [B, T, 1])
+	/// Returns: (`sine_waves`: [B, T, dim], uv: [B, T, 1])
 	fn forward_with_mode(
 		&self,
 		f0: &Tensor,
@@ -267,6 +269,7 @@ impl SineGen {
 // SourceModuleHnNSF
 // ---------------------------------------------------------------------------
 
+/// Harmonic-plus-noise excitation source for the generator.
 pub struct SourceModuleHnNSF {
 	sine_gen: SineGen,
 	l_linear: nn::Linear,
@@ -274,6 +277,7 @@ pub struct SourceModuleHnNSF {
 }
 
 impl SourceModuleHnNSF {
+	/// Loads an excitation source configured for the model's sampling and upsampling rates.
 	pub fn load(
 		sampling_rate: usize,
 		upsample_scale: usize,
@@ -287,13 +291,13 @@ impl SourceModuleHnNSF {
 	}
 
 	/// x: [B, T, 1] (F0 values)
-	/// Returns: (sine_merge: [B, T, 1], noise: [B, T, 1], uv: [B, T, 1])
+	/// Returns: (`sine_merge`: [B, T, 1], noise: [B, T, 1], uv: [B, T, 1])
 	pub fn forward(&self, x: &Tensor) -> Result<(Tensor, Tensor, Tensor)> {
 		self.forward_with_mode(x, SynthesisMode::Stochastic)
 	}
 
 	/// x: [B, T, 1] (F0 values)
-	/// Returns: (sine_merge: [B, T, 1], noise: [B, T, 1], uv: [B, T, 1])
+	/// Returns: (`sine_merge`: [B, T, 1], noise: [B, T, 1], uv: [B, T, 1])
 	pub fn forward_with_mode(
 		&self,
 		x: &Tensor,
@@ -318,6 +322,7 @@ impl SourceModuleHnNSF {
 // TorchSTFT — STFT/iSTFT using candle operations
 // ---------------------------------------------------------------------------
 
+/// Short-time Fourier transform kernels used to synthesize waveform frames.
 pub struct TorchSTFT {
 	filter_length:  usize,
 	hop_length:     usize,
@@ -333,6 +338,7 @@ pub struct TorchSTFT {
 }
 
 impl TorchSTFT {
+	/// Builds transform kernels and a Hann window for the requested FFT configuration.
 	pub fn new(
 		filter_length: usize,
 		hop_length: usize,
@@ -407,8 +413,8 @@ impl TorchSTFT {
 
 	/// Compute STFT magnitude and phase via DFT convolution.
 	///
-	/// input_data: [B, L] (time-domain signal)
-	/// Returns: (magnitude: [B, n_fft/2+1, T], phase: [B, n_fft/2+1, T])
+	/// `input_data`: [B, L] (time-domain signal)
+	/// Returns: (magnitude: [B, `n_fft/2+1`, T], phase: [B, `n_fft/2+1`, T])
 	pub fn transform(&self, input_data: &Tensor) -> Result<(Tensor, Tensor)> {
 		let device = input_data.device();
 		let dtype = input_data.dtype();
@@ -443,10 +449,10 @@ impl TorchSTFT {
 		Ok((magnitude, phase))
 	}
 
-	/// Inverse STFT via GPU conv_transpose1d (iDFT + overlap-add in one
+	/// Inverse STFT via GPU `conv_transpose1d` (iDFT + overlap-add in one
 	/// operation).
 	///
-	/// magnitude: [B, n_fft/2+1, T], phase: [B, n_fft/2+1, T]
+	/// magnitude: [B, `n_fft/2+1`, T], phase: [B, `n_fft/2+1`, T]
 	/// Returns: [B, 1, L] (time-domain signal with channel dim)
 	pub fn inverse(&self, magnitude: &Tensor, phase: &Tensor) -> Result<Tensor> {
 		let device = magnitude.device();
@@ -475,13 +481,13 @@ impl TorchSTFT {
 			for n in 0..win_len.min(n_fft) {
 				if start + n < output_len {
 					let w = self.window[n];
-					window_sum[start + n] += w * w;
+					window_sum[start + n] = w.mul_add(w, window_sum[start + n]);
 				}
 			}
 		}
 
 		// Clamp to avoid division by zero (leaves near-zero samples unchanged)
-		for v in window_sum.iter_mut() {
+		for v in &mut window_sum {
 			if *v < 1e-8 {
 				*v = 1.0;
 			}
@@ -505,6 +511,7 @@ impl TorchSTFT {
 // Generator — the main vocoder generator
 // ---------------------------------------------------------------------------
 
+/// iSTFT vocoder generator that converts encoded speech features into waveforms.
 pub struct Generator {
 	m_source:       SourceModuleHnNSF,
 	ups:            Vec<nn::ConvTranspose1d>,
@@ -520,6 +527,7 @@ pub struct Generator {
 }
 
 impl Generator {
+	/// Loads the generator layers and its waveform reconstruction transform.
 	pub fn load(
 		style_dim: usize,
 		resblock_kernel_sizes: &[usize],
@@ -653,12 +661,12 @@ impl Generator {
 		})
 	}
 
-	/// x: [B, C, T], s: [B, style_dim], f0: [B, T_f0]
+	/// x: [B, C, T], s: [B, `style_dim`], f0: [B, `T_f0`]
 	pub fn forward(&self, x: &Tensor, s: &Tensor, f0: &Tensor) -> Result<Tensor> {
 		self.forward_with_mode(x, s, f0, SynthesisMode::Stochastic)
 	}
 
-	/// x: [B, C, T], s: [B, style_dim], f0: [B, T_f0]
+	/// x: [B, C, T], s: [B, `style_dim`], f0: [B, `T_f0`]
 	pub fn forward_with_mode(
 		&self,
 		x: &Tensor,
@@ -747,16 +755,19 @@ impl Generator {
 // Decoder — top-level decoder wrapping Generator
 // ---------------------------------------------------------------------------
 
+/// Top-level speech decoder that prepares conditioning features for the generator.
 pub struct Decoder {
 	encode:        AdainResBlk1d,
 	decode:        Vec<AdainResBlk1d>,
 	f0_conv:       nn::Conv1d,
 	n_conv:        nn::Conv1d,
 	asr_res:       nn::Conv1d,
+	/// Waveform generator used after the decoder's feature preparation layers.
 	pub generator: Generator,
 }
 
 impl Decoder {
+	/// Loads the decoder's conditioning, residual, and generator layers.
 	pub fn load(
 		dim_in: usize,
 		style_dim: usize,
@@ -803,7 +814,7 @@ impl Decoder {
 		Ok(Self { encode, decode, f0_conv, n_conv, asr_res, generator })
 	}
 
-	/// asr: [B, C, T], f0_curve: [B, T], n: [B, T], s: [B, style_dim]
+	/// asr: [B, C, T], `f0_curve`: [B, T], n: [B, T], s: [B, `style_dim`]
 	pub fn forward(
 		&self,
 		asr: &Tensor,
@@ -814,7 +825,7 @@ impl Decoder {
 		self.forward_with_mode(asr, f0_curve, n, s, SynthesisMode::Stochastic)
 	}
 
-	/// asr: [B, C, T], f0_curve: [B, T], n: [B, T], s: [B, style_dim]
+	/// asr: [B, C, T], `f0_curve`: [B, T], n: [B, T], s: [B, `style_dim`]
 	pub fn forward_with_mode(
 		&self,
 		asr: &Tensor,
@@ -902,7 +913,7 @@ fn reflection_pad_1d_channels(x: &Tensor, pad_left: usize, pad_right: usize) -> 
 }
 
 /// GPU-native linear downsample of [B, C, T] by factor N.
-/// Equivalent to F.interpolate(x, scale_factor=1/N, mode='linear').
+/// Equivalent to F.interpolate(x, `scale_factor=1/N`, mode='linear').
 /// Uses gather + lerp pattern: for each output position, blend two input
 /// positions.
 fn gpu_linear_downsample(
@@ -922,7 +933,7 @@ fn gpu_linear_downsample(
 	let mut lo_indices = Vec::with_capacity(t_out);
 	let mut fracs = Vec::with_capacity(t_out);
 	for i in 0..t_out {
-		let src = (i as f64 + 0.5) * factor as f64 - 0.5;
+		let src = (i as f64 + 0.5).mul_add(factor as f64, -0.5);
 		let src = src.max(0.0).min((t_in - 1) as f64);
 		let lo = src.floor() as u32;
 		let _hi_idx = ((lo + 1) as usize).min(t_in - 1) as u32;
@@ -953,8 +964,8 @@ fn gpu_linear_downsample(
 	Ok(result)
 }
 
-/// GPU-native linear upsample of [B, C, T_in] to T_out.
-/// Equivalent to F.interpolate(x, size=t_out, mode='linear') with scale_factor
+/// GPU-native linear upsample of [B, C, `T_in`] to `T_out`.
+/// Equivalent to F.interpolate(x, `size=t_out`, mode='linear') with `scale_factor`
 /// semantics.
 fn gpu_linear_upsample(
 	x: &Tensor,

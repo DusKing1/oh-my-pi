@@ -11,10 +11,10 @@ use omp_core::Str;
 use omp_llm_egress::auth_inject::{CredentialLease, CredentialMetadataSource};
 use omp_llm_types::{GenerateImageRequest, ImageDone, ImageEvent, facet};
 use smallvec::SmallVec;
-use strum::{EnumString, IntoStaticStr};
+use strum::EnumString;
 
 /// Image providers in the default Pi-compatible attempt order.
-#[derive(Clone, Copy, Debug, EnumString, Eq, IntoStaticStr, PartialEq)]
+#[derive(Clone, Copy, Debug, EnumString, Eq, PartialEq)]
 #[strum(serialize_all = "kebab-case")]
 pub enum ImageProvider {
 	/// `OpenAI` Responses image-generation tool.
@@ -35,10 +35,23 @@ pub enum ImageProvider {
 }
 
 impl ImageProvider {
-	/// Stable configuration identifier.
+	/// Returns the provider's stable configuration identifier.
 	#[must_use]
-	pub fn id(self) -> &'static str {
-		self.into()
+	pub const fn id(self) -> &'static str {
+		self.into_str()
+	}
+
+	/// Returns the provider's stable configuration identifier.
+	#[must_use]
+	pub const fn into_str(&self) -> &'static str {
+		match self {
+			Self::OpenAi => "openai",
+			Self::OpenAiCodex => "openai-codex",
+			Self::Antigravity => "antigravity",
+			Self::Xai => "xai",
+			Self::OpenRouter => "openrouter",
+			Self::Gemini => "gemini",
+		}
 	}
 
 	/// Canonical provider catalog and broker credential identifier.
@@ -58,6 +71,18 @@ impl ImageProvider {
 	#[must_use]
 	pub fn from_id(id: &str) -> Option<Self> {
 		id.parse().ok()
+	}
+}
+
+impl From<ImageProvider> for &'static str {
+	fn from(provider: ImageProvider) -> Self {
+		provider.into_str()
+	}
+}
+
+impl From<&ImageProvider> for &'static str {
+	fn from(provider: &ImageProvider) -> Self {
+		provider.into_str()
 	}
 }
 

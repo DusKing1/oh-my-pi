@@ -142,10 +142,28 @@ impl Dialect {
 		Self::MiniMax,
 	];
 
+	/// Converts this dialect to its canonical configuration spelling.
+	#[must_use]
+	pub const fn into_str(self) -> &'static str {
+		match self {
+			Self::Glm => "glm",
+			Self::Hermes => "hermes",
+			Self::Kimi => "kimi",
+			Self::Xml => "xml",
+			Self::Anthropic => "anthropic",
+			Self::DeepSeek => "deepseek",
+			Self::Harmony => "harmony",
+			Self::Qwen3 => "qwen3",
+			Self::Gemini => "gemini",
+			Self::Gemma => "gemma",
+			Self::MiniMax => "minimax",
+		}
+	}
+
 	/// Returns the canonical configuration spelling.
 	#[must_use]
-	pub fn as_str(self) -> &'static str {
-		self.into()
+	pub const fn as_str(self) -> &'static str {
+		self.into_str()
 	}
 }
 

@@ -1,3 +1,5 @@
+//! Integration coverage for short-window STFT reconstruction.
+
 use candle_core::{DType, Device, Tensor};
 use omp_voice_kokoro::istftnet::TorchSTFT;
 
@@ -32,7 +34,7 @@ fn stft_roundtrip() {
 		.sum::<f32>()
 		/ len as f32;
 
-	assert!(mse < 0.01, "STFT roundtrip MSE too high: {}", mse);
+	assert!(mse < 0.01, "STFT roundtrip MSE too high: {mse}");
 }
 
 fn stft_test_device() -> Device {

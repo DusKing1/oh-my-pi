@@ -78,11 +78,11 @@ impl Component for Hr {
 		// An unstyled rule takes the theme's border tone; `fg=`/`bc=` win.
 		let line = self.props.edge(&pc.ctx.theme).map_or_else(
 			|| {
-				if !self.props.contains(Prop::Fg) {
-					style.fg(pc.ctx.theme.border)
-				} else {
-					style.dim()
-				}
+				if self.props.contains(Prop::Fg) {
+    					style.dim()
+    				} else {
+    					style.fg(pc.ctx.theme.border)
+    				}
 			},
 			|color| style.fg(color),
 		);

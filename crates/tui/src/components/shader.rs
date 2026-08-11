@@ -72,7 +72,7 @@ impl Shader {
 
 	/// Viewport columns: a cell-valued `w` prop wins over the built size.
 	/// A percentage `w` has no parent width at measure time and is ignored.
-	fn viewport_cols(&self) -> u16 {
+	const fn viewport_cols(&self) -> u16 {
 		match self.props.w() {
 			Some(Dim::Cells(cols)) => cols,
 			_ => self.cols,

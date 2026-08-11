@@ -18,7 +18,7 @@ use nix::{
 	poll::{PollFd, PollFlags, PollTimeout, poll},
 	sys::termios::{SetArg, cfmakeraw, tcgetattr, tcsetattr},
 };
-use strum::{Display, IntoStaticStr};
+use strum::Display;
 
 use crate::{Graphics, escape::esc};
 
@@ -27,8 +27,8 @@ const FORCE_IMAGE_PROTOCOL: &str = "OMP_FORCE_IMAGE_PROTOCOL";
 const FORCE_CHARSET: &str = "OMP_TUI_CHARSET";
 
 /// Terminal emulator identity inferred from environment markers.
-#[derive(Clone, Copy, Debug, Display, Eq, IntoStaticStr, PartialEq)]
-#[strum(serialize_all = "lowercase", const_into_str)]
+#[derive(Clone, Copy, Debug, Display, Eq, PartialEq)]
+#[strum(serialize_all = "lowercase")]
 pub enum TerminalId {
 	/// No recognized emulator and no true-color advertisement.
 	Base,
@@ -54,7 +54,17 @@ pub enum TerminalId {
 impl TerminalId {
 	/// Stable identifier used by pi-tui's terminal capability table.
 	pub const fn as_str(self) -> &'static str {
-		self.into_str()
+		match self {
+			Self::Base => "base",
+			Self::TrueColor => "trueColor",
+			Self::Kitty => "kitty",
+			Self::Ghostty => "ghostty",
+			Self::Wezterm => "wezterm",
+			Self::Iterm2 => "iterm2",
+			Self::Vscode => "vscode",
+			Self::Alacritty => "alacritty",
+			Self::Warp => "warp",
+		}
 	}
 }
 

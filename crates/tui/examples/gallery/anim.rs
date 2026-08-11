@@ -8,7 +8,7 @@ use std::time::Duration;
 use omp_tui::{Component, IntoComponent as _, Key, Prop, Ui, components::Spinner, dom};
 
 /// One breath of the autoplay loop: long enough to watch a transition land.
-pub(crate) const AUTOPLAY_STEP: Duration = Duration::from_millis(1600);
+pub const AUTOPLAY_STEP: Duration = Duration::from_millis(1600);
 
 const BARS: &[(&str, &str)] =
 	&[("bar-linear", "linear"), ("bar-in", "in"), ("bar-out", "out"), ("bar-in-out", "in-out")];
@@ -25,7 +25,7 @@ const PALETTES: &[&str] =
 	&["#0f0c29..#f5af19", "#12c2e9..#f64f59", "#134e5e..#71b280", "#41295a..#f4e2d8"];
 
 /// The animation-lab pane hosted by the gallery's `Anim` tab.
-pub(crate) fn pane() -> Box<dyn Component> {
+pub fn pane() -> Box<dyn Component> {
 	let (_, mood_bg, mood_text) = MOODS[0];
 	dom! {
 		<col gap=1 pad="1 2">
@@ -75,7 +75,7 @@ pub(crate) fn pane() -> Box<dyn Component> {
 }
 
 /// Scene state; every transition is just a prop write on retained ids.
-pub(crate) struct Lab {
+pub struct Lab {
 	race_wide:           bool,
 	mood:                usize,
 	palette:             usize,

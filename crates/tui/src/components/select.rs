@@ -237,7 +237,8 @@ impl Select {
 				Some(PropValue::Bool(enabled)) => self.state.filter = enabled,
 				Some(PropValue::Str(seed)) => {
 					self.state.filter = true;
-					self.state.filter_q = seed.as_str().to_owned();
+					self.state.filter_q.clear();
+					self.state.filter_q.push_str(seed.as_str());
 				},
 				_ => self.state.filter = false,
 			},

@@ -13,6 +13,7 @@ use crate::config::PlbertConfig;
 // ALBERT Embeddings
 // ---------------------------------------------------------------------------
 
+/// Builds normalized token, position, and token-type embeddings for PL-BERT.
 pub struct AlbertEmbeddings {
 	word_embeddings:       nn::Embedding,
 	position_embeddings:   nn::Embedding,
@@ -23,6 +24,7 @@ pub struct AlbertEmbeddings {
 }
 
 impl AlbertEmbeddings {
+	/// Loads embedding weights from the PL-BERT checkpoint.
 	pub fn load(config: &PlbertConfig, vocab_size: usize, vb: VarBuilder) -> Result<Self> {
 		let emb_size = config.embedding_size;
 		let word_embeddings = nn::embedding(vocab_size, emb_size, vb.pp("word_embeddings"))?;
@@ -44,6 +46,7 @@ impl AlbertEmbeddings {
 		})
 	}
 
+	/// Combines token, position, and token-type embeddings for the input tokens.
 	pub fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
 		let (_b, seq_len) = input_ids.dims2()?;
 
@@ -101,32 +104,33 @@ impl AlbertAttention {
 	}
 
 	fn forward(&self, hidden_states: &Tensor, attention_mask: &Tensor) -> Result<Tensor> {
-		let (b, t, _h) = hidden_states.dims3()?;
+		let (batch_size, sequence_length, _hidden_size) = hidden_states.dims3()?;
 		let residual = hidden_states.clone();
 
 		// Project Q, K, V and reshape to [B, heads, T, head_dim]
-		let q = self
+		let query_states = self
 			.query
 			.forward(hidden_states)?
-			.reshape((b, t, self.num_heads, self.head_dim))?
+			.reshape((batch_size, sequence_length, self.num_heads, self.head_dim))?
 			.transpose(1, 2)?
 			.contiguous()?;
-		let k = self
+		let key_states = self
 			.key
 			.forward(hidden_states)?
-			.reshape((b, t, self.num_heads, self.head_dim))?
+			.reshape((batch_size, sequence_length, self.num_heads, self.head_dim))?
 			.transpose(1, 2)?
 			.contiguous()?;
-		let v = self
+		let value_states = self
 			.value
 			.forward(hidden_states)?
-			.reshape((b, t, self.num_heads, self.head_dim))?
+			.reshape((batch_size, sequence_length, self.num_heads, self.head_dim))?
 			.transpose(1, 2)?
 			.contiguous()?;
 
 		// Attention scores: [B, heads, T, T]
 		let scale = (self.head_dim as f32).sqrt();
-		let scores = (q.matmul(&k.transpose(2, 3)?)? * (1.0f64 / scale as f64))?;
+		let scores =
+			(query_states.matmul(&key_states.transpose(2, 3)?)? * (1.0f64 / scale as f64))?;
 
 		// Apply attention mask: mask is [B, 1, 1, T], 0 for attend, large neg for
 		// masked
@@ -136,9 +140,9 @@ impl AlbertAttention {
 		let attn_weights = candle_nn::ops::softmax_last_dim(&scores)?;
 
 		// Apply attention to values
-		let context = attn_weights.matmul(&v)?.transpose(1, 2)?.reshape((
-			b,
-			t,
+		let context = attn_weights.matmul(&value_states)?.transpose(1, 2)?.reshape((
+			batch_size,
+			sequence_length,
 			self.num_heads * self.head_dim,
 		))?;
 
@@ -161,9 +165,9 @@ struct AlbertFFN {
 }
 
 impl AlbertFFN {
-	/// Load from the albert_layer VarBuilder (not prefixed with "ffn").
-	/// Weight keys: ffn.weight, ffn.bias, ffn_output.weight, ffn_output.bias,
-	///              full_layer_layer_norm.weight, full_layer_layer_norm.bias
+	/// Load from the `albert_layer` `VarBuilder` (not prefixed with "ffn").
+	/// Weight keys: ffn.weight, ffn.bias, `ffn_output.weight`, `ffn_output.bias`,
+	///              `full_layer_layer_norm.weight`, `full_layer_layer_norm.bias`
 	fn load(config: &PlbertConfig, vb: VarBuilder) -> Result<Self> {
 		let h = config.hidden_size;
 		let i = config.intermediate_size;
@@ -211,6 +215,7 @@ impl AlbertLayer {
 // CustomAlbert — the full ALBERT model (returns last_hidden_state)
 // ---------------------------------------------------------------------------
 
+/// Runs the shared ALBERT encoder layers used by Kokoro's PL-BERT frontend.
 pub struct CustomAlbert {
 	embeddings:           AlbertEmbeddings,
 	embedding_projection: nn::Linear,
@@ -219,6 +224,7 @@ pub struct CustomAlbert {
 }
 
 impl CustomAlbert {
+	/// Loads the PL-BERT encoder weights from a checkpoint.
 	pub fn load(config: &PlbertConfig, vocab_size: usize, vb: VarBuilder) -> Result<Self> {
 		let embeddings = AlbertEmbeddings::load(config, vocab_size, vb.pp("embeddings"))?;
 
@@ -248,8 +254,8 @@ impl CustomAlbert {
 		})
 	}
 
-	/// input_ids: [B, T] (u32), attention_mask: [B, T] (i64, 1=attend, 0=mask)
-	/// Returns: [B, T, hidden_size]
+	/// `input_ids`: [B, T] (u32), `attention_mask`: [B, T] (i64, 1=attend, 0=mask)
+	/// Returns: [B, T, `hidden_size`]
 	pub fn forward(&self, input_ids: &Tensor, attention_mask: &Tensor) -> Result<Tensor> {
 		let emb = self.embeddings.forward(input_ids)?;
 		// Project from embedding_size to hidden_size

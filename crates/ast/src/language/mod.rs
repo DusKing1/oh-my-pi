@@ -302,7 +302,7 @@ macro_rules! define_support_langs {
 			strum::EnumString,
 			strum::IntoStaticStr,
 		)]
-		#[strum(ascii_case_insensitive, const_into_str)]
+		#[strum(ascii_case_insensitive)]
 		pub enum SupportLang {
 			$(
 				$(#[$meta])*
@@ -319,6 +319,13 @@ macro_rules! define_support_langs {
 			/// Returns every supported language in stable declaration order.
 			pub const fn all_langs() -> &'static [Self] {
 				&[$(Self::$variant),*]
+			}
+
+			/// Converts this language to its canonical lowercase identifier.
+			pub const fn into_str(self) -> &'static str {
+				match self {
+					$(Self::$variant => $canonical,)*
+				}
 			}
 
 			/// The canonical lowercase name used as a stable key in alias maps,

@@ -8,7 +8,7 @@ use omp_tui::{
 	Size, Ui, dom,
 };
 
-pub(crate) const MODELS: [(&str, &str, &str); 4] = [
+pub const MODELS: [(&str, &str, &str); 4] = [
 	("fable", "anthropic/claude-fable-5", "4.5s · 64t/s · $10/50"),
 	("flash", "google/gemini-3.6-flash", "2.6s · 342t/s · $1.5/7.5"),
 	("sol", "openai/gpt-5.6-sol", "1.7s · 41t/s · $5/30"),
@@ -16,7 +16,7 @@ pub(crate) const MODELS: [(&str, &str, &str); 4] = [
 ];
 
 /// The overlay-demo pane hosted by the gallery's `Overlay` tab.
-pub(crate) fn pane() -> Box<dyn Component> {
+pub fn pane() -> Box<dyn Component> {
 	dom! {
 		<col gap=1 pad="1 2">
 			<md>{"The **overlay demo** transcript. Document content stays on the normal screen and keeps native scrollback while layers composite above it."}</md>
@@ -32,7 +32,7 @@ pub(crate) fn pane() -> Box<dyn Component> {
 
 /// Opens the model-switcher modal; commit surfaces as `Changed { id: "model"
 /// }`.
-pub(crate) fn show_picker(ui: &mut Ui) -> OverlayId {
+pub fn show_picker(ui: &mut Ui) -> OverlayId {
 	ui.show_overlay(
 		dom! {
 			<box border=round title="Switch Model">
@@ -56,7 +56,7 @@ pub(crate) fn show_picker(ui: &mut Ui) -> OverlayId {
 }
 
 /// Opens the keybinding help layer.
-pub(crate) fn show_help(ui: &mut Ui) -> OverlayId {
+pub fn show_help(ui: &mut Ui) -> OverlayId {
 	ui.show_overlay(
 		dom! {
 			<box border=round title="Help">

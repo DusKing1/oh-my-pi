@@ -1,6 +1,6 @@
 //! Bidirectional LSTM implementation for candle.
 //!
-//! candle's built-in LSTM is unidirectional. For BiLSTM, we create two
+//! candle's built-in LSTM is unidirectional. For `BiLSTM`, we create two
 //! LSTMs (forward and backward), run them on the input, and concatenate
 //! their outputs along the feature dimension.
 
@@ -16,6 +16,7 @@ pub struct BiLSTM {
 }
 
 impl BiLSTM {
+	/// Loads forward and backward LSTM weights from the supplied variable builder.
 	pub fn load(in_dim: usize, hidden_dim: usize, vb: VarBuilder) -> Result<Self> {
 		let fwd_cfg = LSTMConfig { direction: Direction::Forward, ..Default::default() };
 		let bwd_cfg = LSTMConfig { direction: Direction::Backward, ..Default::default() };
@@ -27,7 +28,7 @@ impl BiLSTM {
 	}
 
 	/// input: [B, T, features]
-	/// output: [B, T, 2*hidden_dim]
+	/// output: [B, T, 2*`hidden_dim`]
 	pub fn forward(&self, input: &Tensor) -> Result<Tensor> {
 		let (_b, seq_len, _feat) = input.dims3()?;
 

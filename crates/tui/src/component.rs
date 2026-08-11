@@ -954,7 +954,7 @@ fn content_rect(rect: Rect, props: &Props, paints_border: bool) -> Rect {
 }
 
 /// The border-color slot every chrome path reads: `bc` when set, else `edge`.
-fn bc_slot(props: &Props) -> Prop {
+const fn bc_slot(props: &Props) -> Prop {
 	if props.contains(Prop::Bc) {
 		Prop::Bc
 	} else {

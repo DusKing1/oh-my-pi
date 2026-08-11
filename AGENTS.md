@@ -77,6 +77,16 @@ saying what it is and its structural philosophy.
   `#[allow]` requires a `reason`.
 - Formatting: `cargo fmt` (hard tabs, 3-column, max width 100 — see
   `rustfmt.toml`). Never hand-format.
+- Enum ↔ string vocabularies are NEVER hand-written match tables. Derive
+  strum: `IntoStaticStr`/`Display` for the emit side, `EnumString` for
+  parsing, `#[strum(serialize_all = "...")]` plus per-variant
+  `to_string`/`serialize` for aliases, `ascii_case_insensitive` for lax
+  input, and `const_into_str` so `as_str` stays `pub const fn`. A custom
+  public parse error keeps its type — parse via the derive and `map_err`.
+  Only when strum can't express the shape (per-arm logic, data variants
+  with dynamic strings, one labeled error shared across many enums) write
+  a local `macro_rules!` that emits both directions from a single
+  variant→string table (see `vocab!` in `crates/telemetry/src/semconv.rs`).
 
 ## Allocation Discipline (CRITICAL)
 Prefer references (`&T`, `&str`, `&[T]`) and borrows over owned types whenever data lifetime permits — agents should not be afraid of using refs and borrows.

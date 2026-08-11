@@ -1,4 +1,4 @@
-//! KModel — the top-level Kokoro TTS model.
+//! `KModel` — the top-level Kokoro TTS model.
 //!
 //! Ported from kokoro/model.py
 
@@ -23,7 +23,7 @@ pub struct KModel {
 }
 
 impl KModel {
-	/// Load model weights from a VarBuilder (typically backed by safetensors).
+	/// Load model weights from a `VarBuilder` (typically backed by safetensors).
 	pub fn load(config: &ModelConfig, vb: VarBuilder) -> Result<Self> {
 		let bert = CustomAlbert::load(&config.plbert, config.n_token, vb.pp("bert"))?;
 

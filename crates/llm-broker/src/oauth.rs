@@ -2246,14 +2246,12 @@ mod tests {
 
 	#[tokio::test]
 	async fn exact_ipv6_loopback_collision_moves_from_the_fixed_port() {
-		let squatter = match TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0)).await {
-			Ok(listener) => listener,
-			Err(_) => return,
+		let Ok(squatter) = TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0)).await else {
+			return;
 		};
 		let port = squatter.local_addr().expect("IPv6 squatter address").port();
-		let error = match bind_callback_listeners("localhost", port).await {
-			Ok(_) => panic!("fixed port must not remain IPv4-only after an IPv6 collision"),
-			Err(error) => error,
+		let Err(error) = bind_callback_listeners("localhost", port).await else {
+			panic!("fixed port must not remain IPv4-only after an IPv6 collision");
 		};
 		assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
 		let listeners = start_callback_listeners("localhost", port)

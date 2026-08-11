@@ -12,7 +12,6 @@ use std::{
 
 use omp_core::{Str, encoding::base64};
 use smallvec::SmallVec;
-use strum::IntoStaticStr;
 
 use crate::{NotifyProtocol, TerminalCaps, escape::esc, kitty::append_tmux_passthrough};
 
@@ -85,8 +84,7 @@ impl NotificationAction {
 }
 
 /// Sound requested for a structured notification.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoStaticStr)]
-#[strum(serialize_all = "lowercase", const_into_str)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NotificationSound {
 	/// Do not play a sound.
 	Silent,
@@ -103,8 +101,33 @@ pub enum NotificationSound {
 }
 
 impl NotificationSound {
+	/// Returns the OSC 99 sound identifier.
+	#[must_use]
+	pub const fn into_str(&self) -> &'static str {
+		match self {
+			Self::Silent => "silent",
+			Self::System => "system",
+			Self::Info => "info",
+			Self::Warning => "warning",
+			Self::Error => "error",
+			Self::Question => "question",
+		}
+	}
+
 	const fn name(self) -> &'static str {
 		self.into_str()
+	}
+}
+
+impl From<NotificationSound> for &'static str {
+	fn from(sound: NotificationSound) -> Self {
+		sound.into_str()
+	}
+}
+
+impl From<&NotificationSound> for &'static str {
+	fn from(sound: &NotificationSound) -> Self {
+		sound.into_str()
 	}
 }
 

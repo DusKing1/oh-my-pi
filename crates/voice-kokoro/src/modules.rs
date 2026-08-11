@@ -1,7 +1,7 @@
-//! Core modules: TextEncoder, ProsodyPredictor, DurationEncoder, AdaLayerNorm,
+//! Core modules: `TextEncoder`, `ProsodyPredictor`, `DurationEncoder`, `AdaLayerNorm`,
 //! etc.
 //!
-//! Ported from kokoro/models.py (StyleTTS 2).
+//! Ported from kokoro/models.py (`StyleTTS` 2).
 
 use candle_core::{Module, Result, Tensor};
 use candle_nn::{self as nn, VarBuilder};
@@ -12,7 +12,7 @@ use crate::bilstm::BiLSTM;
 // ChannelsFirstLayerNorm
 // ---------------------------------------------------------------------------
 
-/// LayerNorm on channels-first [B, C, T] tensors.
+/// `LayerNorm` on channels-first [B, C, T] tensors.
 /// Python: gamma/beta stored as weight/bias in safetensors.
 pub struct ChannelsFirstLayerNorm {
 	weight: Tensor,
@@ -21,6 +21,7 @@ pub struct ChannelsFirstLayerNorm {
 }
 
 impl ChannelsFirstLayerNorm {
+	/// Loads normalization parameters from the model checkpoint.
 	pub fn load(channels: usize, eps: f64, vb: VarBuilder) -> Result<Self> {
 		let weight = vb
 			.get(channels, "weight")
@@ -31,6 +32,7 @@ impl ChannelsFirstLayerNorm {
 		Ok(Self { weight, bias, eps: eps as f32 })
 	}
 
+	/// Normalizes channels independently at every timestep.
 	pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
 		// x: [B, C, T] -> [B, T, C]
 		let x = x.transpose(1, 2)?.contiguous()?;
@@ -43,6 +45,7 @@ impl ChannelsFirstLayerNorm {
 // AdaLayerNorm — style-conditioned layer norm
 // ---------------------------------------------------------------------------
 
+/// Applies layer normalization whose scale and bias are conditioned on a style embedding.
 pub struct AdaLayerNorm {
 	fc:       nn::Linear,
 	channels: usize,
@@ -50,12 +53,13 @@ pub struct AdaLayerNorm {
 }
 
 impl AdaLayerNorm {
+	/// Loads the style projection and normalization configuration.
 	pub fn load(style_dim: usize, channels: usize, eps: f64, vb: VarBuilder) -> Result<Self> {
 		let fc = nn::linear(style_dim, channels * 2, vb.pp("fc"))?;
 		Ok(Self { fc, channels, eps: eps as f32 })
 	}
 
-	/// x: [B, C, T], s: [B, style_dim] -> [B, C, T]
+	/// x: [B, C, T], s: [B, `style_dim`] -> [B, C, T]
 	///
 	/// Python does:
 	///   x = x.transpose(-1, -2)    # [B, T, C]
@@ -69,9 +73,9 @@ impl AdaLayerNorm {
 	///
 	/// Actually: the Python AdaLayerNorm.forward receives x that is [B, T, C]
 	/// (it's called as block(x.transpose(-1,-2), style).transpose(-1,-2) from
-	/// DurationEncoder). Inside: x.transpose(-1,-2) => [B, C, T], then
+	/// `DurationEncoder`). Inside: x.transpose(-1,-2) => [B, C, T], then
 	/// x.transpose(1,-1) => [B, T, C]. So the two transposes cancel out. Then
-	/// layer_norm on last dim (C). Then return x.transpose(1,-1).transpose(-1,
+	/// `layer_norm` on last dim (C). Then return x.transpose(1,-1).transpose(-1,
 	/// -2) = [B, C, T] then [B, T, C].
 	///
 	/// In our usage we'll treat this as: input [B, C, T], output [B, C, T].
@@ -105,18 +109,20 @@ impl AdaLayerNorm {
 // AdaIN1d — adaptive instance normalization
 // ---------------------------------------------------------------------------
 
+/// Normalizes each channel over time, then applies style-conditioned affine parameters.
 pub struct AdaIN1d {
 	fc:        nn::Linear,
 	_channels: usize,
 }
 
 impl AdaIN1d {
+	/// Loads the style projection used to produce affine parameters.
 	pub fn load(style_dim: usize, channels: usize, vb: VarBuilder) -> Result<Self> {
 		let fc = nn::linear(style_dim, channels * 2, vb.pp("fc"))?;
 		Ok(Self { fc, _channels: channels })
 	}
 
-	/// x: [B, C, T], s: [B, style_dim]
+	/// x: [B, C, T], s: [B, `style_dim`]
 	pub fn forward(&self, x: &Tensor, s: &Tensor) -> Result<Tensor> {
 		let h = self.fc.forward(s)?; // [B, C*2]
 		let h = h.unsqueeze(2)?; // [B, C*2, 1]
@@ -143,9 +149,9 @@ impl AdaIN1d {
 // Weight-norm Conv1d helper
 // ---------------------------------------------------------------------------
 
-/// Load a weight_norm Conv1d. In the safetensors, weight_norm stores
-/// weight_v (the direction) and weight_g (the magnitude). At inference:
-///   weight = weight_g * weight_v / ||weight_v||
+/// Load a `weight_norm` Conv1d. In the safetensors, `weight_norm` stores
+/// `weight_v` (the direction) and `weight_g` (the magnitude). At inference:
+///   weight = `weight_g` * `weight_v` / ||`weight_v`||
 pub fn load_weight_norm_conv1d(
 	in_ch: usize,
 	out_ch: usize,
@@ -167,7 +173,7 @@ pub fn load_weight_norm_conv1d(
 	Ok(nn::Conv1d::new(weight, bias, config))
 }
 
-/// Load a weight_norm Conv1d with no bias.
+/// Load a `weight_norm` Conv1d with no bias.
 pub fn load_weight_norm_conv1d_no_bias(
 	in_ch: usize,
 	out_ch: usize,
@@ -184,7 +190,7 @@ pub fn load_weight_norm_conv1d_no_bias(
 	Ok(nn::Conv1d::new(weight, None, config))
 }
 
-/// Load a weight_norm ConvTranspose1d.
+/// Load a `weight_norm` `ConvTranspose1d`.
 pub fn load_weight_norm_conv_transpose1d(
 	in_ch: usize,
 	out_ch: usize,
@@ -208,17 +214,20 @@ pub fn load_weight_norm_conv_transpose1d(
 // AdainResBlk1d — residual block with AdaIN conditioning (from istftnet.py)
 // ---------------------------------------------------------------------------
 
+/// Residual convolutional block conditioned on a style embedding.
 pub struct AdainResBlk1d {
 	conv1:        nn::Conv1d,
 	conv2:        nn::Conv1d,
 	norm1:        AdaIN1d,
 	norm2:        AdaIN1d,
 	conv1x1:      Option<nn::Conv1d>,
+	/// Whether this block doubles the temporal resolution.
 	pub upsample: bool,
 	pool:         Option<nn::ConvTranspose1d>,
 }
 
 impl AdainResBlk1d {
+	/// Loads the residual, normalization, and optional upsampling layers.
 	pub fn load(
 		dim_in: usize,
 		dim_out: usize,
@@ -232,17 +241,17 @@ impl AdainResBlk1d {
 		let norm1 = AdaIN1d::load(style_dim, dim_in, vb.pp("norm1"))?;
 		let norm2 = AdaIN1d::load(style_dim, dim_out, vb.pp("norm2"))?;
 
-		let conv1x1 = if dim_in != dim_out {
-			Some(load_weight_norm_conv1d_no_bias(
-				dim_in,
-				dim_out,
-				1,
-				Default::default(),
-				vb.pp("conv1x1"),
-			)?)
-		} else {
-			None
-		};
+		let conv1x1 = if dim_in == dim_out {
+  			None
+  		} else {
+  			Some(load_weight_norm_conv1d_no_bias(
+  				dim_in,
+  				dim_out,
+  				1,
+  				Default::default(),
+  				vb.pp("conv1x1"),
+  			)?)
+  		};
 
 		let pool = if upsample {
 			let pool_cfg = nn::ConvTranspose1dConfig {
@@ -260,7 +269,7 @@ impl AdainResBlk1d {
 		Ok(Self { conv1, conv2, norm1, norm2, conv1x1, upsample, pool })
 	}
 
-	/// x: [B, C, T], s: [B, style_dim]
+	/// x: [B, C, T], s: [B, `style_dim`]
 	pub fn forward(&self, x: &Tensor, s: &Tensor) -> Result<Tensor> {
 		// Shortcut path
 		let shortcut = if self.upsample {
@@ -296,6 +305,7 @@ impl AdainResBlk1d {
 // TextEncoder — Embedding + weight_norm Conv1d layers + BiLSTM
 // ---------------------------------------------------------------------------
 
+/// Encodes phoneme identifiers into contextual channel-first features.
 pub struct TextEncoder {
 	embedding: nn::Embedding,
 	cnn:       Vec<(nn::Conv1d, ChannelsFirstLayerNorm)>,
@@ -304,6 +314,7 @@ pub struct TextEncoder {
 }
 
 impl TextEncoder {
+	/// Loads the embedding, convolutional stack, and bidirectional LSTM.
 	pub fn load(
 		channels: usize,
 		kernel_size: usize,
@@ -329,7 +340,7 @@ impl TextEncoder {
 		Ok(Self { embedding, cnn, lstm, _channels: channels })
 	}
 
-	/// input_ids: [B, T] (u32), input_lengths: [B], mask: [B, T] (u8,
+	/// `input_ids`: [B, T] (u32), `input_lengths`: [B], mask: [B, T] (u8,
 	/// true=masked)
 	pub fn forward(
 		&self,
@@ -376,6 +387,7 @@ impl TextEncoder {
 // DurationEncoder — alternating BiLSTM + AdaLayerNorm
 // ---------------------------------------------------------------------------
 
+/// Refines text features with alternating bidirectional LSTMs and adaptive normalization.
 pub struct DurationEncoder {
 	lstms:   Vec<BiLSTM>,
 	norms:   Vec<AdaLayerNorm>,
@@ -384,6 +396,7 @@ pub struct DurationEncoder {
 }
 
 impl DurationEncoder {
+	/// Loads the recurrent and style-conditioned normalization layers.
 	pub fn load(sty_dim: usize, d_model: usize, nlayers: usize, vb: VarBuilder) -> Result<Self> {
 		let mut lstms = Vec::with_capacity(nlayers);
 		let mut norms = Vec::with_capacity(nlayers);
@@ -400,70 +413,77 @@ impl DurationEncoder {
 		Ok(Self { lstms, norms, d_model, sty_dim })
 	}
 
-	/// x: [B, C, T], style: [B, sty_dim], text_lengths: [B], mask: [B, T]
+	/// Refines channel-first text features using a style embedding and padding mask.
 	pub fn forward(
 		&self,
-		x: &Tensor,
+		input: &Tensor,
 		style: &Tensor,
 		_text_lengths: &Tensor,
 		mask: &Tensor,
 	) -> Result<Tensor> {
-		let (b, _c, t) = x.dims3()?;
+		let (batch_size, _channels, sequence_length) = input.dims3()?;
 
-		// x: [B, C, T] -> [T, B, C]
-		let mut x = x.permute((2, 0, 1))?;
+		// [B, C, T] -> [T, B, C]
+		let mut features = input.permute((2, 0, 1))?;
 
-		// s: style expanded to [T, B, sty_dim]
-		let s = style.unsqueeze(0)?.expand(&[t, b, self.sty_dim])?;
+		// Style expanded to [T, B, sty_dim].
+		let style_frames =
+			style.unsqueeze(0)?.expand(&[sequence_length, batch_size, self.sty_dim])?;
 
-		// Concatenate [x, s] -> [T, B, C+sty_dim]
-		x = Tensor::cat(&[&x, &s], 2)?;
+		// Concatenate [features, style] -> [T, B, C+sty_dim].
+		features = Tensor::cat(&[&features, &style_frames], 2)?;
 
-		// Mask: [B, T] -> [T, B, 1]
-		let mask_tbc = mask.transpose(0, 1)?.unsqueeze(2)?.to_dtype(x.dtype())?;
-		let inv_mask_tbc = (1.0 - &mask_tbc)?;
-		x = x.broadcast_mul(&inv_mask_tbc)?;
+		// Mask: [B, T] -> [T, B, 1].
+		let mask_tbc = mask.transpose(0, 1)?.unsqueeze(2)?.to_dtype(features.dtype())?;
+		let inverse_mask_tbc = (1.0 - &mask_tbc)?;
+		features = features.broadcast_mul(&inverse_mask_tbc)?;
 
-		// -> [B, T, C+sty_dim]
-		x = x.transpose(0, 1)?;
+		// -> [B, C+sty_dim, T].
+		features = features.transpose(0, 1)?;
+		features = features.transpose(1, 2)?;
 
-		// -> [B, C+sty_dim, T]
-		x = x.transpose(1, 2)?;
-
-		let m_expanded = mask.unsqueeze(1)?.to_dtype(x.dtype())?;
-		let inv_m = (1.0 - &m_expanded)?;
+		let expanded_mask = mask.unsqueeze(1)?.to_dtype(features.dtype())?;
+		let inverse_mask = (1.0 - &expanded_mask)?;
 
 		for (lstm, norm) in self.lstms.iter().zip(self.norms.iter()) {
-			// LSTM path: [B, C+sty_dim, T] -> [B, T, C+sty_dim]
-			let xt = x.transpose(1, 2)?;
-			// No dropout at inference
-			let h = lstm.forward(&xt)?; // [B, T, d_model]
-			let mut h = h.transpose(1, 2)?; // [B, d_model, T]
+			// LSTM path: [B, C+sty_dim, T] -> [B, T, C+sty_dim].
+			let sequence = features.transpose(1, 2)?;
+			// No dropout at inference.
+			let layer_features = lstm.forward(&sequence)?; // [B, T, d_model]
+			let mut layer_features = layer_features.transpose(1, 2)?; // [B, d_model, T]
 
-			// Pad if needed
-			let t_out = h.dim(2)?;
-			if t_out < t {
-				let pad = Tensor::zeros(&[b, self.d_model, t - t_out], h.dtype(), h.device())?;
-				h = Tensor::cat(&[&h, &pad], 2)?;
+			// Pad if needed.
+			let output_length = layer_features.dim(2)?;
+			if output_length < sequence_length {
+				let padding = Tensor::zeros(
+					&[batch_size, self.d_model, sequence_length - output_length],
+					layer_features.dtype(),
+					layer_features.device(),
+				)?;
+				layer_features = Tensor::cat(&[&layer_features, &padding], 2)?;
 			}
 
-			// AdaLayerNorm: input [B, d_model, T], output [B, d_model, T]
-			x = norm.forward(&h, style)?;
+			// AdaLayerNorm: input [B, d_model, T], output [B, d_model, T].
+			features = norm.forward(&layer_features, style)?;
 
-			// Re-concatenate style: [B, sty_dim, T]
-			let s_perm = style.unsqueeze(2)?.expand(&[b, self.sty_dim, t])?;
-			x = Tensor::cat(&[&x, &s_perm], 1)?;
+			// Re-concatenate style: [B, sty_dim, T].
+			let style_channels =
+				style.unsqueeze(2)?.expand(&[batch_size, self.sty_dim, sequence_length])?;
+			features = Tensor::cat(&[&features, &style_channels], 1)?;
 
-			// Mask
-			x = x.broadcast_mul(&{
-				let full_inv =
-					Tensor::ones(&[1, self.d_model + self.sty_dim, 1], x.dtype(), x.device())?;
-				full_inv.broadcast_mul(&inv_m)?
+			// Mask.
+			features = features.broadcast_mul(&{
+				let full_inverse_mask = Tensor::ones(
+					&[1, self.d_model + self.sty_dim, 1],
+					features.dtype(),
+					features.device(),
+				)?;
+				full_inverse_mask.broadcast_mul(&inverse_mask)?
 			})?;
 		}
 
-		// Take first d_model channels: [B, d_model, T] -> [B, T, d_model]
-		x.narrow(1, 0, self.d_model)?.transpose(1, 2)
+		// Take first d_model channels: [B, d_model, T] -> [B, T, d_model].
+		features.narrow(1, 0, self.d_model)?.transpose(1, 2)
 	}
 }
 
@@ -478,19 +498,29 @@ impl DurationEncoder {
 // ProsodyPredictor
 // ---------------------------------------------------------------------------
 
+/// Predicts phoneme durations, pitch, and noise from encoded text and style features.
 pub struct ProsodyPredictor {
+	/// Style-conditioned encoder for duration prediction.
 	pub text_encoder:  DurationEncoder,
+	/// Recurrent layer used to predict durations.
 	pub lstm:          BiLSTM,
+	/// Projects recurrent duration features to duration logits.
 	pub duration_proj: nn::Linear,
+	/// Shared recurrent trunk for pitch and noise prediction.
 	pub shared:        BiLSTM,
+	/// Style-conditioned residual blocks for pitch prediction.
 	pub f0_blocks:     Vec<AdainResBlk1d>,
+	/// Style-conditioned residual blocks for noise prediction.
 	pub n_blocks:      Vec<AdainResBlk1d>,
+	/// Projects pitch features to a scalar contour.
 	pub f0_proj:       nn::Conv1d,
+	/// Projects noise features to a scalar contour.
 	pub n_proj:        nn::Conv1d,
 	style_dim:         usize,
 }
 
 impl ProsodyPredictor {
+	/// Loads the duration, pitch, and noise prediction network.
 	pub fn load(
 		style_dim: usize,
 		d_hid: usize,
@@ -530,36 +560,40 @@ impl ProsodyPredictor {
 		})
 	}
 
-	/// F0 and N prediction from aligned encoder output.
-	/// x: [B, C, T], s: [B, style_dim]
-	/// Returns: (f0: [B, T'], n: [B, T']) where T' may differ from T due to
-	/// upsampling
-	pub fn f0_n_train(&self, x: &Tensor, s: &Tensor) -> Result<(Tensor, Tensor)> {
-		// shared LSTM needs [B, T, C+style_dim]
-		let xt = x.transpose(1, 2)?; // [B, T, C]
-		let (b, t, _c) = xt.dims3()?;
-		let s_exp = s.unsqueeze(1)?.expand(&[b, t, self.style_dim])?;
-		let xt_s = Tensor::cat(&[&xt, &s_exp], 2)?;
+	/// Predicts pitch and noise contours from aligned encoder features.
+	///
+	/// The returned contours may be longer than the input because their residual blocks upsample.
+	pub fn f0_n_train(
+		&self,
+		encoder_output: &Tensor,
+		style: &Tensor,
+	) -> Result<(Tensor, Tensor)> {
+		// Shared LSTM needs [B, T, C+style_dim].
+		let sequence_features = encoder_output.transpose(1, 2)?; // [B, T, C]
+		let (batch_size, sequence_length, _channels) = sequence_features.dims3()?;
+		let expanded_style =
+			style.unsqueeze(1)?.expand(&[batch_size, sequence_length, self.style_dim])?;
+		let shared_input = Tensor::cat(&[&sequence_features, &expanded_style], 2)?;
 
-		let h = self.shared.forward(&xt_s)?; // [B, T, d_hid]
+		let shared_features = self.shared.forward(&shared_input)?; // [B, T, d_hid]
 
-		// F0 path
-		let mut f0 = h.transpose(1, 2)?; // [B, d_hid, T]
+		// F0 path.
+		let mut f0 = shared_features.transpose(1, 2)?; // [B, d_hid, T]
 		for block in &self.f0_blocks {
-			f0 = block.forward(&f0, s)?;
+			f0 = block.forward(&f0, style)?;
 		}
 		let f0 = self.f0_proj.forward(&f0)?; // [B, 1, T']
 		let f0 = f0.squeeze(1)?; // [B, T']
 
-		// N path
-		let mut n = h.transpose(1, 2)?;
+		// N path.
+		let mut noise = shared_features.transpose(1, 2)?;
 		for block in &self.n_blocks {
-			n = block.forward(&n, s)?;
+			noise = block.forward(&noise, style)?;
 		}
-		let n = self.n_proj.forward(&n)?;
-		let n = n.squeeze(1)?;
+		let noise = self.n_proj.forward(&noise)?;
+		let noise = noise.squeeze(1)?;
 
-		Ok((f0, n))
+		Ok((f0, noise))
 	}
 }
 

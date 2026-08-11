@@ -8,7 +8,7 @@ use omp_tui::{Component, IntoComponent as _, Size, components::Shader, dom, shad
 
 /// The eclipse-shader pane hosted by the gallery's `Eclipse` tab, sized to
 /// `viewport` minus the tab chrome.
-pub(crate) fn pane(viewport: Size, rows: u16) -> Box<dyn Component> {
+pub fn pane(viewport: Size, rows: u16) -> Box<dyn Component> {
 	dom! {
 		<col>
 			{Shader::new(Eclipse::default()).size(viewport.width, rows)}

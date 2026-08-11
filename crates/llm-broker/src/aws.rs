@@ -2,7 +2,7 @@
 //!
 //! Credential bytes remain inside the broker: callers provide a sink that
 //! copies resolved material directly into the protected store. STS requests use
-//! the workspace egress client and the broker's sealed SigV4 implementation.
+//! the workspace egress client and the broker's sealed `SigV4` implementation.
 
 use std::{
 	collections::{BTreeMap, HashSet},
@@ -145,7 +145,7 @@ pub enum AwsError {
 	/// An STS or metadata response omitted required credential fields or expiry.
 	#[error("malformed AWS credential response")]
 	Response,
-	/// The broker could not sign an STS AssumeRole request.
+	/// The broker could not sign an STS `AssumeRole` request.
 	#[error("could not sign AWS AssumeRole request")]
 	Signing(#[from] AwsSigV4Error),
 }
@@ -256,9 +256,10 @@ struct CacheEntry {
 /// seconds before their required expiration; static credentials remain cached.
 #[derive(Clone)]
 pub struct AwsEngine<E> {
-	egress:   E,
-	settings: Settings,
-	cache:    Arc<Mutex<Option<CacheEntry>>>,
+	egress:     E,
+	settings:   Settings,
+	cache:      Arc<Mutex<Option<CacheEntry>>>,
+	resolution: Arc<Mutex<()>>,
 }
 
 impl<E> fmt::Debug for AwsEngine<E> {
@@ -275,13 +276,18 @@ impl<E: AwsEgress> AwsEngine<E> {
 	/// paths.
 	#[must_use]
 	pub fn new(egress: E) -> Self {
-		Self { egress, settings: Settings::from_process(), cache: Arc::new(Mutex::new(None)) }
+		Self {
+			egress,
+			settings: Settings::from_process(),
+			cache: Arc::new(Mutex::new(None)),
+			resolution: Arc::new(Mutex::new(())),
+		}
 	}
 
 	/// Resolves the AWS region from environment, selected profile, then the SDK
 	/// default used by STS and Bedrock.
 	pub fn region(&self) -> Result<Str, AwsError> {
-		self.resolve_region().map(Str::from)
+		Ok(Str::from(self.resolve_region()))
 	}
 
 	/// Reports whether the selected AWS chain has a source that is ready to try.
@@ -299,7 +305,7 @@ impl<E: AwsEgress> AwsEngine<E> {
 	}
 
 	/// Resolves a cached or newly minted credential and sends it to `sink`.
-	pub async fn authorize_into<S: AwsCredentialSink>(
+	pub async fn authorize_into<S: AwsCredentialSink + Sync>(
 		&self,
 		sink: &S,
 	) -> Result<(), AwsIntoError<S::Error>> {
@@ -307,35 +313,47 @@ impl<E: AwsEgress> AwsEngine<E> {
 	}
 
 	/// Invalidates the cached chain, resolves it again, and sends it to `sink`.
-	pub async fn refresh_into<S: AwsCredentialSink>(
+	pub async fn refresh_into<S: AwsCredentialSink + Sync>(
 		&self,
 		sink: &S,
 	) -> Result<(), AwsIntoError<S::Error>> {
 		self.deliver(true, sink).await
 	}
 
-	async fn deliver<S: AwsCredentialSink>(
+	async fn deliver<S: AwsCredentialSink + Sync>(
 		&self,
 		force: bool,
 		sink: &S,
 	) -> Result<(), AwsIntoError<S::Error>> {
 		let profile = Str::new(self.settings.profile());
-		let region = Str::from(self.resolve_region()?);
+		let region = Str::from(self.resolve_region());
 		let now = now_ms();
-		let mut cache = self.cache.lock().await;
-		if !force
-			&& let Some(hit) = cache.as_ref()
-			&& hit.profile == profile
-			&& hit.region == region
-			&& hit.credentials.is_fresh(now)
-		{
-			return hit.credentials.deliver(sink).map_err(AwsIntoError::Sink);
+		if !force {
+			let cache = self.cache.lock().await;
+			if let Some(hit) = cache.as_ref()
+				&& hit.profile == profile
+				&& hit.region == region
+				&& hit.credentials.is_fresh(now)
+			{
+				return hit.credentials.deliver(sink).map_err(AwsIntoError::Sink);
+			}
+		}
+		let _resolution = self.resolution.lock().await;
+		if !force {
+			let cache = self.cache.lock().await;
+			if let Some(hit) = cache.as_ref()
+				&& hit.profile == profile
+				&& hit.region == region
+				&& hit.credentials.is_fresh(now)
+			{
+				return hit.credentials.deliver(sink).map_err(AwsIntoError::Sink);
+			}
 		}
 		let credentials = self
 			.resolve_fresh(profile.as_str(), region.as_str())
 			.await?;
 		credentials.deliver(sink).map_err(AwsIntoError::Sink)?;
-		*cache = Some(CacheEntry { profile, region, credentials });
+		*self.cache.lock().await = Some(CacheEntry { profile, region, credentials });
 		Ok(())
 	}
 
@@ -370,13 +388,13 @@ impl<E: AwsEgress> AwsEngine<E> {
 		Err(AwsError::Missing)
 	}
 
-	fn resolve_region(&self) -> Result<String, AwsError> {
+	fn resolve_region(&self) -> String {
 		if let Some(region) = self
 			.settings
 			.env("AWS_REGION")
 			.or_else(|| self.settings.env("AWS_DEFAULT_REGION"))
 		{
-			return Ok(region.to_owned());
+			return region.to_owned();
 		}
 		if self.settings.loads_config()
 			&& let Some(config) = read_ini_file(&self.settings.config_path).ok().flatten()
@@ -384,9 +402,9 @@ impl<E: AwsEgress> AwsEngine<E> {
 				.get(self.settings.profile())
 				.and_then(|profile| ini_value(profile, "region"))
 		{
-			return Ok(region.to_string());
+			return region.to_string();
 		}
-		Ok("us-east-1".to_owned())
+		"us-east-1".to_owned()
 	}
 
 	fn has_env_credentials(&self) -> bool {
@@ -566,9 +584,7 @@ impl<E: AwsEgress> AwsEngine<E> {
 		if token.is_empty() {
 			return Err(AwsError::TokenFile);
 		}
-		let session = session_name
-			.map(str::to_owned)
-			.unwrap_or_else(|| format!("omp-{}", std::process::id()));
+		let session = session_name.map_or_else(|| format!("omp-{}", std::process::id()), str::to_owned);
 		let endpoint = sts_endpoint(region);
 		let body = query_body(&[
 			("Action", "AssumeRoleWithWebIdentity"),
@@ -805,7 +821,7 @@ fn parse_ini(text: &str) -> Ini {
 			let section = section
 				.trim()
 				.strip_prefix("profile ")
-				.unwrap_or(section.trim())
+				.unwrap_or_else(|| section.trim())
 				.trim();
 			let section = Str::new(section);
 			result.entry(section.clone()).or_insert_with(BTreeMap::new);
@@ -1012,9 +1028,7 @@ fn is_ec2_host(root: &Path) -> bool {
 	]
 	.into_iter()
 	.any(|(path, marker)| {
-		std::fs::read_to_string(root.join(path))
-			.ok()
-			.is_some_and(|value| marker.matches(value.trim()))
+		std::fs::read_to_string(root.join(path)).is_ok_and(|value| marker.matches(value.trim()))
 	})
 }
 
@@ -1099,7 +1113,9 @@ mod tests {
 	}
 
 	#[derive(Default)]
-	struct CaptureSink(ParkingMutex<Option<(Vec<u8>, Vec<u8>, Option<Vec<u8>>, u64)>>);
+	struct CaptureSink(ParkingMutex<Option<CapturedCredentials>>);
+
+	type CapturedCredentials = (Vec<u8>, Vec<u8>, Option<Vec<u8>>, u64);
 
 	impl AwsCredentialSink for CaptureSink {
 		type Error = std::convert::Infallible;
@@ -1160,38 +1176,41 @@ mod tests {
 			egress:   egress.clone(),
 			settings: fixture_settings(&temp, &config, &[("AWS_REGION", "us-east-1")]),
 			cache:    Arc::new(Mutex::new(None)),
+			resolution: Arc::new(Mutex::new(())),
 		};
 		let sink = CaptureSink::default();
 
 		engine.authorize_into(&sink).await.expect("role chain");
 
-		let requests = egress.requests.lock();
-		assert_eq!(requests.len(), 2);
-		let first = requests[0].body().clone().into_inner().unwrap_or_default();
-		let first = url::form_urlencoded::parse(first.as_ref())
-			.into_owned()
-			.collect::<BTreeMap<_, _>>();
-		assert_eq!(first.get("Action").map(String::as_str), Some("AssumeRoleWithWebIdentity"));
-		assert_eq!(first.get("WebIdentityToken").map(String::as_str), Some("irsa-jwt"));
-		let second = requests[1].body().clone().into_inner().unwrap_or_default();
-		let second = url::form_urlencoded::parse(second.as_ref())
-			.into_owned()
-			.collect::<BTreeMap<_, _>>();
-		assert_eq!(second.get("RoleSessionName").map(String::as_str), Some("someone@example.com"));
-		assert_eq!(second.get("ExternalId").map(String::as_str), Some("ext-1"));
-		assert_eq!(second.get("DurationSeconds").map(String::as_str), Some("1800"));
-		assert!(
-			requests[1]
-				.headers()
-				.get(header::AUTHORIZATION)
-				.and_then(|value| value.to_str().ok())
-				.is_some_and(|value| value.starts_with("AWS4-HMAC-SHA256 Credential=AKIABASE/"))
-		);
-		drop(requests);
-		let captured = sink.0.lock();
-		assert_eq!(captured.as_ref().map(|value| value.0.as_slice()), Some(b"AKIAFINAL".as_slice()));
-		assert_ne!(captured.as_ref().map(|value| value.3), Some(0));
-		drop(captured);
+		{
+			let requests = egress.requests.lock();
+			assert_eq!(requests.len(), 2);
+			let first = requests[0].body().clone().into_inner().unwrap_or_default();
+			let first = url::form_urlencoded::parse(first.as_ref())
+				.into_owned()
+				.collect::<BTreeMap<_, _>>();
+			assert_eq!(first.get("Action").map(String::as_str), Some("AssumeRoleWithWebIdentity"));
+			assert_eq!(first.get("WebIdentityToken").map(String::as_str), Some("irsa-jwt"));
+			let second = requests[1].body().clone().into_inner().unwrap_or_default();
+			let second = url::form_urlencoded::parse(second.as_ref())
+				.into_owned()
+				.collect::<BTreeMap<_, _>>();
+			assert_eq!(second.get("RoleSessionName").map(String::as_str), Some("someone@example.com"));
+			assert_eq!(second.get("ExternalId").map(String::as_str), Some("ext-1"));
+			assert_eq!(second.get("DurationSeconds").map(String::as_str), Some("1800"));
+			assert!(
+				requests[1]
+					.headers()
+					.get(header::AUTHORIZATION)
+					.and_then(|value| value.to_str().ok())
+					.is_some_and(|value| value.starts_with("AWS4-HMAC-SHA256 Credential=AKIABASE/"))
+			);
+		}
+		{
+			let captured = sink.0.lock();
+			assert_eq!(captured.as_ref().map(|value| value.0.as_slice()), Some(b"AKIAFINAL".as_slice()));
+			assert_ne!(captured.as_ref().map(|value| value.3), Some(0));
+		}
 		engine
 			.authorize_into(&sink)
 			.await
@@ -1214,6 +1233,7 @@ mod tests {
 			egress:   egress.clone(),
 			settings: fixture_settings(&temp, config, &[("AWS_REGION", "us-east-1")]),
 			cache:    Arc::new(Mutex::new(None)),
+			resolution: Arc::new(Mutex::new(())),
 		};
 		let error = engine
 			.authorize_into(&CaptureSink::default())
@@ -1230,8 +1250,12 @@ mod tests {
 			fixture_settings(&temp, "[default]\nrole_arn = arn:aws:iam::111122223333:role/user\n", &[
 				("AWS_REGION", "us-east-1"),
 			]);
-		let engine =
-			AwsEngine { egress: MockEgress::default(), settings, cache: Arc::new(Mutex::new(None)) };
+		let engine = AwsEngine {
+			egress: MockEgress::default(),
+			settings,
+			cache: Arc::new(Mutex::new(None)),
+			resolution: Arc::new(Mutex::new(())),
+		};
 
 		assert!(!engine.has_configured_profile());
 		let error = engine
@@ -1253,8 +1277,12 @@ mod tests {
 			],
 		);
 		let egress = MockEgress::default();
-		let engine =
-			AwsEngine { egress: egress.clone(), settings, cache: Arc::new(Mutex::new(None)) };
+		let engine = AwsEngine {
+			egress: egress.clone(),
+			settings,
+			cache: Arc::new(Mutex::new(None)),
+			resolution: Arc::new(Mutex::new(())),
+		};
 		let sink = CaptureSink::default();
 		engine.authorize_into(&sink).await.expect("ECS role chain");
 		let requests = egress.requests.lock();
@@ -1298,6 +1326,7 @@ mod tests {
 				egress: MockEgress::default(),
 				settings,
 				cache: Arc::new(Mutex::new(None)),
+				resolution: Arc::new(Mutex::new(())),
 			};
 			assert_eq!(engine.has_configured_profile(), expected, "source {source}");
 		}

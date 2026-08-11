@@ -78,7 +78,7 @@ enum Toggle<T> {
 }
 
 impl<T> Toggle<T> {
-	fn value(&self) -> Option<&T> {
+	const fn value(&self) -> Option<&T> {
 		match self {
 			Self::Off => None,
 			Self::Flag(value) | Self::Value(value) => Some(value),
@@ -185,13 +185,13 @@ impl FromStr for Angle {
 macro_rules! define_prop_getter {
 	($field:ident[ref $type:ty; $doc:literal]) => {
 		#[doc = $doc]
-		pub fn $field(&self) -> Option<&$type> {
+		pub const fn $field(&self) -> Option<&$type> {
 			self.$field.as_ref()
 		}
 	};
 	($field:ident[copy $type:ty; $doc:literal]) => {
 		#[doc = $doc]
-		pub fn $field(&self) -> Option<$type> {
+		pub const fn $field(&self) -> Option<$type> {
 			self.$field
 		}
 	};
@@ -265,7 +265,7 @@ macro_rules! define_props {
 				}
 			}
 
-			fn contains_known(&self, prop: Prop) -> bool {
+			const fn contains_known(&self, prop: Prop) -> bool {
 				match prop {
 					$($(Prop::$variant => self.$field.is_some(),)?)+
 					$($(Prop::$variant => {
@@ -602,7 +602,7 @@ impl Props {
 	}
 
 	/// Reports whether a known property has an assigned value.
-	pub fn contains(&self, prop: Prop) -> bool {
+	pub const fn contains(&self, prop: Prop) -> bool {
 		self.contains_known(prop)
 	}
 
@@ -660,7 +660,7 @@ impl Props {
 	}
 
 	/// Returns the minimum width when represented as an unsigned cell count.
-	pub fn min(&self) -> Option<u16> {
+	pub const fn min(&self) -> Option<u16> {
 		match self.min {
 			Some(Number::U16(value)) => Some(value),
 			_ => None,
@@ -668,7 +668,7 @@ impl Props {
 	}
 
 	/// Returns the maximum width when represented as an unsigned cell count.
-	pub fn max(&self) -> Option<u16> {
+	pub const fn max(&self) -> Option<u16> {
 		match self.max {
 			Some(Number::U16(value)) => Some(value),
 			_ => None,
@@ -676,7 +676,7 @@ impl Props {
 	}
 
 	/// Returns the text wrapping mode, defaulting to word boundaries.
-	pub fn text_wrap(&self) -> TextWrap {
+	pub const fn text_wrap(&self) -> TextWrap {
 		match self.wrap {
 			Some(WrapValue::Text(value)) => value,
 			_ => TextWrap::Word,
@@ -689,7 +689,7 @@ impl Props {
 	}
 
 	/// Returns a gradient payload for a color-bearing property.
-	pub(crate) fn gradient_of(&self, prop: Prop) -> Option<&Str> {
+	pub(crate) const fn gradient_of(&self, prop: Prop) -> Option<&Str> {
 		match self.color_slot(prop) {
 			Some(PropColor::Gradient(value)) => Some(value),
 			_ => None,
@@ -702,7 +702,7 @@ impl Props {
 	}
 
 	/// Returns the borrowed textual payload of a property.
-	pub fn str_of(&self, prop: Prop) -> Option<&Str> {
+	pub const fn str_of(&self, prop: Prop) -> Option<&Str> {
 		match prop {
 			Prop::Title => self.title.as_ref(),
 			Prop::Footer => self.footer.as_ref(),
@@ -772,7 +772,7 @@ impl Props {
 			.or_else(|| self.color(Prop::Edge, theme))
 	}
 
-	fn color_slot(&self, prop: Prop) -> Option<&PropColor> {
+	const fn color_slot(&self, prop: Prop) -> Option<&PropColor> {
 		match prop {
 			Prop::Fg => self.fg.as_ref(),
 			Prop::Bg => self.bg.as_ref(),

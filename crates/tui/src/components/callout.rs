@@ -53,7 +53,7 @@ impl Callout {
 		self
 	}
 
-	fn has_header(&self) -> bool {
+	const fn has_header(&self) -> bool {
 		self.props.title().is_some()
 			|| self.props.str_of(Prop::Badge).is_some()
 			|| self.props.str_of(Prop::Icon).is_some()
