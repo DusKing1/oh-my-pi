@@ -346,11 +346,11 @@ omp is a Rust rewrite of pi. When porting any subsystem:
   (free-threaded) and boots it in-process: `Engine::builder().init()`, then
   `engine.attach(|py| ...)`. Native modules register with
   `pyo3::append_to_inittab!` before `init`. The `omp-demo` bin ships from the
-  same crate. Building requires `scripts/fetch-python.sh` once (populates
+  same crate. Building requires `crates/py/scripts/fetch-python.sh` once (populates
   gitignored `vendor/python` with the python-build-standalone archive and
   derived build inputs).
 - Pure-Python packages frozen into the binary (e.g. cloudpickle) are pinned
-  in `crates/py/requirements.txt`; `scripts/fetch-python.sh` resolves them
+  in `crates/py/requirements.txt`; `crates/py/scripts/fetch-python.sh` resolves them
   with `uv` into gitignored `vendor/python/bundled/` (skipped while the
   stamp matches the manifest) and regenerates the tracked
   `crates/py/THIRD-PARTY-NOTICES.txt` (also available as
@@ -360,7 +360,7 @@ omp is a Rust rewrite of pi. When porting any subsystem:
   site-packages.
 - pyo3 is configured via `PYO3_CONFIG_FILE` in `.cargo/config.toml`. The
   pgo+lto pbs variant is LLVM-22 LTO bitcode: it links through Homebrew
-  LLD 22 (`brew install lld`, routed via `scripts/ld64.lld`) — Xcode's ld64
+  LLD 22 (`brew install lld`, routed via `crates/py/scripts/ld64.lld`) — Xcode's ld64
   is too old for it and rustc's rust-lld (LLVM 23) mis-resolves symbols.
   Two things never propagate to consumers and are their explicit contract,
   enforced loudly by omp-py's build script:

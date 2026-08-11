@@ -476,7 +476,7 @@ const factory = (omp: ToolHost) => {
 					env.PYO3_CONFIG_FILE = configPath;
 					argv.push(
 						`-Lnative=${libDir}`,
-						`-Clink-arg=--ld-path=${join(root, "scripts/ld64.lld")}`,
+						`-Clink-arg=--ld-path=${join(root, "crates/py/scripts/ld64.lld")}`,
 						"-Clink-arg=-Wl,-export_dynamic",
 					);
 				}

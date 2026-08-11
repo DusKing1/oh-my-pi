@@ -1,5 +1,5 @@
 # Embedded Python: omp-demo statically links the vendored python-build-standalone
-# CPython (see scripts/fetch-python.sh). The config file tells pyo3 to link
+# CPython (see crates/py/scripts/fetch-python.sh). The config file tells pyo3 to link
 # libpython statically instead of introspecting an installed interpreter.
 #
 # The linker shim for the vendored LTO bitcode is emitted by crates/py's

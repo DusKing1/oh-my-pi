@@ -3,7 +3,7 @@
 **/*.rs.bk
 
 # Vendored CPython: ~290 MB of build/install trees plus the derived
-# stdlib.bin and pyo3-config.txt. Regenerate with scripts/fetch-python.sh.
+# stdlib.bin and pyo3-config.txt. Regenerate with crates/py/scripts/fetch-python.sh.
 /vendor/
 
 # Python
