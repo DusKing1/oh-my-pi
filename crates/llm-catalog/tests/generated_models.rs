@@ -191,7 +191,9 @@ fn checked_in_snapshot_marks_deepseek_responses_reasoning_replay() {
 			.and_then(serde_json::Value::as_bool),
 		Some(true),
 	);
-	let openai = catalog.get("openai", "gpt-5-mini").expect("OpenAI Responses model exists");
+	let openai = catalog
+		.get("openai", "gpt-5-mini")
+		.expect("OpenAI Responses model exists");
 	assert!(
 		openai
 			.behavior
