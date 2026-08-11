@@ -1,8 +1,8 @@
 //! AWS shared-config credential discovery and STS role resolution.
 //!
-//! Credential bytes remain inside the broker: callers provide a sink that copies
-//! resolved material directly into the protected store. STS requests use the
-//! workspace egress client and the broker's sealed SigV4 implementation.
+//! Credential bytes remain inside the broker: callers provide a sink that
+//! copies resolved material directly into the protected store. STS requests use
+//! the workspace egress client and the broker's sealed SigV4 implementation.
 
 use std::{
 	collections::{BTreeMap, HashSet},
@@ -42,7 +42,8 @@ pub trait AwsCredentialSink {
 	/// Failure produced by the protected credential store.
 	type Error: StdError + Send + Sync + 'static;
 
-	/// Copies resolved key material and its absolute expiry into protected storage.
+	/// Copies resolved key material and its absolute expiry into protected
+	/// storage.
 	fn accept(
 		&self,
 		access_key_id: &[u8],
@@ -106,7 +107,7 @@ pub enum AwsError {
 	#[error("could not read AWS credential file {path}")]
 	Read {
 		/// Path that could not be read.
-		path: PathBuf,
+		path:   PathBuf,
 		/// Filesystem failure.
 		#[source]
 		source: std::io::Error,
@@ -173,7 +174,9 @@ impl Settings {
 		let env = std::env::vars()
 			.map(|(name, value)| (Str::from(name), Str::from(value)))
 			.collect::<BTreeMap<_, _>>();
-		let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+		let home = std::env::var_os("HOME")
+			.map(PathBuf::from)
+			.unwrap_or_default();
 		let credentials_path = env
 			.get("AWS_SHARED_CREDENTIALS_FILE")
 			.map_or_else(|| home.join(".aws/credentials"), |path| PathBuf::from(path.as_str()));
@@ -184,7 +187,11 @@ impl Settings {
 	}
 
 	fn env(&self, name: &str) -> Option<&str> {
-		self.env.get(name).map(Str::as_str).filter(|value| !value.is_empty())
+		self
+			.env
+			.get(name)
+			.map(Str::as_str)
+			.filter(|value| !value.is_empty())
 	}
 
 	fn profile(&self) -> &str {
@@ -214,15 +221,16 @@ impl Credentials {
 		expires_at_ms: Option<u64>,
 	) -> Self {
 		Self {
-			access_key_id:     Secret::new(access_key_id),
+			access_key_id: Secret::new(access_key_id),
 			secret_access_key: Secret::new(secret_access_key),
-			session_token:     session_token.map(Secret::new),
+			session_token: session_token.map(Secret::new),
 			expires_at_ms,
 		}
 	}
 
 	fn is_fresh(&self, now_ms: u64) -> bool {
-		self.expires_at_ms
+		self
+			.expires_at_ms
 			.is_none_or(|expires| expires.saturating_sub(REFRESH_SKEW_MS) > now_ms)
 	}
 
@@ -263,22 +271,24 @@ impl<E> fmt::Debug for AwsEngine<E> {
 }
 
 impl<E: AwsEgress> AwsEngine<E> {
-	/// Constructs an engine using process AWS environment and shared-config paths.
+	/// Constructs an engine using process AWS environment and shared-config
+	/// paths.
 	#[must_use]
 	pub fn new(egress: E) -> Self {
 		Self { egress, settings: Settings::from_process(), cache: Arc::new(Mutex::new(None)) }
 	}
+
 	/// Resolves the AWS region from environment, selected profile, then the SDK
 	/// default used by STS and Bedrock.
 	pub fn region(&self) -> Result<Str, AwsError> {
 		self.resolve_region().map(Str::from)
 	}
 
-
 	/// Reports whether the selected AWS chain has a source that is ready to try.
 	///
 	/// `credential_source` profiles are gated by the named source's environment
-	/// readiness, matching the resolver rather than merely trusting the directive.
+	/// readiness, matching the resolver rather than merely trusting the
+	/// directive.
 	#[must_use]
 	pub fn has_credential_source(&self) -> bool {
 		self.has_env_credentials()
@@ -321,7 +331,9 @@ impl<E: AwsEgress> AwsEngine<E> {
 		{
 			return hit.credentials.deliver(sink).map_err(AwsIntoError::Sink);
 		}
-		let credentials = self.resolve_fresh(profile.as_str(), region.as_str()).await?;
+		let credentials = self
+			.resolve_fresh(profile.as_str(), region.as_str())
+			.await?;
 		credentials.deliver(sink).map_err(AwsIntoError::Sink)?;
 		*cache = Some(CacheEntry { profile, region, credentials });
 		Ok(())
@@ -335,7 +347,8 @@ impl<E: AwsEgress> AwsEngine<E> {
 			return self
 				.assume_role_with_web_identity(
 					self.settings.env("AWS_ROLE_ARN").ok_or(AwsError::Missing)?,
-					self.settings
+					self
+						.settings
 						.env("AWS_WEB_IDENTITY_TOKEN_FILE")
 						.ok_or(AwsError::Missing)?,
 					self.settings.env("AWS_ROLE_SESSION_NAME"),
@@ -398,24 +411,36 @@ impl<E: AwsEgress> AwsEngine<E> {
 	}
 
 	fn has_container_source(&self) -> bool {
-		self.settings.env("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI").is_some()
-			|| self.settings.env("AWS_CONTAINER_CREDENTIALS_FULL_URI").is_some()
+		self
+			.settings
+			.env("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")
+			.is_some()
+			|| self
+				.settings
+				.env("AWS_CONTAINER_CREDENTIALS_FULL_URI")
+				.is_some()
 	}
 
 	fn metadata_disabled(&self) -> bool {
-		self.settings
+		self
+			.settings
 			.env("AWS_EC2_METADATA_DISABLED")
 			.is_some_and(|value| value.eq_ignore_ascii_case("true"))
 	}
 
 	fn has_instance_source(&self) -> bool {
 		!self.metadata_disabled()
-			&& (self.settings.env("AWS_EC2_METADATA_SERVICE_ENDPOINT").is_some()
+			&& (self
+				.settings
+				.env("AWS_EC2_METADATA_SERVICE_ENDPOINT")
+				.is_some()
 				|| is_ec2_host(&self.settings.dmi_root))
 	}
 
 	fn has_configured_profile(&self) -> bool {
-		let credentials = read_ini_file(&self.settings.credentials_path).ok().flatten();
+		let credentials = read_ini_file(&self.settings.credentials_path)
+			.ok()
+			.flatten();
 		let config = self
 			.settings
 			.loads_config()
@@ -448,11 +473,9 @@ impl<E: AwsEgress> AwsEngine<E> {
 			if !seen.insert(current.clone()) {
 				return Err(AwsError::ProfileCycle(current));
 			}
-			let Some(merged) = merged_profile(
-				current.as_str(),
-				credentials_ini.as_ref(),
-				config_ini.as_ref(),
-			) else {
+			let Some(merged) =
+				merged_profile(current.as_str(), credentials_ini.as_ref(), config_ini.as_ref())
+			else {
 				if roles.is_empty() {
 					return Ok(None);
 				}
@@ -486,17 +509,17 @@ impl<E: AwsEgress> AwsEngine<E> {
 				}
 				if let Some(source) = ini_value(&merged, "credential_source") {
 					roles.push(role);
-					break self.resolve_credential_source(source.as_str()).await?.ok_or_else(|| {
-						AwsError::MissingRoleSource(current.clone())
-					})?;
+					break self
+						.resolve_credential_source(source.as_str())
+						.await?
+						.ok_or_else(|| AwsError::MissingRoleSource(current.clone()))?;
 				}
 				return Err(AwsError::MissingRoleSource(current));
 			}
 
-			if let (Some(access), Some(secret)) = (
-				ini_value(&merged, "aws_access_key_id"),
-				ini_value(&merged, "aws_secret_access_key"),
-			) {
+			if let (Some(access), Some(secret)) =
+				(ini_value(&merged, "aws_access_key_id"), ini_value(&merged, "aws_secret_access_key"))
+			{
 				let token = ini_value(&merged, "aws_session_token");
 				break Credentials::from_values(
 					access.as_bytes(),
@@ -560,7 +583,11 @@ impl<E: AwsEgress> AwsEngine<E> {
 			.header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
 			.body(Full::new(Bytes::from(body)))
 			.map_err(|_| AwsError::Request)?;
-		let response = self.egress.execute(request).await.map_err(|_| AwsError::Egress)?;
+		let response = self
+			.egress
+			.execute(request)
+			.await
+			.map_err(|_| AwsError::Egress)?;
 		parse_sts_response(response)
 	}
 
@@ -594,11 +621,7 @@ impl<E: AwsEgress> AwsEngine<E> {
 			.header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
 			.body(Full::new(Bytes::from(body)))
 			.map_err(|_| AwsError::Request)?;
-		let auth = AppliedAuth::aws(
-			base.secret_access_key,
-			base.access_key_id,
-			base.session_token,
-		);
+		let auth = AppliedAuth::aws(base.secret_access_key, base.access_key_id, base.session_token);
 		auth.aws_sigv4(
 			&AwsSigV4Context {
 				service:   "sts".into(),
@@ -607,7 +630,11 @@ impl<E: AwsEgress> AwsEngine<E> {
 			},
 			&mut request,
 		)?;
-		let response = self.egress.execute(request).await.map_err(|_| AwsError::Egress)?;
+		let response = self
+			.egress
+			.execute(request)
+			.await
+			.map_err(|_| AwsError::Egress)?;
 		parse_sts_response(response)
 	}
 
@@ -625,36 +652,40 @@ impl<E: AwsEgress> AwsEngine<E> {
 				.and_then(|base| base.join(relative.trim_start_matches('/')))
 				.map_err(|_| AwsError::Request)?
 		} else {
-			let endpoint = Url::parse(full.ok_or(AwsError::Request)?)
-				.map_err(|_| AwsError::Request)?;
+			let endpoint =
+				Url::parse(full.ok_or(AwsError::Request)?).map_err(|_| AwsError::Request)?;
 			if endpoint.scheme() != "https" && !is_local_metadata_host(&endpoint) {
 				return Err(AwsError::Request);
 			}
 			endpoint
 		};
-		let authorization = if let Some(token) = self.settings.env("AWS_CONTAINER_AUTHORIZATION_TOKEN") {
-			Some(token.to_owned())
-		} else if let Some(path) = self.settings.env("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE") {
-			Some(
-				std::fs::read_to_string(path)
-					.map_err(|_| AwsError::TokenFile)?
-					.trim()
-					.to_owned(),
-			)
-		} else {
-			None
-		};
+		let authorization =
+			if let Some(token) = self.settings.env("AWS_CONTAINER_AUTHORIZATION_TOKEN") {
+				Some(token.to_owned())
+			} else if let Some(path) = self.settings.env("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE") {
+				Some(
+					std::fs::read_to_string(path)
+						.map_err(|_| AwsError::TokenFile)?
+						.trim()
+						.to_owned(),
+				)
+			} else {
+				None
+			};
 		let mut builder = Request::builder().uri(endpoint.as_str());
 		if let Some(token) = authorization.as_ref().filter(|token| !token.is_empty()) {
-			let mut token =
-				http::HeaderValue::from_str(token).map_err(|_| AwsError::Request)?;
+			let mut token = http::HeaderValue::from_str(token).map_err(|_| AwsError::Request)?;
 			token.set_sensitive(true);
 			builder = builder.header(header::AUTHORIZATION, token);
 		}
 		let request = builder
 			.body(Full::new(Bytes::new()))
 			.map_err(|_| AwsError::Request)?;
-		let response = self.egress.execute(request).await.map_err(|_| AwsError::Egress)?;
+		let response = self
+			.egress
+			.execute(request)
+			.await
+			.map_err(|_| AwsError::Egress)?;
 		if !response.status().is_success() {
 			return Err(AwsError::Status(response.status()));
 		}
@@ -734,7 +765,8 @@ impl<E: AwsEgress> AwsEngine<E> {
 			IMDS_IPV4_BASE_URL
 		};
 		let mut endpoint = Url::parse(
-			self.settings
+			self
+				.settings
 				.env("AWS_EC2_METADATA_SERVICE_ENDPOINT")
 				.unwrap_or(fallback),
 		)
@@ -766,8 +798,15 @@ fn parse_ini(text: &str) -> Ini {
 		if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
 			continue;
 		}
-		if let Some(section) = line.strip_prefix('[').and_then(|line| line.strip_suffix(']')) {
-			let section = section.trim().strip_prefix("profile ").unwrap_or(section.trim()).trim();
+		if let Some(section) = line
+			.strip_prefix('[')
+			.and_then(|line| line.strip_suffix(']'))
+		{
+			let section = section
+				.trim()
+				.strip_prefix("profile ")
+				.unwrap_or(section.trim())
+				.trim();
 			let section = Str::new(section);
 			result.entry(section.clone()).or_insert_with(BTreeMap::new);
 			current = Some(section);
@@ -795,8 +834,15 @@ fn read_ini_file(path: &Path) -> Result<Option<Ini>, AwsError> {
 	}
 }
 
-fn merged_profile(profile: &str, credentials: Option<&Ini>, config: Option<&Ini>) -> Option<BTreeMap<Str, Str>> {
-	let mut merged = config.and_then(|ini| ini.get(profile)).cloned().unwrap_or_default();
+fn merged_profile(
+	profile: &str,
+	credentials: Option<&Ini>,
+	config: Option<&Ini>,
+) -> Option<BTreeMap<Str, Str>> {
+	let mut merged = config
+		.and_then(|ini| ini.get(profile))
+		.cloned()
+		.unwrap_or_default();
 	if let Some(values) = credentials.and_then(|ini| ini.get(profile)) {
 		for (key, value) in values {
 			merged.insert(key.clone(), value.clone());
@@ -836,8 +882,9 @@ fn profile_has_source(
 						&& settings.env("AWS_SECRET_ACCESS_KEY").is_some()
 				},
 				"EcsContainer" => {
-					settings.env("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI").is_some()
-						|| settings.env("AWS_CONTAINER_CREDENTIALS_FULL_URI").is_some()
+					settings
+						.env("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")
+						.is_some() || settings.env("AWS_CONTAINER_CREDENTIALS_FULL_URI").is_some()
 				},
 				"Ec2InstanceMetadata" => !settings
 					.env("AWS_EC2_METADATA_DISABLED")
@@ -862,7 +909,11 @@ fn query_body(fields: &[(&str, &str)]) -> String {
 }
 
 fn sts_endpoint(region: &str) -> String {
-	let suffix = if region.starts_with("cn-") { "amazonaws.com.cn" } else { "amazonaws.com" };
+	let suffix = if region.starts_with("cn-") {
+		"amazonaws.com.cn"
+	} else {
+		"amazonaws.com"
+	};
 	format!("https://sts.{region}.{suffix}/")
 }
 
@@ -946,7 +997,9 @@ fn is_local_metadata_host(endpoint: &Url) -> bool {
 		|| host == "169.254.170.2"
 		|| host == "169.254.169.254"
 		|| host.eq_ignore_ascii_case("fd00:ec2::23")
-		|| host.parse::<std::net::IpAddr>().is_ok_and(|address| address.is_loopback())
+		|| host
+			.parse::<std::net::IpAddr>()
+			.is_ok_and(|address| address.is_loopback())
 }
 
 fn is_ec2_host(root: &Path) -> bool {
@@ -994,9 +1047,10 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use parking_lot::Mutex as ParkingMutex;
 	use tempfile::TempDir;
+
+	use super::*;
 
 	#[derive(Clone, Default)]
 	struct MockEgress {
@@ -1021,7 +1075,10 @@ mod tests {
 				let params = url::form_urlencoded::parse(body.as_ref())
 					.into_owned()
 					.collect::<BTreeMap<_, _>>();
-				let access = if params.get("Action").is_some_and(|action| action == "AssumeRole") {
+				let access = if params
+					.get("Action")
+					.is_some_and(|action| action == "AssumeRole")
+				{
 					"AKIAFINAL"
 				} else {
 					"AKIABASE"
@@ -1033,7 +1090,9 @@ mod tests {
 					)));
 				}
 				Ok(Response::new(Bytes::from(format!(
-					"<Credentials><AccessKeyId>{access}</AccessKeyId><SecretAccessKey>{access}-secret</SecretAccessKey><SessionToken>{access}-token</SessionToken><Expiration>2099-01-01T00:00:00Z</Expiration></Credentials>"
+					"<Credentials><AccessKeyId>{access}</AccessKeyId><SecretAccessKey>{access}-secret</\
+					 SecretAccessKey><SessionToken>{access}-token</\
+					 SessionToken><Expiration>2099-01-01T00:00:00Z</Expiration></Credentials>"
 				))))
 			}
 		}
@@ -1072,7 +1131,9 @@ mod tests {
 			.map(|(key, value)| (Str::new(key), Str::new(value)))
 			.collect::<BTreeMap<_, _>>();
 		values.insert("AWS_PROFILE".into(), "default".into());
-		values.entry("AWS_EC2_METADATA_DISABLED".into()).or_insert_with(|| "true".into());
+		values
+			.entry("AWS_EC2_METADATA_DISABLED".into())
+			.or_insert_with(|| "true".into());
 		Settings {
 			env: Arc::new(values),
 			credentials_path,
@@ -1087,14 +1148,18 @@ mod tests {
 		let token_path = temp.path().join("token");
 		std::fs::write(&token_path, "irsa-jwt\n").expect("token fixture");
 		let config = format!(
-			"[profile irsa]\nrole_arn = arn:aws:iam::111122223333:role/workspace\nweb_identity_token_file = {}\n\n[default]\nrole_arn = arn:aws:iam::111122223333:role/user\nrole_session_name = someone@example.com\nsource_profile = irsa\nexternal_id = ext-1\nduration_seconds = 1800\n",
+			"[profile irsa]\nrole_arn = \
+			 arn:aws:iam::111122223333:role/workspace\nweb_identity_token_file = \
+			 {}\n\n[default]\nrole_arn = arn:aws:iam::111122223333:role/user\nrole_session_name = \
+			 someone@example.com\nsource_profile = irsa\nexternal_id = ext-1\nduration_seconds = \
+			 1800\n",
 			token_path.display()
 		);
 		let egress = MockEgress::default();
 		let engine = AwsEngine {
-			egress: egress.clone(),
+			egress:   egress.clone(),
 			settings: fixture_settings(&temp, &config, &[("AWS_REGION", "us-east-1")]),
-			cache: Arc::new(Mutex::new(None)),
+			cache:    Arc::new(Mutex::new(None)),
 		};
 		let sink = CaptureSink::default();
 
@@ -1127,21 +1192,28 @@ mod tests {
 		assert_eq!(captured.as_ref().map(|value| value.0.as_slice()), Some(b"AKIAFINAL".as_slice()));
 		assert_ne!(captured.as_ref().map(|value| value.3), Some(0));
 		drop(captured);
-		engine.authorize_into(&sink).await.expect("cached role chain");
+		engine
+			.authorize_into(&sink)
+			.await
+			.expect("cached role chain");
 		assert_eq!(egress.requests.lock().len(), 2);
-		engine.refresh_into(&sink).await.expect("forced role refresh");
+		engine
+			.refresh_into(&sink)
+			.await
+			.expect("forced role refresh");
 		assert_eq!(egress.requests.lock().len(), 4);
 	}
 
 	#[tokio::test]
 	async fn source_profile_cycle_is_rejected_without_sts() {
 		let temp = TempDir::new().expect("tempdir");
-		let config = "[default]\nrole_arn = arn:aws:iam::1:role/a\nsource_profile = b\n\n[profile b]\nrole_arn = arn:aws:iam::1:role/b\nsource_profile = default\n";
+		let config = "[default]\nrole_arn = arn:aws:iam::1:role/a\nsource_profile = b\n\n[profile \
+		              b]\nrole_arn = arn:aws:iam::1:role/b\nsource_profile = default\n";
 		let egress = MockEgress::default();
 		let engine = AwsEngine {
-			egress: egress.clone(),
+			egress:   egress.clone(),
 			settings: fixture_settings(&temp, config, &[("AWS_REGION", "us-east-1")]),
-			cache: Arc::new(Mutex::new(None)),
+			cache:    Arc::new(Mutex::new(None)),
 		};
 		let error = engine
 			.authorize_into(&CaptureSink::default())
@@ -1154,16 +1226,12 @@ mod tests {
 	#[tokio::test]
 	async fn role_without_base_source_is_not_advertised_or_resolved() {
 		let temp = TempDir::new().expect("tempdir");
-		let settings = fixture_settings(
-			&temp,
-			"[default]\nrole_arn = arn:aws:iam::111122223333:role/user\n",
-			&[("AWS_REGION", "us-east-1")],
-		);
-		let engine = AwsEngine {
-			egress: MockEgress::default(),
-			settings,
-			cache: Arc::new(Mutex::new(None)),
-		};
+		let settings =
+			fixture_settings(&temp, "[default]\nrole_arn = arn:aws:iam::111122223333:role/user\n", &[
+				("AWS_REGION", "us-east-1"),
+			]);
+		let engine =
+			AwsEngine { egress: MockEgress::default(), settings, cache: Arc::new(Mutex::new(None)) };
 
 		assert!(!engine.has_configured_profile());
 		let error = engine
@@ -1177,18 +1245,16 @@ mod tests {
 		let temp = TempDir::new().expect("tempdir");
 		let settings = fixture_settings(
 			&temp,
-			"[default]\nrole_arn = arn:aws:iam::111122223333:role/user\ncredential_source = EcsContainer\n",
+			"[default]\nrole_arn = arn:aws:iam::111122223333:role/user\ncredential_source = \
+			 EcsContainer\n",
 			&[
 				("AWS_REGION", "us-east-1"),
 				("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "/v2/credentials/test"),
 			],
 		);
 		let egress = MockEgress::default();
-		let engine = AwsEngine {
-			egress: egress.clone(),
-			settings,
-			cache: Arc::new(Mutex::new(None)),
-		};
+		let engine =
+			AwsEngine { egress: egress.clone(), settings, cache: Arc::new(Mutex::new(None)) };
 		let sink = CaptureSink::default();
 		engine.authorize_into(&sink).await.expect("ECS role chain");
 		let requests = egress.requests.lock();
@@ -1208,15 +1274,24 @@ mod tests {
 		let temp = TempDir::new().expect("tempdir");
 		for (source, env, expected) in [
 			("Environment", vec![], false),
-			("Environment", vec![("AWS_ACCESS_KEY_ID", "AKIA"), ("AWS_SECRET_ACCESS_KEY", "secret")], true),
+			(
+				"Environment",
+				vec![("AWS_ACCESS_KEY_ID", "AKIA"), ("AWS_SECRET_ACCESS_KEY", "secret")],
+				true,
+			),
 			("EcsContainer", vec![], false),
-			("EcsContainer", vec![("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "/v2/credentials/test")], true),
+			(
+				"EcsContainer",
+				vec![("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "/v2/credentials/test")],
+				true,
+			),
 			("Ec2InstanceMetadata", vec![], false),
 			("Ec2InstanceMetadata", vec![("AWS_EC2_METADATA_DISABLED", "false")], true),
 			("Unknown", vec![], false),
 		] {
 			let config = format!(
-				"[default]\nrole_arn = arn:aws:iam::111122223333:role/user\ncredential_source = {source}\n"
+				"[default]\nrole_arn = arn:aws:iam::111122223333:role/user\ncredential_source = \
+				 {source}\n"
 			);
 			let settings = fixture_settings(&temp, &config, &env);
 			let engine = AwsEngine {

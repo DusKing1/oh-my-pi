@@ -48,7 +48,8 @@ fn cursor_request_headers(
 	auth_headers: HeaderMap,
 ) -> Result<HeaderMap, Error> {
 	let mut headers = HeaderMap::new();
-	headers.insert(header::CONTENT_TYPE, http::HeaderValue::from_static("application/connect+proto"));
+	headers
+		.insert(header::CONTENT_TYPE, http::HeaderValue::from_static("application/connect+proto"));
 	headers.insert(
 		http::HeaderName::from_static("connect-protocol-version"),
 		http::HeaderValue::from_static("1"),
@@ -83,8 +84,7 @@ fn cursor_request_headers(
 					| "transfer-encoding"
 					| "upgrade"
 					| "http2-settings"
-					| "host"
-					| "content-length"
+					| "host" | "content-length"
 					| "content-type"
 					| "connect-protocol-version"
 					| "x-ghost-mode"
@@ -94,9 +94,7 @@ fn cursor_request_headers(
 				continue;
 			}
 			let value: http::HeaderValue = raw_value.parse().map_err(|_| {
-				Error::Transport(omp_core::fmts!(
-					"invalid value for Cursor caller header {raw_name}"
-				))
+				Error::Transport(omp_core::fmts!("invalid value for Cursor caller header {raw_name}"))
 			})?;
 			if field == "te" && !value.as_bytes().eq_ignore_ascii_case(b"trailers") {
 				continue;
@@ -1178,10 +1176,7 @@ fn invoke_from_exec(
 			if args.timeout > 0 {
 				args_value.insert("timeout".to_owned(), serde_json::Value::from(args.timeout));
 			}
-			args_value.insert(
-				"tool_call_id".to_owned(),
-				serde_json::Value::String(args.tool_call_id),
-			);
+			args_value.insert("tool_call_id".to_owned(), serde_json::Value::String(args.tool_call_id));
 			let args_json = serde_json::to_vec(&args_value)
 				.map_err(|error| Error::Provider(Str::from(error.to_string())))?;
 			Ok(Invoke::builder()
@@ -1696,7 +1691,7 @@ mod tests {
 		fn invoke(working_directory: &str, timeout: i32) -> Invoke {
 			invoke_from_exec(
 				super::wire::ExecServerMessage {
-					id:      7,
+					id: 7,
 					exec_id: "exec-7".to_owned(),
 					message: Some(super::wire::exec_server_message::Message::ShellStreamArgs(
 						super::wire::ShellArgs {
@@ -1716,7 +1711,10 @@ mod tests {
 
 		let omitted = invoke("", 0);
 		let omitted_args: serde_json::Value = serde_json::from_slice(
-			&omitted.tool_call.expect("canonical shell tool call").args_json,
+			&omitted
+				.tool_call
+				.expect("canonical shell tool call")
+				.args_json,
 		)
 		.expect("shell args JSON");
 		assert_eq!(

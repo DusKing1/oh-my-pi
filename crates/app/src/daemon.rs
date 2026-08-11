@@ -835,12 +835,11 @@ async fn bootstrap_catalog_credentials(
 			},
 			AuthSpec::AwsSigV4 => {
 				if aws.has_credential_source() {
-					aws
-						.authorize_into(&BrokerAwsSink {
-							store:    Arc::clone(store),
-							provider: provider.id.clone(),
-						})
-						.await?;
+					aws.authorize_into(&BrokerAwsSink {
+						store:    Arc::clone(store),
+						provider: provider.id.clone(),
+					})
+					.await?;
 				}
 			},
 			AuthSpec::None | AuthSpec::OAuth { .. } => {},
@@ -1017,10 +1016,7 @@ fn route_dependencies(
 	} else if matches!(&provider.auth, AuthSpec::AwsSigV4) {
 		RouteRefresh::Aws {
 			engine: aws,
-			sink:   BrokerAwsSink {
-				store:    Arc::clone(&store),
-				provider: provider_id.clone(),
-			},
+			sink:   BrokerAwsSink { store: Arc::clone(&store), provider: provider_id.clone() },
 		}
 	} else if matches!(&provider.auth, AuthSpec::OAuth { .. }) || provider.oauth_flow.is_some() {
 		RouteRefresh::OAuth(oauth)

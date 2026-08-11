@@ -483,8 +483,7 @@ impl OAuthEngine {
 		if let Some(browser) = self.browser.as_ref() {
 			let _ = browser.open(url.as_str());
 		}
-		let prompt =
-			LoginPrompt::Browse { url: url.as_str().into(), loopback: true };
+		let prompt = LoginPrompt::Browse { url: url.as_str().into(), loopback: true };
 		let expires_at_ms = now_ms.saturating_add(CUSTOM_FLOW_TIMEOUT_MS);
 		Ok((
 			prompt,
@@ -1662,8 +1661,7 @@ async fn bind_callback_listeners(
 	}
 
 	for attempt in 0..=IPV6_COMPANION_ATTEMPTS {
-		let primary =
-			TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, requested_port)).await?;
+		let primary = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, requested_port)).await?;
 		let port = primary.local_addr()?.port();
 		match TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, port)).await {
 			Ok(companion) => {
@@ -1694,9 +1692,7 @@ async fn start_callback_listeners(
 		Err(_) => bind_callback_listeners(hostname, 0).await,
 	};
 	listeners.map_err(|error| {
-		OAuthError::InvalidCallback(
-			format!("failed to bind OAuth callback listener: {error}").into(),
-		)
+		OAuthError::InvalidCallback(format!("failed to bind OAuth callback listener: {error}").into())
 	})
 }
 
@@ -2231,7 +2227,10 @@ mod tests {
 				.await
 				.expect("write callback");
 			let mut response = Vec::new();
-			stream.read_to_end(&mut response).await.expect("read callback response");
+			stream
+				.read_to_end(&mut response)
+				.await
+				.expect("read callback response");
 			assert!(response.starts_with(b"HTTP/1.1 200 OK"));
 			let (code, state) = callback
 				.await

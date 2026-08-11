@@ -914,7 +914,9 @@ fn cursor_reset_at_ms(payload: &Value) -> Option<u64> {
 			.to_zoned(TimeZone::UTC);
 		let constrained = start.checked_add(1.month()).ok()?;
 		let overflow_days = start.day() - constrained.day();
-		let next_month = constrained.checked_add(i64::from(overflow_days).days()).ok()?;
+		let next_month = constrained
+			.checked_add(i64::from(overflow_days).days())
+			.ok()?;
 		return next_month.timestamp().as_millisecond().try_into().ok();
 	}
 	None
@@ -1315,46 +1317,49 @@ mod tests {
 		});
 	}
 
-
 	#[test]
 	fn cursor_plan_rails_and_on_demand_match_dashboard_percentages() {
 		let reset = "2026-09-08T08:00:31.000Z";
-		let report = cursor_report(7, 42, serde_json::json!({
-			"membershipType": "pro_plus",
-			"individualUsage": {
-				"plan": {
-					"enabled": true,
-					"used": 1504,
-					"limit": 7000,
-					"remaining": 5496,
-					"autoPercentUsed": 1.85,
-					"apiPercentUsed": 0,
-					"totalPercentUsed": 1.63
+		let report = cursor_report(
+			7,
+			42,
+			serde_json::json!({
+				"membershipType": "pro_plus",
+				"individualUsage": {
+					"plan": {
+						"enabled": true,
+						"used": 1504,
+						"limit": 7000,
+						"remaining": 5496,
+						"autoPercentUsed": 1.85,
+						"apiPercentUsed": 0,
+						"totalPercentUsed": 1.63
+					},
+					"onDemand": {
+						"enabled": true,
+						"used": 0,
+						"limit": 2000,
+						"remaining": 2000
+					}
 				},
-				"onDemand": {
-					"enabled": true,
-					"used": 0,
-					"limit": 2000,
-					"remaining": 2000
-				}
-			},
-			"billingCycleEnd": reset
-		}));
+				"billingCycleEnd": reset
+			}),
+		);
 		let reset_at_ms = timestamp_ms(&Value::from(reset)).expect("reset timestamp");
 		assert_eq!(report.plan, "pro_plus");
 		assert_eq!(report.windows, [
 			UsageWindow {
-				label: Str::new("Cursor Models"),
+				label:        Str::new("Cursor Models"),
 				used_percent: 1.85,
 				resets_at_ms: reset_at_ms,
 			},
 			UsageWindow {
-				label: Str::new("Other Models"),
+				label:        Str::new("Other Models"),
 				used_percent: 0.0,
 				resets_at_ms: reset_at_ms,
 			},
 			UsageWindow {
-				label: Str::new("On-Demand Usage"),
+				label:        Str::new("On-Demand Usage"),
 				used_percent: 0.0,
 				resets_at_ms: reset_at_ms,
 			},
@@ -1364,24 +1369,32 @@ mod tests {
 
 	#[test]
 	fn cursor_prefers_usable_overall_and_falls_through_disabled_overall() {
-		let overall = cursor_report(7, 42, serde_json::json!({
-			"individualUsage": {
-				"overall": { "enabled": true, "used": 100, "limit": 1000, "remaining": 900 },
-				"plan": { "enabled": true, "autoPercentUsed": 1.85, "apiPercentUsed": 2.5 }
-			}
-		}));
+		let overall = cursor_report(
+			7,
+			42,
+			serde_json::json!({
+				"individualUsage": {
+					"overall": { "enabled": true, "used": 100, "limit": 1000, "remaining": 900 },
+					"plan": { "enabled": true, "autoPercentUsed": 1.85, "apiPercentUsed": 2.5 }
+				}
+			}),
+		);
 		assert_eq!(overall.windows, [UsageWindow {
-			label: Str::new("Personal Usage"),
+			label:        Str::new("Personal Usage"),
 			used_percent: 10.0,
 			resets_at_ms: 0,
 		}]);
 
-		let plan = cursor_report(7, 42, serde_json::json!({
-			"individualUsage": {
-				"overall": { "enabled": false, "used": 100, "limit": 1000 },
-				"plan": { "enabled": true, "autoPercentUsed": 1.85, "apiPercentUsed": 0 }
-			}
-		}));
+		let plan = cursor_report(
+			7,
+			42,
+			serde_json::json!({
+				"individualUsage": {
+					"overall": { "enabled": false, "used": 100, "limit": 1000 },
+					"plan": { "enabled": true, "autoPercentUsed": 1.85, "apiPercentUsed": 0 }
+				}
+			}),
+		);
 		assert_eq!(plan.windows.len(), 2);
 		assert_eq!(plan.windows[0].label, "Cursor Models");
 		assert_eq!(plan.windows[0].used_percent, 1.85);
@@ -1391,19 +1404,23 @@ mod tests {
 
 	#[test]
 	fn cursor_keeps_on_demand_when_plan_is_disabled() {
-		let report = cursor_report(7, 42, serde_json::json!({
-			"individualUsage": {
-				"plan": {
-					"enabled": false,
-					"limit": 7000,
-					"autoPercentUsed": 1.85,
-					"apiPercentUsed": 0
-				},
-				"onDemand": { "enabled": true, "used": 500, "limit": 2000, "remaining": 1500 }
-			}
-		}));
+		let report = cursor_report(
+			7,
+			42,
+			serde_json::json!({
+				"individualUsage": {
+					"plan": {
+						"enabled": false,
+						"limit": 7000,
+						"autoPercentUsed": 1.85,
+						"apiPercentUsed": 0
+					},
+					"onDemand": { "enabled": true, "used": 500, "limit": 2000, "remaining": 1500 }
+				}
+			}),
+		);
 		assert_eq!(report.windows, [UsageWindow {
-			label: Str::new("On-Demand Usage"),
+			label:        Str::new("On-Demand Usage"),
 			used_percent: 25.0,
 			resets_at_ms: 0,
 		}]);
@@ -1411,31 +1428,43 @@ mod tests {
 
 	#[test]
 	fn cursor_plan_falls_back_to_total_percent_then_cents() {
-		let total = cursor_report(7, 42, serde_json::json!({
-			"individualUsage": {
-				"plan": { "enabled": true, "used": 1504, "limit": 7000, "totalPercentUsed": 1.63 }
-			}
-		}));
+		let total = cursor_report(
+			7,
+			42,
+			serde_json::json!({
+				"individualUsage": {
+					"plan": { "enabled": true, "used": 1504, "limit": 7000, "totalPercentUsed": 1.63 }
+				}
+			}),
+		);
 		assert_eq!(total.windows[0].label, "Personal Usage");
 		assert_eq!(total.windows[0].used_percent, 1.63);
 
-		let cents = cursor_report(7, 42, serde_json::json!({
-			"individualUsage": {
-				"plan": { "enabled": true, "used": 0, "limit": 7000, "remaining": 6076 }
-			}
-		}));
+		let cents = cursor_report(
+			7,
+			42,
+			serde_json::json!({
+				"individualUsage": {
+					"plan": { "enabled": true, "used": 0, "limit": 7000, "remaining": 6076 }
+				}
+			}),
+		);
 		assert_eq!(cents.windows[0].label, "Personal Usage");
 		assert_eq!(cents.windows[0].used_percent, 13.2);
 	}
 
 	#[test]
 	fn cursor_derives_monthly_reset_from_billing_cycle_start() {
-		let report = cursor_report(7, 42, serde_json::json!({
-			"individualUsage": {
-				"plan": { "enabled": true, "autoPercentUsed": 1 }
-			},
-			"billingCycleStart": "2026-01-31T08:00:31Z"
-		}));
+		let report = cursor_report(
+			7,
+			42,
+			serde_json::json!({
+				"individualUsage": {
+					"plan": { "enabled": true, "autoPercentUsed": 1 }
+				},
+				"billingCycleStart": "2026-01-31T08:00:31Z"
+			}),
+		);
 		assert_eq!(
 			report.windows[0].resets_at_ms,
 			timestamp_ms(&Value::from("2026-03-03T08:00:31Z")).expect("reset timestamp")
