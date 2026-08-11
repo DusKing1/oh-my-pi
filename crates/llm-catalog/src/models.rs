@@ -1076,6 +1076,9 @@ fn canonical_compat_key(key: &str) -> Option<&'static str> {
 		"replayUnsignedThinking" => "replay_unsigned_thinking",
 		"requiresAssistantContentForToolCalls" => "requires_assistant_content_for_tool_calls",
 		"requiresReasoningContentForToolCalls" => "requires_reasoning_content_for_tool_calls",
+		"requiresReasoningContentForAllAssistantTurns" => {
+			"requires_reasoning_content_for_all_assistant_turns"
+		},
 		"requiresThinkingEnabled" => "requires_thinking_enabled",
 		"requiresToolResultId" => "requires_tool_result_id",
 		"signingEndpoint" => "signing_endpoint",
@@ -1240,6 +1243,16 @@ fn translate_model(
 	let provider = intern.intern(provider_text);
 	let model = intern.intern(model_text);
 	let family = intern.intern(crate::identity::family_token(model_text).as_str());
+	let is_deepseek_family = family.as_str() == "deepseek"
+		|| raw
+			.name
+			.as_deref()
+			.is_some_and(|name| crate::identity::family_token(name).as_str() == "deepseek");
+	let is_openrouter = provider_text == "openrouter"
+		|| raw
+			.base_url
+			.as_deref()
+			.is_some_and(|url| url.contains("openrouter.ai"));
 	let canonical = intern.intern(&format!("{provider_text}/{model_text}"));
 	let name = intern.intern(raw.name.as_deref().unwrap_or(model_text));
 	let facet = infer_model_facet(model_text);
@@ -1287,6 +1300,19 @@ fn translate_model(
 				canonical_compat_key(&key).expect("RawCompat rejects unknown compatibility keys");
 			let _ = compat.insert_ns("wire", canonical, value);
 		}
+	}
+	if raw.reasoning
+		&& !is_openrouter
+		&& is_deepseek_family
+		&& compat
+			.get_ns("wire", "requires_reasoning_content_for_all_assistant_turns")
+			.is_none()
+	{
+		let _ = compat.insert_ns(
+			"wire",
+			"requires_reasoning_content_for_all_assistant_turns",
+			Value::Bool(true),
+		);
 	}
 	let behavior = ModelBehavior {
 		thinking: raw.thinking,
@@ -1368,7 +1394,7 @@ mod tests {
 		let providers: BTreeMap<String, BTreeMap<String, RawModel>> =
 			serde_json::from_slice(&json).expect("provider map decodes directly");
 		assert_eq!(providers.len(), 80);
-		assert_eq!(providers.values().map(BTreeMap::len).sum::<usize>(), 4_287);
+		assert_eq!(providers.values().map(BTreeMap::len).sum::<usize>(), 4_290);
 	}
 
 	fn priced_model() -> ModelCard {
@@ -1562,7 +1588,7 @@ mod tests {
 	fn embedded_catalog_is_lazily_shared_and_populated() {
 		let first = embedded_catalog();
 		let second = embedded_catalog();
-		assert_eq!(first.len(), 4_212);
+		assert_eq!(first.len(), 4_215);
 		assert!(std::ptr::eq(first, second));
 	}
 }

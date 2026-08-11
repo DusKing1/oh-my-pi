@@ -114,7 +114,7 @@ fn checked_in_snapshot_has_stable_counts_and_identities() {
 		.values()
 		.map(|models| models.as_object().expect("provider model map").len())
 		.sum();
-	assert_eq!(source_records, 4_287);
+	assert_eq!(source_records, 4_290);
 	assert!(providers.keys().all(|provider| !provider.is_empty()));
 	assert!(providers.values().all(|models| {
 		models
@@ -123,7 +123,7 @@ fn checked_in_snapshot_has_stable_counts_and_identities() {
 	}));
 
 	let catalog = load_catalog_zstd(GENERATED).expect("checked-in catalog loads");
-	assert_eq!(catalog.len(), 4_212);
+	assert_eq!(catalog.len(), 4_215);
 	assert_eq!(source_records - catalog.len(), 75);
 	assert!(catalog.models().iter().all(|model| {
 		!model.id.is_empty() && !model.provider.is_empty() && !model.model.is_empty()
@@ -175,6 +175,30 @@ fn checked_in_snapshot_preserves_mixed_provider_wire_routes() {
 		assert_eq!(wire.transport, transport, "{provider}/{model}");
 		assert_eq!(wire.base_url.as_deref(), Some(base_url), "{provider}/{model}");
 	}
+}
+
+#[test]
+fn checked_in_snapshot_marks_deepseek_responses_reasoning_replay() {
+	let catalog = load_catalog_zstd(GENERATED).expect("checked-in catalog loads");
+	let deepseek = catalog
+		.get("opencode-go", "deepseek-v4-flash")
+		.expect("DeepSeek Responses model exists");
+	assert_eq!(
+		deepseek
+			.behavior
+			.compat
+			.get_ns("wire", "requires_reasoning_content_for_all_assistant_turns")
+			.and_then(serde_json::Value::as_bool),
+		Some(true),
+	);
+	let openai = catalog.get("openai", "gpt-5-mini").expect("OpenAI Responses model exists");
+	assert!(
+		openai
+			.behavior
+			.compat
+			.get_ns("wire", "requires_reasoning_content_for_all_assistant_turns")
+			.is_none()
+	);
 }
 
 #[test]
