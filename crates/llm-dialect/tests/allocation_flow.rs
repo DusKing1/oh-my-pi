@@ -106,12 +106,15 @@ fn count_allocations(run: impl FnOnce()) -> usize {
 
 fn consume_projection(batch: impl IntoIterator<Item = Projection>) {
 	for projection in batch {
-		match projection {
-			Projection::Event(TurnEvent::PartDelta { chunk, .. }) => {
+		match projection.into_event() {
+			Some(TurnEvent::PartDelta { chunk, .. }) => {
 				black_box(chunk);
 			},
-			other => {
+			Some(other) => {
 				black_box(other);
+			},
+			None => {
+				black_box(());
 			},
 		}
 	}

@@ -710,7 +710,7 @@ fn decode_kitty_key(body: &[u8], meta: bool) -> Decoded {
 	let mut modifier_parts = modifier_field.split(|byte| *byte == b':');
 	let mut modifiers = modifier_parts.next().and_then(parse_modifier).unwrap_or(0);
 	if meta {
-		modifiers |= 2;
+		modifiers |= 0b0000_0010;
 	}
 	let event_type = modifier_parts
 		.next()
@@ -719,7 +719,7 @@ fn decode_kitty_key(body: &[u8], meta: bool) -> Decoded {
 	if event_type == 3 {
 		return Decoded::None;
 	}
-	let codepoint = if modifiers & 1 != 0 {
+	let codepoint = if modifiers & 0b0000_0001 != 0 {
 		shifted.unwrap_or(primary)
 	} else {
 		primary
@@ -784,15 +784,15 @@ fn decode_sgr_mouse(body: &[u8], final_byte: u8) -> Decoded {
 	let Some(row) = fields.next().and_then(parse_decimal_u16) else {
 		return Decoded::None;
 	};
-	let button = if bits & 64 != 0 {
-		match bits & 3 {
+	let button = if bits & 0b0100_0000 != 0 {
+		match bits & 0b0000_0011 {
 			0 => MouseButton::WheelUp,
 			1 => MouseButton::WheelDown,
 			2 => MouseButton::WheelLeft,
 			_ => MouseButton::WheelRight,
 		}
 	} else {
-		match bits & 3 {
+		match bits & 0b0000_0011 {
 			0 => MouseButton::Left,
 			1 => MouseButton::Middle,
 			2 => MouseButton::Right,
@@ -805,8 +805,8 @@ fn decode_sgr_mouse(body: &[u8], final_byte: u8) -> Decoded {
 		MouseButton::WheelLeft => Mouse::WheelLeft,
 		MouseButton::WheelRight => Mouse::WheelRight,
 		_ if final_byte == b'm' => Mouse::Release,
-		MouseButton::None if bits & 32 != 0 => Mouse::Move,
-		_ if bits & 32 != 0 => Mouse::Drag,
+		MouseButton::None if bits & 0b0010_0000 != 0 => Mouse::Move,
+		_ if bits & 0b0010_0000 != 0 => Mouse::Drag,
 		MouseButton::Left => Mouse::Click,
 		MouseButton::Middle => Mouse::MiddleClick,
 		MouseButton::Right => Mouse::RightClick,
@@ -818,9 +818,9 @@ fn decode_sgr_mouse(body: &[u8], final_byte: u8) -> Decoded {
 		row: row.saturating_sub(1),
 		button,
 		mods: Mods {
-			shift: bits & 4 != 0,
-			alt: bits & 8 != 0,
-			ctrl: bits & 16 != 0,
+			shift: bits & 0b0000_0100 != 0,
+			alt: bits & 0b0000_1000 != 0,
+			ctrl: bits & 0b0001_0000 != 0,
 			..Mods::default()
 		},
 		pressed: final_byte == b'M',
@@ -1103,12 +1103,12 @@ impl Chord {
 
 	const fn with_modifiers(key: Key, modifiers: u32) -> Self {
 		Self::new(key, Mods {
-			shift:     modifiers & 1 != 0,
-			alt:       modifiers & 2 != 0,
-			ctrl:      modifiers & 4 != 0,
-			super_key: modifiers & 8 != 0,
-			hyper:     modifiers & 16 != 0,
-			meta:      modifiers & 32 != 0,
+			shift:     modifiers & 0b0000_0001 != 0,
+			alt:       modifiers & 0b0000_0010 != 0,
+			ctrl:      modifiers & 0b0000_0100 != 0,
+			super_key: modifiers & 0b0000_1000 != 0,
+			hyper:     modifiers & 0b0001_0000 != 0,
+			meta:      modifiers & 0b0010_0000 != 0,
 		})
 	}
 
@@ -1184,10 +1184,10 @@ const DEFAULT_BINDINGS: &[(Key, u8, Key)] = &[
 
 const fn mods_from_bits(bits: u8) -> Mods {
 	Mods {
-		shift:     bits & 1 != 0,
-		alt:       bits & 2 != 0,
-		ctrl:      bits & 4 != 0,
-		super_key: bits & 8 != 0,
+		shift:     bits & 0b0000_0001 != 0,
+		alt:       bits & 0b0000_0010 != 0,
+		ctrl:      bits & 0b0000_0100 != 0,
+		super_key: bits & 0b0000_1000 != 0,
 		hyper:     false,
 		meta:      false,
 	}
@@ -1511,8 +1511,8 @@ mod tests {
 	use std::time::{Duration, Instant};
 
 	use super::{
-		Chord, InputDecoder, InputEvent, Key, Keymap, Mods, Mouse, MouseButton as RawMouseButton,
-		MouseReport, TerminalResponse, decode_keys, mods_from_bits,
+		Chord, InputDecoder, InputEvent, Key, Keymap, Mods, Mouse, MouseButton, MouseReport,
+		TerminalResponse, decode_keys, mods_from_bits,
 	};
 
 	fn drip(bytes: &[u8]) -> Vec<InputEvent> {
@@ -1837,7 +1837,7 @@ mod tests {
 				kind:    Mouse::Drag,
 				col:     9,
 				row:     3,
-				button:  RawMouseButton::Left,
+				button:  MouseButton::Left,
 				mods:    Mods { shift: true, alt: true, ctrl: true, ..Mods::default() },
 				pressed: true,
 			}),
@@ -1845,7 +1845,7 @@ mod tests {
 				kind:    Mouse::WheelDown,
 				col:     2,
 				row:     1,
-				button:  RawMouseButton::WheelDown,
+				button:  MouseButton::WheelDown,
 				mods:    Mods::default(),
 				pressed: true,
 			}),
@@ -1853,7 +1853,7 @@ mod tests {
 				kind:    Mouse::Drag,
 				col:     6,
 				row:     7,
-				button:  RawMouseButton::Left,
+				button:  MouseButton::Left,
 				mods:    Mods::default(),
 				pressed: true,
 			}),
@@ -1921,7 +1921,7 @@ mod tests {
 			let mut decoder = InputDecoder::new();
 			let mut events = Vec::new();
 			decoder.feed(bytes, start, &mut events);
-			assert_eq!(events, [expected.clone()]);
+			assert_eq!(events.as_slice(), std::slice::from_ref(&expected));
 			assert_eq!(drip(bytes), [expected]);
 		}
 	}

@@ -70,10 +70,12 @@ impl OpenAiModelPolicy {
 				if !thinking_enabled {
 					return None;
 				}
-				if let Some(value) = value.as_object() { Some(value) } else {
-    						unsupported.push(malformed("when_thinking", "must be a JSON object"));
-    						None
-    					}
+				if let Some(value) = value.as_object() {
+					Some(value)
+				} else {
+					unsupported.push(malformed("when_thinking", "must be a JSON object"));
+					None
+				}
 			});
 		let value = |name: &str| {
 			overlay
@@ -81,10 +83,14 @@ impl OpenAiModelPolicy {
 				.or_else(|| policy.compat.get_ns("wire", name))
 		};
 		let boolean = |name: &str, default: bool, unsupported: &mut Vec<Unsupported>| {
-			value(name).map_or(default, |value| if let Some(value) = value.as_bool() { value } else {
-   					unsupported.push(malformed(name, "must be a boolean"));
-   					default
-   				})
+			value(name).map_or(default, |value| {
+				if let Some(value) = value.as_bool() {
+					value
+				} else {
+					unsupported.push(malformed(name, "must be a boolean"));
+					default
+				}
+			})
 		};
 
 		compat.usage_in_streaming =
@@ -131,9 +137,7 @@ impl OpenAiModelPolicy {
 						ReasoningWireFormat::OpenAi
 					}
 				},
-				Some("openai_responses" | "openai-responses") => {
-					ReasoningWireFormat::OpenAiResponses
-				},
+				Some("openai_responses" | "openai-responses") => ReasoningWireFormat::OpenAiResponses,
 				Some("openrouter") => {
 					if provider.reasoning_wire_format == ReasoningWireFormat::OpenAiResponses {
 						ReasoningWireFormat::OpenAiResponses
@@ -153,16 +157,17 @@ impl OpenAiModelPolicy {
 				},
 			};
 		}
-		let reasoning_content_field =
-			value("reasoning_content_field").and_then(|value| if let Some("reasoning" | "reasoning_content" | "reasoning_text") = value.as_str() {
-   					Some(Str::from(value.as_str().expect("matched string")))
-   				} else {
-   					unsupported.push(malformed(
-   						"reasoning_content_field",
-   						"must be reasoning, reasoning_content, or reasoning_text",
-   					));
-   					None
-   				});
+		let reasoning_content_field = value("reasoning_content_field").and_then(|value| {
+			if let Some("reasoning" | "reasoning_content" | "reasoning_text") = value.as_str() {
+				Some(Str::from(value.as_str().expect("matched string")))
+			} else {
+				unsupported.push(malformed(
+					"reasoning_content_field",
+					"must be reasoning, reasoning_content, or reasoning_text",
+				));
+				None
+			}
+		});
 		let mut effort_map = policy
 			.thinking
 			.as_ref()
@@ -194,10 +199,14 @@ impl OpenAiModelPolicy {
 				unsupported.push(malformed("reasoning_effort_map", "must be a JSON object"));
 			}
 		}
-		let extra_body = value("extra_body").and_then(|value| if let Some(value) = value.as_object() { Some(value.clone()) } else {
-  				unsupported.push(malformed("extra_body", "must be a JSON object"));
-  				None
-  			});
+		let extra_body = value("extra_body").and_then(|value| {
+			if let Some(value) = value.as_object() {
+				Some(value.clone())
+			} else {
+				unsupported.push(malformed("extra_body", "must be a JSON object"));
+				None
+			}
+		});
 		let omit_reasoning_effort = boolean("omit_reasoning_effort", false, unsupported);
 		let supports_reasoning_effort = boolean("supports_reasoning_effort", true, unsupported);
 

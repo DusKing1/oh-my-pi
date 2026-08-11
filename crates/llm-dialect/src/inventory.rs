@@ -51,13 +51,11 @@ pub fn write_harmony_inventory<W: fmt::Write + ?Sized>(
 			write_tool_examples_jsdoc(out, tool)?;
 		}
 		write!(out, "type {} = (", tool.name)?;
-		if schema_is_empty_object(tool.parameters) {
-			out.write_str(");\n")?;
-		} else {
+		if !schema_is_empty_object(tool.parameters) {
 			out.write_str("_: ")?;
 			write_schema_type(out, tool.parameters)?;
-			out.write_str(");\n")?;
 		}
+		out.write_str(");\n")?;
 	}
 	out.write_str("\n} // namespace functions")
 }

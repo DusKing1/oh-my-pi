@@ -4,7 +4,6 @@
 
 use std::{
 	collections::{HashMap, HashSet, VecDeque},
-	future::Future,
 	sync::Arc,
 };
 
@@ -625,7 +624,7 @@ impl LspRegistry {
 				return Err(LspRegistryError::DuplicateBinding { name: spec.name.clone() });
 			}
 		}
-		let lease_records = self.lease_records().await;
+		let lease_records = self.lease_records();
 		let mut documents =
 			HashMap::<DocumentId, (Arc<DocumentSnapshot>, Url, Option<LanguageId>, usize)>::new();
 		for (_, record) in &lease_records {
@@ -689,9 +688,7 @@ impl LspRegistry {
 		};
 		for (document_id, (_, uri, ..)) in &documents {
 			if let Some((version, _)) = server.tracked_version_revision(*document_id) {
-				self
-					.mark_public_version(id, *document_id, uri, version)
-					.await;
+				self.mark_public_version(id, *document_id, uri, version);
 			}
 		}
 		self.publish_binding_event(id, None, LspBindingEventKind::Ready);
@@ -716,7 +713,7 @@ impl LspRegistry {
 		{
 			return Err(LspRegistryError::BindingBusy { binding_id });
 		}
-		let binding = self.binding(binding_id).await?;
+		let binding = self.binding(binding_id)?;
 		loop {
 			let selected = self
 				.inner
@@ -758,7 +755,7 @@ impl LspRegistry {
 	}
 
 	/// Returns installed bindings in deterministic selection order.
-	pub async fn bindings(&self) -> Vec<LspBindingInfo> {
+	pub fn bindings(&self) -> Vec<LspBindingInfo> {
 		let mut bindings = self
 			.inner
 			.state
@@ -772,40 +769,40 @@ impl LspRegistry {
 	}
 
 	/// Resolves a binding identity by its unique name.
-	pub async fn binding_id(&self, name: &str) -> Option<LspBindingId> {
+	pub fn binding_id(&self, name: &str) -> Option<LspBindingId> {
 		self.inner.state.lock().binding_names.get(name).copied()
 	}
 
 	/// Captures a generation-bound handle for callbacks installed on the
 	/// binding's current server lane.
-	pub async fn binding_handle(
+	pub fn binding_handle(
 		&self,
 		binding_id: LspBindingId,
 	) -> Result<LspBindingHandle, LspRegistryError> {
-		let binding = self.binding(binding_id).await?;
+		let binding = self.binding(binding_id)?;
 		Ok(LspBindingHandle { binding_id, generation: binding.generation })
 	}
 
 	/// Resolves synchronization policy for the concrete server generation that
 	/// originated an inbound request.
-	pub async fn sync_policy_for_handle(
+	pub fn sync_policy_for_handle(
 		&self,
 		handle: LspBindingHandle,
 		uri: &Url,
 		language_id: Option<&LanguageId>,
 	) -> Result<SyncPolicy, LspRegistryError> {
-		let binding = self.binding_for_handle(handle).await?;
+		let binding = self.binding_for_handle(handle)?;
 		Ok(binding.server.sync_policy(uri, language_id))
 	}
 
 	/// Resolves one server-visible text document version to its daemon revision.
-	pub async fn revision_for_version(
+	pub fn revision_for_version(
 		&self,
 		handle: LspBindingHandle,
 		uri: &Url,
 		version: i32,
 	) -> Result<Option<Revision>, LspRegistryError> {
-		let binding = self.binding_for_handle(handle).await?;
+		let binding = self.binding_for_handle(handle)?;
 		Ok(binding.server.revision_for_version(uri, version))
 	}
 
@@ -866,12 +863,10 @@ impl LspRegistry {
 				return Err(error);
 			},
 		};
-		let bindings = self.matching_bindings(&uri, language_id.as_ref()).await;
+		let bindings = self.matching_bindings(&uri, language_id.as_ref());
 		let mut installed: Vec<Binding> = Vec::new();
 		for binding in &bindings {
-			let existing = self
-				.binding_document_count(binding.id, head.document_id())
-				.await;
+			let existing = self.binding_document_count(binding.id, head.document_id());
 			let mut acquired = false;
 			let result = if existing == 0 {
 				let result = binding
@@ -917,9 +912,7 @@ impl LspRegistry {
 					return Err(error.into());
 				},
 			};
-			self
-				.mark_public_version(binding.id, head.document_id(), &uri, version)
-				.await;
+			self.mark_public_version(binding.id, head.document_id(), &uri, version);
 			installed.push(binding.clone());
 		}
 		let binding_ids = bindings
@@ -1003,7 +996,7 @@ impl LspRegistry {
 
 		let mut first_error = None;
 		for binding_id in &record.binding_ids {
-			match self.binding(*binding_id).await {
+			match self.binding(*binding_id) {
 				Ok(binding) => {
 					let result = {
 						let release = binding
@@ -1073,8 +1066,8 @@ impl LspRegistry {
 		cancel: CancellationToken,
 	) -> Result<(), LspRegistryError> {
 		let mutation = self.inner.mutation.lock().await;
-		let binding = self.binding_for_handle(handle).await?;
-		let affected = self.binding_document_ids(binding.id).await;
+		let binding = self.binding_for_handle(handle)?;
+		let affected = self.binding_document_ids(binding.id);
 		binding.server.register_capabilities(params_json)?;
 		drop(mutation);
 		self.schedule_policy_reconciliation(binding, affected, cancel);
@@ -1090,8 +1083,8 @@ impl LspRegistry {
 		cancel: CancellationToken,
 	) -> Result<(), LspRegistryError> {
 		let mutation = self.inner.mutation.lock().await;
-		let binding = self.binding_for_handle(handle).await?;
-		let affected = self.binding_document_ids(binding.id).await;
+		let binding = self.binding_for_handle(handle)?;
+		let affected = self.binding_document_ids(binding.id);
 		binding.server.unregister_capabilities(params_json)?;
 		drop(mutation);
 		self.schedule_policy_reconciliation(binding, affected, cancel);
@@ -1117,12 +1110,12 @@ impl LspRegistry {
 		{
 			return Err(LspRegistryError::BindingBusy { binding_id });
 		}
-		let binding = self.binding(binding_id).await?;
+		let binding = self.binding(binding_id)?;
 		let generation = binding
 			.generation
 			.checked_add(1)
 			.ok_or(LspRegistryError::BindingGenerationOverflow { binding_id })?;
-		let records = self.lease_records().await;
+		let records = self.lease_records();
 		let mut documents =
 			HashMap::<DocumentId, (Arc<DocumentSnapshot>, Url, Option<LanguageId>, usize)>::new();
 		for (_, record) in records
@@ -1189,7 +1182,7 @@ impl LspRegistry {
 		params_json: Bytes,
 		cancel: CancellationToken,
 	) -> Result<LspResponse, LspRegistryError> {
-		let binding = self.binding(binding_id).await?;
+		let binding = self.binding(binding_id)?;
 		let response = binding
 			.server
 			.request(method, params_json, None, cancel)
@@ -1207,7 +1200,7 @@ impl LspRegistry {
 		params_json: Bytes,
 		cancel: CancellationToken,
 	) -> Result<(), LspRegistryError> {
-		let binding = self.binding(binding_id).await?;
+		let binding = self.binding(binding_id)?;
 		binding
 			.server
 			.notification(method, params_json, cancel)
@@ -1228,8 +1221,8 @@ impl LspRegistry {
 		_stale_policy: StaleResponsePolicy,
 		cancel: CancellationToken,
 	) -> Result<LspResponse, LspRegistryError> {
-		let binding = self.binding(binding_id).await?;
-		let record = self.lease_record(lease_id).await?;
+		let binding = self.binding(binding_id)?;
+		let record = self.lease_record(lease_id)?;
 		if !record.binding_ids.contains(&binding_id) {
 			return Err(LspRegistryError::BindingNotSelected {
 				binding_id,
@@ -1275,13 +1268,13 @@ impl LspRegistry {
 
 	/// Tags an inbound event, resolving versioned diagnostics when the mapping
 	/// is provable.
-	pub async fn tag_inbound_event(
+	pub fn tag_inbound_event(
 		&self,
 		handle: LspBindingHandle,
 		method: impl AsRef<str>,
 		params_json: Bytes,
 	) -> Result<TaggedLspEvent, LspRegistryError> {
-		let binding = self.binding_for_handle(handle).await?;
+		let binding = self.binding_for_handle(handle)?;
 		let binding_id = binding.id;
 		let method = method.as_ref();
 		let value: Value = serde_json::from_slice(&params_json).map_err(|error| {
@@ -1358,13 +1351,13 @@ impl LspRegistry {
 	///
 	/// The exact parameter bytes are retained in both the returned event and
 	/// the clone delivered to every current subscriber.
-	pub async fn publish_inbound_event(
+	pub fn publish_inbound_event(
 		&self,
 		handle: LspBindingHandle,
 		method: impl AsRef<str>,
 		params_json: Bytes,
 	) -> Result<TaggedLspEvent, LspRegistryError> {
-		let event = self.tag_inbound_event(handle, method, params_json).await?;
+		let event = self.tag_inbound_event(handle, method, params_json)?;
 		let _ = self
 			.inner
 			.events
@@ -1372,7 +1365,7 @@ impl LspRegistry {
 		Ok(event)
 	}
 
-	async fn binding_document_ids(&self, binding_id: LspBindingId) -> HashSet<DocumentId> {
+	fn binding_document_ids(&self, binding_id: LspBindingId) -> HashSet<DocumentId> {
 		self
 			.inner
 			.state
@@ -1452,7 +1445,6 @@ impl LspRegistry {
 	) -> Result<(), LspRegistryError> {
 		let records = self
 			.lease_records()
-			.await
 			.into_iter()
 			.filter(|(_, record)| record.document_id == document_id)
 			.collect::<Vec<_>>();
@@ -1460,7 +1452,7 @@ impl LspRegistry {
 			return Ok(());
 		}
 		let (snapshot, uri) = self.current_snapshot(document_id).await?;
-		let bindings = self.sorted_bindings().await;
+		let bindings = self.sorted_bindings();
 		let mut desired_by_lease = HashMap::new();
 		let mut desired_counts = HashMap::<LspBindingId, usize>::new();
 		let mut desired_languages = HashMap::<LspBindingId, Option<LanguageId>>::new();
@@ -1538,9 +1530,7 @@ impl LspRegistry {
 					},
 				};
 				progress[index].opened = current == 0;
-				self
-					.mark_public_version(binding_id, document_id, &uri, version)
-					.await;
+				self.mark_public_version(binding_id, document_id, &uri, version);
 				for _ in current.max(1)..desired {
 					if let Err(error) = server.retain_document(document_id).await {
 						self
@@ -1605,9 +1595,7 @@ impl LspRegistry {
 						)
 						.await
 					{
-						self
-							.mark_public_version(item.binding.id, document_id, uri, version)
-							.await;
+						self.mark_public_version(item.binding.id, document_id, uri, version);
 						for _ in 1..item.released {
 							let _ = item.binding.server.retain_document(document_id).await;
 						}
@@ -1657,7 +1645,7 @@ impl LspRegistry {
 		}
 	}
 
-	async fn sorted_bindings(&self) -> Vec<Binding> {
+	fn sorted_bindings(&self) -> Vec<Binding> {
 		let mut bindings = self
 			.inner
 			.state
@@ -1670,16 +1658,15 @@ impl LspRegistry {
 		bindings
 	}
 
-	async fn matching_bindings(&self, uri: &Url, language_id: Option<&LanguageId>) -> Vec<Binding> {
+	fn matching_bindings(&self, uri: &Url, language_id: Option<&LanguageId>) -> Vec<Binding> {
 		self
 			.sorted_bindings()
-			.await
 			.into_iter()
 			.filter(|binding| binding.spec.selector.matches(uri, language_id))
 			.collect()
 	}
 
-	async fn binding(&self, binding_id: LspBindingId) -> Result<Binding, LspRegistryError> {
+	fn binding(&self, binding_id: LspBindingId) -> Result<Binding, LspRegistryError> {
 		self
 			.inner
 			.state
@@ -1690,11 +1677,8 @@ impl LspRegistry {
 			.ok_or(LspRegistryError::UnknownBinding { binding_id })
 	}
 
-	async fn binding_for_handle(
-		&self,
-		handle: LspBindingHandle,
-	) -> Result<Binding, LspRegistryError> {
-		let binding = self.binding(handle.binding_id).await?;
+	fn binding_for_handle(&self, handle: LspBindingHandle) -> Result<Binding, LspRegistryError> {
+		let binding = self.binding(handle.binding_id)?;
 		if binding.generation != handle.generation {
 			return Err(LspRegistryError::BindingRestarted { binding_id: handle.binding_id });
 		}
@@ -1719,7 +1703,7 @@ impl LspRegistry {
 		}
 	}
 
-	async fn lease_record(&self, lease_id: LeaseId) -> Result<LeaseRecord, LspRegistryError> {
+	fn lease_record(&self, lease_id: LeaseId) -> Result<LeaseRecord, LspRegistryError> {
 		self
 			.inner
 			.state
@@ -1730,7 +1714,7 @@ impl LspRegistry {
 			.ok_or(LspRegistryError::UnknownLease { lease_id })
 	}
 
-	async fn lease_records(&self) -> Vec<(LeaseId, LeaseRecord)> {
+	fn lease_records(&self) -> Vec<(LeaseId, LeaseRecord)> {
 		self
 			.inner
 			.state
@@ -1741,11 +1725,7 @@ impl LspRegistry {
 			.collect()
 	}
 
-	async fn binding_document_count(
-		&self,
-		binding_id: LspBindingId,
-		document_id: DocumentId,
-	) -> usize {
+	fn binding_document_count(&self, binding_id: LspBindingId, document_id: DocumentId) -> usize {
 		let state = self.inner.state.lock();
 		let committed = state
 			.leases
@@ -1818,7 +1798,7 @@ impl LspRegistry {
 		Ok(Arc::new(DocumentSnapshot::new(read.head().clone(), content)?))
 	}
 
-	async fn mark_private_version(
+	fn mark_private_version(
 		&self,
 		binding_id: LspBindingId,
 		document_id: DocumentId,
@@ -1876,7 +1856,7 @@ impl LspRegistry {
 		true
 	}
 
-	async fn mark_public_version(
+	fn mark_public_version(
 		&self,
 		binding_id: LspBindingId,
 		document_id: DocumentId,
@@ -1895,7 +1875,7 @@ impl LspRegistry {
 		let _mutation = self.inner.mutation.lock().await;
 		let document_id = request.base().head().document_id();
 		let base_language_id = language_for_head(request.base().head()).cloned();
-		let all_bindings = self.sorted_bindings().await;
+		let all_bindings = self.sorted_bindings();
 		let base_uri = match self.current_snapshot(document_id).await {
 			Ok((_, uri)) => uri,
 			Err(_error)
@@ -1960,9 +1940,7 @@ impl LspRegistry {
 							)
 							.await
 					{
-						self
-							.mark_public_version(binding.id, document_id, &base_uri, version)
-							.await;
+						self.mark_public_version(binding.id, document_id, &base_uri, version);
 					}
 					if retained
 						&& binding
@@ -1984,9 +1962,7 @@ impl LspRegistry {
 					return Err(error.into());
 				},
 			};
-			self
-				.mark_private_version(binding.id, document_id, &base_uri, version)
-				.await;
+			self.mark_private_version(binding.id, document_id, &base_uri, version);
 			self.inner.state.lock().provisional_leases.insert(key);
 			acquired.push(FormatBindingLease { binding: binding.clone(), existing });
 		}
@@ -2020,9 +1996,7 @@ impl LspRegistry {
 					)
 					.await
 			{
-				self
-					.mark_public_version(lease.binding.id, document_id, base_uri, version)
-					.await;
+				self.mark_public_version(lease.binding.id, document_id, base_uri, version);
 			}
 			if lease
 				.binding
@@ -2071,7 +2045,7 @@ impl LspRegistry {
 					first_error = Some(LspRegistryError::from(error));
 				}
 				self.inner.state.lock().provisional_leases.remove(&key);
-				if self.binding_document_count(binding.id, document_id).await == 0 {
+				if self.binding_document_count(binding.id, document_id) == 0 {
 					self
 						.inner
 						.state
@@ -2108,9 +2082,7 @@ impl LspRegistry {
 				.server
 				.synchronize(lsp_document(&snapshot, uri, language_id), cancel.child_token())
 				.await?;
-			self
-				.mark_private_version(binding.id, request.base().head().document_id(), uri, version)
-				.await;
+			self.mark_private_version(binding.id, request.base().head().document_id(), uri, version);
 			let policy = binding.server.sync_policy(uri, language_id);
 			if policy.will_save {
 				binding
@@ -2133,9 +2105,12 @@ impl LspRegistry {
 					.server
 					.synchronize(lsp_document(&snapshot, uri, language_id), cancel.child_token())
 					.await?;
-				self
-					.mark_private_version(binding.id, request.base().head().document_id(), uri, version)
-					.await;
+				self.mark_private_version(
+					binding.id,
+					request.base().head().document_id(),
+					uri,
+					version,
+				);
 			}
 			if binding.server.supports_formatting(uri, language_id) {
 				content = binding
@@ -2152,9 +2127,12 @@ impl LspRegistry {
 					.server
 					.synchronize(lsp_document(&snapshot, uri, language_id), cancel.child_token())
 					.await?;
-				self
-					.mark_private_version(binding.id, request.base().head().document_id(), uri, version)
-					.await;
+				self.mark_private_version(
+					binding.id,
+					request.base().head().document_id(),
+					uri,
+					version,
+				);
 			}
 		}
 		if !performed {
@@ -2167,9 +2145,7 @@ impl LspRegistry {
 				.server
 				.synchronize(lsp_document(&snapshot, uri, language_id), cancel.child_token())
 				.await?;
-			self
-				.mark_private_version(binding.id, request.base().head().document_id(), uri, version)
-				.await;
+			self.mark_private_version(binding.id, request.base().head().document_id(), uri, version);
 		}
 		Ok(content)
 	}
@@ -2188,14 +2164,12 @@ impl LspRegistry {
 				)
 				.await
 			{
-				self
-					.mark_public_version(
-						binding.id,
-						request.base().head().document_id(),
-						&leases.base_uri,
-						version,
-					)
-					.await;
+				self.mark_public_version(
+					binding.id,
+					request.base().head().document_id(),
+					&leases.base_uri,
+					version,
+				);
 			}
 		}
 	}
@@ -2213,9 +2187,12 @@ impl LspRegistry {
 				.server
 				.synchronize(lsp_document(&snapshot, document.uri(), language_id), cancel.child_token())
 				.await?;
-			self
-				.mark_public_version(binding.id, document.head().document_id(), document.uri(), version)
-				.await;
+			self.mark_public_version(
+				binding.id,
+				document.head().document_id(),
+				document.uri(),
+				version,
+			);
 			if binding.server.sync_policy(document.uri(), language_id).save {
 				binding
 					.server
@@ -2228,189 +2205,170 @@ impl LspRegistry {
 }
 
 impl FormatCoordinator for LspRegistry {
-	fn format_candidate(
+	async fn format_candidate(
 		&self,
 		request: FormatRequest,
 		cancel: CancellationToken,
-	) -> impl Future<Output = crate::Result<FormatResult>> + Send + '_ {
-		async move {
-			let leases = self
-				.acquire_format_leases(&request, cancel.child_token())
-				.await
-				.map_err(registry_protocol_error)?;
-			match self.format_candidate_inner(&request, &leases, cancel).await {
-				Ok(content) => Ok(FormatResult::new(content)),
-				Err(error) => {
-					let _mutation = self.inner.mutation.lock().await;
-					self.rollback_candidate(&request, &leases).await;
-					let bindings = leases
-						.bindings
-						.iter()
-						.map(|lease| lease.binding.clone())
-						.collect::<Vec<_>>();
-					let _ = self
-						.release_provisional_in_gate(
-							&bindings,
-							request.base().head().document_id(),
-							request.transaction_id(),
-							CancellationToken::new(),
-						)
-						.await;
-					Err(registry_protocol_error(error))
-				},
-			}
+	) -> crate::Result<FormatResult> {
+		let leases = self
+			.acquire_format_leases(&request, cancel.child_token())
+			.await
+			.map_err(registry_protocol_error)?;
+		match self.format_candidate_inner(&request, &leases, cancel).await {
+			Ok(content) => Ok(FormatResult::new(content)),
+			Err(error) => {
+				let _mutation = self.inner.mutation.lock().await;
+				self.rollback_candidate(&request, &leases).await;
+				let bindings = leases
+					.bindings
+					.iter()
+					.map(|lease| lease.binding.clone())
+					.collect::<Vec<_>>();
+				let _ = self
+					.release_provisional_in_gate(
+						&bindings,
+						request.base().head().document_id(),
+						request.transaction_id(),
+						CancellationToken::new(),
+					)
+					.await;
+				Err(registry_protocol_error(error))
+			},
 		}
 	}
 
-	fn publish_committed(
+	async fn publish_committed(
 		&self,
 		document: PublishedDocument,
 		cancel: CancellationToken,
-	) -> impl Future<Output = crate::Result<()>> + Send + '_ {
-		async move {
-			let _mutation = self.inner.mutation.lock().await;
-			let refresh_result = if self
-				.inner
-				.state
-				.lock()
-				.leases
-				.values()
-				.any(|record| record.document_id == document.head().document_id())
-			{
-				self
-					.refresh_document(document.head().document_id(), cancel.child_token())
-					.await
-			} else {
-				Ok(())
-			};
-			let mut bindings = Vec::new();
-			let mut included = HashSet::new();
-			for binding in self
-				.matching_bindings(document.uri(), language_for_head(document.head()))
+	) -> crate::Result<()> {
+		let _mutation = self.inner.mutation.lock().await;
+		let refresh_result = if self
+			.inner
+			.state
+			.lock()
+			.leases
+			.values()
+			.any(|record| record.document_id == document.head().document_id())
+		{
+			self
+				.refresh_document(document.head().document_id(), cancel.child_token())
 				.await
-			{
-				if self
-					.binding_document_count(binding.id, document.head().document_id())
-					.await > 0
-				{
-					included.insert(binding.id);
-					bindings.push(binding);
-				}
+		} else {
+			Ok(())
+		};
+		let mut bindings = Vec::new();
+		let mut included = HashSet::new();
+		for binding in self.matching_bindings(document.uri(), language_for_head(document.head())) {
+			if self.binding_document_count(binding.id, document.head().document_id()) > 0 {
+				included.insert(binding.id);
+				bindings.push(binding);
 			}
-			let provisional_ids = self
-				.inner
-				.state
-				.lock()
-				.provisional_leases
-				.iter()
-				.filter(|key| {
-					key.document_id == document.head().document_id()
-						&& key.transaction == document.transaction_id()
-				})
-				.map(|key| key.binding_id)
-				.collect::<Vec<_>>();
-			for binding_id in provisional_ids {
-				if included.insert(binding_id) {
-					bindings.push(
-						self
-							.binding(binding_id)
-							.await
-							.map_err(registry_protocol_error)?,
-					);
-				}
-			}
-			let publish_result = match refresh_result {
-				Ok(()) => {
-					self
-						.publish_committed_inner(&document, &bindings, cancel.child_token())
-						.await
-				},
-				Err(error) => Err(error),
-			};
-			let release_result = self
-				.release_provisional_in_gate(
-					&bindings,
-					document.head().document_id(),
-					document.transaction_id(),
-					cancel,
-				)
-				.await;
-			publish_result
-				.and(release_result)
-				.map_err(registry_protocol_error)
 		}
+		let provisional_ids = self
+			.inner
+			.state
+			.lock()
+			.provisional_leases
+			.iter()
+			.filter(|key| {
+				key.document_id == document.head().document_id()
+					&& key.transaction == document.transaction_id()
+			})
+			.map(|key| key.binding_id)
+			.collect::<Vec<_>>();
+		for binding_id in provisional_ids {
+			if included.insert(binding_id) {
+				bindings.push(self.binding(binding_id).map_err(registry_protocol_error)?);
+			}
+		}
+		let publish_result = match refresh_result {
+			Ok(()) => {
+				self
+					.publish_committed_inner(&document, &bindings, cancel.child_token())
+					.await
+			},
+			Err(error) => Err(error),
+		};
+		let release_result = self
+			.release_provisional_in_gate(
+				&bindings,
+				document.head().document_id(),
+				document.transaction_id(),
+				cancel,
+			)
+			.await;
+		publish_result
+			.and(release_result)
+			.map_err(registry_protocol_error)
 	}
 
-	fn revert_uncommitted(
+	async fn revert_uncommitted(
 		&self,
 		document: RevertedDocument,
 		cancel: CancellationToken,
-	) -> impl Future<Output = crate::Result<()>> + Send + '_ {
-		async move {
-			let _mutation = self.inner.mutation.lock().await;
-			let snapshot = document.snapshot();
-			let keys = self
-				.inner
-				.state
-				.lock()
-				.provisional_leases
-				.iter()
-				.copied()
-				.filter(|key| {
-					key.document_id == snapshot.head().document_id()
-						&& key.transaction == document.transaction_id()
-				})
-				.collect::<Vec<_>>();
-			let mut bindings = Vec::new();
-			let mut first_error = None;
-			for key in keys {
-				let binding = match self.binding(key.binding_id).await {
-					Ok(binding) => binding,
-					Err(error) => {
-						self.inner.state.lock().provisional_leases.remove(&key);
-						if first_error.is_none() {
-							first_error = Some(error);
-						}
-						continue;
-					},
-				};
-				match binding
-					.server
-					.synchronize(
-						lsp_document(snapshot, document.uri(), document.language_id()),
-						cancel.child_token(),
-					)
-					.await
-				{
-					Ok(version) => {
-						self
-							.mark_public_version(
-								binding.id,
-								snapshot.head().document_id(),
-								document.uri(),
-								version,
-							)
-							.await;
-					},
-					Err(error) if first_error.is_none() => {
-						first_error = Some(LspRegistryError::from(error));
-					},
-					Err(_) => {},
-				}
-				bindings.push(binding);
-			}
-			let release_result = self
-				.release_provisional_in_gate(
-					&bindings,
-					snapshot.head().document_id(),
-					document.transaction_id(),
-					cancel,
+	) -> crate::Result<()> {
+		let _mutation = self.inner.mutation.lock().await;
+		let snapshot = document.snapshot();
+		let keys = self
+			.inner
+			.state
+			.lock()
+			.provisional_leases
+			.iter()
+			.copied()
+			.filter(|key| {
+				key.document_id == snapshot.head().document_id()
+					&& key.transaction == document.transaction_id()
+			})
+			.collect::<Vec<_>>();
+		let mut bindings = Vec::new();
+		let mut first_error = None;
+		for key in keys {
+			let binding = match self.binding(key.binding_id) {
+				Ok(binding) => binding,
+				Err(error) => {
+					self.inner.state.lock().provisional_leases.remove(&key);
+					if first_error.is_none() {
+						first_error = Some(error);
+					}
+					continue;
+				},
+			};
+			match binding
+				.server
+				.synchronize(
+					lsp_document(snapshot, document.uri(), document.language_id()),
+					cancel.child_token(),
 				)
-				.await;
-			match first_error {
-				Some(error) => Err(registry_protocol_error(error)),
-				None => release_result.map_err(registry_protocol_error),
+				.await
+			{
+				Ok(version) => {
+					self.mark_public_version(
+						binding.id,
+						snapshot.head().document_id(),
+						document.uri(),
+						version,
+					);
+				},
+				Err(error) if first_error.is_none() => {
+					first_error = Some(LspRegistryError::from(error));
+				},
+				Err(_) => {},
 			}
+			bindings.push(binding);
+		}
+		let release_result = self
+			.release_provisional_in_gate(
+				&bindings,
+				snapshot.head().document_id(),
+				document.transaction_id(),
+				cancel,
+			)
+			.await;
+		match first_error {
+			Some(error) => Err(registry_protocol_error(error)),
+			None => release_result.map_err(registry_protocol_error),
 		}
 	}
 }
@@ -2608,6 +2566,14 @@ mod tests {
 
 	#[async_trait]
 	impl LspTransport for NullTransport {
+		#[allow(
+			unknown_lints,
+			reason = "unused_async_trait_impl is not available on every supported nightly"
+		)]
+		#[allow(
+			clippy::unused_async_trait_impl,
+			reason = "LspTransport requires an async request implementation"
+		)]
 		async fn request(
 			&self,
 			_: &str,
@@ -2617,6 +2583,14 @@ mod tests {
 			Ok(Bytes::from_static(b"null"))
 		}
 
+		#[allow(
+			unknown_lints,
+			reason = "unused_async_trait_impl is not available on every supported nightly"
+		)]
+		#[allow(
+			clippy::unused_async_trait_impl,
+			reason = "LspTransport requires an async notification implementation"
+		)]
 		async fn notify(
 			&self,
 			_: &str,
@@ -2631,6 +2605,14 @@ mod tests {
 
 	#[async_trait]
 	impl LspTransport for HangingCloseTransport {
+		#[allow(
+			unknown_lints,
+			reason = "unused_async_trait_impl is not available on every supported nightly"
+		)]
+		#[allow(
+			clippy::unused_async_trait_impl,
+			reason = "LspTransport requires an async request implementation"
+		)]
 		async fn request(
 			&self,
 			_: &str,
@@ -2676,6 +2658,14 @@ mod tests {
 			}
 		}
 
+		#[allow(
+			unknown_lints,
+			reason = "unused_async_trait_impl is not available on every supported nightly"
+		)]
+		#[allow(
+			clippy::unused_async_trait_impl,
+			reason = "LspTransport requires an async notification implementation"
+		)]
 		async fn notify(
 			&self,
 			_: &str,
@@ -2691,6 +2681,14 @@ mod tests {
 
 	#[async_trait]
 	impl LspTransport for CountingTransport {
+		#[allow(
+			unknown_lints,
+			reason = "unused_async_trait_impl is not available on every supported nightly"
+		)]
+		#[allow(
+			clippy::unused_async_trait_impl,
+			reason = "LspTransport requires an async request implementation"
+		)]
 		async fn request(
 			&self,
 			_: &str,
@@ -2701,6 +2699,14 @@ mod tests {
 			Ok(Bytes::from_static(b"null"))
 		}
 
+		#[allow(
+			unknown_lints,
+			reason = "unused_async_trait_impl is not available on every supported nightly"
+		)]
+		#[allow(
+			clippy::unused_async_trait_impl,
+			reason = "LspTransport requires an async notification implementation"
+		)]
 		async fn notify(
 			&self,
 			_: &str,
@@ -2730,6 +2736,14 @@ mod tests {
 			Ok(Bytes::from_static(b"null"))
 		}
 
+		#[allow(
+			unknown_lints,
+			reason = "unused_async_trait_impl is not available on every supported nightly"
+		)]
+		#[allow(
+			clippy::unused_async_trait_impl,
+			reason = "LspTransport requires an async notification implementation"
+		)]
 		async fn notify(
 			&self,
 			_: &str,
@@ -2746,6 +2760,14 @@ mod tests {
 
 	#[async_trait]
 	impl LspTransport for RequestCountingTransport {
+		#[allow(
+			unknown_lints,
+			reason = "unused_async_trait_impl is not available on every supported nightly"
+		)]
+		#[allow(
+			clippy::unused_async_trait_impl,
+			reason = "LspTransport requires an async request implementation"
+		)]
 		async fn request(
 			&self,
 			_: &str,
@@ -2756,6 +2778,14 @@ mod tests {
 			Ok(Bytes::from_static(b"null"))
 		}
 
+		#[allow(
+			unknown_lints,
+			reason = "unused_async_trait_impl is not available on every supported nightly"
+		)]
+		#[allow(
+			clippy::unused_async_trait_impl,
+			reason = "LspTransport requires an async notification implementation"
+		)]
 		async fn notify(
 			&self,
 			_: &str,
@@ -2770,6 +2800,14 @@ mod tests {
 
 	#[async_trait]
 	impl LspTransport for FailingNotifyTransport {
+		#[allow(
+			unknown_lints,
+			reason = "unused_async_trait_impl is not available on every supported nightly"
+		)]
+		#[allow(
+			clippy::unused_async_trait_impl,
+			reason = "LspTransport requires an async request implementation"
+		)]
 		async fn request(
 			&self,
 			_: &str,
@@ -2779,6 +2817,14 @@ mod tests {
 			Ok(Bytes::from_static(b"null"))
 		}
 
+		#[allow(
+			unknown_lints,
+			reason = "unused_async_trait_impl is not available on every supported nightly"
+		)]
+		#[allow(
+			clippy::unused_async_trait_impl,
+			reason = "LspTransport requires an async notification implementation"
+		)]
 		async fn notify(
 			&self,
 			_: &str,
@@ -2796,6 +2842,14 @@ mod tests {
 
 	#[async_trait]
 	impl LspTransport for ToggleNotifyTransport {
+		#[allow(
+			unknown_lints,
+			reason = "unused_async_trait_impl is not available on every supported nightly"
+		)]
+		#[allow(
+			clippy::unused_async_trait_impl,
+			reason = "LspTransport requires an async request implementation"
+		)]
 		async fn request(
 			&self,
 			_: &str,
@@ -2805,6 +2859,14 @@ mod tests {
 			Ok(Bytes::from_static(b"null"))
 		}
 
+		#[allow(
+			unknown_lints,
+			reason = "unused_async_trait_impl is not available on every supported nightly"
+		)]
+		#[allow(
+			clippy::unused_async_trait_impl,
+			reason = "LspTransport requires an async notification implementation"
+		)]
 		async fn notify(
 			&self,
 			_: &str,
@@ -2826,6 +2888,14 @@ mod tests {
 
 	#[async_trait]
 	impl LspTransport for FailSecondNotifyTransport {
+		#[allow(
+			unknown_lints,
+			reason = "unused_async_trait_impl is not available on every supported nightly"
+		)]
+		#[allow(
+			clippy::unused_async_trait_impl,
+			reason = "LspTransport requires an async request implementation"
+		)]
 		async fn request(
 			&self,
 			_: &str,
@@ -2835,6 +2905,14 @@ mod tests {
 			Ok(Bytes::from_static(b"null"))
 		}
 
+		#[allow(
+			unknown_lints,
+			reason = "unused_async_trait_impl is not available on every supported nightly"
+		)]
+		#[allow(
+			clippy::unused_async_trait_impl,
+			reason = "LspTransport requires an async notification implementation"
+		)]
 		async fn notify(
 			&self,
 			_: &str,
@@ -2887,7 +2965,7 @@ mod tests {
 			)
 			.await
 			.unwrap();
-		let handle = registry.binding_handle(binding_id).await.unwrap();
+		let handle = registry.binding_handle(binding_id).unwrap();
 		let document_id = DocumentId::from_bytes([7; 16]);
 		let content = Bytes::from_static(b"published");
 		let revision = Revision::for_content(1, &content);
@@ -2901,22 +2979,19 @@ mod tests {
 		.unwrap();
 		let snapshot = DocumentSnapshot::new(head, content).unwrap();
 		let uri = Url::from_file_path(root.join("published.txt")).unwrap();
-		let bound = registry.binding(binding_id).await.unwrap();
+		let bound = registry.binding(binding_id).unwrap();
 		let version = bound
 			.server
 			.synchronize(lsp_document(&snapshot, &uri, None), CancellationToken::new())
 			.await
 			.unwrap();
-		registry
-			.mark_public_version(binding_id, document_id, &uri, version)
-			.await;
+		registry.mark_public_version(binding_id, document_id, &uri, version);
 		let params_json =
 			Bytes::from(format!(r#"{{"uri":"{uri}","version":{version},"diagnostics":[]}}"#));
 		let mut events = registry.subscribe_events();
 
 		let tagged = registry
 			.publish_inbound_event(handle, "textDocument/publishDiagnostics", params_json.clone())
-			.await
 			.unwrap();
 
 		assert_eq!(tagged.params_json(), &params_json);
@@ -3020,7 +3095,7 @@ mod tests {
 			)
 			.await
 			.unwrap();
-		let binding_handle = registry.binding_handle(binding_id).await.unwrap();
+		let binding_handle = registry.binding_handle(binding_id).unwrap();
 		let content = Bytes::from_static(b"base");
 		let revision = Revision::for_content(1, &content);
 		let head = DocumentHead::new(
@@ -3086,7 +3161,7 @@ mod tests {
 			second_format.await.unwrap().unwrap().content(),
 			&Bytes::from_static(b"candidate-two"),
 		);
-		let bound_server = registry.binding(binding_id).await.unwrap().server;
+		let bound_server = registry.binding(binding_id).unwrap().server;
 		let (version, _) = bound_server
 			.tracked_version_revision(DocumentId::from_bytes([5; 16]))
 			.unwrap();
@@ -3099,7 +3174,6 @@ mod tests {
 					"textDocument/publishDiagnostics",
 					diagnostics.clone(),
 				)
-				.await
 				.unwrap()
 				.revision(),
 			None,
@@ -3115,7 +3189,6 @@ mod tests {
 		assert_eq!(
 			registry
 				.tag_inbound_event(binding_handle, "textDocument/publishDiagnostics", diagnostics,)
-				.await
 				.unwrap()
 				.revision(),
 			None,
@@ -3189,7 +3262,7 @@ mod tests {
 			)
 			.await
 			.unwrap();
-		let old_handle = registry.binding_handle(binding_id).await.unwrap();
+		let old_handle = registry.binding_handle(binding_id).unwrap();
 		let requesting_registry = registry.clone();
 		let request = tokio::spawn(async move {
 			requesting_registry
@@ -3213,13 +3286,11 @@ mod tests {
 				if rejected == binding_id
 		));
 		assert!(matches!(
-			registry
-				.publish_inbound_event(
-					old_handle,
-					"window/logMessage",
-					Bytes::from_static(br#"{"type":3,"message":"late"}"#),
-				)
-				.await,
+			registry.publish_inbound_event(
+				old_handle,
+				"window/logMessage",
+				Bytes::from_static(br#"{"type":3,"message":"late"}"#),
+			),
 			Err(LspRegistryError::BindingRestarted { binding_id: rejected })
 				if rejected == binding_id
 		));
@@ -3387,7 +3458,7 @@ mod tests {
 				.await
 				.is_err()
 		);
-		assert_eq!(registry.binding(binding_id).await.unwrap().generation, 0);
+		assert_eq!(registry.binding(binding_id).unwrap().generation, 0);
 		assert_eq!(registry.inner.state.lock().public_versions, old_versions);
 		assert_eq!(replacement.tracked_version_revision(first.head().document_id()), None);
 		assert_eq!(replacement.tracked_version_revision(second.head().document_id()), None);
@@ -3472,7 +3543,7 @@ mod tests {
 			)
 			.await;
 		assert!(result.is_err());
-		let first = registry.binding(first_id).await.unwrap();
+		let first = registry.binding(first_id).unwrap();
 		assert_eq!(
 			first
 				.server

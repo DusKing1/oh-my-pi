@@ -18,13 +18,29 @@ use crate::{
 /// One projector output, including the non-provider failure used when a model
 /// starts fabricating tool results after an in-band call.
 #[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
-pub enum Projection {
-	/// Canonical delta-only turn event.
-	Event(TurnEvent),
-	/// The model emitted a dialect-specific tool-result opener; callers must
-	/// abort upstream generation and discard all later bytes.
-	AbortFabricatedToolResult,
+pub struct Projection {
+	event: Option<TurnEvent>,
+}
+
+impl Projection {
+	/// Creates a projection containing one canonical turn event.
+	#[must_use]
+	pub fn event(event: TurnEvent) -> Self {
+		Self { event: Some(event) }
+	}
+
+	/// Creates the stop signal emitted for a fabricated in-band tool result.
+	#[must_use]
+	pub const fn abort_fabricated_tool_result() -> Self {
+		Self { event: None }
+	}
+
+	/// Returns the canonical event, or `None` for a fabricated-result stop
+	/// signal.
+	#[must_use]
+	pub fn into_event(self) -> Option<TurnEvent> {
+		self.event
+	}
 }
 
 /// Inline batch emitted by projector operations.
@@ -99,7 +115,7 @@ impl StreamProjector {
 				self.apply(flushed, &mut out);
 				self.close_open(&mut out);
 				self.stopped = true;
-				out.push(Projection::AbortFabricatedToolResult);
+				out.push(Projection::abort_fabricated_tool_result());
 				return out;
 			}
 			let valid = valid_utf8_prefix(&chunk);
@@ -110,7 +126,7 @@ impl StreamProjector {
 			{
 				let index =
 					self.open_part(StreamPartKind::Text, Str::default(), Str::default(), &mut out);
-				out.push(Projection::Event(TurnEvent::PartDelta { index, chunk }));
+				out.push(Projection::event(TurnEvent::PartDelta { index, chunk }));
 				return out;
 			}
 			if valid == chunk.len() && partial_suffix_overlap_any(&chunk, self.response_tokens) == 0 {
@@ -131,7 +147,7 @@ impl StreamProjector {
 			self.apply(flushed, &mut out);
 			self.close_open(&mut out);
 			self.stopped = true;
-			out.push(Projection::AbortFabricatedToolResult);
+			out.push(Projection::abort_fabricated_tool_result());
 			return out;
 		}
 		let hold = partial_suffix_overlap_any(&self.pending, self.response_tokens);
@@ -158,7 +174,7 @@ impl StreamProjector {
 		self.close_open(&mut out);
 		let index = self.allocate_index();
 		self.native_tools.insert(source_index, index);
-		out.push(Projection::Event(TurnEvent::PartStart {
+		out.push(Projection::event(TurnEvent::PartStart {
 			index,
 			kind: StreamPartKind::ToolCall,
 			tool_call_id: canonical_call_id(id),
@@ -175,7 +191,7 @@ impl StreamProjector {
 			return out;
 		}
 		if let Some(&index) = self.native_tools.get(&source_index) {
-			out.push(Projection::Event(TurnEvent::PartDelta { index, chunk }));
+			out.push(Projection::event(TurnEvent::PartDelta { index, chunk }));
 		}
 		out
 	}
@@ -185,7 +201,7 @@ impl StreamProjector {
 	pub fn native_tool_end(&mut self, source_index: u32) -> ProjectionBatch {
 		let mut out = ProjectionBatch::new();
 		if let Some(index) = self.native_tools.remove(&source_index) {
-			out.push(Projection::Event(TurnEvent::PartEnd { index, signature: Default::default() }));
+			out.push(Projection::event(TurnEvent::PartEnd { index, signature: Default::default() }));
 		}
 		out
 	}
@@ -206,7 +222,7 @@ impl StreamProjector {
 		self.apply(flushed, &mut out);
 		self.close_open(&mut out);
 		for index in std::mem::take(&mut self.native_tools).into_values() {
-			out.push(Projection::Event(TurnEvent::PartEnd { index, signature: Default::default() }));
+			out.push(Projection::event(TurnEvent::PartEnd { index, signature: Default::default() }));
 		}
 		out
 	}
@@ -223,7 +239,7 @@ impl StreamProjector {
 				ScanEvent::Text(chunk) => {
 					let index =
 						self.open_part(StreamPartKind::Text, Str::default(), Str::default(), out);
-					out.push(Projection::Event(TurnEvent::PartDelta { index, chunk }));
+					out.push(Projection::event(TurnEvent::PartDelta { index, chunk }));
 				},
 				ScanEvent::ThinkingStart => {
 					self.open_part(StreamPartKind::Thinking, Str::default(), Str::default(), out);
@@ -231,7 +247,7 @@ impl StreamProjector {
 				ScanEvent::ThinkingDelta(chunk) => {
 					let index =
 						self.open_part(StreamPartKind::Thinking, Str::default(), Str::default(), out);
-					out.push(Projection::Event(TurnEvent::PartDelta { index, chunk }));
+					out.push(Projection::event(TurnEvent::PartDelta { index, chunk }));
 				},
 				ScanEvent::ThinkingEnd { signature } => {
 					self.close_open_kind(StreamPartKind::Thinking, signature, out);
@@ -248,7 +264,7 @@ impl StreamProjector {
 					let index = self.allocate_index();
 					let canonical_id = canonical_call_id(id.clone());
 					self.inband_tools.insert(id, index);
-					out.push(Projection::Event(TurnEvent::PartStart {
+					out.push(Projection::event(TurnEvent::PartStart {
 						index,
 						kind: StreamPartKind::ToolCall,
 						tool_call_id: canonical_id,
@@ -260,7 +276,7 @@ impl StreamProjector {
 						continue;
 					}
 					if let Some(&index) = self.inband_tools.get(&id) {
-						out.push(Projection::Event(TurnEvent::PartDelta { index, chunk: delta }));
+						out.push(Projection::event(TurnEvent::PartDelta { index, chunk: delta }));
 					}
 				},
 				ScanEvent::ToolEnd { id, .. } => {
@@ -268,7 +284,7 @@ impl StreamProjector {
 						continue;
 					}
 					if let Some(index) = self.inband_tools.remove(&id) {
-						out.push(Projection::Event(TurnEvent::PartEnd {
+						out.push(Projection::event(TurnEvent::PartEnd {
 							index,
 							signature: Default::default(),
 						}));
@@ -291,7 +307,7 @@ impl StreamProjector {
 		self.close_open(out);
 		let index = self.allocate_index();
 		self.open = Some(OpenPart { index, kind });
-		out.push(Projection::Event(TurnEvent::PartStart {
+		out.push(Projection::event(TurnEvent::PartStart {
 			index,
 			kind,
 			tool_call_id: id,
@@ -308,13 +324,13 @@ impl StreamProjector {
 	) {
 		if let Some(open) = self.open.filter(|open| open.kind == kind) {
 			self.open = None;
-			out.push(Projection::Event(TurnEvent::PartEnd { index: open.index, signature }));
+			out.push(Projection::event(TurnEvent::PartEnd { index: open.index, signature }));
 		}
 	}
 
 	fn close_open(&mut self, out: &mut ProjectionBatch) {
 		if let Some(open) = self.open.take() {
-			out.push(Projection::Event(TurnEvent::PartEnd {
+			out.push(Projection::event(TurnEvent::PartEnd {
 				index:     open.index,
 				signature: Default::default(),
 			}));
@@ -330,7 +346,8 @@ impl StreamProjector {
 
 fn canonical_call_id(id: Str) -> Str {
 	let valid = id
-		.parse::<CallId>().is_ok_and(|id| id.as_ulid().to_bytes() != [0; 16]);
+		.parse::<CallId>()
+		.is_ok_and(|id| id.as_ulid().to_bytes() != [0; 16]);
 	if valid {
 		id
 	} else {

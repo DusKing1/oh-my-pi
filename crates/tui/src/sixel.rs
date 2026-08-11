@@ -106,7 +106,7 @@ impl SixelImage {
 							break;
 						}
 						if self.scaled_index(x, target_y, target_width, target_height) == color {
-							bits |= 1 << bit;
+							bits |= 0b0000_0001 << bit;
 						}
 					}
 					columns.push(bits + 63);

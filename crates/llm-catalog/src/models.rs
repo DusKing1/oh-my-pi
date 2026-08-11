@@ -776,13 +776,14 @@ pub fn load_catalog_json(bytes: &[u8]) -> Result<ModelCatalog, CatalogError> {
 /// behavior are retained server-side, while authentication and unknown agent
 /// fields are rejected by the closed input schema. Pi does not place `OpenAI`'s
 /// embedding cards in its `openai` bucket, so the importer promotes
-/// Pi's exact `ZenMux` copies (pricing and limits) to direct `OpenAI` identities.
-/// Their native dimensions are `OpenAI`'s published 1,536/3,072 widths; OMP's
-/// curated `OpenAI` provider entry and remote embedding policy are the capability
-/// sources for the direct route and custom dimensions. The serialized provider
-/// map remains a source snapshot plus those two documented promotions; loading
-/// it applies family detection, reseller-reference inheritance, and
-/// effort-variant collapse. Zstd frames do not contain filesystem timestamps.
+/// Pi's exact `ZenMux` copies (pricing and limits) to direct `OpenAI`
+/// identities. Their native dimensions are `OpenAI`'s published 1,536/3,072
+/// widths; OMP's curated `OpenAI` provider entry and remote embedding policy
+/// are the capability sources for the direct route and custom dimensions. The
+/// serialized provider map remains a source snapshot plus those two documented
+/// promotions; loading it applies family detection, reseller-reference
+/// inheritance, and effort-variant collapse. Zstd frames do not contain
+/// filesystem timestamps.
 pub fn import_catalog_zstd(bytes: &[u8]) -> Result<Vec<u8>, CatalogError> {
 	let source_values: BTreeMap<String, BTreeMap<String, Value>> = serde_json::from_slice(bytes)?;
 	for (provider, models) in &source_values {

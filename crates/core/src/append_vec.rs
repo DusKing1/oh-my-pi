@@ -1301,7 +1301,7 @@ mod tests {
 	fn test_extend() {
 		let vec = AppendVec::<char>::new();
 
-		let items = vec!['a', 'b', 'c', 'd', 'e'];
+		let items = ['a', 'b', 'c', 'd', 'e'];
 		vec.extend(items);
 
 		assert_eq!(vec.len(), 5);

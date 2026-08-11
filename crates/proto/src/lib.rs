@@ -47,7 +47,23 @@ pub mod omp {
 	pub mod thread {
 		/// Version 1.
 		pub mod v1 {
-			#![allow(missing_docs, clippy::pedantic, clippy::nursery, reason = "generated code")]
+			#![allow(
+				missing_docs,
+				clippy::pedantic,
+				clippy::nursery,
+				reason = "prost/tonic output is machine-generated and cannot follow handwritten \
+				          documentation and style conventions"
+			)]
+			#![allow(
+				clippy::allow_attributes_without_reason,
+				reason = "prost/tonic emits compatibility allow attributes without Rust reason \
+				          metadata"
+			)]
+			#![allow(
+				clippy::large_enum_variant,
+				reason = "prost maps protobuf oneofs directly to enums; boxing would change the \
+				          generated Rust API"
+			)]
 			include!(concat!(env!("OUT_DIR"), "/omp.thread.v1.rs"));
 		}
 	}
@@ -56,7 +72,23 @@ pub mod omp {
 	pub mod inference {
 		/// Version 1.
 		pub mod v1 {
-			#![allow(missing_docs, clippy::pedantic, clippy::nursery, reason = "generated code")]
+			#![allow(
+				missing_docs,
+				clippy::pedantic,
+				clippy::nursery,
+				reason = "prost/tonic output is machine-generated and cannot follow handwritten \
+				          documentation and style conventions"
+			)]
+			#![allow(
+				clippy::allow_attributes_without_reason,
+				reason = "prost/tonic emits compatibility allow attributes without Rust reason \
+				          metadata"
+			)]
+			#![allow(
+				clippy::large_enum_variant,
+				reason = "prost maps protobuf oneofs directly to enums; boxing would change the \
+				          generated Rust API"
+			)]
 			include!(concat!(env!("OUT_DIR"), "/omp.inference.v1.rs"));
 		}
 	}
@@ -65,7 +97,23 @@ pub mod omp {
 	pub mod auth {
 		/// Version 1.
 		pub mod v1 {
-			#![allow(missing_docs, clippy::pedantic, clippy::nursery, reason = "generated code")]
+			#![allow(
+				missing_docs,
+				clippy::pedantic,
+				clippy::nursery,
+				reason = "prost/tonic output is machine-generated and cannot follow handwritten \
+				          documentation and style conventions"
+			)]
+			#![allow(
+				clippy::allow_attributes_without_reason,
+				reason = "prost/tonic emits compatibility allow attributes without Rust reason \
+				          metadata"
+			)]
+			#![allow(
+				clippy::large_enum_variant,
+				reason = "prost maps protobuf oneofs directly to enums; boxing would change the \
+				          generated Rust API"
+			)]
 			include!(concat!(env!("OUT_DIR"), "/omp.auth.v1.rs"));
 		}
 	}
@@ -74,7 +122,23 @@ pub mod omp {
 	pub mod gateway {
 		/// Version 1.
 		pub mod v1 {
-			#![allow(missing_docs, clippy::pedantic, clippy::nursery, reason = "generated code")]
+			#![allow(
+				missing_docs,
+				clippy::pedantic,
+				clippy::nursery,
+				reason = "prost/tonic output is machine-generated and cannot follow handwritten \
+				          documentation and style conventions"
+			)]
+			#![allow(
+				clippy::allow_attributes_without_reason,
+				reason = "prost/tonic emits compatibility allow attributes without Rust reason \
+				          metadata"
+			)]
+			#![allow(
+				clippy::large_enum_variant,
+				reason = "prost maps protobuf oneofs directly to enums; boxing would change the \
+				          generated Rust API"
+			)]
 			include!(concat!(env!("OUT_DIR"), "/omp.gateway.v1.rs"));
 		}
 	}
@@ -83,7 +147,23 @@ pub mod omp {
 	pub mod blob {
 		/// Version 1.
 		pub mod v1 {
-			#![allow(missing_docs, clippy::pedantic, clippy::nursery, reason = "generated code")]
+			#![allow(
+				missing_docs,
+				clippy::pedantic,
+				clippy::nursery,
+				reason = "prost/tonic output is machine-generated and cannot follow handwritten \
+				          documentation and style conventions"
+			)]
+			#![allow(
+				clippy::allow_attributes_without_reason,
+				reason = "prost/tonic emits compatibility allow attributes without Rust reason \
+				          metadata"
+			)]
+			#![allow(
+				clippy::large_enum_variant,
+				reason = "prost maps protobuf oneofs directly to enums; boxing would change the \
+				          generated Rust API"
+			)]
 			include!(concat!(env!("OUT_DIR"), "/omp.blob.v1.rs"));
 		}
 	}
@@ -93,7 +173,23 @@ pub mod omp {
 	pub mod document {
 		/// Version 1.
 		pub mod v1 {
-			#![allow(missing_docs, clippy::pedantic, clippy::nursery, reason = "generated code")]
+			#![allow(
+				missing_docs,
+				clippy::pedantic,
+				clippy::nursery,
+				reason = "prost/tonic output is machine-generated and cannot follow handwritten \
+				          documentation and style conventions"
+			)]
+			#![allow(
+				clippy::allow_attributes_without_reason,
+				reason = "prost/tonic emits compatibility allow attributes without Rust reason \
+				          metadata"
+			)]
+			#![allow(
+				clippy::large_enum_variant,
+				reason = "prost maps protobuf oneofs directly to enums; boxing would change the \
+				          generated Rust API"
+			)]
 			include!(concat!(env!("OUT_DIR"), "/omp.document.v1.rs"));
 		}
 	}

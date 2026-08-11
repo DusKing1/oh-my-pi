@@ -188,7 +188,8 @@ mod tests {
 			json!({"type":"function_call_output","call_id":"call_a","output":"ok","id":"out_1"}),
 		];
 		let before = serde_json::to_vec(&input).unwrap();
-		assert_eq!(repair_responses_tool_pairs(&mut input, &BTreeSet::new()), [] as [omp_llm_types::Unsupported; 0]);
+		assert_eq!(repair_responses_tool_pairs(&mut input, &BTreeSet::new()), []
+			as [omp_llm_types::Unsupported; 0]);
 		assert_eq!(serde_json::to_vec(&input).unwrap(), before);
 	}
 
@@ -201,7 +202,8 @@ mod tests {
 			json!({"type":"message","role":"user","content":"between"}),
 			json!({"type":"function_call_output","call_id":"b","output":"B"}),
 		];
-		assert_eq!(repair_responses_tool_pairs(&mut input, &BTreeSet::new()), [] as [omp_llm_types::Unsupported; 0]);
+		assert_eq!(repair_responses_tool_pairs(&mut input, &BTreeSet::new()), []
+			as [omp_llm_types::Unsupported; 0]);
 		let call_ids = input
 			.iter()
 			.map(|item| item.get("call_id").cloned().unwrap_or(Value::Null))
@@ -214,7 +216,8 @@ mod tests {
 		let mut input =
 			vec![json!({"type":"function_call_output","call_id":"call_sent","output":"Sunny"})];
 		let sent = BTreeSet::from([(ToolKind::Function, Str::new_static("call_sent"))]);
-		assert_eq!(repair_responses_tool_pairs(&mut input, &sent), [] as [omp_llm_types::Unsupported; 0]);
+		assert_eq!(repair_responses_tool_pairs(&mut input, &sent), []
+			as [omp_llm_types::Unsupported; 0]);
 		assert_eq!(input[0]["type"], "function_call_output");
 
 		let mut unsent = input.clone();

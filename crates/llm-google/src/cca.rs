@@ -573,18 +573,18 @@ fn filter_visible_parts(
 			})?;
 			let visible = join_chunks(chunks);
 			if visible.is_empty() {
-   				*pending_signature = None;
-   			} else {
-   				let mut part = Map::new();
-   				part.insert(
-   					"text".into(),
-   					Value::String(String::from_utf8(visible.to_vec()).expect("filter returns UTF-8")),
-   				);
-   				if let Some(signature) = pending_signature.take() {
-   					part.insert("thoughtSignature".into(), Value::String(signature.to_string()));
-   				}
-   				parts.push(Value::Object(part));
-   			}
+				*pending_signature = None;
+			} else {
+				let mut part = Map::new();
+				part.insert(
+					"text".into(),
+					Value::String(String::from_utf8(visible.to_vec()).expect("filter returns UTF-8")),
+				);
+				if let Some(signature) = pending_signature.take() {
+					part.insert("thoughtSignature".into(), Value::String(signature.to_string()));
+				}
+				parts.push(Value::Object(part));
+			}
 		}
 	}
 	Ok(())
@@ -1269,7 +1269,6 @@ mod tests {
 		);
 		assert_eq!(
 			plan
-				
 				.with_mode(CcaEndpointMode::Auto, Some("https://sandbox.example"))
 				.endpoints()
 				.collect::<Vec<_>>(),

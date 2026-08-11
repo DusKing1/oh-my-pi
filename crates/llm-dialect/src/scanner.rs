@@ -220,9 +220,10 @@ fn parse_json_object(raw: &[u8]) -> Map<String, Value> {
 		return Map::new();
 	};
 	if let Value::String(encoded) = &value
-		&& let Ok(decoded) = serde_json::from_str(encoded) {
-			value = decoded;
-		}
+		&& let Ok(decoded) = serde_json::from_str(encoded)
+	{
+		value = decoded;
+	}
 	as_object(value)
 }
 
@@ -763,10 +764,8 @@ fn parse_xml_tag(raw: &[u8]) -> Option<ParsedXmlTag> {
 			return None;
 		}
 		rest = rest[name_end..].trim_start();
-		let Some(after_equal) = rest.strip_prefix('=') else {
-			return None;
-		};
-		rest = after_equal.trim_start();
+		rest = rest.strip_prefix('=')?;
+		rest = rest.trim_start();
 		let (value, tail) = if let Some(quote) = rest
 			.as_bytes()
 			.first()
@@ -1127,13 +1126,11 @@ impl GlmScanner {
 						call.raw.push(CLOSE);
 						end_glm(call, &mut out);
 						self.state = GlmState::Outside;
-					} else if !final_chunk
-						&& partial_suffix_overlap_any(self.buffer.bytes(), &[KEY_OPEN, CLOSE])
-							== self.buffer.bytes().len()
+					} else if self.buffer.is_empty()
+						|| (!final_chunk
+							&& partial_suffix_overlap_any(self.buffer.bytes(), &[KEY_OPEN, CLOSE])
+								== self.buffer.bytes().len())
 					{
-						self.state = GlmState::Body(call);
-						break;
-					} else if self.buffer.is_empty() {
 						self.state = GlmState::Body(call);
 						break;
 					} else {
@@ -1175,10 +1172,9 @@ impl GlmScanner {
 						call.raw.push(VALUE_OPEN);
 						call.value.clear();
 						self.state = GlmState::Value(call);
-					} else if !final_chunk && VALUE_OPEN.starts_with(self.buffer.bytes()) {
-						self.state = GlmState::AfterKey(call);
-						break;
-					} else if self.buffer.is_empty() {
+					} else if self.buffer.is_empty()
+						|| (!final_chunk && VALUE_OPEN.starts_with(self.buffer.bytes()))
+					{
 						self.state = GlmState::AfterKey(call);
 						break;
 					} else {
@@ -1204,14 +1200,13 @@ impl GlmScanner {
 						if healed {
 							let value = String::from_utf8_lossy(&call.value).trim_end().to_owned();
 							finish_glm_value(&self.shapes, &mut call, &value);
-							self.state = GlmState::Body(call);
 						} else {
 							self.buffer.discard(tag.len());
 							call.raw.push(tag);
 							let value = String::from_utf8_lossy(&call.value).into_owned();
 							finish_glm_value(&self.shapes, &mut call, &value);
-							self.state = GlmState::Body(call);
 						}
+						self.state = GlmState::Body(call);
 					} else if final_chunk {
 						self.buffer.clear();
 						self.state = GlmState::Outside;
@@ -1293,8 +1288,8 @@ const DS_OUTSIDE_NO_THINK: &[&[u8]] = &[
 	"<｜User｜>".as_bytes(),
 ];
 
-/// `DeepSeek` scanner supporting native special tokens, legacy fenced calls, and
-/// both DSML alphabets.
+/// `DeepSeek` scanner supporting native special tokens, legacy fenced calls,
+/// and both DSML alphabets.
 #[derive(Debug)]
 pub struct DeepSeekScanner {
 	buffer:           Buffer,
@@ -1442,7 +1437,7 @@ fn parse_deepseek_call(body: &[u8]) -> Option<(Str, Map<String, Value>)> {
 		let name = decode_text(&tail[..fence]);
 		let arguments = tail[fence + 7..]
 			.strip_prefix(b"\n")
-			.unwrap_or(&tail[fence + 7..]);
+			.unwrap_or_else(|| &tail[fence + 7..]);
 		let arguments = arguments.strip_suffix(b"```").unwrap_or(arguments);
 		(name, strict_json_object(arguments)?)
 	} else {
@@ -1694,13 +1689,11 @@ impl KimiScanner {
 					} else if self.buffer.bytes().starts_with(K_CALL_OPEN) {
 						self.buffer.discard(K_CALL_OPEN.len());
 						self.state = KimiState::Header;
-					} else if !final_chunk
-						&& (K_SECTION_CLOSE.starts_with(self.buffer.bytes())
-							|| K_CALL_OPEN.starts_with(self.buffer.bytes()))
+					} else if self.buffer.is_empty()
+						|| (!final_chunk
+							&& (K_SECTION_CLOSE.starts_with(self.buffer.bytes())
+								|| K_CALL_OPEN.starts_with(self.buffer.bytes())))
 					{
-						self.state = KimiState::Section;
-						break;
-					} else if self.buffer.is_empty() {
 						self.state = KimiState::Section;
 						break;
 					} else {
@@ -1738,27 +1731,29 @@ impl KimiScanner {
 					self.buffer.discard(K_CALL_CLOSE.len());
 					let id = decode_text(trim_ascii(&header));
 					let name = Str::from(normalize_kimi_function_name(&id));
-					if !id.is_empty() && !name.is_empty()
-						&& let Some(arguments) = strict_json_object(&body) {
-							out.push(ScanEvent::ToolStart { id: id.clone(), name: name.clone() });
-							let args_json = json_bytes(Value::Object(arguments));
-							out.push(ScanEvent::ToolArgumentDelta {
-								id:    id.clone(),
-								delta: args_json.clone(),
-							});
-							out.push(ScanEvent::ToolEnd {
-								id,
-								name,
-								args_json,
-								raw_block: raw_envelope(self.include_raw_tool, &[
-									K_CALL_OPEN,
-									&header,
-									K_ARG_OPEN,
-									&body,
-									K_CALL_CLOSE,
-								]),
-							});
-						}
+					if !id.is_empty()
+						&& !name.is_empty()
+						&& let Some(arguments) = strict_json_object(&body)
+					{
+						out.push(ScanEvent::ToolStart { id: id.clone(), name: name.clone() });
+						let args_json = json_bytes(Value::Object(arguments));
+						out.push(ScanEvent::ToolArgumentDelta {
+							id:    id.clone(),
+							delta: args_json.clone(),
+						});
+						out.push(ScanEvent::ToolEnd {
+							id,
+							name,
+							args_json,
+							raw_block: raw_envelope(self.include_raw_tool, &[
+								K_CALL_OPEN,
+								&header,
+								K_ARG_OPEN,
+								&body,
+								K_CALL_CLOSE,
+							]),
+						});
+					}
 					self.state = KimiState::Section;
 				},
 			}

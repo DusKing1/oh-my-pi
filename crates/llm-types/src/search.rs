@@ -59,7 +59,10 @@ pub struct SearchRequest {
 	/// Inclusive ISO date upper bound, empty when unbounded.
 	pub before:           Str,
 	/// Domain allowlist.
-	#[allow(clippy::struct_field_names, reason = "matches the wire search request vocabulary")]
+	#[allow(
+		clippy::struct_field_names,
+		reason = "the public field name intentionally matches the wire search request vocabulary"
+	)]
 	pub allowed_domains:  Vec<Str>,
 	/// Domain denylist.
 	pub excluded_domains: Vec<Str>,

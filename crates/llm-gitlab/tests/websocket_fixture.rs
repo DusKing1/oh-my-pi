@@ -320,8 +320,7 @@ async fn dropping_turn_stream_closes_the_socket_without_fallback() {
 			.await
 			.expect("started frame");
 		let closed = socket.next().await;
-		let _ =
-			observed_tx.send(matches!(closed, Some(Ok(WsMessage::Close(_)) | Err(_)) | None));
+		let _ = observed_tx.send(matches!(closed, Some(Ok(WsMessage::Close(_)) | Err(_)) | None));
 	});
 	let config = WorkflowConfig::new(format!("ws://{address}"), "workflow-cancel", "session-cancel");
 	let chat = GitLabDuoChat::new(config, Arc::new(FixtureAuth));

@@ -298,8 +298,9 @@ pub enum DaemonError {
 /// `TailTwo` placement and short retention are Anthropic's breakpoint
 /// semantics, measured cheapest over a 1.2k-session replay. Other transports
 /// read the same [`omp_proto::inference::v1::CacheHint`] fields differently —
-/// the `OpenAI` Responses dialect projects `session_key` into `prompt_cache_key`
-/// — so they keep the inert default and behave exactly as before.
+/// the `OpenAI` Responses dialect projects `session_key` into
+/// `prompt_cache_key` — so they keep the inert default and behave exactly as
+/// before.
 ///
 /// Keep-alive refreshes stay off. They are worth about a thirtieth of what
 /// placement is worth, and they are only cheap if dropping the response stream

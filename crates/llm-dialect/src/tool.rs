@@ -48,8 +48,10 @@ fn parse_python_arguments(text: &str) -> Option<Map<String, Value>> {
 		if segment.is_empty() {
 			continue;
 		}
-		let Some(equal) = top_level_index(segment, b'=')? else {
-			continue;
+		let equal = match top_level_index(segment, b'=') {
+			TopLevelIndex::Found(index) => index,
+			TopLevelIndex::NotFound => continue,
+			TopLevelIndex::InvalidSyntax => return None,
 		};
 		let name = segment[..equal].trim();
 		if !is_identifier(name.as_bytes()) {
@@ -93,7 +95,10 @@ fn parse_python_value(text: &str) -> Option<Value> {
 			if item.is_empty() {
 				continue;
 			}
-			let colon = top_level_index(item, b':')??;
+			let colon = match top_level_index(item, b':') {
+				TopLevelIndex::Found(index) => index,
+				TopLevelIndex::NotFound | TopLevelIndex::InvalidSyntax => return None,
+			};
 			let raw_key = item[..colon].trim();
 			let key = if python_string_prefix(raw_key).is_some() {
 				decode_python_string(raw_key)?
@@ -346,13 +351,24 @@ fn split_top_level(text: &str, separator: u8) -> Option<SmallVec<&str, 8>> {
 	Some(parts)
 }
 
-fn top_level_index(text: &str, target: u8) -> Option<Option<usize>> {
+enum TopLevelIndex {
+	Found(usize),
+	NotFound,
+	InvalidSyntax,
+}
+
+fn top_level_index(text: &str, target: u8) -> TopLevelIndex {
 	let bytes = text.as_bytes();
 	let mut stack = SmallVec::<u8, 8>::new();
 	let mut index = 0;
 	while index < bytes.len() {
 		match bytes[index] {
-			b'\'' | b'"' => index = skip_python_string(bytes, index)?,
+			b'\'' | b'"' => {
+				let Some(next) = skip_python_string(bytes, index) else {
+					return TopLevelIndex::InvalidSyntax;
+				};
+				index = next;
+			},
 			b'(' | b'[' | b'{' => {
 				stack.push(bytes[index]);
 				index += 1;
@@ -364,15 +380,21 @@ fn top_level_index(text: &str, target: u8) -> Option<Option<usize>> {
 					_ => b'{',
 				};
 				if stack.pop() != Some(expected) {
-					return None;
+					return TopLevelIndex::InvalidSyntax;
 				}
 				index += 1;
 			},
-			byte if byte == target && stack.is_empty() => return Some(Some(index)),
+			byte if byte == target && stack.is_empty() => {
+				return TopLevelIndex::Found(index);
+			},
 			_ => index += 1,
 		}
 	}
-	if stack.is_empty() { Some(None) } else { None }
+	if stack.is_empty() {
+		TopLevelIndex::NotFound
+	} else {
+		TopLevelIndex::InvalidSyntax
+	}
 }
 
 fn identifier_before(bytes: &[u8], open: usize) -> Option<&str> {

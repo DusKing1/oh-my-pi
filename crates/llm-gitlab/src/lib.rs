@@ -200,13 +200,13 @@ impl Chat for GitLabDuoChat {
 			 let mut socket = match open_socket(&*connector, &*auth, &config).await {
 				  Ok(mut socket) => {
 						if let Err(error) = socket.send_text(start.to_string()).await {
-							 yield terminal_error(&mut state, error);
+							 yield terminal_error(&state, error);
 							 return;
 						}
 						socket
 				  },
 				  Err(error) => {
-						yield terminal_error(&mut state, error);
+						yield terminal_error(&state, error);
 						return;
 				  },
 			 };
@@ -223,7 +223,7 @@ impl Chat for GitLabDuoChat {
 							 };
 							 match reconnect_socket(&*connector, &*auth, &config, state.last_event_id.as_deref()).await {
 								  Ok(next) => { socket = next; continue; },
-								  Err(error) => { yield terminal_error(&mut state, error); return; },
+								  Err(error) => { yield terminal_error(&state, error); return; },
 							 }
 						},
 						Err(_) if reconnects < config.max_reconnects => {
@@ -235,16 +235,16 @@ impl Chat for GitLabDuoChat {
 							 };
 							 match reconnect_socket(&*connector, &*auth, &config, state.last_event_id.as_deref()).await {
 								  Ok(next) => { socket = next; continue; },
-								  Err(error) => { yield terminal_error(&mut state, error); return; },
+								  Err(error) => { yield terminal_error(&state, error); return; },
 							 }
 						},
 						Ok(Ok(None)) => {
-							 yield terminal_error(&mut state, Error::Transport(Str::new_static("GitLab Duo Workflow socket closed before a terminal status")));
+							 yield terminal_error(&state, Error::Transport(Str::new_static("GitLab Duo Workflow socket closed before a terminal status")));
 							 return;
 						},
-						Ok(Err(error)) => { yield terminal_error(&mut state, error); return; },
+						Ok(Err(error)) => { yield terminal_error(&state, error); return; },
 						Err(_) => {
-							 yield terminal_error(&mut state, Error::Transport(Str::new_static("GitLab Duo Workflow socket idle timeout")));
+							 yield terminal_error(&state, Error::Transport(Str::new_static("GitLab Duo Workflow socket idle timeout")));
 							 return;
 						},
 				  };
@@ -253,7 +253,7 @@ impl Chat for GitLabDuoChat {
 						Ok(decoded) => decoded,
 						Err(error) => {
 							 socket.close().await;
-							 yield terminal_error(&mut state, error);
+							 yield terminal_error(&state, error);
 							 return;
 						},
 				  };
@@ -262,7 +262,7 @@ impl Chat for GitLabDuoChat {
 				  if let Some(action) = decoded.action {
 						let Some(executor) = executor.as_ref() else {
 							 socket.close().await;
-							 yield terminal_error(&mut state, Error::Unsupported(vec![
+							 yield terminal_error(&state, Error::Unsupported(vec![
 								  Unsupported::builder()
 										.what(Str::new_static("gitlab-duo-workflow/executor"))
 										.detail(Str::new_static("GitLab Duo Workflow requested an in-turn MCP action"))
@@ -288,7 +288,7 @@ impl Chat for GitLabDuoChat {
 							 .build());
 						let response = action_response(&action.request_id, &result);
 						if let Err(error) = socket.send_text(response.to_string()).await {
-							 yield terminal_error(&mut state, error);
+							 yield terminal_error(&state, error);
 							 return;
 						}
 				  }
@@ -751,7 +751,8 @@ fn decode_frame(frame: &str, state: &mut DecodeState) -> Result<DecodedFrame, Er
 		push_text_output(state);
 	}
 	if matches!(status, Some("FAILED" | "STOPPED")) {
-		let detail = string_at(event, &["error", "message"]).unwrap_or(status.unwrap_or("FAILED"));
+		let detail =
+			string_at(event, &["error", "message"]).unwrap_or_else(|| status.unwrap_or("FAILED"));
 		return Err(Error::Provider(Str::from(format!("GitLab Duo Workflow {status:?}: {detail}"))));
 	}
 	Ok(DecodedFrame { events, action, terminal })
@@ -1004,7 +1005,7 @@ fn terminal_outcome(state: &mut DecodeState) -> TurnEvent {
 	)
 }
 
-fn terminal_error(state: &mut DecodeState, error: Error) -> TurnEvent {
+fn terminal_error(state: &DecodeState, error: Error) -> TurnEvent {
 	let (kind, detail, unsupported) = match error {
 		Error::Unsupported(unsupported) => (
 			TurnErrorKind::Unsupported,

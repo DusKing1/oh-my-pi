@@ -42,7 +42,8 @@ pub trait Tokenizer: Send + Sync + 'static {
 	fn count(&self, request: &CountRequest) -> Result<u64, Error>;
 }
 
-/// `OpenAI` tokenizer ranks and prompt-framing rules selected for one model card.
+/// `OpenAI` tokenizer ranks and prompt-framing rules selected for one model
+/// card.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OpenAiTokenizer {
 	ranks:   RankTokenizer,

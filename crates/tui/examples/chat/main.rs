@@ -69,6 +69,10 @@ async fn main() -> io::Result<()> {
 /// transcript on every exit — clean quit or error alike, a loop error
 /// outranking a scrub failure. Only a renderer already poisoned by a
 /// writer failure skips the repaint.
+#[expect(
+	clippy::future_not_send,
+	reason = "chat components are deliberately confined to their terminal event-loop thread"
+)]
 async fn run<'a>(
 	terminal: &'a mut Terminal,
 	renderer: &'a mut Renderer<TtyOut>,
@@ -79,6 +83,10 @@ async fn run<'a>(
 	result.and(scrub)
 }
 
+#[expect(
+	clippy::future_not_send,
+	reason = "chat components are deliberately confined to their terminal event-loop thread"
+)]
 async fn chat<'a>(
 	terminal: &'a mut Terminal,
 	renderer: &'a mut Renderer<TtyOut>,
@@ -426,6 +434,10 @@ async fn chat<'a>(
 /// the first card paint, mouse tracking is active throughout, and every
 /// geometry change repaints in place immediately. The main screen stays
 /// untouched underneath — the caller releases the hold on scene exit.
+#[expect(
+	clippy::future_not_send,
+	reason = "the welcome component is deliberately confined to its terminal event-loop thread"
+)]
 async fn run_welcome<'a>(
 	terminal: &'a mut Terminal,
 	renderer: &'a mut Renderer<TtyOut>,

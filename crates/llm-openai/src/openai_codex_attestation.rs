@@ -234,9 +234,9 @@ mod platform {
 
 /// Builds the complete `x-oai-attestation` JSON envelope.
 ///
-/// Unsupported `DeviceCheck` is encoded with error code 3; supported `DeviceCheck`
-/// without a token uses error code 4. A token is never included in debug
-/// output.
+/// Unsupported `DeviceCheck` is encoded with error code 3; supported
+/// `DeviceCheck` without a token uses error code 4. A token is never included
+/// in debug output.
 pub fn build_codex_attestation(
 	result: &CodexDeviceCheckResult,
 	signals: &CodexAttestationSignals<'_>,

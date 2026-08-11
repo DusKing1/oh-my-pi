@@ -1,7 +1,7 @@
 //! Amazon Bedrock `ConverseStream` wire codec and model discovery.
 //!
-//! AWS `EventStream` framing and `SigV4` request mutation intentionally remain in
-//! the shared Bedrock infrastructure; this crate owns Converse JSON and the
+//! AWS `EventStream` framing and `SigV4` request mutation intentionally remain
+//! in the shared Bedrock infrastructure; this crate owns Converse JSON and the
 //! `ListFoundationModels` control-plane listing in [`discovery`], which
 //! attaches non-secret signing context but never signs.
 

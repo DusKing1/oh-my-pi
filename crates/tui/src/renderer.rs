@@ -2849,7 +2849,7 @@ mod tests {
 		assert_eq!(terminal.history, ["row00"], "the scrub commits nothing");
 
 		renderer.clear_layers().expect("layer-free scrub succeeds");
-		assert_eq!(renderer.writer_mut().as_slice(), [0u8; 0], "a layer-free scrub writes nothing");
+		assert!(renderer.writer_mut().is_empty(), "a layer-free scrub writes nothing");
 	}
 
 	#[test]
@@ -3253,7 +3253,7 @@ mod tests {
 			.present(document(&["one", "TWO", "three", "FOUR", "five", "six", "seven"]), 2, 2)
 			.expect_err("deferred stable rows remain immutable");
 		assert_eq!(error.kind(), ErrorKind::InvalidData);
-		assert_eq!(renderer.writer_mut().as_slice(), [0u8; 0]);
+		assert!(renderer.writer_mut().is_empty());
 	}
 
 	#[test]
@@ -3293,7 +3293,7 @@ mod tests {
 			.expect_err("stable mutation must fail");
 
 		assert_eq!(error.kind(), ErrorKind::InvalidData);
-		assert_eq!(renderer.writer_mut().as_slice(), [0u8; 0]);
+		assert!(renderer.writer_mut().is_empty());
 		assert_eq!(renderer.committed_rows(), 2);
 	}
 
@@ -3312,7 +3312,7 @@ mod tests {
 			.expect_err("reported stable mutation must fail");
 
 		assert_eq!(error.kind(), ErrorKind::InvalidData);
-		assert_eq!(renderer.writer_mut().as_slice(), [0u8; 0]);
+		assert!(renderer.writer_mut().is_empty());
 		assert_eq!(renderer.committed_rows(), 2);
 	}
 
@@ -3507,7 +3507,7 @@ mod tests {
 			.present(document(&["one", "two", "three"]), 2, 2)
 			.expect_err("a document tail shorter than committed history must be rejected");
 		assert_eq!(error.kind(), ErrorKind::InvalidData);
-		assert_eq!(renderer.writer_mut().as_slice(), [0u8; 0]);
+		assert!(renderer.writer_mut().is_empty());
 
 		renderer
 			.rebuild(document(&["one", "two", "three"]), 2, 2, "")
@@ -3530,7 +3530,7 @@ mod tests {
 			.expect_err("retreat must fail");
 
 		assert_eq!(error.kind(), ErrorKind::InvalidData);
-		assert_eq!(renderer.writer_mut().as_slice(), [0u8; 0]);
+		assert!(renderer.writer_mut().is_empty());
 	}
 
 	#[test]
@@ -3645,7 +3645,7 @@ mod tests {
 			.expect("second paint succeeds");
 
 		assert_eq!(stats.bytes, 0);
-		assert_eq!(renderer.writer_mut().as_slice(), [0u8; 0]);
+		assert!(renderer.writer_mut().is_empty());
 	}
 
 	#[test]

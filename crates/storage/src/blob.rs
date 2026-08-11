@@ -183,7 +183,7 @@ impl BlobStore {
 		let mut buffer = vec![0_u8; COPY_BUFFER_SIZE].into_boxed_slice();
 
 		loop {
-			let read = match reader.read(&mut *buffer) {
+			let read = match reader.read(&mut buffer) {
 				Ok(0) => break,
 				Ok(read) => read,
 				Err(error) if error.kind() == io::ErrorKind::Interrupted => {
@@ -265,7 +265,7 @@ impl BlobStore {
 		let mut buffer = vec![0_u8; COPY_BUFFER_SIZE].into_boxed_slice();
 
 		loop {
-			let read = match file.read(&mut *buffer) {
+			let read = match file.read(&mut buffer) {
 				Ok(0) => break,
 				Ok(read) => read,
 				Err(error) if error.kind() == io::ErrorKind::Interrupted => {

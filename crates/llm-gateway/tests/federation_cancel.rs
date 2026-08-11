@@ -170,7 +170,7 @@ impl Inference for TerminalGateway {
 						yield delta(b"x");
 					}
 				}
-    					yield outcome();
+						 yield outcome();
 			}
 		};
 		Ok(Response::new(Box::pin(events)))

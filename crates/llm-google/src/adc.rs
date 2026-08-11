@@ -336,7 +336,8 @@ impl<E: AdcEgress> AdcEngine<E> {
 		let path = self
 			.settings
 			.env
-			.get("GOOGLE_APPLICATION_CREDENTIALS").map_or_else(|| self.settings.application_default_path.clone(), PathBuf::from);
+			.get("GOOGLE_APPLICATION_CREDENTIALS")
+			.map_or_else(|| self.settings.application_default_path.clone(), PathBuf::from);
 		let Some(source) = self
 			.read_optional_credentials(&path, "project-discovery")
 			.await?

@@ -99,7 +99,8 @@ mod tests {
 
 	#[test]
 	fn shapes_context_window_and_image_input() {
-		let models = [DiscoveredModel {
+		let models = [
+			DiscoveredModel {
 				id:        Str::new_static("claude-sonnet"),
 				name:      Str::new_static("Claude Sonnet"),
 				reasoning: true,
@@ -110,7 +111,8 @@ mod tests {
 				name:      Str::new_static("Plain Model"),
 				reasoning: false,
 				max_mode:  false,
-			}];
+			},
+		];
 		let cards: Vec<_> = models
 			.iter()
 			.map(|model| card(&provider(), model))

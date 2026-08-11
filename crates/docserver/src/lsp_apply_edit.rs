@@ -159,7 +159,6 @@ async fn lower_text_edit(
 		Some(version) => environment
 			.lsp()
 			.revision_for_version(handle, &uri, version)
-			.await
 			.map_err(|error| error.to_string())?
 			.ok_or_else(|| {
 				format!("LSP version {version} has no admitted daemon revision for {uri}")
@@ -182,7 +181,6 @@ async fn lower_text_edit(
 	let policy = environment
 		.lsp()
 		.sync_policy_for_handle(handle, &uri, language_id)
-		.await
 		.map_err(|error| error.to_string())?;
 	let text = std::str::from_utf8(&loaded.content)
 		.map_err(|_| format!("text document {uri} does not contain UTF-8"))?;

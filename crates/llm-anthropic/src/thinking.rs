@@ -393,14 +393,13 @@ pub fn reasoning_projection_for<'a>(
 		requested_effort
 			.and_then(|effort| policy_mode?.effort_budgets.get(&effort).copied())
 			.unwrap_or_else(|| {
-				requested_effort
-					.map_or(1024, |effort| {
-						if policy_mode.is_some() {
-							effort_budget(effort)
-						} else {
-							legacy_effort_budget(effort)
-						}
-					})
+				requested_effort.map_or(1024, |effort| {
+					if policy_mode.is_some() {
+						effort_budget(effort)
+					} else {
+						legacy_effort_budget(effort)
+					}
+				})
 			})
 	});
 	ReasoningProjection {
@@ -688,9 +687,10 @@ pub fn validate_options(options: &Props) -> Result<(), omp_llm_types::Error> {
 		}
 	}
 	if let Some(mode) = options.get_ns("anthropic", "thinking_mode")
-		&& !matches!(mode.as_str(), Some("adaptive" | "budget")) {
-			return Err(provider_error("anthropic/thinking_mode must be adaptive or budget"));
-		}
+		&& !matches!(mode.as_str(), Some("adaptive" | "budget"))
+	{
+		return Err(provider_error("anthropic/thinking_mode must be adaptive or budget"));
+	}
 	if let Some(betas) = options.get_ns("anthropic", "betas") {
 		let valid = betas.is_string()
 			|| betas

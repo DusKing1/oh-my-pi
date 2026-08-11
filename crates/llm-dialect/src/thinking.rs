@@ -170,11 +170,12 @@ impl ThinkingScanner {
 		}
 
 		if let Some(at) = exact_backtick_run(&self.buffer[..valid], self.code_ticks)
-			&& (final_chunk || at + self.code_ticks < valid) {
-				self.emit_text(at + self.code_ticks, out);
-				self.code_ticks = 0;
-				return true;
-			}
+			&& (final_chunk || at + self.code_ticks < valid)
+		{
+			self.emit_text(at + self.code_ticks, out);
+			self.code_ticks = 0;
+			return true;
+		}
 		let hold = if final_chunk {
 			0
 		} else {
@@ -243,15 +244,16 @@ impl FencedThinkingScanner {
 			};
 			let line = &self.buffer[..nl];
 			if self.inner.is_none()
-				&& let Some(rest_at) = top_level_close(line, false) {
-					let mut rest = self.buffer.split_off(rest_at);
-					if rest.starts_with(b"```") {
-						let ticks = rest.iter().take_while(|byte| **byte == b'`').count();
-						rest.advance(ticks);
-					}
-					self.reset();
-					return FencedThinkingResult { thinking, closed: true, rest: rest.freeze() };
+				&& let Some(rest_at) = top_level_close(line, false)
+			{
+				let mut rest = self.buffer.split_off(rest_at);
+				if rest.starts_with(b"```") {
+					let ticks = rest.iter().take_while(|byte| **byte == b'`').count();
+					rest.advance(ticks);
 				}
+				self.reset();
+				return FencedThinkingResult { thinking, closed: true, rest: rest.freeze() };
+			}
 			if nl + 1 > self.emitted {
 				thinking.push(Bytes::copy_from_slice(&self.buffer[self.emitted..=nl]));
 			}

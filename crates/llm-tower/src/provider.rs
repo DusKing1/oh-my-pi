@@ -357,12 +357,12 @@ impl<S> ProviderAttempt<S> {
 				.headers
 				.keys()
 				.find(|name| name.eq_ignore_ascii_case("anthropic-beta"))
-			{
-				return Err(ProviderBuildError::ForbiddenStaticHeader {
-					transport: provider.transport,
-					name:      name.clone(),
-				});
-			}
+		{
+			return Err(ProviderBuildError::ForbiddenStaticHeader {
+				transport: provider.transport,
+				name:      name.clone(),
+			});
+		}
 		let codec = Arc::new(HttpCodec::from_catalog(&provider, &route)?);
 		Ok(Self {
 			shared: Arc::new(ProviderShared {
@@ -425,12 +425,13 @@ where
 					.is_some_and(|metadata| metadata.account_id.is_some());
 			if attestation_eligible
 				&& let Some(attestation) = CodexAttestor::default().generate().await
-					&& let Ok(mut value) = http::HeaderValue::from_bytes(attestation.as_bytes()) {
-						value.set_sensitive(true);
-						request
-							.headers_mut()
-							.insert(http::HeaderName::from_static("x-oai-attestation"), value);
-					}
+				&& let Ok(mut value) = http::HeaderValue::from_bytes(attestation.as_bytes())
+			{
+				value.set_sensitive(true);
+				request
+					.headers_mut()
+					.insert(http::HeaderName::from_static("x-oai-attestation"), value);
+			}
 			let response = egress
 				.call(request)
 				.await
@@ -1425,11 +1426,12 @@ impl<B> DecodeMachine<B> {
 			return Ok(());
 		}
 		if let FramingState::Raw(buffer) = &mut self.framing
-			&& !buffer.is_empty() {
-				let data = buffer.split().freeze();
-				let events = self.codec.decode(Frame::Data(&data), &mut self.state)?;
-				self.push_native(events);
-			}
+			&& !buffer.is_empty()
+		{
+			let data = buffer.split().freeze();
+			let events = self.codec.decode(Frame::Data(&data), &mut self.state)?;
+			self.push_native(events);
+		}
 		if let FramingState::Bedrock(decoder) = &mut self.framing {
 			decoder.finish()?;
 		}
@@ -1538,8 +1540,10 @@ where
 			if let Some(event) = self.machine.queue.pop_front() {
 				if matches!(
 					event.event,
-					Some(omp_proto::inference::v1::turn_event::Event::Outcome(_) |
-omp_proto::inference::v1::turn_event::Event::Error(_))
+					Some(
+						omp_proto::inference::v1::turn_event::Event::Outcome(_)
+							| omp_proto::inference::v1::turn_event::Event::Error(_)
+					)
 				) {
 					self.ended = true;
 				}
@@ -1556,9 +1560,10 @@ omp_proto::inference::v1::turn_event::Event::Error(_))
 				Poll::Pending => return Poll::Pending,
 				Poll::Ready(Some(Ok(frame))) => {
 					if let Ok(data) = frame.into_data()
-						&& let Err(error) = self.machine.push_chunk(data) {
-							self.machine.fail_in_band(error);
-						}
+						&& let Err(error) = self.machine.push_chunk(data)
+					{
+						self.machine.fail_in_band(error);
+					}
 				},
 				Poll::Ready(Some(Err(error))) => self.machine.fail_in_band(error),
 				Poll::Ready(None) => {

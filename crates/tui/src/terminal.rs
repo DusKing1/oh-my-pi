@@ -2101,14 +2101,14 @@ impl Drop for Terminal {
 
 const fn keyboard_mode(reported: Option<u8>) -> KeyboardMode {
 	match reported {
-		Some(flags) if flags & 1 != 0 => {
-			if flags & 2 != 0 {
+		Some(flags) if flags & 0b0000_0001 != 0 => {
+			if flags & 0b0000_0010 != 0 {
 				KeyboardMode::Kitty(esc!(csi, ">3u"))
 			} else {
 				KeyboardMode::Kitty(esc!(csi, ">1u"))
 			}
 		},
-		Some(flags) if flags & 2 != 0 => KeyboardMode::Kitty(esc!(csi, ">7u")),
+		Some(flags) if flags & 0b0000_0010 != 0 => KeyboardMode::Kitty(esc!(csi, ">7u")),
 		Some(_) => KeyboardMode::Kitty(esc!(csi, ">5u")),
 		None => KeyboardMode::ModifyOtherKeys,
 	}
@@ -2270,7 +2270,7 @@ const fn emergency_restore_payload(
 	alt_screen: bool,
 	xterm_scroll_restore_modes: u8,
 ) -> &'static [u8] {
-	match (alt_screen, xterm_scroll_restore_modes & 3) {
+	match (alt_screen, xterm_scroll_restore_modes & 0b0000_0011) {
 		(false, 0) => emergency_restore!(main),
 		(false, XTERM_SCROLL_ON_OUTPUT) => emergency_restore!(main, scroll_on_output),
 		(false, XTERM_SCROLL_ON_KEY_PRESS) => emergency_restore!(main, scroll_on_key_press),

@@ -606,7 +606,8 @@ fn encode_policy_thinking(
 				};
 				let level = policy
 					.effort_map
-					.get(&floor).map_or_else(|| thinking_level(floor), Str::as_str);
+					.get(&floor)
+					.map_or_else(|| thinking_level(floor), Str::as_str);
 				thinking.insert("thinkingLevel".into(), Value::String(level.into()));
 			},
 			_ => {
@@ -637,7 +638,8 @@ fn encode_policy_thinking(
 			if let Some(effort) = reasoning.effort {
 				let level = policy
 					.effort_map
-					.get(&effort).map_or_else(|| thinking_level(effort), Str::as_str);
+					.get(&effort)
+					.map_or_else(|| thinking_level(effort), Str::as_str);
 				thinking.insert("thinkingLevel".into(), Value::String(level.into()));
 			}
 		},

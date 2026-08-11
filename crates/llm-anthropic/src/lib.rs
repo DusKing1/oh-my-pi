@@ -732,9 +732,10 @@ fn build_body<'a>(
 		thinking = None;
 		budget = None;
 		if projection.effort.is_some()
-			&& let Some(output_config) = controls.output_config.as_mut() {
-				output_config.effort = None;
-			}
+			&& let Some(output_config) = controls.output_config.as_mut()
+		{
+			output_config.effort = None;
+		}
 		if controls
 			.output_config
 			.as_ref()

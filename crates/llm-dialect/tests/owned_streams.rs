@@ -23,16 +23,14 @@ struct ProjectionTrace {
 impl ProjectionTrace {
 	fn extend(&mut self, batch: ProjectionBatch) {
 		for projection in batch {
-			match projection {
-				Projection::Event(event) => {
-					self
-						.accumulator
-						.push(&event)
-						.expect("projector emits a valid canonical sequence");
-					self.events.push(event);
-				},
-				Projection::AbortFabricatedToolResult => self.aborts += 1,
-				_ => {},
+			if let Some(event) = projection.into_event() {
+				self
+					.accumulator
+					.push(&event)
+					.expect("projector emits a valid canonical sequence");
+				self.events.push(event);
+			} else {
+				self.aborts += 1;
 			}
 		}
 	}

@@ -207,44 +207,46 @@ fn output_config<'a>(
 		));
 	}
 	let task_budget = provider.and_then(|value| value.get("task_budget"));
-	let format = if let Some(feature) = format { match &feature.value.kind {
- 			ResponseFormatKind::JsonSchema(schema) => {
- 				Some(OutputFormat::JsonSchema(JsonSchemaFormat {
- 					r#type: "json_schema",
- 					name:   &schema.name,
- 					schema: serde_json::from_slice(&schema.schema_json).map_err(super::json_error)?,
- 					strict: schema.strict,
- 				}))
- 			},
- 			ResponseFormatKind::Grammar(_) => {
- 				super::feature_report(
- 					unsupported,
- 					feature.on_unsupported,
- 					"response_format.grammar",
- 					"Anthropic Messages only supports JSON Schema structured output",
- 				)?;
- 				None
- 			},
- 			_ => {
- 				super::feature_report(
- 					unsupported,
- 					feature.on_unsupported,
- 					"response_format",
- 					"Anthropic Messages does not support this response format",
- 				)?;
- 				None
- 			},
- 		} } else {
- 			let native = props
- 				.get_ns("anthropic", "output_config.format")
- 				.or_else(|| provider.and_then(|value| value.get("format")));
- 			if let Some(value) = native
- 				&& !value.is_object()
- 			{
- 				return Err(provider_error("anthropic/output_config.format must be an object"));
- 			}
- 			native.map(OutputFormat::Native)
- 		};
+	let format = if let Some(feature) = format {
+		match &feature.value.kind {
+			ResponseFormatKind::JsonSchema(schema) => {
+				Some(OutputFormat::JsonSchema(JsonSchemaFormat {
+					r#type: "json_schema",
+					name:   &schema.name,
+					schema: serde_json::from_slice(&schema.schema_json).map_err(super::json_error)?,
+					strict: schema.strict,
+				}))
+			},
+			ResponseFormatKind::Grammar(_) => {
+				super::feature_report(
+					unsupported,
+					feature.on_unsupported,
+					"response_format.grammar",
+					"Anthropic Messages only supports JSON Schema structured output",
+				)?;
+				None
+			},
+			_ => {
+				super::feature_report(
+					unsupported,
+					feature.on_unsupported,
+					"response_format",
+					"Anthropic Messages does not support this response format",
+				)?;
+				None
+			},
+		}
+	} else {
+		let native = props
+			.get_ns("anthropic", "output_config.format")
+			.or_else(|| provider.and_then(|value| value.get("format")));
+		if let Some(value) = native
+			&& !value.is_object()
+		{
+			return Err(provider_error("anthropic/output_config.format must be an object"));
+		}
+		native.map(OutputFormat::Native)
+	};
 	Ok((effort.is_some() || task_budget.is_some() || format.is_some()).then_some(OutputConfig {
 		effort,
 		task_budget,

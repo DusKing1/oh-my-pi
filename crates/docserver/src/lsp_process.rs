@@ -339,7 +339,7 @@ impl LspProcess {
 				.lsp()
 				.add_binding(spec, server, cancel.child_token())
 				.await?;
-			let binding_handle = match environment.lsp().binding_handle(binding_id).await {
+			let binding_handle = match environment.lsp().binding_handle(binding_id) {
 				Ok(handle) => handle,
 				Err(error) => {
 					let _ = environment
@@ -1329,7 +1329,6 @@ async fn dispatch_response(
 			.ok_or_else(|| RpcError::invalid_params("binding stopped before notification dispatch"))?;
 		registry
 			.publish_inbound_event(handle, method, message.params.clone())
-			.await
 			.map_err(|error| RpcError::invalid_params(error.to_string()))?;
 		return Ok(Bytes::from_static(b"null"));
 	}

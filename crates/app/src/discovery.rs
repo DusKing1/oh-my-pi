@@ -45,8 +45,8 @@ mod tests {
 
 	use super::*;
 
-	/// `RDiscoveryHttpon` coverage is a pure question about the provider table, so
-	/// the stack never dispatches a request.
+	/// `RDiscoveryHttpon` coverage is a pure question about the provider table,
+	/// so the stack never dispatches a request.
 	struct NeverCalled;
 
 	#[async_trait]

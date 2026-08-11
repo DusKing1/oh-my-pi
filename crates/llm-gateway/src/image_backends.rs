@@ -447,9 +447,10 @@ impl EgressImageBackend {
 							texts.push(text);
 						}
 					} else if part.get("type").and_then(Value::as_str) == Some("image_url")
-						&& let Some(url) = part.pointer("/image_url/url").and_then(Value::as_str) {
-							urls.push(url);
-						}
+						&& let Some(url) = part.pointer("/image_url/url").and_then(Value::as_str)
+					{
+						urls.push(url);
+					}
 				}
 			},
 			_ => {},
@@ -739,8 +740,8 @@ fn collect_gemini_parts(
 						.or_else(|| inline.get("mime_type"))
 						.and_then(Value::as_str),
 				) {
-					images.push(decode_blob(provider, data, mime)?);
-				}
+				images.push(decode_blob(provider, data, mime)?);
+			}
 		}
 	}
 	Ok(())
@@ -762,10 +763,10 @@ fn last_sse_response(provider: ImageProvider, body: &[u8]) -> Result<Value, Imag
 		if matches!(
 			event.get("type").and_then(Value::as_str),
 			Some("response.completed" | "response.done")
-		)
-			&& let Some(response) = event.get("response") {
-				return Ok(response.clone());
-			}
+		) && let Some(response) = event.get("response")
+		{
+			return Ok(response.clone());
+		}
 	}
 	let output = values
 		.iter()

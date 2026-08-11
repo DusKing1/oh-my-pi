@@ -632,10 +632,10 @@ fn strip_tags(value: &str) -> String {
 		.join(" ");
 	let (kept, _) = xutf::truncate_measured_str(&normalized, 8_000);
 	if kept.len() == normalized.len() {
- 		normalized
- 	} else {
- 		format!("{kept}…")
- 	}
+		normalized
+	} else {
+		format!("{kept}…")
+	}
 }
 fn unwrap_search_url(value: &str) -> &str {
 	value

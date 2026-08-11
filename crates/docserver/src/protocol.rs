@@ -153,7 +153,6 @@ pub async fn registry_event_frame(
 					.environment()
 					.lsp()
 					.bindings()
-					.await
 					.into_iter()
 					.find(|binding| binding.id() == event.binding_id())
 					.map(|binding| proto::LspServerBinding {

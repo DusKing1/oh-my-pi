@@ -1,4 +1,5 @@
-//! Gemini request projection helpers shared by public `GenAI` and Vertex codecs.
+//! Gemini request projection helpers shared by public `GenAI` and Vertex
+//! codecs.
 
 use bytes::Bytes;
 use omp_core::Str;

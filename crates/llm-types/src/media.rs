@@ -105,6 +105,11 @@ pub struct GenerateImageRequest {
 
 /// Streamed image-generation progress or terminal output.
 #[non_exhaustive]
+#[allow(
+	clippy::large_enum_variant,
+	reason = "boxing the terminal result would add an allocation and change the public streaming \
+	          event shape"
+)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ImageEvent {
 	/// A low-resolution progressive preview.
@@ -198,6 +203,11 @@ pub struct SpeakRequest {
 
 /// Streamed speech audio or terminal durable result.
 #[non_exhaustive]
+#[allow(
+	clippy::large_enum_variant,
+	reason = "boxing the terminal result would add an allocation and change the public streaming \
+	          event shape"
+)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum SpeakEvent {
 	/// Encoded bytes in playback order.

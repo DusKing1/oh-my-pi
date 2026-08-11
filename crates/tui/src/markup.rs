@@ -194,6 +194,11 @@ pub fn parse_md_fragment_inheriting(
 	Ok(children)
 }
 
+#[allow(
+	clippy::large_enum_variant,
+	reason = "parser nodes move once into their final owners; boxing the larger variants would add \
+	          one allocation per parsed node"
+)]
 enum Parsed {
 	Cached { cached: Box<Cached>, text: Option<Str>, at: usize, implicit: bool },
 	Option { option: SelectOption, at: usize },

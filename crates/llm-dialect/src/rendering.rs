@@ -44,12 +44,13 @@ pub fn write_py_call_value<W: fmt::Write + ?Sized>(
 ) -> fmt::Result {
 	out.write_str(name)?;
 	out.write_str("(")?;
-	let mut separated = false;
-	if let Some((key, value)) = leading {
+	let mut separated = if let Some((key, value)) = leading {
 		write!(out, "{key}=")?;
 		write_py_string(out, value)?;
-		separated = true;
-	}
+		true
+	} else {
+		false
+	};
 	if let Some(arguments) = arguments.as_object() {
 		for (key, value) in arguments {
 			if separated {
@@ -1397,12 +1398,10 @@ fn write_xml_text<W: fmt::Write + ?Sized>(out: &mut W, text: &str) -> fmt::Resul
 }
 
 fn write_harmony_recipient<W: fmt::Write + ?Sized>(out: &mut W, name: &str) -> fmt::Result {
-	if name.starts_with("functions.") {
-		out.write_str(name)
-	} else {
+	if !name.starts_with("functions.") {
 		out.write_str("functions.")?;
-		out.write_str(name)
 	}
+	out.write_str(name)
 }
 
 fn write_harmony_escaped<W: fmt::Write + ?Sized>(

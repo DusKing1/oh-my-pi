@@ -139,9 +139,8 @@ where
 						}
 					})?;
 					if effective.transport == TransportId::Embedded {
-						let dialect =
-							OwnedDialectConfig::new(DialectSelection::Auto, effective.compat)
-								.with_override(omp_dialect.clone());
+						let dialect = OwnedDialectConfig::new(DialectSelection::Auto, effective.compat)
+							.with_override(omp_dialect.clone());
 						let wrapped = if effective.id == "apple-intelligence" {
 							OwnedDialectChat::latest_user(chat, dialect)
 						} else {

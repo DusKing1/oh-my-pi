@@ -355,7 +355,8 @@ fn apply_learned(
 	entries.retain(|_, failure| failure.expires_at > now);
 	let mut repairs: Vec<_> = entries
 		.iter()
-		.filter(|&((learned_scope, _key), _failure)| learned_scope == scope).map(|((_learned_scope, key), failure)| (*key, failure.classification.clone()))
+		.filter(|&((learned_scope, _key), _failure)| learned_scope == scope)
+		.map(|((_learned_scope, key), failure)| (*key, failure.classification.clone()))
 		.collect();
 	drop(entries);
 	repairs.sort_unstable_by_key(|(key, _)| *key);

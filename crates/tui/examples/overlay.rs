@@ -88,6 +88,10 @@ async fn main() -> io::Result<()> {
 	run(&mut terminal, &mut renderer, caps).await
 }
 
+#[expect(
+	clippy::future_not_send,
+	reason = "the retained UI is deliberately confined to its terminal event-loop thread"
+)]
 async fn run(
 	terminal: &mut Terminal,
 	renderer: &mut Renderer<TtyOut>,

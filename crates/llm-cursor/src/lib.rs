@@ -32,6 +32,10 @@ use tokio::{sync::oneshot, task::JoinHandle};
 use tower::Service as _;
 
 pub mod discovery;
+#[allow(
+	clippy::large_enum_variant,
+	reason = "generated prost oneof layout follows Cursor's pinned external schema"
+)]
 pub mod wire;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);

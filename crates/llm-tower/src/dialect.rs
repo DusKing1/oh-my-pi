@@ -478,16 +478,14 @@ fn enqueue_projection(
 	let mut fabricated = false;
 	let mut events = SmallVec::<NativeTurnEvent, 8>::new();
 	for projection in batch {
-		match projection {
-			Projection::Event(event) => {
-				if accumulator.push(&event).is_err() {
-					continue;
-				}
-				events.push(event);
-			},
-			Projection::AbortFabricatedToolResult => fabricated = true,
-			_ => {},
+		let Some(event) = projection.into_event() else {
+			fabricated = true;
+			continue;
+		};
+		if accumulator.push(&event).is_err() {
+			continue;
 		}
+		events.push(event);
 	}
 	for event in events.into_iter().rev() {
 		pending.push(ProtoTurnEvent::from(event));

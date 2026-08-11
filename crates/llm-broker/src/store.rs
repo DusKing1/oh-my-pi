@@ -1214,8 +1214,7 @@ impl Store {
 			],
 			|row| {
 				Ok((
-					row.get::<_, Option<SqlU64>>(0)?
-						.map_or(0, |value| value.0),
+					row.get::<_, Option<SqlU64>>(0)?.map_or(0, |value| value.0),
 					row.get::<_, Option<SqlU64>>(1)?.map(|value| value.0),
 				))
 			},
@@ -1248,8 +1247,7 @@ impl Store {
 			],
 			|row| {
 				Ok((
-					row.get::<_, Option<SqlU64>>(0)?
-						.map_or(0, |value| value.0),
+					row.get::<_, Option<SqlU64>>(0)?.map_or(0, |value| value.0),
 					row.get::<_, Option<SqlU64>>(1)?.map(|value| value.0),
 				))
 			},

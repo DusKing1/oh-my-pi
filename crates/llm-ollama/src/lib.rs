@@ -276,7 +276,8 @@ fn encode_reasoning(
 		Some(Effort::Off) => Some(Value::Bool(false)),
 		Some(effort) => {
 			let mapped = thinking_policy
-				.and_then(|policy| policy.effort_map.get(&effort)).map_or_else(|| ollama_effort(effort), Str::as_str);
+				.and_then(|policy| policy.effort_map.get(&effort))
+				.map_or_else(|| ollama_effort(effort), Str::as_str);
 			Some(Value::String(mapped.into()))
 		},
 		None => None,

@@ -597,13 +597,14 @@ fn close_open_parts(state: &mut ResponsesDecodeState, out: &mut SmallVec<TurnEve
 	let pending: Vec<(u32, Bytes)> = state
 		.outputs
 		.iter()
-		.filter(|&(index, slot)| !state.ended.contains(index) && is_stream_part(slot)).map(|(index, slot)| {
-				let signature = match slot {
-					OutputSlot::Thinking { encrypted, .. } => encrypted.clone(),
-					_ => Bytes::new(),
-				};
-				(*index, signature)
-			})
+		.filter(|&(index, slot)| !state.ended.contains(index) && is_stream_part(slot))
+		.map(|(index, slot)| {
+			let signature = match slot {
+				OutputSlot::Thinking { encrypted, .. } => encrypted.clone(),
+				_ => Bytes::new(),
+			};
+			(*index, signature)
+		})
 		.collect();
 	for (index, signature) in pending {
 		state.ended.insert(index);
@@ -1647,10 +1648,12 @@ fn encode_tools(
 			}));
 			continue;
 		}
-		let mut parameters = if let Ok(value) = serde_json::from_slice(&tool.schema_json) { value } else {
-  				unsupported.push(dropped("tools.schema_json", "tool schema is not valid JSON"));
-  				Value::Object(Map::new())
-  			};
+		let mut parameters = if let Ok(value) = serde_json::from_slice(&tool.schema_json) {
+			value
+		} else {
+			unsupported.push(dropped("tools.schema_json", "tool schema is not valid JSON"));
+			Value::Object(Map::new())
+		};
 		let (normalized, reports) = normalize_schema(compat.tool_schema_flavor, &parameters);
 		parameters = normalized;
 		unsupported.extend(reports);
@@ -1810,16 +1813,18 @@ fn encode_format(
 	};
 	match &format.value.kind {
 		ResponseFormatKind::JsonSchema(schema) => {
-			let mut parsed = if let Ok(value) = serde_json::from_slice(&schema.schema_json) { value } else {
-   					report(
-   						unsupported,
-   						"response_format.json_schema",
-   						"JSON schema bytes are not valid JSON",
-   						format.on_unsupported,
-   						fail_closed,
-   					);
-   					return;
-   				};
+			let mut parsed = if let Ok(value) = serde_json::from_slice(&schema.schema_json) {
+				value
+			} else {
+				report(
+					unsupported,
+					"response_format.json_schema",
+					"JSON schema bytes are not valid JSON",
+					format.on_unsupported,
+					fail_closed,
+				);
+				return;
+			};
 			let (normalized, reports) = normalize_schema(compat.tool_schema_flavor, &parsed);
 			parsed = normalized;
 			unsupported.extend(reports.into_iter().map(|report| {

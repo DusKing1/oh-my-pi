@@ -418,6 +418,11 @@ pub enum StreamPartKind {
 /// stream accumulator; this avoids cloning the entire partial response for
 /// every token.
 #[non_exhaustive]
+#[allow(
+	clippy::large_enum_variant,
+	reason = "boxing terminal payloads would allocate on every completed turn and change the \
+	          public event shape"
+)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum TurnEvent {
 	/// The context precondition passed and the turn was admitted.

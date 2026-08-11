@@ -498,10 +498,10 @@ fn chips(model: usize, current: usize, charset: Charset) -> Vec<Chip> {
 		let color = if role.configured { role.color } else { DIM };
 		let mut text = StrMut::with_capacity(16);
 		text.push_str(dot);
-		text.push_str(" ");
+		text.push(' ');
 		text.push_str(role.name);
 		if let Some(glyph) = role.thinking {
-			text.push_str(" ");
+			text.push(' ');
 			text.push_str(glyph);
 		}
 		chips.push(Chip { text: text.freeze(), color });

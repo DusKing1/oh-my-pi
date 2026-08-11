@@ -806,8 +806,7 @@ impl EditBuffer {
 				while start < logical_end {
 					let hard_end = start.saturating_add(limit).min(logical_end);
 					let end = if hard_end < logical_end {
-						self.text[start..hard_end]
-							.as_bytes()
+						self.text.as_bytes()[start..hard_end]
 							.iter()
 							.rposition(|byte| *byte == b' ')
 							.map_or(hard_end, |offset| start + offset + 1)
