@@ -363,6 +363,7 @@ impl Auth for AuthService {
 				access_key.expose(),
 				secret_key.expose(),
 				session_token.as_ref().map(Secret::expose),
+				0,
 				now_ms(),
 			)
 			.map_err(store_status)?;

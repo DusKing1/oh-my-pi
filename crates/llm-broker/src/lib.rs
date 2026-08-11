@@ -12,6 +12,7 @@
 //! implementation needed (SQLite leases, CAS write-back, busy-timeout races)
 //! exists here.
 
+pub mod aws;
 pub mod cli;
 pub mod oauth;
 pub mod sealed;

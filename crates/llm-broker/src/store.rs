@@ -317,7 +317,7 @@ pub struct CredentialMeta {
 	pub blocks:         SmallVec<CredentialBlock, 4>,
 	/// Explanation for a disabled credential.
 	pub disabled_cause: Str,
-	/// OAuth access-token expiry, or zero for API keys.
+	/// OAuth or temporary AWS credential expiry, or zero for static credentials.
 	pub expires_at_ms:  u64,
 	/// Creation time in Unix epoch milliseconds.
 	pub created_at_ms:  u64,
@@ -650,8 +650,8 @@ impl Store {
 		)
 	}
 
-	/// Inserts or replaces AWS `SigV4` access, secret, and optional session
-	/// material at the broker's one-way secret ingress.
+	/// Inserts or replaces AWS `SigV4` access, secret, optional session, and
+	/// expiry material at the broker's one-way secret ingress.
 	pub fn upsert_aws(
 		&self,
 		provider: &str,
@@ -659,6 +659,7 @@ impl Store {
 		access_key_id: &[u8],
 		secret_access_key: &[u8],
 		session_token: Option<&[u8]>,
+		expires_at_ms: u64,
 		now_ms: u64,
 	) -> Result<CredentialMeta, StoreError> {
 		self.upsert_credential(
@@ -670,7 +671,7 @@ impl Store {
 			None,
 			Some(access_key_id),
 			session_token,
-			0,
+			expires_at_ms,
 			false,
 			now_ms,
 		)
@@ -1981,6 +1982,7 @@ mod tests {
 				access.as_bytes(),
 				secret.as_bytes(),
 				Some(session.as_bytes()),
+				0,
 				10,
 			)
 			.expect("upsert AWS");

@@ -783,6 +783,7 @@ auth = { type = "bearer", env = ["DEVIN_API_KEY"] }
 				b"AKIDEXAMPLE",
 				b"wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
 				Some(b"session-token"),
+				0,
 				10,
 			)
 			.expect("AWS credential");
@@ -841,11 +842,11 @@ auth = { type = "bearer", env = ["DEVIN_API_KEY"] }
 	fn aws_rotation_is_rejected_before_signature_headers_are_mutated() {
 		let (_directory, store, source) = source();
 		let first = store
-			.upsert_aws("aws", "account", b"OLDACCESS", b"old-secret", None, 10)
+			.upsert_aws("aws", "account", b"OLDACCESS", b"old-secret", None, 0, 10)
 			.expect("AWS credential");
 		let lease = store.lease(first.id).expect("lease lookup").expect("lease");
 		store
-			.upsert_aws("aws", "account", b"NEWACCESS", b"new-secret", None, 11)
+			.upsert_aws("aws", "account", b"NEWACCESS", b"new-secret", None, 0, 11)
 			.expect("rotation");
 		let mut request = Request::builder()
 			.uri("https://bedrock-runtime.us-east-1.amazonaws.com/model/test/invoke")

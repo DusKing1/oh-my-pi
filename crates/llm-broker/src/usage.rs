@@ -11,7 +11,7 @@ use http::{
 	Method, Request, StatusCode,
 	header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue},
 };
-use jiff::Timestamp;
+use jiff::{Timestamp, ToSpan, tz::TimeZone};
 use omp_core::{Str, fmts};
 use omp_llm_egress::{
 	auth_inject::CredentialLease,
@@ -688,6 +688,9 @@ fn report_from_payload(
 	if fetcher.provider == "alibaba-token-plan" {
 		return alibaba_token_plan_report(credential_id, now_ms, payload);
 	}
+	if fetcher.provider == "cursor" {
+		return cursor_report(credential_id, now_ms, payload);
+	}
 	let mut windows = SmallVec::new();
 	for spec in fetcher.windows {
 		let Some(raw) = json_path(&payload, spec.used_percent_path).and_then(value_number) else {
@@ -810,6 +813,111 @@ fn alibaba_token_plan_report(credential_id: u64, now_ms: u64, payload: Value) ->
 		fetched_at_ms: now_ms,
 		detail: payload,
 	}
+}
+fn cursor_report(credential_id: u64, now_ms: u64, payload: Value) -> UsageReport {
+	let reset_at_ms = cursor_reset_at_ms(&payload).unwrap_or(0);
+	let individual = payload.get("individualUsage").and_then(Value::as_object);
+	let mut windows = SmallVec::new();
+
+	if let Some(individual) = individual {
+		let used_overall = individual
+			.get("overall")
+			.and_then(Value::as_object)
+			.and_then(cursor_cents_percent)
+			.map(|used_percent| {
+				windows.push(cursor_window("Personal Usage", used_percent, reset_at_ms));
+			})
+			.is_some();
+
+		if !used_overall
+			&& let Some(plan) = individual.get("plan").and_then(Value::as_object)
+			&& plan.get("enabled") != Some(&Value::Bool(false))
+		{
+			let auto = plan.get("autoPercentUsed").and_then(value_number);
+			let api = plan.get("apiPercentUsed").and_then(value_number);
+			if let Some(used_percent) = auto {
+				windows.push(cursor_window("Cursor Models", used_percent.max(0.0), reset_at_ms));
+			}
+			if let Some(used_percent) = api {
+				windows.push(cursor_window("Other Models", used_percent.max(0.0), reset_at_ms));
+			}
+			if auto.is_none() && api.is_none() {
+				let fallback = plan
+					.get("totalPercentUsed")
+					.and_then(value_number)
+					.map(|percent| percent.max(0.0))
+					.or_else(|| cursor_cents_percent(plan));
+				if let Some(used_percent) = fallback {
+					windows.push(cursor_window("Personal Usage", used_percent, reset_at_ms));
+				}
+			}
+		}
+
+		if let Some(used_percent) = individual
+			.get("onDemand")
+			.and_then(Value::as_object)
+			.and_then(cursor_cents_percent)
+		{
+			windows.push(cursor_window("On-Demand Usage", used_percent, reset_at_ms));
+		}
+	}
+
+	UsageReport {
+		credential_id,
+		provider: Str::new("cursor"),
+		plan: payload
+			.get("membershipType")
+			.and_then(Value::as_str)
+			.map_or_else(|| Str::new(""), Str::new),
+		windows,
+		fetched_at_ms: now_ms,
+		detail: payload,
+	}
+}
+
+fn cursor_cents_percent(bucket: &serde_json::Map<String, Value>) -> Option<f64> {
+	if bucket.get("enabled") == Some(&Value::Bool(false)) {
+		return None;
+	}
+	let limit = bucket.get("limit").and_then(value_number)?;
+	if limit <= 0.0 {
+		return None;
+	}
+	let reported_used = bucket.get("used").and_then(value_number);
+	let reported_remaining = bucket.get("remaining").and_then(value_number);
+	let used = if reported_used.is_some_and(|used| used > 0.0) {
+		reported_used?
+	} else if reported_remaining.is_some_and(|remaining| remaining >= 0.0 && remaining < limit) {
+		(limit - reported_remaining?).max(0.0)
+	} else {
+		reported_used.filter(|used| *used >= 0.0)?
+	};
+	Some(used * 100.0 / limit)
+}
+
+fn cursor_window(label: &'static str, used_percent: f64, resets_at_ms: u64) -> UsageWindow {
+	UsageWindow { label: Str::new(label), used_percent, resets_at_ms }
+}
+
+fn cursor_reset_at_ms(payload: &Value) -> Option<u64> {
+	for key in ["billingCycleEnd", "endOfMonth", "resetsAt", "nextReset"] {
+		if let Some(reset_at_ms) = payload.get(key).and_then(timestamp_ms) {
+			return Some(reset_at_ms);
+		}
+	}
+	for key in ["startOfMonth", "billingCycleStart", "startOfBillingCycle"] {
+		let Some(start_at_ms) = payload.get(key).and_then(timestamp_ms) else {
+			continue;
+		};
+		let start = Timestamp::from_millisecond(i64::try_from(start_at_ms).ok()?)
+			.ok()?
+			.to_zoned(TimeZone::UTC);
+		let constrained = start.checked_add(1.month()).ok()?;
+		let overflow_days = start.day() - constrained.day();
+		let next_month = constrained.checked_add(i64::from(overflow_days).days()).ok()?;
+		return next_month.timestamp().as_millisecond().try_into().ok();
+	}
+	None
 }
 
 fn value_number(value: &Value) -> Option<f64> {
@@ -1030,13 +1138,7 @@ const OPENCODE_GO_SPEND_WINDOWS: &[(&str, u64, u64)] = &[
 	("monthly", 30 * 24 * 60 * 60_000, 60_000_000_000),
 ];
 
-const CURSOR_WINDOWS: &[WindowSpec] = &[WindowSpec {
-	label:              "month",
-	used_percent_path:  "planUsage.usedPercent",
-	resets_at_path:     "billingCycleEnd",
-	used_percent_scale: 1.0,
-	remaining:          false,
-}];
+const CURSOR_WINDOWS: &[WindowSpec] = &[];
 const GEMINI_WINDOWS: &[WindowSpec] = &[WindowSpec {
 	label:              "quota",
 	used_percent_path:  "responses.1.buckets.0.remainingFraction",
@@ -1211,6 +1313,133 @@ mod tests {
 			used_percent: 31.5,
 			resets_at_ms: 1_800_000_000_000,
 		});
+	}
+
+
+	#[test]
+	fn cursor_plan_rails_and_on_demand_match_dashboard_percentages() {
+		let reset = "2026-09-08T08:00:31.000Z";
+		let report = cursor_report(7, 42, serde_json::json!({
+			"membershipType": "pro_plus",
+			"individualUsage": {
+				"plan": {
+					"enabled": true,
+					"used": 1504,
+					"limit": 7000,
+					"remaining": 5496,
+					"autoPercentUsed": 1.85,
+					"apiPercentUsed": 0,
+					"totalPercentUsed": 1.63
+				},
+				"onDemand": {
+					"enabled": true,
+					"used": 0,
+					"limit": 2000,
+					"remaining": 2000
+				}
+			},
+			"billingCycleEnd": reset
+		}));
+		let reset_at_ms = timestamp_ms(&Value::from(reset)).expect("reset timestamp");
+		assert_eq!(report.plan, "pro_plus");
+		assert_eq!(report.windows, [
+			UsageWindow {
+				label: Str::new("Cursor Models"),
+				used_percent: 1.85,
+				resets_at_ms: reset_at_ms,
+			},
+			UsageWindow {
+				label: Str::new("Other Models"),
+				used_percent: 0.0,
+				resets_at_ms: reset_at_ms,
+			},
+			UsageWindow {
+				label: Str::new("On-Demand Usage"),
+				used_percent: 0.0,
+				resets_at_ms: reset_at_ms,
+			},
+		]);
+		assert_ne!(report.windows[0].used_percent, 1504.0 * 100.0 / 7000.0);
+	}
+
+	#[test]
+	fn cursor_prefers_usable_overall_and_falls_through_disabled_overall() {
+		let overall = cursor_report(7, 42, serde_json::json!({
+			"individualUsage": {
+				"overall": { "enabled": true, "used": 100, "limit": 1000, "remaining": 900 },
+				"plan": { "enabled": true, "autoPercentUsed": 1.85, "apiPercentUsed": 2.5 }
+			}
+		}));
+		assert_eq!(overall.windows, [UsageWindow {
+			label: Str::new("Personal Usage"),
+			used_percent: 10.0,
+			resets_at_ms: 0,
+		}]);
+
+		let plan = cursor_report(7, 42, serde_json::json!({
+			"individualUsage": {
+				"overall": { "enabled": false, "used": 100, "limit": 1000 },
+				"plan": { "enabled": true, "autoPercentUsed": 1.85, "apiPercentUsed": 0 }
+			}
+		}));
+		assert_eq!(plan.windows.len(), 2);
+		assert_eq!(plan.windows[0].label, "Cursor Models");
+		assert_eq!(plan.windows[0].used_percent, 1.85);
+		assert_eq!(plan.windows[1].label, "Other Models");
+		assert_eq!(plan.windows[1].used_percent, 0.0);
+	}
+
+	#[test]
+	fn cursor_keeps_on_demand_when_plan_is_disabled() {
+		let report = cursor_report(7, 42, serde_json::json!({
+			"individualUsage": {
+				"plan": {
+					"enabled": false,
+					"limit": 7000,
+					"autoPercentUsed": 1.85,
+					"apiPercentUsed": 0
+				},
+				"onDemand": { "enabled": true, "used": 500, "limit": 2000, "remaining": 1500 }
+			}
+		}));
+		assert_eq!(report.windows, [UsageWindow {
+			label: Str::new("On-Demand Usage"),
+			used_percent: 25.0,
+			resets_at_ms: 0,
+		}]);
+	}
+
+	#[test]
+	fn cursor_plan_falls_back_to_total_percent_then_cents() {
+		let total = cursor_report(7, 42, serde_json::json!({
+			"individualUsage": {
+				"plan": { "enabled": true, "used": 1504, "limit": 7000, "totalPercentUsed": 1.63 }
+			}
+		}));
+		assert_eq!(total.windows[0].label, "Personal Usage");
+		assert_eq!(total.windows[0].used_percent, 1.63);
+
+		let cents = cursor_report(7, 42, serde_json::json!({
+			"individualUsage": {
+				"plan": { "enabled": true, "used": 0, "limit": 7000, "remaining": 6076 }
+			}
+		}));
+		assert_eq!(cents.windows[0].label, "Personal Usage");
+		assert_eq!(cents.windows[0].used_percent, 13.2);
+	}
+
+	#[test]
+	fn cursor_derives_monthly_reset_from_billing_cycle_start() {
+		let report = cursor_report(7, 42, serde_json::json!({
+			"individualUsage": {
+				"plan": { "enabled": true, "autoPercentUsed": 1 }
+			},
+			"billingCycleStart": "2026-01-31T08:00:31Z"
+		}));
+		assert_eq!(
+			report.windows[0].resets_at_ms,
+			timestamp_ms(&Value::from("2026-03-03T08:00:31Z")).expect("reset timestamp")
+		);
 	}
 
 	#[test]

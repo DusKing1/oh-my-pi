@@ -15,6 +15,7 @@ futures = { workspace = true }
 flume = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
+hyper = { workspace = true }
 hmac = { workspace = true }
 jiff = { workspace = true }
 omp-core = { workspace = true }
@@ -33,6 +34,7 @@ smallvec = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tower = { workspace = true }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 tracing = { workspace = true }

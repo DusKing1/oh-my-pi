@@ -17,7 +17,7 @@ use http::{
 	Method,
 	header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT},
 };
-use omp_core::Str;
+use omp_core::{Str, USER_AGENT as OMP_USER_AGENT};
 use omp_llm_catalog::oauth_params::{self, CustomExchange, FlowKind, OAuthParams};
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
@@ -35,6 +35,7 @@ use crate::{
 const DEFAULT_DEVICE_INTERVAL_SECS: u64 = 5;
 const COPILOT_TOKEN_URL: &str = "https://api.github.com/copilot_internal/v2/token";
 const CALLBACK_LIMIT: usize = 16 * 1024;
+const IPV6_COMPANION_ATTEMPTS: usize = 4;
 const FORM_CONTENT_TYPE: &str = "application/x-www-form-urlencoded";
 const JSON_CONTENT_TYPE: &str = "application/json";
 const CURSOR_MAX_POLLS: u16 = 150;
@@ -473,18 +474,17 @@ impl OAuthEngine {
 		let port = params
 			.callback_port
 			.ok_or_else(|| OAuthError::InvalidResponse("PKCE callback port missing".into()))?;
-		let callback_host = optional_extra_param(params, "callback_host").unwrap_or("127.0.0.1");
+		let callback_host = optional_extra_param(params, "callback_host").unwrap_or("localhost");
 		let callback_path = optional_extra_param(params, "callback_path").unwrap_or("/callback");
-		let redirect_uri = format!("http://{callback_host}:{port}{callback_path}");
-		let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
-			.await
-			.ok();
+		let listener = Arc::new(start_callback_listeners(callback_host, port).await?);
+		let callback_port = listener.port();
+		let redirect_uri = format!("http://{callback_host}:{callback_port}{callback_path}");
 		let url = authorization_url(params, &redirect_uri, &state, &challenge)?;
 		if let Some(browser) = self.browser.as_ref() {
 			let _ = browser.open(url.as_str());
 		}
 		let prompt =
-			LoginPrompt::Browse { url: url.as_str().into(), loopback: listener.is_some() };
+			LoginPrompt::Browse { url: url.as_str().into(), loopback: true };
 		let expires_at_ms = now_ms.saturating_add(CUSTOM_FLOW_TIMEOUT_MS);
 		Ok((
 			prompt,
@@ -494,7 +494,7 @@ impl OAuthEngine {
 				verifier,
 				state,
 				redirect_uri: redirect_uri.into(),
-				listener: listener.map(Arc::new),
+				listener: Some(listener),
 				expires_at_ms,
 			}),
 		))
@@ -617,12 +617,11 @@ impl OAuthEngine {
 		let port = params
 			.callback_port
 			.ok_or_else(|| OAuthError::InvalidResponse("callback port missing".into()))?;
-		let callback_host = optional_extra_param(params, "callback_host").unwrap_or("127.0.0.1");
+		let callback_host = optional_extra_param(params, "callback_host").unwrap_or("localhost");
 		let callback_path = optional_extra_param(params, "callback_path").unwrap_or("/callback");
-		let redirect_uri = format!("http://{callback_host}:{port}{callback_path}");
-		let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
-			.await
-			.ok();
+		let listener = Arc::new(start_callback_listeners(callback_host, port).await?);
+		let callback_port = listener.port();
+		let redirect_uri = format!("http://{callback_host}:{callback_port}{callback_path}");
 		let mut url = parsed_url(params.authorize_url.as_str())?;
 		{
 			let mut query = url.query_pairs_mut();
@@ -643,14 +642,14 @@ impl OAuthEngine {
 		self.open_browser(url.as_str());
 		let expires_at_ms = now_ms.saturating_add(CUSTOM_FLOW_TIMEOUT_MS);
 		Ok((
-			LoginPrompt::Browse { url: url.as_str().into(), loopback: listener.is_some() },
+			LoginPrompt::Browse { url: url.as_str().into(), loopback: true },
 			expires_at_ms,
 			PendingFlow::Pkce(PkcePending {
 				params: params.clone(),
 				verifier,
 				state,
 				redirect_uri: redirect_uri.into(),
-				listener: listener.map(Arc::new),
+				listener: Some(listener),
 				expires_at_ms,
 			}),
 		))
@@ -1243,7 +1242,7 @@ impl OAuthEngine {
 	async fn github_copilot_exchange(&self, github_token: &Secret) -> Result<TokenSet, OAuthError> {
 		let mut headers = HeaderMap::new();
 		headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-		headers.insert(USER_AGENT, HeaderValue::from_static("omp"));
+		headers.insert(USER_AGENT, HeaderValue::from_static(OMP_USER_AGENT));
 		let mut bearer = Vec::with_capacity(7 + github_token.expose().len());
 		bearer.extend_from_slice(b"Bearer ");
 		bearer.extend_from_slice(github_token.expose());
@@ -1323,12 +1322,24 @@ impl OAuthEngine {
 	}
 }
 
+struct CallbackListeners {
+	primary:   TcpListener,
+	companion: Option<TcpListener>,
+	port:      u16,
+}
+
+impl CallbackListeners {
+	const fn port(&self) -> u16 {
+		self.port
+	}
+}
+
 struct PkcePending {
 	params:        OAuthParams,
 	verifier:      Secret,
 	state:         Str,
 	redirect_uri:  Str,
-	listener:      Option<Arc<TcpListener>>,
+	listener:      Option<Arc<CallbackListeners>>,
 	expires_at_ms: u64,
 }
 
@@ -1640,14 +1651,69 @@ fn form(pairs: &[(&str, &str)]) -> Bytes {
 	Bytes::from(serializer.finish())
 }
 
+async fn bind_callback_listeners(
+	hostname: &str,
+	requested_port: u16,
+) -> std::io::Result<CallbackListeners> {
+	if hostname != "localhost" {
+		let primary = TcpListener::bind((hostname, requested_port)).await?;
+		let port = primary.local_addr()?.port();
+		return Ok(CallbackListeners { primary, companion: None, port });
+	}
+
+	for attempt in 0..=IPV6_COMPANION_ATTEMPTS {
+		let primary =
+			TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, requested_port)).await?;
+		let port = primary.local_addr()?.port();
+		match TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, port)).await {
+			Ok(companion) => {
+				return Ok(CallbackListeners { primary, companion: Some(companion), port });
+			},
+			// When IPv6 itself is unavailable, IPv4 is the only reachable
+			// localhost family and remains valid on the preferred port.
+			Err(error) if error.kind() != std::io::ErrorKind::AddrInUse => {
+				return Ok(CallbackListeners { primary, companion: None, port });
+			},
+			// An exact-address collision would leave localhost half-reachable.
+			// Random ports can be redrawn; fixed ports fall through to fallback.
+			Err(error) if requested_port != 0 || attempt == IPV6_COMPANION_ATTEMPTS => {
+				return Err(error);
+			},
+			Err(_) => {},
+		}
+	}
+	unreachable!()
+}
+
+async fn start_callback_listeners(
+	hostname: &str,
+	preferred_port: u16,
+) -> Result<CallbackListeners, OAuthError> {
+	let listeners = match bind_callback_listeners(hostname, preferred_port).await {
+		Ok(listeners) => Ok(listeners),
+		Err(_) => bind_callback_listeners(hostname, 0).await,
+	};
+	listeners.map_err(|error| {
+		OAuthError::InvalidCallback(
+			format!("failed to bind OAuth callback listener: {error}").into(),
+		)
+	})
+}
+
 async fn receive_callback(
-	listener: &TcpListener,
+	listeners: &CallbackListeners,
 	expected_state: &str,
 ) -> Result<(Str, Str), OAuthError> {
-	let (mut stream, _) = listener
-		.accept()
-		.await
-		.map_err(|error| OAuthError::InvalidCallback(error.to_string().into()))?;
+	let accepted = if let Some(companion) = listeners.companion.as_ref() {
+		tokio::select! {
+			accepted = listeners.primary.accept() => accepted,
+			accepted = companion.accept() => accepted,
+		}
+	} else {
+		listeners.primary.accept().await
+	};
+	let (mut stream, _) =
+		accepted.map_err(|error| OAuthError::InvalidCallback(error.to_string().into()))?;
 	let mut request = Vec::with_capacity(1_024);
 	loop {
 		let mut chunk = [0_u8; 1_024];
@@ -2136,6 +2202,69 @@ mod tests {
 			base64_url_encode(&sha256(verifier)),
 			"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
 		);
+	}
+
+	#[tokio::test]
+	async fn callback_listener_accepts_both_loopback_families() {
+		async fn callback_through(address: std::net::IpAddr) {
+			let listeners = Arc::new(
+				bind_callback_listeners("localhost", 0)
+					.await
+					.expect("IPv4 callback listener"),
+			);
+			if address.is_ipv6() && listeners.companion.is_none() {
+				return;
+			}
+			let callback = {
+				let listeners = listeners.clone();
+				tokio::spawn(async move { receive_callback(&listeners, "expected-state").await })
+			};
+			let mut stream =
+				tokio::net::TcpStream::connect(std::net::SocketAddr::new(address, listeners.port()))
+					.await
+					.expect("connect to callback listener");
+			stream
+				.write_all(
+					b"GET /callback?code=accepted&state=expected-state HTTP/1.1\r\nHost: \
+					 localhost\r\n\r\n",
+				)
+				.await
+				.expect("write callback");
+			let mut response = Vec::new();
+			stream.read_to_end(&mut response).await.expect("read callback response");
+			assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+			let (code, state) = callback
+				.await
+				.expect("callback task")
+				.expect("valid callback");
+			assert_eq!(code, "accepted");
+			assert_eq!(state, "expected-state");
+		}
+
+		callback_through(std::net::Ipv4Addr::LOCALHOST.into()).await;
+		callback_through(std::net::Ipv6Addr::LOCALHOST.into()).await;
+	}
+
+	#[tokio::test]
+	async fn exact_ipv6_loopback_collision_moves_from_the_fixed_port() {
+		let squatter = match TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0)).await {
+			Ok(listener) => listener,
+			Err(_) => return,
+		};
+		let port = squatter.local_addr().expect("IPv6 squatter address").port();
+		let error = match bind_callback_listeners("localhost", port).await {
+			Ok(_) => panic!("fixed port must not remain IPv4-only after an IPv6 collision"),
+			Err(error) => error,
+		};
+		assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+		let listeners = start_callback_listeners("localhost", port)
+			.await
+			.expect("random-port fallback");
+		assert_ne!(listeners.port(), port);
+		assert!(listeners.companion.is_some());
+		TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+			.await
+			.expect("failed dual bind must release the IPv4 listener");
 	}
 
 	#[tokio::test]
