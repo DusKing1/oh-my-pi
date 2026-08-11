@@ -1,5 +1,6 @@
 //! Graphviz DOT-to-terminal rendering for fenced Markdown blocks.
 
+use std::{cmp::Ordering, collections::HashMap};
 
 use layout::{
 	core::{
@@ -10,7 +11,7 @@ use layout::{
 	gv::{
 		GraphBuilder,
 		parser::{
-			DotParser,
+			DotParser, Lexer, Token,
 			ast::{self, AttrStmt, AttrStmtTarget, AttributeList, Stmt},
 		},
 	},
@@ -27,6 +28,7 @@ use crate::{
 const PIXELS_PER_COLUMN: f64 = 12.0;
 const PIXELS_PER_ROW: f64 = 14.0;
 const MAX_RENDER_CELLS: usize = 2_000_000;
+const MAX_RECORD_DEPTH: usize = 64;
 
 /// Renders Graphviz DOT source without invoking the Graphviz executable.
 /// Returns `false` without emitting so Markdown can preserve invalid source.
@@ -52,8 +54,7 @@ pub(super) fn render(
 }
 
 fn render_best(source: &str, width: usize) -> Option<Scene> {
-	let mut parser = DotParser::new(source);
-	let graph = parser.process().ok()?;
+	let graph = parse_graph(source)?;
 	let mut best = layout_scene(&graph)?;
 	let mut best_width = best.natural_width();
 	if best_width <= width {
@@ -76,14 +77,138 @@ fn render_best(source: &str, width: usize) -> Option<Scene> {
 	Some(best)
 }
 
+#[derive(Clone, Copy)]
+enum GraphKind {
+	Directed,
+	Undirected,
+}
+
+fn parse_graph(source: &str) -> Option<ast::Graph> {
+	let mut lexer = Lexer::from_string(source);
+	let root = match lexer.next_token() {
+		Token::StrictKW => lexer.next_token(),
+		token => token,
+	};
+	let kind = match root {
+		Token::GraphKW => GraphKind::Undirected,
+		Token::DigraphKW => GraphKind::Directed,
+		_ => return None,
+	};
+
+	let mut parser = DotParser::new(source);
+	let graph = parser.process().ok()?;
+	(record_labels_are_safe(&graph) && edge_operators_match(&graph, kind)).then_some(graph)
+}
+
+fn edge_operators_match(graph: &ast::Graph, kind: GraphKind) -> bool {
+	graph.list.list.iter().all(|statement| match statement {
+		Stmt::Edge(edge) => edge.to.iter().all(|(_, arrow)| match kind {
+			GraphKind::Directed => matches!(arrow, &ast::ArrowKind::Arrow),
+			GraphKind::Undirected => matches!(arrow, &ast::ArrowKind::Line),
+		}),
+		Stmt::SubGraph(subgraph) => edge_operators_match(subgraph, kind),
+		_ => true,
+	})
+}
+
+#[derive(Clone, Copy, Default)]
+struct NodeAttributes<'a> {
+	shape: Option<&'a str>,
+	label: Option<&'a str>,
+}
+
+impl<'a> NodeAttributes<'a> {
+	fn apply(&mut self, attributes: &'a AttributeList) {
+		for (name, value) in attributes.iter() {
+			match name.as_str() {
+				"shape" => self.shape = Some(value),
+				"label" => self.label = Some(value),
+				_ => {},
+			}
+		}
+	}
+}
+
+fn record_labels_are_safe(graph: &ast::Graph) -> bool {
+	let mut nodes = HashMap::new();
+	collect_node_attributes(graph, NodeAttributes::default(), &mut nodes);
+	nodes.into_iter().all(|(name, attributes)| {
+		!matches!(attributes.shape, Some("record" | "Mrecord"))
+			|| record_label_is_safe(attributes.label.unwrap_or(name))
+	})
+}
+
+fn collect_node_attributes<'a>(
+	graph: &'a ast::Graph,
+	inherited: NodeAttributes<'a>,
+	nodes: &mut HashMap<&'a str, NodeAttributes<'a>>,
+) {
+	let mut defaults = inherited;
+	for statement in &graph.list.list {
+		match statement {
+			Stmt::Attribute(attribute) if matches!(attribute.target, AttrStmtTarget::Node) => {
+				defaults.apply(&attribute.list);
+			},
+			Stmt::Node(node) => {
+				let attributes = nodes.entry(node.id.name.as_str()).or_default();
+				if let Some(shape) = defaults.shape {
+					attributes.shape = Some(shape);
+				}
+				if let Some(label) = defaults.label {
+					attributes.label = Some(label);
+				}
+				attributes.apply(&node.list);
+			},
+			Stmt::Edge(edge) => {
+				nodes.entry(edge.from.name.as_str()).or_insert(defaults);
+				for (node, _) in &edge.to {
+					nodes.entry(node.name.as_str()).or_insert(defaults);
+				}
+			},
+			Stmt::SubGraph(subgraph) => {
+				collect_node_attributes(subgraph, defaults, nodes);
+			},
+			_ => {},
+		}
+	}
+}
+
+fn record_label_is_safe(label: &str) -> bool {
+	if label.is_empty() {
+		return false;
+	}
+	let mut depth = 0_usize;
+	for character in label.chars() {
+		match character {
+			'{' => {
+				let Some(next) = depth.checked_add(1) else {
+					return false;
+				};
+				depth = next;
+				if depth > MAX_RECORD_DEPTH {
+					return false;
+				}
+			},
+			'}' => {
+				let Some(next) = depth.checked_sub(1) else {
+					return false;
+				};
+				depth = next;
+			},
+			_ => {},
+		}
+	}
+	depth == 0
+}
+
 fn with_rank_direction(graph: &ast::Graph, direction: &str) -> ast::Graph {
 	let mut graph = graph.clone();
 	let mut attributes = AttributeList::new();
 	attributes.add_attr("rankdir", direction);
-	graph.list.list.push(Stmt::Attribute(AttrStmt::new(
-		AttrStmtTarget::Graph,
-		attributes,
-	)));
+	graph
+		.list
+		.list
+		.push(Stmt::Attribute(AttrStmt::new(AttrStmtTarget::Graph, attributes)));
 	graph
 }
 
@@ -111,7 +236,7 @@ impl Bounds {
 		(point.x.is_finite() && point.y.is_finite()).then_some(Self { min: point, max: point })
 	}
 
-	fn include(&mut self, point: Point) {
+	const fn include(&mut self, point: Point) {
 		if !point.x.is_finite() || !point.y.is_finite() {
 			return;
 		}
@@ -132,28 +257,11 @@ impl Bounds {
 
 #[derive(Debug)]
 enum Primitive {
-	Rect {
-		origin: Point,
-		size:   Point,
-	},
-	Line {
-		start: Point,
-		stop:  Point,
-	},
-	Ellipse {
-		center: Point,
-		size:   Point,
-	},
-	Text {
-		center: Point,
-		text:   Str,
-	},
-	Arrow {
-		path:   Vec<(Point, Point)>,
-		dashed: bool,
-		heads:  (bool, bool),
-		text:   Str,
-	},
+	Rect { origin: Point, size: Point },
+	Line { start: Point, stop: Point },
+	Ellipse { center: Point, size: Point },
+	Text { center: Point, text: Str },
+	Arrow { path: Vec<(Point, Point)>, dashed: bool, heads: (bool, bool), text: Str },
 }
 
 #[derive(Default, Debug)]
@@ -180,10 +288,7 @@ impl Scene {
 	fn include_text(&mut self, center: Point, text: &str, font_size: usize) {
 		let columns = text.lines().map(Text::visible_width).max().unwrap_or(0) as f64;
 		let rows = text.lines().count().max(1) as f64;
-		let half = Point::new(
-			columns * font_size as f64 / 2.0,
-			rows * font_size as f64 / 2.0,
-		);
+		let half = Point::new(columns * font_size as f64 / 2.0, rows * font_size as f64 / 2.0);
 		self.include(Point::new(center.x - half.x, center.y - half.y));
 		self.include(Point::new(center.x + half.x, center.y + half.y));
 	}
@@ -238,7 +343,9 @@ impl RenderBackend for Scene {
 			return;
 		}
 		self.include_text(center, text, look.font_size);
-		self.primitives.push(Primitive::Text { center, text: Str::new(text) });
+		self
+			.primitives
+			.push(Primitive::Text { center, text: Str::new(text) });
 	}
 
 	fn draw_arrow(
@@ -301,7 +408,8 @@ impl Projection {
 		};
 
 		let mut y_scale = PIXELS_PER_ROW;
-		let mut rows = (bounds.height() / y_scale).ceil() as usize + 1;
+		let mut rows = (bounds.height() / y_scale).ceil() as usize;
+		rows = rows.saturating_add(1);
 		let max_rows = (MAX_RENDER_CELLS / columns.max(1)).max(1);
 		if rows > max_rows {
 			y_scale = if max_rows == 1 {
@@ -332,7 +440,6 @@ impl Projection {
 		};
 		GridPoint { x, y }
 	}
-
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -370,23 +477,24 @@ enum CellRole {
 
 #[derive(Clone, Debug)]
 struct Cell {
-	line:             u8,
-	line_priority:    u8,
-	glyph:            Option<Str>,
-	glyph_role:       CellRole,
-	glyph_priority:   u8,
-	wide_continuation: bool,
+	line:           u8,
+	line_priority:  u8,
+	glyph:          Option<Str>,
+	glyph_role:     CellRole,
+	glyph_priority: u8,
+	/// Positive on a lead cell, negative by the offset on continuations.
+	glyph_span:     i32,
 }
 
 impl Default for Cell {
 	fn default() -> Self {
 		Self {
-			line: 0,
-			line_priority: 0,
-			glyph: None,
-			glyph_role: CellRole::Text,
+			line:           0,
+			line_priority:  0,
+			glyph:          None,
+			glyph_role:     CellRole::Text,
 			glyph_priority: 0,
-			wide_continuation: false,
+			glyph_span:     0,
 		}
 	}
 }
@@ -428,7 +536,13 @@ impl Raster {
 			Primitive::Rect { origin, size } => self.draw_rect(*origin, *size),
 			Primitive::Line { start, stop } => {
 				let mut phase = 0;
-				self.stroke(self.projection.point(*start), self.projection.point(*stop), 1, false, &mut phase);
+				self.stroke(
+					self.projection.point(*start),
+					self.projection.point(*stop),
+					1,
+					false,
+					&mut phase,
+				);
 			},
 			Primitive::Ellipse { center, size } => self.draw_ellipse(*center, *size, false),
 			Primitive::Text { center, text } => self.draw_text(*center, text.as_str(), 5),
@@ -464,8 +578,14 @@ impl Raster {
 
 	fn draw_ellipse(&mut self, center: Point, size: Point, double: bool) {
 		let half = Point::new(size.x / 2.0, size.y / 2.0);
-		let left = self.projection.point(Point::new(center.x - half.x, center.y)).x;
-		let right = self.projection.point(Point::new(center.x + half.x, center.y)).x;
+		let left = self
+			.projection
+			.point(Point::new(center.x - half.x, center.y))
+			.x;
+		let right = self
+			.projection
+			.point(Point::new(center.x + half.x, center.y))
+			.x;
 		let center = self.projection.point(center);
 		let top = (center.y - 1).max(0);
 		let bottom = (center.y + 1).min(self.projection.rows.saturating_sub(1) as i32);
@@ -474,14 +594,13 @@ impl Raster {
 			return;
 		}
 
-		let (horizontal, vertical, top_left, top_right, bottom_left, bottom_right) =
-			if self.ascii {
-				('-', '|', '+', '+', '+', '+')
-			} else if double {
-				('═', '║', '╔', '╗', '╚', '╝')
-			} else {
-				('─', '│', '╭', '╮', '╰', '╯')
-			};
+		let (horizontal, vertical, top_left, top_right, bottom_left, bottom_right) = if self.ascii {
+			('-', '|', '+', '+', '+', '+')
+		} else if double {
+			('═', '║', '╔', '╗', '╚', '╝')
+		} else {
+			('─', '│', '╭', '╮', '╰', '╯')
+		};
 		for x in left + 1..right {
 			self.set_char(x, top, horizontal, CellRole::Line, 3);
 			self.set_char(x, bottom, horizontal, CellRole::Line, 3);
@@ -496,7 +615,13 @@ impl Raster {
 		self.set_char(right, bottom, bottom_right, CellRole::Line, 3);
 	}
 
-	fn draw_arrow(&mut self, path: &[(Point, Point)], dashed: bool, heads: (bool, bool), text: &str) {
+	fn draw_arrow(
+		&mut self,
+		path: &[(Point, Point)],
+		dashed: bool,
+		heads: (bool, bool),
+		text: &str,
+	) {
 		if path.len() < 2 {
 			return;
 		}
@@ -506,8 +631,8 @@ impl Raster {
 		let mut previous_control = path[1].0;
 		for &(control, next) in path.iter().skip(2) {
 			let reflected = Point::new(
-				2.0 * endpoint.x - previous_control.x,
-				2.0 * endpoint.y - previous_control.y,
+				2.0f64.mul_add(endpoint.x, -previous_control.x),
+				2.0f64.mul_add(endpoint.y, -previous_control.y),
 			);
 			self.orthogonal(endpoint, reflected, control, next, dashed, &mut phase);
 			endpoint = next;
@@ -543,35 +668,31 @@ impl Raster {
 		let stop = self.projection.point(stop);
 		let (points, len) = match (start_axis, stop_axis) {
 			(true, true) => {
-				let middle = (start.x + stop.x) / 2;
-				([
-					start,
-					GridPoint { x: middle, y: start.y },
-					GridPoint { x: middle, y: stop.y },
-					stop,
-				], 4)
+				let middle = i32::midpoint(start.x, stop.x);
+				(
+					[
+						start,
+						GridPoint { x: middle, y: start.y },
+						GridPoint { x: middle, y: stop.y },
+						stop,
+					],
+					4,
+				)
 			},
 			(false, false) => {
-				let middle = (start.y + stop.y) / 2;
-				([
-					start,
-					GridPoint { x: start.x, y: middle },
-					GridPoint { x: stop.x, y: middle },
-					stop,
-				], 4)
+				let middle = i32::midpoint(start.y, stop.y);
+				(
+					[
+						start,
+						GridPoint { x: start.x, y: middle },
+						GridPoint { x: stop.x, y: middle },
+						stop,
+					],
+					4,
+				)
 			},
-			(true, false) => ([
-				start,
-				GridPoint { x: stop.x, y: start.y },
-				stop,
-				stop,
-			], 3),
-			(false, true) => ([
-				start,
-				GridPoint { x: start.x, y: stop.y },
-				stop,
-				stop,
-			], 3),
+			(true, false) => ([start, GridPoint { x: stop.x, y: start.y }, stop, stop], 3),
+			(false, true) => ([start, GridPoint { x: start.x, y: stop.y }, stop, stop], 3),
 		};
 		for segment in points[..len].windows(2) {
 			self.stroke(segment[0], segment[1], 1, dashed, phase);
@@ -623,22 +744,63 @@ impl Raster {
 			return;
 		}
 		let (x, y) = (x as usize, y as usize);
-		if y >= self.projection.rows || x.saturating_add(width) > self.projection.columns {
+		let Some(end) = x.checked_add(width) else {
+			return;
+		};
+		let Ok(span_width) = i32::try_from(width) else {
+			return;
+		};
+		if y >= self.projection.rows || end > self.projection.columns {
 			return;
 		}
+		if (x..end).any(|column| {
+			self
+				.glyph_lead(column, y)
+				.is_some_and(|lead| priority < self.cell(lead, y).glyph_priority)
+		}) {
+			return;
+		}
+		for column in x..end {
+			if let Some(lead) = self.glyph_lead(column, y) {
+				self.clear_glyph(lead, y);
+			}
+		}
+
 		let index = self.index(x, y);
-		if priority < self.cells[index].glyph_priority {
-			return;
-		}
 		self.cells[index].glyph = Some(Str::new(glyph));
 		self.cells[index].glyph_role = role;
 		self.cells[index].glyph_priority = priority;
-		self.cells[index].wide_continuation = false;
-		for column in x + 1..x + width {
+		self.cells[index].glyph_span = span_width;
+		for column in x + 1..end {
 			let continuation = self.index(column, y);
 			self.cells[continuation].glyph = None;
+			self.cells[continuation].glyph_role = role;
 			self.cells[continuation].glyph_priority = priority;
-			self.cells[continuation].wide_continuation = true;
+			self.cells[continuation].glyph_span = -((column - x) as i32);
+		}
+	}
+
+	fn glyph_lead(&self, column: usize, row: usize) -> Option<usize> {
+		let span = self.cell(column, row).glyph_span;
+		match span.cmp(&0) {
+			Ordering::Greater => Some(column),
+			Ordering::Less => column.checked_sub(usize::try_from(span.unsigned_abs()).ok()?),
+			Ordering::Equal => None,
+		}
+	}
+
+	fn clear_glyph(&mut self, lead: usize, row: usize) {
+		let index = self.index(lead, row);
+		let Ok(width) = usize::try_from(self.cells[index].glyph_span) else {
+			return;
+		};
+		for column in lead..lead.saturating_add(width).min(self.projection.columns) {
+			let index = self.index(column, row);
+			let cell = &mut self.cells[index];
+			cell.glyph = None;
+			cell.glyph_role = CellRole::Text;
+			cell.glyph_priority = 0;
+			cell.glyph_span = 0;
 		}
 	}
 
@@ -684,7 +846,6 @@ impl Raster {
 		}
 	}
 
-
 	fn connect(&mut self, from: GridPoint, to: GridPoint, priority: u8) {
 		let dx = to.x - from.x;
 		let dy = to.y - from.y;
@@ -712,7 +873,7 @@ impl Raster {
 		}
 	}
 
-	fn index(&self, x: usize, y: usize) -> usize {
+	const fn index(&self, x: usize, y: usize) -> usize {
 		y * self.projection.columns + x
 	}
 
@@ -750,7 +911,7 @@ impl Raster {
 		let mut run = String::new();
 		for column in 0..=end {
 			let cell = self.cell(column, row);
-			if cell.wide_continuation {
+			if cell.glyph_span < 0 {
 				continue;
 			}
 			let (glyph, role) = if let Some(glyph) = &cell.glyph {
@@ -785,8 +946,8 @@ impl Raster {
 }
 
 impl Cell {
-	fn is_occupied(&self) -> bool {
-		self.line != 0 || self.glyph.is_some() || self.wide_continuation
+	const fn is_occupied(&self) -> bool {
+		self.line != 0 || self.glyph_span != 0
 	}
 }
 
@@ -809,7 +970,6 @@ fn concentric(left: Point, right: Point) -> bool {
 fn horizontal_tangent(from: Point, to: Point) -> bool {
 	(to.x - from.x).abs() >= (to.y - from.y).abs()
 }
-
 
 const fn direction_bits(dx: i32, dy: i32) -> Option<(u8, u8)> {
 	match (dx.signum(), dy.signum()) {
@@ -934,6 +1094,28 @@ fn arrow_glyph(direction: Point, ascii: bool) -> char {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	fn empty_raster(columns: u16) -> Raster {
+		let columns = usize::from(columns);
+		Raster {
+			projection: Projection {
+				bounds: Bounds { min: Point::new(0.0, 0.0), max: Point::new(columns as f64, 0.0) },
+				x_scale: 1.0,
+				y_scale: 1.0,
+				columns,
+				rows: 1,
+			},
+			cells:      vec![Cell::default(); columns],
+			ascii:      false,
+		}
+	}
+
+	fn raster_text(raster: &Raster, width: u16) -> String {
+		let style = crate::Style::default();
+		let styles = DiagramStyles { text: style, line: style, accent: style };
+		let mut output = crate::rich::RichText::default();
+		assert!(raster.emit(width, styles, &mut output));
+		output.row_text(0).to_owned()
+	}
 
 	#[test]
 	fn line_masks_select_terminal_junctions() {
@@ -949,5 +1131,62 @@ mod tests {
 		assert_eq!(arrow_glyph(Point::new(0.0, -4.0), false), '▲');
 		assert_eq!(arrow_glyph(Point::new(-2.0, -2.0), false), '↖');
 		assert_eq!(arrow_glyph(Point::new(2.0, 2.0), true), '>');
+	}
+
+	#[test]
+	fn parser_rejects_invalid_roots_and_unsafe_records() {
+		for source in [
+			"subgraph { a }",
+			"graph { a -> b }",
+			"digraph { a -- b }",
+			"digraph { subgraph cluster { a -- b } }",
+			"digraph { a [shape=record, label=\"\"] }",
+			"digraph { node [shape=record]; a [label=\"{\"] }",
+			"digraph { node [label=\"}\"]; a [shape=Mrecord] }",
+		] {
+			assert!(parse_graph(source).is_none(), "{source}");
+		}
+		let nested = format!(
+			"digraph {{ a [shape=record, label=\"{}x{}\"] }}",
+			"{".repeat(MAX_RECORD_DEPTH + 1),
+			"}".repeat(MAX_RECORD_DEPTH + 1)
+		);
+		assert!(parse_graph(&nested).is_none());
+		assert!(
+			parse_graph(
+				"// leading comment\nstrict digraph { empty [shape=box, label=\"\"]; record \
+				 [shape=record, label=\"{left|right}\"] }"
+			)
+			.is_some()
+		);
+	}
+
+	#[test]
+	fn projection_saturates_extreme_scene_heights() {
+		let projection = Projection::new(
+			Bounds { min: Point::new(0.0, 0.0), max: Point::new(PIXELS_PER_COLUMN * 15.0, f64::MAX) },
+			16,
+		)
+		.unwrap();
+		assert_eq!(projection.columns, 16);
+		assert_eq!(projection.rows, MAX_RENDER_CELLS / projection.columns);
+	}
+
+	#[test]
+	fn overlapping_glyphs_keep_terminal_columns_aligned() {
+		let mut continuation = empty_raster(6);
+		continuation.set_glyph(1, 0, "界", CellRole::Text, 5, 2);
+		continuation.set_glyph(2, 0, "x", CellRole::Accent, 5, 1);
+		assert_eq!(raster_text(&continuation, 6), "  x");
+
+		let mut lead = empty_raster(6);
+		lead.set_glyph(1, 0, "界", CellRole::Text, 5, 2);
+		lead.set_glyph(1, 0, "y", CellRole::Accent, 5, 1);
+		assert_eq!(raster_text(&lead, 6), " y");
+
+		let mut priority = empty_raster(6);
+		priority.set_glyph(3, 0, "!", CellRole::Accent, 9, 1);
+		priority.set_glyph(2, 0, "界", CellRole::Text, 5, 2);
+		assert_eq!(raster_text(&priority, 6), "   !");
 	}
 }

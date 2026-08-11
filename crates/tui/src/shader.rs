@@ -228,8 +228,8 @@ mod tests {
 			}
 		}
 		let cells = cells(2, 1, &mut Dust);
-		// Half-alpha white over opaque black reads mid-gray in the top half.
-		assert!(cells.contains(&(0, 0, '▀', Color::Rgb(128, 128, 128), Some(Color::Rgb(0, 0, 0)))));
+		// Half-alpha white over black is linear 0.5, encoded as sRGB 188.
+		assert!(cells.contains(&(0, 0, '▀', Color::Rgb(188, 188, 188), Some(Color::Rgb(0, 0, 0)))));
 		assert!(cells.contains(&(1, 0, '▀', Color::Rgb(0, 0, 0), Some(Color::Rgb(0, 0, 0)))));
 	}
 

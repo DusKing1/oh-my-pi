@@ -11,6 +11,9 @@ use crate::{
 
 /// A live 3D viewport that rasterizes a [`Trace`] scene into braille cells.
 ///
+/// Use [`crate::scene::PathTracer`] for physical geometry and materials, or
+/// implement [`Trace`] for procedural shading and animated scene state.
+///
 /// The scene advances on the shared presentation clock and repaints at
 /// [`FRAME`] cadence while presented; a [`still`](Self::still) scene paints
 /// once and requests nothing. Unlit cells stay transparent, so set `bg` for
@@ -127,7 +130,7 @@ mod tests {
 	use super::*;
 	use crate::{
 		anim,
-		scene::{Camera, Ray, Vec3, vec3},
+		scene::{Camera, Light, Material, Object, PathTracer, Ray, Sphere, Vec3, World, vec3},
 		test_support::frame_row_text,
 		ui::Ui,
 	};
@@ -140,6 +143,15 @@ mod tests {
 		} else {
 			(Vec3::ZERO, 0.0)
 		}
+	}
+
+	fn physical_orb() -> PathTracer {
+		let world = World::new(vec![Object::new(
+			Sphere::new(Vec3::ZERO, 1.0),
+			Material::diffuse(Vec3::rgb(56, 189, 248)),
+		)])
+		.with_light(Light::directional(vec3(-1.0, -1.0, -1.0), Vec3::ONE, 2.0));
+		PathTracer::new(world)
 	}
 
 	fn lit_braille(ui: &Ui) -> bool {
@@ -160,8 +172,9 @@ mod tests {
 	}
 
 	#[test]
-	fn still_scene_requests_no_wake() {
-		let ui = Ui::from_root(Scene::new(orb).size(12, 6).still(), 12, UiContext::default());
+	fn still_physical_scene_traces_and_requests_no_wake() {
+		let ui =
+			Ui::from_root(Scene::new(physical_orb()).size(12, 6).still(), 12, UiContext::default());
 		assert!(lit_braille(&ui));
 		assert_eq!(ui.next_wake(), None);
 	}

@@ -506,10 +506,9 @@ fn gradient(angle: f32) -> Vec3 {
 	DISK_STOPS[index].lerp(DISK_STOPS[index + 1], position - index as f32)
 }
 
-/// Lowers a unit-range color vector to a terminal cell color.
+/// Encodes a linear-light color for the terminal.
 fn vec3_color(color: Vec3) -> Color {
-	let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
-	Color::Rgb(channel(color.x), channel(color.y), channel(color.z))
+	Color::from(color)
 }
 
 /// Three soft light shafts crossing the stage in the sun's plane.
@@ -566,11 +565,10 @@ fn axis_hit(origin: Vec3, direction: Vec3) -> (f32, bool, Vec3) {
 	(depth, true, normal)
 }
 
-/// Terminal display lift: brightens traced colors so braille reads on a
-/// dark card (the prototype's channel curve, applied per sample — the
-/// rasterizer's coverage-weighted averaging commutes with an affine map).
+/// Terminal display lift in linear light so braille remains legible on the
+/// dark card.
 fn tone(color: Vec3) -> Vec3 {
-	color * 1.28 + vec3(4.0 / 255.0, 4.0 / 255.0, 4.0 / 255.0)
+	color * 1.28 + Vec3::rgb(4, 4, 4)
 }
 
 /// Per-frame scene state shared by every ray: sun direction, disk spin,

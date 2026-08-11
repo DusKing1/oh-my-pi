@@ -338,7 +338,8 @@ Blank flexible space used to separate or push siblings.
 Verbatim text. It does not parse Markdown.
 
 - **Content:** String literals or expressions in `dom!`; raw body text in runtime markup.
-- **Props:** Shared; `fg`; `bold`; `dim`; `italic`; `underline`; `reverse`; `strike`; `align`; `truncate`; `shimmer`; `reveal`.
+- **Props:** Shared; `fg`; `bold`; `dim`; `italic`; `underline`; `reverse`; `strike`; `align`; `truncate`; `wrap`; `shimmer`; `reveal`.
+- **Wrapping:** Word-wraps by default. `wrap=char` flows grapheme-exact to the width like a bare terminal, and full-width rows flag their break as a soft wrap — the renderer joins such boundaries through terminal autowrap (mid-word overflow breaks join under word wrap too), so native selection copies the line unbroken, on screen and in scrollback.
 - **Updates:** `Ui::set_text(id, value)` replaces its content. With `reveal`, a replacement that extends the current text continues the reveal from the shown prefix; any other replacement restarts it from nothing.
 
 #### `<md>`
@@ -414,11 +415,13 @@ A terminal image with a cell-rendered fallback.
 
 #### `Scene` — Rust-built 3D viewport
 
-A raytraced scene rasterized into braille cells, animated on the shared presentation clock.
+A deterministic CPU ray tracer rasterized into braille cells and animated on the shared presentation clock.
 
 - **Availability:** Rust only — the shader is code. Mount `components::Scene` as a `dom!` expression child, or register a `<scene>` tag through `Elements::builder()` with a factory that captures your scene.
 - **Props:** Shared; `bg` paints a backdrop behind unlit (transparent) cells.
-- **Scene:** Implement `scene::Trace` (`advance` returns the per-frame `Camera`, `shade` colors one ray), or pass a plain `Fn(Ray) -> (Vec3, f32)` closure for a still view. `Scene::size(cols, rows)` fixes the cell viewport; `Scene::still()` paints once instead of waking every frame.
+- **Scene:** Build a physical scene from `scene::{World, Object, Primitive, Material, Light}` and pass its `PathTracer`, implement `scene::Trace` for custom animated shading, or pass a plain `Fn(Ray) -> (Vec3, f32)` closure for a still procedural view. `Scene::size(cols, rows)` fixes the cell viewport; `Scene::still()` paints once instead of waking every frame.
+- **Transport:** Finite spheres, quads, disks, and custom geometry are accelerated by an owning BVH. The bounded integrator traces direct shadows, GGX reflection, dielectric refraction, emissive and environment illumination, indirect bounces, and Russian-roulette termination without per-ray allocation.
+- **Color:** `Vec3` colors are linear light; `Vec3::rgb` decodes sRGB literals and terminal output applies the sRGB transfer function after sampling.
 
 #### `Shader` — Rust-built fullscreen effect
 
@@ -648,7 +651,7 @@ These properties apply to standalone retained components. Parent-owned records s
 | `align` | `start`/`left`, `center`/`middle`, `end`/`right` | Horizontal text placement and stack main-axis placement |
 | `valign` | `start`/`top`, `center`/`middle`, `end`/`bottom`, `stretch`/`fill` | Box, column, and row cross-axis placement |
 | `justify` | `start`, `center`, `end`, `between` | Row distribution of leftover width |
-| `wrap` | Flag | Lets a row stack vertically when it cannot fit |
+| `wrap` | Flag or `char` | Flag: lets a row stack vertically when it cannot fit. `char` on text: terminal-exact grapheme flow whose width breaks re-join in native copy |
 | `truncate` | Flag or `start`/`end` | Clips text, Markdown, LaTeX, or callout content to one line with an ellipsis; `start` keeps the tail behind a leading ellipsis |
 | `vertical` | Flag | Forces vertical rendering where supported; currently used by `<hr>` and set automatically by `<row>` |
 | `guides` | Bare flag or `square`/`round`/`heavy`/`double`/`dash` | `<tree>` and `<todo>` connector gutters; the flag means square |
@@ -1003,7 +1006,9 @@ Limitations: direct-drawn images (sixel, iTerm2, Kitty direct) are not occluded 
 
 `Terminal::enter` takes exclusive ownership of the controlling terminal, installs emergency restore hooks, enables raw input and the supported keyboard protocol, and starts the input pump. `Terminal::leave` is idempotent: it disables keyboard enhancement before draining late input, clears progress, restores the previous title and terminal modes, and finally restores raw mode. `Drop` performs normal teardown on early returns; panic and fatal-signal paths use an allocation-free blind restore. `Terminal::emergency_restore` exposes that crash-path restore when an application has its own fatal handler.
 
-`TerminalOptions::default()` lets `Terminal::enter` negotiate capabilities while feeding probe-window bytes into the same streaming decoder the live pump owns. `TerminalOptions::new(caps)` supplies capabilities resolved beforehand; add `.probe_results(probe)` when they came from `negotiate` so preserved bytes and partial escape sequences cross into the pump without loss. Optional `CursorStyle`, probe timeout, and stderr-capture policy are also configured here. `Terminal::caps()` returns the resolved session capabilities. While the session is active, `Terminal::set_title` sets the window title safely and `Terminal::set_progress` reports `Progress::Value`, `Error`, `Indeterminate`, `Paused`, or `Clear`. Teardown clears both automatically.
+Entry resets ANSI insert mode (IRM 4) and new-line mode (LNM 20) so cell writes replace in place and Return decodes once; queried prior states are restored on normal and emergency teardown. Appearance (2031) and in-band resize (2048) notifications are enabled and disabled only when the session owns them.
+
+`TerminalOptions::default()` lets `Terminal::enter` negotiate capabilities while feeding probe-window bytes into the same streaming decoder the live pump owns. `TerminalOptions::new(caps)` supplies capabilities resolved beforehand; add `.probe_results(probe)` when they came from `negotiate` so preserved bytes, partial escape sequences, and queried prior mode states reach entry without loss. Optional `CursorStyle`, probe timeout, and stderr-capture policy are also configured here. `Terminal::caps()` returns the resolved session capabilities. While the session is active, `Terminal::set_title` sets the window title safely and `Terminal::set_progress` reports `Progress::Value`, `Error`, `Indeterminate`, `Paused`, or `Clear`. Teardown clears both automatically.
 
 ## Detect terminal capabilities
 

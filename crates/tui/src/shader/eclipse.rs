@@ -154,7 +154,7 @@ impl Program for Eclipse {
 
 	fn fragment(&self, x: f32, y: f32) -> (Vec3, f32) {
 		let index = y as u32 * self.pixel_width + x as u32;
-		let grain = (rand01(index ^ 0x9e37_79b9) - 0.5) * (24.0 / 255.0);
+		let grain = (rand01(index ^ 0x9e37_79b9) - 0.5) * Vec3::rgb(24, 24, 24).x;
 		let grain = vec3(grain, grain, grain);
 		let base = (BLACK * self.vignette(x, y) + grain).clamp01();
 		let (dx, dy) = (x - self.center.0, y - self.center.1);

@@ -9,8 +9,8 @@ use crate::{
 	rich::{Pipeline, Prefix, RichSink, RichText, cell_width},
 };
 
-mod highlight;
 mod graphviz;
+mod highlight;
 mod inline;
 mod mermaid;
 mod table;
@@ -468,13 +468,7 @@ fn diagram_language(info: &str) -> Option<DiagramLanguage> {
 }
 
 impl DiagramLanguage {
-	fn render(
-		self,
-		source: &str,
-		width: u16,
-		theme: &MdTheme,
-		sink: &mut dyn RichSink,
-	) -> bool {
+	fn render(self, source: &str, width: u16, theme: &MdTheme, sink: &mut dyn RichSink) -> bool {
 		let styles = DiagramStyles {
 			text:   theme.base,
 			line:   Style::new().fg(theme.semantic.muted),
@@ -519,11 +513,11 @@ fn render_fenced_code(
 			.unwrap_or(lines.len());
 		let body = join_lines(&lines[body_start..body_end]);
 		let after = after_fence(body_end, lines.len());
-		if let Some(diagram) = diagram {
-			if diagram.render(body.as_str(), width, theme, sink) {
-				*index = after;
-				return;
-			}
+		if let Some(diagram) = diagram
+			&& diagram.render(body.as_str(), width, theme, sink)
+		{
+			*index = after;
+			return;
 		}
 		let mut rows = RichText::default();
 		highlight::render(body.as_str(), syntax, body_end - body_start, &theme.highlight, &mut rows)
@@ -1760,6 +1754,19 @@ mod tests {
 		let invalid = plain("```dot\ndigraph { a -> }\n```", 80).join("\n");
 		assert!(invalid.contains("```dot"), "{invalid}");
 		assert!(invalid.contains("digraph { a -> }"), "{invalid}");
+
+		for invalid_source in [
+			"subgraph { a }",
+			"graph { a -> b }",
+			"digraph { a -- b }",
+			"digraph { a [shape=record, label=\"\"] }",
+			"digraph { node [shape=record]; a [label=\"{\"] }",
+		] {
+			let fenced = format!("```dot\n{invalid_source}\n```");
+			let invalid = plain(&fenced, 80).join("\n");
+			assert!(invalid.contains("```dot"), "{invalid_source}: {invalid}");
+			assert!(invalid.contains(invalid_source), "{invalid_source}: {invalid}");
+		}
 	}
 
 	#[test]
@@ -1777,10 +1784,14 @@ mod tests {
 		assert!(listed.contains("One"), "{listed}");
 		assert!(listed.contains("Two"), "{listed}");
 
-		let source =
-			"```dot\ndigraph { rankdir=LR; Start -> Build -> Test -> Deploy }\n```";
+		let source = "```dot\ndigraph { rankdir=LR; Start -> Build -> Test -> Deploy }\n```";
 		let narrow = plain(source, 16);
-		assert!(narrow.iter().all(|line| crate::rich::cell_width(line) <= 16), "{narrow:?}");
+		assert!(
+			narrow
+				.iter()
+				.all(|line| crate::rich::cell_width(line) <= 16),
+			"{narrow:?}"
+		);
 		assert!(
 			["Start", "Build", "Test", "Deploy"]
 				.into_iter()

@@ -4,14 +4,12 @@ use mermaid_text::RenderOptions;
 use omp_core::{Str, StrMut};
 use xutf::Text;
 
+use super::DiagramStyles;
 use crate::{
 	context::Charset,
 	frame::Style,
 	rich::{Pipeline, RichSink},
 };
-
-use super::DiagramStyles;
-
 
 /// Renders Mermaid source. Returns `false` without emitting so Markdown can
 /// preserve invalid source.
