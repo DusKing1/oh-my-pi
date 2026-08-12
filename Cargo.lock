@@ -4278,6 +4278,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "omp-ar"
+version = "0.1.0"
+dependencies = [
+ "cap-std",
+ "crc32fast",
+ "flate2",
+ "omp-core",
+ "smallvec 2.0.0-alpha.12",
+ "strum",
+ "tempfile",
+ "thiserror 2.0.20",
+ "xutf",
+ "zerocopy",
+]
+
+[[package]]
 name = "omp-ast"
 version = "0.1.0"
 dependencies = [

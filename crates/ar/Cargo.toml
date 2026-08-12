@@ -1,0 +1,26 @@
+[package]
+name = "omp-ar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Bounded lazy ZIP, TAR, and TAR.GZ reading with deterministic archive writing"
+
+[lints]
+workspace = true
+
+[dependencies]
+cap-std = { workspace = true }
+crc32fast = { workspace = true }
+flate2 = { workspace = true }
+omp-core = { workspace = true }
+smallvec = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+xutf = { workspace = true }
+zerocopy = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
