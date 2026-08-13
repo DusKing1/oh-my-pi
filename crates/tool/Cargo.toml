@@ -1,0 +1,25 @@
+[package]
+name = "omp-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Typed, revisioned tool contracts and registry for the OMP agent mesh"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-stream = { workspace = true }
+bytes = { workspace = true }
+flume = { workspace = true }
+futures = { workspace = true }
+omp-core = { workspace = true }
+omp-llm-catalog = { workspace = true }
+omp-llm-inference = { workspace = true }
+omp-slopjson = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
