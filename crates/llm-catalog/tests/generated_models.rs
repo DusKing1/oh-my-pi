@@ -114,7 +114,7 @@ fn checked_in_snapshot_has_stable_counts_and_identities() {
 		.values()
 		.map(|models| models.as_object().expect("provider model map").len())
 		.sum();
-	assert_eq!(source_records, 4_290);
+	assert_eq!(source_records, 4_293);
 	assert!(providers.keys().all(|provider| !provider.is_empty()));
 	assert!(providers.values().all(|models| {
 		models
@@ -123,7 +123,7 @@ fn checked_in_snapshot_has_stable_counts_and_identities() {
 	}));
 
 	let catalog = load_catalog_zstd(GENERATED).expect("checked-in catalog loads");
-	assert_eq!(catalog.len(), 4_215);
+	assert_eq!(catalog.len(), 4_218);
 	assert_eq!(source_records - catalog.len(), 75);
 	assert!(catalog.models().iter().all(|model| {
 		!model.id.is_empty() && !model.provider.is_empty() && !model.model.is_empty()
@@ -343,6 +343,74 @@ fn checked_in_snapshot_retains_representative_server_behavior() {
 		.expect("OpenAI pro reasoning alias");
 	assert_eq!(pro.behavior.reasoning_mode, Some(ModelReasoningMode::Pro));
 	assert_eq!(pro.behavior.request_model_id.as_deref(), Some("gpt-5.6-luna"));
+}
+
+#[test]
+fn checked_in_snapshot_has_daybreak_tiers_and_deepseek_contract() {
+	let catalog = load_catalog_zstd(GENERATED).expect("checked-in catalog loads");
+	for (model_id, context, input_nanos, output_nanos) in [
+		("daybreak-blue-latest", 1_050_000, 5_000_000_000, 30_000_000_000),
+		("daybreak-red-latest", 400_000, 12_500_000_000, 75_000_000_000),
+		("gpt-5.6-cyber", 400_000, 12_500_000_000, 75_000_000_000),
+	] {
+		let model = catalog.get("openai", model_id).expect("Daybreak model");
+		assert_eq!(model.context_window, context);
+		assert_eq!(model.max_output_tokens, 128_000);
+		assert_eq!(
+			model
+				.pricing
+				.iter()
+				.find(|price| price.unit == PriceUnit::MtokInput)
+				.map(|price| price.nanos_usd),
+			Some(input_nanos)
+		);
+		assert_eq!(
+			model
+				.pricing
+				.iter()
+				.find(|price| price.unit == PriceUnit::MtokOutput)
+				.map(|price| price.nanos_usd),
+			Some(output_nanos)
+		);
+	}
+
+	for (model_id, input_nanos, output_nanos) in [
+		("daybreak-blue-latest", 10_000_000_000, 45_000_000_000),
+		("gpt-5.6-luna", 400_000_000, 1_800_000_000),
+		("gpt-5.6-terra", 4_000_000_000, 18_000_000_000),
+	] {
+		let tier = &catalog.get("openai", model_id).expect("tiered model").pricing_tiers[0];
+		assert_eq!(tier.prompt_tokens_above, 272_000);
+		assert_eq!(
+			tier
+				.pricing
+				.iter()
+				.find(|price| price.unit == PriceUnit::MtokInput)
+				.map(|price| price.nanos_usd),
+			Some(input_nanos)
+		);
+		assert_eq!(
+			tier
+				.pricing
+				.iter()
+				.find(|price| price.unit == PriceUnit::MtokOutput)
+				.map(|price| price.nanos_usd),
+			Some(output_nanos)
+		);
+	}
+
+	for model_id in ["deepseek-v4-flash", "deepseek-v4-flash:0731", "deepseek-v4-flash:preview"] {
+		assert_eq!(
+			catalog.get("ollama-cloud", model_id).expect("DeepSeek Flash").efforts.as_slice(),
+			&[Effort::Low, Effort::High, Effort::Max]
+		);
+	}
+	for model_id in ["deepseek-v3.1:671b", "deepseek-v3.2", "deepseek-v4-pro"] {
+		assert_eq!(
+			catalog.get("ollama-cloud", model_id).expect("DeepSeek reasoner").efforts.as_slice(),
+			&[Effort::High, Effort::Max]
+		);
+	}
 }
 
 #[test]

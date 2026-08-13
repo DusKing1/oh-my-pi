@@ -32,6 +32,8 @@ pub const ANTIGRAVITY_SYSTEM_INSTRUCTION: &str =
 	 coding task. The task may require creating a new codebase, modifying or debugging an existing \
 	 codebase, or simply answering a question.**Absolute paths only****Proactiveness**";
 
+const ANTIGRAVITY_FORCED_TOOL_DIRECTIVE: &str = "TOOL-ONLY TURN. This turn accepts a tool call and nothing else; a text reply here is discarded unread and you will be re-prompted. Emit the tool call now.";
+
 /// Data-selected Cloud Code Assist client behavior.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CcaFlavor {
@@ -272,9 +274,8 @@ impl CcaCodec {
 	/// Builds the exact client fingerprint headers for a wire model.
 	#[must_use]
 	pub fn request_headers(&self, model: &str, reasoning: bool) -> CcaHeaders {
-		let claude_thinking = self.flavor == CcaFlavor::Antigravity
-			&& model.to_ascii_lowercase().contains("claude")
-			&& reasoning;
+		let claude_thinking =
+			self.flavor == CcaFlavor::Antigravity && model_contains(model, "claude") && reasoning;
 		CcaHeaders {
 			user_agent:      match self.flavor {
 				CcaFlavor::GeminiCli => gemini_cli_user_agent(model),
@@ -300,7 +301,7 @@ impl Transport for CcaCodec {
 	) -> Result<(Bytes, Vec<Unsupported>), Error> {
 		let (normalized_tools, mut unsupported) =
 			normalize::normalize_tools(ToolSchemaFlavor::Cca, &req.tools);
-		let (request, mut projection_report) = crate::encode_request_with_tools(
+		let (mut request, mut projection_report) = crate::encode_request_with_tools(
 			req,
 			&normalized_tools,
 			compat,
@@ -309,6 +310,9 @@ impl Transport for CcaCodec {
 		unsupported.append(&mut projection_report);
 		let envelope = match (&self.flavor, &self.antigravity) {
 			(CcaFlavor::Antigravity, Some(metadata)) => {
+				// Antigravity's Gemini routes may ignore `ANY` unless the forced choice is
+				// restated in the transcript; its Claude routes honor the config directly.
+				append_antigravity_forced_tool_directive(&mut request, req.model.as_str());
 				wrap_antigravity_request(request, req.model.as_str(), self.project.as_str(), metadata)
 			},
 			_ => wrap_request(request, req.model.as_str(), self.project.as_str()),
@@ -357,6 +361,33 @@ impl Transport for CcaCodec {
 		record_cca_properties(&mut events, self);
 		Ok(events)
 	}
+}
+
+fn model_contains(model: &str, marker: &str) -> bool {
+	model
+		.as_bytes()
+		.windows(marker.len())
+		.any(|window| window.eq_ignore_ascii_case(marker.as_bytes()))
+}
+
+fn append_antigravity_forced_tool_directive(request: &mut Value, model: &str) {
+	let forced = request
+		.get("toolConfig")
+		.and_then(|config| config.get("functionCallingConfig"))
+		.and_then(|config| config.get("mode"))
+		.and_then(Value::as_str)
+		== Some("ANY");
+	if model_contains(model, "claude") || !forced {
+		return;
+	}
+	request
+		.get_mut("contents")
+		.and_then(Value::as_array_mut)
+		.expect("Google request contents are an array")
+		.push(json!({
+			"role": "user",
+			"parts": [{ "text": ANTIGRAVITY_FORCED_TOOL_DIRECTIVE }],
+		}));
 }
 
 #[derive(Default)]
@@ -425,8 +456,8 @@ fn shape_antigravity_request(
 	model: &str,
 	metadata: &AntigravityRequestMetadata,
 ) {
-	let is_claude = model.to_ascii_lowercase().contains("claude");
-	let needs_identity = is_claude || model.to_ascii_lowercase().contains("gemini-3");
+	let is_claude = model_contains(model, "claude");
+	let needs_identity = is_claude || model_contains(model, "gemini-3");
 	let system = request
 		.entry("systemInstruction")
 		.or_insert_with(|| json!({ "parts": [] }));
@@ -965,8 +996,9 @@ mod tests {
 	use omp_core::Str;
 	use omp_llm_catalog::provider::{AuthSpec, Facet};
 	use omp_llm_types::{
-		ChatOutcome, Effort, Fallback, Feature, Reasoning, ResolvedModelPolicy, ResolvedThinkingMode,
-		ResolvedThinkingPolicy, StopReason, Thread, ToolDef,
+		ChatOutcome, Effort, Fallback, Feature, Item, ItemKind, Message, Part, Props, Reasoning,
+		ResolvedModelPolicy, ResolvedThinkingMode, ResolvedThinkingPolicy, Role, StopReason, Thread,
+		ToolChoice, ToolDef,
 	};
 	use serde_json::json;
 	use smallvec::smallvec;
@@ -1007,6 +1039,88 @@ mod tests {
 		)
 		.with_last_execution_id(Str::from("execution-before"))
 		.with_model_enum(Str::from("MODEL_PLACEHOLDER_M20"))
+	}
+
+	#[test]
+	fn forced_tool_directive_is_appended_only_for_antigravity_gemini() {
+		let thread = Thread::builder()
+			.items(vec![
+				Item::builder()
+					.seq(0)
+					.kind(ItemKind::Message(
+						Message::builder()
+							.role(Role::User)
+							.parts(vec![Part::Text(Str::from("inspect the repository"))])
+							.build(),
+					))
+					.props(Props::default())
+					.build(),
+			])
+			.build();
+		let mut request = ChatRequest::builder()
+			.model(Str::from("gemini-3.5-flash-low"))
+			.thread(thread)
+			.tools(vec![
+				ToolDef::builder()
+					.name(Str::from("read"))
+					.description(Str::from("Read a file"))
+					.schema_json(Bytes::from_static(b"{\"type\":\"object\"}"))
+					.build(),
+			])
+			.tool_choice(
+				Feature::builder()
+					.value(ToolChoice::Required)
+					.on_unsupported(Fallback::Error)
+					.build(),
+			)
+			.build();
+		let codec = CcaCodec::antigravity(Str::from("project-a"), antigravity_metadata());
+		let encoded = |request: &ChatRequest| {
+			let (body, unsupported) = codec.encode(request, &Compat::default()).unwrap();
+			assert!(unsupported.is_empty());
+			serde_json::from_slice::<Value>(&body).unwrap()
+		};
+
+		let forced_gemini = encoded(&request);
+		assert_eq!(
+			forced_gemini["request"]["contents"],
+			json!([
+				{"role": "user", "parts": [{"text": "inspect the repository"}]},
+				{
+					"role": "user",
+					"parts": [{"text": ANTIGRAVITY_FORCED_TOOL_DIRECTIVE}]
+				}
+			])
+		);
+
+		request.model = Str::from("claude-sonnet-4-6");
+		let forced_claude = encoded(&request);
+		assert_eq!(
+			forced_claude["request"]["contents"],
+			json!([{"role": "user", "parts": [{"text": "inspect the repository"}]}])
+		);
+
+		request.model = Str::from("gemini-3.5-flash-low");
+		request.tool_choice = None;
+		let unforced_gemini = encoded(&request);
+		assert_eq!(
+			unforced_gemini["request"]["contents"],
+			json!([{"role": "user", "parts": [{"text": "inspect the repository"}]}])
+		);
+
+		request.tool_choice = Some(
+			Feature::builder()
+				.value(ToolChoice::Required)
+				.on_unsupported(Fallback::Error)
+				.build(),
+		);
+		let cli = CcaCodec::new(Str::from("project-a"));
+		let (cli_body, _) = cli.encode(&request, &Compat::default()).unwrap();
+		let cli_body: Value = serde_json::from_slice(&cli_body).unwrap();
+		assert_eq!(
+			cli_body["request"]["contents"],
+			json!([{"role": "user", "parts": [{"text": "inspect the repository"}]}])
+		);
 	}
 
 	#[test]

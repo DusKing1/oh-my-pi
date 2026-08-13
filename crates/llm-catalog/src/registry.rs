@@ -1013,6 +1013,7 @@ mod tests {
 			context_window: 0,
 			max_output_tokens: 0,
 			pricing: SmallVec::new(),
+			pricing_tiers: SmallVec::new(),
 			availability: Availability::Available,
 			source: Source::Discovered,
 			blocked_until_ms: 0,

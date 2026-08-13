@@ -40,6 +40,7 @@ chrono = "0.4"
 clap = { version = "4", features = ["derive", "wrap_help"] }
 codesnake = "0.2"
 compare = "0.1"
+cookie = "0.18.2"
 command-fds = "0.3"
 crc32fast = "1.5"
 dashmap = "6"

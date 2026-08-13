@@ -2,10 +2,10 @@
 //!
 //! One [`Admission`] instance guards one pool (typically per provider or
 //! per endpoint; the gateway decides the granularity by where it installs
-//! the layer). A permit is held for the FULL life of the attempt stream,
-//! not just the dispatch — a provider slot is consumed until the terminal
-//! frame, and releasing early would let N+1 streams run against an N-slot
-//! provider.
+//! the layer). A permit is held until the provider emits a terminal frame or
+//! ends its stream. Releasing before either point would let N+1 streams run
+//! against an N-slot provider; retaining it afterward needlessly blocks the
+//! next attempt.
 //!
 //! Waiting callers queue on the semaphore (backpressure, FIFO within
 //! tokio's fairness); there is deliberately no reject mode — shedding is
@@ -19,7 +19,7 @@ use std::{
 };
 
 use futures::Stream;
-use omp_proto::inference::v1::TurnEvent;
+use omp_proto::inference::v1::{TurnEvent, turn_event};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower::{Layer, Service, ServiceExt};
 
@@ -61,11 +61,11 @@ impl<S> Admission<S> {
 }
 
 pin_project_lite::pin_project! {
-	/// Stream that keeps its admission permit alive until dropped.
+	/// Stream holding an admission permit until its terminal frame or end.
 	pub struct Permitted<St> {
 		#[pin]
 		inner: St,
-		_permit: OwnedSemaphorePermit,
+		permit: Option<OwnedSemaphorePermit>,
 	}
 }
 
@@ -73,7 +73,22 @@ impl<St: Stream<Item = TurnEvent>> Stream for Permitted<St> {
 	type Item = TurnEvent;
 
 	fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<TurnEvent>> {
-		self.project().inner.poll_next(cx)
+		let this = self.project();
+		match this.inner.poll_next(cx) {
+			Poll::Ready(item) => {
+				let terminal = item.as_ref().is_none_or(|frame| {
+					matches!(
+						&frame.event,
+						Some(turn_event::Event::Outcome(_) | turn_event::Event::Error(_))
+					)
+				});
+				if terminal {
+					drop(this.permit.take());
+				}
+				Poll::Ready(item)
+			},
+			Poll::Pending => Poll::Pending,
+		}
 	}
 }
 
@@ -111,7 +126,7 @@ where
 				.await
 				.expect("admission semaphore closed");
 			let stream = inner.ready().await?.call(req).await?;
-			Ok(Permitted { inner: stream, _permit: permit })
+			Ok(Permitted { inner: stream, permit: Some(permit) })
 		}
 	}
 }

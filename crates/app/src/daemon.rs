@@ -85,6 +85,7 @@ const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(30);
 const GATEWAY_TOKEN_ENV: &str = "OMP_GATEWAY_TOKEN";
 const DATA_DIR_ENV: &str = "OMP_DATA_DIR";
 const APPLE_PROVIDER_ID: &str = "apple-intelligence";
+const BEDROCK_PROVIDER_ID: &str = "amazon-bedrock";
 
 /// One listener requested from the production daemon.
 #[derive(Clone)]
@@ -364,6 +365,7 @@ impl DaemonHandle {
 		let store = Arc::new(Store::open(data_dir.join("broker.db"))?);
 		let client = Arc::new(EgressClient::new(config.first_byte_timeout));
 		let aws = Arc::new(AwsEngine::new(client.as_ref().clone()));
+		let bedrock_skip_auth = aws.bedrock_skip_auth();
 		let aws_region = aws.region()?;
 		bootstrap_catalog_credentials(&store, &providers, &aws).await?;
 		let adc = Arc::new(AdcEngine::new(client.as_ref().clone()));
@@ -391,6 +393,7 @@ impl DaemonHandle {
 			store: Arc::clone(&store),
 			providers: Arc::clone(&providers),
 			apple_fm_available,
+			bedrock_skip_auth,
 		});
 		let model_catalog = Arc::new(models.clone());
 		let premium_multipliers = Arc::new(
@@ -421,8 +424,14 @@ impl DaemonHandle {
 			Arc::clone(&store),
 			credential_source.clone(),
 		)));
-		let route_providers =
-			usable_providers(&providers, &store, &adc_routes, &aws_region, apple_fm_available);
+		let route_providers = usable_providers(
+			&providers,
+			&store,
+			&adc_routes,
+			&aws_region,
+			apple_fm_available,
+			bedrock_skip_auth,
+		);
 		let mut specialized = config.specialized;
 		mount_apple_chat(&mut specialized, apple_chat);
 		for provider in &route_providers {
@@ -463,7 +472,15 @@ impl DaemonHandle {
 		let audio = register_production_audio_routes(
 			providers
 				.values()
-				.filter(|provider| provider_is_routable(provider, &store, &adc_routes, &aws_region)),
+				.filter(|provider| {
+					provider_is_routable(
+						provider,
+						&store,
+						&adc_routes,
+						&aws_region,
+						bedrock_skip_auth,
+					)
+				}),
 			egress.clone(),
 			|provider| provider_route(provider, &adc_routes, &aws_region),
 		)?;
@@ -471,7 +488,13 @@ impl DaemonHandle {
 		let mut has_embed_route = false;
 		for provider in providers.values().filter(|provider| {
 			provider.facets.contains(&Facet::Embeddings)
-				&& provider_is_routable(provider, &store, &adc_routes, &aws_region)
+				&& provider_is_routable(
+					provider,
+					&store,
+					&adc_routes,
+					&aws_region,
+					bedrock_skip_auth,
+				)
 		}) {
 			let route = remote_embed_route(
 				provider.clone(),
@@ -484,7 +507,13 @@ impl DaemonHandle {
 		let mut count_tokens = CountRouter::new(Arc::clone(&model_catalog), Arc::clone(&providers));
 		for provider in providers.values().filter(|provider| {
 			provider.transport == TransportId::AnthropicMessages
-				&& provider_is_routable(provider, &store, &adc_routes, &aws_region)
+				&& provider_is_routable(
+					provider,
+					&store,
+					&adc_routes,
+					&aws_region,
+					bedrock_skip_auth,
+				)
 		}) {
 			let route = remote_count_route(
 				provider.clone(),
@@ -559,7 +588,13 @@ impl DaemonHandle {
 		if facets.image_gen.is_none()
 			&& providers.values().any(|provider| {
 				provider.facets.contains(&Facet::ImageGeneration)
-					&& provider_is_routable(provider, &store, &adc_routes, &aws_region)
+					&& provider_is_routable(
+						provider,
+						&store,
+						&adc_routes,
+						&aws_region,
+						bedrock_skip_auth,
+					)
 			}) {
 			let credentials = Arc::new(LeasedImageCredentials::new(credential_source.clone()));
 			let backend = Arc::new(EgressImageBackend::new(egress.clone(), Arc::clone(&providers)));
@@ -568,7 +603,13 @@ impl DaemonHandle {
 		if facets.video_gen.is_none()
 			&& let Some(openai) = providers.get("openai").filter(|provider| {
 				provider.facets.contains(&Facet::VideoGeneration)
-					&& provider_is_routable(provider, &store, &adc_routes, &aws_region)
+					&& provider_is_routable(
+						provider,
+						&store,
+						&adc_routes,
+						&aws_region,
+						bedrock_skip_auth,
+					)
 			}) {
 			let leases = Arc::new(BrokerVideoLeases { store: Arc::clone(&store) });
 			let video = OpenAiVideoBackend::new(
@@ -737,12 +778,15 @@ fn usable_providers<'a>(
 	adc_routes: &BTreeMap<Str, AdcRoute>,
 	aws_region: &str,
 	apple_fm_available: bool,
+	bedrock_skip_auth: bool,
 ) -> Vec<&'a ProviderEntry> {
 	providers
 		.values()
 		.filter(|provider| provider.facets.contains(&Facet::Chat))
 		.filter(|provider| runtime_provider_is_usable(provider, apple_fm_available))
-		.filter(|provider| provider_is_routable(provider, store, adc_routes, aws_region))
+		.filter(|provider| {
+			provider_is_routable(provider, store, adc_routes, aws_region, bedrock_skip_auth)
+		})
 		.collect()
 }
 
@@ -758,9 +802,14 @@ fn runtime_provider_is_usable(provider: &ProviderEntry, apple_fm_available: bool
 	provider.id.as_str() != APPLE_PROVIDER_ID || apple_fm_available
 }
 
-fn provider_is_configured(provider: &ProviderEntry, store: &Store) -> bool {
-	if !matches!(provider.transport, TransportId::Cursor | TransportId::Devin)
-		&& matches!(&provider.auth, AuthSpec::None | AuthSpec::OptionalBearer { .. })
+fn provider_is_configured(
+	provider: &ProviderEntry,
+	store: &Store,
+	bedrock_skip_auth: bool,
+) -> bool {
+	if (bedrock_skip_auth && provider.id.as_str() == BEDROCK_PROVIDER_ID)
+		|| (!matches!(provider.transport, TransportId::Cursor | TransportId::Devin)
+			&& matches!(&provider.auth, AuthSpec::None | AuthSpec::OptionalBearer { .. }))
 	{
 		return true;
 	}
@@ -779,8 +828,9 @@ fn provider_is_routable(
 	store: &Store,
 	adc_routes: &BTreeMap<Str, AdcRoute>,
 	aws_region: &str,
+	bedrock_skip_auth: bool,
 ) -> bool {
-	provider_is_configured(provider, store)
+	provider_is_configured(provider, store, bedrock_skip_auth)
 		&& provider_route_is_complete(provider, &provider_route(provider, adc_routes, aws_region))
 }
 
@@ -1090,6 +1140,7 @@ struct BrokerAvailability {
 	store:              Arc<Store>,
 	providers:          Arc<ProviderCatalog>,
 	apple_fm_available: bool,
+	bedrock_skip_auth:  bool,
 }
 
 impl CredentialView for BrokerAvailability {
@@ -1100,6 +1151,9 @@ impl CredentialView for BrokerAvailability {
 		let Some(entry) = self.providers.get(provider) else {
 			return Availability::Disabled;
 		};
+		if provider == BEDROCK_PROVIDER_ID && self.bedrock_skip_auth {
+			return Availability::Available;
+		}
 		if matches!(&entry.auth, AuthSpec::None | AuthSpec::OptionalBearer { .. }) {
 			return Availability::Available;
 		}
@@ -1478,9 +1532,15 @@ mod tests {
 			store:              Arc::clone(&store),
 			providers:          Arc::clone(&providers),
 			apple_fm_available: true,
+			bedrock_skip_auth:  false,
 		};
 		assert_eq!(available_view.availability(APPLE_PROVIDER_ID), Availability::Available);
-		let unavailable_view = BrokerAvailability { store, providers, apple_fm_available: false };
+		let unavailable_view = BrokerAvailability {
+			store,
+			providers,
+			apple_fm_available: false,
+			bedrock_skip_auth: false,
+		};
 		assert_eq!(unavailable_view.availability(APPLE_PROVIDER_ID), Availability::Disabled);
 	}
 
@@ -1492,12 +1552,34 @@ mod tests {
 
 		for provider_id in ["cursor", "devin"] {
 			let provider = &providers[provider_id];
-			assert!(!provider_is_configured(provider, &store));
+			assert!(!provider_is_configured(provider, &store, false));
 			store
 				.upsert_api_key(provider_id, "test-account", b"sealed-route-secret", now_ms())
 				.unwrap();
-			assert!(provider_is_configured(provider, &store));
+			assert!(provider_is_configured(provider, &store, false));
 		}
+	}
+
+	#[test]
+	fn bedrock_skip_auth_exposes_only_bedrock_without_local_credentials() {
+		let providers = Arc::new(omp_llm_catalog::provider::load_builtin().unwrap());
+		let temp = tempfile::tempdir().unwrap();
+		let store = Arc::new(Store::open(temp.path().join("broker.db")).unwrap());
+		let bedrock = &providers[BEDROCK_PROVIDER_ID];
+		let mantle = &providers["bedrock-mantle"];
+
+		assert!(!provider_is_configured(bedrock, &store, false));
+		assert!(provider_is_configured(bedrock, &store, true));
+		assert!(!provider_is_configured(mantle, &store, true));
+
+		let availability = BrokerAvailability {
+			store,
+			providers,
+			apple_fm_available: false,
+			bedrock_skip_auth: true,
+		};
+		assert_eq!(availability.availability(BEDROCK_PROVIDER_ID), Availability::Available);
+		assert_eq!(availability.availability("bedrock-mantle"), Availability::LoginRequired);
 	}
 }
 

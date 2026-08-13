@@ -58,6 +58,7 @@ impl RankedCredential {
 					.is_some_and(|suffix| suffix.starts_with(':'))
 			})
 		});
+		// OpenCode Go can fall through to balance after monthly exhaustion.
 		let mut windows = report.windows.iter().filter(|window| {
 			(!scoped
 				|| model.is_some_and(|model| {
@@ -65,7 +66,9 @@ impl RankedCredential {
 						.label
 						.strip_prefix(model)
 						.is_some_and(|suffix| suffix.starts_with(':'))
-				})) && (window.resets_at_ms == 0 || window.resets_at_ms > now_ms)
+				}))
+				&& !(report.provider == "opencode-go" && window.label == "monthly")
+				&& (window.resets_at_ms == 0 || window.resets_at_ms > now_ms)
 		});
 		windows.nth(index)
 	}
@@ -1792,8 +1795,8 @@ mod tests {
 	use tempfile::tempdir;
 
 	use super::{
-		CredentialBlock, CredentialFilter, CredentialMeta, CredentialState, SCHEMA_VERSION, SqlU64,
-		Store, UsageReport, UsageWindow,
+		CredentialBlock, CredentialFilter, CredentialMeta, CredentialState, RankedCredential,
+		SCHEMA_VERSION, SqlU64, Store, UsageReport, UsageWindow,
 	};
 
 	fn report(
@@ -1823,6 +1826,27 @@ mod tests {
 		let directory = tempdir().expect("tempdir");
 		let store = Store::open(directory.path().join("broker.sqlite")).expect("open store");
 		(directory, store)
+	}
+
+	#[test]
+	fn opencode_go_monthly_window_is_display_only_for_ranking() {
+		let mut usage = report(
+			1,
+			"opencode-go",
+			10,
+			&[(10.0, 200), (20.0, 50), (100.0, 200)],
+		);
+		usage.windows[0].label = Str::new("rolling-5h");
+		usage.windows[1].label = Str::new("weekly");
+		usage.windows[2].label = Str::new("monthly");
+		let credential = RankedCredential {
+			id: 1,
+			generation: 1,
+			blocked_until: None,
+			report: Some(usage),
+		};
+		assert_eq!(credential.window(0, None, 100).expect("rolling window").label, "rolling-5h");
+		assert!(credential.window(1, None, 100).is_none());
 	}
 
 	#[test]

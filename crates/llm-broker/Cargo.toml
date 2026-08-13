@@ -11,6 +11,7 @@ description = "Daemon-owned provider credential, OAuth, and usage broker for OMP
 [dependencies]
 bytes = { workspace = true }
 clap = { workspace = true }
+cookie = { workspace = true }
 futures = { workspace = true }
 flume = { workspace = true }
 http = { workspace = true }

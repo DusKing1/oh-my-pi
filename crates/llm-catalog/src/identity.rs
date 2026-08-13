@@ -74,6 +74,113 @@ pub fn family_token(model_id: &str) -> Str {
 	};
 	Str::new(family)
 }
+/// Whether a model identifier belongs to the Gemini family.
+#[must_use]
+pub fn is_gemini_model_id(model_id: &str) -> bool {
+	let lower = model_id.trim().to_ascii_lowercase_str();
+	lower
+		.split("/")
+		.any(|segment| starts_vendor_model(segment.as_str(), "gemini"))
+}
+
+/// Whether a model identifier belongs to the DeepSeek family.
+#[must_use]
+pub fn is_deepseek_model_id(model_id: &str) -> bool {
+	let lower = model_id.trim().to_ascii_lowercase_str();
+	lower
+		.split("/")
+		.any(|segment| starts_vendor_model(segment.as_str(), "deepseek"))
+}
+
+/// Whether a model identifier names Grok 4.6.
+///
+/// Canonical dashed and reseller dotted forms are accepted while adjacent
+/// versions such as `grok-4.60` and `grok-4.6.0` are excluded.
+#[must_use]
+pub fn is_grok_46_model_id(model_id: &str) -> bool {
+	let lower = model_id.trim().to_ascii_lowercase_str();
+	lower.match_indices("grok-4").any(|(index, _)| {
+		let prefix_ok = index == 0
+			|| lower
+				.as_bytes()
+				.get(index - 1)
+				.is_some_and(|byte| matches!(byte, b'.' | b'/' | b'_' | b'-'));
+		if !prefix_ok {
+			return false;
+		}
+		let suffix = &lower[index + "grok-4".len()..];
+		let Some(rest) = suffix.strip_prefix("-6").or_else(|| suffix.strip_prefix(".6")) else {
+			return false;
+		};
+		rest.is_empty()
+			|| rest
+				.as_bytes()
+				.first()
+				.is_some_and(|byte| matches!(byte, b'-' | b'_' | b':'))
+	})
+}
+
+/// Whether repeated-thinking detection applies to this model identifier.
+///
+/// Extending the guard to another family is a predicate-table addition rather
+/// than a stream-policy change.
+#[must_use]
+pub fn is_thinking_loop_guarded_model_id(model_id: &str) -> bool {
+	const PREDICATES: &[fn(&str) -> bool] =
+		&[is_gemini_model_id, is_deepseek_model_id, is_grok_46_model_id];
+	PREDICATES.iter().any(|predicate| predicate(model_id))
+}
+
+/// Parsed semantic version of an `OpenAI` GPT model family.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct OpenAiVersion {
+	/// Major model generation.
+	pub major: u16,
+	/// Minor model generation.
+	pub minor: u16,
+	/// Patch model generation.
+	pub patch: u16,
+}
+
+/// Resolves an `OpenAI` model id to its GPT semantic version.
+///
+/// Rolling Daybreak aliases are pinned to the snapshot version documented by
+/// `OpenAI`; the table must advance when those aliases move.
+#[must_use]
+pub fn openai_model_version(model_id: &str) -> Option<OpenAiVersion> {
+	const ALIASES: &[(&str, OpenAiVersion)] = &[
+		(
+			"daybreak-blue-latest",
+			OpenAiVersion { major: 5, minor: 6, patch: 0 },
+		),
+		(
+			"gpt-daybreak-blue-latest",
+			OpenAiVersion { major: 5, minor: 6, patch: 0 },
+		),
+		(
+			"daybreak-red-latest",
+			OpenAiVersion { major: 5, minor: 6, patch: 0 },
+		),
+		(
+			"gpt-daybreak-red-latest",
+			OpenAiVersion { major: 5, minor: 6, patch: 0 },
+		),
+	];
+	let bare = model_id.trim().rsplit('/').next()?;
+	if let Some((_, version)) = ALIASES.iter().find(|(alias, _)| bare.eq_ignore_ascii_case(alias)) {
+		return Some(*version);
+	}
+	let version = bare.get(..4).filter(|prefix| prefix.eq_ignore_ascii_case("gpt-"))?;
+	let tail = &bare[version.len()..];
+	let numeric = tail
+		.split(|character: char| !character.is_ascii_digit() && character != '.')
+		.next()?;
+	let mut parts = numeric.split('.');
+	let major = parts.next()?.parse().ok()?;
+	let minor = parts.next().map(str::parse).transpose().ok()?.unwrap_or(0);
+	let patch = parts.next().map(str::parse).transpose().ok()?.unwrap_or(0);
+	Some(OpenAiVersion { major, minor, patch })
+}
 /// Environment variable used to override model-prompt dialect selection.
 pub const DIALECT_ENV: &str = "OMP_DIALECT";
 
@@ -1014,6 +1121,7 @@ mod tests {
 			context_window:    0,
 			max_output_tokens: 0,
 			pricing:           SmallVec::new(),
+			pricing_tiers:     SmallVec::new(),
 			availability:      Availability::Unspecified,
 			source:            Source::Bundled,
 			blocked_until_ms:  0,
@@ -1053,6 +1161,45 @@ mod tests {
 		for (model, expected) in cases {
 			assert_eq!(family_token(model), expected, "{model}");
 		}
+	}
+	#[test]
+	fn thinking_loop_guard_uses_model_family_predicates() {
+		for model in [
+			"gemini-3.5-flash",
+			"google/gemini-3-pro",
+			"openrouter/google/gemini-2.5-flash",
+			"deepseek-reasoner",
+			"openrouter/deepseek/deepseek-r1",
+			"grok-4-6",
+			"venice/grok-4-6",
+			"cursor-grok-4.6-high",
+		] {
+			assert!(is_thinking_loop_guarded_model_id(model), "{model}");
+		}
+		for model in [
+			"opaque-model",
+			"gpt-4o",
+			"grok-4.60",
+			"grok-4.6.0",
+			"grok-4-5",
+			"notgrok-4.6",
+		] {
+			assert!(!is_thinking_loop_guarded_model_id(model), "{model}");
+		}
+	}
+
+	#[test]
+	fn openai_daybreak_aliases_resolve_to_gpt_5_6() {
+		let expected = OpenAiVersion { major: 5, minor: 6, patch: 0 };
+		for alias in [
+			"daybreak-blue-latest",
+			"gpt-daybreak-blue-latest",
+			"daybreak-red-latest",
+			"gpt-daybreak-red-latest",
+		] {
+			assert_eq!(openai_model_version(alias), Some(expected));
+		}
+		assert_eq!(openai_model_version("openai/gpt-5.6-cyber"), Some(expected));
 	}
 
 	#[test]

@@ -24,6 +24,7 @@ use std::{
 	collections::BTreeMap,
 	fmt::{self, Display},
 	sync::Arc,
+	time::Duration,
 };
 
 use async_trait::async_trait;
@@ -39,6 +40,9 @@ use crate::{
 	models::{Availability, Modality, ModelCard, Price, PriceUnit, Source},
 	provider::{AuthSpec, DiscoveryKind, ProviderEntry, TransportId},
 };
+
+/// Hard deadline for an OpenAI-compatible `/models` request.
+pub const DEFAULT_OPENAI_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A successful HTTP response used by model discovery.
 #[derive(Clone, Debug)]
@@ -335,7 +339,16 @@ impl Discovery {
 					.await
 			},
 			EndpointKind::Google => discover_google_pages(provider, account, http).await,
-			EndpointKind::Ollama | EndpointKind::OpenAi | EndpointKind::AccountModels => {
+			EndpointKind::OpenAi => {
+				discover_openai_with_timeout(
+					provider,
+					account,
+					http,
+					DEFAULT_OPENAI_DISCOVERY_TIMEOUT,
+				)
+				.await
+			},
+			EndpointKind::Ollama | EndpointKind::AccountModels => {
 				let url = discovery_url(provider, kind)?;
 				let response = http.get(provider, account, &url).await?;
 				let body = response.ensure_success(provider)?;
@@ -353,6 +366,7 @@ impl Discovery {
 	/// A provider declaring [`DiscoveryKind::Specialized`] on an unregistered
 	/// transport fails at listing time with [`Error::UnregisteredProtocol`];
 	/// this lets a runtime assert its coverage up front instead.
+
 	#[must_use]
 	pub fn serves(&self, transport: TransportId) -> bool {
 		self.protocol(transport).is_some()
@@ -365,6 +379,18 @@ impl Discovery {
 			.copied()
 			.find(|protocol| protocol.transports().contains(&transport))
 	}
+}
+async fn discover_openai_with_timeout(
+	provider: &ProviderEntry,
+	account: &Account,
+	http: &dyn DiscoveryHttp,
+	timeout: Duration,
+) -> Result<Vec<ModelCard>, Error> {
+	let url = discovery_url(provider, EndpointKind::OpenAi)?;
+	let response = tokio::time::timeout(timeout, http.get(provider, account, &url))
+		.await
+		.map_err(|_| Error::Timeout(provider.id.clone()))??;
+	parse_openai(provider, response.ensure_success(provider)?)
 }
 
 impl fmt::Debug for Discovery {
@@ -403,6 +429,9 @@ pub enum Error {
 	// exposes an owned provider-operation error type.
 	#[error("model discovery transport failed: {0}")]
 	Transport(Str),
+	/// The provider did not complete model discovery before the default deadline.
+	#[error("model discovery timed out for {0}")]
+	Timeout(Str),
 	/// The provider returned a non-success status.
 	#[error("model discovery returned HTTP {status} for {provider}")]
 	HttpStatus {
@@ -858,6 +887,7 @@ pub fn discovered_card(
 		context_window: 0,
 		max_output_tokens: 0,
 		pricing: SmallVec::new(),
+		pricing_tiers: SmallVec::new(),
 		availability: Availability::Available,
 		source: Source::Discovered,
 		blocked_until_ms: 0,
@@ -906,6 +936,20 @@ mod tests {
 		) -> Result<HttpResponse, Error> {
 			*self.requested.lock() = Some(request.uri().to_string());
 			Ok(HttpResponse::new(200, Bytes::from_static(self.body.as_bytes())))
+		}
+	}
+
+	struct StallingHttp;
+
+	#[async_trait]
+	impl DiscoveryHttp for StallingHttp {
+		async fn execute(
+			&self,
+			_provider: &ProviderEntry,
+			_account: &Account,
+			_request: Request<Bytes>,
+		) -> Result<HttpResponse, Error> {
+			std::future::pending().await
 		}
 	}
 
@@ -969,6 +1013,21 @@ mod tests {
 			pending_facets: SmallVec::new(),
 			pending_transport: None,
 		}
+	}
+
+	#[tokio::test]
+	async fn openai_discovery_has_a_hard_deadline() {
+		let provider = provider("openai-compatible", "https://stall.example/v1");
+		let error = discover_openai_with_timeout(
+			&provider,
+			&Account::provider_default(),
+			&StallingHttp,
+			Duration::from_millis(1),
+		)
+		.await
+		.expect_err("stalled discovery must time out");
+		assert!(matches!(error, Error::Timeout(id) if id == provider.id));
+		assert_eq!(DEFAULT_OPENAI_DISCOVERY_TIMEOUT, Duration::from_secs(10));
 	}
 
 	#[tokio::test]

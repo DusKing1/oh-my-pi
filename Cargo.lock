@@ -4425,6 +4425,8 @@ dependencies = [
  "parking_lot",
  "similar 3.1.2",
  "smallvec 2.0.0-alpha.12",
+ "strum",
+ "thiserror 2.0.20",
  "xutf",
  "xxhash-rust",
 ]
@@ -4496,6 +4498,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "clap",
+ "cookie",
  "flume",
  "futures",
  "hmac",
@@ -5108,7 +5111,9 @@ dependencies = [
 name = "omp-slopjson"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "omp-core",
+ "parking_lot",
  "serde",
  "smallvec 2.0.0-alpha.12",
  "thiserror 2.0.20",

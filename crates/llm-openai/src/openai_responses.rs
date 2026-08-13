@@ -361,12 +361,13 @@ enum OutputSlot {
 
 #[derive(Debug, Default)]
 struct ResponsesDecodeState {
-	response_id:  Str,
-	model:        Str,
-	outputs:      BTreeMap<u32, OutputSlot>,
-	item_options: BTreeMap<u32, Props>,
-	ended:        BTreeSet<u32>,
-	terminal:     bool,
+	response_id:                   Str,
+	model:                         Str,
+	outputs:                       BTreeMap<u32, OutputSlot>,
+	item_options:                  BTreeMap<u32, Props>,
+	ended:                         BTreeSet<u32>,
+	saw_completed_web_search_call: bool,
+	terminal:                      bool,
 }
 
 fn decode_event(
@@ -435,6 +436,9 @@ fn decode_event(
 				}
 				complete_slot(item, state.outputs.get_mut(&index));
 				capture_output_item_options(index, item, state);
+				if is_completed_web_search_call(item) {
+					state.saw_completed_web_search_call = true;
+				}
 			}
 			if state.ended.insert(index)
 				&& let Some(slot) = state.outputs.get(&index)
@@ -864,6 +868,26 @@ fn complete_slot(item: &Value, slot: Option<&mut OutputSlot>) {
 	}
 }
 
+fn is_completed_web_search_call(item: &Value) -> bool {
+	if item.get("type").and_then(Value::as_str) != Some("web_search_call") {
+		return false;
+	}
+	match item.get("status") {
+		None => true,
+		Some(status) => status.as_str() == Some("completed"),
+	}
+}
+
+fn has_visible_assistant_content(outputs: &BTreeMap<u32, OutputSlot>) -> bool {
+	outputs.values().any(|slot| match slot {
+		OutputSlot::Text { text, .. } => std::str::from_utf8(text)
+			.is_ok_and(|text| !text.trim().is_empty()),
+		OutputSlot::Tool { .. } => true,
+		OutputSlot::Image { data } => !data.is_empty(),
+		OutputSlot::Thinking { .. } | OutputSlot::Server { .. } => false,
+	})
+}
+
 fn capture_response(response: Option<&Value>, state: &mut ResponsesDecodeState) {
 	let Some(response) = response else {
 		return;
@@ -881,6 +905,8 @@ fn build_outcome(
 	incomplete: bool,
 	state: &mut ResponsesDecodeState,
 ) -> ChatOutcome {
+	let continue_after_hosted_search = state.saw_completed_web_search_call
+		&& !has_visible_assistant_content(&state.outputs);
 	let mut output = Vec::with_capacity(state.outputs.len());
 	let (outputs, item_options) = (&mut state.outputs, &mut state.item_options);
 	for (index, slot) in outputs {
@@ -1016,7 +1042,12 @@ fn build_outcome(
 	} else {
 		StopReason::EndTurn
 	};
-	let stop = with_tool_use_precedence(mapped, has_tool);
+	let stop = if mapped == StopReason::EndTurn && continue_after_hosted_search {
+		// Hosted tools need another model turn but no client-side dispatch.
+		StopReason::ToolUse
+	} else {
+		with_tool_use_precedence(mapped, has_tool)
+	};
 	ChatOutcome::builder()
 		.output(output)
 		.stop(stop)
@@ -3149,6 +3180,21 @@ mod tests {
 		assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), fixture["wire_body"],);
 	}
 
+	fn decode_terminal(events: impl IntoIterator<Item = Value>) -> ChatOutcome {
+		let codec = OpenAiResponsesCodec::new();
+		let mut state = DecodeState::default();
+		let mut outcome = None;
+		for event in events {
+			let data = serde_json::to_vec(&event).unwrap();
+			for decoded in codec.decode(Frame::Data(&data), &mut state).unwrap() {
+				if let TurnEvent::Outcome(value) = decoded {
+					outcome = Some(value);
+				}
+			}
+		}
+		outcome.expect("events include a terminal outcome")
+	}
+
 	#[test]
 	fn server_tool_fixture_preserves_order_usage_and_terminal_identity() {
 		let codec = OpenAiResponsesCodec::new();
@@ -3175,6 +3221,7 @@ mod tests {
 		}
 		let outcome = outcome.expect("fixture has a terminal outcome");
 		assert_eq!(terminal_count, 1);
+		assert_eq!(outcome.stop, StopReason::EndTurn);
 		assert_eq!(outcome.output.len(), 2);
 		assert_eq!(
 			outcome.output[0]
@@ -3239,6 +3286,56 @@ mod tests {
 				.is_empty()
 		);
 		assert!(codec.decode(Frame::Done, &mut state).unwrap().is_empty());
+	}
+
+	#[test]
+	fn completed_hosted_search_without_visible_output_uses_continuation_stop() {
+		let outcome = decode_terminal([
+			json!({
+				"type": "response.output_item.done",
+				"output_index": 1,
+				"item": {
+					"type": "web_search_call",
+					"id": "ws_1",
+					"status": "completed",
+					"action": {"type": "search"},
+				},
+			}),
+			json!({
+				"type": "response.completed",
+				"response": {"id": "resp_search", "status": "completed"},
+			}),
+		]);
+
+		assert_eq!(outcome.stop, StopReason::ToolUse);
+		assert!(matches!(
+			outcome.output.as_slice(),
+			[Item {
+				kind: ItemKind::Message(Message { parts, .. }),
+				..
+			}] if parts.is_empty()
+		));
+	}
+
+	#[test]
+	fn statusless_hosted_search_without_visible_output_uses_continuation_stop() {
+		let outcome = decode_terminal([
+			json!({
+				"type": "response.output_item.done",
+				"output_index": 1,
+				"item": {
+					"type": "web_search_call",
+					"id": "ws_1",
+					"action": {"type": "search"},
+				},
+			}),
+			json!({
+				"type": "response.completed",
+				"response": {"id": "resp_search", "status": "completed"},
+			}),
+		]);
+
+		assert_eq!(outcome.stop, StopReason::ToolUse);
 	}
 
 	#[test]

@@ -206,6 +206,10 @@ impl Settings {
 	}
 }
 
+fn env_flag(value: Option<&str>) -> bool {
+	matches!(value, Some("1" | "Y" | "y" | "TRUE" | "true" | "YES" | "yes" | "ON" | "on"))
+}
+
 struct Credentials {
 	access_key_id:     Secret,
 	secret_access_key: Secret,
@@ -302,6 +306,15 @@ impl<E: AwsEgress> AwsEngine<E> {
 			|| self.has_configured_profile()
 			|| self.has_container_source()
 			|| self.has_instance_source()
+	}
+
+	/// Reports whether Bedrock discovery may proceed before AWS credentials are
+	/// locally observable.
+	///
+	/// This does not alter credential resolution or request signing.
+	#[must_use]
+	pub fn bedrock_skip_auth(&self) -> bool {
+		env_flag(self.settings.env("OMP_BEDROCK_SKIP_AUTH"))
 	}
 
 	/// Resolves a cached or newly minted credential and sends it to `sink`.
@@ -1156,6 +1169,28 @@ mod tests {
 			config_path,
 			dmi_root: temp.path().to_owned(),
 		}
+	}
+
+	#[tokio::test]
+	async fn bedrock_skip_auth_only_bypasses_discovery_readiness() {
+		let temp = TempDir::new().expect("tempdir");
+		let settings = fixture_settings(&temp, "", &[("OMP_BEDROCK_SKIP_AUTH", "1")]);
+		let egress = MockEgress::default();
+		let engine = AwsEngine {
+			egress: egress.clone(),
+			settings,
+			cache: Arc::new(Mutex::new(None)),
+			resolution: Arc::new(Mutex::new(())),
+		};
+
+		assert!(engine.bedrock_skip_auth());
+		assert!(!engine.has_credential_source());
+		let error = engine
+			.authorize_into(&CaptureSink::default())
+			.await
+			.expect_err("skip-auth must not bypass request credential resolution");
+		assert!(matches!(error, AwsIntoError::Aws(AwsError::Missing)));
+		assert!(egress.requests.lock().is_empty());
 	}
 
 	#[tokio::test]

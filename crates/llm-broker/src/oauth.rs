@@ -12,15 +12,19 @@ use std::{
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
+use cookie::Cookie;
 use http::{
 	Method,
-	header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT},
+	header::{
+		ACCEPT, AUTHORIZATION, CONTENT_TYPE, COOKIE, HeaderMap, HeaderValue, SET_COOKIE, USER_AGENT,
+	},
 };
 use omp_core::{Str, USER_AGENT as OMP_USER_AGENT};
 use omp_llm_catalog::oauth_params::{self, CustomExchange, FlowKind, OAuthParams};
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
+use smallvec::SmallVec;
 use tokio::{
 	io::{AsyncReadExt, AsyncWriteExt},
 	net::TcpListener,
@@ -70,6 +74,8 @@ pub struct HttpResponse {
 	pub status: u16,
 	/// Complete response body.
 	pub body:   Bytes,
+	/// Response headers, including repeated `Set-Cookie` fields.
+	pub headers: HeaderMap,
 }
 
 /// Transport failure reported by the injected OAuth HTTP implementation.
@@ -883,23 +889,32 @@ impl OAuthEngine {
 			HeaderValue::from_static("Perplexity/641 CFNetwork/1568 Darwin/25.2.0"),
 		);
 		headers.insert("x-app-apiversion", HeaderValue::from_static("2.18"));
+		let mut cookies = SmallVec::<(Str, Secret), 4>::new();
 		let csrf_url = extra_param(params, "csrf_url")?;
-		let csrf = self.get_json(csrf_url, headers.clone()).await?;
+		let csrf_response = self.get_json_raw(csrf_url, headers.clone()).await?;
+		remember_response_cookies(&mut cookies, &csrf_response)?;
+		let csrf = decode_http_response(csrf_response)?;
 		let csrf_token = required_string(&csrf, "csrfToken")?;
-		self
-			.post_json(
+		apply_cookie_header(&cookies, &mut headers)?;
+		let email_response = self
+			.post_json_raw(
 				params.authorize_url.as_str(),
 				serde_json::json!({ "email": email.as_str(), "csrfToken": csrf_token }),
 				headers.clone(),
 			)
 			.await?;
-		let verified = self
-			.post_json(
+		remember_response_cookies(&mut cookies, &email_response)?;
+		decode_http_response(email_response)?;
+		apply_cookie_header(&cookies, &mut headers)?;
+		let verify_response = self
+			.post_json_raw(
 				params.token_url.as_str(),
 				serde_json::json!({ "email": email.as_str(), "otp": otp, "csrfToken": csrf_token }),
 				headers,
 			)
 			.await?;
+		remember_response_cookies(&mut cookies, &verify_response)?;
+		let verified = decode_http_response(verify_response)?;
 		let token = required_string(&verified, "token")?;
 		let access = Secret::new(token.as_bytes());
 		let expires_at_ms = jwt_expiry_ms(&access).unwrap_or(NEVER_EXPIRES_MS);
@@ -1282,11 +1297,21 @@ impl OAuthEngine {
 		&self,
 		url: &str,
 		value: Value,
-		mut headers: HeaderMap,
+		headers: HeaderMap,
 	) -> Result<Value, OAuthError> {
+		let response = self.post_json_raw(url, value, headers).await?;
+		decode_http_response(response)
+	}
+
+	async fn post_json_raw(
+		&self,
+		url: &str,
+		value: Value,
+		mut headers: HeaderMap,
+	) -> Result<HttpResponse, OAuthError> {
 		headers.insert(CONTENT_TYPE, HeaderValue::from_static(JSON_CONTENT_TYPE));
 		headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-		let response = self
+		self
 			.http
 			.execute(HttpRequest {
 				method: Method::POST,
@@ -1296,17 +1321,26 @@ impl OAuthEngine {
 					OAuthError::InvalidResponse("could not encode OAuth request".into())
 				})?),
 			})
-			.await?;
+			.await
+			.map_err(Into::into)
+	}
+
+	async fn get_json(&self, url: &str, headers: HeaderMap) -> Result<Value, OAuthError> {
+		let response = self.get_json_raw(url, headers).await?;
 		decode_http_response(response)
 	}
 
-	async fn get_json(&self, url: &str, mut headers: HeaderMap) -> Result<Value, OAuthError> {
+	async fn get_json_raw(
+		&self,
+		url: &str,
+		mut headers: HeaderMap,
+	) -> Result<HttpResponse, OAuthError> {
 		headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-		let response = self
+		self
 			.http
 			.execute(HttpRequest { method: Method::GET, url: url.into(), headers, body: Bytes::new() })
-			.await?;
-		decode_http_response(response)
+			.await
+			.map_err(Into::into)
 	}
 
 	async fn post_form_raw(&self, url: &str, body: Bytes) -> Result<HttpResponse, OAuthError> {
@@ -1398,6 +1432,80 @@ fn decode_http_response(response: HttpResponse) -> Result<Value, OAuthError> {
 	}
 	provider_error(&value, response.status)?;
 	Ok(value)
+}
+
+fn remember_response_cookies(
+	cookies: &mut SmallVec<(Str, Secret), 4>,
+	response: &HttpResponse,
+) -> Result<(), OAuthError> {
+	let now_epoch_secs = i64::try_from(
+		SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.unwrap_or_default()
+			.as_secs(),
+	)
+	.unwrap_or(i64::MAX);
+	for set_cookie in response.headers.get_all(SET_COOKIE) {
+		let set_cookie = set_cookie
+			.to_str()
+			.map_err(|_| OAuthError::InvalidResponse("invalid Set-Cookie header".into()))?;
+		let cookie = Cookie::parse(set_cookie)
+			.map_err(|_| OAuthError::InvalidResponse("invalid Set-Cookie header".into()))?;
+		let position = cookies.iter().position(|(name, _)| name == cookie.name());
+		if response_cookie_expired(&cookie, now_epoch_secs) {
+			if let Some(position) = position {
+				cookies.remove(position);
+			}
+		} else {
+			let value = Secret::new(cookie.value().as_bytes());
+			if let Some(position) = position {
+				cookies[position].1 = value;
+			} else {
+				cookies.push((cookie.name().into(), value));
+			}
+		}
+	}
+	Ok(())
+}
+
+fn response_cookie_expired(cookie: &Cookie<'_>, now_epoch_secs: i64) -> bool {
+	if let Some(max_age) = cookie.max_age() {
+		max_age.whole_seconds() <= 0
+	} else {
+		cookie
+			.expires_datetime()
+			.is_some_and(|expires| expires.unix_timestamp() <= now_epoch_secs)
+	}
+}
+
+fn apply_cookie_header(
+	cookies: &SmallVec<(Str, Secret), 4>,
+	headers: &mut HeaderMap,
+) -> Result<(), OAuthError> {
+	if cookies.is_empty() {
+		headers.remove(COOKIE);
+		return Ok(());
+	}
+	let capacity = cookies.iter().fold(0_usize, |capacity, (name, value)| {
+		capacity
+			.saturating_add(name.len())
+			.saturating_add(value.expose().len())
+			.saturating_add(3)
+	});
+	let mut encoded = BytesMut::with_capacity(capacity);
+	for (index, (name, value)) in cookies.iter().enumerate() {
+		if index != 0 {
+			encoded.extend_from_slice(b"; ");
+		}
+		encoded.extend_from_slice(name.as_bytes());
+		encoded.extend_from_slice(b"=");
+		encoded.extend_from_slice(value.expose());
+	}
+	let mut value = HeaderValue::from_maybe_shared(encoded.freeze())
+		.map_err(|_| OAuthError::InvalidResponse("invalid cookie value".into()))?;
+	value.set_sensitive(true);
+	headers.insert(COOKIE, value);
+	Ok(())
 }
 
 fn parsed_url(url: &str) -> Result<Url, OAuthError> {
@@ -2150,7 +2258,36 @@ mod tests {
 	}
 
 	fn response(status: u16, value: Value) -> HttpResponse {
-		HttpResponse { status, body: Bytes::from(serde_json::to_vec(&value).expect("JSON response")) }
+		HttpResponse {
+			status,
+			body: Bytes::from(serde_json::to_vec(&value).expect("JSON response")),
+			headers: HeaderMap::new(),
+		}
+	}
+
+	fn response_with_cookies(
+		status: u16,
+		value: Value,
+		cookies: &[&'static str],
+	) -> HttpResponse {
+		let mut response = response(status, value);
+		for cookie in cookies {
+			response.headers.append(SET_COOKIE, HeaderValue::from_static(cookie));
+		}
+		response
+	}
+
+	fn assert_cookie_header(request: &HttpRequest, expected: &[&str]) {
+		let actual = request
+			.headers
+			.get(COOKIE)
+			.expect("Cookie header")
+			.to_str()
+			.expect("ASCII Cookie header");
+		assert_eq!(actual.split("; ").count(), expected.len());
+		for pair in expected {
+			assert!(actual.split("; ").any(|actual| actual == *pair), "missing cookie {pair}");
+		}
 	}
 
 	fn store() -> (tempfile::TempDir, Arc<Store>) {
@@ -2861,8 +2998,24 @@ mod tests {
 	async fn perplexity_email_otp_is_sealed_and_provider_rejections_are_redacted() {
 		let (_directory, store) = store();
 		let http = Arc::new(ScriptedHttp::new([
-			response(200, serde_json::json!({"csrfToken": "csrf-intermediate-secret"})),
-			response(200, Value::Null),
+			response_with_cookies(
+				200,
+				serde_json::json!({"csrfToken": "csrf-intermediate-secret"}),
+				&[
+					"next-auth.csrf-token=csrf-cookie; Path=/; HttpOnly; Secure",
+					"__cf_bm=cloudflare-old; Path=/; Secure",
+					"discard-me=stale; Path=/",
+				],
+			),
+			response_with_cookies(
+				200,
+				Value::Null,
+				&[
+					"next-auth.callback-url=callback-cookie; Path=/; HttpOnly; Secure",
+					"__cf_bm=cloudflare-new; Path=/; Secure",
+					"discard-me=; Max-Age=0; Path=/",
+				],
+			),
 			response(200, serde_json::json!({"token": "perplexity-jwt-secret"})),
 			response(
 				400,
@@ -2872,7 +3025,7 @@ mod tests {
 				}),
 			),
 		]));
-		let engine = OAuthEngine::new(store.clone(), http).expect("OAuth engine");
+		let engine = OAuthEngine::new(store.clone(), http.clone()).expect("OAuth engine");
 		let login = engine
 			.begin_login("perplexity", 1_000)
 			.await
@@ -2887,6 +3040,27 @@ mod tests {
 			.await
 			.expect("Perplexity OTP");
 		assert_eq!(bearer(&store, &meta), "Bearer perplexity-jwt-secret");
+		{
+			let requests = http.requests.lock();
+			assert_eq!(requests.len(), 3);
+			assert!(requests[0].headers.get(COOKIE).is_none());
+			assert_cookie_header(
+				&requests[1],
+				&[
+					"next-auth.csrf-token=csrf-cookie",
+					"__cf_bm=cloudflare-old",
+					"discard-me=stale",
+				],
+			);
+			assert_cookie_header(
+				&requests[2],
+				&[
+					"next-auth.csrf-token=csrf-cookie",
+					"__cf_bm=cloudflare-new",
+					"next-auth.callback-url=callback-cookie",
+				],
+			);
+		}
 
 		let gitlab = engine
 			.begin_login("gitlab-duo-workflow", 2_000)

@@ -16,7 +16,10 @@ use async_stream::stream;
 use bytes::{Buf, Bytes, BytesMut};
 use futures::{Stream, StreamExt, TryFutureExt, pin_mut};
 use omp_core::{Str, fmts};
-use omp_llm_catalog::compat::{Compat, LeakedThinkingHealer};
+use omp_llm_catalog::{
+	compat::{Compat, LeakedThinkingHealer},
+	identity::is_thinking_loop_guarded_model_id,
+};
 use omp_llm_types::{StreamPartKind, TurnError, TurnErrorKind, TurnEvent, ids::CallId};
 use omp_proto::{
 	inference::v1::{
@@ -133,7 +136,7 @@ pub struct ProductionPolicy<S> {
 
 impl<S, St, R> Service<R> for ProductionPolicy<S>
 where
-	R: Send + 'static,
+	R: TurnRequestEnvelope,
 	S: Service<R, Response = St>,
 	S::Future: Send,
 	St: Stream<Item = ProtoTurnEvent> + Send + 'static,
@@ -148,7 +151,13 @@ where
 	}
 
 	fn call(&mut self, req: R) -> Self::Future {
-		let compat = self.compat;
+		let model_id = req
+			.request()
+			.params
+			.as_ref()
+			.map_or("", |params| params.model.as_str());
+		let mut compat = self.compat;
+		compat.thinking_loop_guard |= is_thinking_loop_guarded_model_id(model_id);
 		self
 			.inner
 			.call(req)
@@ -1860,6 +1869,61 @@ mod tests {
 			guarded.last(),
 			Some(TurnEvent::Error(error)) if error.detail.as_str().contains("thinking loop detected")
 		));
+	}
+
+	#[tokio::test]
+	async fn production_policy_selects_loop_guard_by_model_family() {
+		for (model, guarded) in [
+			("google/gemini-3.5-flash", true),
+			("deepseek-reasoner", true),
+			("grok-4-6", true),
+			("cursor-grok-4.6-high", true),
+			("grok-4.60", false),
+			("grok-4.5", false),
+			("gpt-4o", false),
+		] {
+			let repeated = "reasoning-loop-unit-".repeat(12);
+			let events = vec![
+				ProtoTurnEvent::from(TurnEvent::PartStart {
+					index:        0,
+					kind:         StreamPartKind::Thinking,
+					tool_call_id: Str::default(),
+					tool_name:    Str::default(),
+				}),
+				ProtoTurnEvent::from(TurnEvent::PartDelta {
+					index: 0,
+					chunk: Bytes::from(repeated),
+				}),
+			];
+			let inner = tower::service_fn(move |_: omp_proto::inference::v1::TurnRequest| {
+				ready(Ok::<_, std::convert::Infallible>(stream::iter(events.clone())))
+			});
+			let mut service = ProductionPolicyLayer::new(Compat::default()).layer(inner);
+			let request = omp_proto::inference::v1::TurnRequest {
+				params: Some(omp_proto::inference::v1::ChatParams {
+					model: model.to_owned(),
+					..Default::default()
+				}),
+				..Default::default()
+			};
+			let output = service
+				.ready()
+				.await
+				.unwrap()
+				.call(request)
+				.await
+				.unwrap()
+				.collect::<Vec<_>>()
+				.await;
+			let detected = output.into_iter().any(|event| {
+				matches!(
+					TurnEvent::try_from(event),
+					Ok(TurnEvent::Error(error))
+						if error.detail.as_str().contains("thinking loop detected")
+				)
+			});
+			assert_eq!(detected, guarded, "{model}");
+		}
 	}
 
 	#[tokio::test]

@@ -115,6 +115,15 @@ pub struct Price {
 	/// The price per unit in nanos of a US dollar.
 	pub nanos_usd: u64,
 }
+/// A higher token-price schedule selected by total prompt size.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, bon::Builder)]
+#[non_exhaustive]
+pub struct PriceTier {
+	/// The tier applies to the full request above this many prompt tokens.
+	pub prompt_tokens_above: u64,
+	/// Per-unit prices active in this tier.
+	pub pricing:             SmallVec<Price, 4>,
+}
 
 /// Server-only wire routing retained from the native Pi model row.
 ///
@@ -506,6 +515,10 @@ pub struct ModelCard {
 	pub max_output_tokens: u64,
 	/// Pricing components.
 	pub pricing:           SmallVec<Price, 4>,
+	/// Higher price schedules selected by total prompt size.
+	#[builder(default)]
+	#[serde(default, skip_serializing_if = "SmallVec::is_empty")]
+	pub pricing_tiers:      SmallVec<PriceTier, 1>,
 	/// Current joined availability.
 	pub availability:      Availability,
 	/// Card origin.
@@ -691,16 +704,17 @@ impl ModelCatalog {
 #[must_use]
 pub fn calculate_cost(model: &ModelCard, usage: &CostUsage) -> CostBreakdown {
 	let orchestration = usage.orchestration.unwrap_or_default();
+	let pricing = resolve_pricing(model, usage);
 	let input =
-		token_cost(model, PriceUnit::MtokInput, usage.input.saturating_add(orchestration.input));
+		token_cost(pricing, PriceUnit::MtokInput, usage.input.saturating_add(orchestration.input));
 	let output =
-		token_cost(model, PriceUnit::MtokOutput, usage.output.saturating_add(orchestration.output));
+		token_cost(pricing, PriceUnit::MtokOutput, usage.output.saturating_add(orchestration.output));
 	let cache_read = token_cost(
-		model,
+		pricing,
 		PriceUnit::MtokCacheRead,
 		usage.cache_read.saturating_add(orchestration.cache_read),
 	);
-	let cache_write = cache_write_cost(model, usage);
+	let cache_write = cache_write_cost_with_pricing(pricing, usage);
 	CostBreakdown {
 		input,
 		output,
@@ -713,14 +727,34 @@ pub fn calculate_cost(model: &ModelCard, usage: &CostUsage) -> CostBreakdown {
 /// Prices cache writes, preserving unattributed tokens and the one-hour rate.
 #[must_use]
 pub fn cache_write_cost(model: &ModelCard, usage: &CostUsage) -> f64 {
-	let rate_5m = price_usd(model, PriceUnit::MtokCacheWrite) / 1_000_000.0;
+	cache_write_cost_with_pricing(resolve_pricing(model, usage), usage)
+}
+
+fn resolve_pricing<'a>(model: &'a ModelCard, usage: &CostUsage) -> &'a [Price] {
+	let orchestration = usage.orchestration.unwrap_or_default();
+	let prompt_tokens = usage
+		.input
+		.saturating_add(usage.cache_read)
+		.saturating_add(usage.cache_write)
+		.saturating_add(orchestration.input)
+		.saturating_add(orchestration.cache_read);
+	model
+		.pricing_tiers
+		.iter()
+		.filter(|tier| prompt_tokens > tier.prompt_tokens_above)
+		.max_by_key(|tier| tier.prompt_tokens_above)
+		.map_or(model.pricing.as_slice(), |tier| tier.pricing.as_slice())
+}
+
+fn cache_write_cost_with_pricing(pricing: &[Price], usage: &CostUsage) -> f64 {
+	let rate_5m = price_usd(pricing, PriceUnit::MtokCacheWrite) / 1_000_000.0;
 	let Some(cttl) = usage.cttl else {
 		return rate_5m * usage.cache_write as f64;
 	};
 	let residual = usage
 		.cache_write
 		.saturating_sub(cttl.ephemeral_5m.saturating_add(cttl.ephemeral_1h));
-	let one_hour_rate = price_usd(model, PriceUnit::MtokInput) * 2.0 / 1_000_000.0;
+	let one_hour_rate = price_usd(pricing, PriceUnit::MtokInput) * 2.0 / 1_000_000.0;
 	one_hour_rate.mul_add(
 		cttl.ephemeral_1h as f64,
 		rate_5m * cttl.ephemeral_5m.saturating_add(residual) as f64,
@@ -834,13 +868,12 @@ pub fn embedded_catalog() -> &'static ModelCatalog {
 	})
 }
 
-fn token_cost(model: &ModelCard, unit: PriceUnit, tokens: u64) -> f64 {
-	price_usd(model, unit) / 1_000_000.0 * tokens as f64
+fn token_cost(pricing: &[Price], unit: PriceUnit, tokens: u64) -> f64 {
+	price_usd(pricing, unit) / 1_000_000.0 * tokens as f64
 }
 
-fn price_usd(model: &ModelCard, unit: PriceUnit) -> f64 {
-	model
-		.pricing
+fn price_usd(pricing: &[Price], unit: PriceUnit) -> f64 {
+	pricing
 		.iter()
 		.find(|price| price.unit == unit)
 		.map_or(0.0, |price| price.nanos_usd as f64 / 1_000_000_000.0)
@@ -996,13 +1029,29 @@ impl From<RawModality> for Modality {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawCost {
 	#[serde(default)]
-	input:       f64,
+	input:        f64,
 	#[serde(default)]
-	output:      f64,
+	output:       f64,
 	#[serde(default)]
-	cache_read:  f64,
+	cache_read:   f64,
 	#[serde(default)]
-	cache_write: f64,
+	cache_write:  f64,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	long_context: Option<RawLongContextCost>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawLongContextCost {
+	input_threshold: u64,
+	#[serde(default)]
+	input:           f64,
+	#[serde(default)]
+	output:          f64,
+	#[serde(default)]
+	cache_read:      f64,
+	#[serde(default)]
+	cache_write:     f64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1073,6 +1122,7 @@ fn canonical_compat_key(key: &str) -> Option<&'static str> {
 		"omitReasoningEffort" => "omit_reasoning_effort",
 		"reasoningContentField" => "reasoning_content_field",
 		"reasoningEffortMap" => "reasoning_effort_map",
+		"reasoningDisableMode" => "reasoning_disable_mode",
 		"replayUnsignedThinking" => "replay_unsigned_thinking",
 		"requiresAssistantContentForToolCalls" => "requires_assistant_content_for_tool_calls",
 		"requiresReasoningContentForToolCalls" => "requires_reasoning_content_for_tool_calls",
@@ -1285,6 +1335,18 @@ fn translate_model(
 	push_price(&mut pricing, PriceUnit::MtokOutput, raw.cost.output);
 	push_price(&mut pricing, PriceUnit::MtokCacheRead, raw.cost.cache_read);
 	push_price(&mut pricing, PriceUnit::MtokCacheWrite, raw.cost.cache_write);
+	let mut pricing_tiers = SmallVec::new();
+	if let Some(long_context) = raw.cost.long_context {
+		let mut tier_pricing = SmallVec::new();
+		push_price(&mut tier_pricing, PriceUnit::MtokInput, long_context.input);
+		push_price(&mut tier_pricing, PriceUnit::MtokOutput, long_context.output);
+		push_price(&mut tier_pricing, PriceUnit::MtokCacheRead, long_context.cache_read);
+		push_price(&mut tier_pricing, PriceUnit::MtokCacheWrite, long_context.cache_write);
+		pricing_tiers.push(PriceTier {
+			prompt_tokens_above: long_context.input_threshold,
+			pricing:             tier_pricing,
+		});
+	}
 	let mut props = Props::default();
 	if let Some(dimensions) = raw.embedding_dimensions {
 		let _ =
@@ -1347,6 +1409,7 @@ fn translate_model(
 		context_window: raw.context_window.unwrap_or_default(),
 		max_output_tokens: raw.max_tokens.unwrap_or_default(),
 		pricing,
+		pricing_tiers,
 		availability: Availability::Unspecified,
 		source: Source::Bundled,
 		blocked_until_ms: 0,
@@ -1394,7 +1457,7 @@ mod tests {
 		let providers: BTreeMap<String, BTreeMap<String, RawModel>> =
 			serde_json::from_slice(&json).expect("provider map decodes directly");
 		assert_eq!(providers.len(), 80);
-		assert_eq!(providers.values().map(BTreeMap::len).sum::<usize>(), 4_290);
+		assert_eq!(providers.values().map(BTreeMap::len).sum::<usize>(), 4_293);
 	}
 
 	fn priced_model() -> ModelCard {
@@ -1419,6 +1482,7 @@ mod tests {
 			]
 			.into_iter()
 			.collect(),
+			pricing_tiers:     SmallVec::new(),
 			availability:      Availability::Unspecified,
 			source:            Source::Bundled,
 			blocked_until_ms:  0,
@@ -1475,6 +1539,35 @@ mod tests {
 		close(cost.output, 0.000_032);
 		close(cost.cache_read, 0.000_004_8);
 		close(cost.total, 0.000_060_8);
+	}
+
+	#[test]
+	fn long_context_tier_prices_full_request_above_prompt_threshold() {
+		let mut model = priced_model();
+		model.pricing_tiers.push(PriceTier {
+			prompt_tokens_above: 272_000,
+			pricing:             [
+				Price { unit: PriceUnit::MtokInput, nanos_usd: 10_000_000_000 },
+				Price { unit: PriceUnit::MtokOutput, nanos_usd: 45_000_000_000 },
+				Price { unit: PriceUnit::MtokCacheRead, nanos_usd: 1_000_000_000 },
+				Price { unit: PriceUnit::MtokCacheWrite, nanos_usd: 12_500_000_000 },
+			]
+			.into_iter()
+			.collect(),
+		});
+		let short = calculate_cost(
+			&model,
+			&CostUsage { input: 270_000, cache_read: 2_000, output: 1_000, ..Default::default() },
+		);
+		close(short.input, 0.54);
+		close(short.output, 0.004);
+		let long = calculate_cost(
+			&model,
+			&CostUsage { input: 270_001, cache_read: 2_000, output: 1_000, ..Default::default() },
+		);
+		close(long.input, 2.700_01);
+		close(long.output, 0.045);
+		close(long.cache_read, 0.002);
 	}
 
 	#[test]
@@ -1588,7 +1681,7 @@ mod tests {
 	fn embedded_catalog_is_lazily_shared_and_populated() {
 		let first = embedded_catalog();
 		let second = embedded_catalog();
-		assert_eq!(first.len(), 4_215);
+		assert_eq!(first.len(), 4_218);
 		assert!(std::ptr::eq(first, second));
 	}
 }

@@ -506,7 +506,22 @@ impl UsageManager {
 				reports.push(report);
 				continue;
 			}
-			let report = self.fetch(&credential, now_ms).await?;
+			let report = match self.fetch(&credential, now_ms).await {
+				Ok(report) => report,
+				Err(error) => {
+					if matches!(
+						&error,
+						UsageError::Http(status)
+							if *status == StatusCode::UNAUTHORIZED || *status == StatusCode::FORBIDDEN
+					) {
+						self.store.mark_usage_stale(
+							Some(credential.provider.as_str()),
+							Some(credential.id),
+						)?;
+					}
+					return Err(error);
+				},
+			};
 			self.store.write_usage_report(&report, now_ms)?;
 			reports.push(report);
 		}
@@ -1002,11 +1017,19 @@ fn apply_auth(
 	Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum OverrideNormalizer {
+	Declarative,
+	OpenCodeGo,
+	Xai,
+}
+
 struct MultiStepOverride {
-	provider:  &'static str,
-	steps:     &'static [OverrideStep],
-	windows:   &'static [WindowSpec],
-	plan_path: &'static str,
+	provider:   &'static str,
+	steps:      &'static [OverrideStep],
+	windows:    &'static [WindowSpec],
+	plan_path:  &'static str,
+	normalizer: OverrideNormalizer,
 }
 
 struct OverrideStep {
@@ -1014,6 +1037,7 @@ struct OverrideStep {
 	url:       &'static str,
 	auth_kind: AuthKind,
 	body:      &'static [u8],
+	headers:   &'static [(&'static str, &'static str)],
 }
 
 impl UsageOverride for MultiStepOverride {
@@ -1026,45 +1050,294 @@ impl UsageOverride for MultiStepOverride {
 		context: OverrideContext<'a>,
 	) -> BoxFuture<'a, Result<UsageReport, UsageError>> {
 		Box::pin(async move {
-			let mut payloads = Vec::with_capacity(self.steps.len());
-			for step in self.steps {
-				let mut request = authenticated_request(
-					step.method.clone(),
-					step.url,
-					Bytes::from_static(step.body),
-					step.auth_kind,
-					&context.lease,
-					context.store,
-				)?;
-				if !step.body.is_empty() {
-					request
-						.headers_mut()
-						.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-				}
-				let response = context.http.send(request).await?;
-				if !response.status.is_success() {
-					return Err(UsageError::Http(response.status));
-				}
-				payloads.push(serde_json::from_slice(&response.body)?);
+			match self.normalizer {
+				OverrideNormalizer::OpenCodeGo => {
+					let payload = fetch_override_step(
+						self.steps.first().expect("OpenCode Go usage step"),
+						&context,
+					)
+					.await?;
+					opencode_go_report(context.credential.id, context.now_ms, payload)
+				},
+				OverrideNormalizer::Xai => xai_report(self.steps, &context).await,
+				OverrideNormalizer::Declarative => {
+					let mut payloads = Vec::with_capacity(self.steps.len());
+					for step in self.steps {
+						payloads.push(fetch_override_step(step, &context).await?);
+					}
+					let payload = if payloads.len() == 1 {
+						payloads.pop().expect("one response was recorded")
+					} else {
+						serde_json::json!({ "responses": payloads })
+					};
+					let descriptor = UsageFetcher {
+						provider:     self.provider,
+						url_template: self.steps.last().map_or("", |step| step.url),
+						auth_kind:    self
+							.steps
+							.last()
+							.map_or(AuthKind::Bearer, |step| step.auth_kind),
+						plan_path:    self.plan_path,
+						windows:      self.windows,
+					};
+					Ok(report_from_payload(
+						&descriptor,
+						context.credential.id,
+						context.now_ms,
+						payload,
+					))
+				},
 			}
-			let payload = if payloads.len() == 1 {
-				payloads.pop().expect("one response was recorded")
-			} else {
-				serde_json::json!({ "responses": payloads })
-			};
-			let descriptor = UsageFetcher {
-				provider:     self.provider,
-				url_template: self.steps.last().map_or("", |step| step.url),
-				auth_kind:    self
-					.steps
-					.last()
-					.map_or(AuthKind::Bearer, |step| step.auth_kind),
-				plan_path:    self.plan_path,
-				windows:      self.windows,
-			};
-			Ok(report_from_payload(&descriptor, context.credential.id, context.now_ms, payload))
 		})
 	}
+}
+
+async fn fetch_override_step(
+	step: &OverrideStep,
+	context: &OverrideContext<'_>,
+) -> Result<Value, UsageError> {
+	let mut request = authenticated_request(
+		step.method.clone(),
+		step.url,
+		Bytes::from_static(step.body),
+		step.auth_kind,
+		&context.lease,
+		context.store,
+	)?;
+	if !step.body.is_empty() {
+		request
+			.headers_mut()
+			.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+	}
+	for &(name, value) in step.headers {
+		request.headers_mut().insert(
+			http::header::HeaderName::from_static(name),
+			HeaderValue::from_static(value),
+		);
+	}
+	let response = context.http.send(request).await?;
+	if !response.status.is_success() {
+		return Err(UsageError::Http(response.status));
+	}
+	Ok(serde_json::from_slice(&response.body)?)
+}
+
+fn invalid_usage(provider: &'static str, message: &'static str) -> UsageError {
+	UsageError::InvalidResponse { provider: Str::new(provider), message: Str::new(message) }
+}
+
+fn iso_timestamp_ms(value: &Value) -> Option<u64> {
+	value
+		.as_str()?
+		.parse::<Timestamp>()
+		.ok()?
+		.as_millisecond()
+		.try_into()
+		.ok()
+}
+
+fn opencode_go_report(
+	credential_id: u64,
+	now_ms: u64,
+	payload: Value,
+) -> Result<UsageReport, UsageError> {
+	let usage = payload
+		.get("usage")
+		.ok_or_else(|| invalid_usage("opencode-go", "missing usage object"))?;
+	let mut windows = SmallVec::new();
+	for (spec, status_path) in OPENCODE_GO_WINDOWS.iter().zip(OPENCODE_GO_STATUS_PATHS) {
+		let used_percent = json_path(usage, spec.used_percent_path)
+			.and_then(Value::as_f64)
+			.filter(|percent| percent.is_finite() && (0.0..=100.0).contains(percent))
+			.ok_or_else(|| invalid_usage("opencode-go", "missing or invalid quota percentage"))?;
+		json_path(usage, status_path)
+			.and_then(Value::as_str)
+			.filter(|status| matches!(*status, "ok" | "rate-limited"))
+			.ok_or_else(|| invalid_usage("opencode-go", "missing or invalid quota status"))?;
+		let resets_at_ms = json_path(usage, spec.resets_at_path)
+			.and_then(iso_timestamp_ms)
+			.ok_or_else(|| invalid_usage("opencode-go", "missing or invalid quota reset"))?;
+		windows.push(UsageWindow {
+			label: Str::new(spec.label),
+			used_percent,
+			resets_at_ms,
+		});
+	}
+	Ok(UsageReport {
+		credential_id,
+		provider: Str::new("opencode-go"),
+		plan: Str::new("OpenCode Go"),
+		windows,
+		fetched_at_ms: now_ms,
+		detail: payload,
+	})
+}
+
+#[derive(Clone, Copy)]
+struct XaiWeekly {
+	used_percent: f64,
+	resets_at_ms: u64,
+	inferred:      bool,
+}
+
+#[derive(Clone, Copy)]
+struct XaiMonthly {
+	used_percent: f64,
+	resets_at_ms: u64,
+}
+
+fn xai_amount(config: &serde_json::Map<String, Value>, key: &str) -> Option<f64> {
+	let amount = config.get(key)?.as_object()?.get("val").and_then(value_number)?;
+	(amount.is_finite() && amount >= 0.0).then_some(amount)
+}
+
+fn parse_xai_weekly(
+	config: &serde_json::Map<String, Value>,
+	now_ms: u64,
+) -> Option<XaiWeekly> {
+	let period = config.get("currentPeriod")?.as_object()?;
+	let start_at_ms = period.get("start").and_then(iso_timestamp_ms)?;
+	let resets_at_ms = period.get("end").and_then(iso_timestamp_ms)?;
+	let period_type = period.get("type")?.as_str()?;
+	let weekly_period = period_type
+		.as_bytes()
+		.windows(4)
+		.any(|candidate| candidate.eq_ignore_ascii_case(b"WEEK"));
+	if resets_at_ms <= start_at_ms || !weekly_period {
+		return None;
+	}
+	let inferred = config
+		.get("creditUsagePercent")
+		.is_none_or(Value::is_null);
+	let used_percent = if inferred {
+		(resets_at_ms > now_ms).then_some(0.0)?
+	} else {
+		config
+			.get("creditUsagePercent")
+			.and_then(value_number)
+			.filter(|percent| percent.is_finite() && (0.0..=100.0).contains(percent))?
+	};
+	Some(XaiWeekly { used_percent, resets_at_ms, inferred })
+}
+
+fn parse_xai_monthly(config: &serde_json::Map<String, Value>) -> Option<XaiMonthly> {
+	let start_at_ms = config.get("billingPeriodStart").and_then(iso_timestamp_ms)?;
+	let resets_at_ms = config.get("billingPeriodEnd").and_then(iso_timestamp_ms)?;
+	if resets_at_ms <= start_at_ms {
+		return None;
+	}
+	let limit = xai_amount(config, "monthlyLimit").filter(|limit| *limit > 0.0)?;
+	let used = xai_amount(config, "used")?;
+	Some(XaiMonthly {
+		used_percent: (used * 100.0 / limit).min(100.0),
+		resets_at_ms,
+	})
+}
+
+fn confirms_no_xai_monthly_quota(
+	config: &serde_json::Map<String, Value>,
+	now_ms: u64,
+) -> bool {
+	if let Some(limit) = xai_amount(config, "monthlyLimit") {
+		return limit == 0.0;
+	}
+	parse_xai_weekly(config, now_ms).is_some_and(|weekly| weekly.inferred)
+}
+
+async fn xai_report(
+	steps: &[OverrideStep],
+	context: &OverrideContext<'_>,
+) -> Result<UsageReport, UsageError> {
+	let credits_step = steps.first().expect("xAI credits usage step");
+	let monthly_step = steps.get(1).expect("xAI monthly usage step");
+	let credits_payload = match fetch_override_step(credits_step, context).await {
+		Ok(payload) => Some(payload),
+		Err(UsageError::Http(status))
+			if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN =>
+		{
+			return Err(UsageError::Http(status));
+		},
+		Err(UsageError::Http(_) | UsageError::Json(_)) => None,
+		Err(error) => return Err(error),
+	};
+	let credits_config = credits_payload
+		.as_ref()
+		.and_then(|payload| payload.get("config"))
+		.and_then(Value::as_object);
+	let weekly = credits_config.and_then(|config| parse_xai_weekly(config, context.now_ms));
+	let unified = credits_config
+		.and_then(|config| config.get("isUnifiedBillingUser"))
+		== Some(&Value::Bool(true));
+
+	let should_probe_monthly = weekly.is_none() || unified;
+	let monthly_payload = if should_probe_monthly {
+		match fetch_override_step(monthly_step, context).await {
+			Ok(payload) => Some(payload),
+			Err(UsageError::Http(status))
+				if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN =>
+			{
+				return Err(UsageError::Http(status));
+			},
+			Err(_) if weekly.is_some_and(|weekly| !weekly.inferred) => None,
+			Err(error) => return Err(error),
+		}
+	} else {
+		None
+	};
+	let monthly_config = monthly_payload
+		.as_ref()
+		.and_then(|payload| payload.get("config"))
+		.and_then(Value::as_object);
+	let monthly = monthly_config.and_then(parse_xai_monthly);
+
+	let effective_weekly = if weekly.is_some_and(|weekly| weekly.inferred) && unified {
+		if monthly.is_some()
+			|| !monthly_config
+				.is_some_and(|config| confirms_no_xai_monthly_quota(config, context.now_ms))
+		{
+			None
+		} else {
+			weekly
+		}
+	} else {
+		weekly
+	};
+	if effective_weekly.is_none() && monthly.is_none() {
+		return Err(invalid_usage("xai", "billing payload contained no usable quota"));
+	}
+
+	let mut windows = SmallVec::new();
+	if let Some(weekly) = effective_weekly {
+		windows.push(UsageWindow {
+			label: Str::new("week"),
+			used_percent: weekly.used_percent,
+			resets_at_ms: weekly.resets_at_ms,
+		});
+	}
+	if let Some(monthly) = monthly {
+		windows.push(UsageWindow {
+			label: Str::new("monthly"),
+			used_percent: monthly.used_percent,
+			resets_at_ms: monthly.resets_at_ms,
+		});
+	}
+	let plan = match (effective_weekly.is_some(), monthly.is_some()) {
+		(true, true) => "unified",
+		(true, false) => "weekly",
+		(false, true) => "monthly",
+		(false, false) => unreachable!("usable xAI quota checked above"),
+	};
+	Ok(UsageReport {
+		credential_id: context.credential.id,
+		provider: Str::new("xai"),
+		plan: Str::new(plan),
+		windows,
+		fetched_at_ms: context.now_ms,
+		detail: serde_json::json!({
+			"credits": credits_payload,
+			"monthly": monthly_payload,
+		}),
+	})
 }
 
 struct LocalUsageOverride {
@@ -1084,35 +1357,6 @@ impl UsageOverride for LocalUsageOverride {
 		context: OverrideContext<'a>,
 	) -> BoxFuture<'a, Result<UsageReport, UsageError>> {
 		Box::pin(async move {
-			if self.provider == "opencode-go" {
-				let mut windows = SmallVec::new();
-				let mut spend = serde_json::Map::new();
-				for &(label, duration_ms, limit_nanos_usd) in OPENCODE_GO_SPEND_WINDOWS {
-					let observed = context.store.rolling_spend(
-						self.provider,
-						Some(context.credential.id),
-						Some(context.credential.identity.as_str()),
-						context.now_ms.saturating_sub(duration_ms),
-						context.now_ms,
-					)?;
-					windows.push(UsageWindow {
-						label:        Str::new(label),
-						used_percent: observed.nanos_usd as f64 * 100.0 / limit_nanos_usd as f64,
-						resets_at_ms: observed
-							.first_observed_at_ms
-							.map_or(0, |first| first.saturating_add(duration_ms)),
-					});
-					spend.insert(label.to_owned(), Value::from(observed.nanos_usd));
-				}
-				return Ok(UsageReport {
-					credential_id: context.credential.id,
-					provider: Str::new(self.provider),
-					plan: Str::new(self.plan),
-					windows,
-					fetched_at_ms: context.now_ms,
-					detail: Value::Object(spend),
-				});
-			}
 			Ok(UsageReport {
 				credential_id: context.credential.id,
 				provider:      Str::new(self.provider),
@@ -1133,12 +1377,32 @@ impl UsageOverride for LocalUsageOverride {
 	}
 }
 
-const OPENCODE_GO_LOCAL_WINDOWS: &[(&str, f64)] = &[];
-const OPENCODE_GO_SPEND_WINDOWS: &[(&str, u64, u64)] = &[
-	("rolling-5h", 5 * 60 * 60_000, 12_000_000_000),
-	("weekly", 7 * 24 * 60 * 60_000, 30_000_000_000),
-	("monthly", 30 * 24 * 60 * 60_000, 60_000_000_000),
+// Credential ranking consumes the first two windows; monthly stays display-only.
+const OPENCODE_GO_WINDOWS: &[WindowSpec] = &[
+	WindowSpec {
+		label:              "rolling-5h",
+		used_percent_path:  "rolling.percent",
+		resets_at_path:     "rolling.resetsAt",
+		used_percent_scale: 1.0,
+		remaining:          false,
+	},
+	WindowSpec {
+		label:              "weekly",
+		used_percent_path:  "weekly.percent",
+		resets_at_path:     "weekly.resetsAt",
+		used_percent_scale: 1.0,
+		remaining:          false,
+	},
+	WindowSpec {
+		label:              "monthly",
+		used_percent_path:  "monthly.percent",
+		resets_at_path:     "monthly.resetsAt",
+		used_percent_scale: 1.0,
+		remaining:          false,
+	},
 ];
+const OPENCODE_GO_STATUS_PATHS: &[&str] =
+	&["rolling.status", "weekly.status", "monthly.status"];
 
 const CURSOR_WINDOWS: &[WindowSpec] = &[];
 const GEMINI_WINDOWS: &[WindowSpec] = &[WindowSpec {
@@ -1155,13 +1419,6 @@ const ANTIGRAVITY_WINDOWS: &[WindowSpec] = &[WindowSpec {
 	used_percent_scale: 100.0,
 	remaining:          true,
 }];
-const XAI_WINDOWS: &[WindowSpec] = &[WindowSpec {
-	label:              "week",
-	used_percent_path:  "responses.0.creditUsagePercent",
-	resets_at_path:     "responses.0.currentPeriod.end",
-	used_percent_scale: 1.0,
-	remaining:          false,
-}];
 
 fn built_in_overrides() -> SmallVec<Arc<dyn UsageOverride>, 4> {
 	SmallVec::from_iter([
@@ -1172,28 +1429,33 @@ fn built_in_overrides() -> SmallVec<Arc<dyn UsageOverride>, 4> {
 				url:       "https://cursor.com/api/usage-summary",
 				auth_kind: AuthKind::CursorCookie,
 				body:      b"",
+				headers:   &[],
 			}],
-			windows:   CURSOR_WINDOWS,
-			plan_path: "membershipType",
+			windows:    CURSOR_WINDOWS,
+			plan_path:  "membershipType",
+			normalizer: OverrideNormalizer::Declarative,
 		}) as Arc<dyn UsageOverride>,
 		Arc::new(MultiStepOverride {
-			provider:  "google-gemini-cli",
-			steps:     &[
+			provider: "google-gemini-cli",
+			steps:    &[
 				OverrideStep {
 					method:    Method::POST,
 					url:       "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
 					auth_kind: AuthKind::Bearer,
 					body:      b"{}",
+					headers:   &[],
 				},
 				OverrideStep {
 					method:    Method::POST,
 					url:       "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
 					auth_kind: AuthKind::Bearer,
 					body:      b"{}",
+					headers:   &[],
 				},
 			],
-			windows:   GEMINI_WINDOWS,
-			plan_path: "tier",
+			windows:    GEMINI_WINDOWS,
+			plan_path:  "tier",
+			normalizer: OverrideNormalizer::Declarative,
 		}),
 		Arc::new(MultiStepOverride {
 			provider:  "google-antigravity",
@@ -1202,34 +1464,46 @@ fn built_in_overrides() -> SmallVec<Arc<dyn UsageOverride>, 4> {
 				url:       "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
 				auth_kind: AuthKind::Bearer,
 				body:      b"{}",
+				headers:   &[],
 			}],
-			windows:   ANTIGRAVITY_WINDOWS,
-			plan_path: "",
+			windows:    ANTIGRAVITY_WINDOWS,
+			plan_path:  "",
+			normalizer: OverrideNormalizer::Declarative,
 		}),
 		Arc::new(MultiStepOverride {
-			provider:  "xai",
-			steps:     &[
+			provider: "xai",
+			steps:    &[
 				OverrideStep {
 					method:    Method::GET,
-					url:       "https://grok.com/rest/billing/subscriptions",
+					url:       "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
 					auth_kind: AuthKind::Bearer,
 					body:      b"",
+					headers:   &[("x-xai-token-auth", "xai-grok-cli")],
 				},
 				OverrideStep {
 					method:    Method::GET,
-					url:       "https://grok.com/rest/rate-limits",
+					url:       "https://cli-chat-proxy.grok.com/v1/billing",
 					auth_kind: AuthKind::Bearer,
 					body:      b"",
+					headers:   &[("x-xai-token-auth", "xai-grok-cli")],
 				},
 			],
-			windows:   XAI_WINDOWS,
-			plan_path: "billingTier",
+			windows:    &[],
+			plan_path:  "",
+			normalizer: OverrideNormalizer::Xai,
 		}),
-		Arc::new(LocalUsageOverride {
-			provider: "opencode-go",
-			plan:     "OpenCode Go",
-			windows:  OPENCODE_GO_LOCAL_WINDOWS,
-			note:     "OMP-observed spend only; no provider quota endpoint is available",
+		Arc::new(MultiStepOverride {
+			provider:  "opencode-go",
+			steps:     &[OverrideStep {
+				method:    Method::GET,
+				url:       "https://opencode.ai/zen/go/v1/usage",
+				auth_kind: AuthKind::Bearer,
+				body:      b"",
+				headers:   &[],
+			}],
+			windows:    OPENCODE_GO_WINDOWS,
+			plan_path:  "",
+			normalizer: OverrideNormalizer::OpenCodeGo,
 		}),
 		Arc::new(LocalUsageOverride {
 			provider: "ollama",
@@ -1248,7 +1522,10 @@ fn built_in_overrides() -> SmallVec<Arc<dyn UsageOverride>, 4> {
 
 #[cfg(test)]
 mod tests {
-	use std::sync::atomic::{AtomicUsize, Ordering};
+	use std::{
+		collections::VecDeque,
+		sync::atomic::{AtomicUsize, Ordering},
+	};
 
 	use tempfile::TempDir;
 
@@ -1285,6 +1562,39 @@ mod tests {
 			let status = self.status;
 			let body = self.body.clone();
 			Box::pin(async move { Ok(UsageHttpResponse { status, body }) })
+		}
+	}
+
+	struct SequenceHttp {
+		requests:  parking_lot::Mutex<Vec<Request<Bytes>>>,
+		responses: parking_lot::Mutex<VecDeque<UsageHttpResponse>>,
+	}
+
+	impl SequenceHttp {
+		fn new(responses: impl IntoIterator<Item = (StatusCode, Value)>) -> Self {
+			Self {
+				requests: parking_lot::Mutex::new(Vec::new()),
+				responses: parking_lot::Mutex::new(
+					responses
+						.into_iter()
+						.map(|(status, payload)| UsageHttpResponse {
+							status,
+							body: serde_json::to_vec(&payload).expect("response JSON").into(),
+						})
+						.collect(),
+				),
+			}
+		}
+	}
+
+	impl UsageHttp for SequenceHttp {
+		fn send(
+			&self,
+			request: Request<Bytes>,
+		) -> BoxFuture<'_, Result<UsageHttpResponse, UsageError>> {
+			self.requests.lock().push(request);
+			let response = self.responses.lock().pop_front().expect("scripted response");
+			Box::pin(async move { Ok(response) })
 		}
 	}
 
@@ -1545,51 +1855,397 @@ mod tests {
 		]);
 	}
 
+	fn opencode_go_payload(rolling: Value) -> Value {
+		serde_json::json!({
+			"usage": {
+				"rolling": rolling,
+				"weekly": {
+					"status": "ok",
+					"percent": 8,
+					"resetsAt": "2026-08-17T00:00:00.847Z",
+				},
+				"monthly": {
+					"status": "rate-limited",
+					"percent": 100,
+					"resetsAt": "2026-08-19T00:31:53.847Z",
+				},
+			},
+		})
+	}
+
+	#[test]
+	fn opencode_go_requires_three_authoritative_valid_windows() {
+		let payload = opencode_go_payload(serde_json::json!({
+			"status": "ok",
+			"percent": 12,
+			"resetsAt": "2026-08-12T15:09:04.847Z",
+		}));
+		let report = opencode_go_report(7, 42, payload).expect("valid usage");
+		assert_eq!(report.plan, "OpenCode Go");
+		assert_eq!(report.windows.len(), 3);
+		assert_eq!(report.windows[0], UsageWindow {
+			label:        Str::new("rolling-5h"),
+			used_percent: 12.0,
+			resets_at_ms: timestamp_ms(&Value::from("2026-08-12T15:09:04.847Z"))
+				.expect("reset"),
+		});
+		assert_eq!(report.windows[1].label, "weekly");
+		assert_eq!(report.windows[1].used_percent, 8.0);
+		assert_eq!(report.windows[2].label, "monthly");
+		assert_eq!(report.windows[2].used_percent, 100.0);
+
+		for malformed in [
+			serde_json::json!({
+				"status": "unknown",
+				"percent": 12,
+				"resetsAt": "2026-08-12T15:09:04.847Z",
+			}),
+			serde_json::json!({
+				"status": "ok",
+				"percent": 101,
+				"resetsAt": "2026-08-12T15:09:04.847Z",
+			}),
+			serde_json::json!({
+				"status": "ok",
+				"percent": 12,
+				"resetsAt": "not-a-timestamp",
+			}),
+		] {
+			assert!(matches!(
+				opencode_go_report(7, 42, opencode_go_payload(malformed)),
+				Err(UsageError::InvalidResponse { .. })
+			));
+		}
+		assert!(opencode_go_report(7, 42, serde_json::json!({ "usage": {} })).is_err());
+		assert!(opencode_go_report(7, 42, serde_json::json!({})).is_err());
+	}
+
 	#[tokio::test]
-	async fn local_usage_sources_cover_opencode_go_and_ollama_without_fake_http() {
-		for (provider, window_count) in [("opencode-go", 3_usize), ("ollama", 0), ("ollama-cloud", 0)]
-		{
+	async fn opencode_go_fetches_fixed_usage_route_with_bearer_key() {
+		let directory = tempfile::tempdir().expect("tempdir");
+		let store = Arc::new(Store::open(directory.path().join("broker.sqlite")).expect("store"));
+		let id = store
+			.upsert_api_key("opencode-go", "test", b"sk-test", 1)
+			.expect("credential")
+			.id;
+		let http = Arc::new(SequenceHttp::new([(
+			StatusCode::OK,
+			opencode_go_payload(serde_json::json!({
+				"status": "ok",
+				"percent": 12,
+				"resetsAt": "2026-08-12T15:09:04.847Z",
+			})),
+		)]));
+		let reports = UsageManager::new(store, http.clone())
+			.get_usage(Some("opencode-go"), Some(id), true, 42)
+			.await
+			.expect("authoritative usage");
+		assert_eq!(reports[0].windows.len(), 3);
+		let requests = http.requests.lock();
+		assert_eq!(requests.len(), 1);
+		assert_eq!(requests[0].uri(), "https://opencode.ai/zen/go/v1/usage");
+		assert_eq!(requests[0].headers()[http::header::AUTHORIZATION], "Bearer sk-test");
+	}
+
+	fn active_xai_weekly(unified: bool, percent: Option<f64>) -> Value {
+		let mut config = serde_json::json!({
+			"currentPeriod": {
+				"start": "2026-07-23T11:11:10.769917+00:00",
+				"end": "2026-07-30T11:11:10.769917+00:00",
+				"type": "USAGE_PERIOD_TYPE_WEEKLY",
+			},
+			"isUnifiedBillingUser": unified,
+		});
+		if let Some(percent) = percent {
+			config["creditUsagePercent"] = Value::from(percent);
+		}
+		serde_json::json!({ "config": config })
+	}
+
+	fn xai_monthly(overrides: Value) -> Value {
+		let mut config = serde_json::json!({
+			"monthlyLimit": { "val": 15000 },
+			"used": { "val": 10548 },
+			"billingPeriodStart": "2026-07-01T00:00:00+00:00",
+			"billingPeriodEnd": "2026-08-01T00:00:00+00:00",
+		});
+		if let (Some(config), Some(overrides)) = (config.as_object_mut(), overrides.as_object()) {
+			config.extend(overrides.clone());
+		}
+		serde_json::json!({ "config": config })
+	}
+
+	fn xai_store() -> (TempDir, Arc<Store>, u64) {
+		let directory = tempfile::tempdir().expect("tempdir");
+		let store = Arc::new(Store::open(directory.path().join("broker.sqlite")).expect("store"));
+		let id = store
+			.upsert_oauth("xai", "test", b"access-token", 0, 1)
+			.expect("credential")
+			.id;
+		(directory, store, id)
+	}
+
+	#[test]
+	fn xai_infers_zero_only_for_an_active_weekly_period() {
+		let now_ms =
+			timestamp_ms(&Value::from("2026-07-24T00:00:00Z")).expect("current timestamp");
+		let active = active_xai_weekly(false, None);
+		let active = active["config"].as_object().expect("active config");
+		let weekly = parse_xai_weekly(active, now_ms).expect("active weekly");
+		assert_eq!(weekly.used_percent, 0.0);
+		assert!(weekly.inferred);
+
+		let expired = active_xai_weekly(false, None);
+		let expired = expired["config"].as_object().expect("expired config");
+		let after_end =
+			timestamp_ms(&Value::from("2026-07-31T00:00:00Z")).expect("expired timestamp");
+		assert!(parse_xai_weekly(expired, after_end).is_none());
+
+		let explicit = active_xai_weekly(false, Some(18.0));
+		let explicit = explicit["config"].as_object().expect("explicit config");
+		assert_eq!(
+			parse_xai_weekly(explicit, after_end).expect("recent explicit period").used_percent,
+			18.0
+		);
+	}
+
+	#[tokio::test]
+	async fn xai_uses_cli_billing_and_skips_monthly_probe_for_legacy_weekly() {
+		let (_directory, store, id) = xai_store();
+		let http = Arc::new(SequenceHttp::new([(
+			StatusCode::OK,
+			active_xai_weekly(false, Some(18.0)),
+		)]));
+		let now_ms =
+			timestamp_ms(&Value::from("2026-07-24T00:00:00Z")).expect("current timestamp");
+		let reports = UsageManager::new(store, http.clone())
+			.get_usage(Some("xai"), Some(id), true, now_ms)
+			.await
+			.expect("weekly usage");
+		assert_eq!(reports[0].plan, "weekly");
+		assert_eq!(reports[0].windows, [UsageWindow {
+			label:        Str::new("week"),
+			used_percent: 18.0,
+			resets_at_ms: timestamp_ms(&Value::from("2026-07-30T11:11:10.769917+00:00"))
+				.expect("weekly reset"),
+		}]);
+		let requests = http.requests.lock();
+		assert_eq!(requests.len(), 1);
+		assert_eq!(
+			requests[0].uri(),
+			"https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+		);
+		assert_eq!(requests[0].headers()["x-xai-token-auth"], "xai-grok-cli");
+	}
+
+	#[tokio::test]
+	async fn xai_prefers_real_monthly_over_inferred_unified_weekly() {
+		let (_directory, store, id) = xai_store();
+		let http = Arc::new(SequenceHttp::new([
+			(StatusCode::OK, active_xai_weekly(true, None)),
+			(StatusCode::OK, xai_monthly(serde_json::json!({}))),
+		]));
+		let now_ms =
+			timestamp_ms(&Value::from("2026-07-24T00:00:00Z")).expect("current timestamp");
+		let reports = UsageManager::new(store, http.clone())
+			.get_usage(Some("xai"), Some(id), true, now_ms)
+			.await
+			.expect("monthly usage");
+		assert_eq!(reports[0].plan, "monthly");
+		assert_eq!(reports[0].windows.len(), 1);
+		assert_eq!(reports[0].windows[0].label, "monthly");
+		assert!((reports[0].windows[0].used_percent - 70.32).abs() < f64::EPSILON);
+		let requests = http.requests.lock();
+		assert_eq!(requests.len(), 2);
+		assert_eq!(requests[1].uri(), "https://cli-chat-proxy.grok.com/v1/billing");
+	}
+
+	#[tokio::test]
+	async fn xai_keeps_explicit_weekly_alongside_unified_monthly_quota() {
+		let (_directory, store, id) = xai_store();
+		let http = Arc::new(SequenceHttp::new([
+			(StatusCode::OK, active_xai_weekly(true, Some(2.0))),
+			(StatusCode::OK, xai_monthly(serde_json::json!({}))),
+		]));
+		let now_ms =
+			timestamp_ms(&Value::from("2026-07-24T00:00:00Z")).expect("current timestamp");
+		let reports = UsageManager::new(store, http)
+			.get_usage(Some("xai"), Some(id), true, now_ms)
+			.await
+			.expect("unified usage");
+		assert_eq!(reports[0].plan, "unified");
+		assert_eq!(reports[0].windows.len(), 2);
+		assert_eq!(reports[0].windows[0].label, "week");
+		assert_eq!(reports[0].windows[0].used_percent, 2.0);
+		assert_eq!(reports[0].windows[1].label, "monthly");
+	}
+
+	#[tokio::test]
+	async fn xai_accepts_inferred_weekly_only_with_no_monthly_quota_evidence() {
+		let (_directory, store, id) = xai_store();
+		let http = Arc::new(SequenceHttp::new([
+			(StatusCode::OK, active_xai_weekly(true, None)),
+			(
+				StatusCode::OK,
+				serde_json::json!({ "config": { "monthlyLimit": { "val": 0 } } }),
+			),
+		]));
+		let now_ms =
+			timestamp_ms(&Value::from("2026-07-24T00:00:00Z")).expect("current timestamp");
+		let reports = UsageManager::new(store, http)
+			.get_usage(Some("xai"), Some(id), true, now_ms)
+			.await
+			.expect("confirmed weekly usage");
+		assert_eq!(reports[0].plan, "weekly");
+		assert_eq!(reports[0].windows[0].used_percent, 0.0);
+	}
+
+	#[tokio::test]
+	async fn xai_rejects_unconfirmed_or_malformed_inferred_unified_quota() {
+		let now_ms =
+			timestamp_ms(&Value::from("2026-07-24T00:00:00Z")).expect("current timestamp");
+		for monthly in [
+			serde_json::json!({ "config": { "isUnifiedBillingUser": true } }),
+			serde_json::json!({
+				"config": {
+					"isUnifiedBillingUser": true,
+					"monthlyLimit": { "val": 15000 },
+				},
+			}),
+		] {
+			let (_directory, store, id) = xai_store();
+			let http = Arc::new(SequenceHttp::new([
+				(StatusCode::OK, active_xai_weekly(true, None)),
+				(StatusCode::OK, monthly),
+			]));
+			assert!(matches!(
+				UsageManager::new(store, http)
+					.get_usage(Some("xai"), Some(id), true, now_ms)
+					.await,
+				Err(UsageError::InvalidResponse { .. })
+			));
+		}
+
+		let (_directory, store, id) = xai_store();
+		let http = Arc::new(SequenceHttp::new([
+			(StatusCode::OK, active_xai_weekly(true, None)),
+			(StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({})),
+		]));
+		assert!(matches!(
+			UsageManager::new(store, http)
+				.get_usage(Some("xai"), Some(id), true, now_ms)
+				.await,
+			Err(UsageError::Http(StatusCode::INTERNAL_SERVER_ERROR))
+		));
+	}
+
+	#[tokio::test]
+	async fn malformed_opencode_go_payload_preserves_last_good_cache() {
+		let directory = tempfile::tempdir().expect("tempdir");
+		let store = Arc::new(Store::open(directory.path().join("broker.sqlite")).expect("store"));
+		let id = store
+			.upsert_api_key("opencode-go", "test", b"key", 1)
+			.expect("credential")
+			.id;
+		let valid = Arc::new(SequenceHttp::new([(
+			StatusCode::OK,
+			opencode_go_payload(serde_json::json!({
+				"status": "ok",
+				"percent": 12,
+				"resetsAt": "2026-08-12T15:09:04.847Z",
+			})),
+		)]));
+		UsageManager::new(Arc::clone(&store), valid)
+			.get_usage(Some("opencode-go"), Some(id), true, 1)
+			.await
+			.expect("last-good usage");
+		let malformed = Arc::new(SequenceHttp::new([(
+			StatusCode::OK,
+			serde_json::json!({ "usage": { "rolling": null } }),
+		)]));
+		assert!(matches!(
+			UsageManager::new(Arc::clone(&store), malformed)
+				.get_usage(Some("opencode-go"), Some(id), true, 2)
+				.await,
+			Err(UsageError::InvalidResponse { .. })
+		));
+		let cached = store
+			.read_usage_reports(Some("opencode-go"), Some(id))
+			.expect("cached usage");
+		assert_eq!(cached.len(), 1);
+		assert_eq!(cached[0].windows.len(), 3);
+	}
+
+	#[tokio::test]
+	async fn auth_failure_marks_last_good_usage_stale() {
+		for status in [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN] {
+			let directory = tempfile::tempdir().expect("tempdir");
+			let store =
+				Arc::new(Store::open(directory.path().join("broker.sqlite")).expect("store"));
+			let id = store
+				.upsert_api_key("opencode-go", "test", b"revoked", 1)
+				.expect("credential")
+				.id;
+			let report = UsageReport {
+				credential_id: id,
+				provider:      Str::new("opencode-go"),
+				plan:          Str::new("OpenCode Go"),
+				windows:       SmallVec::from_vec(vec![
+					UsageWindow {
+						label:        Str::new("rolling-5h"),
+						used_percent: 25.0,
+						resets_at_ms: 1_000,
+					},
+					UsageWindow {
+						label:        Str::new("weekly"),
+						used_percent: 50.0,
+						resets_at_ms: 2_000,
+					},
+					UsageWindow {
+						label:        Str::new("monthly"),
+						used_percent: 75.0,
+						resets_at_ms: 3_000,
+					},
+				]),
+				fetched_at_ms: 1,
+				detail:        Value::Null,
+			};
+			store.write_usage_report(&report, 1).expect("last-good report");
+			let http = Arc::new(CaptureHttp {
+				request: parking_lot::Mutex::new(None),
+				status,
+				body: Bytes::from_static(b"{}"),
+			});
+			let error = UsageManager::new(Arc::clone(&store), http)
+				.get_usage(Some("opencode-go"), Some(id), true, 10)
+				.await
+				.expect_err("auth failure");
+			assert!(matches!(error, UsageError::Http(returned) if returned == status));
+			assert!(
+				store
+					.read_usage_reports(Some("opencode-go"), Some(id))
+					.expect("cached usage")
+					.is_empty()
+			);
+		}
+	}
+
+	#[tokio::test]
+	async fn local_usage_sources_cover_ollama_without_fake_http() {
+		for provider in ["ollama", "ollama-cloud"] {
 			let directory = tempfile::tempdir().expect("tempdir");
 			let store = Arc::new(Store::open(directory.path().join("broker.sqlite")).expect("store"));
 			let id = store
 				.upsert_api_key(provider, "test", b"token", 1)
 				.expect("credential")
 				.id;
-			if provider == "opencode-go" {
-				let lease = store.lease(id).expect("lease query").expect("lease");
-				store
-					.record_terminal_usage(
-						&lease,
-						"turn-observed",
-						"model",
-						0,
-						&ClientUsage {
-							client_id:          "client".into(),
-							label:              "client".into(),
-							input_tokens:       10,
-							output_tokens:      5,
-							cache_read_tokens:  0,
-							cache_write_tokens: 0,
-							nanos_usd:          6_000_000_000,
-							last_seen_ms:       90,
-						},
-						90,
-					)
-					.expect("record usage");
-			}
 			let http = Arc::new(MockHttp { calls: AtomicUsize::new(0), body: Bytes::new() });
-			let reports = UsageManager::new(Arc::clone(&store), http.clone())
+			let reports = UsageManager::new(store, http.clone())
 				.get_usage(Some(provider), Some(id), true, 100)
 				.await
 				.expect("local usage");
-			assert_eq!(reports.len(), 1);
 			assert_eq!(reports[0].provider, provider);
-			assert_eq!(reports[0].windows.len(), window_count);
-			if provider == "opencode-go" {
-				assert_eq!(reports[0].windows[0].used_percent, 50.0);
-				assert_eq!(reports[0].windows[0].resets_at_ms, 90 + 5 * 60 * 60_000);
-				assert_eq!(reports[0].detail["rolling-5h"], 6_000_000_000_u64);
-			}
+			assert!(reports[0].windows.is_empty());
 			assert_eq!(http.calls.load(Ordering::SeqCst), 0);
 		}
 	}

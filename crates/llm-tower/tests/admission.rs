@@ -10,10 +10,10 @@ use std::{
 
 use futures::StreamExt;
 use omp_llm_tower::{
-	admission::AdmissionLayer,
-	testing::{kind_of, outcome},
+	admission::{Admission, AdmissionLayer},
+	testing::{Script, error, kind_of, outcome},
 };
-use omp_proto::inference::v1::{TurnEvent, TurnRequest};
+use omp_proto::inference::v1::{TurnEvent, TurnRequest, turn_error};
 use tower::{Layer, Service, ServiceExt};
 
 /// Service whose streams stay open until released, counting concurrency.
@@ -126,4 +126,49 @@ async fn permit_bounds_concurrency_and_lives_for_the_stream() {
 		assert_eq!(task.await.unwrap(), ["outcome"]);
 	}
 	assert!(peak.load(Ordering::SeqCst) <= 2, "permit pool must never be exceeded");
+}
+
+#[tokio::test]
+async fn exhausted_stream_releases_permit_while_handle_remains_alive() {
+	let permits = Arc::new(tokio::sync::Semaphore::new(1));
+	let mut service = Admission::new(Script::default(), Arc::clone(&permits));
+	let mut stream = service
+		.ready()
+		.await
+		.unwrap()
+		.call(TurnRequest::default())
+		.await
+		.unwrap();
+
+	assert_eq!(permits.available_permits(), 0);
+	assert!(stream.next().await.is_none());
+	assert_eq!(permits.available_permits(), 1);
+
+	// The exhausted stream remains live and may be polled again without
+	// returning the same permit twice.
+	assert!(stream.next().await.is_none());
+	assert_eq!(permits.available_permits(), 1);
+}
+
+#[tokio::test]
+async fn terminal_frames_release_permit_without_being_discarded() {
+	async fn assert_terminal_release(frame: TurnEvent) {
+		let expected = kind_of(&frame);
+		let permits = Arc::new(tokio::sync::Semaphore::new(1));
+		let mut service = Admission::new(Script::new([vec![frame]]), Arc::clone(&permits));
+		let mut stream = service
+			.ready()
+			.await
+			.unwrap()
+			.call(TurnRequest::default())
+			.await
+			.unwrap();
+
+		assert_eq!(permits.available_permits(), 0);
+		assert_eq!(stream.next().await.as_ref().map(kind_of), Some(expected));
+		assert_eq!(permits.available_permits(), 1);
+	}
+
+	assert_terminal_release(outcome()).await;
+	assert_terminal_release(error(turn_error::Kind::Upstream, "provider failed")).await;
 }

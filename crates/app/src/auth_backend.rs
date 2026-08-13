@@ -68,14 +68,14 @@ impl OAuthHttpClient for BrokerHttp {
 				.oneshot(outbound)
 				.await
 				.map_err(|error| oauth_error(error.to_string(), true))?;
-			let status = response.status().as_u16();
-			let body = response
-				.into_body()
+			let (parts, body) = response.into_parts();
+			let status = parts.status.as_u16();
+			let body = body
 				.collect()
 				.await
 				.map_err(|error| oauth_error(error.to_string(), true))?
 				.to_bytes();
-			Ok(OAuthHttpResponse { status, body })
+			Ok(OAuthHttpResponse { status, body, headers: parts.headers })
 		})
 	}
 }
