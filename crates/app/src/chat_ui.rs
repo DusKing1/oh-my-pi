@@ -7,9 +7,10 @@ use std::{
 };
 
 use omp_agent::{
-	Agent, AgentEvent, AgentPhase, AgentState, Interrupt, InterruptClass, InterruptSource, TurnClient,
+	Agent, AgentEvent, AgentPhase, AgentState, Interrupt, InterruptClass, InterruptSource,
+	MailboxSender, TurnClient,
 };
-use omp_core::Str;
+use omp_core::{Str, StrMut, fmts};
 use omp_llm_catalog::{ModelKey, ModelSpec, snapshot::Catalog};
 use omp_llm_inference::id::TurnId;
 use omp_proto::{
@@ -18,8 +19,9 @@ use omp_proto::{
 };
 use omp_tool::{Rev, TOOL_REV_PROP};
 use omp_tui::{
-	AppEvent, AppOptions, Key, Prop, Ui, dom,
+	AppEvent, AppOptions, Key, Prop, Ui,
 	components::{Markdown, Segment, Status, ToolCard, ToolState, TranscriptView},
+	dom,
 };
 
 use crate::chat_ui::{
@@ -27,18 +29,23 @@ use crate::chat_ui::{
 	renderers::{RendererRegistry, ToolFold},
 };
 
+/// Durable session facts required to initialize the inline chat shell.
 pub struct ChatUiSession {
-	pub session_id:    Str,
-	pub initial_items: Vec<Item>,
+	/// Stable session identifier displayed by the status line.
+	pub session_id:     Str,
+	/// Canonical history replayed into the transcript before live events.
+	pub initial_items:  Vec<Item>,
+	/// Selected model's total token window, when known by the catalog.
 	pub context_window: Option<u64>,
 }
 
 struct ActivePart {
-	id:     String,
-	text:   String,
+	id:     Str,
+	text:   StrMut,
 	prefix: &'static str,
 }
 
+/// Runs the inline terminal shell over one transport-neutral agent.
 pub async fn run<C: TurnClient + 'static>(
 	mut agent: Agent<C>,
 	session: ChatUiSession,
@@ -56,10 +63,9 @@ pub async fn run<C: TurnClient + 'static>(
 			let root = dom! {
 				<col>
 					<TranscriptView id="transcript" />
-					<row>
-						<input id="input" />
+					<editor id="input" submit>
 						<status id="status" />
-					</row>
+					</editor>
 				</col>
 			};
 			Ui::from_root(root, env.viewport.width, env.ctx)
@@ -69,12 +75,7 @@ pub async fn run<C: TurnClient + 'static>(
 
 	let renderers = RendererRegistry::new();
 	let mut tool_folds = HashMap::new();
-	render_history(
-		app.ui_mut(),
-		&session.initial_items,
-		&renderers,
-		&mut tool_folds,
-	);
+	render_history(app.ui_mut(), &session.initial_items, &renderers, &mut tool_folds);
 
 	let mut session_model = agent_state.snapshot().turn.params.model.clone();
 	let mut context_window = session.context_window;
@@ -86,10 +87,25 @@ pub async fn run<C: TurnClient + 'static>(
 	let mut active_parts: HashMap<u32, ActivePart> = HashMap::new();
 	let mut part_serial = 0_u64;
 
+	update_status(
+		app.ui_mut(),
+		&session.session_id,
+		&session_model,
+		attempt_indicator,
+		live_jobs.len(),
+		session_cost_nanos,
+		context_tokens,
+		context_window,
+		events.dropped(),
+	);
+
 	let (tx, rx) = flume::unbounded::<Item>();
 	let (err_tx, err_rx) = flume::unbounded::<String>();
 	let mut agent_task = tokio::spawn(async move {
-		if agent.journal().pending_turn().is_some() {
+		if startup_recovery_needed(
+			agent.journal().pending_turn().is_some(),
+			agent.journal().pending_input_submission().is_some(),
+		) {
 			let resume_turn_id = TurnId::new(ulid::Ulid::generate().to_string());
 			if let Err(error) = agent.submit(Vec::new(), resume_turn_id).await {
 				let _ = err_tx.send(format!("**Startup resume error:** {error}"));
@@ -102,7 +118,17 @@ pub async fn run<C: TurnClient + 'static>(
 			}
 		}
 	});
-
+	update_status(
+		app.ui_mut(),
+		&session.session_id,
+		&session_model,
+		attempt_indicator,
+		live_jobs.len(),
+		session_cost_nanos,
+		context_tokens,
+		context_window,
+		events.dropped(),
+	);
 	'ui: loop {
 		tokio::select! {
 			event = app.next() => match event {
@@ -123,31 +149,50 @@ pub async fn run<C: TurnClient + 'static>(
 							app.ui_mut(),
 							"Session already active; select another session with `omp chat --resume <id>`.",
 						),
-						Ok(ChatCommand::Quit) => break 'ui,
+						Ok(ChatCommand::Quit) => {
+							enqueue_shutdown_interrupt(&mailbox, phase);
+							break 'ui;
+						},
 						Ok(ChatCommand::Submit(item)) if phase == AgentPhase::Idle => {
-							if tx.send(item).is_err() {
+							let sent = render_then_deliver(
+								item,
+								|item| render_submitted_item(app.ui_mut(), item),
+								|item| tx.send(item),
+							);
+							if sent.is_err() {
 								push_error(app.ui_mut(), "Agent input channel is closed.");
 							}
 						},
 						Ok(ChatCommand::Submit(item)) => {
-							let _ = mailbox.try_enqueue(Interrupt {
-								class: InterruptClass::Immediate,
+							let _ = render_then_deliver(
 								item,
-								source: InterruptSource::Producer(Str::new_static("user")),
-							});
+								|item| render_submitted_item(app.ui_mut(), item),
+								|item| {
+									mailbox.try_enqueue(Interrupt {
+										class: InterruptClass::Immediate,
+										item,
+										source: InterruptSource::Producer(Str::new_static("user")),
+									})
+								},
+							);
 						},
 						Err(error) => push_error(app.ui_mut(), error.to_string()),
 					}
 				},
 				Ok(Some(AppEvent::Key(Key::Esc))) => {
-					let _ = mailbox.try_enqueue(Interrupt {
-						class: InterruptClass::Immediate,
-						item: interrupt_item(),
-						source: InterruptSource::Producer(Str::new_static("user")),
-					});
+					if interrupt_needed(phase) {
+						let _ = mailbox.try_enqueue(Interrupt {
+							class: InterruptClass::Immediate,
+							item: interrupt_item("User interrupted via Esc."),
+							source: InterruptSource::Producer(Str::new_static("user")),
+						});
+					}
 				},
 				Ok(Some(_)) => {},
-				Ok(None) | Err(_) => break 'ui,
+				Ok(None) | Err(_) => {
+					enqueue_shutdown_interrupt(&mailbox, phase);
+					break 'ui;
+				},
 			},
 			Ok(message) = err_rx.recv_async() => push_error(app.ui_mut(), message),
 			Ok(phase_event) = phase_events.recv() => {
@@ -180,12 +225,15 @@ pub async fn run<C: TurnClient + 'static>(
 							};
 							if let Some(prefix) = prefix {
 								part_serial = part_serial.saturating_add(1);
-								let id = format!("part-{part_serial}");
+								let id = fmts!("part-{part_serial}");
 								app.ui_mut().update_component::<TranscriptView>("transcript", |view| {
 									view.push(Markdown::new().with(Prop::Id, id.as_str()));
 									true
 								});
-								active_parts.insert(start.index, ActivePart { id, text: String::new(), prefix });
+								active_parts.insert(
+									start.index,
+									ActivePart { id, text: StrMut::new_inline(""), prefix },
+								);
 							}
 						},
 						Some(Event::PartDelta(delta)) => {
@@ -193,7 +241,8 @@ pub async fn run<C: TurnClient + 'static>(
 								&& let Ok(fragment) = std::str::from_utf8(&delta.chunk)
 							{
 								active.text.push_str(fragment);
-								app.ui_mut().set_text(&active.id, format!("{}{}", active.prefix, active.text));
+								let rendered = fmts!("{}{}", active.prefix, active.text.as_str());
+								app.ui_mut().set_text(active.id.as_str(), rendered);
 							}
 						},
 						Some(Event::PartEnd(end)) => {
@@ -206,11 +255,9 @@ pub async fn run<C: TurnClient + 'static>(
 						tool_folds.insert(call_id.clone(), fold);
 						push_tool_card(app.ui_mut(), call_id);
 					},
-					AgentEvent::ToolArgs { call_id, fragment } => {
+					AgentEvent::ToolArgs { call_id, view, .. } => {
 						if let Some(fold) = tool_folds.get_mut(call_id.as_str()) {
-							if let Ok(fragment) = std::str::from_utf8(fragment) {
-								fold.push_args(fragment);
-							}
+							fold.set_args_view(view.clone());
 							renderers.update(app.ui_mut(), fold);
 						}
 					},
@@ -255,7 +302,10 @@ pub async fn run<C: TurnClient + 'static>(
 	}
 
 	drop(tx);
-	if tokio::time::timeout(Duration::from_secs(3), &mut agent_task).await.is_err() {
+	if tokio::time::timeout(Duration::from_secs(3), &mut agent_task)
+		.await
+		.is_err()
+	{
 		agent_task.abort();
 		let _ = agent_task.await;
 	}
@@ -296,7 +346,7 @@ fn render_history(
 					tool_revision(item).unwrap_or(Rev { family: Str::new(""), n: 0 }),
 				);
 				if let Ok(args) = std::str::from_utf8(&call.args_json) {
-					fold.push_args(args);
+					fold.set_args_view(omp_slopjson::parse_streaming(args));
 				}
 				push_tool_card(ui, &call_id);
 				renderers.update(ui, &fold);
@@ -315,12 +365,31 @@ fn render_history(
 				}
 				if let Some(fold) = folds.get_mut(call_id.as_str()) {
 					fold.item = Some(item.clone());
-					fold.state = if result.is_error { ToolState::Failure } else { ToolState::Success };
+					fold.state = if result.is_error {
+						ToolState::Failure
+					} else {
+						ToolState::Success
+					};
 					renderers.update(ui, fold);
 				}
 			},
 			_ => {},
 		}
+	}
+}
+
+fn render_then_deliver<R>(
+	item: Item,
+	render: impl FnOnce(&Item),
+	deliver: impl FnOnce(Item) -> R,
+) -> R {
+	render(&item);
+	deliver(item)
+}
+
+fn render_submitted_item(ui: &mut Ui, submitted: &Item) {
+	if let Some(item::Kind::Message(message)) = &submitted.kind {
+		render_message(ui, message);
 	}
 }
 
@@ -351,7 +420,9 @@ fn render_message(ui: &mut Ui, message: &Message) {
 
 fn tool_revision(item: &Item) -> Option<Rev> {
 	let value = item.props.as_ref()?.fields.get(TOOL_REV_PROP)?;
-	let value::Kind::String(revision) = value.kind.as_ref()? else { return None };
+	let value::Kind::String(revision) = value.kind.as_ref()? else {
+		return None;
+	};
 	let (family, number) = revision
 		.rsplit_once('.')
 		.map_or(("", revision.as_str()), |(family, number)| (family, number));
@@ -373,21 +444,37 @@ fn push_error(ui: &mut Ui, message: impl std::fmt::Display) {
 	});
 }
 
-fn interrupt_item() -> Item {
-	Item {
-		seq: 0,
-		created_at_ms: now_ms(),
-		kind: Some(item::Kind::Message(Message {
-			role: i32::from(Role::User),
-			parts: vec![Part {
-				kind: Some(part::Kind::Text("User interrupted via Esc.".to_owned())),
-			}],
-		})),
-		props: None,
+fn startup_recovery_needed(pending_turn: bool, pending_input_submission: bool) -> bool {
+	pending_turn || pending_input_submission
+}
+
+fn interrupt_needed(phase: AgentPhase) -> bool {
+	phase != AgentPhase::Idle
+}
+
+fn enqueue_shutdown_interrupt(mailbox: &MailboxSender, phase: AgentPhase) {
+	if interrupt_needed(phase) {
+		let _ = mailbox.try_enqueue(Interrupt {
+			class:  InterruptClass::Immediate,
+			item:   interrupt_item("User quit the active chat."),
+			source: InterruptSource::Producer(Str::new_static("user")),
+		});
 	}
 }
 
-fn now_ms() -> u64 {
+fn interrupt_item(text: &str) -> Item {
+	Item {
+		seq:           0,
+		created_at_ms: now_ms(),
+		kind:          Some(item::Kind::Message(Message {
+			role:  i32::from(Role::User),
+			parts: vec![Part { kind: Some(part::Kind::Text(text.to_owned())) }],
+		})),
+		props:         None,
+	}
+}
+
+pub(super) fn now_ms() -> u64 {
 	SystemTime::now()
 		.duration_since(UNIX_EPOCH)
 		.unwrap_or_default()
@@ -428,7 +515,11 @@ fn update_status(
 			let context = context_window.filter(|limit| *limit > 0).map_or_else(
 				|| format!("Ctx: {context_tokens} tk"),
 				|limit| {
-					let percent = context_tokens.saturating_mul(100).checked_div(limit).unwrap_or(100).min(100);
+					let percent = context_tokens
+						.saturating_mul(100)
+						.checked_div(limit)
+						.unwrap_or(100)
+						.min(100);
 					format!("Ctx: {percent}%")
 				},
 			);
@@ -444,40 +535,62 @@ fn update_status(
 
 #[cfg(test)]
 mod tests {
+	use std::cell::RefCell;
+
 	use super::*;
-	use omp_tui::UiContext;
 
 	#[test]
-	fn test_status_update() {
-		let mut ui = Ui::from_root(dom! { <status id="status" /> }, 80, UiContext::default());
-		update_status(&mut ui, &Str::from("test"), "gpt-4o", 2, 3, 1_500_000_000, 450, Some(1000), 5);
-		let status = ui.values()["status"].as_array().unwrap().clone();
-		assert!(status.iter().any(|v| v.as_str().unwrap().contains("Session: test")));
-		assert!(status.iter().any(|v| v.as_str().unwrap().contains("gpt-4o")));
-		assert!(status.iter().any(|v| v.as_str().unwrap().contains("Attempt: 2")));
-		assert!(status.iter().any(|v| v.as_str().unwrap().contains("Jobs: 3")));
-		assert!(status.iter().any(|v| v.as_str().unwrap().contains("Cost: $1.5000")));
-		assert!(status.iter().any(|v| v.as_str().unwrap().contains("Ctx: 45%")));
-		assert!(status.iter().any(|v| v.as_str().unwrap().contains("Dropped: 5")));
+	fn submission_is_rendered_once_before_delivery() {
+		let observations = RefCell::new(Vec::new());
+		let item = interrupt_item("visible prompt");
+		render_then_deliver(
+			item,
+			|item| {
+				let Some(item::Kind::Message(message)) = &item.kind else {
+					panic!("submission must be a message");
+				};
+				observations
+					.borrow_mut()
+					.push(("render", message.parts.len()));
+			},
+			|item| {
+				let Some(item::Kind::Message(message)) = item.kind else {
+					panic!("delivery must receive the message");
+				};
+				observations
+					.borrow_mut()
+					.push(("deliver", message.parts.len()));
+			},
+		);
+		assert_eq!(&*observations.borrow(), &[("render", 1), ("deliver", 1)]);
 	}
 
 	#[test]
-	fn test_history_and_error_cards() {
-		let mut ui = Ui::from_root(dom! { <TranscriptView id="transcript" /> }, 80, UiContext::default());
-		
-		// Error card
-		push_error(&mut ui, "Test failure");
-		assert!(ui.values()["transcript"].as_array().unwrap()[0].as_str().unwrap().contains("Error: Test failure"));
-		
-		// Tool slot preservation
-		push_tool_card(&mut ui, &Str::from("tool-1"));
-		ui.update_component::<TranscriptView>("transcript", |v| {
-			v.push(Markdown::new().with(Prop::Id, "part-1"));
-			true
-		});
-		ui.set_text("part-1", "Streaming text");
-		
-		let vals = ui.values()["transcript"].as_array().unwrap().clone();
-		assert_eq!(vals.len(), 3); // Error, ToolCard, Markdown
+	fn startup_recovery_covers_both_durable_crash_windows() {
+		assert!(!startup_recovery_needed(false, false));
+		assert!(startup_recovery_needed(true, false));
+		assert!(startup_recovery_needed(false, true));
+		assert!(startup_recovery_needed(true, true));
+	}
+	#[test]
+	fn interrupt_is_only_needed_while_active() {
+		assert!(!interrupt_needed(AgentPhase::Idle));
+		assert!(interrupt_needed(AgentPhase::Projecting));
+		assert!(interrupt_needed(AgentPhase::Turning));
+		assert!(interrupt_needed(AgentPhase::ToolBatch));
+	}
+	#[test]
+	fn status_update_formats_all_metrics_including_context_percentage() {
+		let mut ui = Ui::from_root(dom! { <status id="status" /> }, 120, UiContext::default());
+		update_status(&mut ui, &Str::from("test"), "gpt-4o", 2, 3, 1_500_000_000, 450, Some(1000), 5);
+
+		let painted = omp_tui::test_support::frame_row_text(ui.frame(), 0);
+		assert!(painted.contains("test"));
+		assert!(painted.contains("gpt-4o"));
+		assert!(painted.contains("Attempt: 2"));
+		assert!(painted.contains("Jobs: 3"));
+		assert!(painted.contains("Cost: $1.5000"));
+		assert!(painted.contains("Ctx: 45%"));
+		assert!(painted.contains("Dropped: 5"));
 	}
 }

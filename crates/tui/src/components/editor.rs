@@ -212,6 +212,13 @@ impl Component for EditInput {
 	}
 
 	fn key(&mut self, ec: &mut EventCtx<'_>, key: Key) -> Flow {
+		if key == Key::Enter && self.props.flag(Prop::Submit) {
+			if !self.buffer.text().trim().is_empty() {
+				return Flow::Event(UiEvent::Submit);
+			}
+			return Flow::Consumed;
+		}
+
 		if matches!(key, Key::Up) && self.buffer.at_visual_start()
 			|| matches!(key, Key::Down) && self.buffer.at_visual_end()
 		{
@@ -830,7 +837,7 @@ impl EditorPane {
 	/// Sets one editor-shell property.
 	pub fn with(mut self, prop: Prop, value: impl Into<PropValue>) -> Self {
 		let value = value.into();
-		if matches!(prop, Prop::Id | Prop::Value) {
+		if matches!(prop, Prop::Id | Prop::Value | Prop::Submit) {
 			self.children[0]
 				.comp_mut()
 				.props_mut()
@@ -1259,6 +1266,38 @@ mod tests {
 		assert!(cursor_y < ui.frame().size().height);
 	}
 
+	#[test]
+	fn editor_pane_forwards_submit_and_handles_enter() {
+		let mut pane = EditorPane::new().with(Prop::Submit, true);
+		assert!(pane.children[0].comp().props().flag(Prop::Submit));
+
+		let mut ui = Ui::from_root(pane, 40, UiContext::default());
+		assert_eq!(ui.handle_key(Key::Enter), UiEvent::None, "empty enter should not submit");
+
+		ui.handle_key(Key::Char(' '));
+		assert_eq!(ui.handle_key(Key::Enter), UiEvent::None, "whitespace enter should not submit");
+
+		ui.handle_key(Key::ShiftEnter);
+		let text = ui
+			.root
+			.comp()
+			.downcast_ref::<EditorPane>()
+			.unwrap()
+			.buffer()
+			.text();
+		assert_eq!(text, " \n");
+
+		ui.handle_key(Key::Char('a'));
+		assert_eq!(ui.handle_key(Key::Enter), UiEvent::Submit, "non-empty enter should submit");
+		let text = ui
+			.root
+			.comp()
+			.downcast_ref::<EditorPane>()
+			.unwrap()
+			.buffer()
+			.text();
+		assert_eq!(text, " \na", "buffer should not be cleared on submit");
+	}
 	#[test]
 	fn editor_status_replaces_top_border_with_rounded_band() {
 		let ctx = UiContext { charset: Charset::NerdFont, ..UiContext::default() };

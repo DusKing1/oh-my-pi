@@ -257,10 +257,12 @@ mod tests {
 		assert_eq!(frame_row_text(&frame, 0).trim_end(), "+ 한");
 		assert_eq!(frame_row_text(&frame, 1).trim_end(), "  글");
 	}
-
-	#[test]
-	
-	fn paint_with_ctx(component: &mut dyn Component, mut ctx: UiContext, width: u16, height: u16) -> Frame {
+	fn paint_with_ctx(
+		component: &mut dyn Component,
+		ctx: UiContext,
+		width: u16,
+		height: u16,
+	) -> Frame {
 		let mut frame = Frame::new(Size::new(width, height));
 		let mut hits = Vec::new();
 		let mut wakes = Vec::new();
@@ -278,7 +280,7 @@ mod tests {
 		// Incremental build
 		incremental.push(DiffKind::Header, "file.txt");
 		let _ = paint_with_ctx(&mut incremental, ctx.clone(), 20, 10);
-		
+
 		incremental.extend(vec![
 			DiffLine { kind: DiffKind::Context, text: Str::from("line 1") },
 			DiffLine { kind: DiffKind::Remove, text: Str::from("line 2") },
@@ -316,13 +318,13 @@ mod tests {
 	#[test]
 	fn charset_routing() {
 		use crate::context::Charset;
-		
+
 		let mut diff = DiffView::new();
 		diff.push(DiffKind::Add, "test");
-		
+
 		let mut ctx_ascii = UiContext::default();
 		ctx_ascii.charset = Charset::Ascii;
-		
+
 		let mut ctx_unicode = UiContext::default();
 		ctx_unicode.charset = Charset::Unicode;
 

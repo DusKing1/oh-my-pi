@@ -4836,11 +4836,13 @@ cd</pre>"##,
 
 	#[test]
 	fn update_component_typed_path() {
-		use crate::component::Component;
-		use crate::components::{Col, TranscriptView};
+		use crate::{
+			component::Component,
+			components::{Col, TranscriptView},
+		};
 		let view = TranscriptView::new().with(Prop::Id, "transcript");
 		let mut ui = Ui::from_root(view, 40, UiContext::default());
-		
+
 		let mut renderer = crate::Renderer::new(Vec::new());
 		ui.present(&mut renderer, 10, 0).unwrap();
 		let initial_height = ui.frame.size().height;
@@ -4864,7 +4866,7 @@ cd</pre>"##,
 			true
 		});
 		ui.present(&mut renderer, 10, 0).unwrap();
-		
+
 		// Replacing tail preserves earlier slot
 		let mut tail_child_slot = 0;
 		let changed = ui.update_component::<TranscriptView>("transcript", |view| {
@@ -4875,8 +4877,13 @@ cd</pre>"##,
 		});
 		assert!(changed);
 		ui.present(&mut renderer, 10, 0).unwrap();
-		
-		let final_slots: Vec<_> = ui.root.comp().children()[0].comp().children().iter().map(|c| c.comp().slot()).collect();
+
+		let final_slots: Vec<_> = ui.root.comp().children()[0]
+			.comp()
+			.children()
+			.iter()
+			.map(|c| c.comp().slot())
+			.collect();
 		assert_eq!(final_slots.len(), 2);
 		assert_eq!(final_slots[0], first_child_slot, "Earlier slot preserved");
 		assert_eq!(final_slots[1], tail_child_slot, "Tail slot replaced");

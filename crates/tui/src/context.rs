@@ -63,7 +63,6 @@ pub struct Grid {
 	pub bottom: (char, char, char),
 }
 
-
 /// Semantic prefixes for diff lines.
 #[derive(Clone, Copy, Debug)]
 pub struct DiffPrefixes {
@@ -80,18 +79,8 @@ pub struct DiffPrefixes {
 impl Charset {
 	pub const fn diff_prefixes(self) -> DiffPrefixes {
 		match self {
-			Self::Ascii => DiffPrefixes {
-				header:  "  ",
-				context: "  ",
-				add:     "+ ",
-				remove:  "- ",
-			},
-			_ => DiffPrefixes {
-				header:  "  ",
-				context: "  ",
-				add:     "+ ",
-				remove:  "- ",
-			},
+			Self::Ascii => DiffPrefixes { header: "  ", context: "  ", add: "+ ", remove: "- " },
+			_ => DiffPrefixes { header: "  ", context: "  ", add: "+ ", remove: "- " },
 		}
 	}
 

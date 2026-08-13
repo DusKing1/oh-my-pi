@@ -278,7 +278,7 @@ impl InferenceRpc {
 					.ok_or_else(|| Status::invalid_argument("Seed.thread is required"))?;
 				let projected =
 					project_thread_history(thread, &self.tool_registry, &RPC_HISTORY_PROMPT_CAPS)
-					.map_err(|error| Status::invalid_argument(error.to_string()))?;
+						.map_err(|error| Status::invalid_argument(error.to_string()))?;
 				let messages = thread_messages(&projected)?;
 				if seed.context_id.is_empty() {
 					return Ok(ResolvedTurn {
@@ -511,11 +511,8 @@ impl pb::inference_server::Inference for InferenceRpc {
 				},
 			);
 		}
-		let chat = chat_request(
-			std::mem::take(&mut resolved.request_messages),
-			params,
-			&self.tool_registry,
-		)?;
+		let chat =
+			chat_request(std::mem::take(&mut resolved.request_messages), params, &self.tool_registry)?;
 		let target = self.target(&params.model, OperationKind::Chat)?;
 		let mut client = self.turn_client(target, request_id, resolved.provider_session.clone());
 		let events = match client.execute(chat).await {
@@ -1677,7 +1674,10 @@ fn chat_request(
 		.into_iter()
 		.filter(|tool| {
 			params.tools.is_empty()
-				|| params.tools.iter().any(|requested| requested.name == tool.identity.name.as_str())
+				|| params
+					.tools
+					.iter()
+					.any(|requested| requested.name == tool.identity.name.as_str())
 		})
 		.map(|tool| tool.definition)
 		.collect();
@@ -1824,6 +1824,31 @@ fn build_turn_outcome(
 		head = head.saturating_add(1);
 		item.seq = head;
 	}
+	let provider = completion
+		.receipt
+		.plan
+		.provider
+		.as_ref()
+		.map_or_else(String::new, |value| value.as_str().to_owned());
+	let model = completion
+		.receipt
+		.plan
+		.model
+		.as_ref()
+		.map_or_else(String::new, |value| value.as_str().to_owned());
+	let diagnostics = completion
+		.receipt
+		.recoveries
+		.iter()
+		.map(|recovery| pb::Diagnostic {
+			provider:     provider.clone(),
+			model:        model.clone(),
+			attempt:      recovery.attempt,
+			code:         recovery.kind.as_str().to_owned(),
+			detail:       recovery.rule.0.as_str().to_owned(),
+			retryability: pb::Retryability::Unspecified as i32,
+		})
+		.collect();
 	pb::Outcome {
 		output,
 		stop: match &completion.reason {
@@ -1837,19 +1862,9 @@ fn build_turn_outcome(
 		cost: Some(proto_cost(completion.receipt.cost)),
 		unsupported: Vec::new(),
 		revision: context_id.map(|context| revision(context, head)),
-		provider: completion
-			.receipt
-			.plan
-			.provider
-			.as_ref()
-			.map_or_else(String::new, |value| value.as_str().to_owned()),
-		model: completion
-			.receipt
-			.plan
-			.model
-			.as_ref()
-			.map_or_else(String::new, |value| value.as_str().to_owned()),
-		diagnostics: Vec::new(),
+		provider,
+		model,
+		diagnostics,
 		upstream_provider: None,
 		duration_ms: Some(
 			completion
@@ -1865,7 +1880,12 @@ fn build_turn_outcome(
 			.timings
 			.first_frame
 			.map(|value| value.as_millis().try_into().unwrap_or(u64::MAX)),
-		context_snapshot: None,
+		context_snapshot: Some(pb::ContextSnapshot {
+			prompt_tokens:                  completion.usage.input_tokens,
+			non_message_tokens:             0,
+			history_rewrite_tokens_removed: None,
+			last_message_timestamp_ms:      None,
+		}),
 		props: None,
 	}
 }
@@ -2661,50 +2681,12 @@ fn realtime_chat_event(event: ChatEvent) -> Result<pb::TurnEvent, Status> {
 			number: 0,
 			reason: format!("usage:{}:{}", update.usage.input_tokens, update.usage.output_tokens),
 		}),
-		ChatEvent::Completed(completion) => pb::turn_event::Event::Outcome(pb::Outcome {
-			output:            Vec::new(),
-			stop:              match completion.reason {
-				FinishReason::Stop | FinishReason::Other(_) => 1,
-				FinishReason::Length => 3,
-				FinishReason::ToolCalls => 2,
-				FinishReason::ContentFilter => 4,
-				FinishReason::Cancelled => 0,
-			},
-			usage:             Some(proto_usage(completion.usage)),
-			cost:              Some(proto_cost(completion.receipt.cost)),
-			unsupported:       Vec::new(),
-			revision:          None,
-			provider:          completion
-				.receipt
-				.plan
-				.provider
-				.as_ref()
-				.map_or_else(String::new, |value| value.as_str().to_owned()),
-			model:             completion
-				.receipt
-				.plan
-				.model
-				.as_ref()
-				.map_or_else(String::new, |value| value.as_str().to_owned()),
-			diagnostics:       Vec::new(),
-			upstream_provider: None,
-			duration_ms:       Some(
-				completion
-					.receipt
-					.timings
-					.total
-					.as_millis()
-					.try_into()
-					.unwrap_or(u64::MAX),
-			),
-			ttft_ms:           completion
-				.receipt
-				.timings
-				.first_frame
-				.map(|value| value.as_millis().try_into().unwrap_or(u64::MAX)),
-			context_snapshot:  None,
-			props:             None,
-		}),
+		ChatEvent::Completed(completion) => pb::turn_event::Event::Outcome(build_turn_outcome(
+			&TurnProjection::default(),
+			&completion,
+			None,
+			0,
+		)),
 		ChatEvent::WorkflowAction(_)
 		| ChatEvent::WorkflowResume(_)
 		| ChatEvent::WorkflowCancelled { .. } => {
@@ -2917,8 +2899,68 @@ fn system_time_ms(time: SystemTime) -> u64 {
 #[cfg(test)]
 mod tests {
 	use futures::StreamExt as _;
+	use omp_llm_inference::receipt::{ExecutionReceipt, ReasonId, RecoveryKind, RecoveryRecord};
 
 	use super::*;
+
+	#[test]
+	fn turn_outcome_preserves_ordered_recovery_diagnostics() {
+		let mut receipt = ExecutionReceipt::default();
+		receipt.plan.provider = Some(ProviderId::from("provider-a"));
+		receipt.plan.model = Some(ModelKey::from("model-a"));
+		receipt.recoveries = vec![
+			RecoveryRecord {
+				attempt:     2,
+				kind:        RecoveryKind::SessionReseed,
+				rule:        ReasonId(Str::new_static("expired-session")),
+				input_bytes: 128,
+				steps:       1,
+			},
+			RecoveryRecord {
+				attempt:     3,
+				kind:        RecoveryKind::JsonRepair,
+				rule:        ReasonId(Str::new_static("bounded-json-repair")),
+				input_bytes: 64,
+				steps:       2,
+			},
+		];
+		let completion = Completion {
+			reason: FinishReason::Stop,
+			blocks: 0,
+			usage: Usage { input_tokens: 321, ..Usage::default() },
+			receipt,
+		};
+
+		let outcome = build_turn_outcome(&TurnProjection::default(), &completion, None, 0);
+
+		assert_eq!(outcome.diagnostics, vec![
+			pb::Diagnostic {
+				provider:     "provider-a".to_owned(),
+				model:        "model-a".to_owned(),
+				attempt:      2,
+				code:         "session_reseed".to_owned(),
+				detail:       "expired-session".to_owned(),
+				retryability: pb::Retryability::Unspecified as i32,
+			},
+			pb::Diagnostic {
+				provider:     "provider-a".to_owned(),
+				model:        "model-a".to_owned(),
+				attempt:      3,
+				code:         "json_repair".to_owned(),
+				detail:       "bounded-json-repair".to_owned(),
+				retryability: pb::Retryability::Unspecified as i32,
+			},
+		]);
+		assert_eq!(
+			outcome.context_snapshot,
+			Some(pb::ContextSnapshot {
+				prompt_tokens:                  321,
+				non_message_tokens:             0,
+				history_rewrite_tokens_removed: None,
+				last_message_timestamp_ms:      None,
+			})
+		);
+	}
 
 	#[test]
 	fn invocation_timeout_projects_the_dedicated_turn_error_kind() {

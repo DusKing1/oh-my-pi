@@ -136,16 +136,26 @@ pub struct AuthArgs {
 #[derive(Clone, Debug, Subcommand)]
 pub enum AuthCommand {
 	/// Begin an interactive provider login.
-	Login { provider: Str },
+	Login {
+		/// Target provider identifier.
+		provider: Str,
+	},
 	/// List non-secret account summaries.
 	List {
+		/// Optional provider filter.
 		#[arg(long)]
 		provider: Option<Str>,
 	},
 	/// Refresh one account.
-	Refresh { account: Str },
+	Refresh {
+		/// Target account identifier.
+		account: Str,
+	},
 	/// Remove one account.
-	Logout { account: Str },
+	Logout {
+		/// Target account identifier.
+		account: Str,
+	},
 }
 
 /// Model-catalog command tree.
@@ -159,6 +169,7 @@ pub struct CatalogArgs {
 /// Model-catalog operations.
 #[derive(Clone, Debug, Subcommand)]
 pub enum CatalogCommand {
+	/// Import catalog sources into normalized JSON.
 	Import(CatalogImportArgs),
 }
 
@@ -190,6 +201,7 @@ pub struct LocalArgs {
 /// Local inference operations.
 #[derive(Clone, Debug, Subcommand)]
 pub enum LocalCommand {
+	/// Run local in-process inference.
 	Infer(LocalInferArgs),
 }
 
@@ -463,7 +475,6 @@ mod tests {
 		assert_eq!(args.resume, Some(Str::from("01ARZ3NDEKTSV4RRFFQ69G5FAV")));
 		assert!(args.py_eval);
 	}
-
 
 	#[test]
 	fn parses_every_auth_branch() {

@@ -18,7 +18,10 @@ use omp_storage::transcript::{Header, SessionId};
 use omp_tool::{LoweringCaps, PromptCaps, Registry};
 use thiserror::Error;
 
-use crate::{chat_ui::{self, ChatUiSession}, cli::ChatArgs};
+use crate::{
+	chat_ui::{self, ChatUiSession},
+	cli::ChatArgs,
+};
 
 const PROMPT_CAPS: PromptCaps =
 	PromptCaps { maximum_parts: 1, maximum_text_bytes: 64 * 1024, media: false };
@@ -30,7 +33,7 @@ pub enum ChatError {
 	#[error("could not resolve project root {path}")]
 	Project {
 		/// Project path supplied by the caller.
-		path: PathBuf,
+		path:   PathBuf,
 		/// Filesystem failure.
 		#[source]
 		source: std::io::Error,
@@ -42,7 +45,7 @@ pub enum ChatError {
 	#[error("project state is not owner-only: {path}")]
 	InsecureState {
 		/// State path that failed validation.
-		path: PathBuf,
+		path:   PathBuf,
 		/// Filesystem or ownership failure.
 		#[source]
 		source: std::io::Error,
@@ -121,15 +124,20 @@ pub async fn run(args: ChatArgs) -> crate::Result<()> {
 	let state = AgentState::new(snapshot);
 
 	if let Some(endpoint) = args.gateway {
-		let channel = omp_rpc::uds::connect(endpoint.as_path()).await.map_err(|source| {
-			crate::AppError::ConnectGateway { endpoint: endpoint.clone(), source }
-		})?;
+		let channel = omp_rpc::uds::connect(endpoint.as_path())
+			.await
+			.map_err(|source| crate::AppError::ConnectGateway {
+				endpoint: endpoint.clone(),
+				source,
+			})?;
 		run_ui(RpcTurnClient::new(channel), env, state, session, context_window).await?;
 	} else {
 		let data_dir = crate::cli::data_dir(None)?;
 		let (_, inference) =
 			crate::daemon::production_inference(&data_dir, Arc::clone(&registry)).await?;
-		let client = InProcTurnClient::new(inference).await.map_err(ChatError::from)?;
+		let client = InProcTurnClient::new(inference)
+			.await
+			.map_err(ChatError::from)?;
 		run_ui(client, env, state, session, context_window).await?;
 	}
 
@@ -154,29 +162,22 @@ async fn run_ui<C: TurnClient + 'static>(
 	context_window: Option<u64>,
 ) -> Result<(), ChatError> {
 	let agent = Agent::new(client, env, state, session.journal, PROMPT_CAPS);
-	chat_ui::run(
-		agent,
-		ChatUiSession {
-			session_id: session.id,
-			initial_items: session.initial_items,
-			context_window,
-		},
-	)
+	chat_ui::run(agent, ChatUiSession {
+		session_id: session.id,
+		initial_items: session.initial_items,
+		context_window,
+	})
 	.await
 	.map_err(ChatError::Ui)
 }
 
-fn model_context_window(
-	catalog: &omp_llm_catalog::snapshot::Catalog,
-	model: &Str,
-) -> Option<u64> {
+fn model_context_window(catalog: &omp_llm_catalog::snapshot::Catalog, model: &Str) -> Option<u64> {
 	let key = omp_llm_catalog::ModelKey::from(model.as_str());
 	catalog
 		.model(&key)
 		.or_else(|| catalog.resolve_alias(model.as_str()))
 		.and_then(|spec| spec.limits.context_window)
 }
-
 
 fn canonical_project(path: &Path) -> Result<PathBuf, ChatError> {
 	let root = std::fs::canonicalize(path)
@@ -216,15 +217,12 @@ fn open_session(
 		}
 		journal
 	} else {
-		let journal = Journal::create(
-			&path,
-			&Header {
-				v: 4,
-				id: SessionId(id.clone()),
-				created: now_ms(),
-				cwd: root.to_owned(),
-			},
-		)?;
+		let journal = Journal::create(&path, &Header {
+			v:       4,
+			id:      SessionId(id.clone()),
+			created: now_ms(),
+			cwd:     root.to_owned(),
+		})?;
 		if let Err(source) = set_owner_file_permissions(&path) {
 			drop(journal);
 			let _ = std::fs::remove_file(&path);
@@ -255,26 +253,28 @@ fn agent_snapshot(
 ) -> Result<AgentSnapshot, ChatError> {
 	let advertised = registry.advertise(LoweringCaps {
 		strict_schema: true,
-		grammar: GrammarBits::LARK | GrammarBits::REGEX | GrammarBits::EBNF,
+		grammar:       GrammarBits::LARK | GrammarBits::REGEX | GrammarBits::EBNF,
 	});
 	let mut enabled_tools = Vec::with_capacity(advertised.len());
 	let mut tools = Vec::with_capacity(advertised.len());
 	for tool in advertised {
 		enabled_tools.push(tool.identity.name.clone());
 		let (schema_json, strict) = match tool.definition.input {
-			ToolInputConstraint::JsonSchema { parameters, strict } => (
-				serde_json::to_vec(parameters.as_value()).map_err(ChatError::ToolSchema)?,
-				strict,
-			),
+			ToolInputConstraint::JsonSchema { parameters, strict } => {
+				(serde_json::to_vec(parameters.as_value()).map_err(ChatError::ToolSchema)?, strict)
+			},
 			ToolInputConstraint::Grammar(_) => {
 				return Err(ChatError::GrammarTool(tool.identity.name));
 			},
 		};
 		tools.push(inference_pb::ToolDef {
-			name: tool.definition.name.to_string(),
-			description: tool.definition.description.map_or_else(String::new, |value| value.to_string()),
+			name:        tool.definition.name.to_string(),
+			description: tool
+				.definition
+				.description
+				.map_or_else(String::new, |value| value.to_string()),
 			schema_json: schema_json.into(),
-			strict: Some(strict),
+			strict:      Some(strict),
 		});
 	}
 	let turn = TurnOptions {
@@ -310,17 +310,17 @@ fn secure_owner_directory(path: &Path) -> Result<(), ChatError> {
 		Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
 		Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
 			let parent = path.parent().ok_or_else(|| ChatError::InsecureState {
-				path: path.to_owned(),
-				source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "state path has no parent"),
+				path:   path.to_owned(),
+				source: std::io::Error::new(
+					std::io::ErrorKind::InvalidInput,
+					"state path has no parent",
+				),
 			})?;
 			secure_owner_directory(parent)?;
-			std::fs::create_dir(path).map_err(|source| ChatError::InsecureState {
-				path: path.to_owned(),
-				source,
-			})?;
-			std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(
-				|source| ChatError::InsecureState { path: path.to_owned(), source },
-			)?;
+			std::fs::create_dir(path)
+				.map_err(|source| ChatError::InsecureState { path: path.to_owned(), source })?;
+			std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+				.map_err(|source| ChatError::InsecureState { path: path.to_owned(), source })?;
 		},
 		Err(source) => return Err(ChatError::InsecureState { path: path.to_owned(), source }),
 	}
@@ -331,7 +331,7 @@ fn secure_owner_directory(path: &Path) -> Result<(), ChatError> {
 		|| metadata.mode() & 0o077 != 0
 	{
 		return Err(ChatError::InsecureState {
-			path: path.to_owned(),
+			path:   path.to_owned(),
 			source: std::io::Error::new(
 				std::io::ErrorKind::PermissionDenied,
 				"state directory must be owner-only and owned by the current user",

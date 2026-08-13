@@ -1,6 +1,7 @@
 use omp_core::Str;
-use std::time::{SystemTime, UNIX_EPOCH};
 use omp_proto::thread::v1::{Item, Message, Part, Role, item, part};
+
+use super::now_ms;
 
 /// Actions parsed from user input in the chat shell.
 #[derive(Debug, PartialEq)]
@@ -54,32 +55,21 @@ pub fn parse_input(text: &str) -> Result<ChatCommand, InputError> {
 		if text == "/quit" {
 			return Ok(ChatCommand::Quit);
 		}
-		
+
 		let cmd = text.split_whitespace().next().unwrap_or(text);
 		return Err(InputError::UnknownCommand(Str::from(cmd)));
 	}
 
 	Ok(ChatCommand::Submit(Item {
-		seq: 0,
+		seq:           0,
 		created_at_ms: now_ms(),
-		kind: Some(item::Kind::Message(Message {
-			role: i32::from(Role::User),
-			parts: vec![Part {
-				kind: Some(part::Kind::Text(text.to_owned())),
-			}],
+		kind:          Some(item::Kind::Message(Message {
+			role:  i32::from(Role::User),
+			parts: vec![Part { kind: Some(part::Kind::Text(text.to_owned())) }],
 		})),
-		props: None,
+		props:         None,
 	}))
 }
-fn now_ms() -> u64 {
-	SystemTime::now()
-		.duration_since(UNIX_EPOCH)
-		.unwrap_or_default()
-		.as_millis()
-		.try_into()
-		.unwrap_or(u64::MAX)
-}
-
 
 #[cfg(test)]
 mod tests {
@@ -96,7 +86,10 @@ mod tests {
 	fn test_invalid_slash_commands() {
 		assert_eq!(parse_input("/model  "), Err(InputError::EmptyModel));
 		assert_eq!(parse_input("/model"), Err(InputError::EmptyModel));
-		assert_eq!(parse_input("/unknown arg"), Err(InputError::UnknownCommand(Str::from("/unknown"))));
+		assert_eq!(
+			parse_input("/unknown arg"),
+			Err(InputError::UnknownCommand(Str::from("/unknown")))
+		);
 	}
 
 	#[test]
@@ -115,10 +108,10 @@ mod tests {
 							part::Kind::Text(t) => assert_eq!(t, "hello world"),
 							_ => panic!("wrong part kind"),
 						}
-					}
+					},
 					_ => panic!("wrong item kind"),
 				}
-			}
+			},
 			_ => panic!("expected Submit"),
 		}
 	}

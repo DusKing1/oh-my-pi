@@ -32,8 +32,7 @@ use omp_llm_inference::{
 		stack::BuiltinConfig,
 	},
 	provider::builtin::{
-		AuthApplicationConfig, GoogleCcaConfig, LocalRouteBackend, ProductionDependencies,
-		discover_antigravity_version,
+		AuthApplicationConfig, GoogleCcaConfig, ProductionDependencies, discover_antigravity_version,
 	},
 	router::Router,
 	session::{ConversationError, ConversationSessionPlanner},
