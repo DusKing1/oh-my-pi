@@ -1,7 +1,6 @@
 #![feature(type_alias_impl_trait)]
 
-//! Self-contained JSON for LLM tool-call bodies — including all the broken
-//! kinds.
+//! Self-contained JSON for imperfect and incrementally produced documents.
 //!
 //! LLMs leak a characteristic family of malformations into JSON arguments:
 //! single-quoted strings, unquoted keys, Python literals, trailing commas,
@@ -13,8 +12,8 @@
 //!
 //! - [`from_str`] — deserialize any `T: Deserialize` straight off the lexer;
 //!   [`parse`] is `from_str::<Value>`. Strict JSON parses unchanged; truncated
-//!   values, trailing garbage, and non-finite numbers still fail, so a bad tool
-//!   call is skipped rather than half-executed.
+//!   values, trailing garbage, and non-finite numbers still fail, so incomplete
+//!   documents are not silently accepted.
 //! - [`parse_streaming`] — mid-stream parse: never fails, auto-closes truncated
 //!   structure, and rolls incomplete atoms back to the last valid prefix.
 //! - [`classify_json_prefix`] — strict RFC 8259 prefix classification for
@@ -47,6 +46,7 @@
 mod classify;
 mod de;
 mod error;
+mod incoming;
 mod macros;
 mod parser;
 mod raw;
@@ -57,6 +57,10 @@ mod value;
 pub use classify::{JsonPrefixState, classify_json_prefix};
 pub use de::{Deserializer, from_str, parse};
 pub use error::ParseError;
+pub use incoming::{
+	FeedClosed, IncomingArray, IncomingDoc, IncomingError, IncomingFeed, IncomingJson,
+	IncomingObject, IncomingString, PullIssue, PullIssueKind, PullPathSegment,
+};
 /// String type used for object keys and string values; re-exported for
 /// constructing [`Value`]s without depending on `omp-core` directly.
 pub use omp_core::Str;

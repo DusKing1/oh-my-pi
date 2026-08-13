@@ -1,9 +1,9 @@
-//! Never-failing parses for mid-stream tool-call argument buffers.
+//! Never-failing parses for mid-stream JSON buffers.
 
 use omp_core::Str;
 
 use crate::{
-	parser::{MAX_DEPTH, Parser},
+	parser::{MAX_DEPTH, Mode, Parser},
 	value::{Object, Value},
 };
 
@@ -13,13 +13,13 @@ use crate::{
 /// empty/whitespace/unrecoverable buffers, and an auto-closed best-effort
 /// value for truncated ones. Incomplete trailing atoms (a half-streamed
 /// `tru`, number, or bareword) roll back to the last valid prefix instead of
-/// committing junk.
+/// retaining junk.
 pub fn parse_streaming(partial_json: &str) -> Value {
 	let trimmed = partial_json.trim_start();
 	if trimmed.is_empty() {
 		return Value::Object(Object::new());
 	}
-	PartialParser { p: Parser::new(trimmed, true) }
+	PartialParser { p: Parser::new(trimmed, Mode::Streaming) }
 		.parse_root()
 		.unwrap_or_else(|| Value::Object(Object::new()))
 }
@@ -40,7 +40,7 @@ impl PartialParser<'_> {
 	}
 
 	/// `None` marks an incomplete atom (or a too-deep container) at the
-	/// streaming edge; the enclosing container commits its prefix instead.
+	/// streaming edge; the enclosing container retains its prefix instead.
 	fn value(&mut self, depth: u32) -> Option<Value> {
 		match self.p.peek()? {
 			b'{' | b'[' if depth >= MAX_DEPTH => {

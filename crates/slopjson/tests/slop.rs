@@ -132,6 +132,14 @@ fn ignores_line_and_block_comments() {
 }
 
 #[test]
+fn comments_directly_after_closing_quotes_do_not_reopen_strings() {
+	assert_eq!(parse("{'a'/*c*/: 1}").unwrap(), json!({ "a": 1 }));
+	assert_eq!(parse_streaming("{\"a\"/*c*/: 1}"), json!({ "a": 1 }));
+	assert_eq!(parse_streaming("{'a': 'v' // note\n}"), json!({ "a": "v" }));
+	assert_eq!(parse_streaming("{\"a\": \"v\"/*c*/}"), json!({ "a": "v" }));
+}
+
+#[test]
 fn does_not_swallow_structure_through_unescaped_double_quotes() {
 	assert!(parse(r#"{"a":"x" "b":1}"#).is_err());
 }

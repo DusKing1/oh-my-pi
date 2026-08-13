@@ -1,9 +1,11 @@
-//! Shared tolerant lexer: token-level primitives that both the strict
-//! [`Deserializer`](crate::Deserializer) and the streaming partial builder
-//! ([`parse_streaming`](crate::parse_streaming)) are built on.
+//! Shared tolerant lexer: token-level primitives that the strict
+//! [`Deserializer`](crate::Deserializer), the streaming partial builder
+//! ([`parse_streaming`](crate::parse_streaming)), and the incoming cursors
+//! are built on. [`Mode`] selects how truncation and unescaped inner double
+//! quotes are treated.
 //!
-//! The grammar is a forgiving superset of JSON covering the malformations
-//! LLM tool-call bodies leak in practice:
+//! The grammar is a forgiving superset of JSON covering malformations commonly
+//! produced by language models:
 //!
 //! - single-quoted strings and unquoted object keys (JSON5);
 //! - trailing / stray commas, and `//` + block comments;
@@ -11,8 +13,10 @@
 //!   literals;
 //! - raw control characters and invalid `\x` escapes inside strings (kept
 //!   literally);
-//! - unescaped quotes inside strings — a quote only closes a string when
+//! - unescaped quotes inside strings — a single quote only closes a string when
 //!   followed by a value terminator, recovering apostrophes such as `'it's'`;
+//!   the same recovery applies to double quotes in [`Mode::Streaming`] only,
+//!   everywhere else they close strictly;
 //! - unquoted string values in value position (strict mode only) — an
 //!   unrecognized bareword such as `{"paths": packages/foo/*}` is recovered as
 //!   a string up to the next `,` / `}` / `]` / newline.
@@ -34,6 +38,24 @@ pub const MAX_DEPTH: u32 = 128;
 pub enum Atom {
 	Bool(bool),
 	Null,
+}
+
+/// Decoded state of a string token at the current streaming edge.
+pub(crate) struct StringProgress<'a> {
+	pub(crate) value:      CowStr<'a>,
+	pub(crate) stable_len: usize,
+	pub(crate) complete:   bool,
+}
+
+/// Reading of the lookahead past a candidate closing quote.
+enum QuoteLook {
+	/// A value terminator (or final end of input) follows: the quote closes.
+	Closes,
+	/// Ordinary content follows: the quote is literal (inner-quote recovery).
+	Inner,
+	/// The lookahead ends on a lone `/` at the buffer edge, which may still
+	/// grow into a comment and flip this quote from inner to closing.
+	Undecided,
 }
 
 impl From<Atom> for Value {
@@ -58,22 +80,75 @@ const fn is_ident_char(b: u8) -> bool {
 	b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
 }
 
-/// Cursor over the input with the tolerant token readers.
-///
-/// `lenient` selects streaming semantics: unterminated strings return their
-/// content instead of failing, double-quoted strings recover unescaped inner
-/// quotes, and malformed numbers report as absent (`Ok(None)`) so the caller
-/// can roll back instead of erroring.
+/// Index of the first byte at or after `i` that is not whitespace or part of
+/// a `//` line / `/* */` block comment.
+fn skip_insignificant(s: &[u8], mut i: usize) -> usize {
+	let n = s.len();
+	loop {
+		while i < n && is_whitespace(s[i]) {
+			i += 1;
+		}
+		if i + 1 < n && s[i] == b'/' {
+			match s[i + 1] {
+				b'/' => {
+					i += 2;
+					while i < n && s[i] != b'\n' {
+						i += 1;
+					}
+					continue;
+				},
+				b'*' => {
+					i += 2;
+					while i + 1 < n && !(s[i] == b'*' && s[i + 1] == b'/') {
+						i += 1;
+					}
+					i = (i + 2).min(n);
+					continue;
+				},
+				_ => {},
+			}
+		}
+		return i;
+	}
+}
+
+/// Grammar tolerance selected by the parser's consumer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+	/// Final parse: complete input required, double quotes close strictly.
+	Strict,
+	/// Mid-stream snapshot ([`crate::parse_streaming`]): incomplete tokens
+	/// tolerated and unescaped inner double quotes recovered for display.
+	Streaming,
+	/// Incoming typed pulls: incomplete tokens tolerated, but double quotes
+	/// close strictly so pulled values match the final parse.
+	Incoming,
+}
+
+impl Mode {
+	/// Truncated tokens roll back or report progress instead of erroring.
+	const fn incomplete_ok(self) -> bool {
+		!matches!(self, Self::Strict)
+	}
+
+	/// An unescaped inner `"` is recovered as literal string content.
+	const fn dq_recovery(self) -> bool {
+		matches!(self, Self::Streaming)
+	}
+}
+
+/// Cursor over the input with the tolerant token readers; [`Mode`] selects
+/// how truncation and unescaped inner double quotes are treated.
 pub struct Parser<'a> {
-	src:     &'a str,
-	s:       &'a [u8],
-	i:       usize,
-	lenient: bool,
+	src:  &'a str,
+	s:    &'a [u8],
+	i:    usize,
+	mode: Mode,
 }
 
 impl<'a> Parser<'a> {
-	pub(crate) const fn new(src: &'a str, lenient: bool) -> Self {
-		Self { src, s: src.as_bytes(), i: 0, lenient }
+	pub(crate) const fn new(src: &'a str, mode: Mode) -> Self {
+		Self { src, s: src.as_bytes(), i: 0, mode }
 	}
 
 	pub(crate) const fn pos(&self) -> usize {
@@ -105,44 +180,29 @@ impl<'a> Parser<'a> {
 
 	/// Skip whitespace plus `//` line and `/* */` block comments.
 	pub(crate) fn ws(&mut self) {
-		let s = self.s;
-		let n = s.len();
-		loop {
-			while self.i < n && is_whitespace(s[self.i]) {
-				self.i += 1;
-			}
-			if self.i + 1 < n && s[self.i] == b'/' {
-				match s[self.i + 1] {
-					b'/' => {
-						self.i += 2;
-						while self.i < n && s[self.i] != b'\n' {
-							self.i += 1;
-						}
-						continue;
-					},
-					b'*' => {
-						self.i += 2;
-						while self.i + 1 < n && !(s[self.i] == b'*' && s[self.i + 1] == b'/') {
-							self.i += 1;
-						}
-						self.i = (self.i + 2).min(n);
-						continue;
-					},
-					_ => {},
-				}
-			}
-			break;
-		}
+		self.i = skip_insignificant(self.s, self.i);
 	}
 
 	/// Read a string starting at the opening `quote`. Borrowed (zero-copy)
 	/// when the literal needs no unescaping.
 	pub(crate) fn string(&mut self, quote: u8) -> Result<CowStr<'a>, ParseError> {
+		Ok(self.string_progress(quote)?.value)
+	}
+
+	/// Read a string and retain the information an incremental consumer needs.
+	///
+	/// `stable_len` excludes output whose meaning can change when more bytes
+	/// arrive: a trailing split escape, or everything from a quote whose
+	/// close/inner reading is still undecidable at the buffer edge. Complete
+	/// parsers ignore it; the incoming cursor uses it to emit only chunks
+	/// that are guaranteed prefixes of the final decoded string.
+	pub(crate) fn string_progress(&mut self, quote: u8) -> Result<StringProgress<'a>, ParseError> {
 		let s = self.s;
 		let n = s.len();
 		let mut i = self.i + 1; // skip opening quote
 		let mut out: Option<StrMut> = None;
 		let mut run_start = i;
+		let mut unstable_from = None;
 		while i < n {
 			let b = s[i];
 			if b != b'\\' && b != quote {
@@ -151,23 +211,44 @@ impl<'a> Parser<'a> {
 			}
 			if b == quote {
 				// Apostrophe / inner-quote recovery (a quote that isn't followed by a
-				// value terminator is literal) is safe for single quotes and in
-				// lenient (streaming) mode. For double quotes in strict mode, close on
-				// the first unescaped quote like standard JSON so malformed structure
-				// fails loudly instead of silently swallowing commas/colons.
-				if (quote != b'\'' && !self.lenient) || self.closes_string(i + 1) {
-					self.i = i + 1;
-					return Ok(finish(out, &self.src[run_start..i]));
+				// value terminator is literal) is always safe for single quotes; for
+				// double quotes it is Streaming-only display leniency. Elsewhere
+				// double quotes close on the first unescaped quote like standard
+				// JSON, so malformed structure fails loudly instead of silently
+				// swallowing commas/colons or sibling members.
+				let look = if quote != b'\'' && !self.mode.dq_recovery() {
+					QuoteLook::Closes
+				} else {
+					self.quote_lookahead(i + 1)
+				};
+				match look {
+					QuoteLook::Closes => {
+						self.i = i + 1;
+						let value = finish(out, &self.src[run_start..i]);
+						let stable_len = value.len();
+						return Ok(StringProgress { value, stable_len, complete: true });
+					},
+					// A lone `/` at the buffer edge may grow into a comment, flipping
+					// this quote from inner to closing — nothing from the quote on is
+					// stable yet.
+					QuoteLook::Undecided => {
+						if unstable_from.is_none() {
+							unstable_from = Some(out.as_ref().map_or(0, |o| o.len()) + (i - run_start));
+						}
+					},
+					// Unescaped inner quote (e.g. apostrophe in `'it's'`) — literal.
+					QuoteLook::Inner => {},
 				}
-				// Unescaped inner quote (e.g. apostrophe in `'it's'`) — keep it literal.
 				i += 1;
 				continue;
 			}
 			// Backslash escape.
 			let out = out.get_or_insert_default();
 			out.push_str(&self.src[run_start..i]);
+			let escape_output_start = out.len();
 			i += 1;
 			if i >= n {
+				unstable_from = Some(escape_output_start);
 				out.push('\\');
 				run_start = i;
 				break;
@@ -201,11 +282,21 @@ impl<'a> Parser<'a> {
 							);
 							i += 6;
 						} else {
+							// A high surrogate at the streaming edge may acquire its low
+							// surrogate in the next fragment, so do not emit it yet.
+							if self.mode.incomplete_ok() && (0xd800..0xdc00).contains(&unit) && i + 7 > n {
+								unstable_from = Some(escape_output_start);
+							}
 							// Lone surrogate: representable in a JS string, not in Rust.
 							out.push('\u{FFFD}');
 						}
 					},
-					None => out.push_str("\\u"), // invalid \u — keep literal
+					None => {
+						if i + 5 > n {
+							unstable_from = Some(escape_output_start);
+						}
+						out.push_str("\\u"); // invalid \u — keep literal
+					},
 				},
 				_ => {
 					// Invalid escape — keep the backslash and the escaped char literal.
@@ -221,21 +312,26 @@ impl<'a> Parser<'a> {
 			i += 1;
 			run_start = i;
 		}
-		// Unterminated string: keep the content in lenient mode, fail strict.
-		if self.lenient {
+		// Unterminated string: report progress when truncation is tolerated.
+		if self.mode.incomplete_ok() {
 			self.i = i;
-			return Ok(finish(out, &self.src[run_start..n]));
+			let value = finish(out, &self.src[run_start..n]);
+			let stable_len = unstable_from.unwrap_or_else(|| value.len());
+			return Ok(StringProgress { value, stable_len, complete: false });
 		}
 		Err(ParseError::UnterminatedString)
 	}
 
-	/// A quote closes a string only when the next non-space char ends a value.
-	fn closes_string(&self, from: usize) -> bool {
-		let mut k = from;
-		while k < self.s.len() && is_whitespace(self.s[k]) {
-			k += 1;
+	/// Classify the lookahead after a candidate closing quote: a quote closes
+	/// a string only when the next significant char (past whitespace and
+	/// comments) ends a value.
+	fn quote_lookahead(&self, from: usize) -> QuoteLook {
+		let k = skip_insignificant(self.s, from);
+		match self.s.get(k) {
+			None | Some(b',' | b'}' | b']' | b':') => QuoteLook::Closes,
+			Some(b'/') if self.mode.incomplete_ok() && k + 1 == self.s.len() => QuoteLook::Undecided,
+			Some(_) => QuoteLook::Inner,
 		}
-		matches!(self.s.get(k), None | Some(b',' | b'}' | b']' | b':'))
 	}
 
 	/// Read a numeric token. `Ok(None)` (lenient mode only) marks a malformed
@@ -251,7 +347,7 @@ impl<'a> Parser<'a> {
 		}
 		match parse_number_token(&self.src[start..self.i]) {
 			Some(number) => Ok(Some(number)),
-			None if self.lenient => Ok(None),
+			None if self.mode.incomplete_ok() => Ok(None),
 			None => Err(ParseError::InvalidNumber(start)),
 		}
 	}

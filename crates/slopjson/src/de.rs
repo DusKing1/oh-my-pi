@@ -15,15 +15,15 @@ use serde::{
 
 use crate::{
 	error::ParseError,
-	parser::{Atom, MAX_DEPTH, Parser},
+	parser::{Atom, MAX_DEPTH, Mode, Parser},
 	value::Value,
 };
 
-/// Deserialize `T` from tolerant JSON: strict JSON plus the malformations
-/// LLM tool-call bodies leak in practice.
+/// Deserialize `T` from tolerant JSON: strict JSON plus malformations commonly
+/// produced by language models.
 ///
-/// Truncated input, trailing garbage, and non-finite numbers still fail, so
-/// a bad tool call is skipped rather than half-executed.
+/// Truncated input, trailing garbage, and non-finite numbers still fail rather
+/// than yielding a partially trusted value.
 pub fn from_str<'de, T: serde::Deserialize<'de>>(json: &'de str) -> Result<T, ParseError> {
 	let mut de = Deserializer::new(json);
 	let value = T::deserialize(&mut de)?;
@@ -54,7 +54,11 @@ impl<'de> Deserializer<'de> {
 	/// Deserializer over `json` positioned at the start; does not verify
 	/// trailing content — call [`end`](Self::end) after the value.
 	pub const fn new(json: &'de str) -> Self {
-		Self { p: Parser::new(json, false), depth: 0, allow_bareword: false }
+		Self {
+			p:              Parser::new(json, Mode::Strict),
+			depth:          0,
+			allow_bareword: false,
+		}
 	}
 
 	/// Verify nothing but whitespace/comments remains.
@@ -143,8 +147,8 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
 				CowStr::Owned(text) => visitor.visit_str(text.as_str()),
 			},
 			b'-' | b'+' | b'.' | b'0'..=b'9' => {
-				// JS-only NaN / Infinity are deliberately not accepted: a tool must
-				// not execute with a non-finite numeric arg.
+				// JS-only NaN / Infinity are deliberately not accepted because JSON
+				// cannot represent non-finite numbers.
 				let number = self
 					.p
 					.number()?

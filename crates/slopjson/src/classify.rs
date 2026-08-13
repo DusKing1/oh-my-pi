@@ -50,20 +50,16 @@ const fn dead() -> Scan {
 
 /// Classify `text` as a strict-JSON value, prefix, or dead end.
 ///
-/// Providers use this to disambiguate identifierless streaming tool-call
-/// deltas: a chunk starting with `{` is a *new* sibling call only if the
-/// current call's argument buffer cannot absorb it — the buffer is already a
-/// complete value, already unsalvageable (lossy hosts abandon buffers
-/// mid-string, leaving raw control characters strict JSON forbids), or the
-/// concatenation would break it. Unlike
-/// [`parse_streaming_json`](crate::parse_streaming_json) this is deliberately
-/// strict: forgiving repair would mask exactly the corruption signals the
-/// caller needs.
+/// Streaming decoders can use this to decide whether a fragment extends the
+/// current JSON buffer: concatenation is impossible when the buffer is already
+/// a complete value, already unsalvageable, or the appended bytes make it a
+/// dead end. Unlike [`parse_streaming`](crate::parse_streaming), this is
+/// deliberately strict: forgiving repair would mask exactly the corruption
+/// signals the caller needs.
 ///
 /// A top-level number at end-of-input classifies as
-/// [`Complete`](JsonPrefixState::Complete) even though more digits could
-/// extend it; tool-argument buffers are always objects, so the ambiguity is
-/// immaterial here.
+/// [`Complete`](JsonPrefixState::Complete) even though more digits could extend
+/// it; consumers that permit top-level scalars must account for that ambiguity.
 pub fn classify_json_prefix(text: &str) -> JsonPrefixState {
 	Classifier { s: text.as_bytes(), i: 0 }.run()
 }
