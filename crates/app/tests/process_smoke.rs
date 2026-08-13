@@ -42,6 +42,7 @@ fn all_executable_command_paths_parse_with_omp_names() {
 		vec!["omp", "serve", "--endpoint", endpoint],
 		vec!["omp", "infer", "--model", "model", "--prompt", "hello"],
 		vec!["omp", "auth", "list"],
+		vec!["omp", "envd"],
 		vec![
 			"omp",
 			"catalog",
@@ -60,6 +61,7 @@ fn all_executable_command_paths_parse_with_omp_names() {
 		let parsed = OmpCli::try_parse_from(args).expect("OMP command parses");
 		match parsed.command {
 			Command::Serve(_)
+			| Command::Envd(_)
 			| Command::Infer(_)
 			| Command::Auth(_)
 			| Command::Catalog(_)
