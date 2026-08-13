@@ -1575,10 +1575,13 @@ pub mod compiler {
 					}
 					let location = ScriptLocation::at_position(lines, line);
 					let mut path = read_file_path(lines, line)?;
-					if let Some(cwd) = cwd
-						&& path.is_relative()
-					{
-						path = cwd.join(path);
+					if let Some(cwd) = cwd {
+						let normalized = omp_shell_engine::sys::fs::normalize_shell_path(&path);
+						path = if normalized.is_absolute() {
+							normalized.into_owned()
+						} else {
+							cwd.join(normalized)
+						};
 					}
 					subst.write_file = Some(NamedWriter::new(path, location)?);
 					return Ok(()); // 'w' is the last flag allowed
@@ -1658,9 +1661,12 @@ pub mod compiler {
 			return compilation_error(lines, line, ERR_SANDBOX);
 		}
 		let mut path = read_file_path(lines, line)?;
-		if path.is_relative() {
-			path = context.cwd.join(path);
-		}
+		let normalized = omp_shell_engine::sys::fs::normalize_shell_path(&path);
+		path = if normalized.is_absolute() {
+			normalized.into_owned()
+		} else {
+			context.cwd.join(normalized)
+		};
 		cmd.data = CommandData::Path(path);
 		Ok(CommandHandling::Continue)
 	}
@@ -1677,9 +1683,12 @@ pub mod compiler {
 		}
 		let location = ScriptLocation::at_position(lines, line);
 		let mut path = read_file_path(lines, line)?;
-		if path.is_relative() {
-			path = context.cwd.join(path);
-		}
+		let normalized = omp_shell_engine::sys::fs::normalize_shell_path(&path);
+		path = if normalized.is_absolute() {
+			normalized.into_owned()
+		} else {
+			context.cwd.join(normalized)
+		};
 		cmd.data = CommandData::NamedWriter(NamedWriter::new(path, location)?);
 		Ok(CommandHandling::Continue)
 	}
@@ -8937,12 +8946,13 @@ pub mod script_line_provider {
 							line_number: 0,
 						};
 					} else {
-						// resolve `-f`
-						// script files against the shell working directory.
-						let resolved = if p.is_absolute() {
-							p.clone()
+						// Resolve `-f` script files against the shell working directory,
+						// normalizing drive aliases to native drive paths first.
+						let normalized = omp_shell_engine::sys::fs::normalize_shell_path(p);
+						let resolved = if normalized.is_absolute() {
+							normalized.into_owned()
 						} else {
-							self.cwd.join(p)
+							self.cwd.join(normalized)
 						};
 						let file = File::open(resolved)
 							.map_err_context(|| format!("error opening script file {}", p.quote()))?;
@@ -9032,6 +9042,30 @@ pub mod script_line_provider {
 			}
 
 			assert_eq!(lines, vec!["file line 1", "file line 2"]);
+		}
+
+		#[cfg(windows)]
+		#[test]
+		fn test_file_source_resolves_msys_drive_alias() {
+			let mut temp_file = NamedTempFile::new().unwrap();
+			writeln!(temp_file, "aliased line 1").unwrap();
+			writeln!(temp_file, "aliased line 2").unwrap();
+
+			let native = temp_file.path().to_string_lossy().replace('\\', "/");
+			let (drive, tail) = native
+				.split_once(":/")
+				.unwrap_or_else(|| panic!("expected drive-qualified temp path, got {native:?}"));
+			let alias = format!("/{}/{}", drive.to_ascii_lowercase(), tail);
+
+			let input = vec![ScriptValue::PathVal(PathBuf::from(alias))];
+			let mut provider = ScriptLineProvider::new(input);
+
+			let mut lines = Vec::new();
+			while let Some(line) = provider.next_line().unwrap() {
+				lines.push(line.trim_end().to_string());
+			}
+
+			assert_eq!(lines, vec!["aliased line 1", "aliased line 2"]);
 		}
 
 		#[test]

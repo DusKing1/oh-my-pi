@@ -3923,7 +3923,8 @@ struct LsRuntime {
 
 impl LsRuntime {
 	fn resolve(&self, path: impl AsRef<Path>) -> PathBuf {
-		let path = path.as_ref();
+		let normalized_path = omp_shell_engine::sys::fs::normalize_shell_path(path.as_ref());
+		let path = normalized_path.as_ref();
 		if path.is_absolute() {
 			path.to_path_buf()
 		} else {
@@ -5426,6 +5427,23 @@ mod integration_tests {
 		let dir = tempfile::tempdir().unwrap();
 		File::create(dir.path().join("visible-name")).unwrap();
 		let (code, capture) = run_util::<Ls>(&["visible-name"], "", dir.path());
+		assert_eq!(code, 0);
+		assert_eq!(capture.out(), "visible-name\n");
+	}
+
+	#[cfg(windows)]
+	#[test]
+	fn resolves_msys_drive_alias_operands() {
+		let dir = tempfile::tempdir().unwrap();
+		File::create(dir.path().join("visible-name")).unwrap();
+		let native = dir.path().to_string_lossy().replace('\\', "/");
+		let (drive, tail) = native
+			.split_once(":/")
+			.unwrap_or_else(|| panic!("expected drive-qualified temp path, got {native:?}"));
+		let alias = format!("/{}/{}", drive.to_ascii_lowercase(), tail);
+
+		let (code, capture) = run_util::<Ls>(&[&alias], "", dir.path());
+
 		assert_eq!(code, 0);
 		assert_eq!(capture.out(), "visible-name\n");
 	}
