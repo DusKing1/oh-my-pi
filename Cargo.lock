@@ -4490,11 +4490,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "omp-agent"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bytes",
+ "flume",
+ "futures",
+ "hyper-util",
+ "omp-core",
+ "omp-env",
+ "omp-llm-inference",
+ "omp-proto",
+ "omp-storage",
+ "omp-tool",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tower",
+]
+
+[[package]]
 name = "omp-app"
 version = "0.1.0"
 dependencies = [
  "async-stream",
  "async-trait",
+ "blake3",
  "bytes",
  "clap",
  "flume",
@@ -4502,19 +4528,29 @@ dependencies = [
  "http",
  "http-body-util",
  "hyper",
+ "libc",
+ "nix 0.31.3",
+ "omp-agent",
  "omp-core",
+ "omp-docserver",
+ "omp-env",
  "omp-llm-catalog",
  "omp-llm-inference",
  "omp-proto",
+ "omp-py",
  "omp-rpc",
+ "omp-shell-engine",
  "omp-storage",
  "omp-telemetry",
+ "omp-tool",
+ "omp-walker",
  "parking_lot",
  "secrecy",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-util",
  "tonic",
  "tonic-health",
  "tower",
@@ -4659,6 +4695,18 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "omp-env"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "flume",
+ "omp-core",
+ "omp-proto",
+ "parking_lot",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -4962,6 +5010,7 @@ dependencies = [
  "blake3",
  "bytes",
  "omp-core",
+ "omp-proto",
  "pretty_assertions",
  "proptest",
  "serde",
@@ -4989,6 +5038,23 @@ dependencies = [
  "smallvec 2.0.0-alpha.12",
  "thiserror 2.0.20",
  "tracing",
+]
+
+[[package]]
+name = "omp-tool"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "bytes",
+ "flume",
+ "futures",
+ "omp-core",
+ "omp-llm-catalog",
+ "omp-llm-inference",
+ "omp-slopjson",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

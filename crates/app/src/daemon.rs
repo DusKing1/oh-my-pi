@@ -208,10 +208,20 @@ pub fn open_credential_store_with_key_source(
 	Ok(Arc::new(CredentialStore::open(database.as_ref(), key_source)?))
 }
 
+/// Builds the production inference registry over durable daemon state.
 pub async fn production_registry(
 	data_dir: &Path,
 	credential_store: Arc<CredentialStore>,
 ) -> Result<Registry, DaemonError> {
+	production_assembly(data_dir, credential_store)
+		.await
+		.map(|(registry, _)| registry)
+}
+
+async fn production_assembly(
+	data_dir: &Path,
+	credential_store: Arc<CredentialStore>,
+) -> Result<(Registry, ConversationSessionPlanner), DaemonError> {
 	std::fs::create_dir_all(data_dir).map_err(DaemonError::PrepareState)?;
 	let catalog = Arc::new(
 		omp_llm_catalog::snapshot::Catalog::try_embedded()
@@ -330,7 +340,7 @@ pub async fn production_registry(
 		credentials,
 		auth_manager,
 		accounts,
-		sessions,
+		sessions.clone(),
 		WebSocketTransport::new(),
 		google_cca,
 		HttpTransport::new(),
@@ -362,9 +372,10 @@ pub async fn production_registry(
 			},
 		}
 	};
-	Ok(Registry::builder(catalog)
+	let registry = Registry::builder(catalog)
 		.with_builtins(BuiltinConfig::production(dependencies))?
-		.build()?)
+		.build()?;
+	Ok((registry, sessions))
 }
 
 #[derive(Clone, Copy)]
@@ -389,12 +400,55 @@ pub struct DaemonHandle {
 }
 
 impl DaemonHandle {
-	/// Loads the immutable catalog and constructs every built-in route service.
+	/// Loads the immutable catalog and constructs every built-in route service
+	/// with an empty shared tool registry.
 	pub async fn start(config: DaemonConfig) -> Result<Self, DaemonError> {
-		let data_dir = config.data_dir.ok_or(DaemonError::MissingDataDirectory)?;
+		Self::start_with_tool_registry(config, Arc::new(omp_tool::Registry::new())).await
+	}
+
+	/// Starts inference with the same revision registry used by environment
+	/// dispatch in a composed application.
+	pub async fn start_with_tool_registry(
+		config: DaemonConfig,
+		tool_registry: Arc<omp_tool::Registry>,
+	) -> Result<Self, DaemonError> {
+		let data_dir = config
+			.data_dir
+			.clone()
+			.ok_or(DaemonError::MissingDataDirectory)?;
 		std::fs::create_dir_all(&data_dir).map_err(DaemonError::PrepareState)?;
 		let credential_store = open_credential_store(data_dir.join("credentials.db"))?;
-		let registry = production_registry(&data_dir, credential_store).await?;
+		let (registry, sessions) = production_assembly(&data_dir, credential_store).await?;
+		let inference = InferenceRpc::new(registry.clone(), sessions, tool_registry);
+		Self::start_rpc(config, data_dir, registry, inference).await
+	}
+
+	/// Starts the production RPC service set around a deterministic test
+	/// registry while retaining the gateway's real context and replay authority.
+	#[doc(hidden)]
+	pub async fn start_for_test(
+		config: DaemonConfig,
+		registry: Registry,
+		sessions: ConversationSessionPlanner,
+		tool_registry: Arc<omp_tool::Registry>,
+		live_responses: flume::Sender<omp_llm_inference::event::WorkflowResponse>,
+	) -> Result<Self, DaemonError> {
+		let data_dir = config
+			.data_dir
+			.clone()
+			.ok_or(DaemonError::MissingDataDirectory)?;
+		std::fs::create_dir_all(&data_dir).map_err(DaemonError::PrepareState)?;
+		let inference =
+			InferenceRpc::new_for_test(registry.clone(), sessions, tool_registry, live_responses);
+		Self::start_rpc(config, data_dir, registry, inference).await
+	}
+
+	async fn start_rpc(
+		config: DaemonConfig,
+		data_dir: PathBuf,
+		registry: Registry,
+		inference: InferenceRpc,
+	) -> Result<Self, DaemonError> {
 		let routes = registry
 			.catalog()
 			.routes()
@@ -406,7 +460,7 @@ impl DaemonHandle {
 			.map_err(DaemonError::RpcListen)?;
 		let (shutdown, mut rpc_shutdown) = watch::channel(false);
 		let blobs = Arc::new(BlobStore::open(&data_dir)?);
-		let inference = InferenceServer::new(InferenceRpc::new(registry.clone()));
+		let inference = InferenceServer::new(inference);
 		let auth = AuthServer::new(AuthRpc::new(registry.clone()));
 		let blobs = BlobServer::new(BlobRpc::new(blobs));
 		let rpc_task = tokio::spawn(async move {

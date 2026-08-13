@@ -4,11 +4,12 @@ use std::{
 	collections::BTreeMap,
 	pin::Pin,
 	sync::Arc,
-	time::{Duration, SystemTime, UNIX_EPOCH},
+	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use bytes::Bytes;
 use futures::{Stream, StreamExt as _, stream};
+use omp_agent::project_thread_history;
 use omp_core::Str;
 use omp_llm_catalog::{
 	ModelAvailability, ModelKey, ModelSpec, OperationKind, ProviderDef, ProviderId,
@@ -16,27 +17,36 @@ use omp_llm_catalog::{
 use omp_llm_inference::{
 	Client, Registry,
 	answer::{
-		Artifact, ArtifactBody, AudioChunk, GenerationEvent, ImageArtifact, NativeResponse,
-		NativeResponseBody, RealtimeEvent as CanonicalRealtimeEvent, RealtimeInput, SearchResults,
-		TranscriptEvent, UsageReport, UsageWindowKind, VideoArtifact,
+		Artifact, ArtifactBody, AudioChunk, ChatControl, ChatControlError, GenerationEvent,
+		ImageArtifact, NativeResponse, NativeResponseBody, RealtimeEvent as CanonicalRealtimeEvent,
+		RealtimeInput, SearchResults, TranscriptEvent, UsageReport, UsageWindowKind, VideoArtifact,
 	},
 	call::{
-		AudioFormat, Background, CallMeta, ContentPart, CountAccuracy, CountTokensRequest,
-		DetokenizeRequest, Dimensions, EmbedRequest, EmbeddingInput, ImageFormat, ImageQuality,
-		ImageRequest, MediaInput, Message, NativeMethod, NativePath, NativePayload, NativeRequest,
-		NativeResponseFraming, NegotiationPolicy, OpaqueJson, RawJson, RealtimeModality,
-		RealtimeRequest, Role, Sampling, SearchRecency, SearchRequest, Setting, SpeechRequest,
-		Target, TimestampGranularity, TokenizeRequest, ToolChoice, ToolDefinition,
-		TranscriptionRequest, TruncationPolicy, UsageRequest, UsageScope, VideoRequest,
+		AudioFormat, Background, CallMeta, ContentPart, ContextStrategy, CountAccuracy,
+		CountTokensRequest, DetokenizeRequest, Dimensions, EmbedRequest, EmbeddingInput, ImageFormat,
+		ImageQuality, ImageRequest, MediaInput, Message, NativeMethod, NativePath, NativePayload,
+		NativeRequest, NativeResponseFraming, NegotiationPolicy, OpaqueJson, RawJson,
+		RealtimeModality, RealtimeRequest, Role, Sampling, SearchRecency, SearchRequest,
+		SessionRequest, Setting, SpeechRequest, Target, TimestampGranularity, TokenizeRequest,
+		ToolChoice, ToolDefinition, ToolInputConstraint, TranscriptionRequest, TruncationPolicy,
+		UsageRequest, UsageScope, VideoRequest,
 	},
 	error::{Error, ErrorKind},
-	event::{BlockKind, ChatEvent, FinishReason},
-	id::{AccountId, RequestId, ToolCallId},
+	event::{
+		BlockKind, ChatEvent, Completion, FinishReason, InvokeComplete, InvokeInput,
+		WorkflowActionResponse, WorkflowResponse, WorkflowResponseKind,
+	},
+	id::{
+		AccountId, ConversationId, RequestId, Revision as ProviderRevision, ToolCallId,
+		TurnId as ProviderTurnId,
+	},
 	operation::job::{JobCancelError, JobCancellationReceipt},
 	receipt::{Cost, ExecutionBudget, Usage, UsageSource},
 	router::Router,
+	session::{ConversationSessionPlanner, TurnReplay},
 };
-use omp_proto::{inference::v1 as pb, thread::v1 as thread_pb};
+use omp_proto::{inference::v1 as pb, prost::Message as _, thread::v1 as thread_pb};
+use omp_tool::{Registry as ToolRegistry, TOOL_REV_PROP};
 use parking_lot::Mutex;
 use tonic::{Request, Response, Status};
 
@@ -47,16 +57,38 @@ pub type RpcStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 's
 /// OMP RPC schema.
 #[derive(Clone)]
 pub struct InferenceRpc {
-	registry:    Registry,
-	epoch:       Arc<[u8]>,
-	contexts:    Arc<Mutex<BTreeMap<String, RpcContext>>>,
-	generations: Arc<Mutex<BTreeMap<String, RpcGeneration>>>,
+	registry:            Registry,
+	tool_registry:       Arc<ToolRegistry>,
+	sessions:            ConversationSessionPlanner,
+	epoch:               Arc<[u8]>,
+	provider_sessions:   bool,
+	test_live_responses: Option<flume::Sender<WorkflowResponse>>,
+	contexts:            Arc<Mutex<BTreeMap<String, RpcContext>>>,
+	generations:         Arc<Mutex<BTreeMap<String, RpcGeneration>>>,
 }
 
 #[derive(Clone, Default)]
 struct RpcContext {
-	revision: u64,
-	messages: Vec<Message>,
+	revision:              u64,
+	messages:              Vec<Message>,
+	provider_conversation: Option<ConversationId>,
+	provider_revision:     Option<ProviderRevision>,
+	provider_heads:        BTreeMap<u64, ProviderRevision>,
+}
+
+struct ResolvedTurn {
+	request_messages:      Vec<Message>,
+	committed_messages:    Vec<Message>,
+	context_id:            Option<String>,
+	provider_session:      Option<SessionRequest>,
+	provider_conversation: Option<ConversationId>,
+	provider_heads:        BTreeMap<u64, ProviderRevision>,
+}
+
+#[derive(Default)]
+struct TurnProjection {
+	assistant_text: String,
+	output:         Vec<thread_pb::Item>,
 }
 
 #[derive(Clone)]
@@ -68,12 +100,47 @@ struct RpcGeneration {
 }
 
 impl InferenceRpc {
-	/// Creates an RPC projection over one immutable registry generation.
+	/// Creates an RPC projection over one immutable registry generation and the
+	/// same provider-conversation planner installed in its route stack.
 	#[must_use]
-	pub fn new(registry: Registry) -> Self {
+	pub fn new(
+		registry: Registry,
+		sessions: ConversationSessionPlanner,
+		tool_registry: Arc<ToolRegistry>,
+	) -> Self {
+		Self::with_provider_sessions(registry, sessions, tool_registry, true, None)
+	}
+
+	/// Constructs the production RPC projection around a deterministic route
+	/// registry whose route stack does not install provider-session middleware.
+	///
+	/// This is an integration-test seam only. Gateway context, turn replay, and
+	/// duplex projection remain owned by this service.
+	#[doc(hidden)]
+	#[must_use]
+	pub fn new_for_test(
+		registry: Registry,
+		sessions: ConversationSessionPlanner,
+		tool_registry: Arc<ToolRegistry>,
+		live_responses: flume::Sender<WorkflowResponse>,
+	) -> Self {
+		Self::with_provider_sessions(registry, sessions, tool_registry, false, Some(live_responses))
+	}
+
+	fn with_provider_sessions(
+		registry: Registry,
+		sessions: ConversationSessionPlanner,
+		tool_registry: Arc<ToolRegistry>,
+		provider_sessions: bool,
+		test_live_responses: Option<flume::Sender<WorkflowResponse>>,
+	) -> Self {
 		let epoch = format!("{}:{}", registry.catalog_revision(), registry.generation()).into_bytes();
 		Self {
 			registry,
+			tool_registry,
+			sessions,
+			provider_sessions,
+			test_live_responses,
 			epoch: epoch.into(),
 			contexts: Arc::new(Mutex::new(BTreeMap::new())),
 			generations: Arc::new(Mutex::new(BTreeMap::new())),
@@ -153,6 +220,25 @@ impl InferenceRpc {
 		)
 	}
 
+	fn turn_client(
+		&self,
+		target: Target,
+		request: RequestId,
+		session: Option<SessionRequest>,
+	) -> Client<omp_llm_inference::ProviderService, Router> {
+		Client::new(
+			self.registry.service(),
+			Router::new(self.registry.clone(), Duration::from_secs(30)),
+			CallMeta {
+				id: request,
+				target,
+				deadline: None,
+				budget: ExecutionBudget::default(),
+				session,
+			},
+		)
+	}
+
 	fn management_target(
 		&self,
 		provider: Option<&ProviderId>,
@@ -175,16 +261,62 @@ impl InferenceRpc {
 
 	fn resolve_turn_input(
 		&self,
+		turn: ProviderTurnId,
 		input: Option<&pb::turn_request::Input>,
-	) -> Result<(Vec<Message>, Option<String>, u64), Status> {
+	) -> Result<ResolvedTurn, Status> {
+		let strategy = ContextStrategy::Replay;
 		match input {
 			Some(pb::turn_request::Input::Seed(seed)) => {
 				let thread = seed
 					.thread
 					.as_ref()
 					.ok_or_else(|| Status::invalid_argument("Seed.thread is required"))?;
-				let messages = thread_messages(thread)?;
-				Ok((messages, (!seed.context_id.is_empty()).then(|| seed.context_id.clone()), 0))
+				let projected = project_thread_history(thread, &self.tool_registry)
+					.map_err(|error| Status::invalid_argument(error.to_string()))?;
+				let messages = thread_messages(&projected)?;
+				if seed.context_id.is_empty() {
+					return Ok(ResolvedTurn {
+						request_messages:      messages.clone(),
+						committed_messages:    messages,
+						context_id:            None,
+						provider_session:      None,
+						provider_conversation: None,
+						provider_heads:        BTreeMap::new(),
+					});
+				}
+				if self.contexts.lock().contains_key(&seed.context_id) {
+					return Err(Status::aborted("seed context is already held"));
+				}
+				if !self.provider_sessions {
+					return Ok(ResolvedTurn {
+						request_messages:      messages.clone(),
+						committed_messages:    messages,
+						context_id:            Some(seed.context_id.clone()),
+						provider_session:      None,
+						provider_conversation: None,
+						provider_heads:        BTreeMap::new(),
+					});
+				}
+				let root = self
+					.sessions
+					.create_conversation()
+					.map_err(conversation_status)?;
+				let conversation = root.conversation().clone();
+				let revision = root.revision().clone();
+				let provider_session = SessionRequest {
+					conversation: conversation.clone(),
+					revision: revision.clone(),
+					turn,
+					strategy,
+				};
+				Ok(ResolvedTurn {
+					request_messages:      messages.clone(),
+					committed_messages:    messages,
+					context_id:            Some(seed.context_id.clone()),
+					provider_session:      Some(provider_session),
+					provider_conversation: Some(conversation),
+					provider_heads:        BTreeMap::from([(0, revision)]),
+				})
 			},
 			Some(pb::turn_request::Input::Incremental(incremental)) => {
 				let context = incremental
@@ -206,13 +338,81 @@ impl InferenceRpc {
 				if retained > held.revision {
 					return Err(Status::invalid_argument("truncate_to exceeds context head"));
 				}
-				let mut messages = held
+				let projected = project_thread_history(
+					&thread_pb::Thread { items: delta.append.clone() },
+					&self.tool_registry,
+				)
+				.map_err(|error| Status::invalid_argument(error.to_string()))?;
+				let appended = thread_messages(&projected)?;
+				let mut committed_messages = held
 					.messages
-					.into_iter()
+					.iter()
 					.take(retained as usize)
+					.cloned()
 					.collect::<Vec<_>>();
-				messages.extend(items_messages(&delta.append)?);
-				Ok((messages, Some(context.context_id.clone()), retained))
+				committed_messages.extend(appended.iter().cloned());
+				if !self.provider_sessions {
+					return Ok(ResolvedTurn {
+						request_messages: committed_messages.clone(),
+						committed_messages,
+						context_id: Some(context.context_id.clone()),
+						provider_session: None,
+						provider_conversation: None,
+						provider_heads: BTreeMap::new(),
+					});
+				}
+				let (request_messages, conversation, revision, provider_heads) =
+					if (delta.truncate_to.is_none() || retained == held.revision)
+						&& held.provider_heads.contains_key(&retained)
+					{
+						(
+							appended,
+							held.provider_conversation.clone().ok_or_else(|| {
+								Status::internal("held context has no provider conversation")
+							})?,
+							held
+								.provider_revision
+								.clone()
+								.ok_or_else(|| Status::internal("held context has no provider revision"))?,
+							held.provider_heads,
+						)
+					} else if let Some(revision) = held.provider_heads.get(&retained).cloned() {
+						let conversation = self
+							.sessions
+							.fork_conversation(&revision)
+							.map_err(conversation_status)?;
+						(
+							appended,
+							conversation,
+							revision,
+							held
+								.provider_heads
+								.into_iter()
+								.filter(|(head, _)| *head <= retained)
+								.collect(),
+						)
+					} else {
+						let root = self
+							.sessions
+							.create_conversation()
+							.map_err(conversation_status)?;
+						(
+							committed_messages.clone(),
+							root.conversation().clone(),
+							root.revision().clone(),
+							BTreeMap::from([(0, root.revision().clone())]),
+						)
+					};
+				let provider_session =
+					SessionRequest { conversation: conversation.clone(), revision, turn, strategy };
+				Ok(ResolvedTurn {
+					request_messages,
+					committed_messages,
+					context_id: Some(context.context_id.clone()),
+					provider_session: Some(provider_session),
+					provider_conversation: Some(conversation),
+					provider_heads,
+				})
 			},
 			None => Err(Status::invalid_argument("TurnRequest.input is required")),
 		}
@@ -257,18 +457,68 @@ impl pb::inference_server::Inference for InferenceRpc {
 		if open.turn_id.is_empty() {
 			return Err(Status::invalid_argument("TurnRequest.turn_id is required"));
 		}
+		let turn = ProviderTurnId::from(open.turn_id.as_str());
+		if let Some(replay) = self
+			.sessions
+			.turn_replay(&turn)
+			.map_err(conversation_status)?
+		{
+			let output = turn_replay_events(replay, &open)?;
+			return Ok(Response::new(Box::pin(output)));
+		}
+		let request_bytes = Bytes::from(open.encode_to_vec());
 		let params = open
 			.params
 			.as_ref()
 			.ok_or_else(|| Status::invalid_argument("TurnRequest.params is required"))?;
-		let (messages, context_id, base_revision) = self.resolve_turn_input(open.input.as_ref())?;
-		let committed_messages = messages.clone();
-		let chat = chat_request(messages, params)?;
+		let mut resolved = match self.resolve_turn_input(turn.clone(), open.input.as_ref()) {
+			Ok(resolved) => resolved,
+			Err(status) => {
+				let Some(event) = turn_recovery_event(&status) else {
+					return Err(status);
+				};
+				return Ok(Response::new(Box::pin(stream::once(async move { Ok(event) }))));
+			},
+		};
+		let projection = Arc::new(Mutex::new(TurnProjection::default()));
+		let request_id = RequestId::from(open.turn_id.as_str());
+		if resolved.provider_session.is_some() {
+			let replay_projection = Arc::clone(&projection);
+			let replay_context = resolved.context_id.clone();
+			let committed_len = resolved.committed_messages.len();
+			self.sessions.stage_turn_replay(
+				request_id.clone(),
+				turn.clone(),
+				request_bytes.clone(),
+				move |completion| {
+					Ok(Bytes::from(
+						build_turn_outcome(
+							&replay_projection.lock(),
+							completion,
+							replay_context.as_deref(),
+							committed_len,
+						)
+						.encode_to_vec(),
+					))
+				},
+			);
+		}
+		let chat = chat_request(std::mem::take(&mut resolved.request_messages), params)?;
 		let target = self.target(&params.model, OperationKind::Chat)?;
-		let mut client = self.client(target, RequestId::from(open.turn_id.as_str()));
+		let mut client = self.turn_client(target, request_id, resolved.provider_session.clone());
 		let events = client.execute(chat).await.map_err(inference_status)?;
-		let contexts = Arc::clone(&self.contexts);
-		let output = turn_events(events, contexts, context_id, base_revision, committed_messages);
+		let output = turn_events(
+			events,
+			incoming,
+			Arc::clone(&self.contexts),
+			self.sessions.clone(),
+			resolved,
+			turn,
+			request_bytes,
+			projection,
+			Arc::clone(&self.tool_registry),
+			self.test_live_responses.clone(),
+		);
 		Ok(Response::new(Box::pin(output)))
 	}
 
@@ -397,9 +647,28 @@ impl pb::inference_server::Inference for InferenceRpc {
 		if contexts.contains_key(&request.context_id) {
 			return Err(Status::already_exists("fork context already exists"));
 		}
+		let provider_revision = source.provider_heads.get(&at).cloned();
+		let provider_conversation = provider_revision
+			.as_ref()
+			.map(|revision| self.sessions.fork_conversation(revision))
+			.transpose()
+			.map_err(conversation_status)?;
+		let provider_heads = if provider_revision.is_some() {
+			source
+				.provider_heads
+				.iter()
+				.filter(|(head, _)| **head <= at)
+				.map(|(head, revision)| (*head, revision.clone()))
+				.collect()
+		} else {
+			BTreeMap::new()
+		};
 		let fork = RpcContext {
 			revision: at,
 			messages: source.messages.into_iter().take(at as usize).collect(),
+			provider_conversation,
+			provider_revision,
+			provider_heads,
 		};
 		contexts.insert(request.context_id.clone(), fork);
 		Ok(Response::new(pb::ForkResponse { revision: Some(revision(&request.context_id, at)) }))
@@ -1145,6 +1414,20 @@ fn inference_status(error: Error) -> Status {
 	}
 }
 
+fn conversation_status(error: omp_llm_inference::session::ConversationError) -> Status {
+	match error {
+		omp_llm_inference::session::ConversationError::RevisionConflict { .. }
+		| omp_llm_inference::session::ConversationError::TurnConflict(_) => {
+			Status::aborted(error.to_string())
+		},
+		omp_llm_inference::session::ConversationError::UnknownConversation(_)
+		| omp_llm_inference::session::ConversationError::UnknownRevision(_) => {
+			Status::not_found(error.to_string())
+		},
+		_ => Status::internal(error.to_string()),
+	}
+}
+
 fn validate_revision(context: &pb::ContextRef, actual: u64) -> Result<(), Status> {
 	let expected = context
 		.expected
@@ -1170,6 +1453,20 @@ fn revision_token(context: &str, head: u64) -> Vec<u8> {
 	token.extend_from_slice(context.as_bytes());
 	token.extend_from_slice(&head.to_be_bytes());
 	token
+}
+
+/// Exercises the same canonical history and live-definition projection used by
+/// [`InferenceRpc::turn`] without opening a transport.
+#[doc(hidden)]
+pub fn project_provider_turn_for_test(
+	thread: &thread_pb::Thread,
+	params: &pb::ChatParams,
+	tool_registry: &ToolRegistry,
+) -> Result<(thread_pb::Thread, omp_llm_inference::call::ChatRequest), Status> {
+	let projected = project_thread_history(thread, tool_registry)
+		.map_err(|error| Status::invalid_argument(error.to_string()))?;
+	let request = chat_request(thread_messages(&projected)?, params)?;
+	Ok((projected, request))
 }
 
 fn thread_messages(thread: &thread_pb::Thread) -> Result<Vec<Message>, Status> {
@@ -1306,8 +1603,10 @@ fn tool_definition(tool: &pb::ToolDef) -> Result<ToolDefinition, Status> {
 	Ok(ToolDefinition {
 		name:        tool.name.as_str().into(),
 		description: (!tool.description.is_empty()).then(|| tool.description.as_str().into()),
-		parameters:  opaque_json(&tool.schema_json, "ToolDef.schema_json")?,
-		strict:      tool.strict.unwrap_or(false),
+		input:       ToolInputConstraint::JsonSchema {
+			parameters: opaque_json(&tool.schema_json, "ToolDef.schema_json")?,
+			strict:     tool.strict.unwrap_or(false),
+		},
 	})
 }
 
@@ -1429,22 +1728,365 @@ fn proto_cost(cost: Cost) -> pb::Cost {
 	}
 }
 
+fn tool_revision_props(registry: &ToolRegistry, name: &str) -> Option<pb::ValueMap> {
+	let (_, revision) = registry.live_identity(name)?;
+	Some(pb::ValueMap {
+		fields: BTreeMap::from([(TOOL_REV_PROP.to_owned(), pb::Value {
+			kind: Some(pb::value::Kind::String(revision.to_string())),
+		})]),
+	})
+}
+
+fn build_turn_outcome(
+	projection: &TurnProjection,
+	completion: &Completion,
+	context_id: Option<&str>,
+	committed_len: usize,
+) -> pb::Outcome {
+	let mut output = projection.output.clone();
+	if !projection.assistant_text.is_empty() {
+		output.insert(0, thread_pb::Item {
+			seq:           0,
+			created_at_ms: 0,
+			kind:          Some(thread_pb::item::Kind::Message(thread_pb::Message {
+				role:  thread_pb::Role::Assistant as i32,
+				parts: vec![thread_pb::Part {
+					kind: Some(thread_pb::part::Kind::Text(projection.assistant_text.clone())),
+				}],
+			})),
+			props:         None,
+		});
+	}
+	let mut head = u64::try_from(committed_len).unwrap_or(u64::MAX);
+	for item in &mut output {
+		head = head.saturating_add(1);
+		item.seq = head;
+	}
+	pb::Outcome {
+		output,
+		stop: match &completion.reason {
+			FinishReason::Stop | FinishReason::Other(_) => 1,
+			FinishReason::Length => 3,
+			FinishReason::ToolCalls => 2,
+			FinishReason::ContentFilter => 4,
+			FinishReason::Cancelled => 0,
+		},
+		usage: Some(proto_usage(completion.usage)),
+		cost: Some(proto_cost(completion.receipt.cost)),
+		unsupported: Vec::new(),
+		revision: context_id.map(|context| revision(context, head)),
+		provider: completion
+			.receipt
+			.plan
+			.provider
+			.as_ref()
+			.map_or_else(String::new, |value| value.as_str().to_owned()),
+		model: completion
+			.receipt
+			.plan
+			.model
+			.as_ref()
+			.map_or_else(String::new, |value| value.as_str().to_owned()),
+		diagnostics: Vec::new(),
+		upstream_provider: None,
+		duration_ms: Some(
+			completion
+				.receipt
+				.timings
+				.total
+				.as_millis()
+				.try_into()
+				.unwrap_or(u64::MAX),
+		),
+		ttft_ms: completion
+			.receipt
+			.timings
+			.first_frame
+			.map(|value| value.as_millis().try_into().unwrap_or(u64::MAX)),
+		context_snapshot: None,
+		props: None,
+	}
+}
+
+fn turn_replay_events(
+	replay: TurnReplay,
+	request: &pb::TurnRequest,
+) -> Result<impl Stream<Item = Result<pb::TurnEvent, Status>> + Send + 'static, Status> {
+	let stored_request = pb::TurnRequest::decode(replay.request)
+		.map_err(|_| Status::internal("stored turn request is corrupt"))?;
+	if stored_request != *request {
+		return Err(Status::already_exists(
+			"turn_id already committed with a different opening request",
+		));
+	}
+	let outcome = pb::Outcome::decode(replay.outcome)
+		.map_err(|_| Status::internal("stored turn outcome is corrupt"))?;
+	Ok(stream::iter([
+		Ok(pb::TurnEvent {
+			event: Some(pb::turn_event::Event::Accepted(pb::Accepted { replay: true })),
+		}),
+		Ok(pb::TurnEvent { event: Some(pb::turn_event::Event::Outcome(outcome)) }),
+	]))
+}
+
+#[derive(Clone)]
+struct PendingInvocation {
+	kind:       WorkflowResponseKind,
+	deadline:   Option<Instant>,
+	tool_call:  Option<thread_pb::ToolCall>,
+	tool_props: Option<pb::ValueMap>,
+}
+
+enum TurnMux {
+	Event(Option<Result<ChatEvent, Error>>),
+	Frame(Result<Option<pb::TurnFrame>, Status>),
+	Timeout(String),
+}
+async fn route_live_turn_frame(
+	frame: pb::TurnFrame,
+	control: Option<&ChatControl>,
+	test_live_responses: Option<&flume::Sender<WorkflowResponse>>,
+	pending: &mut BTreeMap<String, PendingInvocation>,
+	projection: &Arc<Mutex<TurnProjection>>,
+) -> Result<(), Status> {
+	let mut completion_result = None;
+	let response = match frame.frame {
+		Some(pb::turn_frame::Frame::Input(input)) if !input.invocation_id.is_empty() => {
+			let Some(invocation) = pending.get(&input.invocation_id) else {
+				return Err(Status::invalid_argument("unknown or late invocation_id"));
+			};
+			if invocation.kind != WorkflowResponseKind::Invoke {
+				return Err(Status::invalid_argument(
+					"provider action does not accept incremental invocation input",
+				));
+			}
+			WorkflowResponse::InvokeInput(InvokeInput {
+				invocation: Str::from(input.invocation_id.as_str()),
+				payload:    Bytes::from(input.encode_to_vec()),
+			})
+		},
+		Some(pb::turn_frame::Frame::Complete(complete)) if !complete.invocation_id.is_empty() => {
+			let Some(invocation) = pending.get(&complete.invocation_id).cloned() else {
+				return Err(Status::invalid_argument("unknown or late invocation_id"));
+			};
+			if let (Some(call), Some(result)) =
+				(invocation.tool_call.as_ref(), complete.tool_result.as_ref())
+				&& !result.call_id.is_empty()
+				&& result.call_id != call.id
+			{
+				return Err(Status::invalid_argument(
+					"tool_result.call_id does not match invocation tool_call",
+				));
+			}
+			completion_result = complete.tool_result.clone();
+			match invocation.kind {
+				WorkflowResponseKind::Action => {
+					let (response, is_error) = workflow_action_result(&complete)?;
+					WorkflowResponse::WorkflowActionResponse(WorkflowActionResponse {
+						invocation: Str::from(complete.invocation_id.as_str()),
+						response,
+						is_error,
+					})
+				},
+				WorkflowResponseKind::Invoke => WorkflowResponse::InvokeComplete(InvokeComplete {
+					invocation: Str::from(complete.invocation_id.as_str()),
+					payload:    Bytes::from(complete.encode_to_vec()),
+				}),
+			}
+		},
+		Some(pb::turn_frame::Frame::Open(_)) => {
+			return Err(Status::invalid_argument("Turn open frame may only appear first"));
+		},
+		Some(_) => return Err(Status::invalid_argument("invocation_id is required")),
+		None => return Err(Status::invalid_argument("Turn frame body is required")),
+	};
+	let terminal = response.is_terminal();
+	let invocation_id = response.invocation().as_str().to_owned();
+	if let Some(control) = control {
+		control
+			.submit(response)
+			.await
+			.map_err(|error| match error {
+				ChatControlError::DeadlineExceeded => {
+					Status::deadline_exceeded("invoke deadline exceeded")
+				},
+				ChatControlError::UnknownInvocation => {
+					Status::invalid_argument("unknown or late invocation_id")
+				},
+				ChatControlError::Closed => {
+					Status::failed_precondition("live invocation path is closed")
+				},
+			})?;
+	} else if let Some(responses) = test_live_responses {
+		responses
+			.send_async(response)
+			.await
+			.map_err(|_| Status::failed_precondition("test live invocation observer closed"))?;
+	} else {
+		return Err(Status::failed_precondition(
+			"selected provider does not accept live invocation responses",
+		));
+	}
+	if terminal
+		&& let Some(invocation) = pending.remove(&invocation_id)
+		&& let (Some(call), Some(result)) = (invocation.tool_call, completion_result)
+	{
+		let mut projection = projection.lock();
+		projection.output.push(thread_pb::Item {
+			seq:           0,
+			created_at_ms: 0,
+			kind:          Some(thread_pb::item::Kind::ToolCall(call)),
+			props:         invocation.tool_props,
+		});
+		projection.output.push(thread_pb::Item {
+			seq:           0,
+			created_at_ms: 0,
+			kind:          Some(thread_pb::item::Kind::ToolResult(result)),
+			props:         None,
+		});
+	}
+	Ok(())
+}
+
+fn workflow_action_result(complete: &pb::InvokeComplete) -> Result<(Bytes, bool), Status> {
+	if let Some(result) = complete.tool_result.as_ref() {
+		let mut text = String::new();
+		for part in &result.parts {
+			match part.kind.as_ref() {
+				Some(thread_pb::part::Kind::Text(part)) => text.push_str(part),
+				_ => {
+					return Err(Status::invalid_argument(
+						"workflow action results accept text parts only",
+					));
+				},
+			}
+		}
+		return Ok((Bytes::from(text), result.is_error));
+	}
+	if !complete.vendor.is_empty() {
+		let is_error = complete
+			.status
+			.as_ref()
+			.is_some_and(|status| status.outcome() != pb::exec_status::Outcome::Exited);
+		return Ok((complete.vendor.clone(), is_error));
+	}
+	Err(Status::invalid_argument(
+		"workflow action completion requires tool_result or vendor payload",
+	))
+}
+
+fn turn_recovery_event(status: &Status) -> Option<pb::TurnEvent> {
+	let kind = match status.code() {
+		tonic::Code::Aborted => pb::turn_error::Kind::Conflict,
+		tonic::Code::NotFound => pb::turn_error::Kind::NeedFull,
+		_ => return None,
+	};
+	Some(pb::TurnEvent {
+		event: Some(pb::turn_event::Event::Error(pb::TurnError {
+			kind:           kind as i32,
+			detail:         status.message().to_owned(),
+			actual:         None,
+			unsupported:    Vec::new(),
+			retry_after_ms: 0,
+			diagnostics:    Vec::new(),
+			error_id:       None,
+		})),
+	})
+}
+fn invoke_timeout(invocation_id: &str) -> pb::TurnEvent {
+	pb::TurnEvent {
+		event: Some(pb::turn_event::Event::Error(pb::TurnError {
+			kind:           pb::turn_error::Kind::InvokeTimeout as i32,
+			detail:         format!("invocation {invocation_id} exceeded its completion deadline"),
+			actual:         None,
+			unsupported:    Vec::new(),
+			retry_after_ms: 0,
+			diagnostics:    Vec::new(),
+			error_id:       None,
+		})),
+	}
+}
+
 fn turn_events(
 	mut events: omp_llm_inference::answer::ChatStream,
+	mut incoming: tonic::Streaming<pb::TurnFrame>,
 	contexts: Arc<Mutex<BTreeMap<String, RpcContext>>>,
-	context_id: Option<String>,
-	_base_revision: u64,
-	input_messages: Vec<Message>,
+	sessions: ConversationSessionPlanner,
+	mut resolved: ResolvedTurn,
+	turn: ProviderTurnId,
+	request_bytes: Bytes,
+	projection: Arc<Mutex<TurnProjection>>,
+	tool_registry: Arc<ToolRegistry>,
+	test_live_responses: Option<flume::Sender<WorkflowResponse>>,
 ) -> impl Stream<Item = Result<pb::TurnEvent, Status>> + Send + 'static {
+	let control = events.control();
 	async_stream::try_stream! {
 		yield pb::TurnEvent {
 			event: Some(pb::turn_event::Event::Accepted(pb::Accepted { replay: false })),
 		};
-		let mut assistant_text = String::new();
-		let mut assistant_parts = Vec::<ContentPart>::new();
-		let mut output = Vec::<thread_pb::Item>::new();
-		while let Some(event) = events.next().await {
-			match event.map_err(inference_status)? {
+		let mut pending = BTreeMap::<String, PendingInvocation>::new();
+		let mut incoming_open = true;
+		loop {
+			let event = loop {
+				let next_timeout = pending
+					.iter()
+					.filter_map(|(id, invocation)| invocation.deadline.map(|deadline| (id.clone(), deadline)))
+					.min_by_key(|(_, deadline)| *deadline);
+				let mux = tokio::select! {
+					event = events.next(), if pending.is_empty() || test_live_responses.is_none() => TurnMux::Event(event),
+					frame = incoming.message(), if incoming_open => TurnMux::Frame(frame),
+					invocation_id = async {
+						match next_timeout {
+							Some((invocation_id, deadline)) => {
+								tokio::time::sleep_until(deadline.into()).await;
+								invocation_id
+							},
+							None => std::future::pending().await,
+						}
+					} => TurnMux::Timeout(invocation_id),
+				};
+				match mux {
+					TurnMux::Event(event) => break event,
+					TurnMux::Frame(frame) => match frame? {
+						Some(frame) => {
+							let frame_id = match frame.frame.as_ref() {
+								Some(pb::turn_frame::Frame::Input(input)) => input.invocation_id.clone(),
+								Some(pb::turn_frame::Frame::Complete(complete)) => complete.invocation_id.clone(),
+								_ => String::new(),
+							};
+							if let Err(status) = route_live_turn_frame(
+								frame,
+								control.as_ref(),
+								test_live_responses.as_ref(),
+								&mut pending,
+								&projection,
+							).await {
+								if status.code() == tonic::Code::DeadlineExceeded {
+									yield invoke_timeout(&frame_id);
+									return;
+								}
+								Err(status)?;
+							}
+						},
+						None => incoming_open = false,
+					},
+					TurnMux::Timeout(invocation_id) => {
+						yield invoke_timeout(&invocation_id);
+						return;
+					},
+				}
+			};
+			let Some(event) = event else { break };
+			let event = match event {
+				Ok(event) => event,
+				Err(error) if !pending.is_empty() && error.kind == ErrorKind::DeadlineExceeded => {
+					let invocation_id = pending.keys().next().expect("pending invocation").clone();
+					yield invoke_timeout(&invocation_id);
+					return;
+				},
+				Err(error) => Err(inference_status(error))?,
+			};
+			match event {
 				ChatEvent::Started(_) => {},
 				ChatEvent::BlockStarted { index, kind } => {
 					let kind = match kind {
@@ -1467,7 +2109,7 @@ fn turn_events(
 					};
 				},
 				ChatEvent::TextDelta { index, text } => {
-					assistant_text.push_str(text.as_str());
+					projection.lock().assistant_text.push_str(text.as_str());
 					yield pb::TurnEvent {
 						event: Some(pb::turn_event::Event::PartDelta(pb::PartDelta {
 							index,
@@ -1504,13 +2146,8 @@ fn turn_events(
 				ChatEvent::ToolCallReady { index, call } => {
 					let arguments = serde_json::to_vec(call.arguments.as_value())
 						.map_err(|error| Status::internal(format!("tool arguments serialization failed: {error}")))?;
-					assistant_parts.push(ContentPart::ToolCall {
-						call: call.id.clone(),
-						name: call.name.clone(),
-						arguments: call.arguments.clone(),
-						proof: None,
-					});
-					output.push(thread_pb::Item {
+					let props = tool_revision_props(tool_registry.as_ref(), call.name.as_str());
+					projection.lock().output.push(thread_pb::Item {
 						seq: 0,
 						created_at_ms: 0,
 						kind: Some(thread_pb::item::Kind::ToolCall(thread_pb::ToolCall {
@@ -1523,7 +2160,7 @@ fn turn_events(
 							custom_wire_name: None,
 							provider_metadata: None,
 						})),
-						props: None,
+						props,
 					});
 					yield pb::TurnEvent {
 						event: Some(pb::turn_event::Event::PartEnd(pb::PartEnd {
@@ -1538,61 +2175,127 @@ fn turn_events(
 					))?
 				},
 				ChatEvent::Usage(_) => {},
-				ChatEvent::Completed(completion) => {
-					if !assistant_text.is_empty() {
-						assistant_parts.insert(0, ContentPart::Text {
-							text: assistant_text.as_str().into(),
-							proof: None,
-						});
-						output.insert(0, thread_pb::Item {
-							seq: 0,
-							created_at_ms: 0,
-							kind: Some(thread_pb::item::Kind::Message(thread_pb::Message {
-								role: thread_pb::Role::Assistant as i32,
-								parts: vec![thread_pb::Part {
-									kind: Some(thread_pb::part::Kind::Text(assistant_text.clone())),
-								}],
-							})),
-							props: None,
-						});
+				ChatEvent::WorkflowAction(action) => {
+					if control.is_none() && test_live_responses.is_none() {
+						Err(Status::failed_precondition(
+							"provider emitted a workflow action without a live response path",
+						))?;
 					}
-					let next_revision = if let Some(context_id) = context_id.as_ref() {
-						let mut contexts = contexts.lock();
-						let held = contexts.entry(context_id.clone()).or_default();
-						held.messages = input_messages.clone();
-						held.messages.push(Message {
-							role: Role::Assistant,
-							content: assistant_parts.clone().into(),
-							name: None,
-						});
-						held.revision = held.messages.len() as u64;
-						Some(revision(context_id, held.revision))
+					let invocation_id = action.invocation.as_str().to_owned();
+					if pending.contains_key(&invocation_id) {
+						Err(Status::failed_precondition("provider reused a live invocation_id"))?;
+					}
+					let deadline = action.timeout.map(|timeout| Instant::now() + timeout);
+					let vendor = action.call.is_none().then(|| action.arguments.clone()).unwrap_or_default();
+					let tool_props = action
+						.call
+						.as_ref()
+						.and_then(|_| tool_revision_props(tool_registry.as_ref(), action.name.as_str()));
+					let tool_call = action.call.map(|call| thread_pb::ToolCall {
+						id: call.as_str().to_owned(),
+						name: action.name.as_str().to_owned(),
+						args_json: action.arguments,
+						thought_signature: Bytes::new(),
+						intent: None,
+						raw: None,
+						custom_wire_name: None,
+						provider_metadata: None,
+					});
+					pending.insert(
+						invocation_id.clone(),
+						PendingInvocation {
+							kind: action.response_kind,
+							deadline,
+							tool_call: tool_call.clone(),
+							tool_props,
+						},
+					);
+					yield pb::TurnEvent {
+						event: Some(pb::turn_event::Event::Invoke(pb::Invoke {
+							invocation_id: invocation_id,
+							name: action.name.as_str().to_owned(),
+							tool_call,
+							vendor,
+							timeout_ms: action.timeout.map_or(0, |value| value.as_millis().try_into().unwrap_or(u64::MAX)),
+							props: None,
+						})),
+					};
+				},
+				ChatEvent::WorkflowResume(_) => {},
+				ChatEvent::WorkflowCancelled { invocation } => {
+					let invocation_id = invocation.as_str().to_owned();
+					pending.remove(&invocation_id);
+					yield pb::TurnEvent {
+						event: Some(pb::turn_event::Event::InvokeCancel(pb::InvokeCancel {
+							invocation_id,
+						})),
+					};
+				},
+				ChatEvent::Completed(completion) => {
+					if !pending.is_empty() {
+						Err(Status::failed_precondition(
+							"provider completed with live invocations outstanding",
+						))?;
+					}
+					let outcome = build_turn_outcome(
+						&projection.lock(),
+						&completion,
+						resolved.context_id.as_deref(),
+						resolved.committed_messages.len(),
+					);
+					let provider_revision = if let Some(conversation) =
+						resolved.provider_conversation.as_ref()
+					{
+						Some(
+							sessions
+								.committed_turn(conversation, &turn)
+								.map_err(conversation_status)?
+								.ok_or_else(|| {
+									Status::internal("completed provider turn has no committed revision")
+								})?
+								.revision()
+								.clone(),
+						)
 					} else {
 						None
 					};
+					let committed_context =
+						if let (Some(context_id), Some(next_revision)) =
+							(resolved.context_id.as_ref(), outcome.revision.as_ref())
+						{
+							let mut messages = resolved.committed_messages.clone();
+							messages.extend(items_messages(&outcome.output)?);
+							let head = next_revision.head;
+							if let Some(provider_revision) = provider_revision.as_ref() {
+								resolved.provider_heads.insert(head, provider_revision.clone());
+							}
+							Some((
+								context_id.clone(),
+								RpcContext {
+									revision: head,
+									messages,
+									provider_conversation: resolved.provider_conversation.clone(),
+									provider_revision,
+									provider_heads: std::mem::take(&mut resolved.provider_heads),
+								},
+							))
+						} else {
+							None
+						};
+					if resolved.provider_session.is_none() {
+						sessions
+							.commit_turn_replay(
+								turn.clone(),
+								request_bytes.clone(),
+								Bytes::from(outcome.encode_to_vec()),
+							)
+							.map_err(conversation_status)?;
+					}
+					if let Some((context_id, context)) = committed_context {
+						contexts.lock().insert(context_id, context);
+					}
 					yield pb::TurnEvent {
-						event: Some(pb::turn_event::Event::Outcome(pb::Outcome {
-							output: std::mem::take(&mut output),
-							stop: match completion.reason {
-								FinishReason::Stop | FinishReason::Other(_) => 1,
-								FinishReason::Length => 3,
-								FinishReason::ToolCalls => 2,
-								FinishReason::ContentFilter => 4,
-								FinishReason::Cancelled => 0,
-							} as i32,
-							usage: Some(proto_usage(completion.usage)),
-							cost: Some(proto_cost(completion.receipt.cost)),
-							unsupported: Vec::new(),
-							revision: next_revision,
-							provider: completion.receipt.plan.provider.as_ref().map_or_else(String::new, |value| value.as_str().to_owned()),
-							model: completion.receipt.plan.model.as_ref().map_or_else(String::new, |value| value.as_str().to_owned()),
-							diagnostics: Vec::new(),
-							upstream_provider: None,
-							duration_ms: Some(completion.receipt.timings.total.as_millis().try_into().unwrap_or(u64::MAX)),
-							ttft_ms: completion.receipt.timings.first_frame.map(|value| value.as_millis().try_into().unwrap_or(u64::MAX)),
-							context_snapshot: None,
-							props: None,
-						})),
+						event: Some(pb::turn_event::Event::Outcome(outcome)),
 					};
 				},
 			}
@@ -1917,6 +2620,13 @@ fn realtime_chat_event(event: ChatEvent) -> Result<pb::TurnEvent, Status> {
 			context_snapshot:  None,
 			props:             None,
 		}),
+		ChatEvent::WorkflowAction(_)
+		| ChatEvent::WorkflowResume(_)
+		| ChatEvent::WorkflowCancelled { .. } => {
+			return Err(Status::failed_precondition(
+				"workflow control events require the duplex Turn RPC",
+			));
+		},
 	};
 	Ok(pb::TurnEvent { event: Some(event) })
 }
@@ -2117,4 +2827,87 @@ fn system_time_ms(time: SystemTime) -> u64 {
 		.as_millis()
 		.try_into()
 		.unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+	use futures::StreamExt as _;
+
+	use super::*;
+
+	#[test]
+	fn invocation_timeout_projects_the_dedicated_turn_error_kind() {
+		let event = invoke_timeout("invoke-9");
+		assert!(matches!(
+			event.event,
+			Some(pb::turn_event::Event::Error(pb::TurnError {
+				kind,
+				detail,
+				..
+			})) if kind == pb::turn_error::Kind::InvokeTimeout as i32
+				&& detail.contains("invoke-9")
+		));
+	}
+
+	#[test]
+	fn provider_owned_calls_without_registry_identity_remain_unstamped() {
+		let registry = ToolRegistry::new();
+		assert_eq!(tool_revision_props(&registry, "provider.search"), None);
+	}
+
+	#[test]
+	fn workflow_action_completion_preserves_text_and_error_classification() {
+		let complete = pb::InvokeComplete {
+			invocation_id: "invoke-1".to_owned(),
+			tool_result: Some(thread_pb::ToolResult {
+				parts: vec![
+					thread_pb::Part { kind: Some(thread_pb::part::Kind::Text("first".to_owned())) },
+					thread_pb::Part { kind: Some(thread_pb::part::Kind::Text(" second".to_owned())) },
+				],
+				is_error: true,
+				..Default::default()
+			}),
+			..Default::default()
+		};
+		let (payload, is_error) = workflow_action_result(&complete).expect("text workflow response");
+		assert_eq!(payload.as_ref(), b"first second");
+		assert!(is_error);
+	}
+
+	#[tokio::test]
+	async fn committed_turn_replay_is_exact_and_mismatched_open_is_rejected() {
+		let request = pb::TurnRequest { turn_id: "turn-1".to_owned(), ..Default::default() };
+		let outcome = pb::Outcome { model: "recorded-model".to_owned(), ..Default::default() };
+		let replay = TurnReplay {
+			request: Bytes::from(request.encode_to_vec()),
+			outcome: Bytes::from(outcome.encode_to_vec()),
+		};
+		let events = turn_replay_events(replay.clone(), &request)
+			.expect("matching replay")
+			.collect::<Vec<_>>()
+			.await;
+		assert!(matches!(
+			events.as_slice(),
+			[
+				Ok(pb::TurnEvent {
+					event: Some(pb::turn_event::Event::Accepted(pb::Accepted {
+						replay: true
+					}))
+				}),
+				Ok(pb::TurnEvent {
+					event: Some(pb::turn_event::Event::Outcome(actual))
+				}),
+			] if actual == &outcome
+		));
+		let mismatched = pb::TurnRequest {
+			turn_id: "turn-1".to_owned(),
+			params: Some(pb::ChatParams { model: "different".to_owned(), ..Default::default() }),
+			..Default::default()
+		};
+		let status = match turn_replay_events(replay, &mismatched) {
+			Ok(_) => panic!("mismatched replay payload must be rejected"),
+			Err(status) => status,
+		};
+		assert_eq!(status.code(), tonic::Code::AlreadyExists);
+	}
 }

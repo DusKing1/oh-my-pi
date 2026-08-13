@@ -107,6 +107,7 @@ omp-ar = { path = "crates/ar", version = "0.1.0" }
 omp-ast = { path = "crates/ast", version = "0.1.0" }
 omp-core = { path = "crates/core", version = "0.1.0" }
 omp-docserver = { path = "crates/docserver", version = "0.1.0" }
+omp-env = { path = "crates/env", version = "0.1.0" }
 omp-gui = { path = "crates/gui", version = "0.1.0" }
 omp-hashline = { path = "crates/hashline", version = "0.1.0" }
 omp-llm-catalog = { path = "crates/llm-catalog", version = "0.1.0" }
@@ -120,6 +121,7 @@ omp-shell-engine = { path = "crates/shell-engine", version = "0.1.0" }
 omp-slopjson = { path = "crates/slopjson", version = "0.1.0" }
 omp-storage = { path = "crates/storage", version = "0.1.0" }
 omp-telemetry = { path = "crates/telemetry", version = "0.1.0" }
+omp-tool = { path = "crates/tool", version = "0.1.0" }
 omp-tui = { path = "crates/tui", version = "0.1.0" }
 omp-tui-macros = { path = "crates/tui-macros", version = "0.1.0" }
 omp-voice-kokoro = { path = "crates/voice-kokoro", version = "0.1.0" }

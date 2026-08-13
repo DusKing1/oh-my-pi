@@ -44,6 +44,8 @@ pub struct OmpCli {
 pub enum Command {
 	/// Start the inference gateway on a platform-native local endpoint.
 	Serve(ServeArgs),
+	/// Start the project environment daemon.
+	Envd(EnvdArgs),
 	/// Run one typed operation in process.
 	Infer(InferArgs),
 	/// Manage provider credentials.
@@ -63,6 +65,22 @@ pub struct ServeArgs {
 	/// Override the directory containing daemon state.
 	#[arg(long, value_name = "PATH")]
 	pub data_dir: Option<PathBuf>,
+}
+/// Project environment-daemon options.
+#[derive(Clone, Debug, Args)]
+pub struct EnvdArgs {
+	/// Workspace root exposed by the environment.
+	#[arg(long, value_name = "PATH", default_value = ".")]
+	pub root:             PathBuf,
+	/// Owner-only environment socket. Defaults to `<root>/.omp/env.sock`.
+	#[arg(long, value_name = "PATH")]
+	pub socket:           Option<PathBuf>,
+	/// Document-server socket. Defaults to `<root>/.omp/docserver.sock`.
+	#[arg(long, value_name = "PATH")]
+	pub docserver_socket: Option<PathBuf>,
+	/// Environment state directory. Defaults to `<root>/.omp`.
+	#[arg(long, value_name = "PATH")]
+	pub state_dir:        Option<PathBuf>,
 }
 
 /// Direct typed inference options.
@@ -160,6 +178,7 @@ pub struct LocalInferArgs {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DispatchTarget {
 	Serve,
+	Envd,
 	Infer,
 	Auth,
 	CatalogImport,
@@ -170,6 +189,7 @@ enum DispatchTarget {
 const fn dispatch_target(command: &Command) -> DispatchTarget {
 	match command {
 		Command::Serve(_) => DispatchTarget::Serve,
+		Command::Envd(_) => DispatchTarget::Envd,
 		Command::Infer(_) => DispatchTarget::Infer,
 		Command::Auth(_) => DispatchTarget::Auth,
 		Command::Catalog(CatalogArgs { command: CatalogCommand::Import(_) }) => {
@@ -183,6 +203,7 @@ const fn dispatch_target(command: &Command) -> DispatchTarget {
 pub async fn dispatch(cli: OmpCli) -> crate::Result<()> {
 	match cli.command {
 		Command::Serve(args) => serve(args).await,
+		Command::Envd(args) => crate::envd::run(args).await,
 		Command::Infer(args) => infer(args).await,
 		Command::Auth(args) => auth(args).await,
 		Command::Catalog(CatalogArgs { command: CatalogCommand::Import(args) }) => {
@@ -355,6 +376,7 @@ mod tests {
 	fn parses_every_dispatch_branch() {
 		let cases = [
 			(&["omp", "serve", "--endpoint", TEST_ENDPOINT][..], DispatchTarget::Serve),
+			(&["omp", "envd"][..], DispatchTarget::Envd),
 			(
 				&["omp", "infer", "--model", "provider/model", "--prompt", "hello"][..],
 				DispatchTarget::Infer,

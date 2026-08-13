@@ -10,6 +10,9 @@ pub enum AppError {
 	/// Daemon startup or serving failure.
 	#[error(transparent)]
 	Daemon(#[from] crate::daemon::DaemonError),
+	/// Project environment-daemon startup or serving failure.
+	#[error(transparent)]
+	Environment(#[from] crate::envd::EnvdError),
 	/// RPC communication failure.
 	#[error(transparent)]
 	Rpc(#[from] omp_rpc::Error),
