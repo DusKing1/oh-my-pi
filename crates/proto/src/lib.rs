@@ -39,7 +39,7 @@ pub use prost;
 ///
 /// This is bumped for every wire-visible schema change and is the revision
 /// compared by the `omp.gateway.v1.Hello` handshake.
-pub const SCHEMA_REV: u32 = 3;
+pub const SCHEMA_REV: u32 = 4;
 
 /// Generated packages under the protobuf `omp` namespace.
 pub mod omp {
@@ -193,6 +193,57 @@ pub mod omp {
 			include!(concat!(env!("OUT_DIR"), "/omp.document.v1.rs"));
 		}
 	}
+
+	/// Types generated from `omp.env.v1`: environment invocation, exec, and
+	/// content-addressed blob planes.
+	pub mod env {
+		/// Version 1.
+		pub mod v1 {
+			#![allow(
+				missing_docs,
+				clippy::pedantic,
+				clippy::nursery,
+				reason = "prost/tonic output is machine-generated and cannot follow handwritten \
+				          documentation and style conventions"
+			)]
+			#![allow(
+				clippy::allow_attributes_without_reason,
+				reason = "prost/tonic emits compatibility allow attributes without Rust reason \
+				          metadata"
+			)]
+			#![allow(
+				clippy::large_enum_variant,
+				reason = "prost maps protobuf oneofs directly to enums; boxing would change the \
+				          generated Rust API"
+			)]
+			include!(concat!(env!("OUT_DIR"), "/omp.env.v1.rs"));
+		}
+	}
+
+	/// Types generated from `omp.toolhost.v1`: Python worker stdio protocol.
+	pub mod toolhost {
+		/// Version 1.
+		pub mod v1 {
+			#![allow(
+				missing_docs,
+				clippy::pedantic,
+				clippy::nursery,
+				reason = "prost/tonic output is machine-generated and cannot follow handwritten \
+				          documentation and style conventions"
+			)]
+			#![allow(
+				clippy::allow_attributes_without_reason,
+				reason = "prost/tonic emits compatibility allow attributes without Rust reason \
+				          metadata"
+			)]
+			#![allow(
+				clippy::large_enum_variant,
+				reason = "prost maps protobuf oneofs directly to enums; boxing would change the \
+				          generated Rust API"
+			)]
+			include!(concat!(env!("OUT_DIR"), "/omp.toolhost.v1.rs"));
+		}
+	}
 }
 
-pub use omp::{auth, blob, document, gateway, inference, thread};
+pub use omp::{auth, blob, document, env, gateway, inference, thread, toolhost};

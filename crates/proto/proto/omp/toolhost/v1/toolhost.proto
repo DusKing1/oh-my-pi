@@ -1,0 +1,156 @@
+syntax = "proto3";
+
+package omp.toolhost.v1;
+
+import "omp/inference/v1/common.proto";
+import "omp/inference/v1/inference.proto";
+import "omp/thread/v1/thread.proto";
+
+// Python worker stdio protocol. HostFrame and WorkerFrame are encoded as
+// varint-length-delimited protobuf messages. request_id 0 is reserved for
+// WorkerHello, RegisterTools, and connection-level health traffic; invocation
+// request ids are nonzero and unique while in flight.
+//
+// Evolution rules:
+//   - Receivers skip unknown fields and enum values.
+//   - Experimental extensions use a namespaced ValueMap at tag 15.
+//   - Field numbers are never reused; removed fields are reserved.
+//   - A terminal ToolComplete or ToolAborted fuses an invocation stream.
+
+message WorkerHello {
+  uint32 schema_rev = 1;
+  string python_rev = 2;
+  bytes worker_id = 3;
+  omp.inference.v1.ValueMap props = 15;
+}
+
+// Constraint request retained at registration; the host lowers it against the
+// selected inference route rather than silently discarding unsupported forms.
+enum GrammarSyntax {
+  GRAMMAR_SYNTAX_UNSPECIFIED = 0;
+  GRAMMAR_SYNTAX_LARK = 1;
+  GRAMMAR_SYNTAX_REGEX = 2;
+}
+
+message SchemaConstraint {
+  uint32 priority = 1;
+}
+
+message GrammarConstraint {
+  GrammarSyntax syntax = 1;
+  string definition = 2;
+  uint32 priority = 3;
+}
+
+message ToolConstraint {
+  oneof kind {
+    SchemaConstraint schema = 1;
+    GrammarConstraint grammar = 2;
+  }
+}
+
+// A worker declaration adds revision and constraint identity to the canonical
+// inference tool definition instead of duplicating name/description/schema.
+message ToolDecl {
+  omp.inference.v1.ToolDef definition = 1;
+  string rev = 2;
+  ToolConstraint constraint = 3;
+  omp.inference.v1.ValueMap props = 15;
+}
+
+message RegisterTools {
+  repeated ToolDecl tools = 1;
+  omp.inference.v1.ValueMap props = 15;
+}
+
+// Python workers receive only committed args; speculative ArgText never crosses
+// this boundary.
+message InvokeTool {
+  string call_id = 1;
+  string name = 2;
+  bytes args_json = 3;
+  uint64 deadline_ms = 4;
+  string rev = 5;
+  omp.inference.v1.ValueMap props = 15;
+}
+
+message CancelTool {
+  string call_id = 1;
+  string reason = 2;
+  omp.inference.v1.ValueMap props = 15;
+}
+
+message ToolUpdate {
+  string call_id = 1;
+  bytes json = 2;
+  omp.inference.v1.ValueMap props = 15;
+}
+
+message ToolComplete {
+  string call_id = 1;
+  repeated omp.thread.v1.Part parts = 2;
+  // Exact tool-owned JSON value. The environment wraps it as the value of an
+  // omp-tool Verdict::Ok or Verdict::Fault according to is_error.
+  bytes details_json = 3;
+  bool is_error = 4;
+  omp.inference.v1.ValueMap props = 15;
+}
+
+// Terminal abnormal completion used when the worker can still report a failure.
+// EOF/crash is equivalent for the in-flight call but naturally has no frame.
+message ToolAborted {
+  string call_id = 1;
+  string reason = 2;
+  bool effects_unknown = 3;
+  omp.inference.v1.ValueMap props = 15;
+}
+
+message Ping {
+  uint64 nonce = 1;
+  omp.inference.v1.ValueMap props = 15;
+}
+
+message Pong {
+  uint64 nonce = 1;
+  omp.inference.v1.ValueMap props = 15;
+}
+
+enum ProtocolErrorCode {
+  PROTOCOL_ERROR_CODE_UNSPECIFIED = 0;
+  PROTOCOL_ERROR_CODE_INVALID_ARGUMENT = 1;
+  PROTOCOL_ERROR_CODE_NOT_FOUND = 2;
+  PROTOCOL_ERROR_CODE_UNSUPPORTED = 3;
+  PROTOCOL_ERROR_CODE_INTERNAL = 4;
+  PROTOCOL_ERROR_CODE_BUSY = 5;
+}
+
+message ProtocolError {
+  ProtocolErrorCode code = 1;
+  string message = 2;
+  omp.inference.v1.ValueMap props = 15;
+}
+
+message HostFrame {
+  uint64 request_id = 1;
+  oneof body {
+    InvokeTool invoke_tool = 2;
+    CancelTool cancel_tool = 3;
+    Ping ping = 4;
+  }
+  omp.inference.v1.ValueMap props = 15;
+}
+
+message WorkerFrame {
+  uint64 request_id = 1;
+  oneof body {
+    WorkerHello hello = 2;
+    RegisterTools register_tools = 3;
+    ToolUpdate tool_update = 4;
+    ToolComplete tool_complete = 5;
+    ToolAborted tool_aborted = 6;
+    Pong pong = 7;
+    Ping ping = 8;
+    ProtocolError error = 9;
+  }
+  omp.inference.v1.ValueMap props = 15;
+}
