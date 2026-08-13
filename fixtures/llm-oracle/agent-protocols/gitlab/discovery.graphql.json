@@ -1,0 +1,55 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://gitlab.com/api/graphql",
+    "headers": {
+      "authorization": "Bearer oracle-gitlab-token",
+      "content-type": "application/json"
+    },
+    "body": {
+      "query": "query lsp_aiChatAvailableModels($rootNamespaceId: GroupID!) { aiChatAvailableModels(rootNamespaceId: $rootNamespaceId) { defaultModel { name ref } selectableModels { name ref } pinnedModel { name ref } } }",
+      "variables": {
+        "rootNamespaceId": "gid://gitlab/Group/42"
+      }
+    }
+  },
+  "response": {
+    "data": {
+      "aiChatAvailableModels": {
+        "defaultModel": {
+          "name": "Sonnet",
+          "ref": "claude_sonnet_4_6_vertex"
+        },
+        "selectableModels": [
+          {
+            "name": "Opus",
+            "ref": "claude_opus_4_8"
+          }
+        ],
+        "pinnedModel": {
+          "name": "Sonnet pinned",
+          "ref": "claude_sonnet_4_6_vertex"
+        }
+      }
+    }
+  },
+  "expected_models": [
+    {
+      "id": "gitlab-duo-agent/claude_opus_4_8",
+      "provider_model_id": "claude_opus_4_8",
+      "name": "Opus",
+      "family": "claude",
+      "context_window": 1000000,
+      "max_output_tokens": 0
+    },
+    {
+      "id": "gitlab-duo-agent/claude_sonnet_4_6_vertex",
+      "provider_model_id": "claude_sonnet_4_6_vertex",
+      "name": "Sonnet pinned",
+      "family": "claude",
+      "context_window": 1000000,
+      "max_output_tokens": 0
+    }
+  ],
+  "merge_rule": "selectable, default, then pinned; duplicate refs are replaced by the later entry; output sorted by full model id"
+}

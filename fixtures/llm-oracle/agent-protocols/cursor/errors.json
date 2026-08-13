@@ -1,0 +1,47 @@
+{
+  "cases": [
+    {
+      "input": "turn_without_executor",
+      "expected": {
+        "admission": "rejected",
+        "error_kind": "unsupported"
+      }
+    },
+    {
+      "input": "invocation_deadline",
+      "expected": {
+        "error_kind": "invoke_timeout",
+        "executor_future_dropped": true,
+        "no_committed_completion": true
+      }
+    },
+    {
+      "input": "http_non_success",
+      "expected": {
+        "error_kind": "upstream",
+        "detail_template": "Cursor Connect returned HTTP {status}"
+      }
+    },
+    {
+      "input": "authentication_failure",
+      "expected": {
+        "error_kind": "upstream",
+        "detail": "Cursor authentication failed"
+      }
+    },
+    {
+      "input": "discovery_end_stream_only",
+      "expected": {
+        "error_kind": "transport",
+        "detail": "Cursor discovery returned only an end-stream frame"
+      }
+    },
+    {
+      "input": "discovery_length_overflow",
+      "expected": {
+        "error_kind": "transport",
+        "detail": "Cursor discovery frame length overflow"
+      }
+    }
+  ]
+}

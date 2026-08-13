@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "framing": "websocket",
+  "cases": [
+    {
+      "id": "websocket.continuation.v1",
+      "handshake": {
+        "required_headers": {
+          "authorization": "<redacted:bearer>",
+          "openai-beta": "responses_websockets=2026-02-06",
+          "chatgpt-account-id": "<redacted:account-id>",
+          "x-openai-internal-codex-responses-lite": "true",
+          "x-oai-attestation": "<redacted:attestation>"
+        }
+      },
+      "turns": [
+        {
+          "request": {"type": "response.create", "previous_response_id": null, "new_input_count": 1},
+          "server_frame_types": ["response.created", "response.metadata", "response.output_item.added", "response.output_text.delta", "response.output_item.done", "response.completed"],
+          "response_id": "resp_1",
+          "committed": true,
+          "text": "first"
+        },
+        {
+          "request": {"type": "response.create", "previous_response_id": "resp_1", "new_input_count": 1},
+          "server_frame_types": ["response.created", "response.metadata", "response.output_item.added", "response.output_text.delta", "response.output_item.done", "response.completed"],
+          "response_id": "resp_2",
+          "committed": true,
+          "text": "second"
+        }
+      ]
+    },
+    {
+      "id": "websocket.binary-frame.v1",
+      "frames": [
+        {"opcode": "binary", "payload_hex": "7b2274797065223a22726573706f6e73652e63726561746564222c22726573706f6e7365223a7b226964223a22726573705f62696e227d7d", "canonical": {"kind": "data", "encoding": "json-utf8", "type": "response.created", "response_id": "resp_bin"}},
+        {"opcode": "close", "payload_hex": "03e8", "canonical": {"kind": "close", "code": 1000}}
+      ]
+    },
+    {
+      "id": "websocket.cancellation.v1",
+      "server_frame_types_before_drop": ["response.created", "response.output_item.added"],
+      "body_dropped": true,
+      "expected_client_action": "close-websocket",
+      "expected_server_observation": "eof-close-or-transport-error",
+      "committed": true,
+      "retry_action": "do-not-retry"
+    },
+    {
+      "id": "websocket.pre-output-fallback.v1",
+      "server_frame_types_before_disconnect": [],
+      "committed": false,
+      "websocket_retry_budget": 0,
+      "expected_action": "http-fallback-once",
+      "http_request_previous_response_id": null,
+      "http_response_framing": "sse",
+      "http_response_id": "resp_http"
+    }
+  ]
+}

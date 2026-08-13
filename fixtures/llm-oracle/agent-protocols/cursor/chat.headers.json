@@ -1,0 +1,33 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://cursor.example.invalid/agent.v1.AgentService/Run",
+    "http_version": "2",
+    "headers": {
+      "authorization": "Bearer oracle-cursor-token",
+      "content-type": "application/connect+proto",
+      "connect-protocol-version": "1",
+      "x-ghost-mode": "true",
+      "x-cursor-client-version": "cli-2026.07.23-e383d2b",
+      "x-cursor-client-type": "cli"
+    }
+  },
+  "merge_rules": {
+    "auth_headers_win": true,
+    "protected": [
+      "connection",
+      "keep-alive",
+      "proxy-connection",
+      "transfer-encoding",
+      "upgrade",
+      "http2-settings",
+      "host",
+      "content-length",
+      "content-type",
+      "connect-protocol-version",
+      "x-ghost-mode",
+      "x-cursor-*"
+    ],
+    "te_only_allowed_value": "trailers"
+  }
+}

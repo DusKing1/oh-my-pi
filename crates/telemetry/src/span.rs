@@ -113,13 +113,13 @@ pub struct ChatCost<'a> {
 /// Final provider response used to finish a chat span.
 #[derive(Clone, Copy, Default)]
 pub struct ChatOutcome<'a> {
-	/// Actual response model; pi always records this field.
+	/// Actual response model recorded for every completed request.
 	pub model:             &'a str,
 	/// Provider response identifier.
 	pub response_id:       Option<&'a str>,
 	/// Gateway-reported upstream provider.
 	pub upstream_provider: Option<&'a str>,
-	/// Time to first chunk in milliseconds as reported by `pi-ai`.
+	/// Time to first chunk in milliseconds as reported by inference.
 	pub ttft_ms:           Option<f64>,
 	/// Provider stop reason.
 	pub stop_reason:       Option<&'a str>,
@@ -127,8 +127,7 @@ pub struct ChatOutcome<'a> {
 	pub error_message:     Option<&'a str>,
 	/// Provider-stream failure before a final assistant message existed.
 	///
-	/// When present, only gateway and error attributes are emitted, matching
-	/// pi's `failChatSpan` path.
+	/// When present, only gateway and error attributes are emitted.
 	pub failure:           Option<SpanError<'a>>,
 	/// Usage, omitted when the provider returned none.
 	pub usage:             Option<ChatUsage>,
@@ -430,8 +429,7 @@ fn apply_chat_response_attributes(span: &mut Span, outcome: &ChatOutcome<'_>) {
 	push_span_str(span, gen_ai::RESPONSE_ID, outcome.response_id);
 	push_span_str(span, omp_gen_ai::RESPONSE_UPSTREAM_PROVIDER, outcome.upstream_provider);
 	if let Some(ttft_ms) = outcome.ttft_ms {
-		// pi-ai reports milliseconds; pi divides by 1,000 because this OTEL key is
-		// seconds.
+		// Inference reports milliseconds, while this OpenTelemetry key is seconds.
 		span.set_attribute(KeyValue::new(gen_ai::RESPONSE_TIME_TO_FIRST_CHUNK, ttft_ms / 1_000.0));
 	}
 	if let Some(reason) = outcome.stop_reason.and_then(map_stop_reason) {

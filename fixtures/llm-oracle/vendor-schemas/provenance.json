@@ -1,0 +1,187 @@
+{
+  "providers": {
+    "cursor": {
+      "binding": "archive/llm-legacy/llm-cursor/src/wire.rs",
+      "commit": "b6e01c8a3c836032823e13a404ceca2e968b6411",
+      "compile_roots": [
+        "cursor/agent.proto"
+      ],
+      "files": [
+        {
+          "bytes": 119954,
+          "commit": "b6e01c8a3c836032823e13a404ceca2e968b6411",
+          "path": "cursor/agent.proto",
+          "sha256": "aa6d1715e8ba8309c9049d3d1d9acbea75454f852a82ff22292843c1010ae527",
+          "source_path": "packages/ai/src/providers/cursor/proto/agent.proto"
+        }
+      ],
+      "historical_revisions_considered": [
+        "b6e01c8a3c836032823e13a404ceca2e968b6411",
+        "cdbe7c4ed2cd85174356dad20308fcdd92c83c31",
+        "be32064f6e90e6646d758124704b1e55b6e3f4db",
+        "242f319cfc43d8be2b50690f65d72f9110cbf20e"
+      ],
+      "selection": "Newest historical revision; all 627 messages and 27 enums in the archived wire binding have matching schema declarations, tags, and enum numbers.",
+      "source_root": "packages/ai/src/providers/cursor/proto/"
+    },
+    "devin": {
+      "binding": "archive/llm-legacy/llm-devin/src/wire.rs",
+      "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+      "compile_roots": [
+        "devin/exa/api_server_pb/api_server.proto",
+        "devin/exa/auth_pb/auth.proto",
+        "devin/exa/chat_pb/chat.proto",
+        "devin/exa/codeium_common_pb/codeium_common.proto"
+      ],
+      "files": [
+        {
+          "bytes": 10027,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/buf/validate/validate.proto",
+          "sha256": "321e6ca8a46ac6ef317faf6a3726bfc4448dd56d7c1ebcee65fbe9402c4f5bc3",
+          "source_path": "packages/ai/src/providers/devin/proto/buf/validate/validate.proto"
+        },
+        {
+          "bytes": 6864,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/analytics_pb/analytics.proto",
+          "sha256": "9378e1b95fbaa50d6e6915f5f744b874f783fa13ea5bf054d6f8ec94a728d0b0",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/analytics_pb/analytics.proto"
+        },
+        {
+          "bytes": 82137,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/api_server_pb/api_server.proto",
+          "sha256": "32f5fdcae3d4949f2cd2c75415fd2f15fb8a6f7df0468db58b3d4e3180b8ace2",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/api_server_pb/api_server.proto"
+        },
+        {
+          "bytes": 421,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/auth_pb/auth.proto",
+          "sha256": "ea31cb820c93d01cb0764dbc2ae1e976ed5468f55f29137bf6fa9656d10e5bee",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/auth_pb/auth.proto"
+        },
+        {
+          "bytes": 2065,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/auto_cascade_common_pb/auto_cascade_common.proto",
+          "sha256": "27d56522fce7cf5ae7319c341a3db25d6f3f2310f9c9d18102f68db0bdde2aed",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/auto_cascade_common_pb/auto_cascade_common.proto"
+        },
+        {
+          "bytes": 388,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/bug_checker_pb/bug_checker.proto",
+          "sha256": "26a3348454b4e33206685f2eb589d105203235c1ed8677383c677dd23b193764",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/bug_checker_pb/bug_checker.proto"
+        },
+        {
+          "bytes": 7219,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/cascade_plugins_pb/cascade_plugins.proto",
+          "sha256": "fc47aa8c119b85240b6414b6741ed8a48627fdd87cc63e6a05d02f9ea53c4858",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/cascade_plugins_pb/cascade_plugins.proto"
+        },
+        {
+          "bytes": 13197,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/chat_pb/chat.proto",
+          "sha256": "860536cedb093d1096eaf1996bafde3d80f8f014f3c3429cdf0c80fa89489b68",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/chat_pb/chat.proto"
+        },
+        {
+          "bytes": 5575,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/code_edit/code_edit_pb/code_edit.proto",
+          "sha256": "4cca5a433fd135d21c4680b03bc58859145f40824f2c8c9b0e9eae8a96b08999",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/code_edit/code_edit_pb/code_edit.proto"
+        },
+        {
+          "bytes": 125278,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/codeium_common_pb/codeium_common.proto",
+          "sha256": "dc307da454b4387e32bcd2720f4a0aae009ea3058014b614781d916a276a66ea",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/codeium_common_pb/codeium_common.proto"
+        },
+        {
+          "bytes": 5676,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/context_module_pb/context_module.proto",
+          "sha256": "e50ce8fa819e24a2cdfa21ccfb0e26972a4312ea9b657a7d21f654a4144d89b2",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/context_module_pb/context_module.proto"
+        },
+        {
+          "bytes": 98311,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/cortex_pb/cortex.proto",
+          "sha256": "f4a438e4f300b66d5534b52d7b2bb9d59f7de5dea88b9322f0bbad5d7a19800c",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/cortex_pb/cortex.proto"
+        },
+        {
+          "bytes": 1694,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/diff_action_pb/diff_action.proto",
+          "sha256": "e0abcade7ee30ce9fa970c7f721c8b4a10ed2e7ebd823b9adad7e0f406a1982a",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/diff_action_pb/diff_action.proto"
+        },
+        {
+          "bytes": 12946,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/index_pb/index.proto",
+          "sha256": "b7fe7efb10ff36dabac892e0d9827d7b53a217ade7525c5a2ee2f58110c46f17",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/index_pb/index.proto"
+        },
+        {
+          "bytes": 4896,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/knowledge_base_pb/knowledge_base.proto",
+          "sha256": "4e598b065b01cb91d13db88b687a89dc1909250bf6566c168f43d1b14c8a0ddb",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/knowledge_base_pb/knowledge_base.proto"
+        },
+        {
+          "bytes": 80206,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/language_server_pb/language_server.proto",
+          "sha256": "7e0c6681e47edb421f79fd15c4ed13fb4681541a21e17ee60a183f9fdeefc8f8",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/language_server_pb/language_server.proto"
+        },
+        {
+          "bytes": 15020,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/opensearch_clients_pb/opensearch_clients.proto",
+          "sha256": "da6956d39df75ba78f125f1c42174275aa416836e47c62374e20b91b2b124594",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/opensearch_clients_pb/opensearch_clients.proto"
+        },
+        {
+          "bytes": 3354,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/prompt_pb/prompt.proto",
+          "sha256": "7542a59047371c530fcb40621b06a88d40d749a52eb573b70cdbc8c7dfb4759f",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/prompt_pb/prompt.proto"
+        },
+        {
+          "bytes": 2541,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/reactive_component_pb/reactive_component.proto",
+          "sha256": "129bbcf16266c5a3283bdb0de981afc0384ab9b340506b10fe669d6a700c059b",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/reactive_component_pb/reactive_component.proto"
+        },
+        {
+          "bytes": 3722,
+          "commit": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9",
+          "path": "devin/exa/trust_pb/trust.proto",
+          "sha256": "432a12eb4d304751f5099ad8abd857cb0b90842f9fcae206df2d8eec4af23d37",
+          "source_path": "packages/ai/src/providers/devin/proto/exa/trust_pb/trust.proto"
+        }
+      ],
+      "historical_revisions_considered": [
+        "fc01e3b6cba6e1add44a1613baa891a9b873f8a9"
+      ],
+      "selection": "Newest and only revision in path history; includes every repository-owned transitive import needed by the four schemas defining the archived binding surface. Well-known google/protobuf imports are supplied by protoc.",
+      "source_root": "packages/ai/src/providers/devin/proto/"
+    }
+  },
+  "recovery_method": "Exact blobs recovered from repository history with git show; no schema fields were synthesized.",
+  "schema_version": 1
+}

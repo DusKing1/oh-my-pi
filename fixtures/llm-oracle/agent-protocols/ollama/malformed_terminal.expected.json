@@ -1,0 +1,25 @@
+{
+  "events": [
+    {
+      "type": "part_start",
+      "index": 0,
+      "kind": "text"
+    },
+    {
+      "type": "part_delta",
+      "index": 0,
+      "bytes_utf8": "partial"
+    },
+    {
+      "type": "part_end",
+      "index": 0,
+      "signature_base64": ""
+    },
+    {
+      "type": "error",
+      "kind": "upstream",
+      "detail": "Ollama NDJSON stream ended before a done terminal chunk"
+    }
+  ],
+  "terminal_count": 1
+}

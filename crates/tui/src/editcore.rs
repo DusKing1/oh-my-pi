@@ -2303,14 +2303,14 @@ mod tests {
 	}
 
 	#[test]
-	fn pi_control_a_e_and_u_are_scoped_to_logical_lines() {
+	fn control_a_e_and_u_are_scoped_to_logical_lines() {
 		let mut editor = editor();
 		assert_eq!(editor.insert_text("one\ntwo"), EditOutcome::Changed);
 		assert_eq!(editor.handle_key(Key::Ctrl('a')), EditOutcome::Changed);
 		assert_eq!(editor.buffer.cursor(), 4);
 		assert_eq!(editor.handle_key(Key::Ctrl('e')), EditOutcome::Changed);
 		assert_eq!(editor.buffer.cursor(), 7);
-		// Pi kills only to this line's start, rather than clearing the document.
+		// Ctrl-U kills only to this line's start, rather than clearing the document.
 		assert_eq!(editor.handle_key(Key::Ctrl('u')), EditOutcome::Changed);
 		assert_eq!(editor.text(), "one\n");
 		assert_eq!(editor.handle_key(Key::Ctrl('u')), EditOutcome::Changed);
@@ -2318,7 +2318,7 @@ mod tests {
 	}
 
 	#[test]
-	fn pi_word_motion_keeps_apostrophes_and_hyphens_inside_words() {
+	fn word_motion_keeps_apostrophes_and_hyphens_inside_words() {
 		let mut editor = editor();
 		editor.insert_text("don't foo-bar");
 		assert_eq!(editor.handle(Key::WordLeft), EditOutcome::Changed);
@@ -2330,7 +2330,7 @@ mod tests {
 	}
 
 	#[test]
-	fn pi_word_deletes_merge_logical_lines() {
+	fn word_deletes_merge_logical_lines() {
 		let mut editor = editor();
 		editor.insert_text("first\nsecond");
 		editor.handle(Key::Ctrl('a'));

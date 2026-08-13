@@ -1,0 +1,18 @@
+{
+  "events_observed_before_drop": [
+    {
+      "type": "accepted",
+      "replay": false
+    },
+    {
+      "type": "part_start",
+      "index": 0,
+      "kind": "text"
+    }
+  ],
+  "expected_transport": {
+    "send_close_or_drop_socket": true,
+    "fallback_transport": false,
+    "terminal_event_after_consumer_drop": false
+  }
+}

@@ -1,0 +1,117 @@
+{
+  "events": [
+    {
+      "type": "accepted",
+      "replay": false
+    },
+    {
+      "type": "part_start",
+      "index": 0,
+      "kind": "text"
+    },
+    {
+      "type": "part_delta",
+      "index": 0,
+      "bytes_utf8": "working "
+    },
+    {
+      "type": "part_end",
+      "index": 0,
+      "signature_base64": ""
+    },
+    {
+      "type": "part_start",
+      "index": 1,
+      "kind": "tool_call",
+      "tool_call_id": "req-9",
+      "tool_name": "edit"
+    },
+    {
+      "type": "part_delta",
+      "index": 1,
+      "bytes_utf8": "{\"path\":\"a.rs\"}"
+    },
+    {
+      "type": "part_end",
+      "index": 1,
+      "signature_base64": ""
+    },
+    {
+      "type": "invoke",
+      "invocation_id": "req-9",
+      "name": "edit",
+      "arguments": {
+        "path": "a.rs"
+      },
+      "timeout_ms": 120000
+    },
+    {
+      "type": "attempt",
+      "number": 2,
+      "reason": "GitLab Duo Workflow socket reconnect/resume"
+    },
+    {
+      "type": "part_start",
+      "index": 2,
+      "kind": "text"
+    },
+    {
+      "type": "part_delta",
+      "index": 2,
+      "bytes_utf8": "done"
+    },
+    {
+      "type": "part_end",
+      "index": 2,
+      "signature_base64": ""
+    },
+    {
+      "type": "outcome",
+      "stop_reason": "end_turn",
+      "usage": {
+        "input_tokens": 321,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "accuracy": "estimated"
+      }
+    }
+  ],
+  "outcome_output": [
+    {
+      "type": "message",
+      "role": "assistant",
+      "text": "working "
+    },
+    {
+      "type": "tool_call",
+      "wire_id": "req-9",
+      "canonical_id": "<deterministic mapping of req-9>",
+      "name": "edit",
+      "arguments": {
+        "path": "a.rs"
+      }
+    },
+    {
+      "type": "tool_result",
+      "wire_id": "req-9",
+      "name": "edit",
+      "text": "tool-ok",
+      "is_error": false
+    },
+    {
+      "type": "message",
+      "role": "assistant",
+      "text": "done"
+    }
+  ],
+  "terminal_count": 1,
+  "action_response": {
+    "actionResponse": {
+      "requestID": "req-9",
+      "plainTextResponse": {
+        "response": "tool-ok"
+      }
+    }
+  }
+}

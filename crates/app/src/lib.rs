@@ -9,10 +9,14 @@ use clap::Parser as _;
 
 pub mod agent;
 pub mod auth_backend;
+pub mod auth_rpc;
+pub mod blob_rpc;
 pub mod cli;
 pub mod daemon;
 pub mod discovery;
+pub mod endpoint;
 pub mod error;
+pub mod rpc_adapter;
 
 pub use error::{AppError, Result};
 

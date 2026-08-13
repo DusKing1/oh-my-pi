@@ -1,0 +1,36 @@
+{
+  "models": [
+    {
+      "name": "models/gemini-1.5-flash-001",
+      "baseModelId": "gemini-1.5-flash",
+      "version": "001",
+      "displayName": "Gemini 1.5 Flash",
+      "description": "Fast and versatile multimodal model for scaling across diverse tasks.",
+      "inputTokenLimit": 1048576,
+      "outputTokenLimit": 8192,
+      "supportedGenerationMethods": [
+        "generateContent",
+        "countTokens",
+        "createCachedContent",
+        "batchGenerateContent"
+      ],
+      "temperature": 1,
+      "maxTemperature": 2,
+      "topP": 0.95,
+      "topK": 40
+    },
+    {
+      "name": "models/text-embedding-004",
+      "baseModelId": "text-embedding-004",
+      "version": "004",
+      "displayName": "Text Embedding 004",
+      "description": "Obtain a distributed representation of a text.",
+      "inputTokenLimit": 2048,
+      "outputTokenLimit": 1,
+      "supportedGenerationMethods": [
+        "embedContent"
+      ]
+    }
+  ],
+  "nextPageToken": "page-token-REDACTED"
+}

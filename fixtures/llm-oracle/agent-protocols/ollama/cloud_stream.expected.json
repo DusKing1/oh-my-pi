@@ -1,0 +1,100 @@
+{
+  "normalizations": {
+    "generated_tool_call_id": "<generated-call-id>",
+    "generated_tool_call_id_invariant": "non-empty canonical call id; the same id appears in part_start and outcome"
+  },
+  "events": [
+    {
+      "type": "part_start",
+      "index": 0,
+      "kind": "thinking"
+    },
+    {
+      "type": "part_delta",
+      "index": 0,
+      "bytes_utf8": "Check "
+    },
+    {
+      "type": "part_delta",
+      "index": 0,
+      "bytes_utf8": "tools."
+    },
+    {
+      "type": "part_end",
+      "index": 0,
+      "signature_base64": ""
+    },
+    {
+      "type": "part_start",
+      "index": 1,
+      "kind": "text"
+    },
+    {
+      "type": "part_delta",
+      "index": 1,
+      "bytes_utf8": "It is sunny."
+    },
+    {
+      "type": "part_end",
+      "index": 1,
+      "signature_base64": ""
+    },
+    {
+      "type": "part_start",
+      "index": 2,
+      "kind": "tool_call",
+      "tool_call_id": "<generated-call-id>",
+      "tool_name": "weather"
+    },
+    {
+      "type": "part_delta",
+      "index": 2,
+      "bytes_utf8": "{\"city\":\"Paris\"}"
+    },
+    {
+      "type": "part_end",
+      "index": 2,
+      "signature_base64": ""
+    },
+    {
+      "type": "outcome",
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 21,
+        "output_tokens": 8,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "total_tokens": 29,
+        "accuracy": "exact"
+      }
+    }
+  ],
+  "outcome_output": [
+    {
+      "type": "thinking",
+      "text": "Check tools.",
+      "signature_base64": "",
+      "redacted": false
+    },
+    {
+      "type": "text",
+      "text": "It is sunny."
+    },
+    {
+      "type": "tool_call",
+      "id": "<generated-call-id>",
+      "name": "weather",
+      "arguments": {
+        "city": "Paris"
+      }
+    }
+  ],
+  "terminal_count": 1,
+  "framing": {
+    "media": "application/x-ndjson",
+    "delimiter": "LF",
+    "empty_records": "ignored",
+    "input_chunk_boundaries": "arbitrary; the archived test uses seven-byte chunks",
+    "eof": "emit one upstream error unless a done=true or error record already completed the stream"
+  }
+}

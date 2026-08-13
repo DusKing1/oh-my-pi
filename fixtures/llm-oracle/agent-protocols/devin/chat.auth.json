@@ -1,0 +1,15 @@
+{
+  "request": {
+    "rpc_path": "/exa.api_server_pb.ApiServerService/GetChatMessage",
+    "transport": "Connect-compatible server-streaming protobuf",
+    "credential_location": "protobuf request metadata, applied by sealed auth before dispatch",
+    "synthetic_metadata": {
+      "api_key": "devin-session-token$oracle-api-key",
+      "user_jwt": "oracle-user-jwt"
+    }
+  },
+  "auth_failure": {
+    "kind": "transport",
+    "detail": "Devin authentication failed"
+  }
+}

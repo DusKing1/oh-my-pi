@@ -1,0 +1,12 @@
+{
+  "websocket_url": "ws://127.0.0.1:43123",
+  "headers": {
+    "authorization": "Bearer oracle-gitlab-lease",
+    "x-gitlab-client-type": "node-websocket",
+    "x-gitlab-language-server-version": "8.104.0",
+    "user-agent": "omp/0.1.0",
+    "origin": "http://127.0.0.1:43123"
+  },
+  "origin_rule": "ws becomes http; wss becomes https; retain host and explicit port",
+  "reconnect_rule": "apply authentication independently on every connection attempt"
+}

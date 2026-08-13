@@ -1,6 +1,6 @@
 # omp-voice-kokoro
 
-`omp-voice-kokoro` runs Kokoro-82M text-to-speech inference on [candle](https://github.com/huggingface/candle), with Metal acceleration on macOS. It is a vendored copy of the MIT-licensed `voice-kokoro` crate from [rgbkrk/voice](https://github.com/rgbkrk/voice) (Copyright Kyle Kelley, see `LICENSE`), published under the `omp-` prefix so `omp-llm-local` can depend on it from crates.io.
+`omp-voice-kokoro` runs Kokoro-82M text-to-speech inference on [candle](https://github.com/huggingface/candle), with Metal acceleration on macOS. It is a vendored copy of the MIT-licensed `voice-kokoro` crate from [rgbkrk/voice](https://github.com/rgbkrk/voice) (Copyright Kyle Kelley, see `LICENSE`), published under the `omp-` prefix for use by OMP's local inference backends.
 
 ## Structure
 

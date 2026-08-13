@@ -1,0 +1,19 @@
+{
+  "incremental_chunks": [
+    "{\"agent\":",
+    "\"task\",\"note\":\"initial\",",
+    "\"step\":12}"
+  ],
+  "cumulative_chunks": [
+    "{\"agent\":",
+    "{\"agent\":\"task\",\"note\":\"initial\",",
+    "{\"agent\":\"task\",\"note\":\"initial\",\"step\":12}"
+  ],
+  "expected_arguments_json": "{\"agent\":\"task\",\"note\":\"initial\",\"step\":12}",
+  "stop_precedence": {
+    "wire_stop": "max_tokens",
+    "has_tool_call": true,
+    "canonical_stop": "tool_use"
+  },
+  "delta_rule": "For each tool id, accept both append-only fragments and cumulative prefixes; emit only the newly observed suffix canonically."
+}

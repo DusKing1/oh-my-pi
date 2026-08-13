@@ -1,5 +1,5 @@
-//! Core modules: `TextEncoder`, `ProsodyPredictor`, `DurationEncoder`, `AdaLayerNorm`,
-//! etc.
+//! Core modules: `TextEncoder`, `ProsodyPredictor`, `DurationEncoder`,
+//! `AdaLayerNorm`, etc.
 //!
 //! Ported from kokoro/models.py (`StyleTTS` 2).
 
@@ -45,7 +45,8 @@ impl ChannelsFirstLayerNorm {
 // AdaLayerNorm — style-conditioned layer norm
 // ---------------------------------------------------------------------------
 
-/// Applies layer normalization whose scale and bias are conditioned on a style embedding.
+/// Applies layer normalization whose scale and bias are conditioned on a style
+/// embedding.
 pub struct AdaLayerNorm {
 	fc:       nn::Linear,
 	channels: usize,
@@ -109,7 +110,8 @@ impl AdaLayerNorm {
 // AdaIN1d — adaptive instance normalization
 // ---------------------------------------------------------------------------
 
-/// Normalizes each channel over time, then applies style-conditioned affine parameters.
+/// Normalizes each channel over time, then applies style-conditioned affine
+/// parameters.
 pub struct AdaIN1d {
 	fc:        nn::Linear,
 	_channels: usize,
@@ -242,16 +244,16 @@ impl AdainResBlk1d {
 		let norm2 = AdaIN1d::load(style_dim, dim_out, vb.pp("norm2"))?;
 
 		let conv1x1 = if dim_in == dim_out {
-  			None
-  		} else {
-  			Some(load_weight_norm_conv1d_no_bias(
-  				dim_in,
-  				dim_out,
-  				1,
-  				Default::default(),
-  				vb.pp("conv1x1"),
-  			)?)
-  		};
+			None
+		} else {
+			Some(load_weight_norm_conv1d_no_bias(
+				dim_in,
+				dim_out,
+				1,
+				Default::default(),
+				vb.pp("conv1x1"),
+			)?)
+		};
 
 		let pool = if upsample {
 			let pool_cfg = nn::ConvTranspose1dConfig {
@@ -387,7 +389,8 @@ impl TextEncoder {
 // DurationEncoder — alternating BiLSTM + AdaLayerNorm
 // ---------------------------------------------------------------------------
 
-/// Refines text features with alternating bidirectional LSTMs and adaptive normalization.
+/// Refines text features with alternating bidirectional LSTMs and adaptive
+/// normalization.
 pub struct DurationEncoder {
 	lstms:   Vec<BiLSTM>,
 	norms:   Vec<AdaLayerNorm>,
@@ -413,7 +416,8 @@ impl DurationEncoder {
 		Ok(Self { lstms, norms, d_model, sty_dim })
 	}
 
-	/// Refines channel-first text features using a style embedding and padding mask.
+	/// Refines channel-first text features using a style embedding and padding
+	/// mask.
 	pub fn forward(
 		&self,
 		input: &Tensor,
@@ -428,13 +432,18 @@ impl DurationEncoder {
 
 		// Style expanded to [T, B, sty_dim].
 		let style_frames =
-			style.unsqueeze(0)?.expand(&[sequence_length, batch_size, self.sty_dim])?;
+			style
+				.unsqueeze(0)?
+				.expand(&[sequence_length, batch_size, self.sty_dim])?;
 
 		// Concatenate [features, style] -> [T, B, C+sty_dim].
 		features = Tensor::cat(&[&features, &style_frames], 2)?;
 
 		// Mask: [B, T] -> [T, B, 1].
-		let mask_tbc = mask.transpose(0, 1)?.unsqueeze(2)?.to_dtype(features.dtype())?;
+		let mask_tbc = mask
+			.transpose(0, 1)?
+			.unsqueeze(2)?
+			.to_dtype(features.dtype())?;
 		let inverse_mask_tbc = (1.0 - &mask_tbc)?;
 		features = features.broadcast_mul(&inverse_mask_tbc)?;
 
@@ -468,7 +477,9 @@ impl DurationEncoder {
 
 			// Re-concatenate style: [B, sty_dim, T].
 			let style_channels =
-				style.unsqueeze(2)?.expand(&[batch_size, self.sty_dim, sequence_length])?;
+				style
+					.unsqueeze(2)?
+					.expand(&[batch_size, self.sty_dim, sequence_length])?;
 			features = Tensor::cat(&[&features, &style_channels], 1)?;
 
 			// Mask.
@@ -498,7 +509,8 @@ impl DurationEncoder {
 // ProsodyPredictor
 // ---------------------------------------------------------------------------
 
-/// Predicts phoneme durations, pitch, and noise from encoded text and style features.
+/// Predicts phoneme durations, pitch, and noise from encoded text and style
+/// features.
 pub struct ProsodyPredictor {
 	/// Style-conditioned encoder for duration prediction.
 	pub text_encoder:  DurationEncoder,
@@ -562,17 +574,16 @@ impl ProsodyPredictor {
 
 	/// Predicts pitch and noise contours from aligned encoder features.
 	///
-	/// The returned contours may be longer than the input because their residual blocks upsample.
-	pub fn f0_n_train(
-		&self,
-		encoder_output: &Tensor,
-		style: &Tensor,
-	) -> Result<(Tensor, Tensor)> {
+	/// The returned contours may be longer than the input because their residual
+	/// blocks upsample.
+	pub fn f0_n_train(&self, encoder_output: &Tensor, style: &Tensor) -> Result<(Tensor, Tensor)> {
 		// Shared LSTM needs [B, T, C+style_dim].
 		let sequence_features = encoder_output.transpose(1, 2)?; // [B, T, C]
 		let (batch_size, sequence_length, _channels) = sequence_features.dims3()?;
 		let expanded_style =
-			style.unsqueeze(1)?.expand(&[batch_size, sequence_length, self.style_dim])?;
+			style
+				.unsqueeze(1)?
+				.expand(&[batch_size, sequence_length, self.style_dim])?;
 		let shared_input = Tensor::cat(&[&sequence_features, &expanded_style], 2)?;
 
 		let shared_features = self.shared.forward(&shared_input)?; // [B, T, d_hid]

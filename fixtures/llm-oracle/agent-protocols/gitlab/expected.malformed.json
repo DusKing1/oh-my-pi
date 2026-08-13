@@ -1,0 +1,24 @@
+{
+  "events": [
+    {
+      "type": "accepted",
+      "replay": false
+    },
+    {
+      "type": "error",
+      "kind": "upstream",
+      "detail_prefix": "malformed GitLab Duo Workflow frame:",
+      "diagnostics": [
+        {
+          "provider": "gitlab-duo-agent",
+          "model": "duo-agent",
+          "attempt": 1,
+          "code": "malformed_frame",
+          "retryability": "never"
+        }
+      ]
+    }
+  ],
+  "terminal_count": 1,
+  "socket_closed_by_client": true
+}

@@ -1,0 +1,15 @@
+{
+  "case": "structural_deadline",
+  "input": {
+    "timeout_ms": 1
+  },
+  "expected": {
+    "executor_future_dropped": true,
+    "frames": [
+      {
+        "shell_stream": "start"
+      }
+    ],
+    "no_completion_frames": true
+  }
+}

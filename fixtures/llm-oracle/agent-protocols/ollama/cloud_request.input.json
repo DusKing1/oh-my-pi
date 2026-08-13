@@ -1,0 +1,118 @@
+{
+  "model": "qwen3.5-cloud",
+  "thread": [
+    {
+      "type": "message",
+      "role": "system",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Be precise."
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Describe this image"
+        },
+        {
+          "type": "blob",
+          "sha256_hex": "0707070707070707070707070707070707070707070707070707070707070707",
+          "mime": "image/png",
+          "size": 3,
+          "inline_base64": "AQID"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "thinking",
+          "text": "private chain",
+          "signature_base64": "",
+          "redacted": false
+        },
+        {
+          "type": "text",
+          "text": "I will check."
+        }
+      ]
+    },
+    {
+      "type": "tool_call",
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "name": "weather",
+      "arguments": {
+        "city": "Paris"
+      },
+      "thought_signature_base64": ""
+    },
+    {
+      "type": "tool_result",
+      "call_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "name": "weather",
+      "parts": [
+        {
+          "type": "text",
+          "text": "sunny"
+        }
+      ],
+      "is_error": false
+    }
+  ],
+  "tools": [
+    {
+      "name": "weather",
+      "description": "Look up weather",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ]
+      }
+    },
+    {
+      "name": "unused",
+      "description": "Filtered by named selection",
+      "input_schema": {
+        "type": "object"
+      }
+    }
+  ],
+  "tool_choice": {
+    "mode": "named",
+    "name": "weather",
+    "on_unsupported": "error"
+  },
+  "thinking": {
+    "effort": "high",
+    "on_unsupported": "error"
+  },
+  "sampling": {
+    "max_output_tokens": 100000
+  },
+  "expected_wire_path": "cloud_request.json",
+  "expected_unsupported": [
+    {
+      "what": "thread.assistant.thinking"
+    },
+    {
+      "what": "thread.tool_result.call_id"
+    },
+    {
+      "what": "sampling.max_output_tokens",
+      "action": "clamped"
+    }
+  ]
+}

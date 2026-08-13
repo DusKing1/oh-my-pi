@@ -1,0 +1,1226 @@
+{
+  "interpretation": "binding_conflicts are wire-incompatible or unexplained drift. schema_omissions_from_handwritten_binding are exact fields or enum values present in the recovered vendor schema but intentionally absent from the archived handwritten subset; protobuf unknown-field semantics preserve wire compatibility.",
+  "method": "Descriptor comparison of every archived Rust prost message field tag and enum number against the recovered schemas. oneof tags are counted as represented by the Rust oneof member rather than omitted fields.",
+  "providers": {
+    "cursor": {
+      "binding_conflict_count": 0,
+      "binding_conflicts": [],
+      "matched_binding_enums": 27,
+      "matched_binding_messages": 627,
+      "schema_omission_count": 121,
+      "schema_omissions_from_handwritten_binding": [
+        {
+          "message": "ToolCall",
+          "schema_fields_omitted_from_handwritten_binding": [
+            {
+              "field": "shell_tool_call",
+              "tag": 1
+            },
+            {
+              "field": "delete_tool_call",
+              "tag": 3
+            },
+            {
+              "field": "glob_tool_call",
+              "tag": 4
+            },
+            {
+              "field": "grep_tool_call",
+              "tag": 5
+            },
+            {
+              "field": "read_tool_call",
+              "tag": 8
+            },
+            {
+              "field": "update_todos_tool_call",
+              "tag": 9
+            },
+            {
+              "field": "read_todos_tool_call",
+              "tag": 10
+            },
+            {
+              "field": "edit_tool_call",
+              "tag": 12
+            },
+            {
+              "field": "ls_tool_call",
+              "tag": 13
+            },
+            {
+              "field": "read_lints_tool_call",
+              "tag": 14
+            },
+            {
+              "field": "mcp_tool_call",
+              "tag": 15
+            },
+            {
+              "field": "sem_search_tool_call",
+              "tag": 16
+            },
+            {
+              "field": "create_plan_tool_call",
+              "tag": 17
+            },
+            {
+              "field": "web_search_tool_call",
+              "tag": 18
+            },
+            {
+              "field": "task_tool_call",
+              "tag": 19
+            },
+            {
+              "field": "list_mcp_resources_tool_call",
+              "tag": 20
+            },
+            {
+              "field": "read_mcp_resource_tool_call",
+              "tag": 21
+            },
+            {
+              "field": "apply_agent_diff_tool_call",
+              "tag": 22
+            },
+            {
+              "field": "ask_question_tool_call",
+              "tag": 23
+            },
+            {
+              "field": "fetch_tool_call",
+              "tag": 24
+            },
+            {
+              "field": "switch_mode_tool_call",
+              "tag": 25
+            },
+            {
+              "field": "exa_search_tool_call",
+              "tag": 26
+            },
+            {
+              "field": "exa_fetch_tool_call",
+              "tag": 27
+            },
+            {
+              "field": "generate_image_tool_call",
+              "tag": 28
+            },
+            {
+              "field": "record_screen_tool_call",
+              "tag": 29
+            },
+            {
+              "field": "computer_use_tool_call",
+              "tag": 30
+            },
+            {
+              "field": "write_shell_stdin_tool_call",
+              "tag": 31
+            },
+            {
+              "field": "reflect_tool_call",
+              "tag": 32
+            },
+            {
+              "field": "setup_vm_environment_tool_call",
+              "tag": 33
+            },
+            {
+              "field": "truncated_tool_call",
+              "tag": 34
+            },
+            {
+              "field": "start_grind_execution_tool_call",
+              "tag": 35
+            },
+            {
+              "field": "start_grind_planning_tool_call",
+              "tag": 36
+            },
+            {
+              "field": "pi_read_tool_call",
+              "tag": 61
+            },
+            {
+              "field": "pi_bash_tool_call",
+              "tag": 62
+            },
+            {
+              "field": "pi_edit_tool_call",
+              "tag": 63
+            },
+            {
+              "field": "pi_write_tool_call",
+              "tag": 64
+            },
+            {
+              "field": "pi_grep_tool_call",
+              "tag": 65
+            },
+            {
+              "field": "pi_find_tool_call",
+              "tag": 66
+            },
+            {
+              "field": "pi_ls_tool_call",
+              "tag": 67
+            },
+            {
+              "field": "connect_scm_tool_call",
+              "tag": 68
+            },
+            {
+              "field": "search_conversations_tool_call",
+              "tag": 69
+            }
+          ]
+        },
+        {
+          "message": "ExecServerMessage",
+          "schema_fields_omitted_from_handwritten_binding": [
+            {
+              "field": "shell_args",
+              "tag": 2
+            },
+            {
+              "field": "write_args",
+              "tag": 3
+            },
+            {
+              "field": "delete_args",
+              "tag": 4
+            },
+            {
+              "field": "grep_args",
+              "tag": 5
+            },
+            {
+              "field": "read_args",
+              "tag": 7
+            },
+            {
+              "field": "ls_args",
+              "tag": 8
+            },
+            {
+              "field": "diagnostics_args",
+              "tag": 9
+            },
+            {
+              "field": "request_context_args",
+              "tag": 10
+            },
+            {
+              "field": "mcp_args",
+              "tag": 11
+            },
+            {
+              "field": "shell_stream_args",
+              "tag": 14
+            },
+            {
+              "field": "background_shell_spawn_args",
+              "tag": 16
+            },
+            {
+              "field": "list_mcp_resources_exec_args",
+              "tag": 17
+            },
+            {
+              "field": "read_mcp_resource_exec_args",
+              "tag": 18
+            },
+            {
+              "field": "fetch_args",
+              "tag": 20
+            },
+            {
+              "field": "record_screen_args",
+              "tag": 21
+            },
+            {
+              "field": "computer_use_args",
+              "tag": 22
+            },
+            {
+              "field": "write_shell_stdin_args",
+              "tag": 23
+            },
+            {
+              "field": "execute_hook_args",
+              "tag": 27
+            },
+            {
+              "field": "subagent_args",
+              "tag": 28
+            },
+            {
+              "field": "redacted_read_args",
+              "tag": 29
+            },
+            {
+              "field": "force_background_shell_args",
+              "tag": 30
+            },
+            {
+              "field": "force_background_subagent_args",
+              "tag": 31
+            },
+            {
+              "field": "mcp_state_exec_args",
+              "tag": 36
+            },
+            {
+              "field": "subagent_await_args",
+              "tag": 37
+            },
+            {
+              "field": "smart_mode_classifier_args",
+              "tag": 38
+            },
+            {
+              "field": "canvas_diagnostics_args",
+              "tag": 40
+            },
+            {
+              "field": "shell_allowlist_precheck_args",
+              "tag": 41
+            },
+            {
+              "field": "mcp_allowlist_precheck_args",
+              "tag": 42
+            },
+            {
+              "field": "web_fetch_allowlist_precheck_args",
+              "tag": 43
+            },
+            {
+              "field": "git_diff_request",
+              "tag": 44
+            },
+            {
+              "field": "pi_read_args",
+              "tag": 45
+            },
+            {
+              "field": "pi_bash_args",
+              "tag": 46
+            },
+            {
+              "field": "pi_edit_args",
+              "tag": 47
+            },
+            {
+              "field": "pi_write_args",
+              "tag": 48
+            },
+            {
+              "field": "pi_grep_args",
+              "tag": 49
+            },
+            {
+              "field": "pi_find_args",
+              "tag": 50
+            },
+            {
+              "field": "pi_ls_args",
+              "tag": 51
+            },
+            {
+              "field": "mini_swe_agent_bash_args",
+              "tag": 52
+            },
+            {
+              "field": "conversation_search_args",
+              "tag": 53
+            },
+            {
+              "field": "agent_store_conflict_args",
+              "tag": 54
+            }
+          ]
+        },
+        {
+          "message": "ExecClientMessage",
+          "schema_fields_omitted_from_handwritten_binding": [
+            {
+              "field": "shell_result",
+              "tag": 2
+            },
+            {
+              "field": "write_result",
+              "tag": 3
+            },
+            {
+              "field": "delete_result",
+              "tag": 4
+            },
+            {
+              "field": "grep_result",
+              "tag": 5
+            },
+            {
+              "field": "read_result",
+              "tag": 7
+            },
+            {
+              "field": "ls_result",
+              "tag": 8
+            },
+            {
+              "field": "diagnostics_result",
+              "tag": 9
+            },
+            {
+              "field": "request_context_result",
+              "tag": 10
+            },
+            {
+              "field": "mcp_result",
+              "tag": 11
+            },
+            {
+              "field": "shell_stream",
+              "tag": 14
+            },
+            {
+              "field": "background_shell_spawn_result",
+              "tag": 16
+            },
+            {
+              "field": "list_mcp_resources_exec_result",
+              "tag": 17
+            },
+            {
+              "field": "read_mcp_resource_exec_result",
+              "tag": 18
+            },
+            {
+              "field": "fetch_result",
+              "tag": 20
+            },
+            {
+              "field": "record_screen_result",
+              "tag": 21
+            },
+            {
+              "field": "computer_use_result",
+              "tag": 22
+            },
+            {
+              "field": "write_shell_stdin_result",
+              "tag": 23
+            },
+            {
+              "field": "execute_hook_result",
+              "tag": 27
+            },
+            {
+              "field": "subagent_result",
+              "tag": 28
+            },
+            {
+              "field": "redacted_read_result",
+              "tag": 29
+            },
+            {
+              "field": "force_background_shell_result",
+              "tag": 30
+            },
+            {
+              "field": "force_background_subagent_result",
+              "tag": 31
+            },
+            {
+              "field": "mcp_state_exec_result",
+              "tag": 36
+            },
+            {
+              "field": "subagent_await_result",
+              "tag": 37
+            },
+            {
+              "field": "smart_mode_classifier_result",
+              "tag": 38
+            },
+            {
+              "field": "canvas_diagnostics_result",
+              "tag": 40
+            },
+            {
+              "field": "shell_allowlist_precheck_result",
+              "tag": 41
+            },
+            {
+              "field": "mcp_allowlist_precheck_result",
+              "tag": 42
+            },
+            {
+              "field": "web_fetch_allowlist_precheck_result",
+              "tag": 43
+            },
+            {
+              "field": "git_diff_response",
+              "tag": 44
+            },
+            {
+              "field": "pi_read_result",
+              "tag": 46
+            },
+            {
+              "field": "pi_bash_result",
+              "tag": 47
+            },
+            {
+              "field": "pi_edit_result",
+              "tag": 48
+            },
+            {
+              "field": "pi_write_result",
+              "tag": 49
+            },
+            {
+              "field": "pi_grep_result",
+              "tag": 50
+            },
+            {
+              "field": "pi_find_result",
+              "tag": 51
+            },
+            {
+              "field": "pi_ls_result",
+              "tag": 52
+            },
+            {
+              "field": "conversation_search_result",
+              "tag": 53
+            },
+            {
+              "field": "agent_store_conflict_result",
+              "tag": 54
+            },
+            {
+              "field": "mini_swe_agent_bash_result",
+              "tag": 55
+            }
+          ]
+        }
+      ]
+    },
+    "devin": {
+      "binding_conflict_count": 0,
+      "binding_conflicts": [],
+      "matched_binding_enums": 5,
+      "matched_binding_messages": 18,
+      "schema_omission_count": 158,
+      "schema_omissions_from_handwritten_binding": [
+        {
+          "message": "Metadata",
+          "schema_fields_omitted_from_handwritten_binding": [
+            {
+              "field": "os",
+              "tag": 5
+            },
+            {
+              "field": "disable_telemetry",
+              "tag": 6
+            },
+            {
+              "field": "hardware",
+              "tag": 8
+            },
+            {
+              "field": "request_id",
+              "tag": 9
+            },
+            {
+              "field": "source_address",
+              "tag": 11
+            },
+            {
+              "field": "user_agent",
+              "tag": 13
+            },
+            {
+              "field": "url",
+              "tag": 14
+            },
+            {
+              "field": "auth_source",
+              "tag": 15
+            },
+            {
+              "field": "ls_timestamp",
+              "tag": 16
+            },
+            {
+              "field": "extension_path",
+              "tag": 17
+            },
+            {
+              "field": "user_id",
+              "tag": 20
+            },
+            {
+              "field": "force_team_id",
+              "tag": 22
+            },
+            {
+              "field": "device_fingerprint",
+              "tag": 24
+            },
+            {
+              "field": "trigger_id",
+              "tag": 25
+            },
+            {
+              "field": "plan_name",
+              "tag": 26
+            },
+            {
+              "field": "id",
+              "tag": 27
+            },
+            {
+              "field": "ide_type",
+              "tag": 28
+            },
+            {
+              "field": "impersonate_tier",
+              "tag": 29
+            },
+            {
+              "field": "supported_model_displays",
+              "tag": 30
+            },
+            {
+              "field": "f",
+              "tag": 31
+            },
+            {
+              "field": "team_id",
+              "tag": 32
+            }
+          ]
+        },
+        {
+          "message": "CompletionConfiguration",
+          "schema_fields_omitted_from_handwritten_binding": [
+            {
+              "field": "min_log_probability",
+              "tag": 4
+            },
+            {
+              "field": "seed",
+              "tag": 10
+            },
+            {
+              "field": "use_fim_eot_threshold",
+              "tag": 12
+            },
+            {
+              "field": "do_not_score_stop_tokens",
+              "tag": 13
+            },
+            {
+              "field": "sqrt_len_normalized_log_prob_score",
+              "tag": 14
+            },
+            {
+              "field": "last_message_is_partial",
+              "tag": 15
+            },
+            {
+              "field": "return_logprob",
+              "tag": 16
+            },
+            {
+              "field": "service_tier",
+              "tag": 17
+            }
+          ]
+        },
+        {
+          "message": "ChatToolCall",
+          "schema_fields_omitted_from_handwritten_binding": [
+            {
+              "field": "invalid_json_str",
+              "tag": 4
+            },
+            {
+              "field": "invalid_json_err",
+              "tag": 5
+            },
+            {
+              "field": "is_custom_tool_call",
+              "tag": 6
+            }
+          ]
+        },
+        {
+          "message": "ImageData",
+          "schema_fields_omitted_from_handwritten_binding": [
+            {
+              "field": "caption",
+              "tag": 3
+            }
+          ]
+        },
+        {
+          "message": "ModelUsageStats",
+          "schema_fields_omitted_from_handwritten_binding": [
+            {
+              "field": "model_deprecated",
+              "tag": 1
+            },
+            {
+              "field": "api_provider",
+              "tag": 6
+            },
+            {
+              "field": "message_id",
+              "tag": 7
+            },
+            {
+              "field": "response_header",
+              "tag": 8
+            },
+            {
+              "field": "model_uid",
+              "tag": 9
+            },
+            {
+              "field": "billing_model_uid",
+              "tag": 10
+            },
+            {
+              "field": "requested_model_uid",
+              "tag": 11
+            }
+          ]
+        },
+        {
+          "message": "ChatMessagePrompt",
+          "schema_fields_omitted_from_handwritten_binding": [
+            {
+              "field": "num_tokens",
+              "tag": 4
+            },
+            {
+              "field": "safe_for_code_telemetry",
+              "tag": 5
+            },
+            {
+              "field": "prompt_cache_options",
+              "tag": 8
+            },
+            {
+              "field": "thinking_redacted",
+              "tag": 13
+            },
+            {
+              "field": "prompt_annotation_ranges",
+              "tag": 14
+            },
+            {
+              "field": "output_id",
+              "tag": 15
+            },
+            {
+              "field": "thinking_id",
+              "tag": 16
+            },
+            {
+              "field": "gemini_thought_signature",
+              "tag": 17
+            },
+            {
+              "field": "signature_type",
+              "tag": 18
+            },
+            {
+              "field": "phase",
+              "tag": 19
+            }
+          ]
+        },
+        {
+          "message": "ChatToolDefinition",
+          "schema_fields_omitted_from_handwritten_binding": [
+            {
+              "field": "attribution_field_names",
+              "tag": 5
+            },
+            {
+              "field": "server_name",
+              "tag": 6
+            },
+            {
+              "field": "read_only_hint",
+              "tag": 7
+            },
+            {
+              "field": "computer_use_config",
+              "tag": 8
+            },
+            {
+              "field": "is_custom_tool",
+              "tag": 9
+            },
+            {
+              "field": "custom_tool_grammar",
+              "tag": 10
+            },
+            {
+              "field": "custom_tool_grammar_syntax",
+              "tag": 11
+            }
+          ]
+        },
+        {
+          "message": "GetChatMessageRequest",
+          "schema_fields_omitted_from_handwritten_binding": [
+            {
+              "field": "use_internal_chat_model",
+              "tag": 5
+            },
+            {
+              "field": "internal_chat_model",
+              "tag": 6
+            },
+            {
+              "field": "experiment_config",
+              "tag": 9
+            },
+            {
+              "field": "chat_model_name",
+              "tag": 14
+            },
+            {
+              "field": "trajectory_reference",
+              "tag": 15
+            },
+            {
+              "field": "prompt_id",
+              "tag": 17
+            },
+            {
+              "field": "provider_source",
+              "tag": 18
+            },
+            {
+              "field": "language",
+              "tag": 19
+            },
+            {
+              "field": "arena_converge_count",
+              "tag": 24
+            },
+            {
+              "field": "arena_assignment_jwt",
+              "tag": 25
+            },
+            {
+              "field": "model_assignment_jwt",
+              "tag": 26
+            }
+          ]
+        },
+        {
+          "message": "GetChatMessageResponse",
+          "schema_fields_omitted_from_handwritten_binding": [
+            {
+              "field": "timestamp",
+              "tag": 2
+            },
+            {
+              "field": "delta_tokens",
+              "tag": 4
+            },
+            {
+              "field": "redact",
+              "tag": 8
+            },
+            {
+              "field": "thinking_redacted",
+              "tag": 11
+            },
+            {
+              "field": "latency",
+              "tag": 12
+            },
+            {
+              "field": "completion_profile",
+              "tag": 13
+            },
+            {
+              "field": "credit_cost",
+              "tag": 14
+            },
+            {
+              "field": "output_id",
+              "tag": 15
+            },
+            {
+              "field": "thinking_id",
+              "tag": 16
+            },
+            {
+              "field": "request_id",
+              "tag": 17
+            },
+            {
+              "field": "committed_credit_cost",
+              "tag": 18
+            },
+            {
+              "field": "prompt",
+              "tag": 19
+            },
+            {
+              "field": "gemini_thought_signature",
+              "tag": 20
+            },
+            {
+              "field": "delta_signature_type",
+              "tag": 21
+            },
+            {
+              "field": "committed_acu_cost",
+              "tag": 22
+            },
+            {
+              "field": "actual_model_uid",
+              "tag": 23
+            },
+            {
+              "field": "arena_invocation_cap_reached",
+              "tag": 24
+            },
+            {
+              "field": "phase",
+              "tag": 25
+            },
+            {
+              "field": "committed_quota_cost_basis_points",
+              "tag": 26
+            },
+            {
+              "field": "committed_overage_cost_cents",
+              "tag": 27
+            },
+            {
+              "field": "response_dimension_groups",
+              "tag": 28
+            }
+          ]
+        },
+        {
+          "message": "GetCliModelConfigsResponse",
+          "schema_fields_omitted_from_handwritten_binding": [
+            {
+              "field": "default_override_model_config",
+              "tag": 3
+            }
+          ]
+        },
+        {
+          "message": "ClientModelConfig",
+          "schema_fields_omitted_from_handwritten_binding": [
+            {
+              "field": "model_or_alias",
+              "tag": 2
+            },
+            {
+              "field": "credit_multiplier",
+              "tag": 3
+            },
+            {
+              "field": "supports_legacy",
+              "tag": 6
+            },
+            {
+              "field": "is_premium",
+              "tag": 7
+            },
+            {
+              "field": "beta_warning_message",
+              "tag": 8
+            },
+            {
+              "field": "is_beta",
+              "tag": 9
+            },
+            {
+              "field": "provider",
+              "tag": 10
+            },
+            {
+              "field": "is_recommended",
+              "tag": 11
+            },
+            {
+              "field": "allowed_tiers",
+              "tag": 12
+            },
+            {
+              "field": "pricing_type",
+              "tag": 13
+            },
+            {
+              "field": "api_provider",
+              "tag": 14
+            },
+            {
+              "field": "is_new",
+              "tag": 15
+            },
+            {
+              "field": "partial_rollout",
+              "tag": 16
+            },
+            {
+              "field": "rollout_fraction",
+              "tag": 17
+            },
+            {
+              "field": "promo_status",
+              "tag": 19
+            },
+            {
+              "field": "is_capacity_limited",
+              "tag": 20
+            },
+            {
+              "field": "fast_status",
+              "tag": 21
+            },
+            {
+              "field": "model_cost_tier",
+              "tag": 24
+            },
+            {
+              "field": "description",
+              "tag": 27
+            },
+            {
+              "field": "smart_friend_model_uid",
+              "tag": 29
+            },
+            {
+              "field": "model_family_metadata",
+              "tag": 30
+            },
+            {
+              "field": "is_default_model_in_family",
+              "tag": 31
+            },
+            {
+              "field": "model_dimensions",
+              "tag": 32
+            },
+            {
+              "field": "disabled_reason",
+              "tag": 33
+            }
+          ]
+        },
+        {
+          "message": "ModelInfo",
+          "schema_fields_omitted_from_handwritten_binding": [
+            {
+              "field": "model_id",
+              "tag": 1
+            },
+            {
+              "field": "is_internal",
+              "tag": 2
+            },
+            {
+              "field": "model_type",
+              "tag": 3
+            },
+            {
+              "field": "max_tokens",
+              "tag": 4
+            },
+            {
+              "field": "tokenizer_type",
+              "tag": 5
+            },
+            {
+              "field": "api_provider",
+              "tag": 7
+            },
+            {
+              "field": "model_name",
+              "tag": 8
+            },
+            {
+              "field": "supports_context",
+              "tag": 9
+            },
+            {
+              "field": "embed_dim",
+              "tag": 10
+            },
+            {
+              "field": "base_url",
+              "tag": 11
+            },
+            {
+              "field": "chat_model_name",
+              "tag": 12
+            },
+            {
+              "field": "prompt_templater_type",
+              "tag": 14
+            },
+            {
+              "field": "tool_formatter_type",
+              "tag": 15
+            },
+            {
+              "field": "model_uid",
+              "tag": 17
+            },
+            {
+              "field": "inference_server_url",
+              "tag": 18
+            },
+            {
+              "field": "harness_uids",
+              "tag": 20
+            },
+            {
+              "field": "arena_config",
+              "tag": 21
+            },
+            {
+              "field": "display_option",
+              "tag": 22
+            },
+            {
+              "field": "model_family_uid",
+              "tag": 23
+            },
+            {
+              "field": "inference_config",
+              "tag": 24
+            },
+            {
+              "field": "is_model_router",
+              "tag": 25
+            }
+          ]
+        },
+        {
+          "message": "ModelFeatures",
+          "schema_fields_omitted_from_handwritten_binding": [
+            {
+              "field": "supports_context_tokens",
+              "tag": 2
+            },
+            {
+              "field": "requires_instruct_tags",
+              "tag": 3
+            },
+            {
+              "field": "requires_fim_context",
+              "tag": 4
+            },
+            {
+              "field": "requires_context_snippet_prefix",
+              "tag": 5
+            },
+            {
+              "field": "requires_context_relevance_tags",
+              "tag": 6
+            },
+            {
+              "field": "requires_llama3_tokens",
+              "tag": 7
+            },
+            {
+              "field": "zero_shot_capable",
+              "tag": 8
+            },
+            {
+              "field": "requires_autocomplete_as_command",
+              "tag": 9
+            },
+            {
+              "field": "supports_cursor_aware_supercomplete",
+              "tag": 10
+            },
+            {
+              "field": "supports_cumulative_context",
+              "tag": 13
+            },
+            {
+              "field": "tab_jump_print_line_range",
+              "tag": 14
+            },
+            {
+              "field": "supports_estimate_token_counter",
+              "tag": 17
+            },
+            {
+              "field": "add_cursor_to_find_replace_target",
+              "tag": 18
+            },
+            {
+              "field": "supports_tab_jump_use_whole_document",
+              "tag": 19
+            },
+            {
+              "field": "supports_image_captions",
+              "tag": 20
+            },
+            {
+              "field": "supports_parallel_tool_calls",
+              "tag": 21
+            },
+            {
+              "field": "requires_supercomplete_clean",
+              "tag": 22
+            },
+            {
+              "field": "tab_route_to_modal",
+              "tag": 23
+            },
+            {
+              "field": "interleave_thinking",
+              "tag": 24
+            },
+            {
+              "field": "preserve_thinking",
+              "tag": 25
+            },
+            {
+              "field": "supports_rejection_context",
+              "tag": 26
+            }
+          ]
+        },
+        {
+          "enum": "StopReason",
+          "schema_values_omitted_from_handwritten_binding": [
+            {
+              "number": 12,
+              "value": "STOP_REASON_NON_INSERTION"
+            },
+            {
+              "number": 13,
+              "value": "STOP_REASON_ERROR"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "schema_version": 1
+}

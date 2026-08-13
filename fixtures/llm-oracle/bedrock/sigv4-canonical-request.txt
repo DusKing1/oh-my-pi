@@ -1,0 +1,13 @@
+POST
+/model/us.anthropic.claude-sonnet-4-6-v1%3A0/converse-stream
+a=first&z=last
+accept:application/vnd.amazon.eventstream
+content-type:application/json
+host:bedrock-runtime.us-east-1.amazonaws.com
+x-amz-date:20240102T030405Z
+x-amz-security-token:SYNTHETIC_SESSION_TOKEN_NOT_A_CREDENTIAL
+x-amzn-bedrock-accept:application/json
+x-custom:alpha beta
+
+accept;content-type;host;x-amz-date;x-amz-security-token;x-amzn-bedrock-accept;x-custom
+ba2d5455c9b79eb722afcfea82b9c130b0d5e36d889d40aefd908c1796c6d43b

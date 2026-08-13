@@ -1,0 +1,241 @@
+{
+  "daybreak": [
+    {
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "model": "daybreak-blue-latest",
+      "openai_version": {
+        "major": 5,
+        "minor": 6,
+        "patch": 0
+      },
+      "pricing": [
+        {
+          "nanos_usd": 5000000000,
+          "unit": "mtok_input"
+        },
+        {
+          "nanos_usd": 30000000000,
+          "unit": "mtok_output"
+        },
+        {
+          "nanos_usd": 500000000,
+          "unit": "mtok_cache_read"
+        },
+        {
+          "nanos_usd": 6250000000,
+          "unit": "mtok_cache_write"
+        }
+      ],
+      "pricing_tiers": [
+        {
+          "pricing": [
+            {
+              "nanos_usd": 10000000000,
+              "unit": "mtok_input"
+            },
+            {
+              "nanos_usd": 45000000000,
+              "unit": "mtok_output"
+            },
+            {
+              "nanos_usd": 1000000000,
+              "unit": "mtok_cache_read"
+            },
+            {
+              "nanos_usd": 12500000000,
+              "unit": "mtok_cache_write"
+            }
+          ],
+          "prompt_tokens_above": 272000
+        }
+      ]
+    },
+    {
+      "context_window": 400000,
+      "max_output_tokens": 128000,
+      "model": "daybreak-red-latest",
+      "openai_version": {
+        "major": 5,
+        "minor": 6,
+        "patch": 0
+      },
+      "pricing": [
+        {
+          "nanos_usd": 12500000000,
+          "unit": "mtok_input"
+        },
+        {
+          "nanos_usd": 75000000000,
+          "unit": "mtok_output"
+        },
+        {
+          "nanos_usd": 1250000000,
+          "unit": "mtok_cache_read"
+        },
+        {
+          "nanos_usd": 15625000000,
+          "unit": "mtok_cache_write"
+        }
+      ],
+      "pricing_tiers": []
+    },
+    {
+      "context_window": 400000,
+      "max_output_tokens": 128000,
+      "model": "gpt-5.6-cyber",
+      "openai_version": {
+        "major": 5,
+        "minor": 6,
+        "patch": 0
+      },
+      "pricing": [
+        {
+          "nanos_usd": 12500000000,
+          "unit": "mtok_input"
+        },
+        {
+          "nanos_usd": 75000000000,
+          "unit": "mtok_output"
+        },
+        {
+          "nanos_usd": 1250000000,
+          "unit": "mtok_cache_read"
+        },
+        {
+          "nanos_usd": 15625000000,
+          "unit": "mtok_cache_write"
+        }
+      ],
+      "pricing_tiers": []
+    }
+  ],
+  "deepseek_efforts": [
+    {
+      "efforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "model": "deepseek-v4-flash"
+    },
+    {
+      "efforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "model": "deepseek-v4-flash:0731"
+    },
+    {
+      "efforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "model": "deepseek-v4-flash:preview"
+    },
+    {
+      "efforts": [
+        "high",
+        "max"
+      ],
+      "model": "deepseek-v3.1:671b"
+    },
+    {
+      "efforts": [
+        "high",
+        "max"
+      ],
+      "model": "deepseek-v3.2"
+    },
+    {
+      "efforts": [
+        "high",
+        "max"
+      ],
+      "model": "deepseek-v4-pro"
+    }
+  ],
+  "long_context_tiers": [
+    {
+      "model": "daybreak-blue-latest",
+      "pricing_tiers": [
+        {
+          "pricing": [
+            {
+              "nanos_usd": 10000000000,
+              "unit": "mtok_input"
+            },
+            {
+              "nanos_usd": 45000000000,
+              "unit": "mtok_output"
+            },
+            {
+              "nanos_usd": 1000000000,
+              "unit": "mtok_cache_read"
+            },
+            {
+              "nanos_usd": 12500000000,
+              "unit": "mtok_cache_write"
+            }
+          ],
+          "prompt_tokens_above": 272000
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "pricing_tiers": [
+        {
+          "pricing": [
+            {
+              "nanos_usd": 400000000,
+              "unit": "mtok_input"
+            },
+            {
+              "nanos_usd": 1800000000,
+              "unit": "mtok_output"
+            },
+            {
+              "nanos_usd": 40000000,
+              "unit": "mtok_cache_read"
+            },
+            {
+              "nanos_usd": 500000000,
+              "unit": "mtok_cache_write"
+            }
+          ],
+          "prompt_tokens_above": 272000
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "pricing_tiers": [
+        {
+          "pricing": [
+            {
+              "nanos_usd": 4000000000,
+              "unit": "mtok_input"
+            },
+            {
+              "nanos_usd": 18000000000,
+              "unit": "mtok_output"
+            },
+            {
+              "nanos_usd": 400000000,
+              "unit": "mtok_cache_read"
+            },
+            {
+              "nanos_usd": 5000000000,
+              "unit": "mtok_cache_write"
+            }
+          ],
+          "prompt_tokens_above": 272000
+        }
+      ]
+    }
+  ],
+  "schema_version": 1
+}

@@ -94,35 +94,18 @@ multer = "3.1"
 nix = { version = "0.31", features = ["fs", "poll", "process", "resource", "signal", "term", "user"] }
 nom = "8"
 normalize-path = "0.2"
-objc2-device-check = "0.3.2"
-objc2-foundation = "0.3.2"
-omp-llm = { path = "crates/llm", version = "0.1.0" }
-omp-llm-broker = { path = "crates/llm-broker", version = "0.1.0" }
-omp-llm-gateway = { path = "crates/llm-gateway", version = "0.1.0" }
-omp-llm-anthropic = { path = "crates/llm-anthropic", version = "0.1.0" }
-omp-llm-bedrock = { path = "crates/llm-bedrock", version = "0.1.0" }
-omp-llm-catalog = { path = "crates/llm-catalog", version = "0.1.0" }
-omp-llm-cursor = { path = "crates/llm-cursor", version = "0.1.0" }
-omp-llm-devin = { path = "crates/llm-devin", version = "0.1.0" }
-omp-llm-dialect = { path = "crates/llm-dialect", version = "0.1.0" }
-omp-llm-egress = { path = "crates/llm-egress", version = "0.1.0" }
-omp-llm-google = { path = "crates/llm-google", version = "0.1.0" }
-omp-llm-gitlab = { path = "crates/llm-gitlab", version = "0.1.0" }
-omp-llm-openai = { path = "crates/llm-openai", version = "0.1.0" }
-omp-llm-ollama = { path = "crates/llm-ollama", version = "0.1.0" }
-omp-llm-transport = { path = "crates/llm-transport", version = "0.1.0" }
-omp-llm-types = { path = "crates/llm-types", version = "0.1.0" }
 notify = { version = "=8.2.0", features = ["macos_kqueue"] }
 num-bigint = "0.4"
 num-traits = "0.2"
-omp-llm-fm = { path = "crates/llm-fm", version = "0.1.0" }
+objc2-device-check = "0.3.2"
+objc2-foundation = "0.3.2"
+omp-ar = { path = "crates/ar", version = "0.1.0" }
 omp-ast = { path = "crates/ast", version = "0.1.0" }
 omp-core = { path = "crates/core", version = "0.1.0" }
 omp-docserver = { path = "crates/docserver", version = "0.1.0" }
 omp-hashline = { path = "crates/hashline", version = "0.1.0" }
-omp-llm-tower = { path = "crates/llm-tower", version = "0.1.0" }
-omp-llm-error = { path = "crates/llm-error", version = "0.1.0" }
-omp-llm-local = { path = "crates/llm-local", version = "0.1.0" }
+omp-llm-catalog = { path = "crates/llm-catalog", version = "0.1.0" }
+omp-llm-inference = { path = "crates/llm-inference", version = "0.1.0" }
 omp-proto = { path = "crates/proto", version = "0.1.0" }
 omp-py = { path = "crates/py", version = "0.1.0" }
 omp-rpc = { path = "crates/rpc", version = "0.1.0" }
@@ -135,7 +118,6 @@ omp-telemetry = { path = "crates/telemetry", version = "0.1.0" }
 omp-tui-macros = { path = "crates/tui-macros", version = "0.1.0" }
 omp-voice-kokoro = { path = "crates/voice-kokoro", version = "0.1.0" }
 omp-walker = { path = "crates/walker", version = "0.1.0" }
-omp-ar = { path = "crates/ar", version = "0.1.0" }
 onig = { version = "6", default-features = false }
 ort = { version = "=2.0.0-rc.13", default-features = false }
 opentelemetry = "0.32.0"
@@ -170,6 +152,8 @@ rustix = { version = "1.1", features = ["fs", "process", "time"] }
 rusqlite = { version = "0.40", features = ["bundled", "fallible_uint"] }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+secrecy = "0.10"
+security-framework = "3.7"
 self_cell = "1"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.151", features = ["preserve_order", "raw_value"] }

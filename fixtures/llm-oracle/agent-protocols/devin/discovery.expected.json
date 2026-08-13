@@ -1,0 +1,45 @@
+{
+  "request_metadata": {
+    "ide_name": "windsurf",
+    "ide_version": "3.2.23",
+    "extension_name": "windsurf",
+    "extension_version": "1.48.2",
+    "api_key": "devin-session-token$oracle-api-key"
+  },
+  "models": [
+    {
+      "id": "claude_sonnet-4",
+      "name": "Claude Sonnet Thinking",
+      "supports_images": true,
+      "reasoning": true,
+      "context_window": 200000,
+      "max_output_tokens": 64000,
+      "family": "claude",
+      "inputs": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "compact_model",
+      "name": "No thinking compact",
+      "supports_images": false,
+      "reasoning": false,
+      "context_window": 200000,
+      "max_output_tokens": 64000,
+      "family": "compact",
+      "inputs": [
+        "text"
+      ]
+    }
+  ],
+  "ordering": "ascending by model id after duplicate replacement",
+  "filters": [
+    "disabled entries",
+    "trim-empty model_uid"
+  ],
+  "defaults": {
+    "context_window": 200000,
+    "max_output_tokens": "min(context_window, 64000)"
+  }
+}

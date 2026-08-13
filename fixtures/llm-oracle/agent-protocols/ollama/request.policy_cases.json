@@ -1,0 +1,141 @@
+{
+  "base_request": "cloud_request.json",
+  "unsupported_from_base": [
+    {
+      "what": "thread.assistant.thinking",
+      "action": "dropped"
+    },
+    {
+      "what": "thread.tool_result.call_id",
+      "action": "dropped"
+    },
+    {
+      "what": "sampling.max_output_tokens",
+      "action": "clamped",
+      "wire_value": 65536
+    }
+  ],
+  "effort_mapping": [
+    {
+      "canonical": "off",
+      "wire_think": false
+    },
+    {
+      "canonical": "minimal",
+      "wire_think": "low"
+    },
+    {
+      "canonical": "low",
+      "wire_think": "low"
+    },
+    {
+      "canonical": "medium",
+      "wire_think": "medium"
+    },
+    {
+      "canonical": "high",
+      "wire_think": "high"
+    },
+    {
+      "canonical": "xhigh",
+      "wire_think": "xhigh"
+    },
+    {
+      "canonical": "max",
+      "wire_think": "max"
+    }
+  ],
+  "model_policy_cases": [
+    {
+      "canonical_effort": "high",
+      "effort_map": {
+        "high": "turbo",
+        "xhigh": "extra-high",
+        "max": "maximum"
+      },
+      "omit_max_output_tokens": true,
+      "expected": {
+        "think": "turbo",
+        "options_absent": true
+      }
+    },
+    {
+      "canonical_effort": "high",
+      "effort_map": {
+        "high": "careful",
+        "xhigh": "extra-high",
+        "max": "maximum"
+      },
+      "omit_max_output_tokens": false,
+      "expected": {
+        "think": "careful",
+        "options": {
+          "num_predict": 65536
+        }
+      }
+    },
+    {
+      "canonical_effort": "xhigh",
+      "effort_map": {
+        "high": "careful",
+        "xhigh": "extra-high",
+        "max": "maximum"
+      },
+      "expected": {
+        "think": "extra-high"
+      }
+    },
+    {
+      "canonical_effort": "max",
+      "effort_map": {
+        "high": "careful",
+        "xhigh": "extra-high",
+        "max": "maximum"
+      },
+      "expected": {
+        "think": "maximum"
+      }
+    }
+  ],
+  "conditional_sampling_cases": [
+    {
+      "thinking": "high",
+      "sampling": {
+        "temperature": 0.4
+      },
+      "compat": {
+        "supports_sampling_params": true,
+        "when_thinking": {
+          "supports_sampling_params": false
+        }
+      },
+      "expected": {
+        "options_absent": true,
+        "unsupported": [
+          {
+            "what": "sampling.temperature"
+          }
+        ]
+      }
+    },
+    {
+      "thinking": "off",
+      "sampling": {
+        "temperature": 0.4
+      },
+      "compat": {
+        "supports_sampling_params": true,
+        "when_thinking": {
+          "supports_sampling_params": false
+        }
+      },
+      "expected": {
+        "think": false,
+        "options": {
+          "temperature": 0.4
+        },
+        "unsupported": []
+      }
+    }
+  ]
+}

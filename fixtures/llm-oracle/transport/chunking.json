@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "framing": "sse",
+  "cases": [
+    {
+      "id": "chunking.strategy-equivalence.v1",
+      "concatenated_hex": "646174613a207b2274657874223a22636166c3a9227d0a0a646174613a207b2274657874223a22f09f9982227d0a0a",
+      "strategies": [
+        {"name": "whole", "boundaries": [47]},
+        {"name": "seven-byte", "boundaries": [7, 14, 21, 28, 35, 42, 47]},
+        {"name": "utf8-hostile", "boundaries": [19, 40, 41, 42, 47]},
+        {"name": "recorded-physical", "boundaries": [3, 10, 18, 19, 24, 39, 41, 47]}
+      ],
+      "expected_frames_for_every_strategy": [
+        {"kind": "event", "name": null, "data_hex": "7b2274657874223a22636166c3a9227d", "data_utf8": "{\"text\":\"café\"}"},
+        {"kind": "event", "name": null, "data_hex": "7b2274657874223a22f09f9982227d", "data_utf8": "{\"text\":\"🙂\"}"}
+      ],
+      "invariants": ["identical-output-for-all-chunkings", "each-frame-emitted-once", "no-byte-zero-restart", "split-utf8-preserved"]
+    }
+  ]
+}

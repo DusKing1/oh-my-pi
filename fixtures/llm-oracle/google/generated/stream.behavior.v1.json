@@ -1,0 +1,217 @@
+{
+  "schema_version": 1,
+  "retry": {
+    "empty_stream": [
+      {
+        "decision": "retry",
+        "delay_ms": 500
+      },
+      {
+        "decision": "retry",
+        "delay_ms": 1000
+      },
+      {
+        "decision": "terminal"
+      }
+    ],
+    "empty_response": [
+      {
+        "decision": "retry",
+        "delay_ms": 500
+      },
+      {
+        "decision": "retry",
+        "delay_ms": 1000
+      },
+      {
+        "decision": "terminal"
+      }
+    ],
+    "overload": [
+      {
+        "decision": "retry",
+        "delay_ms": 1000
+      },
+      {
+        "decision": "retry",
+        "delay_ms": 2000
+      },
+      {
+        "decision": "terminal"
+      }
+    ],
+    "after_cancellation": {
+      "empty_stream": {
+        "decision": "terminal"
+      },
+      "empty_response": {
+        "decision": "terminal"
+      },
+      "overload": {
+        "decision": "terminal"
+      }
+    }
+  },
+  "errors": [
+    {
+      "input": {
+        "code": 429,
+        "status": "RESOURCE_EXHAUSTED",
+        "message": "Individual quota reached"
+      },
+      "output": {
+        "kind": "rate_limited",
+        "detail": "Individual quota reached",
+        "retry_after_ms": 1000
+      }
+    },
+    {
+      "input": {
+        "code": 503,
+        "status": "UNAVAILABLE",
+        "message": "high demand"
+      },
+      "output": {
+        "kind": "overloaded",
+        "detail": "high demand",
+        "retry_after_ms": 1000
+      }
+    },
+    {
+      "input": {
+        "code": 400,
+        "status": "INVALID_ARGUMENT",
+        "message": "input token count exceeds the maximum"
+      },
+      "output": {
+        "kind": "upstream",
+        "detail": "input token count exceeds the maximum",
+        "retry_after_ms": 0
+      }
+    },
+    {
+      "input": {
+        "stream_end_without_finish": true
+      },
+      "output": {
+        "kind": "upstream",
+        "detail": "Google stream ended without a finish reason",
+        "retry_after_ms": 0
+      }
+    },
+    {
+      "input": {
+        "malformed_json": true
+      },
+      "output": {
+        "kind": "provider_decode_error",
+        "terminal_events": 0
+      }
+    },
+    {
+      "input": {
+        "functionCall": {
+          "args": {}
+        },
+        "thoughtSignature": "sig_REDACTED"
+      },
+      "output": {
+        "kind": "upstream",
+        "detail": "Google functionCall is missing a non-empty name",
+        "retry_after_ms": 0
+      }
+    },
+    {
+      "input": {
+        "functionCall": {
+          "name": "lookup",
+          "args": {}
+        },
+        "thoughtSignature": ""
+      },
+      "output": {
+        "kind": "upstream",
+        "detail": "Google functionCall carried an empty thoughtSignature",
+        "retry_after_ms": 0
+      }
+    },
+    {
+      "input": {
+        "promptFeedback": {
+          "blockReason": "SAFETY",
+          "blockReasonMessage": "Prompt blocked by policy"
+        }
+      },
+      "output": {
+        "kind": "upstream",
+        "detail": "Prompt blocked by policy",
+        "retry_after_ms": 0
+      }
+    }
+  ],
+  "finish_reasons": {
+    "STOP": "end_turn",
+    "MAX_TOKENS": "max_tokens",
+    "SAFETY": "content_filter",
+    "RECITATION": "content_filter",
+    "BLOCKLIST": "content_filter",
+    "PROHIBITED_CONTENT": "content_filter",
+    "SPII": "content_filter",
+    "IMAGE_SAFETY": "content_filter",
+    "IMAGE_PROHIBITED_CONTENT": "content_filter",
+    "IMAGE_RECITATION": "content_filter",
+    "IMAGE_OTHER": "content_filter",
+    "NO_IMAGE": "content_filter",
+    "FINISH_REASON_UNSPECIFIED": {
+      "error": "Google generation failed with finish reason: FINISH_REASON_UNSPECIFIED"
+    },
+    "OTHER": {
+      "error": "Google generation failed with finish reason: OTHER"
+    },
+    "LANGUAGE": {
+      "error": "Google generation failed with finish reason: LANGUAGE"
+    },
+    "MALFORMED_FUNCTION_CALL": {
+      "error": "Google generation failed with finish reason: MALFORMED_FUNCTION_CALL"
+    },
+    "UNEXPECTED_TOOL_CALL": {
+      "error": "Google generation failed with finish reason: UNEXPECTED_TOOL_CALL"
+    },
+    "<unknown>": {
+      "error": "unknown Google finish reason: <unknown>"
+    }
+  },
+  "usage_projection": {
+    "promptTokenCount": "input_tokens",
+    "candidatesTokenCount + thoughtsTokenCount": "output_tokens",
+    "cachedContentTokenCount": "cache_read_tokens",
+    "cache_write_tokens": 0,
+    "accuracy": "exact",
+    "detail.google/thoughts_tokens": "thoughtsTokenCount"
+  },
+  "candidate_metadata_projection": {
+    "groundingMetadata": "google/grounding_metadata",
+    "citationMetadata": "google/citation_metadata",
+    "safetyRatings": "google/safety_ratings",
+    "finishMessage": "google/finish_message",
+    "responseId": "google/response_id"
+  },
+  "auxiliary_parts": {
+    "executableCode": {
+      "event_channel": "text",
+      "props.google/part_kind": "executable_code",
+      "props.google/part_metadata.language": "language or LANGUAGE_UNSPECIFIED"
+    },
+    "codeExecutionResult": {
+      "event_channel": "text",
+      "props.google/part_kind": "code_execution_result",
+      "props.google/part_metadata.outcome": "outcome or OUTCOME_UNSPECIFIED"
+    }
+  },
+  "terminal_invariants": [
+    "an in-band error completes the stream and ignores later frames",
+    "a finish reason emits exactly one outcome",
+    "body end without a finish reason emits exactly one upstream error",
+    "[DONE] and frame end after completion emit no second terminal"
+  ]
+}

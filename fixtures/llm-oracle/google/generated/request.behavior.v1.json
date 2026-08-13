@@ -1,0 +1,381 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "google.request.schema-normalization.v1",
+      "input": {
+        "type": "object",
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "mode": {
+            "enum": [
+              "fast",
+              "safe"
+            ]
+          },
+          "empty": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "answer"
+        ]
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "number",
+            "nullable": true
+          },
+          "mode": {
+            "enum": [
+              "fast",
+              "safe"
+            ],
+            "type": "string"
+          },
+          "empty": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        "required": [
+          "answer"
+        ]
+      },
+      "unsupported": []
+    },
+    {
+      "id": "google.request.cache-resource.v1",
+      "input": {
+        "google/cached_content": "cachedContents/oracle"
+      },
+      "output": {
+        "cachedContent": "cachedContents/oracle"
+      },
+      "errors": [
+        {
+          "input": {
+            "google/cached_content": "  "
+          },
+          "kind": "provider",
+          "detail": "google/cached_content must not be blank"
+        },
+        {
+          "input": {
+            "google/cached_content": 17
+          },
+          "kind": "provider",
+          "detail": "google/cached_content must be a string resource name"
+        },
+        {
+          "input": {
+            "google/cached_content": "cachedContents/oracle",
+            "request_root": {
+              "systemInstruction": {
+                "parts": []
+              }
+            }
+          },
+          "kind": "provider",
+          "detail": "google/cached_content cannot be combined with request-level systemInstruction"
+        },
+        {
+          "input": {
+            "google/cached_content": "cachedContents/oracle",
+            "request_root": {
+              "tools": []
+            }
+          },
+          "kind": "provider",
+          "detail": "google/cached_content cannot be combined with request-level tools"
+        }
+      ]
+    },
+    {
+      "id": "google.request.provider-options.v1",
+      "input": {
+        "google/safety_settings": [
+          {
+            "category": "HARM_CATEGORY_HARASSMENT",
+            "threshold": "OFF"
+          }
+        ],
+        "google/response_modalities": [
+          "TEXT"
+        ],
+        "google/google_search": true,
+        "google/code_execution": true
+      },
+      "output": {
+        "safetySettings": [
+          {
+            "category": "HARM_CATEGORY_HARASSMENT",
+            "threshold": "OFF"
+          }
+        ],
+        "generationConfig": {
+          "responseModalities": [
+            "TEXT"
+          ]
+        },
+        "tools": [
+          {
+            "googleSearch": {}
+          },
+          {
+            "codeExecution": {}
+          }
+        ]
+      },
+      "errors": [
+        {
+          "option": "google/safety_settings",
+          "invalid": "not-array",
+          "kind": "provider",
+          "detail": "google/safety_settings must be an array"
+        },
+        {
+          "option": "google/response_modalities",
+          "invalid": [
+            "TEXT",
+            1
+          ],
+          "kind": "provider",
+          "detail": "google/response_modalities must contain only strings"
+        },
+        {
+          "option": "google/google_search",
+          "invalid": "true",
+          "kind": "provider",
+          "detail": "google/google_search must be a boolean"
+        }
+      ]
+    },
+    {
+      "id": "google.request.parts.v1",
+      "cases": [
+        {
+          "canonical": {
+            "type": "text",
+            "text": "hello"
+          },
+          "wire": {
+            "text": "hello"
+          }
+        },
+        {
+          "canonical": {
+            "type": "thinking",
+            "text": "plan",
+            "signature": "sig_REDACTED"
+          },
+          "wire": {
+            "text": "plan",
+            "thought": true,
+            "thoughtSignature": "sig_REDACTED"
+          }
+        },
+        {
+          "canonical": {
+            "type": "inline_blob",
+            "mime": "image/png",
+            "bytes_hex": "000102ff"
+          },
+          "wire": {
+            "inlineData": {
+              "mimeType": "image/png",
+              "data": "AAEC/w=="
+            }
+          }
+        },
+        {
+          "canonical": {
+            "type": "file_blob",
+            "mime": "application/octet-stream",
+            "google/file_data": {
+              "file_uri": "gs://oracle-bucket/document.pdf",
+              "mime_type": "application/pdf"
+            }
+          },
+          "wire": {
+            "fileData": {
+              "mimeType": "application/pdf",
+              "fileUri": "gs://oracle-bucket/document.pdf"
+            }
+          }
+        },
+        {
+          "canonical": {
+            "type": "empty_blob",
+            "google/file_data": null
+          },
+          "typed_unsupported": {
+            "what": "thread.parts.blob.inline",
+            "action": "dropped",
+            "detail": "Google inlineData requires payload bytes"
+          }
+        }
+      ]
+    },
+    {
+      "id": "google.request.thinking.v1",
+      "cases": [
+        {
+          "input": {
+            "effort": "off"
+          },
+          "legacy": {
+            "includeThoughts": true,
+            "thinkingLevel": "MINIMAL"
+          }
+        },
+        {
+          "input": {
+            "effort": "minimal"
+          },
+          "legacy": {
+            "includeThoughts": true,
+            "thinkingLevel": "MINIMAL"
+          },
+          "budget_policy": {
+            "includeThoughts": true,
+            "thinkingBudget": 1024
+          }
+        },
+        {
+          "input": {
+            "effort": "low"
+          },
+          "legacy": {
+            "includeThoughts": true,
+            "thinkingLevel": "LOW"
+          },
+          "budget_policy": {
+            "includeThoughts": true,
+            "thinkingBudget": 2048
+          }
+        },
+        {
+          "input": {
+            "effort": "medium"
+          },
+          "legacy": {
+            "includeThoughts": true,
+            "thinkingLevel": "MEDIUM"
+          },
+          "budget_policy": {
+            "includeThoughts": true,
+            "thinkingBudget": 8192
+          }
+        },
+        {
+          "input": {
+            "effort": "high"
+          },
+          "legacy": {
+            "includeThoughts": true,
+            "thinkingLevel": "HIGH"
+          },
+          "budget_policy": {
+            "includeThoughts": true,
+            "thinkingBudget": 16384
+          }
+        },
+        {
+          "input": {
+            "effort": "xhigh"
+          },
+          "legacy": {
+            "includeThoughts": true,
+            "thinkingLevel": "THINKING_LEVEL_UNSPECIFIED"
+          }
+        },
+        {
+          "input": {
+            "effort": "max"
+          },
+          "legacy": {
+            "includeThoughts": true,
+            "thinkingLevel": "HIGH"
+          }
+        },
+        {
+          "input": {
+            "budget_tokens": 4096,
+            "hide_summary": true
+          },
+          "legacy": {
+            "includeThoughts": false,
+            "thinkingBudget": 4096
+          }
+        }
+      ]
+    },
+    {
+      "id": "google.request.typed-unsupported.v1",
+      "cases": [
+        {
+          "input_field": "response_format.grammar",
+          "what": "response_format.grammar",
+          "action": "dropped",
+          "detail": "Gemini GenerateContent does not accept portable grammar response formats"
+        },
+        {
+          "input_field": "cache",
+          "what": "cache",
+          "action": "dropped",
+          "detail": "a session key is not a Google cachedContent resource name"
+        },
+        {
+          "input_field": "sampling.min_p",
+          "what": "sampling.min_p",
+          "action": "dropped",
+          "detail": "control has no portable Google GenerateContent projection"
+        },
+        {
+          "input_field": "sampling.frequency_penalty",
+          "what": "sampling.frequency_penalty",
+          "action": "dropped",
+          "detail": "control has no portable Google GenerateContent projection"
+        },
+        {
+          "input_field": "sampling.presence_penalty",
+          "what": "sampling.presence_penalty",
+          "action": "dropped",
+          "detail": "control has no portable Google GenerateContent projection"
+        },
+        {
+          "input_field": "tools[].strict",
+          "what": "tools.<name>.strict",
+          "action": "dropped",
+          "detail": "Gemini function declarations do not expose a strict boolean"
+        },
+        {
+          "input_field": "system.parts.non_text",
+          "what": "thread.system.parts",
+          "action": "dropped",
+          "detail": "Gemini systemInstruction accepts text parts only"
+        },
+        {
+          "input_field": "provider_options.unknown",
+          "what": "<option-key>",
+          "action": "dropped",
+          "detail": "Google codec does not recognize this provider option"
+        }
+      ]
+    }
+  ]
+}

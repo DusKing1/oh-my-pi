@@ -1,0 +1,35 @@
+{
+  "accepted_wire_forms": [
+    "raw protobuf",
+    "first Connect data frame"
+  ],
+  "models": [
+    {
+      "id": "claude-sonnet",
+      "name": "Claude Sonnet",
+      "reasoning": true,
+      "max_mode": true,
+      "family": "claude",
+      "context_window": 1000000,
+      "max_output_tokens": 64000,
+      "inputs": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "plain-model",
+      "name": "Plain Model",
+      "reasoning": false,
+      "max_mode": false,
+      "family": "plain",
+      "context_window": 200000,
+      "max_output_tokens": 64000,
+      "inputs": [
+        "text"
+      ]
+    }
+  ],
+  "ordering": "ascending by model id after duplicate replacement",
+  "filter": "trim-empty model ids are omitted"
+}

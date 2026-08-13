@@ -1,0 +1,3 @@
+{"direction":"client_to_server","kind":"start","payload":{"startRequest":{"workflowID":"workflow-cancel","sessionID":"session-cancel"}}}
+{"direction":"server_to_client","kind":"checkpoint","payload":{"eventID":"cancel-1","text":"started"}}
+{"direction":"client_to_server","kind":"close","cause":"consumer dropped turn stream"}

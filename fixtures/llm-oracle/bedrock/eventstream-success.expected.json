@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "input": "eventstream-success.bin",
+  "fragmentation_pattern_bytes": [
+    1,
+    2,
+    5,
+    8,
+    13,
+    21,
+    34
+  ],
+  "normalization": {
+    "generated_tool_call_id": "$CALL_ID"
+  },
+  "events": [
+    {
+      "event": "part_start",
+      "index": 0,
+      "kind": "thinking",
+      "tool_call_id": "",
+      "tool_name": ""
+    },
+    {
+      "event": "part_delta",
+      "index": 0,
+      "chunk_utf8": "why "
+    },
+    {
+      "event": "part_delta",
+      "index": 0,
+      "chunk_utf8": "now"
+    },
+    {
+      "event": "part_end",
+      "index": 0,
+      "signature_base64": "c2lnbmF0dXJl"
+    },
+    {
+      "event": "part_start",
+      "index": 1,
+      "kind": "text",
+      "tool_call_id": "",
+      "tool_name": ""
+    },
+    {
+      "event": "part_delta",
+      "index": 1,
+      "chunk_utf8": "Answer: 4."
+    },
+    {
+      "event": "part_end",
+      "index": 1,
+      "signature_base64": ""
+    },
+    {
+      "event": "part_start",
+      "index": 2,
+      "kind": "tool_call",
+      "tool_call_id": "$CALL_ID",
+      "tool_name": "lookup"
+    },
+    {
+      "event": "part_delta",
+      "index": 2,
+      "chunk_utf8": "{\"q\":"
+    },
+    {
+      "event": "part_delta",
+      "index": 2,
+      "chunk_utf8": "\"x\"}"
+    },
+    {
+      "event": "part_end",
+      "index": 2,
+      "signature_base64": ""
+    },
+    {
+      "event": "outcome",
+      "output": [
+        {
+          "seq": 0,
+          "created_at_ms": 0,
+          "kind": {
+            "kind": "message",
+            "role": "assistant",
+            "parts": [
+              {
+                "kind": "thinking",
+                "text": "why now",
+                "signature_base64": "c2lnbmF0dXJl",
+                "redacted": false
+              }
+            ]
+          },
+          "props": {}
+        },
+        {
+          "seq": 0,
+          "created_at_ms": 0,
+          "kind": {
+            "kind": "message",
+            "role": "assistant",
+            "parts": [
+              {
+                "kind": "text",
+                "text": "Answer: 4."
+              }
+            ]
+          },
+          "props": {}
+        },
+        {
+          "seq": 0,
+          "created_at_ms": 0,
+          "kind": {
+            "kind": "tool_call",
+            "id": "$CALL_ID",
+            "name": "lookup",
+            "args_json_utf8": "{\"q\":\"x\"}",
+            "thought_signature_base64": "",
+            "intent": null,
+            "raw_base64": null,
+            "custom_wire_name": null,
+            "provider_metadata": {
+              "amazon-bedrock/tool_use_id": "wire-tool-42"
+            }
+          },
+          "props": {}
+        }
+      ],
+      "stop": "tool_use",
+      "usage": {
+        "input_tokens": 10,
+        "output_tokens": 4,
+        "cache_read_tokens": 3,
+        "cache_write_tokens": 2,
+        "total_tokens": 14,
+        "context_tokens": null,
+        "orchestration": null,
+        "premium_requests": null,
+        "reasoning_tokens": null,
+        "cache_ttl": null,
+        "server_tools": null,
+        "accuracy": "exact",
+        "detail": {}
+      },
+      "cost": null,
+      "unsupported": [],
+      "revision": null,
+      "provider": "amazon-bedrock",
+      "model": "",
+      "upstream_provider": null,
+      "duration_ms": null,
+      "ttft_ms": null,
+      "context_snapshot": null,
+      "diagnostics": [],
+      "props": {
+        "amazon-bedrock/metrics": {
+          "latencyMs": 123
+        }
+      }
+    }
+  ]
+}

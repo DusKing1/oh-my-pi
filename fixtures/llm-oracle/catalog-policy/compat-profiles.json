@@ -1,0 +1,711 @@
+{
+  "normalization": "Exact non-empty resolved wire compatibility property maps after catalog loading and effort-variant collapse. Archived Rust container/type names are omitted.",
+  "profile_count": 35,
+  "profiles": [
+    {
+      "model_count": 6,
+      "models": [
+        "xiaomi/mimo-v2-flash",
+        "xiaomi/mimo-v2-omni",
+        "xiaomi/mimo-v2-pro",
+        "xiaomi/mimo-v2.5",
+        "xiaomi/mimo-v2.5-pro",
+        "xiaomi/mimo-v2.5-pro-ultraspeed"
+      ],
+      "profile_id": "compat-01",
+      "shape": {
+        "wire/allows_synthetic_reasoning_content_for_tool_calls": false,
+        "wire/reasoning_content_field": "reasoning_content",
+        "wire/requires_reasoning_content_for_tool_calls": true,
+        "wire/supports_store": false,
+        "wire/thinking_format": "zai"
+      }
+    },
+    {
+      "model_count": 1,
+      "models": [
+        "nanogpt/deepseek-ai/deepseek-v3.2-exp"
+      ],
+      "profile_id": "compat-02",
+      "shape": {
+        "wire/allows_synthetic_reasoning_content_for_tool_calls": true,
+        "wire/disable_reasoning_on_tool_choice": false,
+        "wire/requires_reasoning_content_for_all_assistant_turns": true,
+        "wire/requires_reasoning_content_for_tool_calls": false
+      }
+    },
+    {
+      "model_count": 3,
+      "models": [
+        "anthropic/claude-3-7-sonnet-20250219",
+        "anthropic/claude-3-opus-20240229",
+        "anthropic/claude-3-sonnet-20240229"
+      ],
+      "profile_id": "compat-03",
+      "shape": {
+        "wire/disable_adaptive_thinking": false,
+        "wire/escape_builtin_tool_names": false,
+        "wire/official_endpoint": true,
+        "wire/replay_unsigned_thinking": false,
+        "wire/requires_thinking_enabled": false,
+        "wire/requires_tool_result_id": false,
+        "wire/signing_endpoint": true,
+        "wire/supports_eager_tool_input_streaming": true,
+        "wire/supports_forced_tool_choice": true,
+        "wire/supports_long_cache_retention": true,
+        "wire/supports_mid_conversation_system": false,
+        "wire/supports_sampling_params": true
+      }
+    },
+    {
+      "model_count": 2,
+      "models": [
+        "umans/umans-deepseek-v4-flash-0731",
+        "umans/umans-deepseek-v4-flash-0731-lab"
+      ],
+      "profile_id": "compat-04",
+      "shape": {
+        "wire/escape_builtin_tool_names": true,
+        "wire/requires_reasoning_content_for_all_assistant_turns": true
+      }
+    },
+    {
+      "model_count": 6,
+      "models": [
+        "umans/umans-coder",
+        "umans/umans-flash",
+        "umans/umans-glm-5.2",
+        "umans/umans-kimi-k2.7",
+        "umans/umans-kimi-k3",
+        "umans/umans-qwen3.6-35b-a3b"
+      ],
+      "profile_id": "compat-05",
+      "shape": {
+        "wire/escape_builtin_tool_names": true
+      }
+    },
+    {
+      "model_count": 2,
+      "models": [
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-pro"
+      ],
+      "profile_id": "compat-06",
+      "shape": {
+        "wire/extra_body": {
+          "thinking": {
+            "type": "enabled"
+          }
+        },
+        "wire/max_tokens_field": "max_tokens",
+        "wire/reasoning_content_field": "reasoning_content",
+        "wire/requires_assistant_content_for_tool_calls": true,
+        "wire/requires_reasoning_content_for_all_assistant_turns": true,
+        "wire/requires_reasoning_content_for_tool_calls": true,
+        "wire/supports_developer_role": false,
+        "wire/supports_reasoning_effort": true,
+        "wire/supports_tool_choice": false
+      }
+    },
+    {
+      "model_count": 3,
+      "models": [
+        "xai-oauth/grok-4.20-multi-agent-0309",
+        "xai-oauth/grok-4.3",
+        "xai-oauth/grok-4.5"
+      ],
+      "profile_id": "compat-07",
+      "shape": {
+        "wire/filter_reasoning_history": true,
+        "wire/include_encrypted_reasoning": false,
+        "wire/omit_reasoning_effort": false,
+        "wire/reasoning_effort_map": {
+          "minimal": "low"
+        },
+        "wire/supports_image_detail_original": false,
+        "wire/supports_reasoning_effort": true
+      }
+    },
+    {
+      "model_count": 5,
+      "models": [
+        "xai-oauth/grok-4.20-0309-non-reasoning",
+        "xai-oauth/grok-4.20-0309-reasoning",
+        "xai-oauth/grok-build",
+        "xai-oauth/grok-build-0.1",
+        "xai-oauth/grok-composer-2.5-fast"
+      ],
+      "profile_id": "compat-08",
+      "shape": {
+        "wire/filter_reasoning_history": true,
+        "wire/include_encrypted_reasoning": false,
+        "wire/omit_reasoning_effort": true,
+        "wire/reasoning_effort_map": {
+          "minimal": "low"
+        },
+        "wire/supports_image_detail_original": false,
+        "wire/supports_reasoning_effort": false
+      }
+    },
+    {
+      "model_count": 3,
+      "models": [
+        "sakana/fugu",
+        "sakana/fugu-ultra",
+        "sakana/fugu-ultra-20260615"
+      ],
+      "profile_id": "compat-09",
+      "shape": {
+        "wire/include_encrypted_reasoning": false,
+        "wire/stream_idle_timeout_ms": 0
+      }
+    },
+    {
+      "model_count": 3,
+      "models": [
+        "meta/muse-spark-1.1",
+        "meta/muse-spark-1.2",
+        "meta/muse-spark-1.2-contributor"
+      ],
+      "profile_id": "compat-10",
+      "shape": {
+        "wire/include_encrypted_reasoning": true,
+        "wire/supports_reasoning_effort": true
+      }
+    },
+    {
+      "model_count": 1,
+      "models": [
+        "opencode-go/deepseek-v4-pro"
+      ],
+      "profile_id": "compat-11",
+      "shape": {
+        "wire/max_tokens_field": "max_tokens",
+        "wire/reasoning_content_field": "reasoning_content",
+        "wire/requires_reasoning_content_for_all_assistant_turns": true,
+        "wire/requires_reasoning_content_for_tool_calls": true,
+        "wire/supports_tool_choice": false
+      }
+    },
+    {
+      "model_count": 7,
+      "models": [
+        "cohere/command-a-03-2025",
+        "cohere/command-a-plus-05-2026",
+        "cohere/command-a-reasoning-08-2025",
+        "cohere/command-r-08-2024",
+        "cohere/command-r-plus-08-2024",
+        "cohere/command-r7b-12-2024",
+        "cohere/north-mini-code-1-0"
+      ],
+      "profile_id": "compat-12",
+      "shape": {
+        "wire/max_tokens_field": "max_tokens",
+        "wire/supports_usage_in_streaming": true
+      }
+    },
+    {
+      "model_count": 2,
+      "models": [
+        "poolside/poolside/laguna-m.1",
+        "poolside/poolside/laguna-xs.2"
+      ],
+      "profile_id": "compat-13",
+      "shape": {
+        "wire/max_tokens_field": "max_tokens"
+      }
+    },
+    {
+      "model_count": 2,
+      "models": [
+        "wafer-serverless/DeepSeek-V4-Flash-0731-Fast",
+        "wafer-serverless/DeepSeek-V4-Pro"
+      ],
+      "profile_id": "compat-14",
+      "shape": {
+        "wire/reasoning_content_field": "reasoning_content",
+        "wire/requires_reasoning_content_for_all_assistant_turns": true,
+        "wire/supports_developer_role": false
+      }
+    },
+    {
+      "model_count": 18,
+      "models": [
+        "minimax-code-cn/MiniMax-M2",
+        "minimax-code-cn/MiniMax-M2.1",
+        "minimax-code-cn/MiniMax-M2.1-lightning",
+        "minimax-code-cn/MiniMax-M2.5",
+        "minimax-code-cn/MiniMax-M2.5-highspeed",
+        "minimax-code-cn/MiniMax-M2.5-lightning",
+        "minimax-code-cn/MiniMax-M2.7",
+        "minimax-code-cn/MiniMax-M2.7-highspeed",
+        "minimax-code-cn/MiniMax-M3",
+        "minimax-code/MiniMax-M2",
+        "minimax-code/MiniMax-M2.1",
+        "minimax-code/MiniMax-M2.1-lightning",
+        "minimax-code/MiniMax-M2.5",
+        "minimax-code/MiniMax-M2.5-highspeed",
+        "minimax-code/MiniMax-M2.5-lightning",
+        "minimax-code/MiniMax-M2.7",
+        "minimax-code/MiniMax-M2.7-highspeed",
+        "minimax-code/MiniMax-M3"
+      ],
+      "profile_id": "compat-15",
+      "shape": {
+        "wire/reasoning_content_field": "reasoning_content",
+        "wire/supports_developer_role": false,
+        "wire/supports_reasoning_effort": false,
+        "wire/supports_store": false
+      }
+    },
+    {
+      "model_count": 2,
+      "models": [
+        "kimi-code/k3",
+        "kimi-code/k3-256k"
+      ],
+      "profile_id": "compat-16",
+      "shape": {
+        "wire/reasoning_content_field": "reasoning_content",
+        "wire/supports_developer_role": false,
+        "wire/thinking_format": "kimi"
+      }
+    },
+    {
+      "model_count": 17,
+      "models": [
+        "kimi-code/kimi-for-coding",
+        "kimi-code/kimi-for-coding-highspeed",
+        "wafer-serverless/GLM-5.1",
+        "wafer-serverless/GLM-5.2",
+        "wafer-serverless/Kimi-K2.6",
+        "wafer-serverless/Kimi-K2.7-Code",
+        "wafer-serverless/Kimi-K3",
+        "wafer-serverless/kimi-k3-fast",
+        "zhipu-coding-plan/glm-4.5-air",
+        "zhipu-coding-plan/glm-4.6v",
+        "zhipu-coding-plan/glm-4.7",
+        "zhipu-coding-plan/glm-5-turbo",
+        "zhipu-coding-plan/glm-5.1",
+        "zhipu-coding-plan/glm-5.2",
+        "zhipu-coding-plan/glm-5.2-highspeed",
+        "zhipu-coding-plan/glm-5.2-highspeed[1m]",
+        "zhipu-coding-plan/glm-5v-turbo"
+      ],
+      "profile_id": "compat-17",
+      "shape": {
+        "wire/reasoning_content_field": "reasoning_content",
+        "wire/supports_developer_role": false,
+        "wire/thinking_format": "zai"
+      }
+    },
+    {
+      "model_count": 5,
+      "models": [
+        "wafer-serverless/GLM5.2-Turbo",
+        "wafer-serverless/MiniMax-M3",
+        "wafer-serverless/Qwen3.6-35B-A3B",
+        "wafer-serverless/glm5.2-fast",
+        "wafer-serverless/qwen3.7-max"
+      ],
+      "profile_id": "compat-18",
+      "shape": {
+        "wire/reasoning_content_field": "reasoning_content",
+        "wire/supports_developer_role": false
+      }
+    },
+    {
+      "model_count": 3,
+      "models": [
+        "openai/daybreak-blue-latest",
+        "openai/daybreak-red-latest",
+        "openai/gpt-5.6-cyber"
+      ],
+      "profile_id": "compat-19",
+      "shape": {
+        "wire/reasoning_disable_mode": "none-effort"
+      }
+    },
+    {
+      "model_count": 2,
+      "models": [
+        "nanogpt/xiaomi/mimo-v2-flash",
+        "nanogpt/xiaomi/mimo-v2-flash-original"
+      ],
+      "profile_id": "compat-20",
+      "shape": {
+        "wire/reasoning_effort_map": {}
+      }
+    },
+    {
+      "model_count": 2,
+      "models": [
+        "vercel-ai-gateway/alibaba/qwen3-max",
+        "vercel-ai-gateway/moonshotai/kimi-k2-turbo"
+      ],
+      "profile_id": "compat-21",
+      "shape": {
+        "wire/replay_unsigned_thinking": false
+      }
+    },
+    {
+      "model_count": 2,
+      "models": [
+        "fireworks/deepseek-v4-flash",
+        "fireworks/deepseek-v4-pro"
+      ],
+      "profile_id": "compat-22",
+      "shape": {
+        "wire/requires_assistant_content_for_tool_calls": true,
+        "wire/requires_reasoning_content_for_all_assistant_turns": true,
+        "wire/supports_tool_choice": false
+      }
+    },
+    {
+      "model_count": 1,
+      "models": [
+        "alibaba-token-plan/deepseek-v4-pro"
+      ],
+      "profile_id": "compat-23",
+      "shape": {
+        "wire/requires_reasoning_content_for_all_assistant_turns": true,
+        "wire/supports_developer_role": false
+      }
+    },
+    {
+      "model_count": 110,
+      "models": [
+        "aiand/deepseek-ai/deepseek-v4-flash",
+        "aiand/deepseek-ai/deepseek-v4-pro",
+        "aimlapi/deepseek-v4-flash",
+        "aimlapi/deepseek-v4-pro",
+        "aimlapi/deepseek/deepseek-chat-v3.1",
+        "aimlapi/deepseek/deepseek-r1",
+        "amazon-bedrock/deepseek.v3-v1:0",
+        "amazon-bedrock/deepseek.v3.2",
+        "amazon-bedrock/deepseek.v3.2-v1:0",
+        "amazon-bedrock/us.deepseek.r1-v1:0",
+        "baseten/deepseek-ai/DeepSeek-V4-Pro",
+        "coreweave/deepseek-ai/DeepSeek-V4-Flash",
+        "coreweave/deepseek-ai/DeepSeek-V4-Flash-0731",
+        "coreweave/deepseek-ai/DeepSeek-V4-Pro",
+        "fireworks/deepseek-v4-flash-0731",
+        "friendli/deepseek-ai/DeepSeek-V3.2",
+        "gmi-cloud/deepseek-ai/DeepSeek-V4-Flash",
+        "groq/deepseek-r1-distill-llama-70b",
+        "huggingface/deepseek-ai/DeepSeek-R1",
+        "huggingface/deepseek-ai/DeepSeek-R1-0528",
+        "huggingface/deepseek-ai/DeepSeek-V3.1",
+        "huggingface/deepseek-ai/DeepSeek-V3.2",
+        "huggingface/deepseek-ai/DeepSeek-V4-Flash",
+        "huggingface/deepseek-ai/DeepSeek-V4-Flash-0731",
+        "huggingface/deepseek-ai/DeepSeek-V4-Pro",
+        "kilo/deepseek/deepseek-chat-v3.1",
+        "kilo/deepseek/deepseek-r1",
+        "kilo/deepseek/deepseek-r1-0528",
+        "kilo/deepseek/deepseek-v3.1-terminus",
+        "kilo/deepseek/deepseek-v3.2",
+        "kilo/deepseek/deepseek-v3.2-exp",
+        "kilo/deepseek/deepseek-v4-flash",
+        "kilo/deepseek/deepseek-v4-flash-0731",
+        "kilo/deepseek/deepseek-v4-flash:discounted",
+        "kilo/deepseek/deepseek-v4-pro",
+        "kilo/deepseek/deepseek-v4-pro:discounted",
+        "kilo/~deepseek/deepseek-v4-flash-latest",
+        "nanogpt/TEE/deepseek-v4-pro",
+        "nanogpt/TEE/deepseek-v4-pro:thinking",
+        "nanogpt/deepseek-ai/DeepSeek-R1-0528",
+        "nanogpt/deepseek/deepseek-latest",
+        "nanogpt/deepseek/deepseek-v3.2:thinking",
+        "nanogpt/deepseek/deepseek-v4-flash",
+        "nanogpt/deepseek/deepseek-v4-flash-0731",
+        "nanogpt/deepseek/deepseek-v4-flash-0731-cheaper",
+        "nanogpt/deepseek/deepseek-v4-flash-0731-cheaper:thinking",
+        "nanogpt/deepseek/deepseek-v4-flash-0731:thinking",
+        "nanogpt/deepseek/deepseek-v4-flash-latest",
+        "nanogpt/deepseek/deepseek-v4-flash:thinking",
+        "nanogpt/deepseek/deepseek-v4-pro",
+        "nanogpt/deepseek/deepseek-v4-pro-cheaper",
+        "nanogpt/deepseek/deepseek-v4-pro-cheaper:thinking",
+        "nanogpt/deepseek/deepseek-v4-pro:thinking",
+        "novita/deepseek/deepseek-r1",
+        "novita/deepseek/deepseek-r1-0528",
+        "novita/deepseek/deepseek-r1-distill-llama-70b",
+        "novita/deepseek/deepseek-r1-turbo",
+        "novita/deepseek/deepseek-r1/community",
+        "novita/deepseek/deepseek-v3.1",
+        "novita/deepseek/deepseek-v3.1-terminus",
+        "novita/deepseek/deepseek-v3.2",
+        "novita/deepseek/deepseek-v3.2-exp",
+        "novita/deepseek/deepseek-v4-flash",
+        "novita/deepseek/deepseek-v4-flash-0731",
+        "novita/deepseek/deepseek-v4-pro",
+        "nvidia/deepseek-ai/deepseek-r1-0528",
+        "nvidia/deepseek-ai/deepseek-v3.1",
+        "nvidia/deepseek-ai/deepseek-v3.1-terminus",
+        "nvidia/deepseek-ai/deepseek-v3.2",
+        "nvidia/deepseek-ai/deepseek-v4-flash",
+        "nvidia/deepseek-ai/deepseek-v4-pro",
+        "ollama-cloud/deepseek-v3.1:671b",
+        "ollama-cloud/deepseek-v3.2",
+        "ollama-cloud/deepseek-v4-flash",
+        "ollama-cloud/deepseek-v4-flash:0731",
+        "ollama-cloud/deepseek-v4-flash:preview",
+        "ollama-cloud/deepseek-v4-pro",
+        "opencode-go/deepseek-v4-flash",
+        "opencode-zen/deepseek-v4-flash",
+        "opencode-zen/deepseek-v4-flash-free",
+        "opencode-zen/deepseek-v4-pro",
+        "qianfan/deepseek-v3.2",
+        "together/deepseek-ai/DeepSeek-R1",
+        "together/deepseek-ai/DeepSeek-V3-1",
+        "together/deepseek-ai/DeepSeek-V4-Flash-0731",
+        "together/deepseek-ai/DeepSeek-V4-Pro",
+        "venice/deepseek-v3.2",
+        "venice/deepseek-v4-flash",
+        "venice/deepseek-v4-flash-0731",
+        "venice/deepseek-v4-pro",
+        "vercel-ai-gateway/deepseek/deepseek-r1",
+        "vercel-ai-gateway/deepseek/deepseek-v3.1",
+        "vercel-ai-gateway/deepseek/deepseek-v3.1-terminus",
+        "vercel-ai-gateway/deepseek/deepseek-v3.2",
+        "vercel-ai-gateway/deepseek/deepseek-v3.2-thinking",
+        "vercel-ai-gateway/deepseek/deepseek-v4-flash",
+        "vercel-ai-gateway/deepseek/deepseek-v4-flash-0731",
+        "vercel-ai-gateway/deepseek/deepseek-v4-pro",
+        "wafer-serverless/deepseek-v4-flash",
+        "wafer-serverless/deepseek-v4-pro",
+        "yandex/deepseek-v32",
+        "zenmux/deepseek/deepseek-chat-v3.1",
+        "zenmux/deepseek/deepseek-r1-0528",
+        "zenmux/deepseek/deepseek-reasoner",
+        "zenmux/deepseek/deepseek-v3.2",
+        "zenmux/deepseek/deepseek-v3.2-exp",
+        "zenmux/deepseek/deepseek-v4-flash",
+        "zenmux/deepseek/deepseek-v4-flash-free",
+        "zenmux/deepseek/deepseek-v4-pro",
+        "zenmux/deepseek/deepseek-v4-pro-free"
+      ],
+      "profile_id": "compat-24",
+      "shape": {
+        "wire/requires_reasoning_content_for_all_assistant_turns": true
+      }
+    },
+    {
+      "model_count": 8,
+      "models": [
+        "github-copilot/gemini-2.5-pro",
+        "github-copilot/gemini-3-flash-preview",
+        "github-copilot/gemini-3.1-pro-preview",
+        "github-copilot/gemini-3.5-flash",
+        "github-copilot/gemini-3.6-flash",
+        "github-copilot/gpt-4.1",
+        "github-copilot/kimi-k2.7-code",
+        "github-copilot/kimi-k3"
+      ],
+      "profile_id": "compat-25",
+      "shape": {
+        "wire/supports_developer_role": false,
+        "wire/supports_reasoning_effort": false,
+        "wire/supports_store": false
+      }
+    },
+    {
+      "model_count": 1,
+      "models": [
+        "alibaba-token-plan/qwen3.8-max"
+      ],
+      "profile_id": "compat-26",
+      "shape": {
+        "wire/supports_developer_role": false,
+        "wire/supports_reasoning_effort": true,
+        "wire/when_thinking": {
+          "extraBody": {
+            "enable_thinking": true
+          },
+          "thinkingFormat": "openai"
+        }
+      }
+    },
+    {
+      "model_count": 1,
+      "models": [
+        "alibaba-token-plan/qwen3.8-max-preview"
+      ],
+      "profile_id": "compat-27",
+      "shape": {
+        "wire/supports_developer_role": false,
+        "wire/supports_reasoning_effort": true
+      }
+    },
+    {
+      "model_count": 18,
+      "models": [
+        "alibaba-coding-plan/MiniMax-M2.5",
+        "alibaba-coding-plan/glm-4.7",
+        "alibaba-coding-plan/glm-5",
+        "alibaba-coding-plan/kimi-k2.5",
+        "alibaba-coding-plan/qwen3-coder-next",
+        "alibaba-coding-plan/qwen3-coder-plus",
+        "alibaba-coding-plan/qwen3-max-2026-01-23",
+        "alibaba-coding-plan/qwen3.5-plus",
+        "alibaba-coding-plan/qwen3.6-flash",
+        "alibaba-coding-plan/qwen3.6-plus",
+        "alibaba-coding-plan/qwen3.7-max",
+        "alibaba-coding-plan/qwen3.7-plus",
+        "alibaba-token-plan/glm-5.2",
+        "alibaba-token-plan/qwen3.6-flash",
+        "alibaba-token-plan/qwen3.7-max",
+        "alibaba-token-plan/qwen3.7-plus",
+        "fireworks/qwen3.6-plus",
+        "wafer-serverless/Qwen3.5-397B-A17B"
+      ],
+      "profile_id": "compat-28",
+      "shape": {
+        "wire/supports_developer_role": false
+      }
+    },
+    {
+      "model_count": 8,
+      "models": [
+        "stepfun-plan/step-3.5-flash",
+        "stepfun-plan/step-3.5-flash-2603",
+        "stepfun-plan/step-3.7-flash",
+        "stepfun-plan/step-router-v1",
+        "stepfun/step-1o-turbo-vision",
+        "stepfun/step-3.5-flash",
+        "stepfun/step-3.5-flash-2603",
+        "stepfun/step-3.7-flash"
+      ],
+      "profile_id": "compat-29",
+      "shape": {
+        "wire/supports_developer_role": true,
+        "wire/supports_reasoning_effort": true
+      }
+    },
+    {
+      "model_count": 1,
+      "models": [
+        "opencode-go/kimi-k2.7-code"
+      ],
+      "profile_id": "compat-30",
+      "shape": {
+        "wire/supports_forced_tool_choice": false
+      }
+    },
+    {
+      "model_count": 5,
+      "models": [
+        "github-copilot/gemini-3-pro-preview",
+        "github-copilot/gpt-4o",
+        "github-copilot/grok-code-fast-1",
+        "github-copilot/raptor-mini",
+        "nanogpt/gemini-2.5-pro"
+      ],
+      "profile_id": "compat-31",
+      "shape": {
+        "wire/supports_reasoning_effort": false,
+        "wire/supports_store": false
+      }
+    },
+    {
+      "model_count": 19,
+      "models": [
+        "nanogpt/amazon/nova-lite-v1",
+        "nanogpt/amazon/nova-micro-v1",
+        "nanogpt/amazon/nova-pro-v1",
+        "opencode-go/mimo-v2-omni",
+        "opencode-go/mimo-v2-pro",
+        "opencode-go/mimo-v2.5",
+        "opencode-go/mimo-v2.5-pro",
+        "openrouter/amazon/nova-lite-v1",
+        "openrouter/amazon/nova-micro-v1",
+        "openrouter/amazon/nova-premier-v1",
+        "openrouter/amazon/nova-pro-v1",
+        "openrouter/arcee-ai/trinity-large-preview",
+        "openrouter/arcee-ai/trinity-large-preview:free",
+        "openrouter/baidu/cobuddy:free",
+        "openrouter/minimax/minimax-m2.5:free",
+        "openrouter/openrouter/owl-alpha",
+        "openrouter/stepfun/step-3.5-flash",
+        "openrouter/stepfun/step-3.5-flash:free",
+        "openrouter/stepfun/step-3.7-flash"
+      ],
+      "profile_id": "compat-32",
+      "shape": {
+        "wire/supports_tool_choice": false
+      }
+    },
+    {
+      "model_count": 40,
+      "models": [
+        "nanogpt/gemini-3-pro-preview",
+        "nanogpt/venice-uncensored",
+        "venice/aion-labs-aion-2-0",
+        "venice/aion-labs.aion-2-0",
+        "venice/claude-opus-45",
+        "venice/claude-sonnet-45",
+        "venice/e2ee-deepseek-v4-flash",
+        "venice/e2ee-gemma-3-27b-p",
+        "venice/e2ee-gemma-4-26b-a4b-uncensored-p",
+        "venice/e2ee-gemma-4-31b",
+        "venice/e2ee-glm-4-7-flash-p",
+        "venice/e2ee-glm-4-7-p",
+        "venice/e2ee-glm-5",
+        "venice/e2ee-glm-5-1",
+        "venice/e2ee-glm-5-2-p",
+        "venice/e2ee-gpt-oss-120b-p",
+        "venice/e2ee-gpt-oss-20b-p",
+        "venice/e2ee-qwen-2-5-7b-p",
+        "venice/e2ee-qwen3-30b-a3b-p",
+        "venice/e2ee-qwen3-5-122b-a10b",
+        "venice/e2ee-qwen3-6-27b",
+        "venice/e2ee-qwen3-6-35b-a3b",
+        "venice/e2ee-qwen3-6-35b-a3b-uncensored-p",
+        "venice/e2ee-qwen3-vl-30b-a3b-p",
+        "venice/e2ee-venice-uncensored-24b-p",
+        "venice/gemini-3-pro-preview",
+        "venice/google.gemma-4-26b-a4b-it",
+        "venice/google.gemma-4-31b-it",
+        "venice/grok-4-20-beta",
+        "venice/grok-4-20-multi-agent",
+        "venice/grok-4-20-multi-agent-beta",
+        "venice/grok-41-fast",
+        "venice/grok-code-fast-1",
+        "venice/hermes-3-llama-3.1-405b",
+        "venice/kimi-k2-thinking",
+        "venice/minimax-m21",
+        "venice/mistral-31-24b",
+        "venice/qwen3-4b",
+        "venice/qwen3-coder-480b-a35b-instruct",
+        "venice/venice-uncensored"
+      ],
+      "profile_id": "compat-33",
+      "shape": {
+        "wire/supports_usage_in_streaming": false
+      }
+    },
+    {
+      "model_count": 2,
+      "models": [
+        "agnes-plan/agnes-2.0-flash",
+        "agnes/agnes-2.0-flash"
+      ],
+      "profile_id": "compat-34",
+      "shape": {
+        "wire/thinking_format": "qwen-chat-template"
+      }
+    },
+    {
+      "model_count": 1,
+      "models": [
+        "nanogpt/MiniMax-M2"
+      ],
+      "profile_id": "compat-35",
+      "shape": {
+        "wire/thinking_format": "zai"
+      }
+    }
+  ],
+  "schema_version": 1
+}

@@ -1,0 +1,205 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "plain_text",
+      "input": {
+        "model": "amazon.nova-pro-v1:0",
+        "thread": [
+          {
+            "kind": "message",
+            "role": "system",
+            "parts": [
+              {
+                "kind": "text",
+                "text": "Answer concisely."
+              }
+            ]
+          },
+          {
+            "kind": "message",
+            "role": "user",
+            "parts": [
+              {
+                "kind": "text",
+                "text": "Hello, Bedrock."
+              }
+            ]
+          }
+        ],
+        "sampling": {
+          "max_output_tokens": 128,
+          "temperature": 0.2,
+          "top_p": 0.9,
+          "stop": [
+            "<END>"
+          ]
+        },
+        "tools": []
+      },
+      "expected_body": "request-plain-text.json",
+      "expected_unsupported": []
+    },
+    {
+      "id": "tools_adaptive_thinking",
+      "input": {
+        "model": "us.anthropic.claude-opus-4-7-v1:0",
+        "thread": [
+          {
+            "kind": "message",
+            "role": "user",
+            "parts": [
+              {
+                "kind": "text",
+                "text": "Calculate 2 + 2."
+              }
+            ]
+          }
+        ],
+        "tools": [
+          {
+            "name": "calculator",
+            "description": "Evaluate a mathematical expression.",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "expression": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "expression"
+              ]
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "thinking": {
+          "effort": "high"
+        },
+        "provider_options": {
+          "amazon-bedrock": {
+            "reasoning_mode": "adaptive",
+            "thinking_display": "summarized"
+          }
+        }
+      },
+      "expected_body": "request-tools-adaptive-thinking.json",
+      "expected_unsupported": []
+    },
+    {
+      "id": "cache_no_tools_sentinel",
+      "input": {
+        "model": "eu.anthropic.claude-sonnet-4-6-v1:0",
+        "thread": [
+          {
+            "kind": "message",
+            "role": "system",
+            "parts": [
+              {
+                "kind": "text",
+                "text": "Use prior tool results."
+              }
+            ]
+          },
+          {
+            "kind": "message",
+            "role": "user",
+            "parts": [
+              {
+                "kind": "text",
+                "text": "Find x."
+              }
+            ]
+          },
+          {
+            "kind": "message",
+            "role": "assistant",
+            "parts": [
+              {
+                "kind": "thinking",
+                "text": "I should look it up.",
+                "signature_utf8": "synthetic-signature",
+                "redacted": false
+              }
+            ]
+          },
+          {
+            "kind": "tool_call",
+            "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "name": "lookup",
+            "args_json_utf8": "{\"q\":\"x\"}"
+          },
+          {
+            "kind": "tool_result",
+            "call_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "name": "lookup",
+            "parts": [
+              {
+                "kind": "text",
+                "text": "x is 4"
+              }
+            ],
+            "is_error": false
+          },
+          {
+            "kind": "message",
+            "role": "user",
+            "parts": [
+              {
+                "kind": "text",
+                "text": "Continue without more tools."
+              }
+            ]
+          }
+        ],
+        "tools": [],
+        "cache": {
+          "session_key": "synthetic-session",
+          "retention": "long",
+          "mode": "explicit",
+          "breakpoint": "latest_stable_message"
+        },
+        "provider_options": {
+          "amazon-bedrock": {
+            "cache_ttl": "1h"
+          }
+        }
+      },
+      "expected_body": "request-cache-no-tools-sentinel.json",
+      "expected_unsupported": []
+    },
+    {
+      "id": "budget_thinking_interleaved",
+      "input": {
+        "model": "eu.anthropic.claude-sonnet-4-6-v1:0",
+        "thread": [
+          {
+            "kind": "message",
+            "role": "user",
+            "parts": [
+              {
+                "kind": "text",
+                "text": "Solve carefully."
+              }
+            ]
+          }
+        ],
+        "tools": [],
+        "thinking": {
+          "effort": "high",
+          "budget_tokens": 4096,
+          "hide_summary": true
+        },
+        "provider_options": {
+          "amazon-bedrock": {
+            "reasoning_mode": "budget",
+            "interleaved_thinking": true
+          }
+        }
+      },
+      "expected_body": "request-budget-thinking-interleaved.json",
+      "expected_unsupported": []
+    }
+  ]
+}

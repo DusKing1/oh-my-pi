@@ -1822,8 +1822,8 @@ mod tests {
 		assert!(caps.inside_tmux);
 		assert_eq!(caps.graphics, Graphics::KittyPlaceholders);
 
-		// Unknown terminal in tmux: a forced kitty protocol opts into
-		// placeholders (pi's `PI_FORCE_IMAGE_PROTOCOL=kitty` / `timg -pk`).
+		// Unknown terminals in tmux can force the OMP kitty protocol to use
+		// placeholders, matching the equivalent `timg -pk` behavior.
 		let forced_unknown: &[(&str, &str)] =
 			&[("TMUX", "/tmp/tmux"), ("TERM", "tmux-256color"), ("OMP_FORCE_IMAGE_PROTOCOL", "kitty")];
 		let caps = detect(forced_unknown, TerminalPlatform::Linux);

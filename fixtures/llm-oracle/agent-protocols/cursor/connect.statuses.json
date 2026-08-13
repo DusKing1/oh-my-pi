@@ -1,0 +1,192 @@
+{
+  "case": "completion_statuses",
+  "context": {
+    "id": 17,
+    "exec_id": "exec-17",
+    "command": "printf colours",
+    "cwd": "/work/project"
+  },
+  "status_input": {
+    "failed_exit_code": 23,
+    "reason": "policy detail",
+    "is_readonly": true,
+    "command_timeout_ms": 750,
+    "local_execution_time_ms": 41
+  },
+  "cases": [
+    {
+      "outcome": "exited",
+      "frames": [
+        {
+          "shell_stream": {
+            "exit": {
+              "code": 0,
+              "cwd": "/work/project",
+              "aborted": false,
+              "abort_reason": null
+            }
+          }
+        },
+        {
+          "shell_result": {
+            "success": {
+              "command": "printf colours",
+              "working_directory": "/work/project",
+              "exit_code": 0
+            }
+          }
+        },
+        {
+          "stream_close": {
+            "id": 17
+          }
+        }
+      ]
+    },
+    {
+      "outcome": "failed",
+      "frames": [
+        {
+          "shell_stream": {
+            "exit": {
+              "code": 23,
+              "cwd": "/work/project",
+              "aborted": false,
+              "abort_reason": null
+            }
+          }
+        },
+        {
+          "shell_result": {
+            "failure": {
+              "command": "printf colours",
+              "working_directory": "/work/project",
+              "exit_code": 23,
+              "aborted": false,
+              "abort_reason": null
+            }
+          }
+        },
+        {
+          "stream_close": {
+            "id": 17
+          }
+        }
+      ]
+    },
+    {
+      "outcome": "rejected",
+      "frames": [
+        {
+          "shell_stream": {
+            "rejected": {
+              "command": "printf colours",
+              "working_directory": "/work/project",
+              "reason": "policy detail",
+              "is_readonly": true
+            }
+          }
+        },
+        {
+          "shell_stream": {
+            "exit": {
+              "code": 1,
+              "cwd": "/work/project",
+              "aborted": false,
+              "abort_reason": null
+            }
+          }
+        },
+        {
+          "shell_result": {
+            "rejected": {
+              "command": "printf colours",
+              "working_directory": "/work/project",
+              "reason": "policy detail",
+              "is_readonly": true
+            }
+          }
+        },
+        {
+          "stream_close": {
+            "id": 17
+          }
+        }
+      ]
+    },
+    {
+      "outcome": "denied",
+      "frames": [
+        {
+          "shell_stream": {
+            "permission_denied": {
+              "command": "printf colours",
+              "working_directory": "/work/project",
+              "error": "policy detail",
+              "is_readonly": true
+            }
+          }
+        },
+        {
+          "shell_stream": {
+            "exit": {
+              "code": 1,
+              "cwd": "/work/project",
+              "aborted": false,
+              "abort_reason": null
+            }
+          }
+        },
+        {
+          "shell_result": {
+            "permission_denied": {
+              "command": "printf colours",
+              "working_directory": "/work/project",
+              "error": "policy detail",
+              "is_readonly": true
+            }
+          }
+        },
+        {
+          "stream_close": {
+            "id": 17
+          }
+        }
+      ]
+    },
+    {
+      "outcome": "timeout",
+      "frames": [
+        {
+          "shell_stream": {
+            "stderr": "Command timed out after 750ms"
+          }
+        },
+        {
+          "shell_stream": {
+            "exit": {
+              "code": 1,
+              "cwd": "/work/project",
+              "aborted": true,
+              "abort_reason": null
+            }
+          }
+        },
+        {
+          "shell_result": {
+            "timeout": {
+              "command": "printf colours",
+              "working_directory": "/work/project",
+              "timeout_ms": 750
+            }
+          }
+        },
+        {
+          "stream_close": {
+            "id": 17
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "cases": [
+    {
+      "case": "length",
+      "events": [
+        {
+          "type": "outcome",
+          "stop_reason": "max_tokens",
+          "usage": {
+            "input_tokens": 2,
+            "output_tokens": 4,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "total_tokens": 6,
+            "accuracy": "exact"
+          }
+        }
+      ],
+      "terminal_count": 1
+    },
+    {
+      "case": "load",
+      "events": [
+        {
+          "type": "error",
+          "kind": "upstream",
+          "detail": "Ollama loaded the model but generated nothing because the request had no user message"
+        }
+      ],
+      "terminal_count": 1
+    }
+  ]
+}

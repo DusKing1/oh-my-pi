@@ -1,0 +1,98 @@
+{
+  "import_policy": {
+    "error_must_contain": [
+      "provider/model",
+      "<header-name>"
+    ],
+    "ordinary_model_header_not_client_serialized": {
+      "expected_client_contains_header": false,
+      "input": {
+        "x-model-test": "must-not-be-bundled"
+      }
+    },
+    "rejected_credential_or_framing_headers": [
+      "authorization",
+      "host",
+      "content-length",
+      "transfer-encoding"
+    ]
+  },
+  "resolved_policy": {
+    "cases": [
+      {
+        "accepted": false,
+        "name": "authorization"
+      },
+      {
+        "accepted": false,
+        "name": "AUTHORIZATION"
+      },
+      {
+        "accepted": false,
+        "name": "proxy-authorization"
+      },
+      {
+        "accepted": false,
+        "name": "cookie"
+      },
+      {
+        "accepted": false,
+        "name": "set-cookie"
+      },
+      {
+        "accepted": false,
+        "name": "x-api-key"
+      },
+      {
+        "accepted": false,
+        "name": "api-key"
+      },
+      {
+        "accepted": false,
+        "name": "x-goog-api-key"
+      },
+      {
+        "accepted": false,
+        "name": "host"
+      },
+      {
+        "accepted": false,
+        "name": "connection"
+      },
+      {
+        "accepted": false,
+        "name": "content-length"
+      },
+      {
+        "accepted": false,
+        "name": "transfer-encoding"
+      },
+      {
+        "accepted": true,
+        "name": "User-Agent"
+      },
+      {
+        "accepted": true,
+        "name": "X-GitHub-Api-Version"
+      },
+      {
+        "accepted": true,
+        "name": "x-model-test"
+      }
+    ],
+    "unsafe_names_case_insensitive": [
+      "authorization",
+      "proxy-authorization",
+      "cookie",
+      "set-cookie",
+      "x-api-key",
+      "api-key",
+      "x-goog-api-key",
+      "host",
+      "connection",
+      "content-length",
+      "transfer-encoding"
+    ]
+  },
+  "schema_version": 1
+}

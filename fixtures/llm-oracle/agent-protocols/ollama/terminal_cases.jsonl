@@ -1,0 +1,2 @@
+{"case":"length","wire":{"message":{"role":"assistant","content":""},"done":true,"done_reason":"length","prompt_eval_count":2,"eval_count":4}}
+{"case":"load","wire":{"message":{"role":"assistant","content":""},"done":true,"done_reason":"load"}}

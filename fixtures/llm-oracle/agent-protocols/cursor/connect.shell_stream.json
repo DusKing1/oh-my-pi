@@ -1,0 +1,73 @@
+{
+  "case": "stream_order",
+  "context": {
+    "id": 17,
+    "exec_id": "exec-17",
+    "command": "printf colours",
+    "cwd": "/work/project"
+  },
+  "executor_chunks": [
+    {
+      "channel": "stdout",
+      "bytes_hex": "706c61696e1b5b3331"
+    },
+    {
+      "channel": "stderr",
+      "bytes_utf8": "warning\n"
+    },
+    {
+      "channel": "stdout",
+      "bytes_utf8": "mred\u001b[0m\n"
+    }
+  ],
+  "client_frames": [
+    {
+      "shell_stream": "start"
+    },
+    {
+      "shell_stream": {
+        "stdout": "plain"
+      }
+    },
+    {
+      "shell_stream": {
+        "stderr": "warning\n"
+      }
+    },
+    {
+      "shell_stream": {
+        "stdout": "\u001b[31mred\u001b[0m\n"
+      }
+    },
+    {
+      "shell_stream": {
+        "exit": {
+          "code": 0,
+          "cwd": "/work/project",
+          "aborted": false,
+          "abort_reason": null,
+          "local_execution_time_ms": 41
+        }
+      }
+    },
+    {
+      "shell_result": {
+        "success": {
+          "command": "printf colours",
+          "working_directory": "/work/project",
+          "exit_code": 0,
+          "signal": "",
+          "stdout": "committed output",
+          "stderr": "",
+          "execution_time": 41,
+          "local_execution_time_ms": 41
+        }
+      }
+    },
+    {
+      "stream_close": {
+        "id": 17
+      }
+    }
+  ]
+}

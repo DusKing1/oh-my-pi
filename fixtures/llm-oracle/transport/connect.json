@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "framing": "connect-protocol-envelope",
+  "binary_path": "connect_frames.bin",
+  "stream_sha256_scope": "entire-file",
+  "envelope_layout": {"flags_bytes": 1, "length_bytes": 4, "length_endian": "big", "length_counts": "payload-only"},
+  "cases": [
+    {
+      "id": "connect.protobuf-split-frames.v1",
+      "byte_range": [0, 30],
+      "chunk_boundaries": [1, 5, 10, 14, 19, 20, 22, 25, 30],
+      "expected_frames": [
+        {"flags": 0, "kind": "message", "payload_hex": "0a0568656c6c6f", "protobuf_fields": [{"number": 1, "wire_type": 2, "value_utf8": "hello"}]},
+        {"flags": 0, "kind": "message", "payload_hex": "1204f09f9982", "protobuf_fields": [{"number": 2, "wire_type": 2, "value_utf8": "🙂"}]},
+        {"flags": 2, "kind": "end-stream", "payload_hex": "7b7d", "metadata": {}}
+      ],
+      "invariants": ["emit-only-after-complete-envelope", "preserve-payload-bytes", "do-not-restart-at-chunk-boundary", "do-not-decode-partial-utf8"]
+    },
+    {
+      "id": "connect.first-frame-truncated.v1",
+      "input_hex": "00000000070a0568656c",
+      "end_of_stream": true,
+      "expected_frames": [],
+      "expected_error": {"kind": "unexpected-eof", "phase": "first-frame", "declared_payload_bytes": 7, "available_payload_bytes": 5},
+      "commit_state": "uncommitted",
+      "retry_action": "retry-exact-request"
+    }
+  ]
+}

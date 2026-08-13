@@ -1,0 +1,21 @@
+{
+  "models": [
+    {
+      "slug": "gpt-5.2-codex",
+      "id": "ignored-fallback-id",
+      "display_name": "GPT-5.2 Codex",
+      "family": "gpt-5-codex",
+      "visibility": "visible",
+      "context_window": 400000,
+      "unknown_provider_field": [1, 2, 3]
+    },
+    {
+      "id": "retired-account-model",
+      "display_name": "Retired account model",
+      "visibility": "hidden"
+    }
+  ],
+  "has_more": true,
+  "last_id": "retired-account-model",
+  "unknown_top_level": { "opaque": true }
+}

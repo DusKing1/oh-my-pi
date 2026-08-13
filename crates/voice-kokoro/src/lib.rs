@@ -1,7 +1,7 @@
 //! Neural text-to-speech synthesis with the Kokoro model.
 //!
-//! The public modules expose the model architecture and checkpoint configuration
-//! used by [`KModel`] to generate audio samples.
+//! The public modules expose the model architecture and checkpoint
+//! configuration used by [`KModel`] to generate audio samples.
 
 #![allow(
 	clippy::too_many_arguments,

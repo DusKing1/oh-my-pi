@@ -1,0 +1,21 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://cursor.example.invalid/agent.v1.AgentService/GetUsableModels",
+    "http_version": "2",
+    "headers": {
+      "authorization": "Bearer oracle-cursor-token",
+      "content-type": "application/proto",
+      "accept": "application/proto",
+      "te": "trailers",
+      "x-ghost-mode": "true",
+      "x-cursor-client-version": "cli-2026.07.23-e383d2b",
+      "x-cursor-client-type": "cli"
+    },
+    "body_path": "discovery.request.bin"
+  },
+  "response_examples": {
+    "raw_path": "discovery.response.raw.bin",
+    "connect_framed_path": "discovery.response.connect.bin"
+  }
+}

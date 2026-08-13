@@ -1,0 +1,89 @@
+{
+  "cases": [
+    {
+      "absent_after_collapse": "qwen/qwen3-max-thinking",
+      "expected_logical": {
+        "effort_routing": {
+          "high": "qwen/qwen3-max-thinking",
+          "low": "qwen/qwen3-max-thinking",
+          "medium": "qwen/qwen3-max-thinking",
+          "minimal": "qwen/qwen3-max-thinking",
+          "off": "qwen/qwen3-max"
+        },
+        "efforts": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ],
+        "model": "qwen/qwen3-max",
+        "thinking": {
+          "effortRouting": {
+            "high": "qwen/qwen3-max-thinking",
+            "low": "qwen/qwen3-max-thinking",
+            "medium": "qwen/qwen3-max-thinking",
+            "minimal": "qwen/qwen3-max-thinking",
+            "off": "qwen/qwen3-max"
+          },
+          "efforts": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "mode": "effort",
+          "requiresEffort": true
+        }
+      },
+      "inputs": [
+        "qwen/qwen3-max",
+        "qwen/qwen3-max-thinking"
+      ],
+      "provider": "kilo",
+      "rationale": "Base plus -thinking siblings collapse only after inherited prices agree; Off retains the base wire id and all advertised nonzero efforts route to the thinking wire id."
+    },
+    {
+      "absent_after_collapse": "qwen/qwen3-max-thinking",
+      "expected_logical": {
+        "effort_routing": {
+          "high": "qwen/qwen3-max-thinking",
+          "low": "qwen/qwen3-max-thinking",
+          "medium": "qwen/qwen3-max-thinking",
+          "minimal": "qwen/qwen3-max-thinking",
+          "off": "qwen/qwen3-max"
+        },
+        "efforts": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ],
+        "model": "qwen/qwen3-max",
+        "thinking": {
+          "effortRouting": {
+            "high": "qwen/qwen3-max-thinking",
+            "low": "qwen/qwen3-max-thinking",
+            "medium": "qwen/qwen3-max-thinking",
+            "minimal": "qwen/qwen3-max-thinking",
+            "off": "qwen/qwen3-max"
+          },
+          "efforts": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "mode": "effort",
+          "requiresEffort": true
+        }
+      },
+      "inputs": [
+        "qwen/qwen3-max",
+        "qwen/qwen3-max-thinking"
+      ],
+      "provider": "openrouter",
+      "rationale": "Base plus -thinking siblings collapse only after inherited prices agree; Off retains the base wire id and all advertised nonzero efforts route to the thinking wire id."
+    }
+  ],
+  "schema_version": 1
+}

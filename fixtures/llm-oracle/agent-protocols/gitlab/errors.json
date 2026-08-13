@@ -1,0 +1,49 @@
+{
+  "cases": [
+    {
+      "input": "socket closes before terminal after reconnect budget exhausted",
+      "expected": {
+        "kind": "upstream",
+        "detail": "GitLab Duo Workflow socket closed before a terminal status",
+        "diagnostic_code": "transport",
+        "terminal_count": 1
+      }
+    },
+    {
+      "input": "idle timeout after reconnect budget exhausted",
+      "expected": {
+        "kind": "upstream",
+        "detail": "GitLab Duo Workflow socket idle timeout",
+        "diagnostic_code": "timeout",
+        "terminal_count": 1
+      }
+    },
+    {
+      "input": "action without executor",
+      "expected": {
+        "kind": "unsupported",
+        "detail": "GitLab Duo Workflow requires an in-turn executor",
+        "diagnostic_code": "unsupported",
+        "terminal_count": 1
+      }
+    },
+    {
+      "input": "authentication/authorization failure detail",
+      "expected": {
+        "kind": "auth",
+        "diagnostic_code": "auth",
+        "retryability": "never",
+        "terminal_count": 1
+      }
+    },
+    {
+      "input": "malformed JSON frame",
+      "fixture": "stream.malformed.jsonl",
+      "expected": {
+        "kind": "upstream",
+        "diagnostic_code": "malformed_frame",
+        "terminal_count": 1
+      }
+    }
+  ]
+}

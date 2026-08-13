@@ -1,0 +1,3 @@
+{"direction":"client_to_server","kind":"start","payload":{"startRequest":{"workflowID":"workflow-bad","sessionID":"session-bad"}}}
+{"direction":"server_to_client","kind":"raw_text","raw":"{not-json"}
+{"direction":"client_to_server","kind":"close"}

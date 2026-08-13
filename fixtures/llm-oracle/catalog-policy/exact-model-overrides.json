@@ -1,0 +1,196 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "apply_patch_tool_type": "freeform",
+        "thinking": {
+          "efforts": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "mode": "effort"
+        }
+      },
+      "model": "openai/gpt-5",
+      "provenance": "archive/llm-legacy/llm-catalog/tests/generated_models.rs::checked_in_snapshot_retains_representative_server_behavior",
+      "rationale": "OpenAI GPT-5 uses the freeform apply-patch tool shape."
+    },
+    {
+      "expected": {
+        "headers": {
+          "User-Agent": "opencode/1.3.15",
+          "X-GitHub-Api-Version": "2026-06-01"
+        },
+        "premium_multiplier": 0.33,
+        "thinking": {
+          "efforts": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "mode": "budget"
+        }
+      },
+      "model": "github-copilot/claude-haiku-4.5",
+      "provenance": "archive/llm-legacy/llm-catalog/tests/generated_models.rs::checked_in_snapshot_retains_representative_server_behavior",
+      "rationale": "GitHub Copilot exposes budget thinking with five exact effort levels and a 0.33 premium request multiplier."
+    },
+    {
+      "expected": {
+        "compat": {
+          "wire/thinking_format": "qwen-chat-template"
+        },
+        "supports_computer_use": false,
+        "supports_tools": true,
+        "thinking": {
+          "efforts": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "mode": "effort"
+        }
+      },
+      "model": "agnes/agnes-2.0-flash",
+      "provenance": "archive/llm-legacy/llm-catalog/tests/generated_models.rs::checked_in_snapshot_retains_representative_server_behavior",
+      "rationale": "Agnes explicitly supports tools, not computer use, and uses the Qwen chat-template thinking format."
+    },
+    {
+      "expected": {
+        "apply_patch_tool_type": "freeform",
+        "context_promotion_target": "openai-codex/gpt-5.5",
+        "prefer_websockets": true,
+        "priority": 26,
+        "remote_compaction": {
+          "enabled": true,
+          "transport": "open-ai-codex",
+          "v2_streaming_enabled": true
+        },
+        "thinking": {
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "mode": "effort"
+        }
+      },
+      "model": "openai-codex/gpt-5.3-codex-spark",
+      "provenance": "archive/llm-legacy/llm-catalog/tests/generated_models.rs::checked_in_snapshot_retains_representative_server_behavior",
+      "rationale": "Codex Spark prefers WebSockets, has provider routing priority 26, and owns native remote compaction metadata."
+    },
+    {
+      "expected": {
+        "request_model_id": "gemini-3.1-pro-low",
+        "thinking": {
+          "effortBudgets": {
+            "high": 10001,
+            "low": 1001
+          },
+          "effortRouting": {
+            "high": "gemini-pro-agent",
+            "low": "gemini-3.1-pro-low",
+            "off": "gemini-3.1-pro-low"
+          },
+          "efforts": [
+            "low",
+            "high"
+          ],
+          "mode": "budget",
+          "suppressWhenOff": true
+        }
+      },
+      "model": "google-antigravity/gemini-3.1-pro",
+      "provenance": "archive/llm-legacy/llm-catalog/tests/generated_models.rs::checked_in_snapshot_retains_representative_server_behavior",
+      "rationale": "Antigravity routes the logical model through exact low/high wire ids and provider-specific thinking budgets."
+    },
+    {
+      "expected": {
+        "omit_max_output_tokens": true,
+        "supports_computer_use": false,
+        "supports_computer_use_config": false,
+        "thinking": {
+          "efforts": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "mode": "effort"
+        }
+      },
+      "model": "ollama-cloud/cogito-2.1:671b",
+      "provenance": "archive/llm-legacy/llm-catalog/tests/generated_models.rs::checked_in_snapshot_retains_representative_server_behavior",
+      "rationale": "This Ollama Cloud model omits the maximum-output-token request field and explicitly disables computer-use configuration."
+    },
+    {
+      "expected": {
+        "apply_patch_tool_type": "freeform",
+        "prefer_websockets": true,
+        "priority": 3,
+        "thinking": {
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "mode": "effort"
+        },
+        "use_responses_lite": true
+      },
+      "model": "openai-codex/gpt-5.6-luna",
+      "provenance": "archive/llm-legacy/llm-catalog/tests/generated_models.rs::checked_in_snapshot_retains_representative_server_behavior",
+      "rationale": "Codex uses the Responses Lite shape for the Luna logical model without the public pro reasoning alias."
+    },
+    {
+      "expected": {
+        "apply_patch_tool_type": "freeform",
+        "reasoning_mode": "pro",
+        "request_model_id": "gpt-5.6-luna",
+        "thinking": {
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "mode": "effort"
+        }
+      },
+      "model": "openai/gpt-5.6-luna-pro",
+      "provenance": "archive/llm-legacy/llm-catalog/tests/generated_models.rs::checked_in_snapshot_retains_representative_server_behavior",
+      "rationale": "The public pro alias sends gpt-5.6-luna on the wire with pro reasoning mode."
+    },
+    {
+      "expected": {
+        "compat": {
+          "wire/requires_reasoning_content_for_all_assistant_turns": true
+        },
+        "thinking": {
+          "efforts": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "mode": "effort"
+        }
+      },
+      "model": "opencode-go/deepseek-v4-flash",
+      "provenance": "archive/llm-legacy/llm-catalog/tests/generated_models.rs::checked_in_snapshot_retains_representative_server_behavior",
+      "rationale": "The Responses route requires reasoning content replay on every assistant turn."
+    }
+  ],
+  "schema_version": 1,
+  "source_assertions": "archive/llm-legacy/llm-catalog/tests/generated_models.rs"
+}

@@ -1,0 +1,64 @@
+{
+  "cases": [
+    {
+      "input": {
+        "error": "synthetic upstream failure"
+      },
+      "expected": {
+        "events": [
+          {
+            "type": "error",
+            "kind": "upstream",
+            "detail": "synthetic upstream failure"
+          }
+        ],
+        "terminal_count": 1
+      }
+    },
+    {
+      "input_raw": "{not-json",
+      "expected": {
+        "decode_error_kind": "provider",
+        "detail_prefix": "invalid Ollama NDJSON chunk:"
+      }
+    },
+    {
+      "input": {
+        "message": {
+          "tool_calls": [
+            {
+              "function": {}
+            }
+          ]
+        }
+      },
+      "expected": {
+        "decode_error_kind": "provider",
+        "detail": "Ollama tool call is missing name"
+      }
+    },
+    {
+      "input": {
+        "message": {
+          "tool_calls": [
+            {}
+          ]
+        }
+      },
+      "expected": {
+        "decode_error_kind": "provider",
+        "detail": "Ollama tool call is missing function"
+      }
+    },
+    {
+      "input": "stream EOF before done=true",
+      "fixture": "malformed_terminal.ndjson",
+      "expected": {
+        "error_kind": "upstream",
+        "detail": "Ollama NDJSON stream ended before a done terminal chunk",
+        "terminal_count": 1
+      }
+    }
+  ],
+  "post_terminal_rule": "Ignore every record after the first done=true or error record."
+}

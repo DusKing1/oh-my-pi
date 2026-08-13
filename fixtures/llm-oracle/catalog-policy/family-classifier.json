@@ -1,0 +1,226 @@
+{
+  "cases": [
+    {
+      "case_kind": "canonical",
+      "expected_family": "anthropic",
+      "input": "openrouter/anthropic/claude-opus-4.6"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "openai",
+      "input": "azure/gpt-5.4-codex"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "kimi",
+      "input": "moonshotai/kimi-k2.6"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "qwen",
+      "input": "router/Qwen3-Coder"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "glm",
+      "input": "zai/glm-5"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "deepseek",
+      "input": "together/deepseek-v3"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "gemini",
+      "input": "google/gemini-3-pro"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "meta",
+      "input": "meta-llama/llama-4-maverick"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "gpt-oss",
+      "input": "openrouter/openai/gpt-oss-120b"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "minimax",
+      "input": "minimax/minimax-m2.5"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "mimo",
+      "input": "xiaomi/mimo-v2-flash"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "gemma",
+      "input": "google/gemma-3-27b-it"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "xai",
+      "input": "xai/grok-4"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "mistral",
+      "input": "mistralai/mistral-large-3"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "cohere",
+      "input": "cohere/command-r-plus"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "ai21",
+      "input": "ai21/jamba-large-1.7"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "amazon",
+      "input": "amazon/nova-pro"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "bytedance",
+      "input": "volcengine/doubao-1.5-pro"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "baidu",
+      "input": "baidu/ernie-4.5"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_family": "stepfun",
+      "input": "stepfun/step-3.5-flash"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": ""
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "   "
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "opaque-model"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "openrouter/vendor/opaque-model"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "claudette-opus-4.6"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "geminiac-3-pro"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "gemmaish-3"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "glimmer-5"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "grokker-4.6"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "llamazing-4"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "mistrally-large"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "commanding-r"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "jambalaya-large"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "novapro"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "titanium"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "doubaos"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "ernies"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "stepwise"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "gpt5"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "chatgpt5"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "codex"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "o10"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "o30"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_family": "",
+      "input": "o40"
+    }
+  ],
+  "schema_version": 1,
+  "unknown_family": ""
+}

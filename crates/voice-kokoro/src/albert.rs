@@ -129,8 +129,7 @@ impl AlbertAttention {
 
 		// Attention scores: [B, heads, T, T]
 		let scale = (self.head_dim as f32).sqrt();
-		let scores =
-			(query_states.matmul(&key_states.transpose(2, 3)?)? * (1.0f64 / scale as f64))?;
+		let scores = (query_states.matmul(&key_states.transpose(2, 3)?)? * (1.0f64 / scale as f64))?;
 
 		// Apply attention mask: mask is [B, 1, 1, T], 0 for attend, large neg for
 		// masked
@@ -140,11 +139,10 @@ impl AlbertAttention {
 		let attn_weights = candle_nn::ops::softmax_last_dim(&scores)?;
 
 		// Apply attention to values
-		let context = attn_weights.matmul(&value_states)?.transpose(1, 2)?.reshape((
-			batch_size,
-			sequence_length,
-			self.num_heads * self.head_dim,
-		))?;
+		let context = attn_weights
+			.matmul(&value_states)?
+			.transpose(1, 2)?
+			.reshape((batch_size, sequence_length, self.num_heads * self.head_dim))?;
 
 		// Output projection + residual + layer norm
 		let output = self.dense.forward(&context)?;
@@ -166,8 +164,9 @@ struct AlbertFFN {
 
 impl AlbertFFN {
 	/// Load from the `albert_layer` `VarBuilder` (not prefixed with "ffn").
-	/// Weight keys: ffn.weight, ffn.bias, `ffn_output.weight`, `ffn_output.bias`,
-	///              `full_layer_layer_norm.weight`, `full_layer_layer_norm.bias`
+	/// Weight keys: ffn.weight, ffn.bias, `ffn_output.weight`,
+	/// `ffn_output.bias`,              `full_layer_layer_norm.weight`,
+	/// `full_layer_layer_norm.bias`
 	fn load(config: &PlbertConfig, vb: VarBuilder) -> Result<Self> {
 		let h = config.hidden_size;
 		let i = config.intermediate_size;
@@ -254,8 +253,8 @@ impl CustomAlbert {
 		})
 	}
 
-	/// `input_ids`: [B, T] (u32), `attention_mask`: [B, T] (i64, 1=attend, 0=mask)
-	/// Returns: [B, T, `hidden_size`]
+	/// `input_ids`: [B, T] (u32), `attention_mask`: [B, T] (i64, 1=attend,
+	/// 0=mask) Returns: [B, T, `hidden_size`]
 	pub fn forward(&self, input_ids: &Tensor, attention_mask: &Tensor) -> Result<Tensor> {
 		let emb = self.embeddings.forward(input_ids)?;
 		// Project from embedding_size to hidden_size

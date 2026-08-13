@@ -1,4 +1,4 @@
-//! Unix-domain-socket transport for local daemon connections.
+//! Owner-local Unix-socket and Windows named-pipe transport for daemon RPC.
 
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
@@ -13,6 +13,22 @@ use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Channel;
 #[cfg(unix)]
 use tower::service_fn;
+#[cfg(windows)]
+use {
+	hyper_util::rt::TokioIo,
+	std::{
+		pin::Pin,
+		task::{Context, Poll},
+	},
+	tokio::{
+		io::{AsyncRead, AsyncWrite, ReadBuf},
+		net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions},
+		sync::mpsc,
+	},
+	tokio_stream::wrappers::ReceiverStream,
+	tonic::transport::server::Connected,
+	tower::service_fn,
+};
 
 use crate::Error;
 
@@ -20,13 +36,9 @@ use crate::Error;
 #[cfg(unix)]
 pub type Incoming = UnixListenerStream;
 
-/// Placeholder incoming stream on platforms without Unix-domain sockets.
-///
-/// Named-pipe support is tracked separately. Until it lands, Windows clients
-/// should use TCP on localhost with token authentication.
+/// A stream of accepted owner-local Windows named-pipe connections.
 #[cfg(windows)]
-#[derive(Debug)]
-pub struct Incoming;
+pub type Incoming = ReceiverStream<Result<NamedPipeConnection, std::io::Error>>;
 
 /// Bind an owner-only Unix-domain socket and return its incoming connection
 /// stream.
@@ -80,20 +92,99 @@ pub async fn connect(path: &Path) -> Result<Channel, Error> {
 	Ok(channel)
 }
 
-/// Return an unsupported error on Windows.
-///
-/// Named-pipe support is tracked separately. Until it lands, use TCP on
-/// localhost with token authentication.
+/// Binds an owner-local Windows named pipe and accepts successive instances.
 #[cfg(windows)]
-pub async fn listen(_path: &Path) -> Result<Incoming, Error> {
-	Err(Error::Unsupported("Unix-domain sockets are unavailable on Windows"))
+pub async fn listen(path: &Path) -> Result<Incoming, Error> {
+	let name = path.to_string_lossy().into_owned();
+	let first = ServerOptions::new()
+		.first_pipe_instance(true)
+		.create(&name)?;
+	let (sender, receiver) = mpsc::channel(16);
+	tokio::spawn(async move {
+		let mut pending = first;
+		loop {
+			if let Err(error) = pending.connect().await {
+				let _ = sender.send(Err(error)).await;
+				break;
+			}
+			let next = match ServerOptions::new().create(&name) {
+				Ok(next) => next,
+				Err(error) => {
+					let _ = sender.send(Err(error)).await;
+					break;
+				},
+			};
+			if sender.send(Ok(NamedPipeConnection(pending))).await.is_err() {
+				break;
+			}
+			pending = next;
+		}
+	});
+	Ok(ReceiverStream::new(receiver))
 }
 
-/// Return an unsupported error on Windows.
-///
-/// Named-pipe support is tracked separately. Until it lands, use TCP on
-/// localhost with token authentication.
+/// Connects a tonic channel to an owner-local Windows named pipe.
 #[cfg(windows)]
-pub async fn connect(_path: &Path) -> Result<Channel, Error> {
-	Err(Error::Unsupported("Unix-domain sockets are unavailable on Windows"))
+pub async fn connect(path: &Path) -> Result<Channel, Error> {
+	let name = path.to_string_lossy().into_owned();
+	let endpoint = tonic::transport::Endpoint::from_static("http://[::]:50051");
+	let channel = endpoint
+		.connect_with_connector(service_fn(move |_| {
+			let name = name.clone();
+			async move {
+				loop {
+					match ClientOptions::new().open(&name) {
+						Ok(client) => return Ok::<_, std::io::Error>(TokioIo::new(client)),
+						Err(error) if error.raw_os_error() == Some(231) => {
+							tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+						},
+						Err(error) => return Err(error),
+					}
+				}
+			}
+		}))
+		.await?;
+	Ok(channel)
+}
+
+/// Tonic-compatible accepted Windows named-pipe server instance.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct NamedPipeConnection(NamedPipeServer);
+
+#[cfg(windows)]
+impl Connected for NamedPipeConnection {
+	type ConnectInfo = ();
+
+	fn connect_info(&self) -> Self::ConnectInfo {}
+}
+
+#[cfg(windows)]
+impl AsyncRead for NamedPipeConnection {
+	fn poll_read(
+		self: Pin<&mut Self>,
+		context: &mut Context<'_>,
+		buffer: &mut ReadBuf<'_>,
+	) -> Poll<std::io::Result<()>> {
+		Pin::new(&mut self.get_mut().0).poll_read(context, buffer)
+	}
+}
+
+#[cfg(windows)]
+impl AsyncWrite for NamedPipeConnection {
+	fn poll_write(
+		self: Pin<&mut Self>,
+		context: &mut Context<'_>,
+		buffer: &[u8],
+	) -> Poll<std::io::Result<usize>> {
+		Pin::new(&mut self.get_mut().0).poll_write(context, buffer)
+	}
+
+	fn poll_flush(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+		Pin::new(&mut self.get_mut().0).poll_flush(context)
+	}
+
+	fn poll_shutdown(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+		Pin::new(&mut self.get_mut().0).poll_shutdown(context)
+	}
 }

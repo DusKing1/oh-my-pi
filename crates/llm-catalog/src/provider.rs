@@ -1,559 +1,738 @@
-//! Provider rows, authentication descriptions, and curated TOML loading.
+//! Provider, route, endpoint, authentication, and discovery records.
 
-use std::collections::BTreeMap;
-
-use bon::Builder;
 use omp_core::Str;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
+use strum::{Display, EnumString, IntoStaticStr};
 
-use super::compat::Compat;
+use crate::{
+	capability::{OperationBits, OperationKind},
+	id::{
+		AuthSpecId, CodecId, DiscoverySpecId, HeaderProfileId, OAuthSpecId, ProviderId, RouteId,
+		WirePolicyId,
+	},
+};
 
-/// Curated provider TOML embedded in this crate.
-pub const BUILTIN_PROVIDERS_TOML: &str = include_str!("../providers.toml");
+/// Transport used to exchange encoded requests and responses.
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	Display,
+	EnumString,
+	Eq,
+	Hash,
+	IntoStaticStr,
+	PartialEq,
+	Serialize,
+	Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
+pub enum TransportKind {
+	/// HTTP request and response streaming.
+	Http,
+	/// Bidirectional WebSocket transport.
+	Websocket,
+	/// Bidirectional WebRTC transport.
+	Webrtc,
+	/// AWS event-stream framing over HTTP.
+	AwsEventStream,
+	/// Connect protocol framing.
+	Connect,
+	/// In-process local execution.
+	Local,
+}
 
-/// Maximum expanded base-URL length accepted by [`expand_base_url`].
-pub const MAX_EXPANDED_BASE_URL_LEN: usize = 8 * 1024;
-const MAX_BASE_URL_EXPANSIONS: usize = 16;
-
-/// How this row reconciles a source-registry identifier.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum RegistryMapping {
-	/// The registry identifier has its own endpoint and authentication policy.
+/// Typed codec-construction discriminator independent of provider identity.
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	Default,
+	Display,
+	EnumString,
+	Eq,
+	Hash,
+	IntoStaticStr,
+	PartialEq,
+	Serialize,
+	Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case", ascii_case_insensitive, const_into_str)]
+pub enum CodecProfile {
+	/// Conventional constructor for the selected codec.
 	#[default]
+	Standard,
+	/// Google Cloud Code Assist contract used by Gemini CLI.
+	GoogleCcaGeminiCli,
+	/// Google Cloud Code Assist contract used by Antigravity.
+	GoogleCcaAntigravity,
+	/// Apple Foundation Models local runtime.
+	AppleFm,
+}
+
+/// Authentication protocol represented by an [`AuthSpec`].
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	Display,
+	EnumString,
+	Eq,
+	Hash,
+	IntoStaticStr,
+	PartialEq,
+	Serialize,
+	Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
+pub enum AuthSpecKind {
+	/// No credentials are required.
+	None,
+	/// Static API key authentication.
+	ApiKey,
+	/// Bearer token authentication.
+	Bearer,
+	/// OAuth authorization and refresh.
+	Oauth,
+	/// AWS Signature Version 4.
+	AwsSigv4,
+	/// Google application-default credentials.
+	GcpAdc,
+	/// Microsoft Entra ID credentials.
+	AzureAd,
+	/// GitHub application credentials.
+	GithubApp,
+	/// OMP-managed session credentials.
+	OmpSession,
+}
+
+/// Scope at which one authenticated principal and its quota are shared.
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	Display,
+	EnumString,
+	Eq,
+	Hash,
+	IntoStaticStr,
+	PartialEq,
+	Serialize,
+	Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
+pub enum AccountScope {
+	/// Credentials are shared across the whole provider.
+	Provider,
+	/// Credentials are isolated to one route.
+	Route,
+	/// Credentials are isolated by endpoint region.
+	Region,
+}
+
+/// Typed credential-bearing body placement compiled from provider source.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SealedBodyPlacement {
+	/// Devin protobuf request metadata.
+	DevinMetadata,
+}
+/// One source in an application-default credential chain.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplicationDefaultSource {
+	/// Reads a short-lived access token from one environment variable.
+	EnvironmentAccessToken {
+		/// Environment variable name.
+		variable: Str,
+	},
+	/// Reads a public credential document path.
+	CredentialFile {
+		/// Optional environment variable overriding the credential path.
+		path_environment: Option<Str>,
+		/// Optional default credential path.
+		default_path:     Option<Str>,
+	},
+	/// Requests a standard token response from a workload metadata endpoint.
+	Metadata {
+		/// Public metadata endpoint URL.
+		url:     Str,
+		/// Non-secret metadata request headers.
+		headers: Box<[StaticHeader]>,
+	},
+}
+
+/// Public credential acquisition source.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialSourceSpec {
+	/// Reads the first populated environment variable from an ordered list.
+	Environment {
+		/// Environment variable names in exact lookup order.
+		ordered_names: Box<[Str]>,
+	},
+	/// Reads an encrypted credential from the account store.
+	Stored,
+	/// Resolves application-default credentials from declared environment
+	/// inputs.
+	ApplicationDefault {
+		/// API key or access-token environment variables in lookup order.
+		api_key_env:  Box<[Str]>,
+		/// Project environment variables in lookup order.
+		project_env:  Box<[Str]>,
+		/// Location environment variables in lookup order.
+		location_env: Box<[Str]>,
+		/// Complete application-default sources in exact acquisition order.
+		sources:      Box<[ApplicationDefaultSource]>,
+	},
+	/// Resolves the standard AWS credential chain.
+	AwsChain,
+	/// Runs an interned public OAuth flow.
+	Oauth {
+		/// OAuth flow specification identifier.
+		flow: OAuthSpecId,
+	},
+	/// Acquires an interactive provider session credential.
+	Session,
+}
+
+/// Source of the AWS region used for Signature Version 4.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegionSource {
+	/// Uses the selected route endpoint's normalized region.
+	RouteEndpoint,
+	/// Uses one fixed catalog region.
+	Fixed {
+		/// Fixed AWS region.
+		region: Str,
+	},
+	/// Reads the first populated environment variable from an ordered list.
+	Environment {
+		/// Region environment variables in exact lookup order.
+		ordered_names: Box<[Str]>,
+	},
+}
+
+/// Exact AWS Signature Version 4 signing contract.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SigV4Spec {
+	/// AWS signing service.
+	pub service: Str,
+	/// Typed source of the AWS signing region.
+	pub region:  RegionSource,
+}
+
+/// Placement of a resolved OAuth access token.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthTokenPlacement {
+	/// Places the token in a sensitive request header.
+	Header {
+		/// Header name.
+		name:   Str,
+		/// Prefix inserted before the token.
+		prefix: Str,
+	},
+	/// Places the token in a sensitive query parameter at final dispatch.
+	Query {
+		/// Query parameter name.
+		parameter: Str,
+	},
+	/// Binds the token into a typed sealed request body.
+	SealedBody {
+		/// Typed body field selected by the codec.
+		placement: SealedBodyPlacement,
+	},
+}
+
+/// Non-secret OAuth form or query parameter.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OAuthParameter {
+	/// Parameter name.
+	pub name:  Str,
+	/// Public parameter value.
+	pub value: Str,
+}
+
+/// Completion mechanism for an OAuth authorization-code flow.
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	Display,
+	EnumString,
+	Eq,
+	Hash,
+	IntoStaticStr,
+	PartialEq,
+	Serialize,
+	Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
+pub enum OAuthCompletion {
+	/// Receives a loopback callback URL and validates its state.
+	CallbackUrl,
+	/// Accepts a pasted callback URL and validates its state.
+	PasteCallbackUrl,
+	/// Accepts a raw authorization code.
+	PasteCode,
+}
+
+/// Typed custom OAuth exchange engine selected without provider-name policy.
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	Display,
+	EnumString,
+	Eq,
+	Hash,
+	IntoStaticStr,
+	PartialEq,
+	Serialize,
+	Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case", ascii_case_insensitive, const_into_str)]
+pub enum OAuthExchangeKind {
+	/// Extracts account claims from the OpenAI Codex token response.
+	OpenAiCodexClaims,
+	/// Exchanges a GitHub device token for a Copilot session token.
+	GithubCopilotSessionToken,
+	/// Completes PKCE through an external application redirect.
+	ExternalRedirectPkce,
+	/// Polls Cursor's public login exchange endpoint.
+	CursorPoll,
+	/// Exchanges a Z.AI authorization result for an API key.
+	ZaiApiKey,
+	/// Exchanges a Devin CLI authorization result for a token.
+	DevinCliToken,
+	/// Completes Perplexity's email one-time-password flow.
+	PerplexityEmailOtp,
+	/// Collects an API key through an interactive paste flow.
+	ApiKeyPaste,
+}
+
+/// OAuth device polling bounds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OAuthPollingSpec {
+	/// Hard upper bound on token polling attempts.
+	pub maximum_polls:       u16,
+	/// Default polling interval in milliseconds.
+	pub default_interval_ms: u64,
+	/// Largest accepted or slowed-down interval in milliseconds.
+	pub maximum_interval_ms: u64,
+}
+
+/// Flow-specific public OAuth endpoints and completion behavior.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthFlowSpec {
+	/// Authorization-code flow with S256 PKCE.
+	Pkce {
+		/// Browser authorization endpoint.
+		authorize_url:        Str,
+		/// Exact registered redirect URI.
+		redirect_uri:         Str,
+		/// How the authorization result reaches the runtime.
+		completion:           OAuthCompletion,
+		/// Additional public authorization query parameters.
+		authorize_parameters: Box<[OAuthParameter]>,
+	},
+	/// RFC 8628 device authorization flow.
+	DeviceCode {
+		/// Device authorization endpoint.
+		device_authorization_url: Str,
+		/// Typed token polling bounds.
+		polling:                  OAuthPollingSpec,
+	},
+	/// Browser-assisted exchange completed by pasted input.
+	Paste {
+		/// Public page the caller opens.
+		authorization_url: Str,
+		/// Stable non-secret prompt shown to the caller.
+		prompt:            Str,
+	},
+	/// Provider protocol that requires a distinct typed exchange engine.
+	Custom {
+		/// Public authorization or login endpoint.
+		authorize_url: Str,
+		/// Exchange engine selected independently of provider identity.
+		exchange:      OAuthExchangeKind,
+		/// Additional public flow parameters.
+		parameters:    Box<[OAuthParameter]>,
+		/// Optional polling bounds for asynchronous exchanges.
+		polling:       Option<OAuthPollingSpec>,
+	},
+}
+
+/// Refresh-token behavior for an OAuth flow.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthRefreshBehavior {
+	/// The flow cannot refresh credentials.
+	Unsupported,
+	/// Refreshes through the standard token endpoint.
+	TokenEndpoint,
+	/// Refreshes through a distinct public endpoint.
+	Endpoint {
+		/// Public refresh endpoint.
+		url:        Str,
+		/// Additional non-secret refresh parameters.
+		parameters: Box<[OAuthParameter]>,
+	},
+}
+
+/// Evidence used to bind refreshed credentials to a stable principal.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrincipalResolution {
+	/// Reads the principal from a verified ID-token claim.
+	IdTokenClaim {
+		/// Claim name.
+		claim: Str,
+	},
+	/// Reads the principal from a typed token-response field.
+	TokenResponseField {
+		/// JSON Pointer into the known token response schema.
+		pointer: Str,
+	},
+	/// Fetches public principal metadata after token exchange.
+	UserinfoEndpoint {
+		/// Public user-information endpoint.
+		url:   Str,
+		/// Field carrying the stable principal identifier.
+		field: Str,
+	},
+	/// Uses a reviewed static principal label.
+	StaticLabel {
+		/// Stable non-secret label.
+		label: Str,
+	},
+}
+
+/// Interned public OAuth flow data with no credential secrets.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OAuthSpec {
+	/// Stable content-derived OAuth specification identifier.
+	pub id:                   OAuthSpecId,
+	/// Public installed-application client identifier.
+	pub client_id:            Str,
+	/// Token exchange endpoint.
+	pub token_url:            Str,
+	/// Ordered requested scopes.
+	pub scopes:               Box<[Str]>,
+	/// Optional resource audience.
+	pub audience:             Option<Str>,
+	/// Placement of the resulting access token.
+	pub placement:            OAuthTokenPlacement,
+	/// Additional public token exchange parameters.
+	pub token_parameters:     Box<[OAuthParameter]>,
+	/// Flow-specific endpoints and completion behavior.
+	pub flow:                 OAuthFlowSpec,
+	/// Refresh-token behavior.
+	pub refresh:              OAuthRefreshBehavior,
+	/// Typed evidence for stable principal identity across token refreshes.
+	pub principal_resolution: Option<PrincipalResolution>,
+}
+
+/// Interned authentication requirements without credential values.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AuthSpec {
+	/// Stable content-derived authentication specification identifier.
+	pub id:                 AuthSpecId,
+	/// Credential protocol.
+	pub kind:               AuthSpecKind,
+	/// Header receiving the credential, when header placement is used.
+	pub header_name:        Option<Str>,
+	/// Query parameter receiving the credential, when query placement is used.
+	pub query_parameter:    Option<Str>,
+	/// Prefix placed before a credential value.
+	pub prefix:             Option<Str>,
+	/// Typed sealed-body placement, mutually exclusive with header and query.
+	#[serde(default)]
+	pub sealed_body:        Option<SealedBodyPlacement>,
+	/// OAuth or identity-provider scopes.
+	pub scopes:             Box<[Str]>,
+	/// Optional token audience.
+	pub audience:           Option<Str>,
+	/// Principal and quota sharing boundary.
+	pub account_scope:      AccountScope,
+	/// Credential sources in exact acquisition order.
+	pub credential_sources: Box<[CredentialSourceSpec]>,
+	/// Direct link to the OAuth flow when this authentication spec uses OAuth.
+	pub oauth:              Option<OAuthSpecId>,
+	/// Exact signing contract for request-signing authentication.
+	pub signing:            Option<SigV4Spec>,
+}
+
+/// Concrete endpoint configuration with optional region identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EndpointSpec {
+	/// Base endpoint URL, possibly containing compiler-validated placeholders.
+	pub base_url: Str,
+	/// Stable region name used for routing and account scope.
+	pub region:   Option<Str>,
+}
+
+/// Redirect behavior at an endpoint trust boundary.
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	Display,
+	EnumString,
+	Eq,
+	Hash,
+	IntoStaticStr,
+	PartialEq,
+	Serialize,
+	Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
+pub enum RedirectTrust {
+	/// Redirects are rejected.
+	Deny,
+	/// Redirects within the original origin are accepted.
+	SameOrigin,
+	/// Cross-origin redirects are accepted without forwarding credentials.
+	PublicOnly,
+}
+
+/// Endpoint origin and credential-forwarding trust boundary.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TrustDomain {
+	/// Canonical trusted origin.
+	pub origin:          Str,
+	/// Redirect policy for this origin.
+	pub redirects:       RedirectTrust,
+	/// Whether explicitly configured plaintext HTTP is permitted.
+	pub allow_plaintext: bool,
+}
+
+/// One static non-secret request header.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StaticHeader {
+	/// Header name validated by the catalog compiler.
+	pub name:  Str,
+	/// Header value containing no credentials.
+	pub value: Str,
+}
+
+/// Interned ordered static header set.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HeaderProfile {
+	/// Stable content-derived header profile identifier.
+	pub id:      HeaderProfileId,
+	/// Usually-small headers copied into each encoded request.
+	pub headers: SmallVec<StaticHeader, 4>,
+}
+
+/// Remote model-list schema family.
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	Display,
+	EnumString,
+	Eq,
+	Hash,
+	IntoStaticStr,
+	PartialEq,
+	Serialize,
+	Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
+pub enum DiscoveryKind {
+	/// OpenAI-compatible model listing.
+	OpenAiModels,
+	/// Google model listing.
+	GoogleModels,
+	/// Ollama tags listing.
+	OllamaTags,
+	/// Account-scoped model listing.
+	AccountModels,
+	/// Codec-owned specialized listing.
+	Specialized,
+}
+
+/// Pagination strategy for remote model discovery.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryPagination {
+	/// A single response contains the complete list.
+	SinglePage,
+	/// A response cursor is passed in a query parameter.
+	Cursor {
+		/// Query parameter carrying the next cursor.
+		query_parameter: Str,
+	},
+	/// A numeric page is passed in a query parameter.
+	PageNumber {
+		/// Query parameter carrying the page number.
+		query_parameter: Str,
+		/// First page number.
+		first_page:      u32,
+	},
+}
+
+/// Interned remote model-discovery specification.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiscoverySpec {
+	/// Stable content-derived discovery specification identifier.
+	pub id:            DiscoverySpecId,
+	/// Typed discovery response family.
+	pub kind:          DiscoveryKind,
+	/// Human-readable discovery source label.
+	pub label:         Str,
+	/// Endpoint-relative discovery path.
+	pub path:          Str,
+	/// Pagination strategy.
+	pub pagination:    DiscoveryPagination,
+	/// Whether absence from a successful listing proves unavailability.
+	pub authoritative: bool,
+}
+
+/// Provider registry relationship for declarative aliases and replacements.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistryMapping {
+	/// A directly usable provider.
 	Concrete,
-	/// The identifier is an alternate login or spelling for another row.
+	/// Another provider ID names the same provider domain.
 	Alias {
-		/// Canonical provider identifier.
-		target: Str,
-		/// Why the source registry keeps the alternate identifier.
+		/// Canonical provider target.
+		target: ProviderId,
+		/// Human-auditable catalog rationale.
 		reason: Str,
 	},
-	/// The source entry moved to a non-inference subsystem.
+	/// Another inference component supplies this provider behavior.
 	Replacement {
-		/// Owning subsystem or component.
+		/// Stable component name.
 		component: Str,
-		/// Why this is deliberately not selectable as inference.
+		/// Human-auditable catalog rationale.
 		reason:    Str,
 	},
 }
 
-/// Live model-listing convention advertised by a provider.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum DiscoveryKind {
-	/// OpenAI-compatible `GET /models`.
-	OpenAiModels,
-	/// Google Generative Language `GET /models`.
-	GoogleModels,
-	/// Ollama's native `GET /api/tags`.
-	OllamaTags,
-	/// A provider-specific account model listing.
-	AccountModels,
-	/// Discovery is owned by a specialized transport.
-	Specialized,
+/// Provider-level management operations and account behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ManagementCapabilities {
+	/// Management operations exposed by the provider.
+	pub operations:        OperationBits,
+	/// Whether several stored principals may be selected or rotated.
+	pub multiple_accounts: bool,
+	/// Whether credentials can be refreshed without changing principal.
+	pub refresh:           bool,
+	/// Whether quota observations are scoped to individual principals.
+	pub principal_quota:   bool,
 }
 
-/// Account model-discovery policy retained from the source registry.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct DiscoverySpec {
-	/// Listing protocol.
-	pub kind:          DiscoveryKind,
-	/// Human-readable account source shown by model discovery.
-	pub label:         Str,
-	/// Whether a successful account listing replaces, rather than augments, the
-	/// bundled model set.
-	#[serde(default)]
-	pub authoritative: bool,
+impl ManagementCapabilities {
+	/// Reports whether a management operation is exposed.
+	pub const fn supports(self, operation: OperationKind) -> bool {
+		self.operations.contains_kind(operation)
+	}
 }
 
-/// Request placement used specifically for broker-minted login credentials.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum CredentialPlacement {
-	/// `Authorization: Bearer`.
-	Bearer,
-	/// A provider-defined header.
-	Header {
-		/// Header name.
-		name: Str,
-	},
-	/// A provider-defined query parameter.
-	Query {
-		/// Query parameter name.
-		param: Str,
-	},
+/// Declarative commercial, account, and quota domain.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProviderDef {
+	/// Stable provider identifier.
+	pub id:                 ProviderId,
+	/// Human-readable provider name.
+	pub name:               Str,
+	/// Eligible authentication specifications in preference order.
+	pub auth:               Box<[AuthSpecId]>,
+	/// Provider account and management capabilities.
+	pub management:         ManagementCapabilities,
+	/// Provider-owned route identifiers in deterministic order.
+	pub routes:             Box<[RouteId]>,
+	/// Provider-default lowering policy for model-less management operations.
+	pub wire_policy:        WirePolicyId,
+	/// Authored defaults for conservative runtime model discovery.
+	pub discovery_defaults: Option<crate::discover::DiscoveryDefaults>,
+	/// Registry relationship used during deterministic normalization.
+	pub mapping:            RegistryMapping,
 }
-/// Preferred wire path for `ChatGPT` Codex Responses requests.
-///
-/// This is catalog data rather than an application-provider name check. The
-/// HTTP path remains the replay-safe baseline for rows that do not opt in.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
+
+/// Route-level restrictions applied after model capabilities.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RouteRestrictions {
+	/// Optional allowlist of operations; `None` leaves model operations
+	/// unchanged.
+	pub operations:             Option<OperationBits>,
+	/// Route-specific context token ceiling.
+	pub maximum_context_tokens: Option<u64>,
+	/// Route-specific output token ceiling.
+	pub maximum_output_tokens:  Option<u64>,
+	/// Whether server-side conversation state is disabled on this route.
+	pub disable_server_state:   bool,
+	/// Whether prompt caching is disabled on this route.
+	pub disable_prompt_caching: bool,
+}
+
+/// Codex-family connection preference captured as route data.
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	Display,
+	EnumString,
+	Eq,
+	Hash,
+	IntoStaticStr,
+	PartialEq,
+	Serialize,
+	Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
 pub enum CodexTransportPreference {
-	/// Use HTTP SSE only.
-	#[default]
+	/// Use HTTP only.
 	HttpOnly,
-	/// Attempt Responses-Lite WebSocket execution before replay-safe HTTP SSE.
+	/// Prefer WebSocket and fall back to HTTP.
 	WebsocketPreferred,
 }
 
-/// One provider endpoint and its data-selected wire behavior.
-#[non_exhaustive]
-#[derive(Builder, Clone, Debug, Eq, PartialEq)]
-pub struct ProviderEntry {
-	/// Stable catalog identifier.
-	pub id:                   Str,
-	/// Wire transport implemented by the endpoint.
-	pub transport:            TransportId,
-	/// Preferred Codex wire path; ignored by non-Codex transports.
-	#[builder(default)]
-	pub codex_transport:      CodexTransportPreference,
-	/// Provider-level default for the Codex Responses Lite request shape.
-	#[builder(default)]
-	pub codex_responses_lite: bool,
-	/// Base URL, optionally containing the bounded placeholders accepted by
-	/// [`BaseUrlVars`].
-	pub base_url:             Str,
-	/// Whether a user or project overlay explicitly selected [`Self::base_url`].
-	///
-	/// Server-only routing provenance; built-in model wire routes may override
-	/// only fields that were not explicitly configured.
-	#[builder(default)]
-	pub base_url_overridden:  bool,
-	/// Whether a user or project overlay explicitly selected
-	/// [`Self::transport`].
-	#[builder(default)]
-	pub transport_overridden: bool,
-	/// Default API version appended by transports that require a version query.
-	pub api_version:          Option<Str>,
-	/// Ordered failover base URLs attempted after [`Self::base_url`].
-	///
-	/// This is transport-agnostic catalog data; Cloud Code Assist is its first
-	/// user.
-	#[builder(default)]
-	pub fallback_base_urls:   SmallVec<Str, 2>,
-	/// Credential injection description.
-	pub auth:                 AuthSpec,
-	/// Facets exposed at this endpoint.
-	pub facets:               SmallVec<Facet, 4>,
-	/// Static request headers.
-	pub headers:              BTreeMap<Str, Str>,
-	/// Data-like deviations from the transport defaults.
-	pub compat:               Compat,
-	/// Source-registry reconciliation for this identifier.
-	#[builder(default)]
-	pub mapping:              RegistryMapping,
-	/// Login flow usable in addition to the request authentication policy.
-	///
-	/// This is separate from [`AuthSpec::OAuth`] because providers such as
-	/// Anthropic accept both environment API keys and broker-minted OAuth
-	/// credentials.
-	pub oauth_flow:           Option<Str>,
-	/// Credential placement for [`Self::oauth_flow`] when it differs from
-	/// [`Self::auth`].
-	pub oauth_auth:           Option<CredentialPlacement>,
-	/// Live account model-discovery policy.
-	pub discovery:            Option<DiscoverySpec>,
-	/// Facets known upstream but withheld until their distinct transport exists.
-	#[builder(default)]
-	pub pending_facets:       SmallVec<Facet, 2>,
-	/// Upstream wire name for [`Self::pending_facets`].
-	pub pending_transport:    Option<Str>,
-}
-
-/// Supported provider wire transports.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum TransportId {
-	/// Anthropic Messages API.
-	AnthropicMessages,
-	/// Anthropic Messages adapted to AWS Bedrock
-	/// `InvokeModelWithResponseStream`/`EventStream`.
-	AnthropicBedrock,
-	/// Amazon Bedrock model-independent `ConverseStream` API over AWS
-	/// `EventStream`.
-	BedrockConverse,
-	/// Anthropic Messages adapted to Vertex `streamRawPredict`.
-	AnthropicVertex,
-	/// `OpenAI` Chat Completions API.
-	OpenAiChat,
-	/// `OpenAI` Responses API.
-	OpenAiResponses,
-	/// `ChatGPT` subscription Codex Responses transport.
-	OpenAiCodex,
-	/// Public Google Generative Language API.
-	GoogleGenAi,
-	/// Google Vertex AI Gemini API.
-	GoogleVertex,
-	/// Google Cloud Code Assist API.
-	GoogleCca,
-	/// Ollama's native `/api/chat` NDJSON protocol.
-	OllamaChat,
-	/// Cursor's Connect/gRPC agent transport.
-	Cursor,
-	/// Devin's Connect server-streaming transport.
-	Devin,
-	/// GitLab Duo Workflow authenticated WebSocket agent tunnel.
-	#[serde(rename = "gitlab-duo-workflow")]
-	GitLabDuoWorkflow,
-	/// OMP federation protocol.
-	Omp,
-	/// In-process embedded inference.
-	Embedded,
-}
-
-/// How credentials are obtained and placed on an outbound request.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum AuthSpec {
-	/// No credential is required.
-	#[default]
-	None,
-	/// A bearer token read from the first populated environment variable.
-	Bearer {
-		/// Environment variables in priority order.
-		env: SmallVec<Str, 2>,
-	},
-	/// An optional bearer token, used by local servers that accept authenticated
-	/// and unauthenticated requests.
-	OptionalBearer {
-		/// Environment variables in priority order.
-		env: SmallVec<Str, 2>,
-	},
-	/// A token sent in a custom header.
-	Header {
-		/// Header name.
-		name: Str,
-		/// Environment variables in priority order.
-		env:  SmallVec<Str, 2>,
-	},
-	/// A token sent in a query parameter.
-	Query {
-		/// Query parameter name.
-		param: Str,
-		/// Environment variables in priority order.
-		env:   SmallVec<Str, 2>,
-	},
-	/// AWS Signature Version 4 request signing.
-	AwsSigV4,
-	/// Google Application Default Credentials, with optional API-key and route
-	/// metadata fallbacks.
-	GoogleAdc {
-		/// API-key environment variables in priority order.
-		api_key_env:  SmallVec<Str, 2>,
-		/// Project environment variables in priority order.
-		project_env:  SmallVec<Str, 3>,
-		/// Location environment variables in priority order.
-		location_env: SmallVec<Str, 3>,
-	},
-	/// A broker-managed OAuth flow.
-	#[serde(rename = "oauth")]
-	OAuth {
-		/// Flow identifier in the OAuth parameter catalog.
-		flow: Str,
-	},
-}
-
-/// Inference capabilities independently exposed by a provider.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Facet {
-	/// Conversational generation.
-	Chat,
-	/// Text embeddings.
-	Embeddings,
-	/// Text reranking.
-	Rerank,
-	/// Speech synthesis.
-	AudioSpeech,
-	/// Audio transcription.
-	AudioTranscription,
-	/// Image generation.
-	ImageGeneration,
-	/// Asynchronous video generation.
-	VideoGeneration,
-}
-
-/// Loaded provider rows indexed by stable provider id.
-pub type ProviderCatalog = BTreeMap<Str, ProviderEntry>;
-
-/// Failure while parsing a provider catalog.
-#[derive(Debug, thiserror::Error)]
-pub enum ProviderLoadError {
-	/// TOML deserialization failed.
-	#[error("failed to deserialize provider document: {0}")]
-	Toml(#[from] toml::de::Error),
-}
-
-/// Values accepted by the deliberately small base-URL template expander.
-#[non_exhaustive]
-#[derive(Builder, Clone, Copy, Debug, Default)]
-pub struct BaseUrlVars<'a> {
-	/// Value for the `{region}` placeholder.
-	pub region:     Option<&'a str>,
-	/// Value for the `{location}` placeholder.
-	pub location:   Option<&'a str>,
-	/// Value for the `{project}` placeholder.
-	pub project:    Option<&'a str>,
-	/// Value for the `{deployment}` placeholder.
-	pub deployment: Option<&'a str>,
-	/// Value for the `{model}` placeholder.
-	pub model:      Option<&'a str>,
-	/// Value for the `{account}` placeholder.
-	pub account:    Option<&'a str>,
-	/// Value for the `{gateway}` placeholder.
-	pub gateway:    Option<&'a str>,
-}
-
-/// Failure while expanding a bounded base-URL template.
-#[derive(Debug, thiserror::Error, Eq, PartialEq)]
-pub enum BaseUrlTemplateError {
-	/// The template contains an unsupported placeholder syntax.
-	#[error("unsupported placeholder syntax in template: {0}")]
-	UnsupportedPlaceholder(Str),
-	/// Unclosed placeholder delimiter `{`.
-	#[error("unclosed placeholder bracket at byte index {0}")]
-	UnclosedBracket(usize),
-	/// A required variable was not supplied in [`BaseUrlVars`].
-	#[error("missing required base-URL variable `{0}`")]
-	MissingVar(&'static str),
-	/// Maximum expansion pass limit exceeded.
-	#[error("exceeded maximum template substitutions ({MAX_BASE_URL_EXPANSIONS})")]
-	TooManyExpansions,
-	/// Expanded URL exceeded maximum permitted size.
-	#[error("expanded URL exceeds maximum length ({MAX_EXPANDED_BASE_URL_LEN} bytes)")]
-	UrlTooLong,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProviderDocument {
-	providers: BTreeMap<Str, ProviderConfig>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProviderConfig {
-	transport:            TransportId,
-	base_url:             Str,
-	#[serde(default)]
-	api_version:          Option<Str>,
-	#[serde(default)]
-	codex_transport:      CodexTransportPreference,
-	#[serde(default)]
-	codex_responses_lite: bool,
-	#[serde(default)]
-	fallback_base_urls:   SmallVec<Str, 2>,
-	#[serde(default)]
-	auth:                 AuthSpec,
-	#[serde(default)]
-	facets:               SmallVec<Facet, 4>,
-	#[serde(default)]
-	headers:              BTreeMap<Str, Str>,
-	#[serde(default)]
-	compat:               Compat,
-	#[serde(default)]
-	mapping:              RegistryMapping,
-	#[serde(default)]
-	oauth_flow:           Option<Str>,
-	#[serde(default)]
-	oauth_auth:           Option<CredentialPlacement>,
-	#[serde(default)]
-	discovery:            Option<DiscoverySpec>,
-	#[serde(default)]
-	pending_facets:       SmallVec<Facet, 2>,
-	#[serde(default)]
-	pending_transport:    Option<Str>,
-}
-
-impl ProviderConfig {
-	fn with_id(self, id: Str) -> ProviderEntry {
-		ProviderEntry {
-			id,
-			transport: self.transport,
-			codex_transport: self.codex_transport,
-			codex_responses_lite: self.codex_responses_lite,
-			base_url: self.base_url,
-			base_url_overridden: false,
-			transport_overridden: false,
-			api_version: self.api_version,
-			fallback_base_urls: self.fallback_base_urls,
-			auth: self.auth,
-			facets: self.facets,
-			headers: self.headers,
-			oauth_auth: self.oauth_auth,
-			compat: self.compat,
-			mapping: self.mapping,
-			oauth_flow: self.oauth_flow,
-			discovery: self.discovery,
-			pending_facets: self.pending_facets,
-			pending_transport: self.pending_transport,
-		}
-	}
-}
-
-/// Parses a complete provider TOML document.
-///
-/// Unknown keys at the document, provider, auth, and compat levels are rejected
-/// by serde so configuration typos retain TOML's key path and source span.
-pub fn load_providers(source: &str) -> Result<ProviderCatalog, ProviderLoadError> {
-	let document: ProviderDocument = toml::from_str(source)?;
-	Ok(document
-		.providers
-		.into_iter()
-		.map(|(id, config)| (id.clone(), config.with_id(id)))
-		.collect())
-}
-
-/// Loads the curated provider catalog embedded in this crate.
-pub fn load_builtin() -> Result<ProviderCatalog, ProviderLoadError> {
-	load_providers(BUILTIN_PROVIDERS_TOML)
-}
-
-/// Expands the seven permitted base-URL placeholders without a template engine.
-///
-/// Expansion is bounded to 16 substitutions and an 8 KiB output. Values are
-/// inserted verbatim, so callers must provide URL path-safe identifiers. Any
-/// other placeholder is rejected rather than silently passed through.
-pub fn expand_base_url(template: &str, vars: BaseUrlVars<'_>) -> Result<Str, BaseUrlTemplateError> {
-	if !template.contains('{') {
-		if template.len() > MAX_EXPANDED_BASE_URL_LEN {
-			return Err(BaseUrlTemplateError::UrlTooLong);
-		}
-		return Ok(Str::new(template));
-	}
-
-	let mut result = String::with_capacity(template.len() + 32);
-	let mut cursor = 0;
-	let bytes = template.as_bytes();
-	let mut replacements = 0;
-
-	while cursor < bytes.len() {
-		let open = if let Some(pos) = bytes[cursor..].iter().position(|&b| b == b'{') {
-			cursor + pos
-		} else {
-			result.push_str(&template[cursor..]);
-			break;
-		};
-
-		result.push_str(&template[cursor..open]);
-
-		let close = match bytes[open..].iter().position(|&b| b == b'}') {
-			Some(pos) => open + pos,
-			None => return Err(BaseUrlTemplateError::UnclosedBracket(open)),
-		};
-
-		let key = &template[open + 1..close];
-		replacements += 1;
-		if replacements > MAX_BASE_URL_EXPANSIONS {
-			return Err(BaseUrlTemplateError::TooManyExpansions);
-		}
-
-		let val = match key {
-			"region" => vars
-				.region
-				.ok_or(BaseUrlTemplateError::MissingVar("region"))?,
-			"location" => vars
-				.location
-				.or(vars.region)
-				.ok_or(BaseUrlTemplateError::MissingVar("location"))?,
-			"project" => vars
-				.project
-				.ok_or(BaseUrlTemplateError::MissingVar("project"))?,
-			"deployment" => vars
-				.deployment
-				.ok_or(BaseUrlTemplateError::MissingVar("deployment"))?,
-			"model" => vars
-				.model
-				.ok_or(BaseUrlTemplateError::MissingVar("model"))?,
-			"account" => vars
-				.account
-				.ok_or(BaseUrlTemplateError::MissingVar("account"))?,
-			"gateway" => vars
-				.gateway
-				.ok_or(BaseUrlTemplateError::MissingVar("gateway"))?,
-			_ => {
-				return Err(BaseUrlTemplateError::UnsupportedPlaceholder(Str::new(
-					&template[open..=close],
-				)));
-			},
-		};
-
-		result.push_str(val);
-		if result.len() > MAX_EXPANDED_BASE_URL_LEN {
-			return Err(BaseUrlTemplateError::UrlTooLong);
-		}
-
-		cursor = close + 1;
-	}
-
-	if result.len() > MAX_EXPANDED_BASE_URL_LEN {
-		return Err(BaseUrlTemplateError::UrlTooLong);
-	}
-
-	Ok(Str::new(result))
-}
-
-#[cfg(test)]
-mod tests {
-	use omp_core::Str;
-	use smallvec::smallvec;
-
-	use super::{AuthSpec, CodexTransportPreference, load_builtin};
-
-	#[test]
-	fn auth_spec_wire_names_round_trip() {
-		let cases = [
-			(AuthSpec::None, "none"),
-			(AuthSpec::Bearer { env: smallvec![Str::new_static("TOKEN")] }, "bearer"),
-			(AuthSpec::OptionalBearer { env: smallvec![Str::new_static("TOKEN")] }, "optional-bearer"),
-			(
-				AuthSpec::Header {
-					name: Str::new_static("x-api-key"),
-					env:  smallvec![Str::new_static("TOKEN")],
-				},
-				"header",
-			),
-			(
-				AuthSpec::Query {
-					param: Str::new_static("key"),
-					env:   smallvec![Str::new_static("TOKEN")],
-				},
-				"query",
-			),
-			(AuthSpec::AwsSigV4, "aws-sig-v4"),
-			(
-				AuthSpec::GoogleAdc {
-					api_key_env:  smallvec![Str::new_static("GOOGLE_CLOUD_API_KEY")],
-					project_env:  smallvec![Str::new_static("GOOGLE_CLOUD_PROJECT")],
-					location_env: smallvec![Str::new_static("GOOGLE_VERTEX_LOCATION")],
-				},
-				"google-adc",
-			),
-			(AuthSpec::OAuth { flow: Str::new_static("test-flow") }, "oauth"),
-		];
-
-		for (spec, wire_name) in cases {
-			let encoded = serde_json::to_value(&spec).expect("auth spec serializes");
-			assert_eq!(encoded["type"], wire_name);
-			let decoded: AuthSpec =
-				serde_json::from_value(encoded).expect("serialized auth spec deserializes");
-			assert_eq!(decoded, spec);
-		}
-	}
-
-	#[test]
-	fn builtin_codex_rows_select_websocket_transport_with_http_default_elsewhere() {
-		let providers = load_builtin().expect("built-in providers parse");
-		assert_eq!(
-			providers["openai-codex"].codex_transport,
-			CodexTransportPreference::WebsocketPreferred
-		);
-		assert!(!providers["openai-codex"].codex_responses_lite);
-		assert_eq!(providers["openai"].codex_transport, CodexTransportPreference::HttpOnly);
-		assert!(!providers["openai"].codex_responses_lite);
-	}
+/// Concrete endpoint, codec, authentication, and trust configuration.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RouteDef {
+	/// Stable route identifier.
+	pub id:                 RouteId,
+	/// Owning commercial or local provider domain.
+	pub provider:           ProviderId,
+	/// Typed codec-construction profile.
+	pub codec_profile:      CodecProfile,
+	/// Wire codec used by this route.
+	pub codec:              CodecId,
+	/// Network or local transport used by the codec.
+	pub transport:          TransportKind,
+	/// Concrete endpoint and region.
+	pub endpoint:           EndpointSpec,
+	/// Authentication requirements.
+	pub auth:               AuthSpecId,
+	/// Static safe request headers.
+	pub headers:            HeaderProfileId,
+	/// Optional model discovery specification.
+	pub discovery:          Option<DiscoverySpecId>,
+	/// Restrictions layered over model capabilities.
+	pub capability_limits:  RouteRestrictions,
+	/// Credential-forwarding and redirect boundary.
+	pub trust_domain:       TrustDomain,
+	/// Protocol-specific Codex connection preference.
+	pub codex_transport:    CodexTransportPreference,
+	/// Whether the reduced Responses schema is selected.
+	pub use_responses_lite: Option<bool>,
+	/// Route priority, where larger values are preferred.
+	pub priority:           Option<u32>,
 }

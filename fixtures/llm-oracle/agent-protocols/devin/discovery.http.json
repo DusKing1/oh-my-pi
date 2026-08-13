@@ -1,0 +1,16 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://cascade.example.invalid/exa.api_server_pb.ApiServerService/GetCliModelConfigs",
+    "headers": {
+      "accept": "*/*",
+      "content-type": "application/proto",
+      "connect-protocol-version": "1"
+    },
+    "credential_location": "protobuf Metadata.api_key",
+    "normalization": "If the supplied token lacks the devin-session-token$ prefix, prepend it exactly once.",
+    "initial_body_base64": "",
+    "sealed_body": true,
+    "dispatch_body_path": "discovery.request.bin"
+  }
+}

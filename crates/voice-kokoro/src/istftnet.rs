@@ -1,5 +1,5 @@
-//! iSTFTNet decoder: Generator with harmonic source, `AdaINResBlock1` with snake
-//! activation.
+//! iSTFTNet decoder: Generator with harmonic source, `AdaINResBlock1` with
+//! snake activation.
 //!
 //! Ported from kokoro/istftnet.py
 
@@ -75,7 +75,8 @@ pub struct AdaINResBlock1 {
 }
 
 impl AdaINResBlock1 {
-	/// Loads the block's convolutions, adaptive normalizations, and Snake parameters.
+	/// Loads the block's convolutions, adaptive normalizations, and Snake
+	/// parameters.
 	pub fn load(
 		channels: usize,
 		kernel_size: usize,
@@ -277,7 +278,8 @@ pub struct SourceModuleHnNSF {
 }
 
 impl SourceModuleHnNSF {
-	/// Loads an excitation source configured for the model's sampling and upsampling rates.
+	/// Loads an excitation source configured for the model's sampling and
+	/// upsampling rates.
 	pub fn load(
 		sampling_rate: usize,
 		upsample_scale: usize,
@@ -338,7 +340,8 @@ pub struct TorchSTFT {
 }
 
 impl TorchSTFT {
-	/// Builds transform kernels and a Hann window for the requested FFT configuration.
+	/// Builds transform kernels and a Hann window for the requested FFT
+	/// configuration.
 	pub fn new(
 		filter_length: usize,
 		hop_length: usize,
@@ -511,7 +514,8 @@ impl TorchSTFT {
 // Generator — the main vocoder generator
 // ---------------------------------------------------------------------------
 
-/// iSTFT vocoder generator that converts encoded speech features into waveforms.
+/// iSTFT vocoder generator that converts encoded speech features into
+/// waveforms.
 pub struct Generator {
 	m_source:       SourceModuleHnNSF,
 	ups:            Vec<nn::ConvTranspose1d>,
@@ -755,7 +759,8 @@ impl Generator {
 // Decoder — top-level decoder wrapping Generator
 // ---------------------------------------------------------------------------
 
-/// Top-level speech decoder that prepares conditioning features for the generator.
+/// Top-level speech decoder that prepares conditioning features for the
+/// generator.
 pub struct Decoder {
 	encode:        AdainResBlk1d,
 	decode:        Vec<AdainResBlk1d>,
@@ -965,8 +970,8 @@ fn gpu_linear_downsample(
 }
 
 /// GPU-native linear upsample of [B, C, `T_in`] to `T_out`.
-/// Equivalent to F.interpolate(x, `size=t_out`, mode='linear') with `scale_factor`
-/// semantics.
+/// Equivalent to F.interpolate(x, `size=t_out`, mode='linear') with
+/// `scale_factor` semantics.
 fn gpu_linear_upsample(
 	x: &Tensor,
 	factor: usize,

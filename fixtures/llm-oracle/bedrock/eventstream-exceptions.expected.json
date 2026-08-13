@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "access-denied",
+      "input": "eventstream-exception-access-denied.bin",
+      "deframed_canonical_error": {
+        "type": "error",
+        "error": {
+          "type": "authentication_error",
+          "message": "synthetic access denied"
+        }
+      },
+      "canonical_turn_error": {
+        "event": "error",
+        "kind": "auth",
+        "detail": "synthetic access denied",
+        "actual": null,
+        "unsupported": [],
+        "retry_after_ms": 0,
+        "diagnostics": [],
+        "error_id": null
+      },
+      "terminal": true,
+      "subsequent_frames_ignored": true
+    },
+    {
+      "id": "throttling",
+      "input": "eventstream-exception-throttling.bin",
+      "deframed_canonical_error": {
+        "type": "error",
+        "error": {
+          "type": "rate_limit_error",
+          "message": "synthetic throttle"
+        }
+      },
+      "canonical_turn_error": {
+        "event": "error",
+        "kind": "rate_limited",
+        "detail": "synthetic throttle",
+        "actual": null,
+        "unsupported": [],
+        "retry_after_ms": 0,
+        "diagnostics": [],
+        "error_id": null
+      },
+      "terminal": true,
+      "subsequent_frames_ignored": true
+    },
+    {
+      "id": "service-unavailable",
+      "input": "eventstream-exception-service-unavailable.bin",
+      "deframed_canonical_error": {
+        "type": "error",
+        "error": {
+          "type": "overloaded_error",
+          "message": "synthetic capacity unavailable"
+        }
+      },
+      "canonical_turn_error": {
+        "event": "error",
+        "kind": "overloaded",
+        "detail": "synthetic capacity unavailable",
+        "actual": null,
+        "unsupported": [],
+        "retry_after_ms": 0,
+        "diagnostics": [],
+        "error_id": null
+      },
+      "terminal": true,
+      "subsequent_frames_ignored": true
+    },
+    {
+      "id": "validation",
+      "input": "eventstream-exception-validation.bin",
+      "deframed_canonical_error": {
+        "type": "error",
+        "error": {
+          "type": "api_error",
+          "message": "synthetic validation failure"
+        }
+      },
+      "canonical_turn_error": {
+        "event": "error",
+        "kind": "upstream",
+        "detail": "synthetic validation failure",
+        "actual": null,
+        "unsupported": [],
+        "retry_after_ms": 0,
+        "diagnostics": [],
+        "error_id": null
+      },
+      "terminal": true,
+      "subsequent_frames_ignored": true
+    },
+    {
+      "id": "error-header-throttling",
+      "input": "eventstream-exception-error-header-throttling.bin",
+      "deframed_canonical_error": {
+        "type": "error",
+        "error": {
+          "type": "rate_limit_error",
+          "message": "synthetic retry later"
+        }
+      },
+      "canonical_turn_error": {
+        "event": "error",
+        "kind": "rate_limited",
+        "detail": "synthetic retry later",
+        "actual": null,
+        "unsupported": [],
+        "retry_after_ms": 0,
+        "diagnostics": [],
+        "error_id": null
+      },
+      "terminal": true,
+      "subsequent_frames_ignored": true
+    }
+  ]
+}

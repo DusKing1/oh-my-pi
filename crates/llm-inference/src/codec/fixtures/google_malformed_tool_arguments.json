@@ -1,0 +1,12 @@
+[
+  {
+    "name": "single_quote_trailing_comma",
+    "response": "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"lookup\",\"args\":\"{'x':1,}\"}}]}}]}",
+    "expected": "{'x':1,}"
+  },
+  {
+    "name": "truncated_nested_json",
+    "response": "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"lookup\",\"args\":\"{'outer':{'x':1\"}}]}}]}",
+    "expected": "{'outer':{'x':1"
+  }
+]

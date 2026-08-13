@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "synthetic_credentials": {
+    "access_key_id": "AKIDSYNTHETIC00000000",
+    "secret_access_key": "SYNTHETIC_TEST_SECRET_NOT_A_CREDENTIAL_000000",
+    "session_token": "SYNTHETIC_SESSION_TOKEN_NOT_A_CREDENTIAL",
+    "real_credential": false
+  },
+  "request": {
+    "method": "POST",
+    "uri": "https://bedrock-runtime.us-east-1.amazonaws.com/model/us.anthropic.claude-sonnet-4-6-v1%3A0/converse-stream?z=last&a=first",
+    "body": "sigv4-request-body.bin",
+    "headers_before_signing": {
+      "accept": "application/vnd.amazon.eventstream",
+      "content-type": "application/json",
+      "x-amzn-bedrock-accept": "application/json",
+      "x-custom": "alpha   beta"
+    },
+    "service": "bedrock",
+    "region": "us-east-1",
+    "signed_at": "2024-01-02T03:04:05Z"
+  },
+  "expected": {
+    "payload_sha256": "ba2d5455c9b79eb722afcfea82b9c130b0d5e36d889d40aefd908c1796c6d43b",
+    "canonical_request": "sigv4-canonical-request.txt",
+    "canonical_request_sha256": "685c17206bfa93b253716e8a09bcde854ea532c35b2bf5653502da99fd82f60d",
+    "signed_headers": "accept;content-type;host;x-amz-date;x-amz-security-token;x-amzn-bedrock-accept;x-custom",
+    "string_to_sign": "sigv4-string-to-sign.txt",
+    "signature": "784a6c591ce7341dc49f5c6a248b5def84ae98c7a51396faff7b492e8def1af5",
+    "headers_after_signing": {
+      "host": "bedrock-runtime.us-east-1.amazonaws.com",
+      "x-amz-date": "20240102T030405Z",
+      "x-amz-security-token": "SYNTHETIC_SESSION_TOKEN_NOT_A_CREDENTIAL",
+      "authorization": "AWS4-HMAC-SHA256 Credential=AKIDSYNTHETIC00000000/20240102/us-east-1/bedrock/aws4_request, SignedHeaders=accept;content-type;host;x-amz-date;x-amz-security-token;x-amzn-bedrock-accept;x-custom, Signature=784a6c591ce7341dc49f5c6a248b5def84ae98c7a51396faff7b492e8def1af5"
+    }
+  }
+}

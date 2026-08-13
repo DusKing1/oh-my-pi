@@ -1,0 +1,93 @@
+{
+  "cases": [
+    {
+      "input": {
+        "action": {
+          "name": "runMCPTool",
+          "requestID": "req-1",
+          "args": {
+            "name": "mcp__omp__edit",
+            "arguments": {
+              "path": "a.rs"
+            }
+          }
+        }
+      },
+      "expected": {
+        "request_id": "req-1",
+        "tool_name": "edit",
+        "arguments": {
+          "path": "a.rs"
+        }
+      }
+    },
+    {
+      "input": {
+        "action": {
+          "name": "run_mcp_tool",
+          "requestId": "req-2",
+          "arguments": {
+            "toolName": "read",
+            "args": "{\"path\":\"b.rs\"}"
+          }
+        }
+      },
+      "expected": {
+        "request_id": "req-2",
+        "tool_name": "read",
+        "arguments": {
+          "path": "b.rs"
+        }
+      }
+    },
+    {
+      "input": {
+        "runMCPTool": {
+          "name": "edit",
+          "arguments": {}
+        },
+        "requestID": "req-3"
+      },
+      "expected": {
+        "request_id": "req-3",
+        "tool_name": "edit",
+        "arguments": {}
+      }
+    },
+    {
+      "input": {
+        "action": {
+          "name": "runMCPTool",
+          "args": {
+            "name": "edit"
+          }
+        }
+      },
+      "expected_error": {
+        "detail": "malformed GitLab Duo Workflow action `runMCPTool`: missing requestID",
+        "diagnostic_code": "malformed_frame"
+      }
+    },
+    {
+      "input": {
+        "status": "FAILED",
+        "message": "provider failed"
+      },
+      "expected_error": {
+        "kind": "upstream",
+        "detail": "GitLab Duo Workflow Some(\"FAILED\"): provider failed",
+        "diagnostic_code": "transport"
+      }
+    }
+  ],
+  "terminal_statuses": {
+    "success": [
+      "FINISHED",
+      "INPUT_REQUIRED"
+    ],
+    "errors": [
+      "FAILED",
+      "STOPPED"
+    ]
+  }
+}

@@ -1,0 +1,1 @@
+{"messages":[{"role":"user","content":[{"text":"Solve carefully."}]}],"additionalModelRequestFields":{"thinking":{"type":"enabled","budget_tokens":4096,"display":"omitted"},"anthropic_beta":["interleaved-thinking-2025-05-14"]}}

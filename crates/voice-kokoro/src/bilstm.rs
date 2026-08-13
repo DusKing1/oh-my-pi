@@ -16,7 +16,8 @@ pub struct BiLSTM {
 }
 
 impl BiLSTM {
-	/// Loads forward and backward LSTM weights from the supplied variable builder.
+	/// Loads forward and backward LSTM weights from the supplied variable
+	/// builder.
 	pub fn load(in_dim: usize, hidden_dim: usize, vb: VarBuilder) -> Result<Self> {
 		let fwd_cfg = LSTMConfig { direction: Direction::Forward, ..Default::default() };
 		let bwd_cfg = LSTMConfig { direction: Direction::Backward, ..Default::default() };

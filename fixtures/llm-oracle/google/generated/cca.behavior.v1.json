@@ -1,0 +1,408 @@
+{
+  "schema_version": 1,
+  "constants": {
+    "stream_generate_path": "/v1internal:streamGenerateContent?alt=sse",
+    "gemini_cli_client_metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
+    "claude_thinking_beta": "interleaved-thinking-2025-05-14",
+    "user_agent_templates": {
+      "gemini_cli": "GeminiCLI/0.46.0/{model} ({platform}; {arch}; terminal)",
+      "antigravity": "antigravity/hub/2.1.4 {os}/{arch}"
+    },
+    "gemini_cli_default_base": "https://cloudcode-pa.googleapis.com",
+    "antigravity_bases": [
+      "https://daily-cloudcode-pa.googleapis.com",
+      "https://daily-cloudcode-pa.sandbox.googleapis.com"
+    ]
+  },
+  "cases": [
+    {
+      "id": "google.cca.wrap.v1",
+      "input": {
+        "model": "gemini-3.5-flash",
+        "project": "project-REDACTED",
+        "request": {
+          "contents": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": "hello"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "output": {
+        "model": "gemini-3.5-flash",
+        "project": "project-REDACTED",
+        "request": {
+          "contents": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": "hello"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "wrapped_response": {
+        "input": {
+          "response": {
+            "candidates": []
+          }
+        },
+        "output": {
+          "candidates": []
+        }
+      }
+    },
+    {
+      "id": "google.cca.headers.v1",
+      "cases": [
+        {
+          "flavor": "gemini_cli",
+          "reasoning": false,
+          "headers": {
+            "User-Agent": "GeminiCLI/0.46.0/{model} ({platform}; {arch}; terminal)",
+            "Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
+          }
+        },
+        {
+          "flavor": "antigravity",
+          "model_family": "claude",
+          "reasoning": true,
+          "quota_project": "project-REDACTED",
+          "headers": {
+            "User-Agent": "antigravity/hub/2.1.4 {os}/{arch}",
+            "anthropic-beta": "interleaved-thinking-2025-05-14",
+            "X-Goog-User-Project": "project-REDACTED"
+          }
+        }
+      ]
+    },
+    {
+      "id": "google.cca.forced-tool.v1",
+      "directive": "TOOL-ONLY TURN. This turn accepts a tool call and nothing else; a text reply here is discarded unread and you will be re-prompted. Emit the tool call now.",
+      "cases": [
+        {
+          "flavor": "antigravity",
+          "model_family": "gemini",
+          "mode": "ANY",
+          "append_user_directive": true
+        },
+        {
+          "flavor": "antigravity",
+          "model_family": "claude",
+          "mode": "ANY",
+          "append_user_directive": false
+        },
+        {
+          "flavor": "gemini_cli",
+          "model_family": "gemini",
+          "mode": "ANY",
+          "append_user_directive": false
+        },
+        {
+          "flavor": "antigravity",
+          "model_family": "gemini",
+          "mode": "AUTO",
+          "append_user_directive": false
+        }
+      ]
+    },
+    {
+      "id": "google.cca.antigravity-model-policy.v1",
+      "cases": [
+        {
+          "model": "gemini-3.5-flash-extra-low",
+          "maxOutputTokens": 65536,
+          "model_enum": "MODEL_PLACEHOLDER_M187"
+        },
+        {
+          "model": "gemini-3.5-flash-low",
+          "maxOutputTokens": 65536,
+          "model_enum": "MODEL_PLACEHOLDER_M20"
+        },
+        {
+          "model": "gemini-3-flash-agent",
+          "maxOutputTokens": 65536,
+          "model_enum": "MODEL_PLACEHOLDER_M132"
+        },
+        {
+          "model": "gemini-3.1-pro-low",
+          "maxOutputTokens": 65535,
+          "model_enum": "MODEL_PLACEHOLDER_M36"
+        },
+        {
+          "model": "gemini-pro-agent",
+          "maxOutputTokens": 65535,
+          "model_enum": "MODEL_PLACEHOLDER_M16"
+        },
+        {
+          "model": "claude-sonnet-4-6",
+          "maxOutputTokens": 64000,
+          "model_enum": null
+        },
+        {
+          "model": "claude-opus-4-6-thinking",
+          "maxOutputTokens": 64000,
+          "model_enum": null
+        }
+      ]
+    },
+    {
+      "id": "google.cca.tool-schema.v1",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Arguments",
+        "type": "object",
+        "additionalProperties": false,
+        "patternProperties": {
+          "^x": {
+            "type": "string"
+          }
+        },
+        "propertyNames": {
+          "maxLength": 12
+        },
+        "properties": {
+          "city": {
+            "type": "string",
+            "title": "City",
+            "description": "kept"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "x-extra": true
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "description": "kept"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "x-extra": true
+      },
+      "removed_keywords": [
+        "$schema",
+        "title",
+        "additionalProperties",
+        "patternProperties",
+        "propertyNames"
+      ]
+    },
+    {
+      "id": "google.cca.thinking-off.v1",
+      "cases": [
+        {
+          "policy_mode": "google_level",
+          "output": {
+            "includeThoughts": false,
+            "thinkingLevel": "LOW"
+          }
+        },
+        {
+          "policy_mode": "budget",
+          "output": {
+            "includeThoughts": false,
+            "thinkingBudget": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "google.cca.endpoint-fallback.v1",
+      "attempt_order": [
+        "https://daily-cloudcode-pa.googleapis.com",
+        "https://daily-cloudcode-pa.sandbox.googleapis.com"
+      ],
+      "mode": {
+        "production": [
+          "https://daily-cloudcode-pa.googleapis.com"
+        ],
+        "sandbox": [
+          "https://daily-cloudcode-pa.sandbox.googleapis.com"
+        ],
+        "auto_last_good_sandbox": [
+          "https://daily-cloudcode-pa.sandbox.googleapis.com",
+          "https://daily-cloudcode-pa.googleapis.com"
+        ]
+      },
+      "fallback": [
+        {
+          "failure": {
+            "http_status": 408
+          },
+          "response_started": false,
+          "retry_next_host": true
+        },
+        {
+          "failure": {
+            "http_status": 429
+          },
+          "response_started": false,
+          "retry_next_host": true
+        },
+        {
+          "failure": {
+            "http_status": 503
+          },
+          "response_started": false,
+          "retry_next_host": true
+        },
+        {
+          "failure": {
+            "http_status": 400
+          },
+          "response_started": false,
+          "retry_next_host": false
+        },
+        {
+          "failure": "transport",
+          "response_started": false,
+          "retry_next_host": true
+        },
+        {
+          "failure": "empty_body",
+          "response_started": false,
+          "retry_next_host": true
+        },
+        {
+          "failure": "first_event_timeout",
+          "response_started": false,
+          "retry_next_host": true
+        },
+        {
+          "failure": "incomplete_stream",
+          "response_started": false,
+          "retry_next_host": false
+        },
+        {
+          "failure": "output",
+          "response_started": false,
+          "retry_next_host": false
+        },
+        {
+          "failure": {
+            "http_status": 503
+          },
+          "response_started": true,
+          "retry_next_host": false
+        }
+      ],
+      "first_event_timeout_ms": {
+        "model_contains_flash": 60000,
+        "other": 300000
+      }
+    },
+    {
+      "id": "google.cca.malformed-and-signature-errors.v1",
+      "cases": [
+        {
+          "input": "[]",
+          "operation": "unwrap_response",
+          "error": {
+            "kind": "provider",
+            "detail": "CCA stream event is not an object"
+          }
+        },
+        {
+          "input": {},
+          "operation": "unwrap_response",
+          "error": {
+            "kind": "provider",
+            "detail": "CCA stream event has no response"
+          }
+        },
+        {
+          "input": {
+            "error": {
+              "code": 500,
+              "message": "upstream failed"
+            }
+          },
+          "operation": "unwrap_response",
+          "error": {
+            "kind": "provider",
+            "detail": "CCA in-band error: {\"code\":500,\"message\":\"upstream failed\"}"
+          }
+        },
+        {
+          "input_bytes_hex": "ff",
+          "operation": "thought_signature_to_wire",
+          "error": {
+            "kind": "provider",
+            "detail_prefix": "CCA thought signature is not UTF-8:"
+          }
+        },
+        {
+          "input": "not-json",
+          "operation": "stream_decode",
+          "error": {
+            "kind": "provider",
+            "detail_prefix": "invalid CCA response JSON:"
+          }
+        }
+      ]
+    },
+    {
+      "id": "google.cca.shared-generation-config.v1",
+      "input": {
+        "temperature": 0.2,
+        "top_p": 0.9,
+        "top_k": 32,
+        "max_output_tokens": 2048,
+        "stop": [
+          "END"
+        ],
+        "thinking": {
+          "effort": "high"
+        }
+      },
+      "output": {
+        "request": {
+          "generationConfig": {
+            "temperature": 0.2,
+            "topP": 0.9,
+            "topK": 32,
+            "maxOutputTokens": 2048,
+            "stopSequences": [
+              "END"
+            ],
+            "thinkingConfig": {
+              "includeThoughts": true,
+              "thinkingLevel": "HIGH"
+            }
+          }
+        }
+      },
+      "typed_unsupported": [
+        {
+          "field": "minP",
+          "canonical_field": "sampling.min_p",
+          "action": "dropped"
+        },
+        {
+          "field": "presencePenalty",
+          "canonical_field": "sampling.presence_penalty",
+          "action": "dropped"
+        },
+        {
+          "field": "repetitionPenalty",
+          "type": "not_in_canonical_request"
+        }
+      ]
+    }
+  ]
+}

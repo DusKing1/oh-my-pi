@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "crc_mismatch",
+      "input": "eventstream-invalid-crc.bin",
+      "operation": "push",
+      "error": "provider failure: AWS EventStream message CRC mismatch"
+    },
+    {
+      "id": "truncated_frame",
+      "input": "eventstream-truncated.bin",
+      "operation": "finish",
+      "error": "provider failure: Bedrock response ended inside an AWS EventStream message"
+    }
+  ]
+}

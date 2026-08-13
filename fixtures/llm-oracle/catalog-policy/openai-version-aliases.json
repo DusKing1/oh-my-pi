@@ -1,0 +1,126 @@
+{
+  "alias_provenance": "Rolling Daybreak aliases are pinned to the OpenAI-documented 5.6.0 snapshot and must advance when the aliases move.",
+  "cases": [
+    {
+      "case_kind": "daybreak_alias",
+      "expected_version": {
+        "major": 5,
+        "minor": 6,
+        "patch": 0
+      },
+      "input": "daybreak-blue-latest"
+    },
+    {
+      "case_kind": "daybreak_alias",
+      "expected_version": {
+        "major": 5,
+        "minor": 6,
+        "patch": 0
+      },
+      "input": "gpt-daybreak-blue-latest"
+    },
+    {
+      "case_kind": "daybreak_alias",
+      "expected_version": {
+        "major": 5,
+        "minor": 6,
+        "patch": 0
+      },
+      "input": "daybreak-red-latest"
+    },
+    {
+      "case_kind": "daybreak_alias",
+      "expected_version": {
+        "major": 5,
+        "minor": 6,
+        "patch": 0
+      },
+      "input": "gpt-daybreak-red-latest"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_version": {
+        "major": 5,
+        "minor": 6,
+        "patch": 0
+      },
+      "input": "openai/gpt-5.6-cyber"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_version": {
+        "major": 5,
+        "minor": 4,
+        "patch": 0
+      },
+      "input": "azure/gpt-5.4-codex"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_version": {
+        "major": 4,
+        "minor": 1,
+        "patch": 0
+      },
+      "input": "openai/gpt-4.1"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_version": {
+        "major": 5,
+        "minor": 6,
+        "patch": 1
+      },
+      "input": "gpt-5.6.1-test"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_version": {
+        "major": 5,
+        "minor": 0,
+        "patch": 0
+      },
+      "input": "gpt-5"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_version": {
+        "major": 4,
+        "minor": 0,
+        "patch": 0
+      },
+      "input": "gpt-4o"
+    },
+    {
+      "case_kind": "canonical",
+      "expected_version": null,
+      "input": "o3"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_version": null,
+      "input": "gpt5"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_version": null,
+      "input": "chatgpt5"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_version": null,
+      "input": "codex"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_version": null,
+      "input": "o10"
+    },
+    {
+      "case_kind": "adversarial_near_match_or_unknown",
+      "expected_version": null,
+      "input": "opaque-model"
+    }
+  ],
+  "schema_version": 1
+}

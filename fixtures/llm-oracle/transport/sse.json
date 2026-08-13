@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "framing": "sse",
+  "cases": [
+    {
+      "id": "sse.split-field.v1",
+      "steps": [
+        {"input_hex": "657665", "emitted": []},
+        {"input_hex": "6e743a206d65730a646174613a2068656c", "emitted": []},
+        {"input_hex": "6c6f0a0a", "emitted": [{"kind": "event", "name": "mes", "data_hex": "68656c6c6f"}]}
+      ],
+      "final_state": {"done": false, "last_event_id": null, "retry_ms": null}
+    },
+    {
+      "id": "sse.multiline-mixed-newlines.v1",
+      "steps": [
+        {"input_hex": "646174613a2066697273740d0a646174613a207365636f6e640a646174613a0a0a", "emitted": [{"kind": "event", "name": null, "data_hex": "66697273740a7365636f6e640a"}]}
+      ],
+      "final_state": {"done": false, "last_event_id": null, "retry_ms": null}
+    },
+    {
+      "id": "sse.split-utf8.v1",
+      "steps": [
+        {"input_hex": "646174613a20636166c3", "emitted": []},
+        {"input_hex": "a90a0a", "emitted": [{"kind": "event", "name": null, "data_hex": "636166c3a9", "data_utf8": "café"}]}
+      ],
+      "final_state": {"done": false, "last_event_id": null, "retry_ms": null}
+    },
+    {
+      "id": "sse.metadata-comments.v1",
+      "steps": [
+        {"input_hex": "3a206b656570616c6976650a756e6b6e6f776e3a2076616c75650a69643a20637572736f722d310a72657472793a203235300a646174613a206f6b0a0a", "emitted": [{"kind": "event", "name": null, "data_hex": "6f6b"}]}
+      ],
+      "final_state": {"done": false, "last_event_id": "cursor-1", "retry_ms": 250}
+    },
+    {
+      "id": "sse.done-terminal.v1",
+      "steps": [
+        {"input_hex": "646174613a206265666f72650a0a646174613a205b444f4e455d0a0a", "emitted": [{"kind": "event", "name": null, "data_hex": "6265666f7265"}]},
+        {"input_hex": "646174613a206c617465720a0a", "emitted": []}
+      ],
+      "final_state": {"done": true, "last_event_id": null, "retry_ms": null}
+    }
+  ]
+}

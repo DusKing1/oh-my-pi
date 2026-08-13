@@ -79,10 +79,10 @@ impl Component for Hr {
 		let line = self.props.edge(&pc.ctx.theme).map_or_else(
 			|| {
 				if self.props.contains(Prop::Fg) {
-    					style.dim()
-    				} else {
-    					style.fg(pc.ctx.theme.border)
-    				}
+					style.dim()
+				} else {
+					style.fg(pc.ctx.theme.border)
+				}
 			},
 			|color| style.fg(color),
 		);

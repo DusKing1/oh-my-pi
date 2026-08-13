@@ -1,0 +1,33 @@
+{
+  "cases": [
+    {
+      "input": "grpc stream status error",
+      "expected": {
+        "error_kind": "upstream",
+        "detail": "status string preserved",
+        "terminal_count": 1
+      }
+    },
+    {
+      "input": "context overflow trailer",
+      "fixture": "response.context_overflow.json",
+      "expected": {
+        "error_kind": "context_overflow",
+        "retryable": false
+      }
+    },
+    {
+      "input": "malformed discovery protobuf",
+      "expected": {
+        "error_kind": "transport"
+      }
+    },
+    {
+      "input": "authentication mutation failure",
+      "expected": {
+        "error_kind": "transport",
+        "detail": "Devin authentication failed"
+      }
+    }
+  ]
+}

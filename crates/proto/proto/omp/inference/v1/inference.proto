@@ -53,8 +53,14 @@ service Inference {
   // Release a context ahead of its TTL.
   rpc Drop(DropRequest) returns (DropResponse);
 
+  // ── Realtime ──────────────────────────────────────────────────────────
+  // Owned bidirectional low-latency text/audio session. The first frame is open.
+  rpc Realtime(stream RealtimeFrame) returns (stream RealtimeEvent);
+
   // ── Text utilities ────────────────────────────────────────────────────
   rpc CountTokens(CountTokensRequest) returns (CountTokensResponse);
+  rpc Tokenize(TokenizeRequest) returns (TokenizeResponse);
+  rpc Detokenize(DetokenizeRequest) returns (DetokenizeResponse);
   rpc Embed(EmbedRequest) returns (EmbedResponse);
 
   // ── Media generation ──────────────────────────────────────────────────
@@ -74,6 +80,10 @@ service Inference {
 
   // ── Search ────────────────────────────────────────────────────────────
   rpc Search(SearchRequest) returns (SearchResponse);
+
+  // ── Account usage and allowlisted native wire access ──────────────────
+  rpc Usage(UsageRequest) returns (UsageResponse);
+  rpc Native(NativeRequest) returns (stream NativeChunk);
 
   // ── Discovery ─────────────────────────────────────────────────────────
   // What this gateway can serve: the join of the catalog (bundled +
@@ -677,6 +687,35 @@ message CountTokensResponse {
   // Exact when a provider endpoint or exact tokenizer served the count;
   // estimated for heuristics.
   Usage.Accuracy accuracy = 2;
+  TokenizerProvenance provenance = 3;
+}
+
+message TokenizerProvenance {
+  string tokenizer = 1;
+  string revision = 2;
+  bool exact = 3;
+}
+
+message TokenizeRequest {
+  string model = 1;
+  string text = 2;
+  bool allow_special = 3;
+}
+
+message TokenizeResponse {
+  repeated uint32 tokens = 1;
+  TokenizerProvenance provenance = 2;
+}
+
+message DetokenizeRequest {
+  string model = 1;
+  repeated uint32 tokens = 2;
+  bool strict = 3;
+}
+
+message DetokenizeResponse {
+  string text = 1;
+  TokenizerProvenance provenance = 2;
 }
 
 message EmbedRequest {
@@ -693,4 +732,140 @@ message EmbedResponse {
   }
   repeated Vector vectors = 1;
   Usage usage = 2;
+}
+
+message UsageRequest {
+  string provider = 1;
+  string account = 2;
+  enum Scope {
+    SCOPE_UNSPECIFIED = 0;
+    SCOPE_CURRENT = 1;
+    SCOPE_BILLING = 2;
+    SCOPE_RATE_LIMIT = 3;
+    SCOPE_ALL = 4;
+  }
+  Scope scope = 3;
+  bool allow_stale = 4;
+}
+
+message UsageResponse {
+  string provider = 1;
+  string account = 2;
+  string principal = 3;
+  repeated Window windows = 4;
+  message Window {
+    enum Kind {
+      KIND_UNSPECIFIED = 0;
+      KIND_RATE_LIMIT = 1;
+      KIND_QUOTA = 2;
+      KIND_BILLING = 3;
+      KIND_BALANCE = 4;
+    }
+    Kind kind = 1;
+    string dimension = 2;
+    optional uint64 consumed = 3;
+    optional uint64 remaining = 4;
+    optional uint64 limit = 5;
+    optional uint64 resets_at_ms = 6;
+    Usage.Accuracy accuracy = 7;
+    uint64 observed_at_ms = 8;
+  }
+}
+
+message NativeRequest {
+  string model = 1;
+  enum Method {
+    METHOD_UNSPECIFIED = 0;
+    METHOD_GET = 1;
+    METHOD_POST = 2;
+    METHOD_DELETE = 3;
+  }
+  Method method = 2;
+  enum Path {
+    PATH_UNSPECIFIED = 0;
+    PATH_CHAT_COMPLETIONS = 1;
+    PATH_RESPONSES = 2;
+    PATH_MESSAGES = 3;
+    PATH_MESSAGE_TOKEN_COUNTS = 4;
+    PATH_EMBEDDINGS = 5;
+    PATH_IMAGE_GENERATIONS = 6;
+    PATH_AUDIO_SPEECH = 7;
+    PATH_AUDIO_TRANSCRIPTIONS = 8;
+    PATH_REALTIME_SESSIONS = 9;
+    PATH_MODELS = 10;
+    PATH_USAGE = 11;
+  }
+  Path path = 3;
+  oneof payload {
+    bytes json = 4;
+    bytes bytes = 5;
+  }
+  enum Framing {
+    FRAMING_UNSPECIFIED = 0;
+    FRAMING_JSON = 1;
+    FRAMING_SSE = 2;
+    FRAMING_BYTES = 3;
+  }
+  Framing framing = 6;
+  uint64 max_response_bytes = 7;
+}
+
+message NativeChunk {
+  uint32 status = 1;
+  string media_type = 2;
+  string provider_request_id = 3;
+  bytes data = 4;
+  bool final = 5;
+}
+
+message RealtimeFrame {
+  oneof frame {
+    RealtimeOpen open = 1;
+    bytes audio = 2;
+    string text = 3;
+    omp.thread.v1.ToolResult tool_result = 4;
+    RealtimeCommit commit = 5;
+    RealtimeCancelResponse cancel_response = 6;
+    RealtimeClose close = 7;
+  }
+}
+
+message RealtimeOpen {
+  string request_id = 1;
+  string model = 2;
+  string instructions = 3;
+  enum Modality {
+    MODALITY_UNSPECIFIED = 0;
+    MODALITY_TEXT = 1;
+    MODALITY_AUDIO = 2;
+  }
+  repeated Modality modalities = 4;
+  string voice = 5;
+  AudioEncoding input_audio = 6;
+  AudioEncoding output_audio = 7;
+  repeated ToolDef tools = 8;
+}
+
+message RealtimeCommit {}
+message RealtimeCancelResponse {}
+message RealtimeClose {}
+
+message RealtimeEvent {
+  oneof event {
+    RealtimeReady ready = 1;
+    TurnEvent chat = 2;
+    RealtimeAudio audio = 3;
+    RealtimeInputCommitted input_committed = 4;
+    RealtimeClosed closed = 5;
+  }
+}
+
+message RealtimeReady {}
+message RealtimeInputCommitted {}
+message RealtimeClosed {}
+message RealtimeAudio {
+  bytes audio = 1;
+  optional uint64 start_ms = 2;
+  optional uint64 end_ms = 3;
+  bool final = 4;
 }

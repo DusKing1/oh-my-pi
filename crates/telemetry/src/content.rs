@@ -42,14 +42,14 @@ pub const MAX_TELEMETRY_TEXT_CHARS: usize = 240;
 pub struct RequestContent<'a> {
 	/// System prompt, represented as either a string or an array of strings.
 	pub system_prompt: Option<&'a Value>,
-	/// Conversation messages in the `pi-ai` JSON shape.
+	/// Conversation messages in the canonical inference JSON shape.
 	pub messages:      &'a [Value],
 }
 
 /// Assistant response content consumed by the content-capture serializers.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ResponseContent<'a> {
-	/// Assistant content parts in the `pi-ai` JSON shape.
+	/// Assistant content parts in the canonical inference JSON shape.
 	pub parts:       &'a [Value],
 	/// Provider stop reason.
 	pub stop_reason: Option<&'a str>,

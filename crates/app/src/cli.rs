@@ -1,30 +1,32 @@
 //! Command parsing and production dispatch for the `omp` executable.
 
 use std::{
-	collections::BTreeSet,
 	path::{Path, PathBuf},
 	sync::Arc,
 	time::{SystemTime, UNIX_EPOCH},
 };
 
 use clap::{Args, Parser, Subcommand};
-use futures::{StreamExt as _, stream};
+use futures::StreamExt as _;
 use omp_core::Str;
-use omp_llm_broker::cli::{self as broker_cli, AuthCli, AuthCommand};
-use omp_llm_catalog::models::import_catalog_zstd;
-use omp_llm_gateway::local::LocalEndpoint;
-use omp_llm_local::{Embedded, Inference, TextModel, TextSelection};
-use omp_llm_types::{
-	Chat, ChatRequest, Item, ItemKind, Message, Part, Props, Role, StreamPartKind, Thread, TurnEvent,
-};
-use omp_proto::inference::v1::{
-	TurnFrame, inference_client::InferenceClient, turn_event, turn_frame,
+use omp_llm_catalog::{ModelKey, compile::compile_oracle};
+#[cfg(feature = "local-applefm")]
+use omp_llm_inference::local::applefm::{AppleFm, AppleFmEvent, AppleFmOptions};
+use omp_llm_inference::{
+	Client,
+	call::{
+		CallMeta, ChatRequest, ContentPart, Message, NegotiationPolicy, Role, Sampling, Setting,
+		Target,
+	},
+	event::ChatEvent,
+	id::RequestId,
+	receipt::ExecutionBudget,
 };
 use tokio::io::AsyncWriteExt as _;
 
 use crate::{
-	auth_backend,
 	daemon::{DaemonConfig, DaemonHandle},
+	endpoint::LocalEndpoint,
 	error::AppError,
 };
 
@@ -42,13 +44,13 @@ pub struct OmpCli {
 pub enum Command {
 	/// Start the inference gateway on a platform-native local endpoint.
 	Serve(ServeArgs),
-	/// Run one stateless turn through a running gateway.
+	/// Run one typed operation in process.
 	Infer(InferArgs),
-	/// Manage provider credentials in the local broker store.
+	/// Manage provider credentials.
 	Auth(AuthArgs),
 	/// Manage generated model-catalog data.
 	Catalog(CatalogArgs),
-	/// Run hardware-accelerated inference in this process.
+	/// Run hardware-accelerated local inference.
 	Local(LocalArgs),
 }
 
@@ -63,29 +65,42 @@ pub struct ServeArgs {
 	pub data_dir: Option<PathBuf>,
 }
 
-/// Direct gateway inference options.
+/// Direct typed inference options.
 #[derive(Clone, Debug, Args)]
 pub struct InferArgs {
-	/// Platform-local endpoint of the running gateway.
-	#[arg(long = "endpoint", visible_aliases = ["uds", "pipe"], value_name = "LOCAL_ENDPOINT")]
-	pub endpoint: LocalEndpoint,
-	/// Catalog model id, alias, or role.
+	/// Catalog model key.
 	#[arg(long)]
-	pub model:    Str,
-	/// User prompt for the stateless turn.
+	pub model:  Str,
+	/// User prompt.
 	#[arg(long)]
-	pub prompt:   Str,
+	pub prompt: Str,
 }
 
-/// Broker command and durable-state options.
+/// Authentication command options.
 #[derive(Clone, Debug, Args)]
 pub struct AuthArgs {
-	/// OMP data directory containing `broker.db`.
+	/// OMP data directory containing `credentials.db`.
 	#[arg(long, value_name = "PATH")]
 	pub data_dir: Option<PathBuf>,
 	/// Authentication operation.
 	#[command(subcommand)]
 	pub command:  AuthCommand,
+}
+
+/// Typed authentication commands.
+#[derive(Clone, Debug, Subcommand)]
+pub enum AuthCommand {
+	/// Begin an interactive provider login.
+	Login { provider: Str },
+	/// List non-secret account summaries.
+	List {
+		#[arg(long)]
+		provider: Option<Str>,
+	},
+	/// Refresh one account.
+	Refresh { account: Str },
+	/// Remove one account.
+	Logout { account: Str },
 }
 
 /// Model-catalog command tree.
@@ -99,18 +114,23 @@ pub struct CatalogArgs {
 /// Model-catalog operations.
 #[derive(Clone, Debug, Subcommand)]
 pub enum CatalogCommand {
-	/// Normalize and compress a generated source catalog.
 	Import(CatalogImportArgs),
 }
 
-/// Catalog import paths.
+/// Catalog compiler inputs and normalized output.
 #[derive(Clone, Debug, Args)]
 pub struct CatalogImportArgs {
-	/// Generated source JSON.
-	#[arg(long, value_name = "JSON")]
-	pub source:      PathBuf,
-	/// Destination zstd catalog payload.
+	/// Provider manifest TOML.
+	#[arg(long, value_name = "TOML")]
+	pub providers:   PathBuf,
+	/// Secret-free OAuth flow manifest TOML.
+	#[arg(long, value_name = "TOML")]
+	pub oauth:       PathBuf,
+	/// Compressed oracle model rows.
 	#[arg(long, value_name = "ZST")]
+	pub models:      PathBuf,
+	/// Destination normalized JSON.
+	#[arg(long, value_name = "JSON")]
 	pub destination: PathBuf,
 }
 
@@ -125,16 +145,12 @@ pub struct LocalArgs {
 /// Local inference operations.
 #[derive(Clone, Debug, Subcommand)]
 pub enum LocalCommand {
-	/// Generate one complete local response.
 	Infer(LocalInferArgs),
 }
 
-/// In-process text generation options.
+/// In-process Apple Foundation Models options.
 #[derive(Clone, Debug, Args)]
 pub struct LocalInferArgs {
-	/// Backend selection: `auto`, `foundation`, or a local GGUF path.
-	#[arg(long, default_value = "auto", value_name = "BACKEND_OR_GGUF")]
-	pub model:  Str,
 	/// User prompt.
 	#[arg(long)]
 	pub prompt: Str,
@@ -177,49 +193,39 @@ pub async fn dispatch(cli: OmpCli) -> crate::Result<()> {
 }
 
 async fn serve(args: ServeArgs) -> crate::Result<()> {
-	let config = match args.data_dir {
-		Some(data_dir) => DaemonConfig::local(args.endpoint).with_data_dir(data_dir),
-		None => DaemonConfig::local(args.endpoint),
-	};
-	let handle = DaemonHandle::start(config).await?;
-	handle.wait().await?;
+	let config = args.data_dir.map_or_else(
+		|| DaemonConfig::local(args.endpoint.clone()),
+		|dir| DaemonConfig::local(args.endpoint.clone()).with_data_dir(dir),
+	);
+	DaemonHandle::start(config).await?.wait().await?;
 	Ok(())
 }
 
 async fn infer(args: InferArgs) -> crate::Result<()> {
-	let channel = omp_llm_gateway::local::connect(&args.endpoint)
-		.await
-		.map_err(|source| AppError::ConnectGateway { endpoint: args.endpoint.clone(), source })?;
-	omp_rpc::handshake(channel.clone(), "omp-cli", &["inference"]).await?;
-	let request = ChatRequest::builder()
-		.model(args.model)
-		.thread(
-			Thread::builder()
-				.items(vec![user_item(args.prompt)])
-				.build(),
-		)
-		.tools(Vec::new())
-		.build();
-	let mut open: omp_proto::inference::v1::TurnRequest = request.into();
-	open.turn_id = turn_id();
-	let frame = TurnFrame { frame: Some(turn_frame::Frame::Open(open)) };
-	let mut events = InferenceClient::new(channel)
-		.turn(stream::iter([frame]))
-		.await?
-		.into_inner();
-	let mut terminal = false;
+	let data_dir = data_dir(None)?;
+	let store = crate::daemon::open_credential_store(data_dir.join("credentials.db"))?;
+	let registry = crate::daemon::production_registry(&data_dir, store).await?;
+	let planner =
+		omp_llm_inference::router::Router::new(registry.clone(), std::time::Duration::from_secs(30));
+	let meta = CallMeta {
+		id:       RequestId::from(turn_id()),
+		target:   Target::Model(ModelKey::from(args.model)),
+		deadline: None,
+		budget:   ExecutionBudget::default(),
+		session:  None,
+	};
+	let mut client = Client::new(registry.service(), planner, meta);
+	let mut events = client.execute(chat_request(args.prompt)).await?;
+	let mut completed = false;
 	let mut stdout = tokio::io::stdout();
 	while let Some(event) = events.next().await {
-		match event?.event {
-			Some(turn_event::Event::PartDelta(delta)) => stdout.write_all(&delta.chunk).await?,
-			Some(turn_event::Event::Outcome(_)) => terminal = true,
-			Some(turn_event::Event::Error(error)) => {
-				return Err(AppError::InferenceFailed { detail: Str::from(error.detail) });
-			},
+		match event? {
+			ChatEvent::TextDelta { text, .. } => stdout.write_all(text.as_bytes()).await?,
+			ChatEvent::Completed(_) => completed = true,
 			_ => {},
 		}
 	}
-	if !terminal {
+	if !completed {
 		return Err(AppError::InferenceStreamUnterminated);
 	}
 	stdout.write_all(b"\n").await?;
@@ -227,17 +233,27 @@ async fn infer(args: InferArgs) -> crate::Result<()> {
 	Ok(())
 }
 
-fn user_item(prompt: Str) -> Item {
-	Item::builder()
-		.seq(0)
-		.kind(ItemKind::Message(
-			Message::builder()
-				.role(Role::User)
-				.parts(vec![Part::Text(prompt)])
-				.build(),
-		))
-		.props(Props::default())
-		.build()
+fn chat_request(prompt: Str) -> ChatRequest {
+	ChatRequest {
+		messages:          Arc::from([Message {
+			role:    Role::User,
+			content: Arc::from([ContentPart::Text { text: prompt, proof: None }]),
+			name:    None,
+		}]),
+		tools:             Arc::from([]),
+		hosted_tools:      Arc::from([]),
+		tool_choice:       Setting::Unset,
+		output:            Setting::Unset,
+		reasoning:         Setting::Unset,
+		verbosity:         Setting::Unset,
+		cache_retention:   Setting::Unset,
+		service_tier:      Setting::Unset,
+		sampling:          Sampling::default(),
+		max_output_tokens: None,
+		top_logprobs:      None,
+		safety:            Arc::from([]),
+		negotiation:       NegotiationPolicy::default(),
+	}
 }
 
 fn turn_id() -> String {
@@ -245,26 +261,12 @@ fn turn_id() -> String {
 		.duration_since(UNIX_EPOCH)
 		.unwrap_or_default()
 		.as_nanos();
-	format!("cli-{}-{now}", std::process::id())
+	format!("omp-cli-{}-{now}", std::process::id())
 }
 
 async fn auth(args: AuthArgs) -> crate::Result<()> {
-	validate_auth(&args.command)?;
-	let database = data_dir(args.data_dir)?.join("broker.db");
-	let backend = auth_backend::open(&database)?;
-	let output = broker_cli::run(&backend, &AuthCli { command: args.command }).await?;
-	println!("{output}");
-	Ok(())
-}
-
-const fn validate_auth(command: &AuthCommand) -> crate::Result<()> {
-	if let AuthCommand::Migrate(args) = command
-		&& args.sqlite.is_none()
-		&& args.json_file.is_none()
-	{
-		return Err(AppError::AuthMigrateArgsRequired);
-	}
-	Ok(())
+	let data = data_dir(args.data_dir)?;
+	crate::auth_backend::run(data.join("credentials.db"), args.command).await
 }
 
 fn data_dir(explicit: Option<PathBuf>) -> crate::Result<PathBuf> {
@@ -279,20 +281,24 @@ fn data_dir(explicit: Option<PathBuf>) -> crate::Result<PathBuf> {
 }
 
 fn catalog_import(args: &CatalogImportArgs) -> crate::Result<()> {
-	if same_path(&args.source, &args.destination) {
+	if same_path(&args.providers, &args.destination)
+		|| same_path(&args.oauth, &args.destination)
+		|| same_path(&args.models, &args.destination)
+	{
 		return Err(AppError::SameCatalogSourceAndDestination);
 	}
-	let input = std::fs::read(&args.source)
-		.map_err(|source| AppError::ReadCatalogSource { path: args.source.clone(), source })?;
-	let payload = import_catalog_zstd(&input)?;
-	if let Some(parent) = args.destination.parent()
-		&& !parent.as_os_str().is_empty()
+	let providers = std::fs::read_to_string(&args.providers)?;
+	let oauth = std::fs::read_to_string(&args.oauth)?;
+	let models = std::fs::read(&args.models)?;
+	let payload = compile_oracle(&providers, &models, &oauth)?.normalized_json()?;
+	if let Some(parent) = args
+		.destination
+		.parent()
+		.filter(|path| !path.as_os_str().is_empty())
 	{
 		std::fs::create_dir_all(parent)?;
 	}
-	std::fs::write(&args.destination, payload).map_err(|source| {
-		AppError::WriteCatalogDestination { path: args.destination.clone(), source }
-	})?;
+	std::fs::write(&args.destination, payload)?;
 	Ok(())
 }
 
@@ -305,52 +311,29 @@ fn same_path(left: &Path, right: &Path) -> bool {
 			.is_some_and(|(left, right)| left == right)
 }
 
+#[cfg(feature = "local-applefm")]
 async fn local_infer(args: LocalInferArgs) -> crate::Result<()> {
-	let selection = match args.model.as_str() {
-		"auto" => TextSelection::Auto,
-		"foundation" => TextSelection::FoundationModels,
-		path => TextSelection::Gguf(TextModel::Local(PathBuf::from(path))),
-	};
-	let inference = Arc::new(Inference::builder().text(selection).build().await?);
-	let embedded = Embedded::new(Arc::clone(&inference));
-	let request = ChatRequest::builder()
-		.model(Str::new_static("local/default"))
-		.thread(
-			Thread::builder()
-				.items(vec![user_item(args.prompt)])
-				.build(),
-		)
-		.tools(Vec::new())
-		.build();
-	let mut events = embedded.turn(request, None).await?;
-	let mut text_parts = BTreeSet::new();
-	let mut terminal = false;
+	let model = AppleFm::load().await?;
+	let mut events = model.stream(AppleFmOptions::new(args.prompt))?;
+	let mut completed = false;
 	let mut stdout = tokio::io::stdout();
 	while let Some(event) = events.next().await {
-		match event {
-			TurnEvent::PartStart { index, kind: StreamPartKind::Text, .. } => {
-				text_parts.insert(index);
-			},
-			TurnEvent::PartDelta { index, chunk } if text_parts.contains(&index) => {
-				stdout.write_all(&chunk).await?;
-			},
-			TurnEvent::PartEnd { index, .. } => {
-				text_parts.remove(&index);
-			},
-			TurnEvent::Outcome(_) => terminal = true,
-			TurnEvent::Error(error) => {
-				return Err(AppError::InferenceFailed { detail: error.detail });
-			},
-			_ => {},
+		match event? {
+			AppleFmEvent::Delta(text) => stdout.write_all(text.as_bytes()).await?,
+			AppleFmEvent::Finished(_) => completed = true,
 		}
 	}
-	if !terminal {
+	if !completed {
 		return Err(AppError::LocalInferenceStreamUnterminated);
 	}
 	stdout.write_all(b"\n").await?;
 	stdout.flush().await?;
-	inference.shutdown().await?;
 	Ok(())
+}
+
+#[cfg(not(feature = "local-applefm"))]
+async fn local_infer(_args: LocalInferArgs) -> crate::Result<()> {
+	Err(AppError::LocalFeatureDisabled)
 }
 
 #[cfg(test)]
@@ -373,8 +356,7 @@ mod tests {
 		let cases = [
 			(&["omp", "serve", "--endpoint", TEST_ENDPOINT][..], DispatchTarget::Serve),
 			(
-				&["omp", "infer", "--endpoint", TEST_ENDPOINT, "--model", "slow", "--prompt", "hello"]
-					[..],
+				&["omp", "infer", "--model", "provider/model", "--prompt", "hello"][..],
 				DispatchTarget::Infer,
 			),
 			(&["omp", "auth", "list"][..], DispatchTarget::Auth),
@@ -383,10 +365,14 @@ mod tests {
 					"omp",
 					"catalog",
 					"import",
-					"--source",
-					"models.json",
-					"--destination",
+					"--providers",
+					"providers.toml",
+					"--oauth",
+					"oauth.toml",
+					"--models",
 					"models.json.zst",
+					"--destination",
+					"catalog.json",
 				][..],
 				DispatchTarget::CatalogImport,
 			),
@@ -397,27 +383,34 @@ mod tests {
 		}
 	}
 
-	#[cfg(windows)]
 	#[test]
-	fn parses_windows_named_pipe_alias_and_uri() {
-		for arguments in [
-			&["omp", "serve", "--pipe", r"\\.\pipe\omp-cli-test"][..],
-			&["omp", "serve", "--endpoint", "npipe://./pipe/omp-cli-test"][..],
-		] {
-			let Command::Serve(args) = parse(arguments).command else {
-				panic!("serve command");
-			};
-			assert_eq!(args.endpoint.as_path(), Path::new(r"\\.\pipe\omp-cli-test"));
-		}
+	fn parses_every_auth_branch() {
+		assert!(matches!(
+			parse(&["omp", "auth", "login", "provider"]).command,
+			Command::Auth(AuthArgs { command: AuthCommand::Login { .. }, .. })
+		));
+		assert!(matches!(
+			parse(&["omp", "auth", "list", "--provider", "provider"]).command,
+			Command::Auth(AuthArgs { command: AuthCommand::List { provider: Some(_) }, .. })
+		));
+		assert!(matches!(
+			parse(&["omp", "auth", "refresh", "account"]).command,
+			Command::Auth(AuthArgs { command: AuthCommand::Refresh { .. }, .. })
+		));
+		assert!(matches!(
+			parse(&["omp", "auth", "logout", "account"]).command,
+			Command::Auth(AuthArgs { command: AuthCommand::Logout { .. }, .. })
+		));
 	}
 
 	#[test]
-	fn rejects_incomplete_and_conflicting_commands() {
+	fn rejects_incomplete_commands() {
 		for arguments in [
 			&["omp", "serve"][..],
-			&["omp", "infer", "--model", "slow", "--prompt", "hello"][..],
+			&["omp", "infer", "--model", "provider/model"][..],
 			&["omp", "local", "infer"][..],
-			&["omp", "catalog", "import", "--source", "models.json"][..],
+			&["omp", "catalog", "import", "--providers", "providers.toml", "--oauth", "oauth.toml"][..],
+			&["omp", "auth", "login"][..],
 		] {
 			assert_eq!(
 				OmpCli::try_parse_from(arguments)
@@ -426,21 +419,5 @@ mod tests {
 				ErrorKind::MissingRequiredArgument
 			);
 		}
-	}
-
-	#[test]
-	fn catalog_import_rejects_overwriting_its_source() {
-		let args =
-			CatalogImportArgs { source: "models.json".into(), destination: "models.json".into() };
-		assert!(catalog_import(&args).is_err());
-	}
-
-	#[test]
-	fn auth_migrate_rejects_an_empty_source_set() {
-		let command = parse(&["omp", "auth", "migrate"]).command;
-		let Command::Auth(args) = command else {
-			panic!("auth command");
-		};
-		assert!(validate_auth(&args.command).is_err());
 	}
 }

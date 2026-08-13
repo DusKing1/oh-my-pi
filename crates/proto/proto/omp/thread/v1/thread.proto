@@ -4,10 +4,10 @@ package omp.thread.v1;
 
 import "omp/inference/v1/common.proto";
 
-// Canonical conversation AST shared by every inference facet and the gateway
-// context store. This is the *transport binding* of the Rust-side types in
-// `omp-llm-types`, not the interface itself: in-process callers use the facet
-// traits directly and never serialize.
+// Canonical conversation transport schema shared by inference operations and
+// the gateway context store. In-process callers use the typed
+// `omp-llm-inference` operation API directly and serialize only at RPC
+// boundaries.
 //
 // Evolution rules (apply to every omp.* package):
 //   - Receivers skip unknown fields (proto3); peers MUST tolerate newer

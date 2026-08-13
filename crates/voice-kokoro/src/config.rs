@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-/// Architecture and inference settings deserialized from Kokoro's `config.json`.
+/// Architecture and inference settings deserialized from Kokoro's
+/// `config.json`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelConfig {
 	/// iSTFTNet vocoder architecture.

@@ -1,0 +1,47 @@
+{
+  "cases": [
+    {
+      "id": "normal_end_stream",
+      "path": "connect.end_stream.normal.bin",
+      "expected_payloads": [],
+      "expected_error": null
+    },
+    {
+      "id": "error_end_stream",
+      "path": "connect.end_stream.error.bin",
+      "expected_payloads": [],
+      "expected_error": {
+        "kind": "transport",
+        "detail": "Cursor Connect end-stream error"
+      }
+    },
+    {
+      "id": "split_data_frame",
+      "chunks_hex": [
+        "000000",
+        "00027b7d"
+      ],
+      "expected_payloads_hex": [
+        "7b7d"
+      ],
+      "expected_error": null
+    },
+    {
+      "id": "incomplete_header",
+      "chunks_hex": [
+        "000000"
+      ],
+      "expected_payloads_hex": [],
+      "expected_buffered_bytes": 3
+    },
+    {
+      "id": "incomplete_payload",
+      "chunks_hex": [
+        "00000000047b7d"
+      ],
+      "expected_payloads_hex": [],
+      "expected_buffered_bytes": 7
+    }
+  ],
+  "note": "An end-stream frame is never emitted as a protobuf payload. Only an end-stream payload containing the literal byte sequence \"\\\"error\\\"\" is an error."
+}

@@ -1,0 +1,170 @@
+{
+  "case": "vertex_id_stripping_and_policy_default_safety",
+  "encoder": "omp_llm_google::GoogleCodec::vertex().encode",
+  "canonical_input": {
+    "model": "gemini-2.5-pro",
+    "function_call_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "policy_default_provider_options": {
+      "google/response_modalities": [
+        "TEXT"
+      ],
+      "google/safety_settings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "OFF"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "OFF"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "OFF"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "OFF"
+        }
+      ]
+    },
+    "multipart": [
+      "text",
+      "inline image/png bytes 000102ff",
+      "fileData gs://oracle-bucket/document.pdf"
+    ],
+    "tool_choice": {
+      "named": "lookup"
+    },
+    "thinking_effort": "high"
+  },
+  "wire_body": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Inspect both attachments."
+          },
+          {
+            "inlineData": {
+              "mimeType": "image/png",
+              "data": "AAEC/w=="
+            }
+          },
+          {
+            "fileData": {
+              "mimeType": "application/pdf",
+              "fileUri": "gs://oracle-bucket/document.pdf"
+            }
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "functionCall": {
+              "name": "lookup",
+              "args": {
+                "q": "oracle"
+              }
+            },
+            "thoughtSignature": "sig_REDACTED"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "lookup",
+              "response": {
+                "output": "found"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "Use evidence only."
+        }
+      ]
+    },
+    "generationConfig": {
+      "temperature": 0.2,
+      "topP": 0.9,
+      "topK": 32,
+      "maxOutputTokens": 2048,
+      "stopSequences": [
+        "END"
+      ],
+      "thinkingConfig": {
+        "includeThoughts": true,
+        "thinkingLevel": "HIGH"
+      },
+      "responseModalities": [
+        "TEXT"
+      ]
+    },
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "name": "lookup",
+            "description": "Look up a record",
+            "parametersJsonSchema": {
+              "type": "object",
+              "properties": {
+                "q": {
+                  "type": "string",
+                  "nullable": true
+                }
+              },
+              "required": [
+                "q"
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "toolConfig": {
+      "functionCallingConfig": {
+        "mode": "ANY",
+        "allowedFunctionNames": [
+          "lookup"
+        ]
+      }
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "OFF"
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "OFF"
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "OFF"
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "OFF"
+      }
+    ]
+  },
+  "unsupported": [],
+  "assertions": {
+    "function_call_id_omitted": true,
+    "function_response_id_omitted": true,
+    "four_default_safety_entries_preserved": true,
+    "inline_data_base64": "AAEC/w==",
+    "remote_file_uri": "gs://oracle-bucket/document.pdf"
+  }
+}

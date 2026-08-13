@@ -1,0 +1,177 @@
+{
+  "framing": {
+    "header_bytes": 5,
+    "flags_offset": 0,
+    "length_offset": 1,
+    "length_encoding": "unsigned 32-bit big-endian",
+    "payload": "protobuf",
+    "data_flags": 0,
+    "end_stream_mask": 2,
+    "incremental_buffering": true
+  },
+  "server_frames": [
+    {
+      "input": {
+        "interaction_update": {
+          "thinking_delta": "Inspect first."
+        }
+      },
+      "events": [
+        {
+          "type": "part_start",
+          "index": 0,
+          "kind": "thinking"
+        },
+        {
+          "type": "part_delta",
+          "index": 0,
+          "bytes_utf8": "Inspect first."
+        }
+      ]
+    },
+    {
+      "input": {
+        "interaction_update": {
+          "tool_call_started": {
+            "call_id": "call-read",
+            "tool": "read"
+          }
+        }
+      },
+      "events": [
+        {
+          "type": "part_end",
+          "index": 0,
+          "signature_base64": ""
+        },
+        {
+          "type": "part_start",
+          "index": 1,
+          "kind": "tool_call",
+          "tool_call_id": "call-read",
+          "tool_name": "read"
+        }
+      ]
+    },
+    {
+      "input": {
+        "interaction_update": {
+          "partial_tool_call": {
+            "call_id": "call-read",
+            "args_text_delta": "{\"pa"
+          }
+        }
+      },
+      "events": [
+        {
+          "type": "part_delta",
+          "index": 1,
+          "bytes_utf8": "{\"pa"
+        }
+      ]
+    },
+    {
+      "input": {
+        "interaction_update": {
+          "partial_tool_call": {
+            "call_id": "call-read",
+            "args_text_delta": "th\":\"package.json\"}"
+          }
+        }
+      },
+      "events": [
+        {
+          "type": "part_delta",
+          "index": 1,
+          "bytes_utf8": "th\":\"package.json\"}"
+        }
+      ]
+    },
+    {
+      "input": {
+        "interaction_update": {
+          "tool_call_completed": {
+            "call_id": "call-read"
+          }
+        }
+      },
+      "events": [
+        {
+          "type": "part_end",
+          "index": 1,
+          "signature_base64": ""
+        }
+      ]
+    },
+    {
+      "input": {
+        "interaction_update": {
+          "text_delta": "Done."
+        }
+      },
+      "events": [
+        {
+          "type": "part_start",
+          "index": 2,
+          "kind": "text"
+        },
+        {
+          "type": "part_delta",
+          "index": 2,
+          "bytes_utf8": "Done."
+        }
+      ]
+    },
+    {
+      "input": {
+        "interaction_update": {
+          "token_delta": 8
+        }
+      },
+      "events": []
+    },
+    {
+      "input": {
+        "interaction_update": "turn_ended"
+      },
+      "events": [
+        {
+          "type": "part_end",
+          "index": 2,
+          "signature_base64": ""
+        },
+        {
+          "type": "outcome",
+          "stop_reason": "tool_use",
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 8,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "accuracy": "exact"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "exec_server_control": {
+          "abort": {
+            "id": 17
+          }
+        }
+      },
+      "events": [
+        {
+          "type": "invoke_cancel",
+          "invocation_id": "17"
+        }
+      ]
+    }
+  ],
+  "state_invariants": {
+    "token_delta_is_additive_and_saturating": true,
+    "turn_end_stop_reason": "tool_use iff any tool call was observed, otherwise end_turn",
+    "usage_present": "only after at least one token_delta"
+  }
+}

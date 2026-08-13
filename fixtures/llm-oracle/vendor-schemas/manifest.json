@@ -1,0 +1,167 @@
+{
+  "category": "vendor-schemas",
+  "fixtures": [
+    {
+      "id": "vendor-schemas.cursor.agent.v1",
+      "path": "cursor/agent.proto",
+      "secret_free": true,
+      "sha256": "aa6d1715e8ba8309c9049d3d1d9acbea75454f852a82ff22292843c1010ae527",
+      "source": "b6e01c8a3c836032823e13a404ceca2e968b6411:packages/ai/src/providers/cursor/proto/agent.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.buf.validate.validate.v1",
+      "path": "devin/buf/validate/validate.proto",
+      "secret_free": true,
+      "sha256": "321e6ca8a46ac6ef317faf6a3726bfc4448dd56d7c1ebcee65fbe9402c4f5bc3",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/buf/validate/validate.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.analytics-pb.analytics.v1",
+      "path": "devin/exa/analytics_pb/analytics.proto",
+      "secret_free": true,
+      "sha256": "9378e1b95fbaa50d6e6915f5f744b874f783fa13ea5bf054d6f8ec94a728d0b0",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/analytics_pb/analytics.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.api-server-pb.api-server.v1",
+      "path": "devin/exa/api_server_pb/api_server.proto",
+      "secret_free": true,
+      "sha256": "32f5fdcae3d4949f2cd2c75415fd2f15fb8a6f7df0468db58b3d4e3180b8ace2",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/api_server_pb/api_server.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.auth-pb.auth.v1",
+      "path": "devin/exa/auth_pb/auth.proto",
+      "secret_free": true,
+      "sha256": "ea31cb820c93d01cb0764dbc2ae1e976ed5468f55f29137bf6fa9656d10e5bee",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/auth_pb/auth.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.auto-cascade-common-pb.auto-cascade-common.v1",
+      "path": "devin/exa/auto_cascade_common_pb/auto_cascade_common.proto",
+      "secret_free": true,
+      "sha256": "27d56522fce7cf5ae7319c341a3db25d6f3f2310f9c9d18102f68db0bdde2aed",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/auto_cascade_common_pb/auto_cascade_common.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.bug-checker-pb.bug-checker.v1",
+      "path": "devin/exa/bug_checker_pb/bug_checker.proto",
+      "secret_free": true,
+      "sha256": "26a3348454b4e33206685f2eb589d105203235c1ed8677383c677dd23b193764",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/bug_checker_pb/bug_checker.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.cascade-plugins-pb.cascade-plugins.v1",
+      "path": "devin/exa/cascade_plugins_pb/cascade_plugins.proto",
+      "secret_free": true,
+      "sha256": "fc47aa8c119b85240b6414b6741ed8a48627fdd87cc63e6a05d02f9ea53c4858",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/cascade_plugins_pb/cascade_plugins.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.chat-pb.chat.v1",
+      "path": "devin/exa/chat_pb/chat.proto",
+      "secret_free": true,
+      "sha256": "860536cedb093d1096eaf1996bafde3d80f8f014f3c3429cdf0c80fa89489b68",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/chat_pb/chat.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.code-edit.code-edit-pb.code-edit.v1",
+      "path": "devin/exa/code_edit/code_edit_pb/code_edit.proto",
+      "secret_free": true,
+      "sha256": "4cca5a433fd135d21c4680b03bc58859145f40824f2c8c9b0e9eae8a96b08999",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/code_edit/code_edit_pb/code_edit.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.codeium-common-pb.codeium-common.v1",
+      "path": "devin/exa/codeium_common_pb/codeium_common.proto",
+      "secret_free": true,
+      "sha256": "dc307da454b4387e32bcd2720f4a0aae009ea3058014b614781d916a276a66ea",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/codeium_common_pb/codeium_common.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.context-module-pb.context-module.v1",
+      "path": "devin/exa/context_module_pb/context_module.proto",
+      "secret_free": true,
+      "sha256": "e50ce8fa819e24a2cdfa21ccfb0e26972a4312ea9b657a7d21f654a4144d89b2",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/context_module_pb/context_module.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.cortex-pb.cortex.v1",
+      "path": "devin/exa/cortex_pb/cortex.proto",
+      "secret_free": true,
+      "sha256": "f4a438e4f300b66d5534b52d7b2bb9d59f7de5dea88b9322f0bbad5d7a19800c",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/cortex_pb/cortex.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.diff-action-pb.diff-action.v1",
+      "path": "devin/exa/diff_action_pb/diff_action.proto",
+      "secret_free": true,
+      "sha256": "e0abcade7ee30ce9fa970c7f721c8b4a10ed2e7ebd823b9adad7e0f406a1982a",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/diff_action_pb/diff_action.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.index-pb.index.v1",
+      "path": "devin/exa/index_pb/index.proto",
+      "secret_free": true,
+      "sha256": "b7fe7efb10ff36dabac892e0d9827d7b53a217ade7525c5a2ee2f58110c46f17",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/index_pb/index.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.knowledge-base-pb.knowledge-base.v1",
+      "path": "devin/exa/knowledge_base_pb/knowledge_base.proto",
+      "secret_free": true,
+      "sha256": "4e598b065b01cb91d13db88b687a89dc1909250bf6566c168f43d1b14c8a0ddb",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/knowledge_base_pb/knowledge_base.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.language-server-pb.language-server.v1",
+      "path": "devin/exa/language_server_pb/language_server.proto",
+      "secret_free": true,
+      "sha256": "7e0c6681e47edb421f79fd15c4ed13fb4681541a21e17ee60a183f9fdeefc8f8",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/language_server_pb/language_server.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.opensearch-clients-pb.opensearch-clients.v1",
+      "path": "devin/exa/opensearch_clients_pb/opensearch_clients.proto",
+      "secret_free": true,
+      "sha256": "da6956d39df75ba78f125f1c42174275aa416836e47c62374e20b91b2b124594",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/opensearch_clients_pb/opensearch_clients.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.prompt-pb.prompt.v1",
+      "path": "devin/exa/prompt_pb/prompt.proto",
+      "secret_free": true,
+      "sha256": "7542a59047371c530fcb40621b06a88d40d749a52eb573b70cdbc8c7dfb4759f",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/prompt_pb/prompt.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.reactive-component-pb.reactive-component.v1",
+      "path": "devin/exa/reactive_component_pb/reactive_component.proto",
+      "secret_free": true,
+      "sha256": "129bbcf16266c5a3283bdb0de981afc0384ab9b340506b10fe669d6a700c059b",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/reactive_component_pb/reactive_component.proto"
+    },
+    {
+      "id": "vendor-schemas.devin.exa.trust-pb.trust.v1",
+      "path": "devin/exa/trust_pb/trust.proto",
+      "secret_free": true,
+      "sha256": "432a12eb4d304751f5099ad8abd857cb0b90842f9fcae206df2d8eec4af23d37",
+      "source": "fc01e3b6cba6e1add44a1613baa891a9b873f8a9:packages/ai/src/providers/devin/proto/exa/trust_pb/trust.proto"
+    },
+    {
+      "id": "vendor-schemas.drift.v1",
+      "path": "drift.json",
+      "secret_free": true,
+      "sha256": "1dd1156ab675cae7eda2ef70b16212939453a1b3ca513fa5d2a3df4f9f2fae08",
+      "source": "descriptor comparison against archive/llm-legacy/llm-cursor/src/wire.rs and archive/llm-legacy/llm-devin/src/wire.rs"
+    },
+    {
+      "id": "vendor-schemas.provenance.v1",
+      "path": "provenance.json",
+      "secret_free": true,
+      "sha256": "e929195ebb0355055d10f5afeb8a5c6bba198225334c2c706df95705fb11c588",
+      "source": "repository history paths and archived Cursor/Devin wire bindings"
+    }
+  ],
+  "schema_version": 1
+}

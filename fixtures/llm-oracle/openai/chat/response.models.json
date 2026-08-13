@@ -1,0 +1,20 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "gpt-4.1",
+      "object": "model",
+      "created": 1744316542,
+      "owned_by": "openai",
+      "permission": [],
+      "provider_extension": { "opaque": true }
+    },
+    {
+      "id": "gpt-4.1-mini",
+      "object": "model",
+      "created": 1744317542,
+      "owned_by": "openai"
+    }
+  ],
+  "unknown_top_level": "ignored"
+}

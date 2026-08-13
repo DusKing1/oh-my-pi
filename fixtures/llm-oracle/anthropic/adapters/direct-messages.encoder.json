@@ -1,0 +1,90 @@
+{
+  "canonical_intent": {
+    "model": "claude-sonnet-4-6",
+    "media": [
+      "application/pdf",
+      "image/png:file"
+    ],
+    "thinking": "high",
+    "cache_retention": "1h",
+    "server_tool": "web_search",
+    "service_tier": "priority"
+  },
+  "wire_body": {
+    "model": "claude-sonnet-4-6",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "document",
+            "source": {
+              "type": "base64",
+              "media_type": "application/pdf",
+              "data": "JVBERg=="
+            }
+          },
+          {
+            "type": "image",
+            "source": {
+              "type": "file",
+              "file_id": "file_oracle_image"
+            },
+            "cache_control": {
+              "type": "ephemeral",
+              "ttl": "1h"
+            }
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "name": "lookup",
+        "description": "Look up a value",
+        "input_schema": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        },
+        "strict": false,
+        "eager_input_streaming": true
+      },
+      {
+        "type": "web_search_20250305",
+        "name": "web_search",
+        "cache_control": {
+          "type": "ephemeral",
+          "ttl": "1h"
+        }
+      }
+    ],
+    "thinking": {
+      "type": "adaptive"
+    },
+    "context_management": {
+      "edits": []
+    },
+    "output_config": {
+      "effort": "high"
+    },
+    "speed": "fast",
+    "stream": true
+  },
+  "headers": [
+    {
+      "name": "anthropic-version",
+      "value": "2023-06-01"
+    },
+    {
+      "name": "anthropic-beta",
+      "value": "interleaved-thinking-2025-05-14,effort-2025-11-24,extended-cache-ttl-2025-04-11,pdfs-2024-09-25,files-api-2025-04-14,fine-grained-tool-streaming-2025-05-14,context-management-2025-06-27,fast-mode-2026-02-01,web-search-2025-03-05,canonical-explicit-2026-08-10"
+    }
+  ],
+  "invariants": [
+    "model and stream remain in the direct body",
+    "anthropic_beta is absent from the direct body",
+    "negotiated betas are emitted in the anthropic-beta header"
+  ]
+}

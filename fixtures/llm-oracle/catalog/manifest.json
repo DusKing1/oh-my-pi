@@ -1,0 +1,93 @@
+{
+  "category": "catalog",
+  "fixtures": [
+    {
+      "id": "catalog.models.compressed.v1",
+      "path": "models.json.zst",
+      "provenance": {
+        "kind": "verbatim-source-snapshot"
+      },
+      "secret_free": true,
+      "sha256": "7995339f8a7b17d3ad9dc0728801003f9046c10307f6df84defb25b92c5b269c",
+      "source": "archive/llm-legacy/llm-catalog/models.json.zst"
+    },
+    {
+      "id": "catalog.models.raw.v1",
+      "path": "models.raw.json",
+      "provenance": {
+        "input": "archive/llm-legacy/llm-catalog/models.json.zst",
+        "kind": "verbatim-zstd-decompression"
+      },
+      "secret_free": true,
+      "sha256": "0ae9cdbb875e95c15bbfdea64bb331ee26dcbe10d75d45cbc3464909820dc042",
+      "source": "archive/llm-legacy/llm-catalog/models.json.zst"
+    },
+    {
+      "id": "catalog.models.normalized.v1",
+      "path": "models.normalized.json",
+      "provenance": {
+        "input": "archive/llm-legacy/llm-catalog/models.json.zst",
+        "kind": "archived-loader-projection",
+        "loader": "archive/llm-legacy/llm-catalog/src/models.rs::load_catalog_zstd",
+        "ordering": [
+          "provider",
+          "model"
+        ]
+      },
+      "secret_free": true,
+      "sha256": "2b91f09c66241029a4305aeeebf893ee4c31eb32d9ca3cb0d4f44ba06a79c3b3",
+      "source": "archive/llm-legacy/llm-catalog/src/models.rs::load_catalog_zstd"
+    },
+    {
+      "id": "catalog.providers.source.v1",
+      "path": "providers.toml",
+      "provenance": {
+        "kind": "verbatim-source-snapshot"
+      },
+      "secret_free": true,
+      "sha256": "3f7cc9c14c6b42abea75757081b9f1e4e743ea41761b62feb56d7e31be114967",
+      "source": "archive/llm-legacy/llm-catalog/providers.toml"
+    },
+    {
+      "id": "catalog.oauth.source.v1",
+      "path": "oauth.toml",
+      "provenance": {
+        "kind": "sanitized-source-snapshot"
+      },
+      "redactions": [
+        {
+          "count": 10,
+          "field": "provider[].client_id",
+          "reason": "installed-application credential/account identifier",
+          "replacement": "<redacted-client-id>"
+        },
+        {
+          "count": 2,
+          "field": "provider[].extra_auth_params.client_secret",
+          "reason": "installed-application credential",
+          "replacement": "<redacted-client-secret>"
+        }
+      ],
+      "secret_free": true,
+      "sha256": "775ea37ea3e97de177cdac3b6109fd62e08ae25131b486af89cd5b9291cde9b2",
+      "source": "archive/llm-legacy/llm-catalog/oauth.toml"
+    },
+    {
+      "id": "catalog.census.v1",
+      "path": "census.json",
+      "provenance": {
+        "kind": "derived-census",
+        "sources": [
+          "archive/llm-legacy/llm-catalog/models.json.zst",
+          "archive/llm-legacy/llm-catalog/providers.toml",
+          "archive/llm-legacy/llm-catalog/src/models.rs::load_catalog_zstd",
+          "archive/llm-legacy/llm-catalog/src/provider.rs::TransportId"
+        ]
+      },
+      "secret_free": true,
+      "sha256": "066a0def0df1dff67a27e4b93321856bebdb626520b909e00d9016be64ed8f27",
+      "source": "archive/llm-legacy/llm-catalog/src/models.rs::load_catalog_zstd"
+    }
+  ],
+  "schema_version": 1
+}

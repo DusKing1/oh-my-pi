@@ -1,0 +1,15 @@
+{
+  "case": "structural_cancel",
+  "input": {
+    "server_abort_id": 17
+  },
+  "expected": {
+    "executor_future_dropped": true,
+    "frames": [
+      {
+        "shell_stream": "start"
+      }
+    ],
+    "no_completion_frames": true
+  }
+}

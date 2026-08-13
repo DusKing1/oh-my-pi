@@ -1,0 +1,168 @@
+{
+  "cases": [
+    {
+      "id": "openai.chat.success",
+      "projection": {
+        "sampling": {
+          "temperature": 0.25
+        }
+      },
+      "request": {
+        "json": {
+          "messages": [
+            {
+              "content": "hello",
+              "role": "user"
+            }
+          ],
+          "model": "sdk-model",
+          "temperature": 0.25
+        },
+        "method": "POST",
+        "path": "/v1/chat/completions"
+      },
+      "response": {
+        "content_type": "application/json",
+        "status": 200
+      }
+    },
+    {
+      "id": "openai.chat.streaming",
+      "request": {
+        "json": {
+          "messages": [],
+          "model": "sdk-model",
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          }
+        },
+        "path": "/v1/chat/completions"
+      },
+      "response": {
+        "content_type": "text/event-stream",
+        "status": 200,
+        "terminal_bytes": "data: [DONE]\n\n"
+      }
+    },
+    {
+      "id": "openai.responses.success",
+      "projection": {
+        "provider_options": {
+          "openai": {
+            "store": true
+          }
+        }
+      },
+      "request": {
+        "json": {
+          "input": "hello",
+          "model": "sdk-model",
+          "store": true
+        },
+        "path": "/v1/responses"
+      },
+      "response": {
+        "status": 200
+      }
+    },
+    {
+      "id": "openai.responses.affinity",
+      "projection": {
+        "cache_session_key": "resp_previous"
+      },
+      "request": {
+        "input": "continue",
+        "model": "test",
+        "previous_response_id": "resp_previous"
+      }
+    },
+    {
+      "id": "anthropic.messages.success",
+      "projection": {
+        "sampling": {
+          "max_output_tokens": 37
+        }
+      },
+      "request": {
+        "json": {
+          "max_tokens": 37,
+          "messages": [
+            {
+              "content": "hello",
+              "role": "user"
+            }
+          ],
+          "model": "claude-sdk"
+        },
+        "path": "/v1/messages"
+      },
+      "response": {
+        "status": 200
+      }
+    },
+    {
+      "id": "anthropic.count_tokens.success",
+      "request": {
+        "json": {
+          "messages": [
+            {
+              "content": "hello",
+              "role": "user"
+            }
+          ],
+          "model": "claude-sdk"
+        },
+        "path": "/v1/messages/count_tokens"
+      },
+      "response": {
+        "body": {
+          "input_tokens": 17
+        },
+        "status": 200
+      }
+    },
+    {
+      "arguments": "{ \"z\": [3, 2], \"a\": \"x&y\" }",
+      "id": "openai.tool_arguments.byte_preserving",
+      "rule": "UTF-8 argument bytes survive request projection unchanged"
+    },
+    {
+      "id": "invalid_json.failure",
+      "request": {
+        "body": "{",
+        "path": "/v1/responses"
+      },
+      "response": {
+        "error_type": "invalid_request_error",
+        "message_prefix": "invalid JSON request:",
+        "status": 400
+      }
+    },
+    {
+      "id": "route.not_found",
+      "request": {
+        "method": "POST",
+        "path": "/v1/unknown"
+      },
+      "response": {
+        "body": {
+          "error": {
+            "message": "route not found",
+            "type": "invalid_request_error"
+          }
+        },
+        "status": 404
+      }
+    }
+  ],
+  "operation": "openai_and_anthropic_native_wire_facades",
+  "related_sources": [
+    "archive/llm-legacy/llm-gateway/src/facade/mod.rs::Router::route",
+    "archive/llm-legacy/llm-gateway/tests/facade_smoke.rs::foreign_request_fields_are_forwarded_without_silent_loss",
+    "archive/llm-legacy/llm-gateway/tests/facade_smoke.rs::openai_and_anthropic_sdk_routes",
+    "archive/llm-legacy/llm-gateway/src/facade/chat.rs::tests::tool_argument_bytes_survive_request_projection",
+    "archive/llm-legacy/llm-gateway/src/facade/responses.rs::tests::previous_response_is_gateway_affinity"
+  ],
+  "schema_version": 1
+}
