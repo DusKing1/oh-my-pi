@@ -3,13 +3,14 @@
 use std::{collections::BTreeMap, fs::OpenOptions, io::Write as _, path::PathBuf};
 
 use omp_core::Str;
+use omp_proto::thread::v1 as thread_pb;
 use omp_storage::{
 	blob::BlobRef,
 	transcript::{
 		AmendPatch, Attribution, Block, BlockKind, CallId, CtxSnapshot, DialectId, Entry, Error,
-		Event, FeatureId, Header, Kind, ModelChange, ModelId, ModelRef, Msg, Patch, Pin, ProviderId,
-		Replay, RequestError, SessionId, Stop, ThinkingSel, Timing, TitleSource, Usage, UserBlock,
-		Writer, load, read_line, write_header, write_line,
+		Event, FeatureId, Header, ItemRecord, Kind, ModelChange, ModelId, ModelRef, Msg, Patch, Pin,
+		ProviderId, Replay, RequestError, SessionId, Stop, ThinkingSel, Timing, TitleSource,
+		TurnReceipt, Usage, UserBlock, Writer, load, read_line, write_header, write_line,
 	},
 };
 use serde::{Deserialize, Serialize};
@@ -170,7 +171,33 @@ fn every_kind() -> Vec<Event> {
 		},
 		Event {
 			ts:   18,
-			kind: Kind::Unknown(raw(r#"{ "foreign" : true, "ts" : 18, "k":"else" }"#)),
+			kind: Kind::Item(ItemRecord {
+				item:        thread_pb::Item {
+					seq:           0,
+					created_at_ms: 18,
+					kind:          Some(thread_pb::item::Kind::Message(thread_pb::Message {
+						role:  thread_pb::Role::User as i32,
+						parts: vec![thread_pb::Part {
+							kind: Some(thread_pb::part::Kind::Text("canonical".to_owned())),
+						}],
+					})),
+					props:         None,
+				},
+				turn_id:     Some(text("turn-1")),
+				prompt_hash: Some([4; 32]),
+			}),
+		},
+		Event { ts: 19, kind: Kind::Amend { target: 17, patch: AmendPatch::Seq { seq: 7 } } },
+		Event {
+			ts:   20,
+			kind: Kind::TurnReceipt(TurnReceipt {
+				turn_id:     text("turn-1"),
+				item_events: vec![17],
+			}),
+		},
+		Event {
+			ts:   21,
+			kind: Kind::Unknown(raw(r#"{ "foreign" : true, "ts" : 21, "k":"else" }"#)),
 		},
 	]
 }

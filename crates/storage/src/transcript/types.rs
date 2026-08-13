@@ -200,7 +200,7 @@ pub enum TitleSource {
 	Imported,
 }
 
-/// An append-only correction to an earlier message event.
+/// An append-only correction to an earlier transcript event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum AmendPatch {
@@ -220,6 +220,11 @@ pub enum AmendPatch {
 		/// Original provider response identifier, when present.
 		response_id: Option<Str>,
 	},
+	/// Assign the gateway sequence to an optimistically recorded canonical item.
+	Seq {
+		/// Gateway-assigned dense thread sequence.
+		seq: u64,
+	},
 }
 
 #[derive(Deserialize)]
@@ -238,6 +243,11 @@ struct RetryRecoveryPayload {
 	stop:        Stop,
 	usage:       Usage,
 	response_id: Option<Str>,
+}
+
+#[derive(Deserialize)]
+struct SeqPayload {
+	seq: u64,
 }
 
 impl<'de> Deserialize<'de> for AmendPatch {
@@ -262,6 +272,10 @@ impl<'de> Deserialize<'de> for AmendPatch {
 					usage:       payload.usage,
 					response_id: payload.response_id,
 				})
+			},
+			"seq" => {
+				let payload: SeqPayload = serde_json::from_str(raw.get()).map_err(D::Error::custom)?;
+				Ok(Self::Seq { seq: payload.seq })
 			},
 			op => Err(D::Error::custom(format_args!("unknown amendment operation `{op}`"))),
 		}

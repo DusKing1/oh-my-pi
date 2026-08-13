@@ -23,7 +23,7 @@ pub mod writer;
 
 pub use block::{Block, BlockKind, Replay};
 pub use codec::{Error, Header, read_header, read_line, write_header, write_line};
-pub use event::{Event, Kind};
+pub use event::{Event, ItemRecord, Kind, TurnReceipt};
 pub use msg::{Content, Msg, UserBlock};
 pub use patch::Patch;
 pub use reader::{Entry, Log, load};

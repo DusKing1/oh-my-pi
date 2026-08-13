@@ -9,7 +9,7 @@ use serde_json::value::RawValue;
 use thiserror::Error as ThisError;
 
 use super::{
-	event::{Event, Kind},
+	event::{Event, ItemRecord, Kind, TurnReceipt},
 	msg::{Content, Msg},
 	patch::Patch,
 	types::{
@@ -133,6 +133,12 @@ pub fn write_line(event: &Event, out: &mut impl BufMut) -> Result<(), Error> {
 			object.field("output_schema", output_schema)?;
 		},
 		Kind::Msg(message) => write_msg_fields(&mut object, message)?,
+		Kind::Item(record) => {
+			object.field("k", "item")?;
+			object.field("item", &record.item)?;
+			object.field("turn_id", &record.turn_id)?;
+			object.field("prompt_hash", &record.prompt_hash)?;
+		},
 		Kind::Failed { error, model, usage } => {
 			object.field("k", "failed")?;
 			object.field("error", error)?;
@@ -200,6 +206,11 @@ pub fn write_line(event: &Event, out: &mut impl BufMut) -> Result<(), Error> {
 			object.field("k", "amend")?;
 			object.field("target", target)?;
 			object.field("patch", patch)?;
+		},
+		Kind::TurnReceipt(receipt) => {
+			object.field("k", "turn_receipt")?;
+			object.field("turn_id", &receipt.turn_id)?;
+			object.field("item_events", &receipt.item_events)?;
 		},
 		Kind::Label { target, label } => {
 			object.field("k", "label")?;
@@ -293,6 +304,11 @@ payload!(InitPayload {
 	agent: Option<Str>,
 	output_schema: Option<Box<RawValue>>,
 });
+payload!(ItemPayload {
+	item: omp_proto::thread::v1::Item,
+	turn_id: Option<Str>,
+	prompt_hash: Option<[u8; 32]>,
+});
 payload!(FailedPayload {
 	error: RequestError,
 	model: ModelRef,
@@ -326,6 +342,7 @@ payload!(ForkedFromPayload { session: SessionId, at: Option<u64> });
 payload!(CheckpointPayload { provider: ProviderId, model: ModelId, items: BlobRef });
 payload!(AbortedPayload { tool_call_ids: Vec<CallId> });
 payload!(AmendPayload { target: u64, patch: AmendPatch });
+payload!(TurnReceiptPayload { turn_id: Str, item_events: Vec<u64> });
 payload!(LabelPayload { target: u64, label: Option<Str> });
 payload!(CustomPayload {
 	kind: Str,
@@ -356,6 +373,14 @@ pub fn read_line(line: &[u8]) -> Result<Event, Error> {
 			}
 		},
 		"msg" => Kind::Msg(serde_json::from_slice::<Msg>(line)?),
+		"item" => {
+			let payload: ItemPayload = serde_json::from_slice(line)?;
+			Kind::Item(ItemRecord {
+				item:        payload.item,
+				turn_id:     payload.turn_id,
+				prompt_hash: payload.prompt_hash,
+			})
+		},
 		"failed" => {
 			let payload: FailedPayload = serde_json::from_slice(line)?;
 			Kind::Failed { error: payload.error, model: payload.model, usage: payload.usage }
@@ -415,6 +440,13 @@ pub fn read_line(line: &[u8]) -> Result<Event, Error> {
 		"amend" => {
 			let payload: AmendPayload = serde_json::from_slice(line)?;
 			Kind::Amend { target: payload.target, patch: payload.patch }
+		},
+		"turn_receipt" => {
+			let payload: TurnReceiptPayload = serde_json::from_slice(line)?;
+			Kind::TurnReceipt(TurnReceipt {
+				turn_id:     payload.turn_id,
+				item_events: payload.item_events,
+			})
 		},
 		"label" => {
 			let payload: LabelPayload = serde_json::from_slice(line)?;

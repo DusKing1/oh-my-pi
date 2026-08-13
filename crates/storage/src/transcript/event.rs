@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use omp_core::Str;
+use omp_proto::thread::v1::Item;
 use serde_json::value::RawValue;
 
 use super::{
@@ -15,6 +16,28 @@ use super::{
 	},
 };
 use crate::blob::BlobRef;
+
+/// One canonical thread item with journal-only turn metadata.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ItemRecord {
+	/// Canonical gateway thread item.
+	pub item:        Item,
+	/// Turn that committed the item, absent for optimistic local input.
+	pub turn_id:     Option<Str>,
+	/// Deterministic system-prompt hash active when the item was recorded.
+	pub prompt_hash: Option<[u8; 32]>,
+}
+
+impl Eq for ItemRecord {}
+
+/// Durable proof that one gateway turn outcome was fully journaled.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TurnReceipt {
+	/// Gateway turn identifier.
+	pub turn_id:     Str,
+	/// Physical event indexes of canonical items committed by the outcome.
+	pub item_events: Vec<u64>,
+}
 
 /// A timestamped transcript event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +64,8 @@ pub enum Kind {
 	},
 	/// Add a conversation message.
 	Msg(Msg),
+	/// Add one canonical gateway thread item.
+	Item(ItemRecord),
 	/// Record an inference failure with no conversational content.
 	Failed {
 		/// Request failure details.
@@ -128,6 +153,8 @@ pub enum Kind {
 		/// Append-only correction.
 		patch:  AmendPatch,
 	},
+	/// Record completion of a gateway turn after all of its items were appended.
+	TurnReceipt(TurnReceipt),
 	/// Add, replace, or clear a label on an earlier event.
 	Label {
 		/// Event index receiving the label.
@@ -174,6 +201,7 @@ impl PartialEq for Kind {
 					&& opt_raw_eq(a_output_schema.as_deref(), b_output_schema.as_deref())
 			},
 			(Self::Msg(a_message), Self::Msg(b_message)) => a_message == b_message,
+			(Self::Item(a), Self::Item(b)) => a == b,
 			(
 				Self::Failed { error: a_error, model: a_model, usage: a_usage },
 				Self::Failed { error: b_error, model: b_model, usage: b_usage },
@@ -235,6 +263,7 @@ impl PartialEq for Kind {
 				Self::Amend { target: a_target, patch: a_patch },
 				Self::Amend { target: b_target, patch: b_patch },
 			) => (a_target, a_patch) == (b_target, b_patch),
+			(Self::TurnReceipt(a), Self::TurnReceipt(b)) => a == b,
 			(
 				Self::Label { target: a_target, label: a_label },
 				Self::Label { target: b_target, label: b_label },
