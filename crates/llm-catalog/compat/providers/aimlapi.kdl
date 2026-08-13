@@ -1,0 +1,24 @@
+// Deployment compat for provider "aimlapi": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "aimlapi" {
+	family "glm" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	}
+	family "minimax" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	}
+	models "deepseek-v4-flash" {
+		thinking-efforts "low" "high" "max"
+	}
+	models "deepseek/deepseek-chat-v3.1" "deepseek/deepseek-r1" {
+		thinking-efforts "high" "max"
+		requires-reasoning-content-for-all-assistant-turns #true
+	}
+	models "gemini-3.5-flash" {
+		thinking-requires-effort #true
+	}
+	models "gpt-5.2-codex" "gpt-5.3-codex" {
+		thinking-efforts "low" "medium" "high" "xhigh"
+	}
+}

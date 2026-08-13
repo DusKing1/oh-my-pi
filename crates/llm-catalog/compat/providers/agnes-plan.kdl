@@ -1,0 +1,10 @@
+// Deployment compat for provider "agnes-plan": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "agnes-plan" {
+	thinking-efforts "minimal" "low" "medium" "high"
+	thinking-mode "effort"
+	models "agnes-2.0-flash" {
+		thinking-format "qwen-chat-template"
+	}
+}

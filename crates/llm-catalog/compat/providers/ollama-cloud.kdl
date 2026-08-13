@@ -1,0 +1,19 @@
+// Deployment compat for provider "ollama-cloud": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "ollama-cloud" {
+	family "unknown" {
+		thinking-efforts "minimal" "low" "medium" "high"
+		thinking-mode "effort"
+	}
+	models "deepseek-v4-flash" {
+		thinking-efforts "low" "high" "max"
+	}
+	models "glm-4.6" "glm-4.7" "glm-5" "glm-5.1" \
+		"kimi-k2-thinking" "kimi-k2.5" "kimi-k2.6" "kimi-k2.7-code" {
+		thinking-efforts "minimal" "low" "medium" "high"
+	}
+	models "glm-5.2" {
+		thinking-efforts "high" "max"
+	}
+}

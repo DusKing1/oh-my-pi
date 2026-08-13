@@ -1,0 +1,7 @@
+// Deployment compat for provider "stepfun": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "stepfun" {
+	supports-developer-role #true
+	supports-reasoning-effort #true
+}

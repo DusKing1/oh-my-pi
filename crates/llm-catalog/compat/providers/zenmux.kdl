@@ -1,0 +1,53 @@
+// Deployment compat for provider "zenmux": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "zenmux" {
+	family "unknown" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "effort"
+	}
+	models "anthropic/claude-3.7-sonnet" "anthropic/claude-opus-4" "anthropic/claude-opus-4.1" "anthropic/claude-sonnet-4" \
+		"anthropic/claude-sonnet-4.5" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "budget"
+	}
+	models "anthropic/claude-fable-5" "anthropic/claude-opus-4.7" "anthropic/claude-opus-4.8" "anthropic/claude-opus-5" \
+		"anthropic/claude-sonnet-5" {
+		thinking-efforts "low" "medium" "high" "xhigh" "max"
+		thinking-mode "anthropic-adaptive"
+		thinking-supports-display #true
+	}
+	models "anthropic/claude-opus-4.5" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "anthropic-budget-effort"
+	}
+	models "anthropic/claude-opus-4.6" {
+		thinking-efforts "low" "medium" "high" "max"
+		thinking-mode "anthropic-adaptive"
+	}
+	models "anthropic/claude-sonnet-4.6" {
+		thinking-efforts "low" "medium" "high"
+		thinking-mode "anthropic-adaptive"
+	}
+	models "baidu/ernie-5.0-thinking-preview" "tencent/hunyuan-2.0-thinking" {
+		thinking-requires-effort #true
+	}
+	models "deepseek/deepseek-chat-v3.1" "deepseek/deepseek-r1-0528" "deepseek/deepseek-v3.2" "deepseek/deepseek-v3.2-exp" \
+		"deepseek/deepseek-v4-pro" {
+		thinking-efforts "high" "max"
+		requires-reasoning-content-for-all-assistant-turns #true
+	}
+	models "deepseek/deepseek-v4-flash" {
+		thinking-efforts "low" "high" "max"
+		requires-reasoning-content-for-all-assistant-turns #true
+	}
+	models "minimax/minimax-m3" "moonshotai/kimi-k2-thinking" "moonshotai/kimi-k2.5" "moonshotai/kimi-k2.6" \
+		"moonshotai/kimi-k2.7-code" "openai/o4-mini" "z-ai/glm-4.5" "z-ai/glm-4.5-air" \
+		"z-ai/glm-4.6" "z-ai/glm-4.6v" "z-ai/glm-4.7" "z-ai/glm-5" \
+		"z-ai/glm-5.1" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	}
+	models "z-ai/glm-5.2" {
+		thinking-efforts "minimal" "low" "medium" "high" "max"
+	}
+}

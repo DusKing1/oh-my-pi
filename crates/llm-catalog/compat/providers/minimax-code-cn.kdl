@@ -1,0 +1,11 @@
+// Deployment compat for provider "minimax-code-cn": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "minimax-code-cn" {
+	supports-developer-role #false
+	supports-reasoning-effort #false
+	supports-store #false
+	models "MiniMax-M3" {
+		thinking-efforts "minimal" "low" "medium" "high"
+	}
+}

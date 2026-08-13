@@ -1,0 +1,31 @@
+// Deployment compat for provider "alibaba-token-plan": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "alibaba-token-plan" priority=10 {
+	// pi-openai-chat:015 — `isAlibaba` (DashScope) => top-level enable_thinking
+	// for every model on this host; priority beats family defaults.
+	thinking-format "qwen"
+	supports-developer-role #false
+	family "glm" {
+		thinking-efforts "minimal" "low" "medium" "high" "max"
+	}
+	models "qwen3.6-flash" "qwen3.7-max" "qwen3.7-plus" {
+		thinking-efforts "minimal" "low" "medium" "high"
+	}
+	models "qwen3.8-max" {
+		thinking-default-level "xhigh"
+		thinking-efforts "low" "medium" "xhigh"
+		supports-reasoning-effort #true
+		when-thinking {
+			extraBody {
+				enable_thinking #true
+			}
+			thinkingFormat "openai"
+		}
+	}
+	models "qwen3.8-max-preview" {
+		thinking-efforts "low" "high" "xhigh"
+		thinking-requires-effort #true
+		supports-reasoning-effort #true
+	}
+}

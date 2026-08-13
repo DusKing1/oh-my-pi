@@ -1,0 +1,53 @@
+// Deployment compat for provider "github-copilot": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "github-copilot" {
+	family "gemini" {
+		supports-reasoning-effort #false
+		supports-store #false
+	}
+	family "kimi" {
+		supports-developer-role #false
+		supports-reasoning-effort #false
+		supports-store #false
+	}
+	family "unknown" {
+		thinking-mode "effort"
+	}
+	models "claude-fable-5" "claude-opus-5" "claude-sonnet-5" {
+		thinking-efforts "low" "medium" "high" "xhigh" "max"
+		thinking-mode "anthropic-adaptive"
+		thinking-supports-display #true
+	}
+	models "claude-haiku-4.5" "claude-opus-4.5" "claude-sonnet-4" "claude-sonnet-4.5" \
+		"grok-4.5" "mai-code-1-flash-picker" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	}
+	models "gemini-2.5-pro" "gemini-3-flash-preview" "gemini-3.1-pro-preview" "gemini-3.6-flash" {
+		supports-developer-role #false
+	}
+	models "gemini-3.5-flash" {
+		thinking-requires-effort #true
+		supports-developer-role #false
+	}
+	models "gpt-4.1" {
+		supports-developer-role #false
+		supports-reasoning-effort #false
+		supports-store #false
+	}
+	models "gpt-4o" {
+		supports-reasoning-effort #false
+		supports-store #false
+	}
+	models "gpt-5.1" "kimi-k2.7-code" {
+		thinking-efforts "minimal" "low" "medium" "high"
+	}
+	models "gpt-5.2" "gpt-5.2-codex" "gpt-5.3-codex" {
+		thinking-efforts "low" "medium" "high" "xhigh"
+	}
+	models "grok-code-fast-1" "raptor-mini" {
+		thinking-efforts "minimal" "low" "medium" "high"
+		supports-reasoning-effort #false
+		supports-store #false
+	}
+}

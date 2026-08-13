@@ -1,0 +1,12 @@
+// Deployment compat for provider "friendli": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "friendli" {
+	family "unknown" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "effort"
+	}
+	models "zai-org/GLM-5.2" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	}
+}

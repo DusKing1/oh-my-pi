@@ -1,0 +1,6 @@
+// Deployment compat for provider "firepass": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "firepass" {
+	thinking-efforts "low" "medium" "high" "xhigh" "max"
+}

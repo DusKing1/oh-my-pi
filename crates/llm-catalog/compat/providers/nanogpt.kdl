@@ -1,0 +1,70 @@
+// Deployment compat for provider "nanogpt": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "nanogpt" {
+	family "unknown" {
+		thinking-mode "effort"
+	}
+	models "MiniMax-M2" {
+		thinking-format "zai"
+	}
+	models "aion-labs/aion-2.0" "aion-labs/aion-3.0" "aion-labs/aion-3.0-mini" "arcee-ai/trinity-large" \
+		"arcee-ai/trinity-mini" "bytedance-seed/seed-2.0-lite" "holo3-35b-a3b" "holo3-35b-a3b:thinking" \
+		"inclusionai/ling-3.0-flash:thinking" "inclusionai/ling-3.0-tiny:thinking" "inclusionai/ring-2.6-1t" "longcat-2.0:thinking" \
+		"mercury-2" "meta/muse-spark-1.1" "meta/muse-spark-1.2" "meta/muse-spark-1.2-contributor" \
+		"mistralai/devstral-2-123b-instruct-2512" "moonshotai/kimi-k2-thinking" "moonshotai/kimi-k2.7-code" "nanogpt/coding-router" \
+		"nanogpt/coding-router:high" "nanogpt/coding-router:low" "nanogpt/coding-router:max" "nanogpt/coding-router:medium" \
+		"nex-agi/nex-n2-mini" "nex-agi/nex-n2-pro" "nousresearch/hermes-4-405b" "nousresearch/hermes-4-70b" \
+		"nvidia/nemotron-3-nano-30b-a3b" "nvidia/nemotron-3-super-120b-a12b" "nvidia/nemotron-3-super-120b-a12b:thinking" "nvidia/nemotron-3-ultra-550b-a55b" \
+		"nvidia/nemotron-3-ultra-550b-a55b:thinking" "nvidia/nvidia-nemotron-nano-9b-v2" "openai/gpt-chat-latest" "openai/o1" \
+		"openai/o3" "openai/o3-deep-research" "openai/o4-mini" "openai/o4-mini-deep-research" \
+		"openai/o4-mini-high" "pokee-isaac" "poolside/laguna-m.1" "poolside/laguna-s-2.1" \
+		"poolside/laguna-s-2.1:thinking" "poolside/laguna-xs.2" "sakana/fugu-ultra" "sakana/fugu-ultra-v1.1" \
+		"sarvam-105b" "sarvam-30b" "sonar-pro" "tencent/hy3" \
+		"tencent/hy3-preview" "thinkingmachines/Inkling-Small:thinking" "thinkingmachines/inkling:thinking" "tngtech/tng-r1t-chimera" \
+		"upstage/solar-pro-3" "z-ai/glm-4.5v" "z-ai/glm-4.6" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	}
+	models "amazon/nova-lite-v1" "amazon/nova-micro-v1" "amazon/nova-pro-v1" {
+		supports-tool-choice #false
+	}
+	models "claude-opus-4-1-thinking" "claude-opus-4-1-thinking:1024" "claude-opus-4-1-thinking:32000" "claude-opus-4-1-thinking:32768" \
+		"claude-opus-4-1-thinking:8192" "claude-opus-4-thinking" "claude-opus-4-thinking:1024" "claude-opus-4-thinking:32000" \
+		"claude-opus-4-thinking:32768" "claude-opus-4-thinking:8192" "claude-sonnet-4-thinking" "claude-sonnet-4-thinking:1024" \
+		"claude-sonnet-4-thinking:32768" "claude-sonnet-4-thinking:64000" "claude-sonnet-4-thinking:8192" {
+		thinking-requires-effort #true
+	}
+	models "claw" "hermes" {
+		thinking-efforts "low" "medium" "high"
+	}
+	models "deepseek-ai/deepseek-v3.2-exp" {
+		allows-synthetic-reasoning-content-for-tool-calls #true
+		disable-reasoning-on-tool-choice #false
+		requires-reasoning-content-for-tool-calls #false
+	}
+	models "deepseek/deepseek-v4-flash" "deepseek/deepseek-v4-flash-0731" {
+		thinking-efforts "low" "high" "max"
+		requires-reasoning-content-for-all-assistant-turns #true
+	}
+	models "deepseek/deepseek-v4-pro" {
+		thinking-efforts "high" "max"
+		requires-reasoning-content-for-all-assistant-turns #true
+	}
+	models "gemini-2.5-pro" {
+		supports-reasoning-effort #false
+		supports-store #false
+	}
+	models "gemini-3-pro-preview" "venice-uncensored" {
+		supports-usage-in-streaming #false
+	}
+	models "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-requires-effort #true
+	}
+	models "openai/o3-mini" {
+		thinking-efforts "low" "high"
+	}
+	models "xiaomi/mimo-v2-flash" "xiaomi/mimo-v2-flash-original" {
+		reasoning-effort-map {}
+	}
+}

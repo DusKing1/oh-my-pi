@@ -1,0 +1,28 @@
+// Deployment compat for provider "wafer-serverless": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "wafer-serverless" {
+	family "glm" {
+		supports-developer-role #false
+	}
+	family "kimi" {
+		supports-developer-role #false
+	}
+	family "minimax" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		supports-developer-role #false
+	}
+	family "qwen" {
+		supports-developer-role #false
+	}
+	models "DeepSeek-V4-Flash-0731-Fast" "DeepSeek-V4-Pro" {
+		reasoning-content-field "reasoning_content"
+		supports-developer-role #false
+	}
+	models "Qwen3.6-35B-A3B" "qwen3.7-max" {
+		reasoning-content-field "reasoning_content"
+	}
+	models "deepseek-v4-flash" {
+		thinking-efforts "low" "high" "max"
+	}
+}

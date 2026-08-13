@@ -1,0 +1,19 @@
+// Deployment compat for provider "umans": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "umans" {
+	escape-builtin-tool-names #true
+	models "umans-coder" "umans-kimi-k2.7" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "budget"
+		thinking-requires-effort #true
+	}
+	models "umans-flash" "umans-kimi-k3" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "budget"
+	}
+	models "umans-glm-5.2" {
+		thinking-efforts "high" "max"
+		thinking-mode "anthropic-budget-effort"
+	}
+}

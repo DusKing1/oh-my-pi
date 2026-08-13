@@ -11,6 +11,7 @@ readme = "README.md"
 
 [dependencies]
 omp-core = { workspace = true }
+kdl = { workspace = true }
 postcard = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

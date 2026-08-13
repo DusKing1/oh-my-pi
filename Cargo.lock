@@ -3361,6 +3361,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kdl"
+version = "6.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "082ddf81b2acd76fe04412655d17befedfff1837db772f8e74c38050d25ed670"
+dependencies = [
+ "miette",
+ "num-traits",
+ "serde",
+ "winnow 0.7.15",
+]
+
+[[package]]
 name = "keccak"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4502,6 +4514,7 @@ dependencies = [
  "omp-env",
  "omp-llm-inference",
  "omp-proto",
+ "omp-slopjson",
  "omp-storage",
  "omp-tool",
  "parking_lot",
@@ -4566,6 +4579,7 @@ dependencies = [
  "ulid",
  "url",
  "windows-sys 0.61.2",
+ "xutf",
  "zeroize",
 ]
 
@@ -4808,6 +4822,7 @@ dependencies = [
 name = "omp-llm-catalog"
 version = "0.1.0"
 dependencies = [
+ "kdl",
  "omp-core",
  "postcard",
  "serde",

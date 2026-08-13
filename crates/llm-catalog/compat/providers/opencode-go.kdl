@@ -1,0 +1,49 @@
+// Deployment compat for provider "opencode-go": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "opencode-go" {
+	family "mimo" {
+		supports-tool-choice #false
+	}
+	family "unknown" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "effort"
+	}
+	models "deepseek-v4-flash" "glm-5" "glm-5.1" "kimi-k2.5" \
+		"kimi-k2.6" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	}
+	models "deepseek-v4-pro" {
+		max-tokens-field "max_tokens"
+		reasoning-content-field "reasoning_content"
+		requires-reasoning-content-for-tool-calls #true
+		supports-tool-choice #false
+	}
+	models "glm-5.2" {
+		thinking-efforts "minimal" "low" "medium" "high" "max"
+	}
+	models "kimi-k2.7-code" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		supports-forced-tool-choice #false
+	}
+	models "minimax-m2.5" {
+		thinking-efforts "low" "medium" "high"
+		thinking-mode "anthropic-adaptive"
+	}
+	models "minimax-m2.7" {
+		thinking-efforts "low" "medium" "high"
+		thinking-mode "effort"
+	}
+	models "minimax-m3" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "effort"
+	}
+	models "qwen3.5-plus" "qwen3.6-plus" {
+		thinking-efforts "minimal" "low" "medium" "high"
+		thinking-mode "effort"
+	}
+	models "qwen3.7-max" "qwen3.7-plus" "qwen3.8-max" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "budget"
+	}
+}

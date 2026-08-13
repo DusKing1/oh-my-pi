@@ -1,0 +1,20 @@
+// Deployment compat for provider "deepseek": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "deepseek" {
+	extra-body {
+		thinking {
+			type "enabled"
+		}
+	}
+	max-tokens-field "max_tokens"
+	reasoning-content-field "reasoning_content"
+	requires-assistant-content-for-tool-calls #true
+	requires-reasoning-content-for-tool-calls #true
+	supports-developer-role #false
+	supports-reasoning-effort #true
+	supports-tool-choice #false
+	models "deepseek-v4-flash" {
+		thinking-efforts "low" "high" "max"
+	}
+}

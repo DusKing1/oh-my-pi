@@ -1,0 +1,10 @@
+// Deployment compat for provider "xiaomi": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "xiaomi" {
+	allows-synthetic-reasoning-content-for-tool-calls #false
+	reasoning-content-field "reasoning_content"
+	requires-reasoning-content-for-tool-calls #true
+	supports-store #false
+	thinking-format "zai"
+}

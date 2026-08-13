@@ -1,0 +1,31 @@
+// Deployment compat for provider "fireworks": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "fireworks" {
+	family "unknown" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "effort"
+	}
+	models "deepseek-v4-flash" {
+		thinking-efforts "low" "high" "max"
+		requires-assistant-content-for-tool-calls #true
+		supports-tool-choice #false
+	}
+	models "deepseek-v4-pro" {
+		requires-assistant-content-for-tool-calls #true
+		supports-tool-choice #false
+	}
+	models "glm-5" "glm-5.1" "kimi-k2.5" "kimi-k2.6" \
+		"kimi-k2.7-code" "minimax-m3" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	}
+	models "glm-5.2" {
+		thinking-efforts "minimal" "low" "medium" "high" "max"
+	}
+	models "minimax-m2.5" "minimax-m2.7" {
+		thinking-efforts "low" "medium" "high"
+	}
+	models "qwen3.6-plus" {
+		supports-developer-role #false
+	}
+}

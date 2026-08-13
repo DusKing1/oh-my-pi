@@ -1,0 +1,23 @@
+// Deployment compat for provider "cloudflare-ai-gateway": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "cloudflare-ai-gateway" {
+	family "unknown" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "budget"
+	}
+	models "anthropic/claude-fable-5" "anthropic/claude-opus-5" "anthropic/claude-sonnet-5" {
+		thinking-efforts "low" "medium" "high" "xhigh" "max"
+		thinking-mode "anthropic-adaptive"
+		thinking-supports-display #true
+	}
+	models "anthropic/claude-haiku-4-5" "anthropic/claude-opus-4-1" "anthropic/claude-opus-4-5" "anthropic/claude-sonnet-4-5" \
+		"openai/o1" "openai/o3" "openai/o3-mini" "openai/o3-pro" \
+		"openai/o4-mini" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	}
+	models "anthropic/claude-opus-4" "anthropic/claude-sonnet-4" "claude-sonnet-4-5" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "budget"
+	}
+}

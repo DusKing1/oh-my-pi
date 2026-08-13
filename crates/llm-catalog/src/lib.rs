@@ -5,6 +5,7 @@
 //! [`PolicyModel`] records cannot reveal raw wire model identifiers.
 
 pub mod capability;
+pub mod cascade;
 pub mod classify;
 pub mod compile;
 pub mod discover;
@@ -18,6 +19,7 @@ pub mod snapshot;
 pub mod thinking;
 
 pub use capability::*;
+pub use cascade::*;
 pub use classify::*;
 pub use compile::*;
 pub use discover::*;

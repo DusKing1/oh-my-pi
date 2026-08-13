@@ -1,0 +1,68 @@
+// Deployment compat for provider "vercel-ai-gateway": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "vercel-ai-gateway" {
+	family "amazon" {
+		thinking-mode "budget"
+	}
+	family "mimo" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "budget"
+	}
+	family "stepfun" {
+		thinking-mode "budget"
+	}
+	family "unknown" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "budget"
+	}
+	family "xai" {
+		thinking-mode "budget"
+	}
+	models "alibaba/qwen3-max" "moonshotai/kimi-k2-turbo" {
+		replay-unsigned-thinking #false
+	}
+	models "anthropic/claude-3.7-sonnet" "anthropic/claude-haiku-4.5" "anthropic/claude-opus-4" "anthropic/claude-opus-4.1" \
+		"anthropic/claude-sonnet-4" "anthropic/claude-sonnet-4.5" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "budget"
+	}
+	models "anthropic/claude-fable-5" "anthropic/claude-opus-4.7" "anthropic/claude-opus-4.7-fast" "anthropic/claude-opus-4.8" \
+		"anthropic/claude-opus-4.8-fast" "anthropic/claude-opus-5" "anthropic/claude-opus-5-fast" "anthropic/claude-sonnet-5" {
+		thinking-efforts "low" "medium" "high" "xhigh" "max"
+		thinking-mode "anthropic-adaptive"
+		thinking-supports-display #true
+	}
+	models "anthropic/claude-opus-4.5" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "anthropic-budget-effort"
+	}
+	models "anthropic/claude-opus-4.6" {
+		thinking-efforts "low" "medium" "high" "max"
+		thinking-mode "anthropic-adaptive"
+	}
+	models "anthropic/claude-sonnet-4.6" {
+		thinking-efforts "low" "medium" "high"
+		thinking-mode "anthropic-adaptive"
+	}
+	models "arcee-ai/trinity-large-thinking" "meituan/longcat-flash-thinking" "meituan/longcat-flash-thinking-2601" {
+		thinking-requires-effort #true
+	}
+	models "deepseek/deepseek-r1" "deepseek/deepseek-v3.1-terminus" "deepseek/deepseek-v3.2" "deepseek/deepseek-v4-flash" \
+		"deepseek/deepseek-v4-flash-0731" "deepseek/deepseek-v4-pro" {
+		requires-reasoning-content-for-all-assistant-turns #true
+	}
+	models "google/gemini-2.5-flash" "google/gemini-2.5-flash-lite" "google/gemini-2.5-flash-lite-preview-09-2025" "google/gemini-2.5-flash-preview-09-2025" \
+		"google/gemini-2.5-pro" "google/gemini-3-pro-preview" "google/gemini-3.1-flash-lite" "google/gemini-3.1-pro-preview" \
+		"google/gemini-3.5-flash" "google/gemini-3.5-flash-lite" "google/gemini-3.6-flash" {
+		thinking-mode "budget"
+	}
+	models "minimax/minimax-m3" {
+		thinking-efforts "low" "medium" "high"
+	}
+	models "moonshotai/kimi-k2-thinking" "moonshotai/kimi-k2.5" "moonshotai/kimi-k2.6" "moonshotai/kimi-k2.7-code" \
+		"openai/o1" "openai/o3" "openai/o3-deep-research" "openai/o3-mini" \
+		"openai/o3-pro" "openai/o4-mini" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	}
+}

@@ -1,0 +1,14 @@
+// Deployment compat for provider "cohere": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "cohere" {
+	max-tokens-field "max_tokens"
+	supports-usage-in-streaming #true
+	family "unknown" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "effort"
+	}
+	models "command-a-reasoning-08-2025" {
+		thinking-requires-effort #true
+	}
+}

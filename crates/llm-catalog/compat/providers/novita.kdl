@@ -1,0 +1,28 @@
+// Deployment compat for provider "novita": transport/wire contract of this deployment,
+// plus per-model residues the family stratum does not explain.
+
+provider "novita" {
+	family "unknown" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "effort"
+	}
+	models "deepseek/deepseek-r1" "deepseek/deepseek-r1-0528" "deepseek/deepseek-v3.1-terminus" "deepseek/deepseek-v3.2" \
+		"deepseek/deepseek-v3.2-exp" "deepseek/deepseek-v4-pro" {
+		thinking-efforts "high" "max"
+		requires-reasoning-content-for-all-assistant-turns #true
+	}
+	models "deepseek/deepseek-r1-distill-llama-70b" {
+		requires-reasoning-content-for-all-assistant-turns #true
+	}
+	models "deepseek/deepseek-v3.1" {
+		thinking-efforts "high" "max"
+	}
+	models "deepseek/deepseek-v4-flash" "deepseek/deepseek-v4-flash-0731" {
+		thinking-efforts "low" "high" "max"
+		requires-reasoning-content-for-all-assistant-turns #true
+	}
+	models "minimax/minimax-m3" "moonshotai/kimi-k2-thinking" "moonshotai/kimi-k2.5" "moonshotai/kimi-k2.6" \
+		"moonshotai/kimi-k2.7-code" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	}
+}
