@@ -10,9 +10,9 @@ use thiserror::Error as ThisError;
 
 use super::{
 	event::{
-		Event, ItemRecord, JobRegistered, JobSettled, Kind, PromptRewriteCommit,
-		PromptRewriteIntent, PromptRewriteStage, ToolBatchAuthorized, TurnInputItem, TurnInputRecord,
-		TurnOptionsRecord, TurnReceipt, TurnStart,
+		Event, ItemRecord, JobRegistered, JobSettled, Kind, PromptRewriteCommit, PromptRewriteIntent,
+		PromptRewriteStage, ToolBatchAuthorized, TurnInputItem, TurnInputRecord, TurnOptionsRecord,
+		TurnReceipt, TurnStart,
 	},
 	msg::{Content, Msg},
 	patch::Patch,
@@ -409,19 +409,16 @@ payload!(PromptRewriteIntentPayload {
 	preserved_tail: Vec<u64>,
 });
 payload!(PromptRewriteStagePayload {
-	intent: u64,
+	intent:  u64,
 	ordinal: u64,
-	item: omp_proto::thread::v1::Item,
+	item:    omp_proto::thread::v1::Item,
 });
 payload!(PromptRewriteCommitPayload {
 	intent: u64,
 	head_events: Vec<u64>,
 });
 payload!(JobRegisteredPayload { job: omp_tool::JobRef });
-payload!(JobSettledPayload {
-	job_id: Str,
-	settlement: omp_proto::thread::v1::Item,
-});
+payload!(JobSettledPayload { job_id: Str, settlement: omp_proto::thread::v1::Item });
 payload!(ToolBatchAuthorizedPayload {
 	turn_id: Str,
 	call_ids: Vec<Str>,
@@ -545,31 +542,31 @@ pub fn read_line(line: &[u8]) -> Result<Event, Error> {
 		"turn_input" => {
 			let payload: TurnInputPayload = serde_json::from_slice(line)?;
 			Kind::TurnInput(TurnInputItem {
-				turn_id: payload.turn_id,
-				item: payload.item,
+				turn_id:     payload.turn_id,
+				item:        payload.item,
 				prompt_hash: payload.prompt_hash,
 			})
 		},
 		"prompt_rewrite_intent" => {
 			let payload: PromptRewriteIntentPayload = serde_json::from_slice(line)?;
 			Kind::PromptRewriteIntent(PromptRewriteIntent {
-				prompt_hash: payload.prompt_hash,
-				head: payload.head,
+				prompt_hash:    payload.prompt_hash,
+				head:           payload.head,
 				preserved_tail: payload.preserved_tail,
 			})
 		},
 		"prompt_rewrite_stage" => {
 			let payload: PromptRewriteStagePayload = serde_json::from_slice(line)?;
 			Kind::PromptRewriteStage(PromptRewriteStage {
-				intent: payload.intent,
+				intent:  payload.intent,
 				ordinal: payload.ordinal,
-				item: payload.item,
+				item:    payload.item,
 			})
 		},
 		"prompt_rewrite_commit" => {
 			let payload: PromptRewriteCommitPayload = serde_json::from_slice(line)?;
 			Kind::PromptRewriteCommit(PromptRewriteCommit {
-				intent: payload.intent,
+				intent:      payload.intent,
 				head_events: payload.head_events,
 			})
 		},
@@ -579,15 +576,12 @@ pub fn read_line(line: &[u8]) -> Result<Event, Error> {
 		},
 		"job_settled" => {
 			let payload: JobSettledPayload = serde_json::from_slice(line)?;
-			Kind::JobSettled(JobSettled {
-				job_id: payload.job_id,
-				settlement: payload.settlement,
-			})
+			Kind::JobSettled(JobSettled { job_id: payload.job_id, settlement: payload.settlement })
 		},
 		"tool_batch_authorized" => {
 			let payload: ToolBatchAuthorizedPayload = serde_json::from_slice(line)?;
 			Kind::ToolBatchAuthorized(ToolBatchAuthorized {
-				turn_id: payload.turn_id,
+				turn_id:  payload.turn_id,
 				call_ids: payload.call_ids,
 			})
 		},

@@ -46,7 +46,6 @@ pub enum ToolRoute {
 	Worker,
 }
 
-
 /// One live tool declaration ready for inference request construction.
 #[derive(Clone, Debug)]
 pub struct LoweredTool {
@@ -150,9 +149,9 @@ pub enum RegistryError {
 	#[error("tool update does not match registered revision {name}@{rev}: {source}")]
 	UpdateShape {
 		/// Tool name.
-		name: Str,
+		name:   Str,
 		/// Exact registered revision.
-		rev: Rev,
+		rev:    Rev,
 		/// Typed update decoder failure.
 		source: serde_json::Error,
 	},
@@ -175,7 +174,6 @@ trait ErasedTool: Send + Sync {
 		json: &[u8],
 	) -> Result<Option<InvokeInput>, RegistryError>;
 	fn lift(&self, from: &Rev, call: RecordedCall<'_>) -> Option<LiftedCall>;
-
 }
 
 struct Worker {
@@ -195,7 +193,6 @@ impl ErasedTool for Worker {
 	fn schema(&self) -> &OpaqueJson {
 		&self.schema
 	}
-
 
 	fn call<'a>(&'a self, _params: IncomingParams<'a>) -> ErasedStream<'a> {
 		let error = external_error(&self.spec, "invoke");
@@ -357,13 +354,12 @@ impl<T: Tool> ErasedTool for Registered<T> {
 		invocation_id: &str,
 		json: &[u8],
 	) -> Result<Option<InvokeInput>, RegistryError> {
-		let update: T::Update = serde_json::from_slice(json).map_err(|source| {
-			RegistryError::UpdateShape {
+		let update: T::Update =
+			serde_json::from_slice(json).map_err(|source| RegistryError::UpdateShape {
 				name: self.tool.spec().name.clone(),
 				rev: self.tool.spec().rev.clone(),
 				source,
-			}
-		})?;
+			})?;
 		Ok(self.tool.invoke_input(&update, invocation_id))
 	}
 
@@ -409,6 +405,7 @@ impl Registry {
 		self.live.insert(name, rev);
 		Ok(())
 	}
+
 	/// Registers an externally supervised worker declaration and makes it live.
 	///
 	/// Worker declarations participate in identity, hashing, and advertisement,
@@ -428,7 +425,6 @@ impl Registry {
 		Ok(())
 	}
 
-
 	/// Borrows the exact live `(name, revision)` identity for `name`.
 	///
 	/// The returned values are owned by this registry and remain valid for the
@@ -437,17 +433,19 @@ impl Registry {
 	pub fn live_identity(&self, name: &str) -> Option<(&Str, &Rev)> {
 		self.live.get_key_value(name)
 	}
+
 	/// Returns the execution route of the live declaration named `name`.
 	pub fn route(&self, name: &str) -> Result<ToolRoute, RegistryError> {
 		Ok(self.live_entry(name)?.route())
 	}
 
-
-	/// Hashes the ordered live tool identities without allocation or serialization.
+	/// Hashes the ordered live tool identities without allocation or
+	/// serialization.
 	///
 	/// Every identity field is length-delimited with a little-endian `u64`
 	/// length; revision numbers are encoded as little-endian `u16` bytes. The
-	/// live map's `BTreeMap` order makes the digest registration-order independent.
+	/// live map's `BTreeMap` order makes the digest registration-order
+	/// independent.
 	#[must_use]
 	pub fn live_hash(&self) -> [u8; 32] {
 		let mut hasher = blake3::Hasher::new();
@@ -600,9 +598,7 @@ fn render_arg_issue(issue: &crate::ArgIssue) -> Str {
 		match segment {
 			crate::ArgPath::Key(key) => {
 				path.push('[');
-				path.push_str(
-					&serde_json::to_string(key.as_str()).unwrap_or_else(|_| "\"?\"".into()),
-				);
+				path.push_str(&serde_json::to_string(key.as_str()).unwrap_or_else(|_| "\"?\"".into()));
 				path.push(']');
 			},
 			crate::ArgPath::Index(index) => {
@@ -634,15 +630,12 @@ fn render_abort(abort: &Abort) -> Str {
 		Abort::EffectsUnknown { reason } => {
 			Str::from(format!("aborted with effects unknown: {reason}"))
 		},
-		Abort::InputDropped => {
-			Str::new_static("aborted: invocation input dropped before commit")
-		},
+		Abort::InputDropped => Str::new_static("aborted: invocation input dropped before commit"),
 		Abort::MissingOutcome => {
 			Str::new_static("aborted: executor ended without a terminal outcome")
 		},
 	}
 }
-
 
 fn lower(entry: &dyn ErasedTool, caps: LoweringCaps) -> LoweredTool {
 	let spec = entry.spec();
@@ -711,11 +704,7 @@ fn lower(entry: &dyn ErasedTool, caps: LoweringCaps) -> LoweredTool {
 }
 
 fn external_error(spec: &crate::ToolSpec, operation: &'static str) -> RegistryError {
-	RegistryError::UnsupportedExternal {
-		name: spec.name.clone(),
-		rev: spec.rev.clone(),
-		operation,
-	}
+	RegistryError::UnsupportedExternal { name: spec.name.clone(), rev: spec.rev.clone(), operation }
 }
 
 fn grammar_syntax(syntax: GrammarSyntax) -> ToolGrammarSyntax {

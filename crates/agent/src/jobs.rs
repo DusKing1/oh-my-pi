@@ -33,9 +33,9 @@ pub struct JobBoard {
 }
 
 struct JobBoardInner {
-	env: EnvClient,
-	mailbox: MailboxSender,
-	pending: Mutex<BTreeMap<Str, JobRef>>,
+	env:      EnvClient,
+	mailbox:  MailboxSender,
+	pending:  Mutex<BTreeMap<Str, JobRef>>,
 	watchers: Mutex<BTreeMap<Str, AbortHandle>>,
 }
 
@@ -97,16 +97,15 @@ impl JobBoard {
 	/// Settles a pending job with a caller-supplied canonical item.
 	///
 	/// This idempotent seam is used by authoritative settlement recovery and
-	/// tests. Normal named-process settlement is produced by the board's watcher.
+	/// tests. Normal named-process settlement is produced by the board's
+	/// watcher.
 	pub fn settle(
 		&self,
 		job_id: &str,
 		item: thread::Item,
 	) -> Result<bool, flume::TrySendError<Interrupt>> {
 		let delivered = self.inner.deliver(job_id, item)?;
-		if delivered
-			&& let Some(watcher) = self.inner.watchers.lock().remove(job_id)
-		{
+		if delivered && let Some(watcher) = self.inner.watchers.lock().remove(job_id) {
 			watcher.abort();
 		}
 		Ok(delivered)
@@ -155,9 +154,7 @@ pub struct PendingJobs<'a> {
 
 impl PendingJobs<'_> {
 	/// Iterates descriptors in stable job-identifier order.
-	pub fn iter(
-		&self,
-	) -> impl DoubleEndedIterator<Item = &JobRef> + ExactSizeIterator + Clone + '_ {
+	pub fn iter(&self) -> impl DoubleEndedIterator<Item = &JobRef> + ExactSizeIterator + Clone + '_ {
 		self.guard.values()
 	}
 
@@ -176,9 +173,9 @@ async fn watch_job(env: &EnvClient, job: &JobRef) -> Result<thread::Item, Str> {
 	let JobOwner::NamedProcess { name, generation } = &job.owner;
 	let mut attachment = env
 		.attach_output(AttachOutput {
-			name: name.to_string(),
+			name:           name.to_string(),
 			after_sequence: 0,
-			props: None,
+			props:          None,
 		})
 		.await
 		.map_err(|error| fmts!("could not attach to named process: {error}"))?;
@@ -204,12 +201,12 @@ async fn watch_job(env: &EnvClient, job: &JobRef) -> Result<thread::Item, Str> {
 		.await
 		.map_err(|error| fmts!("could not open settlement artifact upload: {error}"))?;
 	let mut header = serde_json::to_vec(&ArtifactHeader {
-		job_id: job.id.as_str(),
-		owner: OwnerRecord { name: name.as_str(), generation: *generation },
+		job_id:            job.id.as_str(),
+		owner:             OwnerRecord { name: name.as_str(), generation: *generation },
 		expected_artifact: ExpectedArtifactRecord {
 			description: job.artifact.description.as_str(),
-			media_type: job.artifact.media_type.as_deref(),
-			lifetime: job.artifact.lifetime,
+			media_type:  job.artifact.media_type.as_deref(),
+			lifetime:    job.artifact.lifetime,
 		},
 	})
 	.map_err(|error| fmts!("could not encode settlement header: {error}"))?;
@@ -234,8 +231,8 @@ async fn watch_job(env: &EnvClient, job: &JobRef) -> Result<thread::Item, Str> {
 				validate_output(&output, name, *generation)?;
 				let mut encoded = serde_json::to_vec(&OutputRecord {
 					sequence: output.sequence,
-					channel: output.channel,
-					data: &output.data,
+					channel:  output.channel,
+					data:     &output.data,
 				})
 				.map_err(|error| fmts!("could not encode process output: {error}"))?;
 				if !first_output {
@@ -344,46 +341,46 @@ fn settlement_error_item(job: &JobRef, reason: &str) -> thread::Item {
 
 fn system_item(parts: Vec<thread::Part>) -> thread::Item {
 	thread::Item {
-		seq: 0,
+		seq:           0,
 		created_at_ms: 0,
-		kind: Some(thread::item::Kind::Message(thread::Message {
+		kind:          Some(thread::item::Kind::Message(thread::Message {
 			role: thread::Role::System as i32,
 			parts,
 		})),
-		props: None,
+		props:         None,
 	}
 }
 
 #[derive(Serialize)]
 struct ArtifactHeader<'a> {
-	job_id: &'a str,
-	owner: OwnerRecord<'a>,
+	job_id:            &'a str,
+	owner:             OwnerRecord<'a>,
 	expected_artifact: ExpectedArtifactRecord<'a>,
 }
 
 #[derive(Serialize)]
 struct OwnerRecord<'a> {
-	name: &'a str,
+	name:       &'a str,
 	generation: u64,
 }
 
 #[derive(Serialize)]
 struct ExpectedArtifactRecord<'a> {
 	description: &'a str,
-	media_type: Option<&'a str>,
-	lifetime: ArtifactLifetime,
+	media_type:  Option<&'a str>,
+	lifetime:    ArtifactLifetime,
 }
 
 #[derive(Serialize)]
 struct OutputRecord<'a> {
 	sequence: u64,
-	channel: i32,
-	data: &'a [u8],
+	channel:  i32,
+	data:     &'a [u8],
 }
 
 #[derive(Serialize)]
 struct StateRecord<'a> {
-	state: i32,
+	state:  i32,
 	status: Option<StatusRecord<'a>>,
 }
 
@@ -395,21 +392,21 @@ impl<'a> From<&'a ProcessInfo> for StateRecord<'a> {
 
 #[derive(Serialize)]
 struct StatusRecord<'a> {
-	outcome: i32,
-	exit_code: Option<i32>,
-	signal: &'a str,
+	outcome:       i32,
+	exit_code:     Option<i32>,
+	signal:        &'a str,
 	wall_clock_ms: u64,
-	aborted: bool,
+	aborted:       bool,
 }
 
 impl<'a> From<&'a ExecStatusMsg> for StatusRecord<'a> {
 	fn from(status: &'a ExecStatusMsg) -> Self {
 		Self {
-			outcome: status.outcome,
-			exit_code: status.exit_code,
-			signal: status.signal.as_str(),
+			outcome:       status.outcome,
+			exit_code:     status.exit_code,
+			signal:        status.signal.as_str(),
 			wall_clock_ms: status.wall_clock_ms,
-			aborted: status.aborted,
+			aborted:       status.aborted,
 		}
 	}
 }
@@ -428,8 +425,8 @@ mod tests {
 
 	fn job(id: &str, lifetime: ArtifactLifetime) -> JobRef {
 		JobRef {
-			id: Str::from(id),
-			owner: JobOwner::NamedProcess { name: Str::from(id), generation: 1 },
+			id:       Str::from(id),
+			owner:    JobOwner::NamedProcess { name: Str::from(id), generation: 1 },
 			artifact: ExpectedArtifact {
 				description: Str::from("detached output"),
 				media_type: None,
@@ -453,10 +450,7 @@ mod tests {
 		assert_eq!(jobs.next().unwrap().id, "job-a");
 		assert_eq!(jobs.next().unwrap().id, "job-b");
 		assert_eq!(jobs.next(), None);
-		assert_eq!(
-			pending.iter().next().unwrap().artifact.lifetime,
-			ArtifactLifetime::Session
-		);
+		assert_eq!(pending.iter().next().unwrap().artifact.lifetime, ArtifactLifetime::Session);
 	}
 
 	#[tokio::test]
@@ -488,10 +482,7 @@ mod tests {
 		let interrupts = mailbox.drain(DrainPoint::TurnBoundary, false);
 		assert_eq!(interrupts.len(), 1);
 		assert_eq!(interrupts[0].class, InterruptClass::TurnBoundary);
-		assert_eq!(
-			interrupts[0].source,
-			InterruptSource::Job { id: Str::from("job-1") }
-		);
+		assert_eq!(interrupts[0].source, InterruptSource::Job { id: Str::from("job-1") });
 		assert!(!board.settle("job-1", thread::Item::default()).unwrap());
 		assert!(mailbox.is_empty());
 	}

@@ -120,7 +120,9 @@ impl<C: TurnClient> Agent<C> {
 			last_toolset_hash = Some(start.toolset_hash);
 			let context_id = match &start.input {
 				TurnInputRecord::Delta { context, .. } => Some(context.context_id.clone()),
-				TurnInputRecord::Full { .. } => start.options.context_id.as_ref().map(ToString::to_string),
+				TurnInputRecord::Full { .. } => {
+					start.options.context_id.as_ref().map(ToString::to_string)
+				},
 			};
 			let expected = journal
 				.latest_receipt()
@@ -218,7 +220,9 @@ impl<C: TurnClient> Agent<C> {
 			(events, TurnId::new(turn_id))
 		} else {
 			let snapshot = self.state.snapshot();
-			let queued = self.mailbox.drain(DrainPoint::Idle, snapshot.defer_interrupts);
+			let queued = self
+				.mailbox
+				.drain(DrainPoint::Idle, snapshot.defer_interrupts);
 			let mut pending_indexes = self.journal.recoverable_input_events().to_vec();
 			pending_indexes.extend_from_slice(self.journal.recoverable_settlement_events());
 			pending_indexes.sort_unstable();
@@ -241,7 +245,8 @@ impl<C: TurnClient> Agent<C> {
 			committed_turns = committed_turns.saturating_add(1);
 			let stop = outcome.stop();
 			self.context = outcome.revision.clone().and_then(|expected| {
-				submitted_context_id.map(|context_id| ContextRef { context_id, expected: Some(expected) })
+				submitted_context_id
+					.map(|context_id| ContextRef { context_id, expected: Some(expected) })
 			});
 
 			self.events.publish(AgentEvent::Snapshot(snapshot.clone()));
@@ -253,12 +258,15 @@ impl<C: TurnClient> Agent<C> {
 				.drain(DrainPoint::TurnBoundary, snapshot.defer_interrupts);
 			if stop == pb::StopReason::StopToolUse {
 				self.transition(AgentPhase::ToolBatch);
-				if let Err(error) = self.complete_missing_speculation(
-					&outcome.output,
-					&mut speculative,
-					snapshot.registry.as_ref(),
-					enabled_tools.as_ref(),
-				).await {
+				if let Err(error) = self
+					.complete_missing_speculation(
+						&outcome.output,
+						&mut speculative,
+						snapshot.registry.as_ref(),
+						enabled_tools.as_ref(),
+					)
+					.await
+				{
 					immediate.append(&mut boundary);
 					self.mailbox.requeue_front(immediate);
 					return Err(error);
@@ -279,11 +287,11 @@ impl<C: TurnClient> Agent<C> {
 						_ => None,
 					})
 					.collect();
-				if let Err(error) = self.journal.authorize_tool_batch(
-					now_ms(),
-					turn_id.as_str(),
-					&call_ids,
-				) {
+				if let Err(error) =
+					self
+						.journal
+						.authorize_tool_batch(now_ms(), turn_id.as_str(), &call_ids)
+				{
 					immediate.append(&mut boundary);
 					self.mailbox.requeue_front(immediate);
 					return Err(error.into());
@@ -326,15 +334,15 @@ impl<C: TurnClient> Agent<C> {
 						let id = job.id.clone();
 						self.journal.register_job(now_ms(), job.clone())?;
 						if self.jobs.register(job) {
-							self.events.publish(AgentEvent::JobRegistered { job_id: id });
+							self
+								.events
+								.publish(AgentEvent::JobRegistered { job_id: id });
 						}
 					}
 				}
 				let next_turn_id = follow_up_id(&turn_id, committed_turns);
 				pending_indexes = self.append_pending(&next_turn_id, next)?;
-				pending_indexes.extend(
-					self.stage_interrupts(&next_turn_id, boundary.drain(..))?,
-				);
+				pending_indexes.extend(self.stage_interrupts(&next_turn_id, boundary.drain(..))?);
 				if deadline_elapsed {
 					return Err(AgentError::Deadline);
 				}
@@ -391,7 +399,9 @@ impl<C: TurnClient> Agent<C> {
 		for interrupt in interrupts {
 			if let crate::InterruptSource::Job { id } = &interrupt.source {
 				indexes.push(self.journal.settle_job(ts, id.as_str(), interrupt.item)?);
-				self.events.publish(AgentEvent::JobSettled { job_id: id.clone() });
+				self
+					.events
+					.publish(AgentEvent::JobSettled { job_id: id.clone() });
 			} else {
 				indexes.push(self.journal.append_turn_input(
 					ts,
@@ -432,25 +442,27 @@ impl<C: TurnClient> Agent<C> {
 					.iter()
 					.any(|name| snapshot.registry.live_identity(name.as_str()).is_none())
 			{
-				return Err(AgentError::ToolsetMismatch {
-					durable: start.toolset_hash,
-					current,
-				});
+				return Err(AgentError::ToolsetMismatch { durable: start.toolset_hash, current });
 			}
 		}
-		let rendered = if durable.is_none() { Some(snapshot.render_prompt()?) } else { None };
+		let rendered = if durable.is_none() {
+			Some(snapshot.render_prompt()?)
+		} else {
+			None
+		};
 		let changed_prompt = rendered
 			.as_ref()
 			.is_some_and(|rendered| self.prompt_hash.is_some_and(|hash| hash != rendered.hash));
 		let mut input_events = durable
 			.as_ref()
 			.map_or(pending, |start| start.item_events.clone());
-		let toolset_hash = durable.as_ref().map_or_else(
-			|| snapshot.registry.live_hash(),
-			|start| start.toolset_hash,
-		);
+		let toolset_hash = durable
+			.as_ref()
+			.map_or_else(|| snapshot.registry.live_hash(), |start| start.toolset_hash);
 		let changed_toolset = durable.is_none()
-			&& self.last_toolset_hash.is_some_and(|hash| hash != toolset_hash);
+			&& self
+				.last_toolset_hash
+				.is_some_and(|hash| hash != toolset_hash);
 		if let Some(rendered) = rendered.as_ref()
 			&& (self.prompt_hash.is_none() || changed_prompt)
 		{
@@ -493,7 +505,12 @@ impl<C: TurnClient> Agent<C> {
 		let append_events = if let Some(start) = &durable {
 			start.sequence_targets.clone()
 		} else if changed_prompt {
-			self.prompt_head_events.iter().chain(&input_events).copied().collect()
+			self
+				.prompt_head_events
+				.iter()
+				.chain(&input_events)
+				.copied()
+				.collect()
 		} else if changed_toolset || full {
 			all_live.clone()
 		} else {
@@ -515,18 +532,14 @@ impl<C: TurnClient> Agent<C> {
 			|| snapshot.turn.clone(),
 			|start| crate::TurnOptions {
 				context_id: start.options.context_id.clone(),
-				params: start.options.params.clone(),
-				executor: start.options.executor.clone(),
-				props: start.options.props.clone(),
+				params:     start.options.params.clone(),
+				executor:   start.options.executor.clone(),
+				props:      start.options.props.clone(),
 			},
 		);
 		let lifted_reseed = if changed_toolset {
 			self.transition(AgentPhase::Projecting);
-			Some(project_journal(
-				&self.journal.load()?,
-				snapshot.registry.as_ref(),
-				&self.caps,
-			)?)
+			Some(project_journal(&self.journal.load()?, snapshot.registry.as_ref(), &self.caps)?)
 		} else {
 			None
 		};
@@ -558,43 +571,49 @@ impl<C: TurnClient> Agent<C> {
 				TurnInput::Delta(held, ThreadDelta { truncate_to, append })
 			};
 			let start = TurnStart {
-				turn_id:            turn_id.as_str().to_str(),
-				item_events:        input_events.clone(),
-				prompt_hash:        self.prompt_hash.expect("prompt rendered").into_bytes(),
+				turn_id: turn_id.as_str().to_str(),
+				item_events: input_events.clone(),
+				prompt_hash: self.prompt_hash.expect("prompt rendered").into_bytes(),
 				prompt_head_events: self.prompt_head_events.clone(),
 				toolset_hash,
-				enabled_tools:      frozen_enabled_tools.to_vec(),
-				sequence_targets:   sequence_targets.clone(),
-				input:              match &input {
+				enabled_tools: frozen_enabled_tools.to_vec(),
+				sequence_targets: sequence_targets.clone(),
+				input: match &input {
 					TurnInput::Full(thread) => TurnInputRecord::Full { thread: thread.clone() },
-					TurnInput::Delta(context, delta) => TurnInputRecord::Delta {
-						context: context.clone(),
-						delta: delta.clone(),
+					TurnInput::Delta(context, delta) => {
+						TurnInputRecord::Delta { context: context.clone(), delta: delta.clone() }
 					},
 				},
-				options:            TurnOptionsRecord {
+				options: TurnOptionsRecord {
 					context_id: frozen_options.context_id.clone(),
-					params: frozen_options.params.clone(),
-					executor: frozen_options.executor.clone(),
-					props: frozen_options.props.clone(),
+					params:     frozen_options.params.clone(),
+					executor:   frozen_options.executor.clone(),
+					props:      frozen_options.props.clone(),
 				},
 			};
 			let expected_head = match &input {
 				TurnInput::Delta(context, delta) => {
-					let expected = context.expected.as_ref()
+					let expected = context
+						.expected
+						.as_ref()
 						.ok_or(AgentError::Protocol("delta context missing revision"))?;
 					let retained = delta.truncate_to.unwrap_or(expected.head);
 					if retained > expected.head {
 						return Err(AgentError::Protocol("delta truncation exceeds expected head"));
 					}
-					Some(retained.checked_add(u64::try_from(delta.append.len())
-						.map_err(|_| AgentError::Protocol("delta too large"))?)
-						.ok_or(AgentError::Protocol("delta head overflow"))?)
+					Some(
+						retained
+							.checked_add(
+								u64::try_from(delta.append.len())
+									.map_err(|_| AgentError::Protocol("delta too large"))?,
+							)
+							.ok_or(AgentError::Protocol("delta head overflow"))?,
+					)
 				},
-				TurnInput::Full(thread) if frozen_options.context_id.is_some() => {
-					Some(u64::try_from(thread.items.len())
-						.map_err(|_| AgentError::Protocol("full thread too large"))?)
-				},
+				TurnInput::Full(thread) if frozen_options.context_id.is_some() => Some(
+					u64::try_from(thread.items.len())
+						.map_err(|_| AgentError::Protocol("full thread too large"))?,
+				),
 				TurnInput::Full(_) => None,
 			};
 			self.journal.start_turn(now_ms(), start)?;
@@ -629,8 +648,10 @@ impl<C: TurnClient> Agent<C> {
 					}
 					if let (Some(base), Some(revision)) = (expected_head, outcome.revision.as_ref()) {
 						let expected = base
-							.checked_add(u64::try_from(outcome.output.len())
-								.map_err(|_| AgentError::Protocol("outcome too large"))?)
+							.checked_add(
+								u64::try_from(outcome.output.len())
+									.map_err(|_| AgentError::Protocol("outcome too large"))?,
+							)
 							.ok_or(AgentError::Protocol("outcome head overflow"))?;
 						if revision.head != expected {
 							return Err(AgentError::Protocol(
@@ -734,7 +755,10 @@ impl<C: TurnClient> Agent<C> {
 				Some(pb::turn_event::Event::PartStart(part))
 					if part.kind() == pb::part_start::Kind::ToolCall =>
 				{
-					if !enabled_tools.iter().any(|name| name.as_str() == part.tool_name) {
+					if !enabled_tools
+						.iter()
+						.any(|name| name.as_str() == part.tool_name)
+					{
 						return Err(TurnError::Protocol("stream named disabled tool"));
 					}
 					let Some((name, rev)) = registry.live_identity(&part.tool_name) else {
@@ -758,7 +782,7 @@ impl<C: TurnClient> Agent<C> {
 						let fragment = std::str::from_utf8(&part.chunk)
 							.map_err(|_| TurnError::Protocol("tool argument fragment is not UTF-8"))?;
 						speculative
-							.get(call_id)
+							.get_mut(call_id)
 							.expect("part call owns speculation")
 							.relay_fragment(fragment.to_str())
 							.await
@@ -797,7 +821,7 @@ impl<C: TurnClient> Agent<C> {
 			let Some((name, rev)) = registry.live_identity(&call.name) else {
 				return Err(AgentError::Protocol("outcome names unknown tool"));
 			};
-			let opened = SpeculativeCall::open(
+			let mut opened = SpeculativeCall::open(
 				&self.env,
 				&self.events,
 				call.id.as_str().to_str(),
@@ -866,11 +890,12 @@ fn committed_calls(
 		if opened.identity().name.as_str() != call.name {
 			return Err(AgentError::Protocol("committed tool identity changed"));
 		}
-		let committed_rev = item.props.as_ref()
+		let committed_rev = item
+			.props
+			.as_ref()
 			.and_then(|props| props.fields.get(omp_tool::TOOL_REV_PROP))
 			.and_then(|value| value.kind.as_ref())
 			.and_then(|kind| match kind {
-
 				pb::value::Kind::String(value) => Some(value.as_str()),
 				_ => None,
 			})
@@ -884,9 +909,11 @@ fn committed_calls(
 }
 
 fn validate_outcome(outcome: &Outcome) -> Result<(), AgentError> {
-	let tool_calls = outcome.output.iter().filter(|item| {
-		matches!(item.kind, Some(thread::item::Kind::ToolCall(_)))
-	}).count();
+	let tool_calls = outcome
+		.output
+		.iter()
+		.filter(|item| matches!(item.kind, Some(thread::item::Kind::ToolCall(_))))
+		.count();
 	match outcome.stop() {
 		pb::StopReason::StopToolUse if tool_calls == 0 => {
 			return Err(AgentError::Protocol("tool-use outcome has no tool calls"));
@@ -899,8 +926,11 @@ fn validate_outcome(outcome: &Outcome) -> Result<(), AgentError> {
 	if let Some(revision) = outcome.revision.as_ref() {
 		let count = u64::try_from(outcome.output.len())
 			.map_err(|_| AgentError::Protocol("outcome too large"))?;
-		let first = revision.head.checked_sub(count)
-			.ok_or(AgentError::Protocol("outcome exceeds revision"))? + 1;
+		let first = revision
+			.head
+			.checked_sub(count)
+			.ok_or(AgentError::Protocol("outcome exceeds revision"))?
+			+ 1;
 		for (offset, item) in outcome.output.iter().enumerate() {
 			if item.seq != first + u64::try_from(offset).unwrap_or(u64::MAX) {
 				return Err(AgentError::Protocol("outcome sequences are not a consecutive suffix"));
@@ -929,7 +959,9 @@ async fn sleep_with_deadline(
 
 fn interrupt_reason(source: &crate::mailbox::InterruptSource) -> Str {
 	match source {
-		crate::mailbox::InterruptSource::Job { id } => format!("job {} settled", id.as_str()).to_str(),
+		crate::mailbox::InterruptSource::Job { id } => {
+			format!("job {} settled", id.as_str()).to_str()
+		},
 		crate::mailbox::InterruptSource::Producer(name) => name.clone(),
 	}
 }
@@ -956,8 +988,176 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+	use std::{
+		collections::VecDeque,
+		sync::{Arc, Mutex},
+	};
+
+	use futures::stream;
+	use omp_storage::transcript::{Header, SessionId};
+	use omp_tool::{Constraint, Rev, ToolSpec};
+
 	use super::*;
 
+	#[derive(Clone)]
+	struct ScriptedClient {
+		outcomes: Arc<Mutex<VecDeque<Outcome>>>,
+		opened:   Arc<Mutex<Vec<(TurnId, TurnInput, crate::TurnOptions)>>>,
+	}
+
+	struct ScriptedSession {
+		events: Vec<Result<pb::TurnEvent, TurnError>>,
+	}
+
+	impl TurnSession for ScriptedSession {
+		fn events(
+			&mut self,
+		) -> impl futures::Stream<Item = Result<pb::TurnEvent, TurnError>> + Send + Unpin + '_ {
+			stream::iter(std::mem::take(&mut self.events))
+		}
+
+		async fn submit(&mut self, _frame: crate::InvokeFrame) -> Result<(), TurnError> {
+			Ok(())
+		}
+	}
+
+	impl TurnClient for ScriptedClient {
+		type Session<'client> = ScriptedSession;
+
+		async fn turn<'client>(
+			&'client self,
+			turn_id: TurnId,
+			input: TurnInput,
+			options: &'client crate::TurnOptions,
+		) -> Result<Self::Session<'client>, TurnError> {
+			self
+				.opened
+				.lock()
+				.expect("capture lock")
+				.push((turn_id, input, options.clone()));
+			let outcome = self
+				.outcomes
+				.lock()
+				.expect("script lock")
+				.pop_front()
+				.expect("one outcome per turn");
+			Ok(ScriptedSession {
+				events: vec![Ok(pb::TurnEvent {
+					event: Some(pb::turn_event::Event::Outcome(outcome)),
+				})],
+			})
+		}
+	}
+
+	fn worker(name: &str) -> ToolSpec {
+		ToolSpec {
+			name:        Str::from(name),
+			rev:         Rev { family: Str::from("test"), n: 1 },
+			description: Str::from("test worker"),
+			schema:      Bytes::from_static(br#"{"type":"object"}"#),
+			constraint:  Constraint::None,
+		}
+	}
+
+	#[tokio::test]
+	async fn resumed_turn_freezes_durable_allowlist_then_fresh_turn_uses_snapshot() {
+		let mut registry = ToolRegistry::new();
+		registry
+			.register_worker(worker("old"))
+			.expect("register old");
+		registry
+			.register_worker(worker("new"))
+			.expect("register new");
+		let registry = Arc::new(registry);
+
+		let mut old_options = crate::TurnOptions::default();
+		old_options.params.model = "durable-model".to_owned();
+		let mut new_options = crate::TurnOptions::default();
+		new_options.params.model = "fresh-model".to_owned();
+		let state = AgentState::new(crate::AgentSnapshot {
+			turn: new_options.clone(),
+			enabled_tools: Arc::from([Str::from("new")]),
+			registry: Arc::clone(&registry),
+			..crate::AgentSnapshot::default()
+		});
+
+		let path = std::env::temp_dir().join(format!(
+			"omp-agent-loop-allowlist-{}-{}.jsonl",
+			std::process::id(),
+			ulid::Ulid::generate()
+		));
+		let mut journal = Journal::create(&path, &Header {
+			v:       4,
+			id:      SessionId(Str::from("allowlist-test")),
+			created: 1,
+			cwd:     std::env::temp_dir(),
+		})
+		.expect("create journal");
+		let durable_input = thread::Thread::default();
+		journal
+			.start_turn(1, TurnStart {
+				turn_id:            Str::from("durable-turn"),
+				item_events:        Vec::new(),
+				prompt_hash:        [7; 32],
+				prompt_head_events: Vec::new(),
+				toolset_hash:       registry.live_hash(),
+				enabled_tools:      vec![Str::from("old")],
+				sequence_targets:   Vec::new(),
+				input:              TurnInputRecord::Full { thread: durable_input.clone() },
+				options:            TurnOptionsRecord {
+					context_id: old_options.context_id.clone(),
+					params:     old_options.params.clone(),
+					executor:   old_options.executor.clone(),
+					props:      old_options.props.clone(),
+				},
+			})
+			.expect("persist durable start");
+
+		let opened = Arc::new(Mutex::new(Vec::new()));
+		let client = ScriptedClient {
+			outcomes: Arc::new(Mutex::new(VecDeque::from([
+				Outcome { stop: pb::StopReason::StopEndTurn as i32, ..Outcome::default() },
+				Outcome { stop: pb::StopReason::StopEndTurn as i32, ..Outcome::default() },
+			]))),
+			opened:   Arc::clone(&opened),
+		};
+		let (env, _transport) = EnvClient::in_process(1);
+		let mut agent = Agent::new(client, env, state, journal, PromptCaps {
+			maximum_parts:      16,
+			maximum_text_bytes: 16_384,
+			media:              false,
+		});
+
+		let (_, _, _, _, resumed_tools) = agent
+			.run_turn(TurnId::new("durable-turn"), Vec::new())
+			.await
+			.expect("resume durable turn");
+		let (_, _, _, _, fresh_tools) = agent
+			.run_turn(TurnId::new("fresh-turn"), Vec::new())
+			.await
+			.expect("run fresh turn");
+
+		assert_eq!(resumed_tools.as_ref(), &[Str::from("old")]);
+		assert_eq!(fresh_tools.as_ref(), &[Str::from("new")]);
+		let opened = opened.lock().expect("capture lock");
+		assert_eq!(opened.len(), 2);
+		assert_eq!(opened[0].0.as_str(), "durable-turn");
+		assert!(matches!(&opened[0].1, TurnInput::Full(thread) if thread == &durable_input));
+		assert_eq!(opened[0].2.params, old_options.params);
+		assert_eq!(opened[1].0.as_str(), "fresh-turn");
+		assert_eq!(opened[1].2.params, new_options.params);
+		assert_eq!(
+			agent
+				.journal()
+				.latest_turn_start()
+				.expect("fresh durable start")
+				.enabled_tools,
+			vec![Str::from("new")]
+		);
+		drop(opened);
+		drop(agent);
+		std::fs::remove_file(path).expect("remove journal");
+	}
 
 	#[tokio::test]
 	async fn deadline_wait_wins_over_long_backoff() {

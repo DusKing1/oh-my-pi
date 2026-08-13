@@ -18,6 +18,7 @@ hyper-util = { workspace = true, features = ["tokio"] }
 omp-core = { workspace = true }
 omp-env = { workspace = true }
 omp-llm-inference = { workspace = true }
+omp-slopjson = { workspace = true }
 omp-proto = { workspace = true, features = ["tonic"] }
 omp-storage = { workspace = true }
 omp-tool = { workspace = true }

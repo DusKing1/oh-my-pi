@@ -84,7 +84,8 @@ pub enum RetryPolicyError {
 /// Immutable authoritative configuration consumed by one agent turn.
 ///
 /// A loop reads a fresh snapshot before every logical turn. Cloning a snapshot
-/// shares its registry, prompt source, tool names, workspace bytes, and context files.
+/// shares its registry, prompt source, tool names, workspace bytes, and context
+/// files.
 #[derive(Clone)]
 pub struct AgentSnapshot {
 	/// Per-turn gateway options.

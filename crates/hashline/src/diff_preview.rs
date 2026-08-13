@@ -5,7 +5,10 @@ use std::{fmt::Write as _, str::Utf8Error};
 use omp_core::{Str, StrMut, fmts};
 use similar::{Algorithm, DiffOp, capture_diff_slices};
 
-use crate::{format::split_addressable_file_lines, normalize::{normalize_to_lf, strip_bom}};
+use crate::{
+	format::split_addressable_file_lines,
+	normalize::{normalize_to_lf, strip_bom},
+};
 
 const DEFAULT_ADDED_RUN_CONTEXT_LINES: usize = 2;
 const ELISION: &str = "…";
@@ -21,7 +24,8 @@ pub struct NumberedDiff {
 	pub removed_lines: usize,
 }
 
-/// Produces a stable full line diff with one-based original/current coordinates.
+/// Produces a stable full line diff with one-based original/current
+/// coordinates.
 ///
 /// Context and deletion row numbers address `base`; insertion row numbers
 /// address `current`. UTF-8 BOM and line-ending conventions are normalized
@@ -40,28 +44,58 @@ pub fn numbered_diff(base: &[u8], current: &[u8]) -> Result<NumberedDiff, Utf8Er
 		match operation {
 			DiffOp::Equal { old_index, new_index: _, len } => {
 				for offset in 0..len {
-					push_numbered_row(&mut text, &mut first, ' ', old_index + offset + 1, base_lines[old_index + offset]);
+					push_numbered_row(
+						&mut text,
+						&mut first,
+						' ',
+						old_index + offset + 1,
+						base_lines[old_index + offset],
+					);
 				}
 			},
 			DiffOp::Delete { old_index, old_len, new_index: _ } => {
 				for offset in 0..old_len {
-					push_numbered_row(&mut text, &mut first, '-', old_index + offset + 1, base_lines[old_index + offset]);
+					push_numbered_row(
+						&mut text,
+						&mut first,
+						'-',
+						old_index + offset + 1,
+						base_lines[old_index + offset],
+					);
 					removed_lines += 1;
 				}
 			},
 			DiffOp::Insert { old_index: _, new_index, new_len } => {
 				for offset in 0..new_len {
-					push_numbered_row(&mut text, &mut first, '+', new_index + offset + 1, current_lines[new_index + offset]);
+					push_numbered_row(
+						&mut text,
+						&mut first,
+						'+',
+						new_index + offset + 1,
+						current_lines[new_index + offset],
+					);
 					added_lines += 1;
 				}
 			},
 			DiffOp::Replace { old_index, old_len, new_index, new_len } => {
 				for offset in 0..old_len {
-					push_numbered_row(&mut text, &mut first, '-', old_index + offset + 1, base_lines[old_index + offset]);
+					push_numbered_row(
+						&mut text,
+						&mut first,
+						'-',
+						old_index + offset + 1,
+						base_lines[old_index + offset],
+					);
 					removed_lines += 1;
 				}
 				for offset in 0..new_len {
-					push_numbered_row(&mut text, &mut first, '+', new_index + offset + 1, current_lines[new_index + offset]);
+					push_numbered_row(
+						&mut text,
+						&mut first,
+						'+',
+						new_index + offset + 1,
+						current_lines[new_index + offset],
+					);
 					added_lines += 1;
 				}
 			},
@@ -205,7 +239,6 @@ fn append_added_run(output: &mut Vec<Str>, run: &[Str], edge_lines: usize) {
 	for line in &run[run.len() - edge_lines..] {
 		append_line(output, line);
 	}
-
 }
 
 fn append_line(output: &mut Vec<Str>, line: &str) {
@@ -293,10 +326,7 @@ mod tests {
 			"α\nLEFT\nmiddle\nRIGHT\n終\n".as_bytes(),
 		)
 		.unwrap();
-		assert_eq!(
-			diff.text,
-			" 1|α\n-2|left\n+2|LEFT\n 3|middle\n-4|right\n+4|RIGHT\n 5|終"
-		);
+		assert_eq!(diff.text, " 1|α\n-2|left\n+2|LEFT\n 3|middle\n-4|right\n+4|RIGHT\n 5|終");
 		assert_eq!((diff.added_lines, diff.removed_lines), (2, 2));
 	}
 

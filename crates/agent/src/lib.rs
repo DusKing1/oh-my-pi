@@ -25,7 +25,9 @@ pub use batch::{BatchError, BatchResult, CommittedCall, SpeculativeCall, ToolBat
 pub use events::{AgentEvent, AgentPhase, EventBus, EventSubscription, LossyEventSubscription};
 pub use inproc::{InProcTurnClient, RpcTurnClient, RpcTurnSession};
 pub use jobs::{JobBoard, PendingJobs};
-pub use journal::{Journal, JournalError, TurnInputRecord, TurnOptionsRecord, TurnReceipt, TurnStart};
+pub use journal::{
+	Journal, JournalError, TurnInputRecord, TurnOptionsRecord, TurnReceipt, TurnStart,
+};
 pub use r#loop::{Agent, AgentError, AgentRunSummary};
 pub use mailbox::{DrainPoint, Interrupt, InterruptClass, InterruptSource, Mailbox, MailboxSender};
 pub use omp_llm_inference::TurnId;

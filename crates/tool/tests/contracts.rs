@@ -312,12 +312,16 @@ fn duplicate_registration_never_replaces_the_erased_implementation() {
 fn live_hash_is_stable_until_a_live_revision_changes() {
 	let calls = Arc::new(AtomicUsize::new(0));
 	let mut first = Registry::new();
-	first.register(fake_tool(1, "one", Arc::clone(&calls))).unwrap();
+	first
+		.register(fake_tool(1, "one", Arc::clone(&calls)))
+		.unwrap();
 	let unchanged = first.live_hash();
 	assert_eq!(unchanged, first.live_hash());
 
 	let mut same = Registry::new();
-	same.register(fake_tool(1, "one", Arc::clone(&calls))).unwrap();
+	same
+		.register(fake_tool(1, "one", Arc::clone(&calls)))
+		.unwrap();
 	assert_eq!(unchanged, same.live_hash());
 
 	first.register(fake_tool(2, "two", calls)).unwrap();
@@ -752,10 +756,7 @@ fn detached_artifact_lifetime_is_explicit_and_session_is_the_conservative_defaul
 	] {
 		let job = JobRef {
 			id:       Str::from("job-7"),
-			owner: JobOwner::NamedProcess {
-				name: Str::from("render"),
-				generation: 3,
-			},
+			owner:    JobOwner::NamedProcess { name: Str::from("render"), generation: 3 },
 			artifact: ExpectedArtifact {
 				description: Str::from("rendered video"),
 				media_type: Some(Str::from("video/mp4")),

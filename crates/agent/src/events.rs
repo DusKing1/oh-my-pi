@@ -62,6 +62,8 @@ pub enum AgentEvent {
 		call_id:  Str,
 		/// Unparsed argument bytes in arrival order.
 		fragment: Bytes,
+		/// Loop-owned best-effort view of all argument fragments so far.
+		view:     omp_slopjson::Value,
 	},
 	/// A tool emitted an ephemeral update that must not enter the thread.
 	ToolUpdate {

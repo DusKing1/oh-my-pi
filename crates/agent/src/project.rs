@@ -150,12 +150,8 @@ pub fn project_thread_history(
 		let ProjectedCall::Live(live) = tool_registry.project(original) else {
 			continue;
 		};
-		let rendered = tool_registry.project_verdict(
-			&live.identity,
-			&live.verdict,
-			recorded_useless,
-			caps,
-		)?;
+		let rendered =
+			tool_registry.project_verdict(&live.identity, &live.verdict, recorded_useless, caps)?;
 		let lifted_verdict: serde_json::Value = serde_json::from_slice(&live.verdict)?;
 		let lifted_details = json_proto_value(lifted_verdict);
 		let lifted_parts = tool_parts(&rendered.parts)?;
@@ -208,15 +204,9 @@ pub(crate) fn recovery_tool_result_item(
 	};
 	let verdict = Verdict::<serde_json::Value, serde_json::Value>::Aborted(abort);
 	let raw = serde_json::to_vec(&verdict)?;
-	tool_result_item(
-		created_at_ms,
-		&call.id,
-		&identity,
-		&raw,
-		true,
-		false,
-		&[ToolPart::Text { text: Str::from(text) }],
-	)
+	tool_result_item(created_at_ms, &call.id, &identity, &raw, true, false, &[ToolPart::Text {
+		text: Str::from(text),
+	}])
 }
 
 /// Builds one canonical optimistic tool-result item from durable tool truth.

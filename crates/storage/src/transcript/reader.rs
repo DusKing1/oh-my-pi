@@ -131,7 +131,9 @@ impl Log {
 							live.push(index);
 						}
 					},
-					Event { kind: Kind::PromptRewriteIntent(_) | Kind::PromptRewriteStage(_), .. } => {},
+					Event {
+						kind: Kind::PromptRewriteIntent(_) | Kind::PromptRewriteStage(_), ..
+					} => {},
 					Event { kind: Kind::PromptRewriteCommit(commit), .. } => {
 						let Some(Entry::Ok(intent_event)) = self.get(commit.intent) else {
 							continue;
@@ -142,21 +144,24 @@ impl Log {
 						if commit.head_events.len() != intent.head.len() {
 							continue;
 						}
-						let complete = commit.head_events.iter().enumerate().all(
-							|(ordinal, stage_index)| {
-								matches!(
-									self.get(*stage_index),
-									Some(Entry::Ok(stage_event))
-										if matches!(
-											&stage_event.kind,
-											Kind::PromptRewriteStage(stage)
-												if stage.intent == commit.intent
-													&& stage.ordinal == ordinal as u64
-													&& stage.item == intent.head[ordinal]
-										)
-								)
-							},
-						);
+						let complete =
+							commit
+								.head_events
+								.iter()
+								.enumerate()
+								.all(|(ordinal, stage_index)| {
+									matches!(
+										self.get(*stage_index),
+										Some(Entry::Ok(stage_event))
+											if matches!(
+												&stage_event.kind,
+												Kind::PromptRewriteStage(stage)
+													if stage.intent == commit.intent
+														&& stage.ordinal == ordinal as u64
+														&& stage.item == intent.head[ordinal]
+											)
+									)
+								});
 						if complete {
 							live.clear();
 							live.extend(commit.head_events.iter().copied());

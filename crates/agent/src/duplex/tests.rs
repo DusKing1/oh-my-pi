@@ -18,10 +18,7 @@ use crate::{EventBus, InvokeFrame};
 
 const WAIT: Duration = Duration::from_secs(2);
 
-fn expect_complete(
-	result: Result<InvokeFrame, DuplexError>,
-	context: &str,
-) -> InvokeComplete {
+fn expect_complete(result: Result<InvokeFrame, DuplexError>, context: &str) -> InvokeComplete {
 	match result.expect(context) {
 		InvokeFrame::Complete(complete) => complete,
 		InvokeFrame::Input(_) => panic!("expected terminal invocation completion"),
@@ -93,9 +90,9 @@ impl Tool for ScriptTool {
 	fn invoke_input(&self, update: &Self::Update, invocation_id: &str) -> Option<InvokeInput> {
 		self.project_inputs.then(|| InvokeInput {
 			invocation_id: invocation_id.to_owned(),
-			payload: Some(invoke_input::Payload::Chunk(invoke_input::Chunk {
+			payload:       Some(invoke_input::Payload::Chunk(invoke_input::Chunk {
 				channel: invoke_input::chunk::Channel::Progress as i32,
-				data: Bytes::copy_from_slice(update.as_bytes()),
+				data:    Bytes::copy_from_slice(update.as_bytes()),
 			})),
 		})
 	}
@@ -414,10 +411,7 @@ async fn typed_updates_are_ordered_before_completion() {
 		assert!(matches!(open.body, Some(frame::client_frame::Body::InvokeTool(_))));
 		assert!(matches!(recv(&requests).body, Some(frame::client_frame::Body::ArgText(_))));
 		assert!(matches!(recv(&requests).body, Some(frame::client_frame::Body::ArgsCommitted(_))));
-		for raw in [
-			Bytes::from_static(br#""first""#),
-			Bytes::from_static(br#""second""#),
-		] {
+		for raw in [Bytes::from_static(br#""first""#), Bytes::from_static(br#""second""#)] {
 			respond(
 				&responses,
 				request_id,

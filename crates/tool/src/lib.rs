@@ -177,7 +177,8 @@ pub trait Tool: Send + Sync + 'static {
 	/// Deterministically projects either durable tool branch for one model.
 	fn prompt(&self, view: Result<&Self::Payload, &Self::Fault>, caps: &PromptCaps) -> Vec<Part>;
 
-	/// Projects one typed ephemeral update into an optional live invocation frame.
+	/// Projects one typed ephemeral update into an optional live invocation
+	/// frame.
 	///
 	/// The default keeps ordinary tool progress on the agent event feed only.
 	fn invoke_input(

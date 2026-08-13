@@ -10,9 +10,8 @@ use omp_storage::{
 		AmendPatch, Attribution, Block, BlockKind, CallId, CtxSnapshot, DialectId, Entry, Error,
 		Event, FeatureId, Header, ItemRecord, Kind, ModelChange, ModelId, ModelRef, Msg, Patch, Pin,
 		ProviderId, Replay, RequestError, SessionId, Stop, ThinkingSel, Timing, TitleSource,
-		ToolBatchAuthorized, TurnInputItem, TurnInputRecord, TurnOptionsRecord, TurnReceipt, TurnStart,
-		Usage, UserBlock, Writer, load, read_line,
-		write_header, write_line,
+		ToolBatchAuthorized, TurnInputItem, TurnInputRecord, TurnOptionsRecord, TurnReceipt,
+		TurnStart, Usage, UserBlock, Writer, load, read_line, write_header, write_line,
 	},
 };
 use serde::{Deserialize, Serialize};
@@ -203,15 +202,15 @@ fn every_kind() -> Vec<Event> {
 				input:              TurnInputRecord::Delta {
 					context: pb::ContextRef {
 						context_id: "context".to_owned(),
-						expected: Some(thread_pb::Revision { head: 6, token: vec![8; 32].into() }),
+						expected:   Some(thread_pb::Revision { head: 6, token: vec![8; 32].into() }),
 					},
-					delta: pb::ThreadDelta { truncate_to: None, append: Vec::new() },
+					delta:   pb::ThreadDelta { truncate_to: None, append: Vec::new() },
 				},
-				options: TurnOptionsRecord {
+				options:            TurnOptionsRecord {
 					context_id: None,
-					params: pb::ChatParams::default(),
-					executor: None,
-					props: None,
+					params:     pb::ChatParams::default(),
+					executor:   None,
+					props:      None,
 				},
 			}),
 		},
@@ -243,27 +242,27 @@ fn every_kind() -> Vec<Event> {
 			}),
 		},
 		Event {
-			ts: 22,
+			ts:   22,
 			kind: Kind::TurnInput(TurnInputItem {
-				turn_id: text("turn-2"),
-				item: thread_pb::Item {
-					seq: 0,
+				turn_id:     text("turn-2"),
+				item:        thread_pb::Item {
+					seq:           0,
 					created_at_ms: 22,
-					kind: Some(thread_pb::item::Kind::Message(thread_pb::Message {
-						role: thread_pb::Role::User as i32,
+					kind:          Some(thread_pb::item::Kind::Message(thread_pb::Message {
+						role:  thread_pb::Role::User as i32,
 						parts: vec![thread_pb::Part {
 							kind: Some(thread_pb::part::Kind::Text("next".to_owned())),
 						}],
 					})),
-					props: None,
+					props:         None,
 				},
 				prompt_hash: Some([4; 32]),
 			}),
 		},
 		Event {
-			ts: 23,
+			ts:   23,
 			kind: Kind::ToolBatchAuthorized(ToolBatchAuthorized {
-				turn_id: text("turn-1"),
+				turn_id:  text("turn-1"),
 				call_ids: vec![text("call-1")],
 			}),
 		},

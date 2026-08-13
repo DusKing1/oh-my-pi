@@ -7,13 +7,13 @@ use std::{
 
 use omp_core::Str;
 use omp_proto::{inference::v1::Outcome, thread::v1::Item};
-use omp_tool::{Abort, JobRef};
-pub use omp_storage::transcript::{TurnInputRecord, TurnOptionsRecord, TurnReceipt, TurnStart};
 use omp_storage::transcript::{
 	self, AmendPatch, Event, Header, ItemRecord, JobRegistered, JobSettled, Kind, Log,
 	PromptRewriteCommit, PromptRewriteIntent, PromptRewriteStage, ToolBatchAuthorized,
 	TurnInputItem, Writer,
 };
+pub use omp_storage::transcript::{TurnInputRecord, TurnOptionsRecord, TurnReceipt, TurnStart};
+use omp_tool::{Abort, JobRef};
 use thiserror::Error;
 
 use crate::prompt::PromptHash;
@@ -89,21 +89,21 @@ pub enum JournalError {
 
 /// Append-only transcript owner with an in-memory terminal-turn index.
 pub struct Journal {
-	path:         PathBuf,
-	writer:       Writer,
-	receipts:     BTreeMap<Str, TurnReceipt>,
-	starts:       BTreeMap<Str, (u64, TurnStart)>,
-	claims:       BTreeMap<u64, Str>,
-	last_start:   Option<TurnStart>,
-	last_receipt: Option<TurnReceipt>,
-	active_prompt: Option<([u8; 32], Vec<u64>)>,
-	pending:      BTreeMap<Str, Vec<(u64, Item, Option<[u8; 32]>)>>,
-	pending_jobs: BTreeMap<Str, (u64, JobRef)>,
-	settled_jobs: BTreeMap<Str, (u64, Item)>,
-	authorized_batches: BTreeMap<Str, (u64, Vec<Str>)>,
+	path:                    PathBuf,
+	writer:                  Writer,
+	receipts:                BTreeMap<Str, TurnReceipt>,
+	starts:                  BTreeMap<Str, (u64, TurnStart)>,
+	claims:                  BTreeMap<u64, Str>,
+	last_start:              Option<TurnStart>,
+	last_receipt:            Option<TurnReceipt>,
+	active_prompt:           Option<([u8; 32], Vec<u64>)>,
+	pending:                 BTreeMap<Str, Vec<(u64, Item, Option<[u8; 32]>)>>,
+	pending_jobs:            BTreeMap<Str, (u64, JobRef)>,
+	settled_jobs:            BTreeMap<Str, (u64, Item)>,
+	authorized_batches:      BTreeMap<Str, (u64, Vec<Str>)>,
 	recoverable_settlements: Vec<u64>,
-	pending_inputs: VecDeque<(Str, Vec<u64>)>,
-	item_count:   u64,
+	pending_inputs:          VecDeque<(Str, Vec<u64>)>,
+	item_count:              u64,
 }
 
 impl Journal {
@@ -166,7 +166,10 @@ impl Journal {
 					if !turn_inputs.contains_key(input.turn_id.as_str()) {
 						turn_input_order.push(input.turn_id.clone());
 					}
-					turn_inputs.entry(input.turn_id.clone()).or_default().push(index);
+					turn_inputs
+						.entry(input.turn_id.clone())
+						.or_default()
+						.push(index);
 				},
 				Kind::PromptRewriteStage(_) => {
 					item_count = item_count.saturating_add(1);
@@ -183,17 +186,13 @@ impl Journal {
 				},
 				Kind::JobRegistered(registered) => {
 					if !settled_jobs.contains_key(registered.job.id.as_str()) {
-						pending_jobs.insert(
-							registered.job.id.clone(),
-							(index, registered.job.clone()),
-						);
+						pending_jobs.insert(registered.job.id.clone(), (index, registered.job.clone()));
 					}
 				},
 				Kind::JobSettled(settled) => {
 					pending_jobs.remove(settled.job_id.as_str());
 					item_count = item_count.saturating_add(1);
-					settled_jobs
-						.insert(settled.job_id.clone(), (index, settled.settlement.clone()));
+					settled_jobs.insert(settled.job_id.clone(), (index, settled.settlement.clone()));
 					settled_input_events.push(index);
 				},
 				Kind::ToolBatchAuthorized(batch) => {
@@ -219,7 +218,11 @@ impl Journal {
 					});
 				}
 			}
-			for target in start.prompt_head_events.iter().chain(&start.sequence_targets) {
+			for target in start
+				.prompt_head_events
+				.iter()
+				.chain(&start.sequence_targets)
+			{
 				if !matches!(log.get(*target), Some(transcript::Entry::Ok(event)) if event_item(&event.kind).is_some())
 				{
 					return Err(JournalError::InvalidTurnInput(*target));
@@ -246,7 +249,11 @@ impl Journal {
 		}
 		let pending_inputs = turn_input_order
 			.into_iter()
-			.filter_map(|turn_id| turn_inputs.remove(turn_id.as_str()).map(|events| (turn_id, events)))
+			.filter_map(|turn_id| {
+				turn_inputs
+					.remove(turn_id.as_str())
+					.map(|events| (turn_id, events))
+			})
 			.collect();
 		let recoverable_settlements = settled_input_events
 			.into_iter()
@@ -327,7 +334,8 @@ impl Journal {
 		Ok(index)
 	}
 
-	/// Atomically replaces the system-prompt head while retaining an ordered tail.
+	/// Atomically replaces the system-prompt head while retaining an ordered
+	/// tail.
 	///
 	/// The intent and hidden stages do not change the live chain. Only the final
 	/// commit publishes `[new head, preserved tail]`; reopening the journal
@@ -346,35 +354,37 @@ impl Journal {
 			}
 		}
 		let intent = PromptRewriteIntent {
-			prompt_hash: prompt_hash.into_bytes(),
-			head: head.to_vec(),
+			prompt_hash:    prompt_hash.into_bytes(),
+			head:           head.to_vec(),
 			preserved_tail: preserved_tail.to_vec(),
 		};
-		let intent_event =
-			self.writer.append(&Event { ts, kind: Kind::PromptRewriteIntent(intent) })?;
+		let intent_event = self
+			.writer
+			.append(&Event { ts, kind: Kind::PromptRewriteIntent(intent) })?;
 		let mut head_events = Vec::with_capacity(head.len());
 		for (ordinal, item) in head.iter().enumerate() {
 			let stage = PromptRewriteStage {
-				intent: intent_event,
+				intent:  intent_event,
 				ordinal: u64::try_from(ordinal).expect("prompt head length fits in u64"),
-				item: item.clone(),
+				item:    item.clone(),
 			};
-			head_events
-				.push(self.writer.append(&Event { ts, kind: Kind::PromptRewriteStage(stage) })?);
+			head_events.push(
+				self
+					.writer
+					.append(&Event { ts, kind: Kind::PromptRewriteStage(stage) })?,
+			);
 			self.item_count = self.item_count.saturating_add(1);
 		}
 		self.writer.append(&Event {
 			ts,
 			kind: Kind::PromptRewriteCommit(PromptRewriteCommit {
-				intent: intent_event,
+				intent:      intent_event,
 				head_events: head_events.clone(),
 			}),
 		})?;
 		self.active_prompt = Some((prompt_hash.into_bytes(), head_events.clone()));
 		Ok(head_events)
 	}
-
-
 
 	/// Durably fixes a logical turn before its transport is opened.
 	///
@@ -514,7 +524,11 @@ impl Journal {
 		let Some((_, start)) = self.starts.get(turn_id.as_str()).cloned() else {
 			return Err(JournalError::MissingTurnStart(turn_id));
 		};
-		let existing = self.pending.get(turn_id.as_str()).cloned().unwrap_or_default();
+		let existing = self
+			.pending
+			.get(turn_id.as_str())
+			.cloned()
+			.unwrap_or_default();
 		let prompt_hash = Some(start.prompt_hash);
 		let mut item_events = Vec::with_capacity(outcome.output.len());
 		item_events.extend(existing.iter().map(|(index, ..)| *index));
@@ -546,7 +560,6 @@ impl Journal {
 				.push((index, item.clone(), prompt_hash));
 		}
 		if mismatch || replayed < existing.len() {
-
 			return Err(JournalError::TurnReplayMismatch(turn_id));
 		}
 		let receipt = TurnReceipt {
@@ -567,6 +580,7 @@ impl Journal {
 		self.receipts.insert(turn_id, receipt.clone());
 		Ok((receipt, false))
 	}
+
 	/// Durably authorizes one committed tool batch before any effect may start.
 	pub fn authorize_tool_batch(
 		&mut self,
@@ -598,17 +612,16 @@ impl Journal {
 				});
 			}
 		}
-		let batch = ToolBatchAuthorized {
-			turn_id: Str::from(turn_id),
-			call_ids: call_ids.to_vec(),
-		};
-		let index =
-			self.writer.append(&Event { ts, kind: Kind::ToolBatchAuthorized(batch.clone()) })?;
+		let batch = ToolBatchAuthorized { turn_id: Str::from(turn_id), call_ids: call_ids.to_vec() };
+		let index = self
+			.writer
+			.append(&Event { ts, kind: Kind::ToolBatchAuthorized(batch.clone()) })?;
 		self
 			.authorized_batches
 			.insert(batch.turn_id, (index, batch.call_ids));
 		Ok(index)
 	}
+
 	/// Durably registers detached work for restart-safe settlement watching.
 	///
 	/// Re-registering the exact same job is idempotent. A job already settled
@@ -623,10 +636,9 @@ impl Journal {
 			}
 			return Ok(*index);
 		}
-		let index = self.writer.append(&Event {
-			ts,
-			kind: Kind::JobRegistered(JobRegistered { job: job.clone() }),
-		})?;
+		let index = self
+			.writer
+			.append(&Event { ts, kind: Kind::JobRegistered(JobRegistered { job: job.clone() }) })?;
 		self.pending_jobs.insert(job.id.clone(), (index, job));
 		Ok(index)
 	}
@@ -651,10 +663,9 @@ impl Journal {
 		let index = self.writer.append(&Event {
 			ts,
 			kind: Kind::JobSettled(JobSettled {
-				job_id: job_id.clone(),
+				job_id:     job_id.clone(),
 				settlement: settlement.clone(),
 			}),
-
 		})?;
 		self.item_count = self.item_count.saturating_add(1);
 		self.pending_jobs.remove(job_id.as_str());
@@ -662,10 +673,14 @@ impl Journal {
 		self.recoverable_settlements.push(index);
 		Ok(index)
 	}
+
 	/// Returns unclaimed durable settlement or recovered-result item events.
 	#[must_use]
 	pub fn recoverable_input_events(&self) -> &[u64] {
-		self.pending_inputs.front().map_or(&[], |(_, events)| events.as_slice())
+		self
+			.pending_inputs
+			.front()
+			.map_or(&[], |(_, events)| events.as_slice())
 	}
 
 	/// Returns unclaimed durable detached-job settlement event IDs.
@@ -688,7 +703,6 @@ impl Journal {
 		self.pending_jobs.values().map(|(_, job)| job)
 	}
 
-
 	/// Appends a later event assigning a gateway sequence to an item event.
 	pub fn amend_seq(&mut self, ts: u64, target: u64, seq: u64) -> Result<u64, JournalError> {
 		if seq == 0 {
@@ -709,7 +723,6 @@ impl Journal {
 	pub fn contains_turn(&self, turn_id: &str) -> bool {
 		self.receipts.contains_key(turn_id)
 	}
-
 
 	/// Returns the authoritative committed prompt identity and head event IDs.
 	#[must_use]
@@ -739,10 +752,7 @@ impl Journal {
 	}
 }
 
-fn recover_tool_batches(
-	log: &Log,
-	writer: &mut Writer,
-) -> Result<Vec<(Str, u64)>, JournalError> {
+fn recover_tool_batches(log: &Log, writer: &mut Writer) -> Result<Vec<(Str, u64)>, JournalError> {
 	let mut results = BTreeMap::<Str, Option<Str>>::new();
 	let mut authorized = BTreeMap::<Str, BTreeSet<Str>>::new();
 	let mut receipts = Vec::new();
@@ -757,15 +767,16 @@ fn recover_tool_batches(
 				Kind::TurnInput(input) => Some(input.turn_id.clone()),
 				_ => None,
 			};
-			results.entry(Str::from(result.call_id.as_str())).or_insert(recovery_turn);
+			results
+				.entry(Str::from(result.call_id.as_str()))
+				.or_insert(recovery_turn);
 		}
 		match &event.kind {
 			Kind::ToolBatchAuthorized(batch) => {
 				authorized.insert(batch.turn_id.clone(), batch.call_ids.iter().cloned().collect());
 			},
 			Kind::TurnReceipt(receipt)
-				if receipt.outcome.stop
-					== omp_proto::inference::v1::StopReason::StopToolUse as i32 =>
+				if receipt.outcome.stop == omp_proto::inference::v1::StopReason::StopToolUse as i32 =>
 			{
 				receipts.push((event.ts, receipt));
 			},
@@ -803,13 +814,13 @@ fn recover_tool_batches(
 				}
 			};
 			let result = crate::project::recovery_tool_result_item(ts, item, abort)?;
-			let recovery_turn = recovery_turn
-				.get_or_insert_with(|| Str::from(ulid::Ulid::generate().to_string()));
+			let recovery_turn =
+				recovery_turn.get_or_insert_with(|| Str::from(ulid::Ulid::generate().to_string()));
 			let index = writer.append(&Event {
 				ts,
 				kind: Kind::TurnInput(TurnInputItem {
-					turn_id: recovery_turn.clone(),
-					item: result,
+					turn_id:     recovery_turn.clone(),
+					item:        result,
 					prompt_hash: Some(receipt.prompt_hash),
 				}),
 			})?;
@@ -896,7 +907,7 @@ fn recover_sequence_amendments(log: &Log, writer: &mut Writer) -> Result<(), Jou
 				continue;
 			}
 			writer.append(&Event {
-				ts: recovery.ts,
+				ts:   recovery.ts,
 				kind: Kind::Amend { target: *target, patch: AmendPatch::Seq { seq: expected } },
 			})?;
 		}
@@ -922,9 +933,9 @@ fn recover_prompt_rewrites(
 		match &event.kind {
 			Kind::PromptRewriteIntent(intent) => {
 				rewrites.insert(index, RewriteRecovery {
-					ts: event.ts,
-					intent: intent.clone(),
-					stages: vec![None; intent.head.len()],
+					ts:        event.ts,
+					intent:    intent.clone(),
+					stages:    vec![None; intent.head.len()],
 					committed: false,
 				});
 			},
@@ -969,11 +980,11 @@ fn recover_prompt_rewrites(
 					continue;
 				}
 				let index = writer.append(&Event {
-					ts: rewrite.ts,
+					ts:   rewrite.ts,
 					kind: Kind::PromptRewriteStage(PromptRewriteStage {
-						intent: *intent_event,
+						intent:  *intent_event,
 						ordinal: u64::try_from(ordinal).expect("prompt head length fits in u64"),
-						item: rewrite.intent.head[ordinal].clone(),
+						item:    rewrite.intent.head[ordinal].clone(),
 					}),
 				})?;
 				*stage_event = Some(index);
@@ -988,9 +999,9 @@ fn recover_prompt_rewrites(
 			.expect("committed or recovered prompt stages are complete");
 		if !rewrite.committed {
 			writer.append(&Event {
-				ts: rewrite.ts,
+				ts:   rewrite.ts,
 				kind: Kind::PromptRewriteCommit(PromptRewriteCommit {
-					intent: *intent_event,
+					intent:      *intent_event,
 					head_events: head_events.clone(),
 				}),
 			})?;
@@ -1014,10 +1025,9 @@ fn event_item(kind: &Kind) -> Option<&Item> {
 mod tests {
 	use std::sync::atomic::{AtomicU64, Ordering};
 
-	use omp_proto::{inference::v1 as pb, thread::v1 as thread_pb};
-	use omp_proto::prost::Message as _;
-	use omp_tool::{ArtifactLifetime, ExpectedArtifact, JobOwner};
+	use omp_proto::{inference::v1 as pb, prost::Message as _, thread::v1 as thread_pb};
 	use omp_storage::transcript::{Entry, Header, SessionId};
+	use omp_tool::{ArtifactLifetime, ExpectedArtifact, JobOwner};
 
 	use super::*;
 	use crate::{PromptHash, project_journal};
@@ -1077,24 +1087,24 @@ mod tests {
 
 	fn caps() -> omp_tool::PromptCaps {
 		omp_tool::PromptCaps {
-			maximum_parts: 1,
+			maximum_parts:      1,
 			maximum_text_bytes: 1024,
-			media: false,
+			media:              false,
 		}
 	}
 
 	fn tool_outcome() -> Outcome {
 		Outcome {
 			output: vec![Item {
-				seq: 3,
+				seq:           3,
 				created_at_ms: 4,
-				kind: Some(thread_pb::item::Kind::ToolCall(thread_pb::ToolCall {
+				kind:          Some(thread_pb::item::Kind::ToolCall(thread_pb::ToolCall {
 					id: "call-1".to_owned(),
 					name: "read".to_owned(),
 					args_json: br#"{"path":"x"}"#.to_vec().into(),
 					..Default::default()
 				})),
-				props: Some(pb::ValueMap {
+				props:         Some(pb::ValueMap {
 					fields: BTreeMap::from([(omp_tool::TOOL_REV_PROP.to_owned(), pb::Value {
 						kind: Some(pb::value::Kind::String("1".to_owned())),
 					})]),
@@ -1109,7 +1119,11 @@ mod tests {
 	}
 
 	fn assert_tool_crash_recovery(authorized: bool, expected_text: &str) {
-		let path = path(if authorized { "authorized-tool" } else { "unmarked-tool" });
+		let path = path(if authorized {
+			"authorized-tool"
+		} else {
+			"unmarked-tool"
+		});
 		let hash = PromptHash::from([2; 32]);
 		let mut journal = Journal::create(&path, &header()).expect("create journal");
 		let input = journal
@@ -1117,21 +1131,21 @@ mod tests {
 			.expect("append turn input");
 		journal
 			.start_turn(3, TurnStart {
-				turn_id: Str::from("turn"),
-				item_events: vec![input],
-				prompt_hash: hash.into_bytes(),
+				turn_id:            Str::from("turn"),
+				item_events:        vec![input],
+				prompt_hash:        hash.into_bytes(),
 				prompt_head_events: Vec::new(),
-				toolset_hash: [3; 32],
-				enabled_tools: vec![Str::from("read")],
-				sequence_targets: vec![input],
-				input: TurnInputRecord::Full {
+				toolset_hash:       [3; 32],
+				enabled_tools:      vec![Str::from("read")],
+				sequence_targets:   vec![input],
+				input:              TurnInputRecord::Full {
 					thread: thread_pb::Thread { items: vec![message("input")] },
 				},
-				options: TurnOptionsRecord {
+				options:            TurnOptionsRecord {
 					context_id: None,
-					params: pb::ChatParams::default(),
-					executor: None,
-					props: None,
+					params:     pb::ChatParams::default(),
+					executor:   None,
+					props:      None,
 				},
 			})
 			.expect("start turn");
@@ -1145,8 +1159,9 @@ mod tests {
 		}
 		drop(journal);
 		let reopened = Journal::open(&path).expect("recover unresolved tool");
-		let (recovery_turn, indexes) =
-			reopened.pending_input_submission().expect("recovery submission");
+		let (recovery_turn, indexes) = reopened
+			.pending_input_submission()
+			.expect("recovery submission");
 		ulid::Ulid::from_string(recovery_turn.as_str()).expect("recovery turn id is a ULID");
 		assert_eq!(indexes.len(), 1);
 		let log = reopened.load().expect("load recovery");
@@ -1171,7 +1186,14 @@ mod tests {
 
 		let reopened = Journal::open(&path).expect("reopen recovered tool");
 		assert_eq!(std::fs::read(&path).expect("read twice-recovered journal"), bytes);
-		assert_eq!(reopened.pending_input_submission().expect("same recovery").1.len(), 1);
+		assert_eq!(
+			reopened
+				.pending_input_submission()
+				.expect("same recovery")
+				.1
+				.len(),
+			1
+		);
 		std::fs::remove_file(path).expect("remove journal");
 	}
 	#[test]
@@ -1184,8 +1206,9 @@ mod tests {
 			.expect("append staged input");
 		drop(journal);
 		let reopened = Journal::open(&path).expect("reopen staged input");
-		let (durable_turn_id, indexes) =
-			reopened.pending_input_submission().expect("pending staged input");
+		let (durable_turn_id, indexes) = reopened
+			.pending_input_submission()
+			.expect("pending staged input");
 		assert_eq!(durable_turn_id.as_str(), turn_id);
 		assert_eq!(indexes, &[index]);
 		assert_eq!(reopened.recoverable_input_events(), &[index]);
@@ -1203,21 +1226,21 @@ mod tests {
 			.expect("append turn input");
 		journal
 			.start_turn(3, TurnStart {
-				turn_id: Str::from("turn"),
-				item_events: vec![input],
-				prompt_hash: hash.into_bytes(),
+				turn_id:            Str::from("turn"),
+				item_events:        vec![input],
+				prompt_hash:        hash.into_bytes(),
 				prompt_head_events: Vec::new(),
-				toolset_hash: [3; 32],
-				enabled_tools: vec![Str::from("read")],
-				sequence_targets: vec![input],
-				input: TurnInputRecord::Full {
+				toolset_hash:       [3; 32],
+				enabled_tools:      vec![Str::from("read")],
+				sequence_targets:   vec![input],
+				input:              TurnInputRecord::Full {
 					thread: thread_pb::Thread { items: vec![message("input")] },
 				},
-				options: TurnOptionsRecord {
+				options:            TurnOptionsRecord {
 					context_id: None,
-					params: pb::ChatParams::default(),
-					executor: None,
-					props: None,
+					params:     pb::ChatParams::default(),
+					executor:   None,
+					props:      None,
 				},
 			})
 			.expect("start turn");
@@ -1237,26 +1260,34 @@ mod tests {
 			.authorize_tool_batch(5, "turn", &[Str::from("call-1"), Str::from("call-2")])
 			.expect("authorize tool batch");
 		let follow_up = ulid::Ulid::generate().to_string();
-		let first_result = crate::project::recovery_tool_result_item(
-			6,
-			&outcome.output[0],
-			Abort::Interrupted { reason: Str::new_static("fixture terminal result") },
-		)
-		.expect("build first terminal result");
+		let first_result =
+			crate::project::recovery_tool_result_item(6, &outcome.output[0], Abort::Interrupted {
+				reason: Str::new_static("fixture terminal result"),
+			})
+			.expect("build first terminal result");
 		journal
 			.append_turn_input(6, &follow_up, first_result, Some(hash))
 			.expect("append first result");
 		drop(journal);
 
 		let reopened = Journal::open(&path).expect("recover missing batch result");
-		let (turn_id, indexes) = reopened.pending_input_submission().expect("recovery submission");
+		let (turn_id, indexes) = reopened
+			.pending_input_submission()
+			.expect("recovery submission");
 		assert_eq!(turn_id.as_str(), follow_up);
 		assert_eq!(indexes.len(), 2);
 		let bytes = std::fs::read(&path).expect("read recovered batch");
 		drop(reopened);
 		let reopened = Journal::open(&path).expect("reopen recovered batch");
 		assert_eq!(std::fs::read(&path).expect("read idempotent batch"), bytes);
-		assert_eq!(reopened.pending_input_submission().expect("same group").1.len(), 2);
+		assert_eq!(
+			reopened
+				.pending_input_submission()
+				.expect("same group")
+				.1
+				.len(),
+			2
+		);
 		std::fs::remove_file(path).expect("remove journal");
 	}
 
@@ -1285,23 +1316,21 @@ mod tests {
 		assert_eq!(journal.recoverable_settlement_events(), &[settlement]);
 		journal
 			.start_turn(5, TurnStart {
-				turn_id: Str::from(first_turn.as_str()),
-				item_events: vec![first, settlement],
-				prompt_hash: [0; 32],
+				turn_id:            Str::from(first_turn.as_str()),
+				item_events:        vec![first, settlement],
+				prompt_hash:        [0; 32],
 				prompt_head_events: Vec::new(),
-				toolset_hash: [0; 32],
-				enabled_tools: Vec::new(),
-				sequence_targets: vec![first, settlement],
-				input: TurnInputRecord::Full {
-					thread: thread_pb::Thread {
-						items: vec![message("first"), message("settled")],
-					},
+				toolset_hash:       [0; 32],
+				enabled_tools:      Vec::new(),
+				sequence_targets:   vec![first, settlement],
+				input:              TurnInputRecord::Full {
+					thread: thread_pb::Thread { items: vec![message("first"), message("settled")] },
 				},
-				options: TurnOptionsRecord {
+				options:            TurnOptionsRecord {
 					context_id: None,
-					params: pb::ChatParams::default(),
-					executor: None,
-					props: None,
+					params:     pb::ChatParams::default(),
+					executor:   None,
+					props:      None,
 				},
 			})
 			.expect("start first group");
@@ -1317,21 +1346,21 @@ mod tests {
 		assert!(journal.recoverable_settlement_events().is_empty());
 		journal
 			.start_turn(7, TurnStart {
-				turn_id: Str::from(second_turn.as_str()),
-				item_events: vec![second],
-				prompt_hash: [0; 32],
+				turn_id:            Str::from(second_turn.as_str()),
+				item_events:        vec![second],
+				prompt_hash:        [0; 32],
 				prompt_head_events: Vec::new(),
-				toolset_hash: [0; 32],
-				enabled_tools: Vec::new(),
-				sequence_targets: vec![second],
-				input: TurnInputRecord::Full {
+				toolset_hash:       [0; 32],
+				enabled_tools:      Vec::new(),
+				sequence_targets:   vec![second],
+				input:              TurnInputRecord::Full {
 					thread: thread_pb::Thread { items: vec![message("second")] },
 				},
-				options: TurnOptionsRecord {
+				options:            TurnOptionsRecord {
 					context_id: None,
-					params: pb::ChatParams::default(),
-					executor: None,
-					props: None,
+					params:     pb::ChatParams::default(),
+					executor:   None,
+					props:      None,
 				},
 			})
 			.expect("start second group");
@@ -1374,15 +1403,15 @@ mod tests {
 				input:              TurnInputRecord::Delta {
 					context: pb::ContextRef {
 						context_id: "context".to_owned(),
-						expected: Some(thread_pb::Revision { head: 2, token: vec![3; 32].into() }),
+						expected:   Some(thread_pb::Revision { head: 2, token: vec![3; 32].into() }),
 					},
-					delta: pb::ThreadDelta { truncate_to: None, append: vec![message("input")] },
+					delta:   pb::ThreadDelta { truncate_to: None, append: vec![message("input")] },
 				},
 				options:            TurnOptionsRecord {
 					context_id: None,
-					params: pb::ChatParams::default(),
-					executor: None,
-					props: None,
+					params:     pb::ChatParams::default(),
+					executor:   None,
+					props:      None,
 				},
 			})
 			.expect("start turn");
@@ -1416,8 +1445,12 @@ mod tests {
 		let reopened = Journal::open(&path).expect("reopen journal");
 		assert_eq!(reopened.receipt("turn"), Some(&receipt));
 		assert!(reopened.pending_turn().is_none());
-		let projected = project_journal(&reopened.load().expect("load recovered"), &omp_tool::Registry::new(), &caps())
-			.expect("project recovered");
+		let projected = project_journal(
+			&reopened.load().expect("load recovered"),
+			&omp_tool::Registry::new(),
+			&caps(),
+		)
+		.expect("project recovered");
 		assert_eq!(projected.items[1].seq, 2, "reopen must recover the missing sequence patch");
 		std::fs::remove_file(path).expect("remove journal");
 	}
@@ -1435,34 +1468,31 @@ mod tests {
 			.append_optimistic(3, input.clone(), Some(prompt_hash))
 			.expect("append input");
 		let start = TurnStart {
-			turn_id: Str::from("turn"),
-			item_events: vec![input_event],
-			prompt_hash: prompt_hash.into_bytes(),
+			turn_id:            Str::from("turn"),
+			item_events:        vec![input_event],
+			prompt_hash:        prompt_hash.into_bytes(),
 			prompt_head_events: vec![prompt_event],
-			toolset_hash: [6; 32],
-			enabled_tools: Vec::new(),
-			sequence_targets: vec![input_event],
-			input: TurnInputRecord::Full {
+			toolset_hash:       [6; 32],
+			enabled_tools:      Vec::new(),
+			sequence_targets:   vec![input_event],
+			input:              TurnInputRecord::Full {
 				thread: thread_pb::Thread { items: vec![message("system"), input] },
 			},
-			options: TurnOptionsRecord {
+			options:            TurnOptionsRecord {
 				context_id: Some(Str::from("seed")),
-				params: pb::ChatParams {
-					model: "provider/model".to_owned(),
-					..Default::default()
-				},
-				executor: None,
-				props: None,
+				params:     pb::ChatParams { model: "provider/model".to_owned(), ..Default::default() },
+				executor:   None,
+				props:      None,
 			},
 		};
 		journal.start_turn(4, start.clone()).expect("start turn");
 		journal
 			.writer
 			.append(&Event {
-				ts: 5,
+				ts:   5,
 				kind: Kind::Item(ItemRecord {
-					item: outcome().output[0].clone(),
-					turn_id: Some(start.turn_id.clone()),
+					item:        outcome().output[0].clone(),
+					turn_id:     Some(start.turn_id.clone()),
 					prompt_hash: Some(start.prompt_hash),
 				}),
 			})
@@ -1471,8 +1501,12 @@ mod tests {
 
 		let reopened = Journal::open(&path).expect("reopen partial turn");
 		assert_eq!(reopened.pending_turn(), Some(&start));
-		let projected = project_journal(&reopened.load().expect("load partial"), &omp_tool::Registry::new(), &caps())
-			.expect("project partial");
+		let projected = project_journal(
+			&reopened.load().expect("load partial"),
+			&omp_tool::Registry::new(),
+			&caps(),
+		)
+		.expect("project partial");
 		assert_eq!(projected.items, vec![message("system"), message("input")]);
 		std::fs::remove_file(path).expect("remove journal");
 	}
@@ -1495,12 +1529,8 @@ mod tests {
 			panic!("target is not an item")
 		};
 		assert_eq!(record.item.seq, 0);
-		let projected = project_journal(
-			&log,
-			&omp_tool::Registry::new(),
-			&caps(),
-		)
-		.expect("project journal");
+		let projected =
+			project_journal(&log, &omp_tool::Registry::new(), &caps()).expect("project journal");
 		assert_eq!(projected.items[0].seq, 9);
 		drop(journal);
 		std::fs::remove_file(path).expect("remove journal");
@@ -1523,10 +1553,10 @@ mod tests {
 			let mut writer = Writer::open_append(&path).expect("open raw writer");
 			let intent = writer
 				.append(&Event {
-					ts: 4,
+					ts:   4,
 					kind: Kind::PromptRewriteIntent(PromptRewriteIntent {
-						prompt_hash: [2; 32],
-						head: head.clone(),
+						prompt_hash:    [2; 32],
+						head:           head.clone(),
 						preserved_tail: vec![tail],
 					}),
 				})
@@ -1534,7 +1564,7 @@ mod tests {
 			for (ordinal, item) in head.iter().take(staged).enumerate() {
 				writer
 					.append(&Event {
-						ts: 4,
+						ts:   4,
 						kind: Kind::PromptRewriteStage(PromptRewriteStage {
 							intent,
 							ordinal: ordinal as u64,
@@ -1547,35 +1577,49 @@ mod tests {
 
 			let pending = transcript::load(&path).expect("load incomplete rewrite");
 			assert_eq!(pending.live(), vec![old_head, tail]);
-			let pending_thread =
-				project_journal(&pending, &omp_tool::Registry::new(), &caps())
-					.expect("project old live chain");
+			let pending_thread = project_journal(&pending, &omp_tool::Registry::new(), &caps())
+				.expect("project old live chain");
 			assert_eq!(pending_thread.items, vec![message("old-head"), message("tail")]);
 
 			let recovered = Journal::open(&path).expect("recover rewrite");
-			let live = recovered.live_item_events().expect("read recovered live indexes");
+			let live = recovered
+				.live_item_events()
+				.expect("read recovered live indexes");
 			assert_eq!(live.len(), 3);
 			assert_eq!(live[2], tail);
-			let (active_hash, active_head) = recovered.active_prompt().expect("active recovered prompt");
+			let (active_hash, active_head) =
+				recovered.active_prompt().expect("active recovered prompt");
 			assert_eq!(active_hash, [2; 32]);
 			assert_eq!(active_head, &live[..2]);
 			assert!(!live.contains(&old_head));
-			assert_eq!(
-				recovered.items_at(&live).expect("read rewritten items"),
-				vec![head[0].clone(), head[1].clone(), message("tail")]
-			);
-			let projected =
-				project_journal(&recovered.load().expect("load recovered journal"), &omp_tool::Registry::new(), &caps())
-					.expect("project recovered rewrite");
+			assert_eq!(recovered.items_at(&live).expect("read rewritten items"), vec![
+				head[0].clone(),
+				head[1].clone(),
+				message("tail")
+			]);
+			let projected = project_journal(
+				&recovered.load().expect("load recovered journal"),
+				&omp_tool::Registry::new(),
+				&caps(),
+			)
+			.expect("project recovered rewrite");
 			let projected_bytes = projected.encode_to_vec();
 			drop(recovered);
 			let recovered_bytes = std::fs::read(&path).expect("read recovered bytes");
 
 			let reopened = Journal::open(&path).expect("reopen completed rewrite");
-			assert_eq!(reopened.live_item_events().expect("read stable live indexes"), live);
-			let reprojection =
-				project_journal(&reopened.load().expect("reload journal"), &omp_tool::Registry::new(), &caps())
-					.expect("reproject completed rewrite");
+			assert_eq!(
+				reopened
+					.live_item_events()
+					.expect("read stable live indexes"),
+				live
+			);
+			let reprojection = project_journal(
+				&reopened.load().expect("reload journal"),
+				&omp_tool::Registry::new(),
+				&caps(),
+			)
+			.expect("reproject completed rewrite");
 			assert_eq!(reprojection.encode_to_vec(), projected_bytes);
 			drop(reopened);
 			assert_eq!(
@@ -1592,25 +1636,28 @@ mod tests {
 		let path = path("jobs");
 		let mut journal = Journal::create(&path, &header()).expect("create journal");
 		let job = |id: &'static str| JobRef {
-			id: Str::new_static(id),
-			owner: JobOwner::NamedProcess {
-				name: Str::new_static(id),
-				generation: 1,
-			},
+			id:       Str::new_static(id),
+			owner:    JobOwner::NamedProcess { name: Str::new_static(id), generation: 1 },
 			artifact: ExpectedArtifact {
 				description: Str::new_static("artifact"),
-				media_type: Some(Str::new_static("text/plain")),
-				lifetime: ArtifactLifetime::Session,
+				media_type:  Some(Str::new_static("text/plain")),
+				lifetime:    ArtifactLifetime::Session,
 			},
 		};
 		let first = job("job-a");
 		let second = job("job-b");
-		let first_index = journal.register_job(2, first.clone()).expect("register first job");
+		let first_index = journal
+			.register_job(2, first.clone())
+			.expect("register first job");
 		assert_eq!(
-			journal.register_job(3, first.clone()).expect("repeat first registration"),
+			journal
+				.register_job(3, first.clone())
+				.expect("repeat first registration"),
 			first_index
 		);
-		journal.register_job(4, second.clone()).expect("register second job");
+		journal
+			.register_job(4, second.clone())
+			.expect("register second job");
 		let settlement = message("job-a settled");
 		let settlement_index = journal
 			.settle_job(5, first.id.as_str(), settlement.clone())
@@ -1638,4 +1685,3 @@ mod tests {
 		std::fs::remove_file(path).expect("remove journal");
 	}
 }
-

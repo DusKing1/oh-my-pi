@@ -4,7 +4,7 @@ use std::{fmt, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use futures::{StreamExt, stream::FuturesUnordered};
-use omp_core::{IntoStr, Str};
+use omp_core::{IntoStr, Str, StrMut};
 use omp_env::{ClientError, EnvClient, Invocation};
 use omp_proto::{
 	env::v1::InvokeTool,
@@ -69,6 +69,7 @@ pub struct SpeculativeCall {
 	identity:   ToolIdentity,
 	invocation: Invocation,
 	events:     EventBus,
+	args_text:  StrMut,
 }
 
 impl SpeculativeCall {
@@ -94,7 +95,13 @@ impl SpeculativeCall {
 			name:    identity.name.clone(),
 			rev:     identity.rev.clone(),
 		});
-		Ok(Self { call_id, identity, invocation, events: events.clone() })
+		Ok(Self {
+			call_id,
+			identity,
+			invocation,
+			events: events.clone(),
+			args_text: StrMut::default(),
+		})
 	}
 
 	/// Returns the stable model-authored call identifier.
@@ -107,12 +114,16 @@ impl SpeculativeCall {
 		&self.identity
 	}
 
-	/// Relays one provider argument fragment verbatim without validating it.
-	pub async fn relay_fragment(&self, fragment: Str) -> Result<(), BatchError> {
+	/// Relays one provider argument fragment verbatim and publishes the retained
+	/// best-effort view of every fragment received so far.
+	pub async fn relay_fragment(&mut self, fragment: Str) -> Result<(), BatchError> {
 		self.invocation.arg_text(fragment.clone()).await?;
+		self.args_text.push_str(&fragment);
+		let view = omp_slopjson::parse_streaming(self.args_text.as_str());
 		self.events.publish(AgentEvent::ToolArgs {
-			call_id:  self.call_id.clone(),
+			call_id: self.call_id.clone(),
 			fragment: Bytes::copy_from_slice(fragment.as_bytes()),
+			view,
 		});
 		Ok(())
 	}
@@ -231,7 +242,9 @@ impl ToolBatch {
 	/// or lowering failures become canonical `EffectsUnknown` results so every
 	/// committed call remains journalable and peer truth is never discarded.
 	pub async fn drive(self, registry: &Registry, caps: &PromptCaps) -> Vec<BatchResult> {
-		self.drive_inner(registry, caps, None, Duration::ZERO, None).await
+		self
+			.drive_inner(registry, caps, None, Duration::ZERO, None)
+			.await
 	}
 
 	/// Drives the batch with one watch-broadcast cooperative interrupt source.
@@ -334,13 +347,12 @@ async fn run_call(
 
 	let mut publish_update = |update: omp_proto::env::v1::Update| {
 		let json = update.json;
-		call.events.publish(AgentEvent::ToolUpdate {
-			call_id: call.call_id.clone(),
-			json:    json.clone(),
-		});
+		call
+			.events
+			.publish(AgentEvent::ToolUpdate { call_id: call.call_id.clone(), json: json.clone() });
 		if let Some(updates) = updates.as_ref() {
 			let _ = updates.send(BatchUpdate {
-				call_id:  call.call_id.clone(),
+				call_id: call.call_id.clone(),
 				identity: call.identity.clone(),
 				json,
 			});
@@ -363,37 +375,26 @@ async fn run_call(
 	};
 
 	let result = match terminal {
-		Ok(InvocationTerminal::Verdict(verdict)) => {
-			lower_verdict(&call, registry, caps, verdict).unwrap_or_else(|error| {
-				lower_abort_total(
-					&call,
-					Abort::EffectsUnknown {
-						reason: format!("failed to lower environment verdict: {error}").to_str(),
-					},
-				)
+		Ok(InvocationTerminal::Verdict(verdict)) => lower_verdict(&call, registry, caps, verdict)
+			.unwrap_or_else(|error| {
+				lower_abort_total(&call, Abort::EffectsUnknown {
+					reason: format!("failed to lower environment verdict: {error}").to_str(),
+				})
+			}),
+		Ok(InvocationTerminal::StreamError(error)) => {
+			lower_abort_total(&call, Abort::EffectsUnknown {
+				reason: format!("environment invocation stream lost: {}", error.message).to_str(),
 			})
 		},
-		Ok(InvocationTerminal::StreamError(error)) => lower_abort_total(
-			&call,
-			Abort::EffectsUnknown {
-				reason: format!("environment invocation stream lost: {}", error.message).to_str(),
-			},
-		),
 		Ok(InvocationTerminal::Closed) => lower_abort_total(&call, Abort::MissingOutcome),
-		Ok(InvocationTerminal::CancelUnobserved) => lower_abort_total(
-			&call,
-			Abort::EffectsUnknown {
-				reason: Str::new_static(
-					"environment owner did not report terminal truth after cancellation",
-				),
-			},
-		),
-		Err(error) => lower_abort_total(
-			&call,
-			Abort::EffectsUnknown {
-				reason: format!("environment invocation failed: {error}").to_str(),
-			},
-		),
+		Ok(InvocationTerminal::CancelUnobserved) => lower_abort_total(&call, Abort::EffectsUnknown {
+			reason: Str::new_static(
+				"environment owner did not report terminal truth after cancellation",
+			),
+		}),
+		Err(error) => lower_abort_total(&call, Abort::EffectsUnknown {
+			reason: format!("environment invocation failed: {error}").to_str(),
+		}),
 	};
 	(index, result)
 }
@@ -455,9 +456,8 @@ fn lower_abort(call: &CommittedCall, abort: Abort) -> Result<BatchResult, BatchE
 }
 
 fn lower_abort_total(call: &CommittedCall, abort: Abort) -> BatchResult {
-	lower_abort(call, abort).expect(
-		"harness-owned Aborted verdict serialization and canonical lowering are infallible",
-	)
+	lower_abort(call, abort)
+		.expect("harness-owned Aborted verdict serialization and canonical lowering are infallible")
 }
 
 fn lower_tool_parts(
@@ -574,8 +574,7 @@ mod tests {
 	}
 
 	fn terminal_text(result: &BatchResult) -> &str {
-		let Some(omp_proto::thread::v1::item::Kind::ToolResult(result)) =
-			result.item().kind.as_ref()
+		let Some(omp_proto::thread::v1::item::Kind::ToolResult(result)) = result.item().kind.as_ref()
 		else {
 			panic!("batch completion was not a ToolResult");
 		};
@@ -626,9 +625,7 @@ mod tests {
 					body: Some(server_frame::Body::Verdict(frame::Verdict {
 						invocation_id: "first".into(),
 						json: Bytes::from_static(br#"{"kind":"ok","value":{"answer":1}}"#),
-						parts: vec![ThreadPart {
-							kind: Some(part::Kind::Text("one".into())),
-						}],
+						parts: vec![ThreadPart { kind: Some(part::Kind::Text("one".into())) }],
 						..Default::default()
 					})),
 					..Default::default()
@@ -692,8 +689,8 @@ mod tests {
 		.expect("open call");
 		let opened = requests.recv_async().await.expect("invoke frame");
 		assert!(matches!(opened.body, Some(client_frame::Body::InvokeTool(_))));
-		let (_interrupt_tx, interrupt_rx) =
-			watch::channel(Some(Str::new_static("user interrupted")));
+
+		let (_interrupt_tx, interrupt_rx) = watch::channel(Some(Str::new_static("user interrupted")));
 		let results = ToolBatch::new(vec![call.commit(Bytes::from_static(b"{}"))])
 			.drive_interruptible(&Registry::new(), &caps(), interrupt_rx, Duration::from_millis(10))
 			.await;
@@ -705,5 +702,57 @@ mod tests {
 				"interrupted unstarted call sent ArgsCommitted"
 			);
 		}
+	}
+	#[tokio::test]
+	async fn tool_args_events_accumulate_exact_fragments_and_partial_view() {
+		let (client, transport) = EnvClient::in_process(0);
+		let (requests, _responses) = transport.into_parts();
+		let events = EventBus::new();
+		let observed = events.subscribe_lossless();
+		let mut call = SpeculativeCall::open(
+			&client,
+			&events,
+			Str::new_static("partial"),
+			identity("partial_tool"),
+			Duration::from_secs(1),
+		)
+		.await
+		.expect("open call");
+		let opened = requests.recv_async().await.expect("invoke frame");
+		assert!(matches!(opened.body, Some(client_frame::Body::InvokeTool(_))));
+
+		call
+			.relay_fragment(Str::new_static(r#"{"path":"src/main.rs","#))
+			.await
+			.expect("relay path fragment");
+		let first_wire = requests.recv_async().await.expect("first ArgText");
+		assert!(matches!(
+			&first_wire.body,
+			Some(client_frame::Body::ArgText(args))
+				if args.fragment == r#"{"path":"src/main.rs","#
+		));
+		call
+			.relay_fragment(Str::new_static(r#""command":"cargo ch"#))
+			.await
+			.expect("relay command fragment");
+		let second_wire = requests.recv_async().await.expect("second ArgText");
+		assert!(matches!(
+			&second_wire.body,
+			Some(client_frame::Body::ArgText(args))
+				if args.fragment == r#""command":"cargo ch"#
+		));
+
+		let mut args_events = Vec::new();
+		while let Ok(event) = observed.try_recv() {
+			if let AgentEvent::ToolArgs { fragment, view, .. } = event.as_ref() {
+				args_events.push((fragment.clone(), view.clone()));
+			}
+		}
+		assert_eq!(args_events.len(), 2);
+		assert_eq!(args_events[0].0, Bytes::from_static(br#"{"path":"src/main.rs","#));
+		assert_eq!(args_events[0].1["path"].as_str(), Some("src/main.rs"));
+		assert_eq!(args_events[1].0, Bytes::from_static(br#""command":"cargo ch"#));
+		assert_eq!(args_events[1].1["path"].as_str(), Some("src/main.rs"));
+		assert_eq!(args_events[1].1["command"].as_str(), Some("cargo ch"));
 	}
 }

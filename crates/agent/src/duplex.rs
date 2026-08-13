@@ -13,9 +13,7 @@ use omp_tool::{PromptCaps, Registry, RegistryError, ToolIdentity};
 use tokio::sync::watch;
 
 use crate::{
-	BatchError, EventBus, SpeculativeCall, ToolBatch,
-	batch::BatchUpdate,
-	turn::InvokeFrame,
+	BatchError, EventBus, SpeculativeCall, ToolBatch, batch::BatchUpdate, turn::InvokeFrame,
 };
 
 /// Failure while dispatching a server-initiated invocation.
@@ -144,7 +142,9 @@ impl DuplexManager {
 			)
 			.await
 			.map(InvokeFrame::Complete);
-			let _ = completions.send_async(Completion { invocation_id, token, result }).await;
+			let _ = completions
+				.send_async(Completion { invocation_id, token, result })
+				.await;
 		});
 	}
 
@@ -231,7 +231,7 @@ async fn run_invocation(
 		Err(_) => return Ok(failed_completion(invocation_id, "tool arguments are not UTF-8")),
 	};
 	let deadline = Duration::from_millis(invoke.timeout_ms);
-	let speculative =
+	let mut speculative =
 		SpeculativeCall::open(&env, &events, Str::from(call.id.as_str()), identity, deadline).await?;
 	speculative.relay_fragment(fragment).await?;
 	let committed = speculative.commit(raw_args);
@@ -263,13 +263,7 @@ async fn run_invocation(
 		}
 	};
 	while let Ok(update) = updates_rx.try_recv() {
-		send_update(
-			&registry,
-			&frame_invocation_id,
-			token,
-			&frames,
-			update,
-		).await?;
+		send_update(&registry, &frame_invocation_id, token, &frames, update).await?;
 	}
 	let result = results.pop().ok_or(DuplexError::MissingToolResult)?;
 	let tool_result = match result.item().kind.as_ref() {
