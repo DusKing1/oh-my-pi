@@ -364,9 +364,9 @@ fn preview(prepared: &impl EditPrepared, patch: &str) -> Option<EditUpdate> {
 	let diff = numbered_diff(prepared.base_bytes(), &applied.bytes).ok()?;
 	let compact = build_compact_diff_preview(&diff.text, CompactDiffOptions::default());
 	Some(EditUpdate {
-		applied_ops: op_details(&parsed.edits).len(),
-		preview: compact.preview,
-		added_lines: diff.added_lines,
+		applied_ops:   op_details(&parsed.edits).len(),
+		preview:       compact.preview,
+		added_lines:   diff.added_lines,
 		removed_lines: diff.removed_lines,
 	})
 }
@@ -410,12 +410,8 @@ fn rejection_text(fault: &Fault) -> String {
 		RejectionReason::Conflict => {
 			let mut text = format!("conflict ({} overlapping range(s))", fault.conflicts.len());
 			for conflict in &fault.conflicts {
-				write!(
-					text,
-					"\n{}-{}: {}",
-					conflict.start_line, conflict.end_line, conflict.message
-				)
-				.expect("writing to String cannot fail");
+				write!(text, "\n{}-{}: {}", conflict.start_line, conflict.end_line, conflict.message)
+					.expect("writing to String cannot fail");
 			}
 			text
 		},

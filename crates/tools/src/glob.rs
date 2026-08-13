@@ -70,7 +70,8 @@ pub struct WalkRequest {
 	pub gitignore: bool,
 	/// Whether dot-prefixed paths are traversed.
 	pub hidden:    bool,
-	/// Maximum paths requested, including one lookahead used to prove truncation.
+	/// Maximum paths requested, including one lookahead used to prove
+	/// truncation.
 	pub limit:     u64,
 }
 

@@ -4,12 +4,12 @@ use async_stream::stream;
 use bytes::Bytes;
 use futures::{FutureExt, Stream, future::Either, pin_mut};
 use omp_core::{CowBytes, Str};
+use omp_proto::inference::v1::{InvokeInput, invoke_input};
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, ArtifactLifetime, BlobRef, CommitError, Constraint, Ev,
 	ExpectedArtifact, IncomingParams, InterruptWaitError, JobOwner, JobRef, Outcome, ParamError,
 	Part, PromptCaps, Rev, Tool, ToolSpec,
 };
-use omp_proto::inference::v1::{InvokeInput, invoke_input};
 use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 
@@ -180,7 +180,7 @@ pub struct DetachRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DetachedJob {
 	/// Stable environment job identifier.
-	pub id: Str,
+	pub id:    Str,
 	/// Named process generation that authoritatively reports settlement.
 	pub owner: JobOwner,
 }
@@ -496,16 +496,14 @@ impl<E: ShellExec> Tool for ShellTool<E> {
 
 	fn invoke_input(&self, update: &Update, invocation_id: &str) -> Option<InvokeInput> {
 		let channel = match update.channel {
-			OutputChannel::Stdout | OutputChannel::Pty => {
-				invoke_input::chunk::Channel::Stdout
-			},
+			OutputChannel::Stdout | OutputChannel::Pty => invoke_input::chunk::Channel::Stdout,
 			OutputChannel::Stderr => invoke_input::chunk::Channel::Stderr,
 		};
 		Some(InvokeInput {
 			invocation_id: invocation_id.to_owned(),
-			payload: Some(invoke_input::Payload::Chunk(invoke_input::Chunk {
+			payload:       Some(invoke_input::Payload::Chunk(invoke_input::Chunk {
 				channel: channel as i32,
-				data: update.data.clone().into_bytes(),
+				data:    update.data.clone().into_bytes(),
 			})),
 		})
 	}

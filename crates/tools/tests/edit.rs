@@ -179,10 +179,7 @@ async fn pins_early_previews_progressively_and_waits_for_commit_gate() {
 	assert_eq!(payload.diff, "-1|old\n+1|new");
 	assert_eq!(state.lock().commits[0].format, "omp.hashline");
 	let tag = omp_hashline::compute_snapshot_tag(b"old\n");
-	assert_eq!(
-		state.lock().commits[0].payload,
-		format!("[src/a.rs#{tag}]\nPUT 1.=1:\n+new")
-	);
+	assert_eq!(state.lock().commits[0].payload, format!("[src/a.rs#{tag}]\nPUT 1.=1:\n+new"));
 	assert!(!state.lock().commits[0].applied_ops.is_empty());
 	assert_eq!(state.lock().committed_ids, [7]);
 }
@@ -261,12 +258,16 @@ async fn typed_rejection_is_preserved() {
 #[tokio::test]
 async fn disjoint_stale_rebase_truth_is_preserved() {
 	let fake = Fake {
-		state: Arc::default(),
-		result: Ok(CommitResult {
+		state:         Arc::default(),
+		result:        Ok(CommitResult {
 			new_revision: "r3".into(),
-			applied_ops: vec![AppliedOp { kind: "insert".into(), patch_line: 1, index: 0 }],
-			rebased: true,
-			diff: " 1|other\n-2|old\n+2|new".into(),
+			applied_ops:  vec![AppliedOp {
+				kind:       "insert".into(),
+				patch_line: 1,
+				index:      0,
+			}],
+			rebased:      true,
+			diff:         " 1|other\n-2|old\n+2|new".into(),
 		}),
 		prepare_fault: None,
 	};
@@ -290,16 +291,16 @@ async fn disjoint_stale_rebase_truth_is_preserved() {
 #[tokio::test]
 async fn overlapping_rejection_preserves_typed_conflicts() {
 	let fault = Fault {
-		reason: RejectionReason::Conflict,
+		reason:    RejectionReason::Conflict,
 		conflicts: vec![omp_tools::edit::Conflict {
 			start_line: 1,
-			end_line: 1,
-			message: "overlapping concurrent edit".into(),
+			end_line:   1,
+			message:    "overlapping concurrent edit".into(),
 		}],
 	};
 	let fake = Fake {
-		state: Arc::default(),
-		result: Err(EditCommitError::Rejected(fault.clone())),
+		state:         Arc::default(),
+		result:        Err(EditCommitError::Rejected(fault.clone())),
 		prepare_fault: None,
 	};
 	let edit = tool(fake, FormatPolicy::Configured);
@@ -316,10 +317,11 @@ async fn overlapping_rejection_preserves_typed_conflicts() {
 			break;
 		}
 	}
-	let parts = edit.prompt(
-		Err(&fault),
-		&PromptCaps { maximum_parts: 1, maximum_text_bytes: 1024, media: false },
-	);
+	let parts = edit.prompt(Err(&fault), &PromptCaps {
+		maximum_parts:      1,
+		maximum_text_bytes: 1024,
+		media:              false,
+	});
 	assert!(matches!(
 		parts.as_slice(),
 		[Part::Text { text }] if text.contains("1-1: overlapping concurrent edit")
@@ -333,10 +335,8 @@ async fn overlapping_rejection_preserves_typed_conflicts() {
 #[tokio::test]
 async fn uncertain_resource_commit_is_not_misreported_as_rejection() {
 	let fake = Fake {
-		state: Arc::default(),
-		result: Err(EditCommitError::EffectsUnknown {
-			reason: "partially committed".into(),
-		}),
+		state:         Arc::default(),
+		result:        Err(EditCommitError::EffectsUnknown { reason: "partially committed".into() }),
 		prepare_fault: None,
 	};
 	let edit = tool(fake, FormatPolicy::Configured);
@@ -353,10 +353,7 @@ async fn uncertain_resource_commit_is_not_misreported_as_rejection() {
 			break;
 		}
 	}
-	assert!(matches!(
-		terminal,
-		Some(Ev::Aborted(omp_tool::Abort::EffectsUnknown { .. }))
-	));
+	assert!(matches!(terminal, Some(Ev::Aborted(omp_tool::Abort::EffectsUnknown { .. }))));
 }
 
 #[tokio::test]
@@ -427,7 +424,8 @@ async fn precommit_cancellation_never_reaches_adapter_head() {
 #[tokio::test]
 async fn postcommit_interrupt_drops_transaction_without_touching_adapter_head() {
 	let head_changed = Arc::new(AtomicBool::new(false));
-	let edit = tool(CancelFake { head_changed: Arc::clone(&head_changed) }, FormatPolicy::Configured);
+	let edit =
+		tool(CancelFake { head_changed: Arc::clone(&head_changed) }, FormatPolicy::Configured);
 	let (feed, incoming) = IncomingParams::channel();
 	let raw = r#"{"path":"a","patch":"PUT 1.=1:\n+x"}"#;
 	feed.arg_text(raw.into()).unwrap();
@@ -444,9 +442,6 @@ async fn postcommit_interrupt_drops_transaction_without_touching_adapter_head() 
 			break;
 		}
 	}
-	assert!(matches!(
-		terminal,
-		Some(Ev::Aborted(omp_tool::Abort::EffectsUnknown { .. }))
-	));
+	assert!(matches!(terminal, Some(Ev::Aborted(omp_tool::Abort::EffectsUnknown { .. }))));
 	assert!(!head_changed.load(Ordering::SeqCst));
 }

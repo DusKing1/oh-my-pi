@@ -132,17 +132,21 @@ async fn opens_before_commit_and_same_pinned_lease_reads_ranges() {
 	let tool = read::tool(docs, Blobs);
 	let (feed, params) = IncomingParams::channel();
 	feed
-		.arg_text(Str::new_static("{\"path\":\"a.rs\""))
+		.arg_text(Str::new_static("{\"path\":\"a.rs\","))
 		.unwrap();
 	let mut events = Box::pin(tool.call(params));
 	future::poll_fn(|cx| {
 		assert!(events.as_mut().poll_next(cx).is_pending());
-		if state.opened.load(Ordering::SeqCst) { Poll::Ready(()) } else { Poll::Pending }
+		if state.opened.load(Ordering::SeqCst) {
+			Poll::Ready(())
+		} else {
+			Poll::Pending
+		}
 	})
 	.await;
 	assert_eq!(state.reads.load(Ordering::SeqCst), 0);
 	feed
-		.arg_text(Str::new_static(",\"ranges\":[{\"start\":2,\"end\":3}]}"))
+		.arg_text(Str::new_static("\"ranges\":[{\"start\":2,\"end\":3}]}"))
 		.unwrap();
 	feed
 		.args_committed(Str::new_static("{\"path\":\"a.rs\",\"ranges\":[{\"start\":2,\"end\":3}]}"))

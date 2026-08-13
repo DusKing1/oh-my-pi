@@ -98,7 +98,8 @@ pub struct SearchRequest {
 	pub gitignore: bool,
 	/// Whether dot-prefixed paths are traversed.
 	pub hidden:    bool,
-	/// Maximum records requested, including one lookahead used to prove truncation.
+	/// Maximum records requested, including one lookahead used to prove
+	/// truncation.
 	pub limit:     u64,
 }
 

@@ -1,4 +1,5 @@
-//! Registry-level contracts for deterministic, cancellable exact workspace search.
+//! Registry-level contracts for deterministic, cancellable exact workspace
+//! search.
 
 use std::{
 	future::{Future, pending},
@@ -202,12 +203,14 @@ fn malformed_pulled_params_become_args_verdicts() {
 #[test]
 fn owner_drop_before_commit_is_an_input_drop_abort() {
 	let workspace = fake(grep::SearchResult {
-		matches: Vec::new(),
+		matches:        Vec::new(),
 		binary_skipped: Vec::new(),
-		truncated: false,
+		truncated:      false,
 	});
 	let mut registry = Registry::new();
-	registry.register(grep::tool(workspace)).expect("grep registers");
+	registry
+		.register(grep::tool(workspace))
+		.expect("grep registers");
 	let (feed, params) = IncomingParams::channel();
 	drop(feed);
 	let events = block_on(registry.invoke("grep", params).unwrap().collect::<Vec<_>>());

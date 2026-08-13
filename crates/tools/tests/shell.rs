@@ -154,10 +154,7 @@ impl ShellExec for FakeExec {
 			if pending {
 				futures::future::pending().await
 			}
-			Ok(DetachedJob {
-				id,
-				owner: JobOwner::NamedProcess { name: owner_name, generation: 1 },
-			})
+			Ok(DetachedJob { id, owner: JobOwner::NamedProcess { name: owner_name, generation: 1 } })
 		}
 	}
 }
@@ -303,10 +300,7 @@ fn detach_returns_a_named_session_lifetime_job_reference() {
 		panic!("detach must return a detached outcome")
 	};
 	assert_eq!(job.id, "process:web:1");
-	assert_eq!(
-		job.owner,
-		JobOwner::NamedProcess { name: Str::from("web"), generation: 1 }
-	);
+	assert_eq!(job.owner, JobOwner::NamedProcess { name: Str::from("web"), generation: 1 });
 	assert_eq!(job.artifact.lifetime, ArtifactLifetime::Session);
 	assert_eq!(
 		job.artifact.media_type.as_deref(),
@@ -317,16 +311,13 @@ fn detach_returns_a_named_session_lifetime_job_reference() {
 	assert_eq!(state.detaches[0].timeout_ms, Some(50));
 }
 
-
 #[test]
 fn interrupt_during_detach_reports_effect_uncertainty() {
 	let exec = FakeExec::default();
 	let registry = registry(exec.clone(), 1024);
 	let (feed, params) = IncomingParams::channel();
 	feed
-		.args_committed(Str::from(
-			r#"{"command":"pending-detach","detach":true,"name":"pending"}"#,
-		))
+		.args_committed(Str::from(r#"{"command":"pending-detach","detach":true,"name":"pending"}"#))
 		.unwrap();
 	let wait_state = Arc::clone(&exec.state);
 	let interrupter = std::thread::spawn(move || {
@@ -334,10 +325,7 @@ fn interrupt_during_detach_reports_effect_uncertainty() {
 			std::thread::yield_now();
 		}
 		feed
-			.interrupt(Interrupt {
-				class: Str::from("immediate"),
-				reason: Str::from("stop detach"),
-			})
+			.interrupt(Interrupt { class: Str::from("immediate"), reason: Str::from("stop detach") })
 			.unwrap();
 	});
 	let stream = registry.invoke("shell", params).unwrap();
@@ -354,8 +342,8 @@ fn interrupt_during_detach_reports_effect_uncertainty() {
 #[test]
 fn output_update_clones_share_owned_bytes() {
 	let update = Update {
-		channel: OutputChannel::Stdout,
-		data: CowBytes::owned(Bytes::from(vec![1, 2, 3, 4])),
+		channel:  OutputChannel::Stdout,
+		data:     CowBytes::owned(Bytes::from(vec![1, 2, 3, 4])),
 		sequence: 1,
 	};
 	let cloned = update.clone();
@@ -371,8 +359,8 @@ fn shell_updates_map_exactly_to_live_invoke_input_chunks() {
 		(OutputChannel::Pty, invoke_input::chunk::Channel::Stdout),
 	] {
 		let update = Update {
-			channel: source,
-			data: CowBytes::owned(Bytes::from(vec![7, 8, 9])),
+			channel:  source,
+			data:     CowBytes::owned(Bytes::from(vec![7, 8, 9])),
 			sequence: 42,
 		};
 		let source_ptr = update.data.as_ptr();

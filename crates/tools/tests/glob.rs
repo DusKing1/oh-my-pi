@@ -1,4 +1,5 @@
-//! Registry-level contracts for deterministic, cancellable workspace path matching.
+//! Registry-level contracts for deterministic, cancellable workspace path
+//! matching.
 
 use std::{
 	future::{Future, pending},
@@ -168,7 +169,9 @@ fn malformed_pulled_params_become_args_verdicts() {
 fn owner_drop_before_commit_is_an_input_drop_abort() {
 	let workspace = fake(Ok(glob::WalkResult { paths: Vec::new(), truncated: false }));
 	let mut registry = Registry::new();
-	registry.register(glob::tool(workspace)).expect("glob registers");
+	registry
+		.register(glob::tool(workspace))
+		.expect("glob registers");
 	let (feed, params) = IncomingParams::channel();
 	drop(feed);
 	let events = block_on(registry.invoke("glob", params).unwrap().collect::<Vec<_>>());
