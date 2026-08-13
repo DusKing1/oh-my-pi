@@ -12,13 +12,13 @@ use std::{fmt, future::Future};
 use bytes::Bytes;
 use futures::Stream;
 pub use incoming::{
-	CommitError, IncomingParams, Interrupt, InterruptibleParams, InvocationEvent, InvocationFeed,
-	InvocationSendError, ParamError,
+	CommitError, IncomingParams, Interrupt, InterruptWaitError, InterruptibleParams,
+	InvocationEvent, InvocationFeed, InvocationSendError, ParamError,
 };
 use omp_core::Str;
 pub use registry::{
 	ConstraintDisposition, ErasedEv, ErasedOutcome, ErasedStream, LoweredTool, LoweringCaps,
-	ProjectedCall, Registry, RegistryError,
+	ProjectedCall, ProjectedVerdict, Registry, RegistryError, ToolRoute,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 /// Namespaced thread-item property carrying a committed tool revision.
@@ -159,7 +159,7 @@ pub trait Tool: Send + Sync + 'static {
 	/// Declared whole-argument shape for tools which opt into whole validation.
 	type Params: DeserializeOwned;
 	/// Ephemeral progress payload.
-	type Update: Serialize + Send;
+	type Update: Serialize + DeserializeOwned + Send;
 	/// Durable successful result.
 	type Payload: Serialize + DeserializeOwned + Send;
 	/// Durable typed failure.
@@ -176,6 +176,17 @@ pub trait Tool: Send + Sync + 'static {
 
 	/// Deterministically projects either durable tool branch for one model.
 	fn prompt(&self, view: Result<&Self::Payload, &Self::Fault>, caps: &PromptCaps) -> Vec<Part>;
+
+	/// Projects one typed ephemeral update into an optional live invocation frame.
+	///
+	/// The default keeps ordinary tool progress on the agent event feed only.
+	fn invoke_input(
+		&self,
+		_update: &Self::Update,
+		_invocation_id: &str,
+	) -> Option<omp_proto::inference::v1::InvokeInput> {
+		None
+	}
 
 	/// Deterministically migrates one historical call toward this revision.
 	fn lift(&self, _from: &Rev, _call: RecordedCall<'_>) -> Option<LiftedCall> {
@@ -310,11 +321,26 @@ pub enum ArtifactLifetime {
 	Durable,
 }
 
+/// Environment resource that authoritatively owns detached work.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum JobOwner {
+	/// One generation of a named environment process.
+	NamedProcess {
+		/// Stable process name.
+		name:       Str,
+		/// Exact process generation observed when detaching.
+		generation: u64,
+	},
+}
+
 /// Detached work and its expected artifact.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct JobRef {
 	/// Stable environment job identifier.
 	pub id:       Str,
+	/// Environment resource that authoritatively reports settlement.
+	pub owner:    JobOwner,
 	/// Artifact expected when the job settles.
 	pub artifact: ExpectedArtifact,
 }

@@ -4,13 +4,16 @@
 //! prompts, ordered interrupts, event fan-out, journal projection, tool-batch
 //! supervision, detached jobs, and the live turn transport. Durable history is
 //! canonical [`Item`] data; provider, application, and UI types stay outside
-//! this boundary. The top-level policy loop is intentionally assembled later.
+//! this boundary. [`Agent`] is the durable policy loop tying these foundations
+//! into complete N-turn conversations.
 
 mod batch;
+pub(crate) mod duplex;
 mod events;
 mod inproc;
 mod jobs;
 mod journal;
+mod r#loop;
 mod mailbox;
 mod project;
 mod prompt;
@@ -22,8 +25,9 @@ pub use batch::{BatchError, BatchResult, CommittedCall, SpeculativeCall, ToolBat
 pub use events::{AgentEvent, AgentPhase, EventBus, EventSubscription, LossyEventSubscription};
 pub use inproc::{InProcTurnClient, RpcTurnClient, RpcTurnSession};
 pub use jobs::{JobBoard, PendingJobs};
-pub use journal::{Journal, JournalError, TurnReceipt};
-pub use mailbox::{DrainPoint, Interrupt, InterruptClass, Mailbox, MailboxSender};
+pub use journal::{Journal, JournalError, TurnInputRecord, TurnOptionsRecord, TurnReceipt, TurnStart};
+pub use r#loop::{Agent, AgentError, AgentRunSummary};
+pub use mailbox::{DrainPoint, Interrupt, InterruptClass, InterruptSource, Mailbox, MailboxSender};
 pub use omp_llm_inference::TurnId;
 pub use omp_proto::{
 	inference::v1::{

@@ -8,6 +8,7 @@ use std::{
 };
 
 use omp_core::Str;
+use omp_tool::Registry;
 use thiserror::Error;
 use tokio::sync::watch;
 
@@ -82,14 +83,16 @@ pub enum RetryPolicyError {
 
 /// Immutable authoritative configuration consumed by one agent turn.
 ///
-/// A loop reads a fresh snapshot before every submission. Cloning a snapshot
-/// shares prompt sources, tool names, workspace bytes, and context files.
+/// A loop reads a fresh snapshot before every logical turn. Cloning a snapshot
+/// shares its registry, prompt source, tool names, workspace bytes, and context files.
 #[derive(Clone)]
 pub struct AgentSnapshot {
 	/// Per-turn gateway options.
 	pub turn:             TurnOptions,
 	/// Names of tools enabled for this turn, in stable publication order.
 	pub enabled_tools:    Arc<[Str]>,
+	/// Live revisioned tools used for advertisement, projection, and execution.
+	pub registry:         Arc<Registry>,
 	/// Immutable workspace and context-file input.
 	pub workspace:        WorkspaceInput,
 	/// Synchronous source used to construct the canonical prompt head.
@@ -103,11 +106,13 @@ pub struct AgentSnapshot {
 }
 
 impl AgentSnapshot {
-	/// Creates a snapshot with the deterministic workspace prompt source.
-	pub fn new(turn: TurnOptions, workspace: WorkspaceInput) -> Self {
+	/// Creates a snapshot with one live registry and the deterministic workspace
+	/// prompt source.
+	pub fn new(turn: TurnOptions, workspace: WorkspaceInput, registry: Arc<Registry>) -> Self {
 		Self {
 			turn,
 			enabled_tools: Arc::from([]),
+			registry,
 			workspace,
 			prompt_source: Arc::new(WorkspacePromptSource),
 			defer_interrupts: false,
@@ -125,7 +130,7 @@ impl AgentSnapshot {
 
 impl Default for AgentSnapshot {
 	fn default() -> Self {
-		Self::new(TurnOptions::default(), WorkspaceInput::default())
+		Self::new(TurnOptions::default(), WorkspaceInput::default(), Arc::new(Registry::new()))
 	}
 }
 
@@ -135,6 +140,7 @@ impl fmt::Debug for AgentSnapshot {
 			.debug_struct("AgentSnapshot")
 			.field("turn", &self.turn)
 			.field("enabled_tools", &self.enabled_tools)
+			.field("registry_hash", &self.registry.live_hash())
 			.field("workspace", &self.workspace)
 			.field("prompt_source", &format_args!("<dyn PromptSource>"))
 			.field("defer_interrupts", &self.defer_interrupts)
@@ -226,10 +232,17 @@ mod tests {
 	#[test]
 	fn sequential_updates_derive_from_latest_publication() {
 		let state = AgentState::default();
-		state.update(|snapshot| snapshot.enabled_tools = Arc::from([Str::from("read")]));
+		let original_registry = state.snapshot().registry.clone();
+		let replacement_registry = Arc::new(Registry::new());
+		state.update(|snapshot| {
+			snapshot.enabled_tools = Arc::from([Str::from("read")]);
+			snapshot.registry = replacement_registry.clone();
+		});
 		let published = state.update(|snapshot| snapshot.defer_interrupts = true);
 
 		assert_eq!(published.enabled_tools.as_ref(), &[Str::from("read")]);
+		assert!(!Arc::ptr_eq(&original_registry, &published.registry));
+		assert!(Arc::ptr_eq(&replacement_registry, &published.registry));
 		assert!(published.defer_interrupts);
 	}
 }

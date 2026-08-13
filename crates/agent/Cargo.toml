@@ -29,6 +29,7 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tower = { workspace = true }
+ulid = { workspace = true }
 
 [lints]
 workspace = true

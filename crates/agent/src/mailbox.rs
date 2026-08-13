@@ -47,6 +47,18 @@ impl DrainPoint {
 	}
 }
 
+/// Typed attribution for an interrupt producer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InterruptSource {
+	/// Settlement notification for one detached job.
+	Job {
+		/// Stable detached-job identifier.
+		id: Str,
+	},
+	/// Named producer without a more specific structured source.
+	Producer(Str),
+}
+
 /// Canonical thread input delivered asynchronously to the agent loop.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Interrupt {
@@ -54,8 +66,8 @@ pub struct Interrupt {
 	pub class:  InterruptClass,
 	/// Canonical thread item to append on delivery.
 	pub item:   Item,
-	/// Stable attribution for the producer of this input.
-	pub source: Str,
+	/// Typed attribution for the producer of this input.
+	pub source: InterruptSource,
 }
 
 /// Cloneable nonblocking producer for the agent's sole command mailbox.

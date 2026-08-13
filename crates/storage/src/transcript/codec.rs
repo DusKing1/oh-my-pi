@@ -9,7 +9,11 @@ use serde_json::value::RawValue;
 use thiserror::Error as ThisError;
 
 use super::{
-	event::{Event, ItemRecord, Kind, TurnReceipt},
+	event::{
+		Event, ItemRecord, JobRegistered, JobSettled, Kind, PromptRewriteCommit,
+		PromptRewriteIntent, PromptRewriteStage, ToolBatchAuthorized, TurnInputItem, TurnInputRecord,
+		TurnOptionsRecord, TurnReceipt, TurnStart,
+	},
 	msg::{Content, Msg},
 	patch::Patch,
 	types::{
@@ -207,10 +211,62 @@ pub fn write_line(event: &Event, out: &mut impl BufMut) -> Result<(), Error> {
 			object.field("target", target)?;
 			object.field("patch", patch)?;
 		},
+		Kind::PromptRewriteIntent(intent) => {
+			object.field("k", "prompt_rewrite_intent")?;
+			object.field("prompt_hash", &intent.prompt_hash)?;
+			object.field("head", &intent.head)?;
+			object.field("preserved_tail", &intent.preserved_tail)?;
+		},
+		Kind::TurnInput(input) => {
+			object.field("k", "turn_input")?;
+			object.field("turn_id", &input.turn_id)?;
+			object.field("item", &input.item)?;
+			object.field("prompt_hash", &input.prompt_hash)?;
+		},
+		Kind::PromptRewriteStage(stage) => {
+			object.field("k", "prompt_rewrite_stage")?;
+			object.field("intent", &stage.intent)?;
+			object.field("ordinal", &stage.ordinal)?;
+			object.field("item", &stage.item)?;
+		},
+		Kind::PromptRewriteCommit(commit) => {
+			object.field("k", "prompt_rewrite_commit")?;
+			object.field("intent", &commit.intent)?;
+			object.field("head_events", &commit.head_events)?;
+		},
+		Kind::JobRegistered(registered) => {
+			object.field("k", "job_registered")?;
+			object.field("job", &registered.job)?;
+		},
+		Kind::JobSettled(settled) => {
+			object.field("k", "job_settled")?;
+			object.field("job_id", &settled.job_id)?;
+			object.field("settlement", &settled.settlement)?;
+		},
+		Kind::ToolBatchAuthorized(batch) => {
+			object.field("k", "tool_batch_authorized")?;
+			object.field("turn_id", &batch.turn_id)?;
+			object.field("call_ids", &batch.call_ids)?;
+		},
+		Kind::TurnStart(start) => {
+			object.field("k", "turn_start")?;
+			object.field("turn_id", &start.turn_id)?;
+			object.field("item_events", &start.item_events)?;
+			object.field("prompt_hash", &start.prompt_hash)?;
+			object.field("prompt_head_events", &start.prompt_head_events)?;
+			object.field("toolset_hash", &start.toolset_hash)?;
+			object.field("enabled_tools", &start.enabled_tools)?;
+			object.field("sequence_targets", &start.sequence_targets)?;
+			object.field("input", &start.input)?;
+			object.field("options", &start.options)?;
+		},
 		Kind::TurnReceipt(receipt) => {
 			object.field("k", "turn_receipt")?;
 			object.field("turn_id", &receipt.turn_id)?;
+			object.field("prompt_hash", &receipt.prompt_hash)?;
+			object.field("prompt_head_events", &receipt.prompt_head_events)?;
 			object.field("item_events", &receipt.item_events)?;
+			object.field("outcome", &receipt.outcome)?;
 		},
 		Kind::Label { target, label } => {
 			object.field("k", "label")?;
@@ -342,7 +398,52 @@ payload!(ForkedFromPayload { session: SessionId, at: Option<u64> });
 payload!(CheckpointPayload { provider: ProviderId, model: ModelId, items: BlobRef });
 payload!(AbortedPayload { tool_call_ids: Vec<CallId> });
 payload!(AmendPayload { target: u64, patch: AmendPatch });
-payload!(TurnReceiptPayload { turn_id: Str, item_events: Vec<u64> });
+payload!(TurnInputPayload {
+	turn_id: Str,
+	item: omp_proto::thread::v1::Item,
+	prompt_hash: Option<[u8; 32]>,
+});
+payload!(PromptRewriteIntentPayload {
+	prompt_hash: [u8; 32],
+	head: Vec<omp_proto::thread::v1::Item>,
+	preserved_tail: Vec<u64>,
+});
+payload!(PromptRewriteStagePayload {
+	intent: u64,
+	ordinal: u64,
+	item: omp_proto::thread::v1::Item,
+});
+payload!(PromptRewriteCommitPayload {
+	intent: u64,
+	head_events: Vec<u64>,
+});
+payload!(JobRegisteredPayload { job: omp_tool::JobRef });
+payload!(JobSettledPayload {
+	job_id: Str,
+	settlement: omp_proto::thread::v1::Item,
+});
+payload!(ToolBatchAuthorizedPayload {
+	turn_id: Str,
+	call_ids: Vec<Str>,
+});
+payload!(TurnReceiptPayload {
+	turn_id: Str,
+	prompt_hash: [u8; 32],
+	prompt_head_events: Vec<u64>,
+	item_events: Vec<u64>,
+	outcome: omp_proto::inference::v1::Outcome,
+});
+payload!(TurnStartPayload {
+	turn_id: Str,
+	item_events: Vec<u64>,
+	prompt_hash: [u8; 32],
+	prompt_head_events: Vec<u64>,
+	toolset_hash: [u8; 32],
+	enabled_tools: Vec<Str>,
+	sequence_targets: Vec<u64>,
+	input: TurnInputRecord,
+	options: TurnOptionsRecord,
+});
 payload!(LabelPayload { target: u64, label: Option<Str> });
 payload!(CustomPayload {
 	kind: Str,
@@ -441,11 +542,77 @@ pub fn read_line(line: &[u8]) -> Result<Event, Error> {
 			let payload: AmendPayload = serde_json::from_slice(line)?;
 			Kind::Amend { target: payload.target, patch: payload.patch }
 		},
+		"turn_input" => {
+			let payload: TurnInputPayload = serde_json::from_slice(line)?;
+			Kind::TurnInput(TurnInputItem {
+				turn_id: payload.turn_id,
+				item: payload.item,
+				prompt_hash: payload.prompt_hash,
+			})
+		},
+		"prompt_rewrite_intent" => {
+			let payload: PromptRewriteIntentPayload = serde_json::from_slice(line)?;
+			Kind::PromptRewriteIntent(PromptRewriteIntent {
+				prompt_hash: payload.prompt_hash,
+				head: payload.head,
+				preserved_tail: payload.preserved_tail,
+			})
+		},
+		"prompt_rewrite_stage" => {
+			let payload: PromptRewriteStagePayload = serde_json::from_slice(line)?;
+			Kind::PromptRewriteStage(PromptRewriteStage {
+				intent: payload.intent,
+				ordinal: payload.ordinal,
+				item: payload.item,
+			})
+		},
+		"prompt_rewrite_commit" => {
+			let payload: PromptRewriteCommitPayload = serde_json::from_slice(line)?;
+			Kind::PromptRewriteCommit(PromptRewriteCommit {
+				intent: payload.intent,
+				head_events: payload.head_events,
+			})
+		},
+		"job_registered" => {
+			let payload: JobRegisteredPayload = serde_json::from_slice(line)?;
+			Kind::JobRegistered(JobRegistered { job: payload.job })
+		},
+		"job_settled" => {
+			let payload: JobSettledPayload = serde_json::from_slice(line)?;
+			Kind::JobSettled(JobSettled {
+				job_id: payload.job_id,
+				settlement: payload.settlement,
+			})
+		},
+		"tool_batch_authorized" => {
+			let payload: ToolBatchAuthorizedPayload = serde_json::from_slice(line)?;
+			Kind::ToolBatchAuthorized(ToolBatchAuthorized {
+				turn_id: payload.turn_id,
+				call_ids: payload.call_ids,
+			})
+		},
+		"turn_start" => {
+			let payload: TurnStartPayload = serde_json::from_slice(line)?;
+			Kind::TurnStart(TurnStart {
+				turn_id:            payload.turn_id,
+				item_events:        payload.item_events,
+				prompt_hash:        payload.prompt_hash,
+				prompt_head_events: payload.prompt_head_events,
+				toolset_hash:       payload.toolset_hash,
+				sequence_targets:   payload.sequence_targets,
+				enabled_tools:      payload.enabled_tools,
+				input:              payload.input,
+				options:            payload.options,
+			})
+		},
 		"turn_receipt" => {
 			let payload: TurnReceiptPayload = serde_json::from_slice(line)?;
 			Kind::TurnReceipt(TurnReceipt {
-				turn_id:     payload.turn_id,
-				item_events: payload.item_events,
+				turn_id:            payload.turn_id,
+				prompt_hash:        payload.prompt_hash,
+				prompt_head_events: payload.prompt_head_events,
+				item_events:        payload.item_events,
+				outcome:            payload.outcome,
 			})
 		},
 		"label" => {

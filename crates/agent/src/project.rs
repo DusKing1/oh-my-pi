@@ -7,8 +7,8 @@ use omp_core::{Str, encoding::hex};
 use omp_proto::{inference::v1 as pb, thread::v1 as thread_pb};
 use omp_storage::transcript::{AmendPatch, Entry, Kind, Log};
 use omp_tool::{
-	Part as ToolPart, ProjectedCall, PromptCaps, RecordedCallOwned, Registry as ToolRegistry, Rev,
-	TOOL_REV_PROP, ToolIdentity,
+	Abort, Part as ToolPart, ProjectedCall, PromptCaps, RecordedCallOwned, Registry as ToolRegistry,
+	Rev, TOOL_REV_PROP, ToolIdentity, Verdict,
 };
 use thiserror::Error;
 
@@ -33,6 +33,12 @@ pub enum ProjectionError {
 	/// The live tool could not deterministically render a lifted verdict.
 	#[error("tool projection failed: {0}")]
 	Tool(#[from] omp_tool::RegistryError),
+	/// A recovery target was not a canonical tool call.
+	#[error("tool recovery target is not a tool call")]
+	ExpectedToolCall,
+	/// A committed tool call lacked its durable revision identity.
+	#[error("committed tool call is missing omp/tool-rev")]
+	MissingRevision,
 }
 
 /// Projects the live append-only journal chain into one canonical thread.
@@ -42,6 +48,7 @@ pub enum ProjectionError {
 pub fn project_journal(
 	log: &Log,
 	tool_registry: &ToolRegistry,
+	caps: &PromptCaps,
 ) -> Result<thread_pb::Thread, ProjectionError> {
 	let mut items = Vec::new();
 	let mut positions = BTreeMap::new();
@@ -54,6 +61,18 @@ pub fn project_journal(
 				positions.insert(index, items.len());
 				items.push(record.item.clone());
 			},
+			Kind::TurnInput(input) => {
+				positions.insert(index, items.len());
+				items.push(input.item.clone());
+			},
+			Kind::PromptRewriteStage(stage) => {
+				positions.insert(index, items.len());
+				items.push(stage.item.clone());
+			},
+			Kind::JobSettled(settled) => {
+				positions.insert(index, items.len());
+				items.push(settled.settlement.clone());
+			},
 			Kind::Amend { target, patch: AmendPatch::Seq { seq } } => {
 				if let Some(position) = positions.get(target).copied() {
 					items[position].seq = *seq;
@@ -62,7 +81,7 @@ pub fn project_journal(
 			_ => {},
 		}
 	}
-	project_thread_history(&thread_pb::Thread { items }, tool_registry)
+	project_thread_history(&thread_pb::Thread { items }, tool_registry, caps)
 }
 
 /// Re-expresses historical tool calls through complete live revision lifts.
@@ -73,6 +92,7 @@ pub fn project_journal(
 pub fn project_thread_history(
 	thread: &thread_pb::Thread,
 	tool_registry: &ToolRegistry,
+	caps: &PromptCaps,
 ) -> Result<thread_pb::Thread, ProjectionError> {
 	let mut projected = thread.clone();
 	for call_index in 0..projected.items.len() {
@@ -113,6 +133,7 @@ pub fn project_thread_history(
 		else {
 			unreachable!("result index came from ToolResult items")
 		};
+		let recorded_useless = result.useless.unwrap_or(false);
 		let Some(verdict) = proto_json_bytes(
 			result
 				.details
@@ -129,15 +150,15 @@ pub fn project_thread_history(
 		let ProjectedCall::Live(live) = tool_registry.project(original) else {
 			continue;
 		};
-
-		let rendered = tool_registry.prompt(&live.identity, &live.verdict, &PromptCaps {
-			maximum_parts:      u16::MAX,
-			maximum_text_bytes: u32::MAX,
-			media:              true,
-		})?;
+		let rendered = tool_registry.project_verdict(
+			&live.identity,
+			&live.verdict,
+			recorded_useless,
+			caps,
+		)?;
 		let lifted_verdict: serde_json::Value = serde_json::from_slice(&live.verdict)?;
 		let lifted_details = json_proto_value(lifted_verdict);
-		let lifted_parts = rendered.as_deref().map(tool_parts).transpose()?;
+		let lifted_parts = tool_parts(&rendered.parts)?;
 
 		let Some(thread_pb::item::Kind::ToolCall(call)) = projected.items[call_index].kind.as_mut()
 		else {
@@ -161,11 +182,41 @@ pub fn project_thread_history(
 			unreachable!("result index came from ToolResult items")
 		};
 		result.details = Some(lifted_details);
-		if let Some(parts) = lifted_parts {
-			result.parts = parts;
-		}
+		result.parts = lifted_parts;
+		result.is_error = rendered.is_error;
+		result.useless = Some(rendered.useless);
 	}
 	Ok(projected)
+}
+
+pub(crate) fn recovery_tool_result_item(
+	created_at_ms: u64,
+	call_item: &thread_pb::Item,
+	abort: Abort,
+) -> Result<thread_pb::Item, ProjectionError> {
+	let Some(thread_pb::item::Kind::ToolCall(call)) = call_item.kind.as_ref() else {
+		return Err(ProjectionError::ExpectedToolCall);
+	};
+	let rev = tool_revision(call_item)?.ok_or(ProjectionError::MissingRevision)?;
+	let identity = ToolIdentity { name: Str::from(call.name.as_str()), rev };
+	let text = match &abort {
+		Abort::Skipped { reason } => format!("skipped: {reason}"),
+		Abort::Interrupted { reason } => format!("interrupted: {reason}"),
+		Abort::EffectsUnknown { reason } => format!("aborted with effects unknown: {reason}"),
+		Abort::InputDropped => "aborted: invocation input dropped before commit".to_owned(),
+		Abort::MissingOutcome => "aborted: executor ended without a terminal outcome".to_owned(),
+	};
+	let verdict = Verdict::<serde_json::Value, serde_json::Value>::Aborted(abort);
+	let raw = serde_json::to_vec(&verdict)?;
+	tool_result_item(
+		created_at_ms,
+		&call.id,
+		&identity,
+		&raw,
+		true,
+		false,
+		&[ToolPart::Text { text: Str::from(text) }],
+	)
 }
 
 /// Builds one canonical optimistic tool-result item from durable tool truth.

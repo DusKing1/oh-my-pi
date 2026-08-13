@@ -3,14 +3,16 @@
 use std::{collections::BTreeMap, fs::OpenOptions, io::Write as _, path::PathBuf};
 
 use omp_core::Str;
-use omp_proto::thread::v1 as thread_pb;
+use omp_proto::{inference::v1 as pb, thread::v1 as thread_pb};
 use omp_storage::{
 	blob::BlobRef,
 	transcript::{
 		AmendPatch, Attribution, Block, BlockKind, CallId, CtxSnapshot, DialectId, Entry, Error,
 		Event, FeatureId, Header, ItemRecord, Kind, ModelChange, ModelId, ModelRef, Msg, Patch, Pin,
 		ProviderId, Replay, RequestError, SessionId, Stop, ThinkingSel, Timing, TitleSource,
-		TurnReceipt, Usage, UserBlock, Writer, load, read_line, write_header, write_line,
+		ToolBatchAuthorized, TurnInputItem, TurnInputRecord, TurnOptionsRecord, TurnReceipt, TurnStart,
+		Usage, UserBlock, Writer, load, read_line,
+		write_header, write_line,
 	},
 };
 use serde::{Deserialize, Serialize};
@@ -190,14 +192,84 @@ fn every_kind() -> Vec<Event> {
 		Event { ts: 19, kind: Kind::Amend { target: 17, patch: AmendPatch::Seq { seq: 7 } } },
 		Event {
 			ts:   20,
-			kind: Kind::TurnReceipt(TurnReceipt {
-				turn_id:     text("turn-1"),
-				item_events: vec![17],
+			kind: Kind::TurnStart(TurnStart {
+				turn_id:            text("turn-1"),
+				item_events:        vec![17],
+				prompt_hash:        [4; 32],
+				prompt_head_events: vec![17],
+				toolset_hash:       [5; 32],
+				enabled_tools:      Vec::new(),
+				sequence_targets:   vec![17],
+				input:              TurnInputRecord::Delta {
+					context: pb::ContextRef {
+						context_id: "context".to_owned(),
+						expected: Some(thread_pb::Revision { head: 6, token: vec![8; 32].into() }),
+					},
+					delta: pb::ThreadDelta { truncate_to: None, append: Vec::new() },
+				},
+				options: TurnOptionsRecord {
+					context_id: None,
+					params: pb::ChatParams::default(),
+					executor: None,
+					props: None,
+				},
 			}),
 		},
 		Event {
 			ts:   21,
-			kind: Kind::Unknown(raw(r#"{ "foreign" : true, "ts" : 21, "k":"else" }"#)),
+			kind: Kind::TurnReceipt(TurnReceipt {
+				turn_id:            text("turn-1"),
+				prompt_hash:        [4; 32],
+				prompt_head_events: vec![17],
+				item_events:        vec![17],
+				outcome:            pb::Outcome {
+					output: vec![thread_pb::Item {
+						seq:           7,
+						created_at_ms: 18,
+						kind:          Some(thread_pb::item::Kind::Message(thread_pb::Message {
+							role:  thread_pb::Role::Assistant as i32,
+							parts: vec![thread_pb::Part {
+								kind: Some(thread_pb::part::Kind::Text("done".to_owned())),
+							}],
+						})),
+						props:         None,
+					}],
+					stop: pb::StopReason::StopEndTurn as i32,
+					revision: Some(thread_pb::Revision { head: 7, token: vec![9; 32].into() }),
+					provider: "fixture".to_owned(),
+					model: "fixture-model".to_owned(),
+					..Default::default()
+				},
+			}),
+		},
+		Event {
+			ts: 22,
+			kind: Kind::TurnInput(TurnInputItem {
+				turn_id: text("turn-2"),
+				item: thread_pb::Item {
+					seq: 0,
+					created_at_ms: 22,
+					kind: Some(thread_pb::item::Kind::Message(thread_pb::Message {
+						role: thread_pb::Role::User as i32,
+						parts: vec![thread_pb::Part {
+							kind: Some(thread_pb::part::Kind::Text("next".to_owned())),
+						}],
+					})),
+					props: None,
+				},
+				prompt_hash: Some([4; 32]),
+			}),
+		},
+		Event {
+			ts: 23,
+			kind: Kind::ToolBatchAuthorized(ToolBatchAuthorized {
+				turn_id: text("turn-1"),
+				call_ids: vec![text("call-1")],
+			}),
+		},
+		Event {
+			ts:   22,
+			kind: Kind::Unknown(raw(r#"{ "foreign" : true, "ts" : 22, "k":"else" }"#)),
 		},
 	]
 }

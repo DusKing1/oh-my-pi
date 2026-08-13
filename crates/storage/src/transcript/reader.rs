@@ -84,6 +84,27 @@ impl Log {
 			let index = u64::try_from(index).expect("event indexes fit in u64");
 			match entry {
 				Entry::Ok(event) => match event.as_ref() {
+					Event { kind: Kind::Item(record), .. } if record.turn_id.is_some() => {},
+					Event { kind: Kind::TurnReceipt(receipt), .. } => {
+						let complete = receipt.item_events.len() == receipt.outcome.output.len()
+							&& receipt.item_events.iter().zip(&receipt.outcome.output).all(
+								|(item_index, expected)| {
+									matches!(
+										self.get(*item_index),
+										Some(Entry::Ok(item_event))
+											if matches!(
+												&item_event.kind,
+												Kind::Item(record)
+													if record.turn_id.as_ref() == Some(&receipt.turn_id)
+														&& &record.item == expected
+											)
+									)
+								},
+							);
+						if complete {
+							live.extend(receipt.item_events.iter().copied());
+						}
+					},
 					Event { kind: Kind::Rewind { to }, .. } => match to {
 						None => live.clear(),
 						Some(target) => {
@@ -108,6 +129,38 @@ impl Log {
 						} else {
 							live.clear();
 							live.push(index);
+						}
+					},
+					Event { kind: Kind::PromptRewriteIntent(_) | Kind::PromptRewriteStage(_), .. } => {},
+					Event { kind: Kind::PromptRewriteCommit(commit), .. } => {
+						let Some(Entry::Ok(intent_event)) = self.get(commit.intent) else {
+							continue;
+						};
+						let Kind::PromptRewriteIntent(intent) = &intent_event.kind else {
+							continue;
+						};
+						if commit.head_events.len() != intent.head.len() {
+							continue;
+						}
+						let complete = commit.head_events.iter().enumerate().all(
+							|(ordinal, stage_index)| {
+								matches!(
+									self.get(*stage_index),
+									Some(Entry::Ok(stage_event))
+										if matches!(
+											&stage_event.kind,
+											Kind::PromptRewriteStage(stage)
+												if stage.intent == commit.intent
+													&& stage.ordinal == ordinal as u64
+													&& stage.item == intent.head[ordinal]
+										)
+								)
+							},
+						);
+						if complete {
+							live.clear();
+							live.extend(commit.head_events.iter().copied());
+							live.extend(intent.preserved_tail.iter().copied());
 						}
 					},
 					_ => live.push(index),

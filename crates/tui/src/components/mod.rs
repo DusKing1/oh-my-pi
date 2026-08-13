@@ -3,6 +3,7 @@ mod button;
 mod callout;
 mod col;
 mod custom;
+mod diff;
 mod editor;
 mod form;
 mod hr;
@@ -25,6 +26,8 @@ mod table;
 mod tabs;
 mod text;
 mod todo;
+mod tool_card;
+mod transcript;
 mod tree;
 mod wizard;
 
@@ -36,6 +39,7 @@ pub use button::Button;
 pub use callout::Callout;
 pub use col::Col;
 pub use custom::CustomElement;
+pub use diff::{DiffKind, DiffLine, DiffView};
 pub use editor::{
 	Attachment, AttachmentContent, Attachments, EditInput, EditorPane, attachment_color, chip_label,
 };
@@ -60,5 +64,7 @@ pub use table::{Table, TableCell, TableRow};
 pub use tabs::Tabs;
 pub use text::{Pre, TextLeaf};
 pub use todo::{TaskStatus, Todo, TodoTask};
+pub use tool_card::{ToolCard, ToolState};
+pub use transcript::TranscriptView;
 pub use tree::{Tree, TreeNode};
 pub use wizard::Wizard;

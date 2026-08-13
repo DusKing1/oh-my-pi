@@ -19,9 +19,10 @@ use omp_llm_inference::{Adjustment, ToolGrammarSyntax};
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, ArgPath, ArtifactLifetime, BlobRef, CommitError, Constraint,
 	ConstraintDisposition, ErasedEv, ErasedOutcome, Ev, ExpectedArtifact, GrammarSyntax,
-	IncomingParams, JobRef, LiftedCall, LoweringCaps, Outcome, ParamError, Part, ProjectedCall,
-	PromptCaps, RecordedCall, RecordedCallOwned, Registry, RegistryError, Rev, Tool, ToolIdentity,
-	ToolSpec, Verdict, VerdictDetails, VerdictSpill, verdict_details,
+	IncomingParams, Interrupt, InterruptWaitError, JobOwner, JobRef, LiftedCall, LoweringCaps,
+	Outcome, ParamError, Part, ProjectedCall, PromptCaps, RecordedCall, RecordedCallOwned, Registry,
+	RegistryError, Rev, Tool, ToolIdentity, ToolSpec, Verdict, VerdictDetails, VerdictSpill,
+	verdict_details,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -308,6 +309,22 @@ fn duplicate_registration_never_replaces_the_erased_implementation() {
 }
 
 #[test]
+fn live_hash_is_stable_until_a_live_revision_changes() {
+	let calls = Arc::new(AtomicUsize::new(0));
+	let mut first = Registry::new();
+	first.register(fake_tool(1, "one", Arc::clone(&calls))).unwrap();
+	let unchanged = first.live_hash();
+	assert_eq!(unchanged, first.live_hash());
+
+	let mut same = Registry::new();
+	same.register(fake_tool(1, "one", Arc::clone(&calls))).unwrap();
+	assert_eq!(unchanged, same.live_hash());
+
+	first.register(fake_tool(2, "two", calls)).unwrap();
+	assert_ne!(unchanged, first.live_hash());
+}
+
+#[test]
 fn erased_tool_does_not_run_before_explicit_argument_commitment() {
 	let calls = Arc::new(AtomicUsize::new(0));
 	let mut registry = Registry::new();
@@ -578,6 +595,19 @@ fn commitment_is_explicit_and_feed_guard_drop_aborts() {
 	drop(guard);
 	assert!(matches!(block_on(abandoned.committed()), Err(CommitError::Aborted)));
 }
+#[test]
+fn post_commit_interrupt_wait_preserves_reason_and_reports_owner_drop() {
+	let (feed, mut params) = IncomingParams::channel();
+	feed.args_committed(Str::from("{}")).unwrap();
+	assert_eq!(block_on(params.committed()).unwrap(), "{}");
+	let expected =
+		Interrupt { class: Str::from("immediate"), reason: Str::from("steering changed") };
+	feed.interrupt(expected.clone()).unwrap();
+	assert_eq!(block_on(params.next_interrupt()).unwrap(), expected);
+
+	drop(feed);
+	assert!(matches!(block_on(params.next_interrupt()), Err(InterruptWaitError::Closed)));
+}
 
 #[test]
 fn prompt_projection_is_exact_and_deterministic_for_the_same_input() {
@@ -722,6 +752,10 @@ fn detached_artifact_lifetime_is_explicit_and_session_is_the_conservative_defaul
 	] {
 		let job = JobRef {
 			id:       Str::from("job-7"),
+			owner: JobOwner::NamedProcess {
+				name: Str::from("render"),
+				generation: 3,
+			},
 			artifact: ExpectedArtifact {
 				description: Str::from("rendered video"),
 				media_type: Some(Str::from("video/mp4")),
@@ -739,6 +773,11 @@ fn detached_artifact_lifetime_is_explicit_and_session_is_the_conservative_defaul
 	assert!(
 		serde_json::from_value::<JobRef>(json!({
 			"id": "job-7",
+			"owner": {
+				"kind": "named_process",
+				"name": "render",
+				"generation": 3
+			},
 			"artifact": {
 				"description": "rendered video",
 				"media_type": "video/mp4"
@@ -746,5 +785,17 @@ fn detached_artifact_lifetime_is_explicit_and_session_is_the_conservative_defaul
 		}))
 		.is_err(),
 		"wire descriptors must carry an explicit lifetime"
+	);
+	assert!(
+		serde_json::from_value::<JobRef>(json!({
+			"id": "job-7",
+			"artifact": {
+				"description": "rendered video",
+				"media_type": "video/mp4",
+				"lifetime": "session"
+			}
+		}))
+		.is_err(),
+		"wire job references must carry an explicit resource owner"
 	);
 }

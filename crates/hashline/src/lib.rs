@@ -37,6 +37,7 @@ pub mod types;
 pub use apply::{
 	ApplyError, ApplyMode, ApplyOptions, ApplyResult, ByteEdit, apply_edits, apply_parsed_patch,
 };
+pub use diff_preview::{NumberedDiff, numbered_diff};
 pub use clipboard::Clipboard;
 pub use format::{
 	compute_file_hash, format_cut_header, format_gap_locator, format_hashline_header,

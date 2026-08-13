@@ -1,27 +1,30 @@
 [package]
-name = "omp-tool"
+name = "omp-tools"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Typed, revisioned tool contracts and registry for the OMP agent mesh"
+description = "Resource-owning built-in executors for the OMP environment"
 
 [lints]
 workspace = true
 
 [dependencies]
 async-stream = { workspace = true }
-blake3 = { workspace = true }
 bytes = { workspace = true }
-flume = { workspace = true }
 futures = { workspace = true }
+flume = { workspace = true }
 omp-core = { workspace = true }
-omp-llm-catalog = { workspace = true }
-omp-llm-inference = { workspace = true }
-omp-slopjson = { workspace = true }
+omp-env = { workspace = true }
+omp-hashline = { workspace = true }
 omp-proto = { workspace = true }
+omp-tool = { workspace = true }
+omp-walker = { workspace = true }
+parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }

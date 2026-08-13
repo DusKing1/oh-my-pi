@@ -14,6 +14,8 @@ pub(crate) enum InvocationTerminal {
 	StreamError(EventStreamError),
 	/// The stream closed without a terminal frame.
 	Closed,
+	/// Structural cancellation did not yield owner truth within its bound.
+	CancelUnobserved,
 }
 
 /// Drains an invocation, relaying updates and ignoring its one acceptance
@@ -42,10 +44,10 @@ where
 
 /// Requests cooperative interruption, then escalates after the grace period.
 ///
-/// Escalation queues the invocation's [`omp_env::RunGuard`] cancellation but
-/// deliberately retains and drains the invocation stream. Resource owners,
+/// Escalation queues the invocation's [`omp_env::RunGuard`] cancellation and
+/// retains the stream for one more bounded observation window. Resource owners,
 /// rather than this supervisor, remain authoritative about whether effects
-/// landed and must report that truth in their terminal verdict.
+/// landed; a terminal verdict observed in either window wins.
 pub(crate) async fn interrupt_with_grace<F>(
 	invocation: &mut Invocation,
 	reason: Str,
@@ -55,19 +57,25 @@ pub(crate) async fn interrupt_with_grace<F>(
 where
 	F: FnMut(Update),
 {
-	if let Err(error) = invocation.interrupt(reason).await {
-		invocation.guard().cancel();
-		return match drain_terminal(invocation, on_update).await {
-			Ok(terminal) => Ok(terminal),
-			Err(_) => Err(error),
-		};
-	}
-
-	match tokio::time::timeout(grace, drain_terminal(invocation, on_update)).await {
-		Ok(terminal) => terminal,
+	let cooperative = async {
+		invocation.interrupt(reason).await?;
+		drain_terminal(invocation, on_update).await
+	};
+	match tokio::time::timeout(grace, cooperative).await {
+		Ok(Ok(terminal)) => Ok(terminal),
+		Ok(Err(interrupt_error)) => {
+			invocation.guard().cancel();
+			match tokio::time::timeout(grace, drain_terminal(invocation, on_update)).await {
+				Ok(Ok(terminal)) => Ok(terminal),
+				Ok(Err(_)) | Err(_) => Err(interrupt_error),
+			}
+		},
 		Err(_) => {
 			invocation.guard().cancel();
-			drain_terminal(invocation, on_update).await
+			match tokio::time::timeout(grace, drain_terminal(invocation, on_update)).await {
+				Ok(terminal) => terminal,
+				Err(_) => Ok(InvocationTerminal::CancelUnobserved),
+			}
 		},
 	}
 }

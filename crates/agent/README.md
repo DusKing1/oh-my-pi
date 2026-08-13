@@ -6,10 +6,13 @@ only conversation shape and composes the live turn protocol with immutable
 configuration, deterministic prompt heads, ordered interrupts, event fan-out,
 journal projection, supervised tool batches, and detached-job settlement.
 
-`AgentState` publishes immutable snapshots through a watch value. Each turn can
-re-read the latest options, enabled tools, workspace bytes, prompt source,
-interrupt policy, deadline, and bounded retry policy without sharing mutable
-configuration. Prompt sources are synchronous and receive an immutable
+`AgentState` publishes immutable snapshots through a watch value. Each logical
+turn re-reads the latest options, enabled tools, live revisioned registry,
+workspace bytes, prompt source, interrupt policy, deadline, and bounded retry
+policy without sharing mutable configuration. Registry identity is hashed
+separately from prompt content so revision swaps invalidate held gateway
+context and re-project durable history through the current lift chains. Prompt
+sources are synchronous and receive an immutable
 workspace capture; every render is repeated and compared before canonical
 system items and their stable BLAKE3 hash are accepted.
 
@@ -21,6 +24,6 @@ through `omp-env`; event subscribers observe shared payloads without feeding
 back into the loop, and detached jobs settle through the same mailbox.
 
 The crate contains no provider, application, UI, docserver, or shell-engine
-dependencies. It also does not yet own the top-level run loop: hosts compose
-these foundations with `TurnClient`, while RPC and in-process sessions retain
-the same generated protocol contract and stable `TurnId` replay behavior.
+dependencies. Its `Agent` policy loop composes these foundations with a
+`TurnClient`; RPC and in-process sessions retain the same generated protocol
+contract and stable `TurnId` replay behavior.

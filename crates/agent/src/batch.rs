@@ -159,6 +159,14 @@ impl CommittedCall {
 	}
 }
 
+/// One exact serialized tool update emitted while a batch call is live.
+#[derive(Clone, Debug)]
+pub(crate) struct BatchUpdate {
+	pub(crate) call_id:  Str,
+	pub(crate) identity: ToolIdentity,
+	pub(crate) json:     Bytes,
+}
+
 /// One ordered batch completion shared with the event feed.
 #[derive(Clone)]
 pub struct BatchResult {
@@ -218,12 +226,12 @@ impl ToolBatch {
 	}
 
 	/// Sends every commit gate and drives all calls concurrently.
-	pub async fn drive(
-		self,
-		registry: &Registry,
-		caps: &PromptCaps,
-	) -> Result<Vec<BatchResult>, BatchError> {
-		self.drive_inner(registry, caps, None, Duration::ZERO).await
+	///
+	/// Results remain in issued order. Once a call is authorized, environment
+	/// or lowering failures become canonical `EffectsUnknown` results so every
+	/// committed call remains journalable and peer truth is never discarded.
+	pub async fn drive(self, registry: &Registry, caps: &PromptCaps) -> Vec<BatchResult> {
+		self.drive_inner(registry, caps, None, Duration::ZERO, None).await
 	}
 
 	/// Drives the batch with one watch-broadcast cooperative interrupt source.
@@ -237,9 +245,23 @@ impl ToolBatch {
 		caps: &PromptCaps,
 		interrupt: watch::Receiver<Option<Str>>,
 		grace: Duration,
-	) -> Result<Vec<BatchResult>, BatchError> {
+	) -> Vec<BatchResult> {
 		self
-			.drive_inner(registry, caps, Some(interrupt), grace)
+			.drive_inner(registry, caps, Some(interrupt), grace, None)
+			.await
+	}
+
+	/// Drives an interruptible batch while copying exact updates to `updates`.
+	pub(crate) async fn drive_streaming(
+		self,
+		registry: &Registry,
+		caps: &PromptCaps,
+		interrupt: watch::Receiver<Option<Str>>,
+		grace: Duration,
+		updates: flume::Sender<BatchUpdate>,
+	) -> Vec<BatchResult> {
+		self
+			.drive_inner(registry, caps, Some(interrupt), grace, Some(updates))
 			.await
 	}
 
@@ -249,11 +271,20 @@ impl ToolBatch {
 		caps: &PromptCaps,
 		interrupt: Option<watch::Receiver<Option<Str>>>,
 		grace: Duration,
-	) -> Result<Vec<BatchResult>, BatchError> {
+		updates: Option<flume::Sender<BatchUpdate>>,
+	) -> Vec<BatchResult> {
 		let count = self.calls.len();
 		let mut running = FuturesUnordered::new();
 		for (index, call) in self.calls.into_iter().enumerate() {
-			running.push(run_call(index, call, registry, caps, interrupt.clone(), grace));
+			running.push(run_call(
+				index,
+				call,
+				registry,
+				caps,
+				interrupt.clone(),
+				grace,
+				updates.clone(),
+			));
 		}
 
 		let mut ordered = Vec::with_capacity(count);
@@ -275,23 +306,45 @@ async fn run_call(
 	caps: &PromptCaps,
 	mut interrupt: Option<watch::Receiver<Option<Str>>>,
 	grace: Duration,
-) -> (usize, Result<BatchResult, BatchError>) {
+	updates: Option<flume::Sender<BatchUpdate>>,
+) -> (usize, BatchResult) {
 	if let Some(reason) = interrupt
 		.as_mut()
 		.and_then(|receiver| receiver.borrow_and_update().clone())
 	{
 		let reason = format!("interrupted before execution: {reason}").to_str();
-		return (index, lower_abort(&call, Abort::Skipped { reason }));
+		return (index, lower_abort_total(&call, Abort::Skipped { reason }));
 	}
-	if let Err(error) = call.invocation.commit_args(call.raw_args.clone()).await {
+	let commit = if let Some(receiver) = interrupt.as_mut() {
+		tokio::select! {
+			biased;
+			reason = wait_for_interrupt(receiver) => {
+				let reason = format!("interrupted before execution: {reason}").to_str();
+				return (index, lower_abort_total(&call, Abort::Skipped { reason }));
+			},
+			result = call.invocation.commit_args(call.raw_args.clone()) => result,
+		}
+	} else {
+		call.invocation.commit_args(call.raw_args.clone()).await
+	};
+	if let Err(error) = commit {
 		let reason = format!("ArgsCommitted delivery failed: {error}").to_str();
-		return (index, lower_abort(&call, Abort::EffectsUnknown { reason }));
+		return (index, lower_abort_total(&call, Abort::EffectsUnknown { reason }));
 	}
 
 	let mut publish_update = |update: omp_proto::env::v1::Update| {
-		call
-			.events
-			.publish(AgentEvent::ToolUpdate { call_id: call.call_id.clone(), json: update.json });
+		let json = update.json;
+		call.events.publish(AgentEvent::ToolUpdate {
+			call_id: call.call_id.clone(),
+			json:    json.clone(),
+		});
+		if let Some(updates) = updates.as_ref() {
+			let _ = updates.send(BatchUpdate {
+				call_id:  call.call_id.clone(),
+				identity: call.identity.clone(),
+				json,
+			});
+		}
 	};
 	let terminal = if let Some(receiver) = interrupt.as_mut() {
 		tokio::select! {
@@ -310,14 +363,37 @@ async fn run_call(
 	};
 
 	let result = match terminal {
-		Ok(InvocationTerminal::Verdict(verdict)) => lower_verdict(&call, registry, caps, verdict),
-		Ok(InvocationTerminal::StreamError(error)) => lower_abort(&call, Abort::EffectsUnknown {
-			reason: format!("environment invocation stream lost: {}", error.message).to_str(),
-		}),
-		Ok(InvocationTerminal::Closed) => lower_abort(&call, Abort::MissingOutcome),
-		Err(error) => lower_abort(&call, Abort::EffectsUnknown {
-			reason: format!("environment invocation failed: {error}").to_str(),
-		}),
+		Ok(InvocationTerminal::Verdict(verdict)) => {
+			lower_verdict(&call, registry, caps, verdict).unwrap_or_else(|error| {
+				lower_abort_total(
+					&call,
+					Abort::EffectsUnknown {
+						reason: format!("failed to lower environment verdict: {error}").to_str(),
+					},
+				)
+			})
+		},
+		Ok(InvocationTerminal::StreamError(error)) => lower_abort_total(
+			&call,
+			Abort::EffectsUnknown {
+				reason: format!("environment invocation stream lost: {}", error.message).to_str(),
+			},
+		),
+		Ok(InvocationTerminal::Closed) => lower_abort_total(&call, Abort::MissingOutcome),
+		Ok(InvocationTerminal::CancelUnobserved) => lower_abort_total(
+			&call,
+			Abort::EffectsUnknown {
+				reason: Str::new_static(
+					"environment owner did not report terminal truth after cancellation",
+				),
+			},
+		),
+		Err(error) => lower_abort_total(
+			&call,
+			Abort::EffectsUnknown {
+				reason: format!("environment invocation failed: {error}").to_str(),
+			},
+		),
 	};
 	(index, result)
 }
@@ -345,13 +421,14 @@ fn lower_verdict(
 
 	let verdict = serde_json::from_slice::<Verdict<Value, Value>>(&wire.json)
 		.map_err(BatchError::InvalidVerdict)?;
+	let is_error = !matches!(verdict, Verdict::Ok(_));
 	if let Some(parts) = harness_parts(&verdict) {
-		return lower_tool_parts(call, &wire.json, wire.is_error, wire.useless, &parts);
+		return lower_tool_parts(call, &wire.json, is_error, wire.useless, &parts);
 	}
 	match registry.prompt(&call.identity, &wire.json, caps) {
-		Ok(Some(parts)) => lower_tool_parts(call, &wire.json, wire.is_error, wire.useless, &parts),
+		Ok(Some(parts)) => lower_tool_parts(call, &wire.json, is_error, wire.useless, &parts),
 		Ok(None) => unreachable!("harness verdict branches were handled before registry projection"),
-		Err(_) => lower_canonical_parts(call, &wire.json, wire.is_error, wire.useless, wire.parts),
+		Err(_) => lower_canonical_parts(call, &wire.json, is_error, wire.useless, wire.parts),
 	}
 }
 
@@ -375,6 +452,12 @@ fn lower_abort(call: &CommittedCall, abort: Abort) -> Result<BatchResult, BatchE
 	let raw = Bytes::from(serde_json::to_vec(&verdict).map_err(BatchError::InvalidVerdict)?);
 	let parts = harness_parts(&verdict).expect("aborted verdict always uses the harness renderer");
 	lower_tool_parts(call, &raw, true, false, &parts)
+}
+
+fn lower_abort_total(call: &CommittedCall, abort: Abort) -> BatchResult {
+	lower_abort(call, abort).expect(
+		"harness-owned Aborted verdict serialization and canonical lowering are infallible",
+	)
 }
 
 fn lower_tool_parts(
@@ -466,5 +549,161 @@ fn render_abort(abort: &Abort) -> Str {
 		Abort::MissingOutcome => {
 			Str::new_static("aborted: executor ended without a terminal outcome")
 		},
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::collections::HashMap;
+
+	use omp_env::frame::{self, client_frame, server_frame};
+	use omp_proto::thread::v1::{Part as ThreadPart, part};
+	use omp_tool::Rev;
+
+	use super::*;
+
+	fn identity(name: &'static str) -> ToolIdentity {
+		ToolIdentity {
+			name: Str::new_static(name),
+			rev:  Rev { family: Str::new_static("test"), n: 1 },
+		}
+	}
+
+	fn caps() -> PromptCaps {
+		PromptCaps { maximum_parts: 8, maximum_text_bytes: 4096, media: false }
+	}
+
+	fn terminal_text(result: &BatchResult) -> &str {
+		let Some(omp_proto::thread::v1::item::Kind::ToolResult(result)) =
+			result.item().kind.as_ref()
+		else {
+			panic!("batch completion was not a ToolResult");
+		};
+		let Some(ThreadPart { kind: Some(part::Kind::Text(text)) }) = result.parts.first() else {
+			panic!("tool result did not contain text");
+		};
+		text
+	}
+
+	#[tokio::test]
+	async fn two_calls_preserve_order_and_malformed_terminal_becomes_effects_unknown() {
+		let (client, transport) = EnvClient::in_process(0);
+		let (requests, responses) = transport.into_parts();
+		let server = tokio::spawn(async move {
+			let mut opened = HashMap::new();
+			while opened.len() < 2 {
+				let frame = requests.recv_async().await.expect("invoke frame");
+				let Some(client_frame::Body::InvokeTool(invoke)) = frame.body else {
+					continue;
+				};
+				opened.insert(invoke.invocation_id, frame.request_id);
+			}
+			let mut committed = HashMap::new();
+			while committed.len() < 2 {
+				let frame = requests.recv_async().await.expect("commit frame");
+				let Some(client_frame::Body::ArgsCommitted(commit)) = frame.body else {
+					continue;
+				};
+				committed.insert(commit.invocation_id, frame.request_id);
+			}
+			let second = committed["second"];
+			responses
+				.send_async(frame::ServerFrame {
+					request_id: second,
+					body: Some(server_frame::Body::Verdict(frame::Verdict {
+						invocation_id: "second".into(),
+						json: Bytes::from_static(b"not-json"),
+						..Default::default()
+					})),
+					..Default::default()
+				})
+				.await
+				.expect("malformed verdict");
+			let first = committed["first"];
+			responses
+				.send_async(frame::ServerFrame {
+					request_id: first,
+					body: Some(server_frame::Body::Verdict(frame::Verdict {
+						invocation_id: "first".into(),
+						json: Bytes::from_static(br#"{"kind":"ok","value":{"answer":1}}"#),
+						parts: vec![ThreadPart {
+							kind: Some(part::Kind::Text("one".into())),
+						}],
+						..Default::default()
+					})),
+					..Default::default()
+				})
+				.await
+				.expect("valid verdict");
+		});
+		let events = EventBus::new();
+		let observed = events.subscribe_lossless();
+		let first = SpeculativeCall::open(
+			&client,
+			&events,
+			Str::new_static("first"),
+			identity("first_tool"),
+			Duration::from_secs(1),
+		)
+		.await
+		.expect("open first");
+		let second = SpeculativeCall::open(
+			&client,
+			&events,
+			Str::new_static("second"),
+			identity("second_tool"),
+			Duration::from_secs(1),
+		)
+		.await
+		.expect("open second");
+		let results = ToolBatch::new(vec![
+			first.commit(Bytes::from_static(b"{}")),
+			second.commit(Bytes::from_static(b"{}")),
+		])
+		.drive(&Registry::new(), &caps())
+		.await;
+		server.await.expect("scripted env task");
+
+		assert_eq!(results.len(), 2);
+		assert_eq!(terminal_text(&results[0]), "one");
+		assert!(terminal_text(&results[1]).contains("failed to lower environment verdict"));
+		let mut finished = 0;
+		while let Ok(event) = observed.try_recv() {
+			if matches!(event.as_ref(), AgentEvent::ToolFinished { .. }) {
+				finished += 1;
+			}
+		}
+		assert_eq!(finished, 2, "every committed call emits exactly one result");
+	}
+
+	#[tokio::test]
+	async fn interrupt_before_commit_yields_skipped_without_args_committed() {
+		let (client, transport) = EnvClient::in_process(0);
+		let (requests, _responses) = transport.into_parts();
+		let events = EventBus::new();
+		let call = SpeculativeCall::open(
+			&client,
+			&events,
+			Str::new_static("skipped"),
+			identity("skipped_tool"),
+			Duration::from_secs(1),
+		)
+		.await
+		.expect("open call");
+		let opened = requests.recv_async().await.expect("invoke frame");
+		assert!(matches!(opened.body, Some(client_frame::Body::InvokeTool(_))));
+		let (_interrupt_tx, interrupt_rx) =
+			watch::channel(Some(Str::new_static("user interrupted")));
+		let results = ToolBatch::new(vec![call.commit(Bytes::from_static(b"{}"))])
+			.drive_interruptible(&Registry::new(), &caps(), interrupt_rx, Duration::from_millis(10))
+			.await;
+		assert_eq!(results.len(), 1);
+		assert!(terminal_text(&results[0]).starts_with("skipped:"));
+		while let Ok(frame) = requests.try_recv() {
+			assert!(
+				!matches!(frame.body, Some(client_frame::Body::ArgsCommitted(_))),
+				"interrupted unstarted call sent ArgsCommitted"
+			);
+		}
 	}
 }

@@ -102,6 +102,16 @@ pub enum CommitError {
 	#[error("invalid invocation framing: {0}")]
 	Protocol(Str),
 }
+/// Failure while waiting for the next invocation interrupt.
+#[derive(Debug, Error)]
+pub enum InterruptWaitError {
+	/// The invocation owner disappeared before sending another interrupt.
+	#[error("invocation event stream closed")]
+	Closed,
+	/// Framing violated the one-stream invocation protocol.
+	#[error("invalid invocation framing: {0}")]
+	Protocol(Str),
+}
 
 /// Tool-facing cursor over one invocation's single inbound event stream.
 ///
@@ -191,6 +201,31 @@ impl<'c> IncomingParams<'c> {
 	/// Removes the oldest interrupt observed by a non-interruptible operation.
 	pub fn take_interrupt(&mut self) -> Option<Interrupt> {
 		self.interrupts.pop_front()
+	}
+
+	/// Waits for and consumes the next structured interrupt.
+	///
+	/// This is the cooperative-cancellation arm for resource operations that
+	/// begin after argument commitment. A closed feed is reported separately
+	/// because the resource owner must then establish terminal effect truth.
+	pub async fn next_interrupt(&mut self) -> Result<Interrupt, InterruptWaitError> {
+		if let Some(interrupt) = self.interrupts.pop_front() {
+			return Ok(interrupt);
+		}
+		loop {
+			match self.events.recv_async().await {
+				Ok(event) => {
+					if let Some(interrupt) = self.apply(event).map_err(InterruptWaitError::Protocol)? {
+						self.interrupts.pop_back();
+						return Ok(interrupt);
+					}
+				},
+				Err(_) => {
+					self.disconnect();
+					return Err(InterruptWaitError::Closed);
+				},
+			}
+		}
 	}
 
 	async fn drive_pull<R, F, Fut>(&mut self, operation: F, observe: bool) -> Result<R, ParamError>

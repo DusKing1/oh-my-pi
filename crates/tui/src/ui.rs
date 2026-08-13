@@ -295,6 +295,37 @@ impl Ui {
 		true
 	}
 
+	/// Locates a named component, downcasts it to `T`, and applies `update`.
+	/// If the component exists, matches `T`, and the closure returns `true`,
+	/// this invalidates cached geometry and schedules a relayout/repaint.
+	pub fn update_component<T: crate::component::Component>(
+		&mut self,
+		id: &str,
+		update: impl FnOnce(&mut T) -> bool,
+	) -> bool {
+		let Some((slot, old_measure, old_rect, presented)) = self.snapshot_id(id) else {
+			return false;
+		};
+		let Some(changed) = self.root.update_id(id, |cached| {
+			let changed = if let Some(comp) = cached.comp_mut().downcast_mut::<T>() {
+				update(comp)
+			} else {
+				false
+			};
+			(changed, changed)
+		}) else {
+			return false;
+		};
+		if !changed {
+			return false;
+		}
+		if presented {
+			self.refresh_slot(slot, old_measure, old_rect);
+		}
+		self.apply_conds(true);
+		true
+	}
+
 	/// Sets a named component's property and refreshes the smallest safe
 	/// region. Size properties relayout the document; components with an
 	/// `anim` property tween toward the new value from whatever is on
@@ -4801,5 +4832,64 @@ cd</pre>"##,
 		let col = shown_cursor_col(&overlay_paint(&mut renderer))
 			.expect("blurring returns the caret to the composer");
 		assert!(col < 14, "caret back in the composer, got column {col}");
+	}
+
+	#[test]
+	fn update_component_typed_path() {
+		use crate::component::Component;
+		use crate::components::{Col, TranscriptView};
+		let view = TranscriptView::new().with(Prop::Id, "transcript");
+		let mut ui = Ui::from_root(view, 40, UiContext::default());
+		
+		let mut renderer = crate::Renderer::new(Vec::new());
+		ui.present(&mut renderer, 10, 0).unwrap();
+		let initial_height = ui.frame.size().height;
+
+		let mut first_child_slot = 0;
+		let changed = ui.update_component::<TranscriptView>("transcript", |view| {
+			let mut child = Col::new();
+			child.props_mut().set(Prop::H, 2_u16);
+			first_child_slot = child.slot();
+			view.push(crate::component::Cached::new(Box::new(child)));
+			true
+		});
+		assert!(changed);
+		ui.present(&mut renderer, 10, 0).unwrap();
+		assert!(ui.frame.size().height > initial_height);
+
+		// Add a second item so we can replace it and preserve the first
+		ui.update_component::<TranscriptView>("transcript", |view| {
+			let child = Col::new();
+			view.push(crate::component::Cached::new(Box::new(child)));
+			true
+		});
+		ui.present(&mut renderer, 10, 0).unwrap();
+		
+		// Replacing tail preserves earlier slot
+		let mut tail_child_slot = 0;
+		let changed = ui.update_component::<TranscriptView>("transcript", |view| {
+			let child = Col::new();
+			tail_child_slot = child.slot();
+			view.replace_tail(crate::component::Cached::new(Box::new(child)));
+			true
+		});
+		assert!(changed);
+		ui.present(&mut renderer, 10, 0).unwrap();
+		
+		let final_slots: Vec<_> = ui.root.comp().children()[0].comp().children().iter().map(|c| c.comp().slot()).collect();
+		assert_eq!(final_slots.len(), 2);
+		assert_eq!(final_slots[0], first_child_slot, "Earlier slot preserved");
+		assert_eq!(final_slots[1], tail_child_slot, "Tail slot replaced");
+
+		// Wrong type causes no damage
+		let mut wrong_type_called = false;
+		let changed = ui.update_component::<Col>("transcript", |_| {
+			wrong_type_called = true;
+			true
+		});
+		assert!(!changed, "Wrong type returns false");
+		assert!(!wrong_type_called, "Wrong type does not call closure");
+		let changed = ui.update_component::<TranscriptView>("transcript", |_| false);
+		assert!(!changed, "No-op returns false");
 	}
 }

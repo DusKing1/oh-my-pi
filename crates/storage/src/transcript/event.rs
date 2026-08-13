@@ -17,6 +17,19 @@ use super::{
 };
 use crate::blob::BlobRef;
 
+/// Canonical caller or harness input durably assigned to a logical turn.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TurnInputItem {
+	/// Logical turn that must claim this input before opening transport.
+	pub turn_id:     Str,
+	/// Canonical input item.
+	pub item:        Item,
+	/// Deterministic prompt identity active when the input was staged.
+	pub prompt_hash: Option<[u8; 32]>,
+}
+
+impl Eq for TurnInputItem {}
+
 /// One canonical thread item with journal-only turn metadata.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ItemRecord {
@@ -30,14 +43,142 @@ pub struct ItemRecord {
 
 impl Eq for ItemRecord {}
 
-/// Durable proof that one gateway turn outcome was fully journaled.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// Durable, field-exact proof that one gateway turn outcome was fully
+/// journaled.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TurnReceipt {
 	/// Gateway turn identifier.
-	pub turn_id:     Str,
-	/// Physical event indexes of canonical items committed by the outcome.
-	pub item_events: Vec<u64>,
+	pub turn_id:            Str,
+	/// Deterministic prompt identity fixed before the turn opened.
+	pub prompt_hash:        [u8; 32],
+	/// Ordered physical item events comprising the canonical system head.
+	pub prompt_head_events: Vec<u64>,
+	/// Physical event indexes of canonical items emitted by the outcome.
+	pub item_events:        Vec<u64>,
+	/// Complete authoritative terminal gateway outcome.
+	pub outcome:            omp_proto::inference::v1::Outcome,
 }
+
+impl Eq for TurnReceipt {}
+/// Exact canonical input fixed before an inference turn opens.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum TurnInputRecord {
+	/// Complete thread for a stateless turn or context seed.
+	Full {
+		/// Exact submitted canonical thread.
+		thread: omp_proto::thread::v1::Thread,
+	},
+	/// Atomic delta against one held gateway context revision.
+	Delta {
+		/// Exact context identity and optimistic-concurrency stamp.
+		context: omp_proto::inference::v1::ContextRef,
+		/// Exact submitted truncate-and-append delta.
+		delta:   omp_proto::inference::v1::ThreadDelta,
+	},
+}
+
+impl Eq for TurnInputRecord {}
+
+/// Exact frozen options fixed before an inference turn opens.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TurnOptionsRecord {
+	/// Context seeded by a full input, absent for stateless turns.
+	pub context_id: Option<Str>,
+	/// Canonical chat parameters.
+	pub params:     omp_proto::inference::v1::ChatParams,
+	/// In-turn invocation capability.
+	pub executor:   Option<omp_proto::inference::v1::Executor>,
+	/// Namespaced turn-level properties.
+	pub props:      Option<omp_proto::inference::v1::ValueMap>,
+}
+
+impl Eq for TurnOptionsRecord {}
+
+/// Durable proof that a logical turn was fixed before transport opened.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TurnStart {
+	/// Gateway turn identifier reused by every retry of this logical turn.
+	pub turn_id:            Str,
+	/// Ordered physical item events claimed as this submission's input.
+	pub item_events:        Vec<u64>,
+	/// Deterministic prompt identity used to construct the submission.
+	pub prompt_hash:        [u8; 32],
+	/// Ordered physical item events comprising the canonical system head.
+	pub prompt_head_events: Vec<u64>,
+	/// Deterministic identity of the exact live tool registry used by the turn.
+	pub toolset_hash:       [u8; 32],
+	/// Stable ordered allowlist fixed for this exact submission.
+	pub enabled_tools:      Vec<Str>,
+	/// Ordered item events whose optimistic sequences require outcome patching.
+	pub sequence_targets:   Vec<u64>,
+	/// Exact canonical opening input used for every retry and crash replay.
+	pub input:              TurnInputRecord,
+	/// Exact frozen opening options used for every retry and crash replay.
+	pub options:            TurnOptionsRecord,
+}
+
+/// Durable intent for an atomic system-prompt head replacement.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PromptRewriteIntent {
+	/// Deterministic identity of the replacement prompt.
+	pub prompt_hash:    [u8; 32],
+	/// Canonical replacement head items, retained for crash recovery.
+	pub head:           Vec<Item>,
+	/// Ordered live item-event indexes retained after the new head.
+	pub preserved_tail: Vec<u64>,
+}
+
+impl Eq for PromptRewriteIntent {}
+
+/// One materialized replacement-head item belonging to a rewrite intent.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PromptRewriteStage {
+	/// Physical event index of the owning rewrite intent.
+	pub intent:  u64,
+	/// Zero-based position in the intent's replacement head.
+	pub ordinal: u64,
+	/// Canonical replacement-head item.
+	pub item:    Item,
+}
+
+impl Eq for PromptRewriteStage {}
+
+/// Atomic publication of one fully materialized prompt rewrite.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PromptRewriteCommit {
+	/// Physical event index of the owning rewrite intent.
+	pub intent:      u64,
+	/// Ordered physical event indexes of every staged head item.
+	pub head_events: Vec<u64>,
+}
+
+/// Durable authorization boundary before committed tool effects may start.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ToolBatchAuthorized {
+	/// Gateway turn whose canonical output contains the calls.
+	pub turn_id:  Str,
+	/// Model-issued call identifiers authorized as one concurrent batch.
+	pub call_ids: Vec<Str>,
+}
+
+/// Durable registration of detached work owned by the agent session.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct JobRegistered {
+	/// Full detached-job reference needed to resume settlement watching.
+	pub job: omp_tool::JobRef,
+}
+
+/// Durable canonical settlement of one detached job.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct JobSettled {
+	/// Stable environment job identifier.
+	pub job_id:     Str,
+	/// Canonical settlement item posted at the next turn boundary.
+	pub settlement: Item,
+}
+
+impl Eq for JobSettled {}
 
 /// A timestamped transcript event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +294,23 @@ pub enum Kind {
 		/// Append-only correction.
 		patch:  AmendPatch,
 	},
+	/// Stage one canonical input under its logical turn before transport opens.
+	TurnInput(TurnInputItem),
+	/// Begin an atomic prompt-head replacement without changing the live chain.
+	PromptRewriteIntent(PromptRewriteIntent),
+	/// Materialize one hidden item for a pending prompt-head replacement.
+	PromptRewriteStage(PromptRewriteStage),
+	/// Atomically publish a fully materialized prompt-head replacement.
+	PromptRewriteCommit(PromptRewriteCommit),
+	/// Register detached work for durable restart ownership.
+	JobRegistered(JobRegistered),
+	/// Record canonical detached-work settlement.
+	JobSettled(JobSettled),
+	/// Authorize one committed tool batch before any effects may start.
+	ToolBatchAuthorized(ToolBatchAuthorized),
+	/// Fix one logical gateway submission before opening its transport.
+	TurnStart(TurnStart),
+
 	/// Record completion of a gateway turn after all of its items were appended.
 	TurnReceipt(TurnReceipt),
 	/// Add, replace, or clear a label on an earlier event.
@@ -259,10 +417,18 @@ impl PartialEq for Kind {
 				Self::NativeCheckpoint { provider: b_provider, model: b_model, items: b_items },
 			) => (a_provider, a_model, a_items) == (b_provider, b_model, b_items),
 			(Self::Aborted { tool_call_ids: a }, Self::Aborted { tool_call_ids: b }) => a == b,
+			(Self::TurnInput(a), Self::TurnInput(b)) => a == b,
 			(
 				Self::Amend { target: a_target, patch: a_patch },
 				Self::Amend { target: b_target, patch: b_patch },
 			) => (a_target, a_patch) == (b_target, b_patch),
+			(Self::PromptRewriteIntent(a), Self::PromptRewriteIntent(b)) => a == b,
+			(Self::PromptRewriteStage(a), Self::PromptRewriteStage(b)) => a == b,
+			(Self::PromptRewriteCommit(a), Self::PromptRewriteCommit(b)) => a == b,
+			(Self::JobRegistered(a), Self::JobRegistered(b)) => a == b,
+			(Self::JobSettled(a), Self::JobSettled(b)) => a == b,
+			(Self::ToolBatchAuthorized(a), Self::ToolBatchAuthorized(b)) => a == b,
+			(Self::TurnStart(a), Self::TurnStart(b)) => a == b,
 			(Self::TurnReceipt(a), Self::TurnReceipt(b)) => a == b,
 			(
 				Self::Label { target: a_target, label: a_label },

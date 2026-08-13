@@ -63,7 +63,38 @@ pub struct Grid {
 	pub bottom: (char, char, char),
 }
 
+
+/// Semantic prefixes for diff lines.
+#[derive(Clone, Copy, Debug)]
+pub struct DiffPrefixes {
+	/// Header or file metadata prefix.
+	pub header:  &'static str,
+	/// Unchanged context line prefix.
+	pub context: &'static str,
+	/// Added line prefix.
+	pub add:     &'static str,
+	/// Removed line prefix.
+	pub remove:  &'static str,
+}
+
 impl Charset {
+	pub const fn diff_prefixes(self) -> DiffPrefixes {
+		match self {
+			Self::Ascii => DiffPrefixes {
+				header:  "  ",
+				context: "  ",
+				add:     "+ ",
+				remove:  "- ",
+			},
+			_ => DiffPrefixes {
+				header:  "  ",
+				context: "  ",
+				add:     "+ ",
+				remove:  "- ",
+			},
+		}
+	}
+
 	/// Resolves a semantic icon through this terminal's capability tier.
 	pub const fn icon(self, icon: crate::Icon) -> &'static str {
 		icon.glyph(self)
