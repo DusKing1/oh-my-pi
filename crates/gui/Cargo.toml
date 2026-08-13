@@ -1,0 +1,37 @@
+[package]
+name = "omp-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "GPU-accelerated native window host for omp-tui applications"
+
+[lints]
+workspace = true
+
+[dependencies]
+omp-core = { workspace = true }
+omp-tui = { workspace = true }
+bytemuck = { workspace = true }
+etagere = { workspace = true }
+fontdb = { workspace = true }
+parking_lot = { workspace = true }
+png = { workspace = true }
+pollster = { workspace = true }
+rustybuzz = { workspace = true }
+self_cell = { workspace = true }
+smallvec = { workspace = true }
+swash = { workspace = true }
+thiserror = { workspace = true }
+wgpu = { workspace = true }
+winit = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { workspace = true }
+raw-window-handle = { workspace = true }
+
+[dev-dependencies]
+flume = { workspace = true }
+xutf = { workspace = true }

@@ -7,7 +7,7 @@ use xutf::Text;
 use crate::{
 	anim,
 	component::{Component, MemoKey, PaintCtx, Slot, next_slot},
-	frame::{Rect, Style},
+	frame::{Decor, DecorKind, Rect, Style},
 	markup::{TextWrap, Truncate},
 	props::{Prop, PropValue, Props},
 	rich::{Pipeline, RichSink, RichText, cell_width},
@@ -195,7 +195,9 @@ impl Component for TextLeaf {
 		match self.props.shimmer() {
 			Some(period) => {
 				paint_rich_shimmer(pc, rect, &self.rich, self.props.align(), period);
-				pc.wake(self.slot, pc.now.saturating_add(anim::FRAME));
+				if !pc.ctx.native_decor {
+					pc.wake(self.slot, pc.now.saturating_add(anim::FRAME));
+				}
 			},
 			None => paint_rich(pc, rect, &self.rich, self.props.align()),
 		}
@@ -204,6 +206,25 @@ impl Component for TextLeaf {
 		if let Some(reveal) = self.reveal.as_deref()
 			&& !reveal.is_settled()
 		{
+			if pc.ctx.native_decor {
+				let row = RichText::rows(&self.rich).saturating_sub(1);
+				let width = self.rich.row_width(row);
+				let slack = rect.width.saturating_sub(width);
+				let x = rect
+					.x
+					.saturating_add(alignment_slack(self.props.align(), slack));
+				pc.frame.push_decor(Decor {
+					rect: Rect {
+						x,
+						y: rect.y.saturating_add(row),
+						width,
+						height: 1,
+					},
+					kind: DecorKind::Reveal {
+						front: f32::from(x.saturating_add(width)),
+					},
+				});
+			}
 			pc.wake_layout(self.slot, pc.now.saturating_add(anim::FRAME));
 		}
 	}
@@ -606,25 +627,33 @@ pub(super) fn paint_rich(
 /// distance from the sweep, and each row rides the same phase.
 fn paint_rich_shimmer(
 	pc: &mut PaintCtx<'_>,
-	rect: Rect,
+	text_rect: Rect,
 	rich: &RichText,
 	align: crate::markup::Align,
 	period: std::time::Duration,
 ) {
-	let right = rect.x.saturating_add(rect.width);
-	let clip = pc.clip.min(rect.y.saturating_add(rect.height));
-	let full_row = rect.x == 0 && rect.width == pc.frame.size().width;
+	if pc.ctx.native_decor {
+		paint_rich(pc, text_rect, rich, align);
+		pc.frame.push_decor(Decor {
+			rect: text_rect,
+			kind: DecorKind::Shimmer { period },
+		});
+		return;
+	}
+	let right = text_rect.x.saturating_add(text_rect.width);
+	let clip = pc.clip.min(text_rect.y.saturating_add(text_rect.height));
+	let full_row = text_rect.x == 0 && text_rect.width == pc.frame.size().width;
 	for row in 0..RichText::rows(rich) {
-		let y = rect.y.saturating_add(row);
+		let y = text_rect.y.saturating_add(row);
 		if y >= clip {
 			break;
 		}
-		if full_row && row > 0 && rich.row_soft_wrap(row - 1) && rich.row_width(row - 1) == rect.width
+		if full_row && row > 0 && rich.row_soft_wrap(row - 1) && rich.row_width(row - 1) == text_rect.width
 		{
 			pc.frame.set_soft_wrap(y - 1);
 		}
-		let slack = rect.width.saturating_sub(rich.row_width(row));
-		let start = rect.x.saturating_add(alignment_slack(align, slack));
+		let slack = text_rect.width.saturating_sub(rich.row_width(row));
+		let start = text_rect.x.saturating_add(alignment_slack(align, slack));
 		let shimmer = anim::Shimmer::new(pc.now, period, rich.row_width(row));
 		let mut x = start;
 		'runs: for (style, text) in rich.row_runs(row) {
@@ -822,6 +851,39 @@ mod tests {
 		ui.tick(Duration::from_millis(100));
 		assert_eq!(frame_row_text(ui.frame(), 0), "aaa");
 		assert_eq!(frame_row_text(ui.frame(), 1), "bbb");
+	}
+
+	#[test]
+	fn native_reveal_tracks_the_painted_front_row() {
+		let ctx = UiContext {
+			native_decor: true,
+			..UiContext::default()
+		};
+		let mut ui = Ui::from_root(
+			TextLeaf::new().with(Prop::Reveal, true).text("aaa bbb"),
+			3,
+			ctx,
+		);
+		assert_eq!(
+			ui.frame().decors(),
+			&[Decor {
+				rect: Rect::new(0, 0, 0, 1),
+				kind: DecorKind::Reveal { front: 0.0 },
+			}]
+		);
+
+		assert!(ui.tick(Duration::from_millis(34)));
+		assert!(ui.tick(Duration::from_millis(67)));
+		assert_eq!(
+			ui.frame().decors(),
+			&[Decor {
+				rect: Rect::new(0, 1, 1, 1),
+				kind: DecorKind::Reveal { front: 1.0 },
+			}]
+		);
+
+		assert!(ui.tick(Duration::from_millis(100)));
+		assert_eq!(ui.frame().decors(), &[]);
 	}
 
 	#[test]

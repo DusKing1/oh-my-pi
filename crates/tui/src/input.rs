@@ -20,6 +20,14 @@ pub enum Key {
 	Left,
 	/// Arrow right: chips/enums/number fields consume; else focus ring.
 	Right,
+	/// Extend the selection one grapheme left.
+	SelectLeft,
+	/// Extend the selection one grapheme right.
+	SelectRight,
+	/// Extend the selection one visual row up.
+	SelectUp,
+	/// Extend the selection one visual row down.
+	SelectDown,
 	/// Next focusable widget (always escapes the current widget).
 	Tab,
 	/// Previous focusable widget.
@@ -40,6 +48,10 @@ pub enum Key {
 	Home,
 	/// Jump to line/list end.
 	End,
+	/// Extend the selection to the logical line start.
+	SelectHome,
+	/// Extend the selection to the logical line end.
+	SelectEnd,
 	/// Scroll one viewport up.
 	PageUp,
 	/// Scroll one viewport down.
@@ -64,6 +76,16 @@ pub enum Key {
 	WordLeft,
 	/// Ctrl/Alt+Right: next word boundary.
 	WordRight,
+	/// Extend the selection to the previous word boundary.
+	SelectWordLeft,
+	/// Extend the selection to the next word boundary.
+	SelectWordRight,
+	/// Select the complete editable value.
+	SelectAll,
+	/// Copy the active selection to the clipboard.
+	Copy,
+	/// Copy the active selection to the clipboard, then delete it.
+	Cut,
 	/// Alt+D / Alt+Delete: delete forward through the next word end.
 	WordDelete,
 	/// Ctrl+V: host-driven clipboard paste, preferring images (see the runtime's
@@ -1153,6 +1175,22 @@ const DEFAULT_BINDINGS: &[(Key, u8, Key)] = &[
 	(Key::Right, 2, Key::WordRight),
 	(Key::Left, 4, Key::WordLeft),
 	(Key::Right, 4, Key::WordRight),
+	(Key::Left, 1, Key::SelectLeft),
+	(Key::Right, 1, Key::SelectRight),
+	(Key::Up, 1, Key::SelectUp),
+	(Key::Down, 1, Key::SelectDown),
+	(Key::Home, 1, Key::SelectHome),
+	(Key::End, 1, Key::SelectEnd),
+	(Key::Left, 3, Key::SelectWordLeft),
+	(Key::Right, 3, Key::SelectWordRight),
+	(Key::Left, 5, Key::SelectWordLeft),
+	(Key::Right, 5, Key::SelectWordRight),
+	(Key::Left, 7, Key::SelectWordLeft),
+	(Key::Right, 7, Key::SelectWordRight),
+	(Key::Char('c'), 5, Key::Copy),
+	(Key::Char('C'), 5, Key::Copy),
+	(Key::Char('x'), 5, Key::Cut),
+	(Key::Char('X'), 5, Key::Cut),
 	(Key::Char('f'), 2, Key::WordRight),
 	(Key::Char('b'), 2, Key::WordLeft),
 	(Key::Char('d'), 2, Key::WordDelete),
@@ -1338,6 +1376,10 @@ pub enum UiEvent {
 		/// `None` when nothing matches.
 		value: Option<Str>,
 	},
+	/// An editing widget copied or cut text; the HOST owns the clipboard
+	/// write (OSC 52 on terminals, a native detached write on the GPU
+	/// host) — widgets never touch the clipboard themselves.
+	Copied(Str),
 }
 
 /// Grapheme-safe byte offset for a cell-column cursor within `text`.
@@ -1592,6 +1634,22 @@ mod tests {
 			(b"\x1b[49;2u", Key::Char('1')),
 			(b"\x1b[97;5u", Key::Ctrl('a')),
 			(b"A", Key::Char('A')),
+		];
+		for &(bytes, expected) in cases {
+			let mut keys = Vec::new();
+			decode_keys(bytes, &mut keys);
+			assert_eq!(keys, [expected], "{bytes:?}");
+		}
+	}
+
+	#[test]
+	fn decoder_emits_selection_chords_across_legacy_and_kitty_protocols() {
+		let cases: &[(&[u8], Key)] = &[
+			(b"\x1b[1;2D", Key::SelectLeft),
+			(b"\x1b[57351;2u", Key::SelectRight),
+			(b"\x1b[1;6D", Key::SelectWordLeft),
+			(b"\x1b[99:67;6u", Key::Copy),
+			(b"\x1b[120:88;6u", Key::Cut),
 		];
 		for &(bytes, expected) in cases {
 			let mut keys = Vec::new();

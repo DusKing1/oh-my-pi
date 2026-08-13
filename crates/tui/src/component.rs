@@ -20,9 +20,9 @@ use crate::{
 	anim::{self, Easing, Lerp, Tween},
 	components::Markdown,
 	context::UiContext,
-	frame::{Color, Frame, Gradient, Rect, Style},
+	frame::{Color, Decor, DecorFill, DecorKind, Frame, Gradient, Rect, Style},
 	input::{Key, Mouse, UiEvent},
-	markup::{Align, Dim},
+	markup::{Align, Border, Dim},
 	props::{Prop, PropValue, Props},
 };
 
@@ -420,6 +420,10 @@ impl Cached {
 			self.comp.paints_background(),
 			chrome_anim,
 		);
+		if self.comp.props().noselect() {
+			// The whole chrome opts out of host text selection.
+			pc.frame.push_noselect(chrome);
+		}
 		if risen > 0 {
 			paint_lift_shadow(pc, chrome, rect);
 		}
@@ -1094,12 +1098,32 @@ pub fn paint_gradients(
 			.map(|(start, end)| Gradient::new(start, end, angle))
 			.or_else(|| resolve_gradient(pc.ctx, props, bg_prop, angle));
 		if let Some(gradient) = gradient {
-			pc.frame
-				.underlay_gradient(background, gradient, projection.unwrap_or(background_bounds));
+			if pc.ctx.native_decor {
+				pc.frame.push_decor(Decor {
+					rect: background,
+					kind: DecorKind::Fill {
+						fill:    DecorFill::Gradient(gradient),
+						rounded: props.border() == Some(Border::Round),
+					},
+				});
+			} else {
+				pc.frame
+					.underlay_gradient(background, gradient, projection.unwrap_or(background_bounds));
+			}
 		} else {
 			let bg = props.style(&pc.ctx.theme).background_color();
 			if bg != Color::Default {
-				pc.frame.underlay(background, bg);
+				if pc.ctx.native_decor {
+					pc.frame.push_decor(Decor {
+						rect: background,
+						kind: DecorKind::Fill {
+							fill:    DecorFill::Solid(bg),
+							rounded: props.border() == Some(Border::Round),
+						},
+					});
+				} else {
+					pc.frame.underlay(background, bg);
+				}
 			}
 		}
 	}
@@ -1150,7 +1174,6 @@ fn paint_border(
 		return;
 	}
 	let border = props.border().unwrap_or_default();
-	let (tl, tr, bl, br, horizontal, vertical) = pc.ctx.charset.border(border);
 	let style = props.style(&pc.ctx.theme);
 	let base = if props.bleed() {
 		style
@@ -1166,14 +1189,32 @@ fn paint_border(
 	// the ring lands; solid edges resolve directly; with only `fg=` the
 	// frame stays a dimmed echo of the node style; an unstyled border
 	// falls back to the theme's border tone.
+	let edge_color = props.edge(&pc.ctx.theme);
+	let solid = edge_color.unwrap_or_else(|| {
+		if props.contains(Prop::Fg) {
+			base.foreground_color()
+		} else {
+			pc.ctx.theme.border
+		}
+	});
+	if pc.ctx.native_decor {
+		let ink = ramp.map_or(DecorFill::Solid(solid), DecorFill::Gradient);
+		let glow = glow.map(|glow| (glow.start, glow.strength.clamp(0.0, 1.0)));
+		pc.frame.push_decor(Decor {
+			rect,
+			kind: DecorKind::Border { border, ink, glow },
+		});
+		return;
+	}
+	let (tl, tr, bl, br, horizontal, vertical) = pc.ctx.charset.border(border);
 	let edge = if ramp.is_some() {
 		base.fg(Color::Default)
-	} else if let Some(color) = props.edge(&pc.ctx.theme) {
-		base.fg(color)
+	} else if edge_color.is_some() {
+		base.fg(solid)
 	} else if props.contains(Prop::Fg) {
 		base.dim()
 	} else {
-		base.fg(pc.ctx.theme.border)
+		base.fg(solid)
 	};
 	let inner = usize::from(rect.width) - 2;
 	assemble_border_line(&mut pc.border_scratch, tl, horizontal, tr, inner);

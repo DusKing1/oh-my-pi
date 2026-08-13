@@ -49,6 +49,14 @@ impl Rect {
 		Self { x, y, width, height }
 	}
 
+	/// Whether `other` lies entirely within this rectangle.
+	pub const fn contains_rect(self, other: Self) -> bool {
+		other.x >= self.x
+			&& other.y >= self.y
+			&& other.right() <= self.right()
+			&& other.bottom() <= self.bottom()
+	}
+
 	const fn right(self) -> u16 {
 		self.x.saturating_add(self.width)
 	}
@@ -114,6 +122,21 @@ impl Gradient {
 		Self { start, end, angle }
 	}
 
+	/// Returns the color at the beginning of the ramp.
+	pub const fn start(&self) -> Color {
+		self.start
+	}
+
+	/// Returns the color at the end of the ramp.
+	pub const fn end(&self) -> Color {
+		self.end
+	}
+
+	/// Returns the angle: 0 is left-to-right and 90 is top-to-bottom.
+	pub const fn angle(&self) -> u16 {
+		self.angle
+	}
+
 	fn projection(self, bounds: Rect) -> GradientProjection {
 		let (horizontal, vertical) = match self.angle % 360 {
 			0 => (1.0, 0.0),
@@ -148,6 +171,57 @@ impl Gradient {
 			span: max - min,
 		}
 	}
+}
+
+/// One native-decoration primitive for pixel-capable presenters. Cell
+/// coordinates; the glyph backend never reads these.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Decor {
+	/// Decorated cell region.
+	pub rect: Rect,
+	/// Visual primitive applied to the region.
+	pub kind: DecorKind,
+}
+
+/// Visual treatment carried by a native-decoration primitive.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DecorKind {
+	/// Container underlay; `rounded` follows the box's border shape.
+	Fill {
+		/// Underlay paint.
+		fill:    DecorFill,
+		/// Whether the fill follows rounded border corners.
+		rounded: bool,
+	},
+	/// Border ring; `glow` is the focus/hover halo (color, strength 0..1).
+	Border {
+		/// Border shape.
+		border: crate::markup::Border,
+		/// Border paint.
+		ink:    DecorFill,
+		/// Optional halo color and normalized strength.
+		glow:   Option<(Color, f32)>,
+	},
+	/// Moving highlight crest over the rect's text (period of one sweep).
+	Shimmer {
+		/// Duration of one highlight sweep.
+		period: std::time::Duration,
+	},
+	/// Soft fade-in edge of a streaming text reveal. The rect is the front
+	/// row's line; glyphs within ~2 cells behind `front` ramp in.
+	Reveal {
+		/// Fractional absolute column of the reveal edge.
+		front: f32,
+	},
+}
+
+/// Paint used by a native fill or border decoration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DecorFill {
+	/// A flat color.
+	Solid(Color),
+	/// A two-stop color ramp.
+	Gradient(Gradient),
 }
 
 #[derive(Clone, Copy)]
@@ -220,6 +294,8 @@ impl LinkRegistry {
 
 static LINKS: LazyLock<Mutex<LinkRegistry>> = LazyLock::new(|| Mutex::new(LinkRegistry::default()));
 
+/// Resolves an interned hyperlink target, passing the URL to `use_url` when
+/// the id is known.
 pub fn with_link_url<T>(id: LinkId, use_url: impl FnOnce(&str) -> T) -> Option<T> {
 	let links = LINKS.lock();
 	links.get(id).map(use_url)
@@ -368,6 +444,51 @@ impl Style {
 	pub const fn background_color(&self) -> Color {
 		self.background
 	}
+
+	/// Reads every attribute at once, for presenters outside this crate.
+	pub const fn spec(&self) -> StyleSpec {
+		StyleSpec {
+			foreground:      self.foreground,
+			background:      self.background,
+			bold:            self.bold,
+			dim:             self.dim,
+			italic:          self.italic,
+			underline:       self.underline,
+			underline_color: self.underline_color,
+			reverse:         self.reverse,
+			strikethrough:   self.strikethrough,
+			link:            self.link,
+		}
+	}
+}
+
+/// A plain read-out of a [`Style`]'s attributes.
+///
+/// Non-terminal presenters (the GPU host) composite cells without emitting
+/// escapes; `spec` exposes the full attribute set without opening the
+/// fields themselves.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StyleSpec {
+	/// Foreground color; [`Color::Default`] defers to the host.
+	pub foreground:      Color,
+	/// Background color; [`Color::Default`] shows the host backdrop.
+	pub background:      Color,
+	/// Bold intensity.
+	pub bold:            bool,
+	/// Faint intensity.
+	pub dim:             bool,
+	/// Italics.
+	pub italic:          bool,
+	/// Underlining.
+	pub underline:       bool,
+	/// Underline color (SGR 58); [`Color::Default`] follows the foreground.
+	pub underline_color: Color,
+	/// Reverse video.
+	pub reverse:         bool,
+	/// Strikethrough.
+	pub strikethrough:   bool,
+	/// Hyperlink target, if any.
+	pub link:            Option<LinkId>,
 }
 
 /// Stored glyph data for a declarative cell.
@@ -375,18 +496,27 @@ impl Style {
 pub enum CellContent {
 	/// A one-cell space without owned text.
 	Blank,
+	/// A shaped grapheme cluster spanning `width` cells.
 	Grapheme {
+		/// The cluster text (one grapheme, possibly multi-codepoint).
 		text:  Str,
+		/// Cell span; continuation cells follow wide clusters.
 		width: u16,
 	},
 	/// A Kitty Unicode-placeholder cell, materialized only by the renderer.
 	Image {
+		/// Registered image identity.
 		id:   u32,
+		/// First image row this cell displays.
 		row:  u16,
+		/// First image column this cell displays.
 		col:  u16,
+		/// Image rows the placement spans.
 		rows: u16,
+		/// Image columns the placement spans.
 		cols: u16,
 	},
+	/// Trailing cell of a wide cluster; the head carries the glyph.
 	Continuation,
 }
 
@@ -400,6 +530,18 @@ pub struct Cell {
 impl Cell {
 	pub(super) const fn blank(style: Style) -> Self {
 		Self { content: CellContent::Blank, style }
+	}
+
+	/// The stored glyph data, for presenters compositing the grid directly.
+	#[inline]
+	pub const fn content(&self) -> &CellContent {
+		&self.content
+	}
+
+	/// The cell's visual attributes.
+	#[inline]
+	pub const fn style(&self) -> Style {
+		self.style
 	}
 
 	#[cfg(test)]
@@ -416,6 +558,8 @@ impl Cell {
 pub struct Frame {
 	size:            Size,
 	cells:           Vec<Cell>,
+	decors:          Vec<Decor>,
+	noselect:        Vec<Rect>,
 	cursor:          Option<(u16, u16)>,
 	may_have_images: bool,
 	source_id:       u64,
@@ -431,6 +575,8 @@ impl Frame {
 		Self {
 			size,
 			cells: vec![Cell::blank(Style::default()); size.area()],
+			decors: Vec::new(),
+			noselect: Vec::new(),
 			cursor: None,
 			may_have_images: false,
 			source_id: NEXT_FRAME_ID.fetch_add(1, Ordering::Relaxed),
@@ -448,6 +594,13 @@ impl Frame {
 		self.touch();
 		let area = usize::from(self.size.width).saturating_mul(usize::from(height));
 		self.cells.resize(area, Cell::blank(style));
+		if height < self.size.height {
+			self.decors
+				.retain(|decor| decor.rect.y.saturating_add(decor.rect.height) <= height);
+			self
+				.noselect
+				.retain(|rect| rect.y.saturating_add(rect.height) <= height);
+		}
 		// Boundary flags at and beyond the new final row are meaningless;
 		// drop them so a later regrowth cannot resurrect stale joins.
 		let first_invalid = usize::from(height.saturating_sub(1));
@@ -507,6 +660,40 @@ impl Frame {
 		self.size
 	}
 
+	/// Adds a native-decoration primitive for pixel presenters; the terminal
+	/// renderer ignores it.
+	pub fn push_decor(&mut self, decor: Decor) {
+		self.touch();
+		self.decors.push(decor);
+	}
+
+	/// Returns native-decoration primitives for pixel presenters; the terminal
+	/// renderer ignores them.
+	pub fn decors(&self) -> &[Decor] {
+		&self.decors
+	}
+
+	/// Marks a region whose text is excluded from host-driven selection
+	/// and copy (status bars, HUD chrome). The terminal renderer ignores
+	/// it — a terminal emulator's native selection cannot honor it.
+	pub fn push_noselect(&mut self, rect: Rect) {
+		self.touch();
+		self.noselect.push(rect);
+	}
+
+	/// Regions excluded from host-driven text selection.
+	pub fn noselect(&self) -> &[Rect] {
+		&self.noselect
+	}
+
+	/// Whether the cell at `(x, y)` participates in host text selection.
+	pub fn selectable(&self, x: u16, y: u16) -> bool {
+		!self
+			.noselect
+			.iter()
+			.any(|rect| x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom())
+	}
+
 	/// Places the terminal's hardware cursor at a document cell.
 	///
 	/// The renderer hides the cursor when this cell falls outside the live
@@ -520,6 +707,8 @@ impl Frame {
 	pub fn clear(&mut self, style: Style) {
 		self.touch();
 		self.cells.fill(Cell::blank(style));
+		self.decors.clear();
+		self.noselect.clear();
 		self.soft_wraps.clear();
 	}
 
@@ -533,6 +722,9 @@ impl Frame {
 			return;
 		}
 		self.touch();
+		let fill_rect = Rect::new(left, top, right - left, bottom - top);
+		self.decors.retain(|decor| !fill_rect.contains_rect(decor.rect));
+		self.noselect.retain(|rect| !fill_rect.contains_rect(*rect));
 		// Blanking any part of a row invalidates its exact joinability;
 		// painters re-flag when they redraw.
 		self.clear_soft_wraps_touching(top, bottom);
@@ -746,12 +938,14 @@ impl Frame {
 		column
 	}
 
-	pub(super) const fn cursor(&self) -> Option<(u16, u16)> {
+	/// The hardware-cursor anchor cell, if the document placed one.
+	pub const fn cursor(&self) -> Option<(u16, u16)> {
 		self.cursor
 	}
 
+	/// The cell at (`x`, `y`); out-of-bounds coordinates panic.
 	#[inline(always)]
-	pub(super) fn cell(&self, x: u16, y: u16) -> &Cell {
+	pub fn cell(&self, x: u16, y: u16) -> &Cell {
 		&self.cells[self.index(x, y)]
 	}
 
@@ -880,6 +1074,36 @@ impl Frame {
 				}
 			}
 		}
+		if width > 0 && copied > 0 {
+			let destination = Rect::new(dst_x, dst_y, width, copied);
+			self.decors.retain(|decor| !destination.contains_rect(decor.rect));
+			self.noselect.retain(|rect| !destination.contains_rect(*rect));
+			let source_band = Rect::new(0, src_top, src.size.width, rows);
+			let translate = |rect: Rect| {
+				Rect::new(
+					rect.x.saturating_add(dst_x),
+					dst_y.saturating_add(rect.y.saturating_sub(src_top)),
+					rect.width,
+					rect.height,
+				)
+			};
+			self.decors.extend(
+				src.decors
+					.iter()
+					.filter(|decor| source_band.contains_rect(decor.rect))
+					.cloned()
+					.map(|mut decor| {
+						decor.rect = translate(decor.rect);
+						decor
+					}),
+			);
+			self.noselect.extend(
+				src.noselect
+					.iter()
+					.filter(|rect| source_band.contains_rect(**rect))
+					.map(|rect| translate(*rect)),
+			);
+		}
 		// Wrap boundaries: a full-width copy carries its interior
 		// boundaries; anything else conservatively hardens the touched
 		// rows, since exact joinability cannot survive a partial rewrite.
@@ -1000,7 +1224,14 @@ impl Frame {
 
 #[cfg(test)]
 mod tests {
-	use super::{CellContent, Frame, Rect, Size, Style};
+	use super::{CellContent, Color, Decor, DecorFill, DecorKind, Frame, Rect, Size, Style};
+
+	fn decor(rect: Rect) -> Decor {
+		Decor {
+			rect,
+			kind: DecorKind::Fill { fill: DecorFill::Solid(Color::Default), rounded: false },
+		}
+	}
 
 	#[test]
 	fn overwriting_wide_grapheme_clears_its_continuation() {
@@ -1064,6 +1295,17 @@ mod tests {
 	}
 
 	#[test]
+	fn push_decor_bumps_revision() {
+		let mut frame = Frame::new(Size::new(4, 4));
+		let (_, before) = frame.source_stamp();
+
+		frame.push_decor(decor(Rect::new(1, 1, 2, 2)));
+
+		let (_, after) = frame.source_stamp();
+		assert_eq!(after, before.wrapping_add(1));
+	}
+
+	#[test]
 	fn soft_wrap_flags_are_layout_metadata() {
 		let mut frame = Frame::new(Size::new(4, 3));
 		frame.set_soft_wrap(0);
@@ -1096,6 +1338,19 @@ mod tests {
 	}
 
 	#[test]
+	fn fill_drops_contained_decor_and_keeps_enclosing_decor() {
+		let mut frame = Frame::new(Size::new(8, 8));
+		let contained = decor(Rect::new(3, 3, 2, 2));
+		let enclosing = decor(Rect::new(1, 1, 6, 6));
+		frame.push_decor(contained);
+		frame.push_decor(enclosing.clone());
+
+		frame.fill(Rect::new(2, 2, 4, 4), Style::default());
+
+		assert_eq!(frame.decors(), &[enclosing]);
+	}
+
+	#[test]
 	fn blit_carries_full_width_wrap_boundaries_and_hardens_partial_copies() {
 		let mut source = Frame::new(Size::new(4, 3));
 		source.put(0, 0, "abcd", Style::default());
@@ -1112,6 +1367,37 @@ mod tests {
 		partial.set_soft_wrap(1);
 		partial.blit(&source, 0, 3, 1, 1);
 		assert!(!partial.soft_wrap(1), "an offset copy hardens the rows it rewrites");
+	}
+
+	#[test]
+	fn blit_translates_source_decor_and_drops_destination_decor() {
+		let mut source = Frame::new(Size::new(8, 6));
+		source.push_decor(decor(Rect::new(1, 2, 2, 1)));
+		let mut destination = Frame::new(Size::new(12, 8));
+		destination.push_decor(decor(Rect::new(5, 2, 1, 1)));
+
+		destination.blit(&source, 2, 3, 4, 1);
+
+		assert_eq!(destination.decors(), &[decor(Rect::new(5, 1, 2, 1))]);
+	}
+
+	#[test]
+	fn noselect_regions_follow_fill_and_blit_lifecycle() {
+		let mut frame = Frame::new(Size::new(8, 8));
+		frame.push_noselect(Rect::new(3, 3, 2, 2));
+		frame.push_noselect(Rect::new(1, 1, 6, 6));
+		assert!(!frame.selectable(3, 3));
+		assert!(frame.selectable(0, 0));
+
+		frame.fill(Rect::new(2, 2, 4, 4), Style::default());
+		assert_eq!(frame.noselect(), &[Rect::new(1, 1, 6, 6)], "contained mark drops");
+
+		let mut source = Frame::new(Size::new(8, 6));
+		source.push_noselect(Rect::new(1, 2, 2, 1));
+		let mut destination = Frame::new(Size::new(12, 8));
+		destination.push_noselect(Rect::new(5, 2, 1, 1));
+		destination.blit(&source, 2, 3, 4, 1);
+		assert_eq!(destination.noselect(), &[Rect::new(5, 1, 2, 1)], "marks translate like decors");
 	}
 	#[test]
 	fn blit_translates_cursor_from_copied_region() {

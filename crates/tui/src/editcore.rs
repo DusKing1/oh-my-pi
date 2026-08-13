@@ -4,7 +4,7 @@
 //! [`Editor`] built on top of it (pluggable completion, inline ghost
 //! hints, emoji expansion, prompt history).
 
-use std::{cell::Cell, cmp::Reverse, collections::HashMap, sync::LazyLock};
+use std::{cell::Cell, cmp::Reverse, collections::HashMap, ops::Range, sync::LazyLock};
 
 use omp_core::{Str, fmts, str::IntoStr};
 use smallvec::SmallVec;
@@ -60,6 +60,10 @@ struct Atom {
 #[derive(Clone, Copy, Debug)]
 /// One visual word-wrapped row borrowed from an [`EditBuffer`].
 pub struct VisualRow<'a> {
+	/// UTF-8 byte start in the complete buffer.
+	pub start:         usize,
+	/// UTF-8 byte end in the complete buffer.
+	pub end:           usize,
 	/// Grapheme-aligned text belonging to the row.
 	pub text:          &'a str,
 	/// Cursor cell column when this row owns the cursor.
@@ -78,6 +82,8 @@ struct Segment {
 pub struct EditBuffer {
 	text:          String,
 	cursor:        usize,
+	anchor:        Option<usize>,
+	copied:        Option<Str>,
 	desired:       Option<u16>,
 	kill_ring:     Vec<String>,
 	kill_index:    usize,
@@ -107,6 +113,8 @@ impl EditBuffer {
 		Self {
 			text,
 			cursor,
+			anchor: None,
+			copied: None,
 			desired: None,
 			kill_ring: Vec::new(),
 			kill_index: 0,
@@ -137,6 +145,61 @@ impl EditBuffer {
 	/// Returns the UTF-8 byte cursor.
 	pub const fn cursor(&self) -> usize {
 		self.cursor
+	}
+
+	#[must_use]
+	/// Returns the normalized selected UTF-8 byte range, or `None` when
+	/// collapsed.
+	pub fn selection(&self) -> Option<Range<usize>> {
+		let anchor = self.anchor?;
+		if anchor == self.cursor {
+			return None;
+		}
+		let (start, end) = if anchor < self.cursor {
+			(anchor, self.cursor)
+		} else {
+			(self.cursor, anchor)
+		};
+		let (start, end) = self.expand_to_atoms(start, end);
+		Some(start..end)
+	}
+
+	#[must_use]
+	/// Returns the selected visible text.
+	pub fn selected_text(&self) -> Option<&str> {
+		self.selection().map(|range| &self.text[range])
+	}
+
+	/// Selects the complete buffer.
+	pub const fn select_all(&mut self) {
+		self.anchor = Some(0);
+		self.cursor = self.text.len();
+		self.desired = None;
+		self.break_sequence();
+	}
+
+	/// Collapses the active selection at its cursor edge.
+	pub const fn clear_selection(&mut self) {
+		self.anchor = None;
+	}
+
+	/// Takes the text captured by the last `Copy`/`Cut`, handing the
+	/// clipboard write to the host (OSC 52 on terminals, a detached
+	/// native write on the GPU host).
+	pub const fn take_copied(&mut self) -> Option<Str> {
+		self.copied.take()
+	}
+
+	#[must_use]
+	/// Returns the selected display-column span intersecting `row`.
+	pub fn selection_span(&self, row: &VisualRow<'_>) -> Option<(u16, u16)> {
+		let selection = self.selection()?;
+		let start = selection.start.max(row.start);
+		let end = selection.end.min(row.end);
+		if start >= end {
+			return None;
+		}
+		Some((cell_width(&row.text[..start - row.start]), cell_width(&row.text[..end - row.start])))
 	}
 
 	#[must_use]
@@ -174,6 +237,7 @@ impl EditBuffer {
 		self.atoms.clear();
 		self.cursor = if cursor_at_start { 0 } else { self.text.len() };
 		self.undo.clear();
+		self.anchor = None;
 		self.desired = None;
 		self.break_sequence();
 	}
@@ -192,16 +256,45 @@ impl EditBuffer {
 			.map_or(self.text.len(), |offset| start + offset);
 		let at = start + byte_at_column(&self.text[start..end], column);
 		self.cursor = self.snap_position(at, at >= self.cursor);
+		self.anchor = None;
 		self.desired = None;
 		self.break_sequence();
 	}
 
-	/// Places the cursor on a visual row and cell column.
+	/// Places the cursor on a visible visual row and cell column.
 	pub fn set_cursor_visual_row(&mut self, row: usize, column: u16, width_limit: u16) {
-		let segments = self.segments(width_limit.max(1));
-		let segment = segments[row.min(segments.len() - 1)];
-		let at = segment.start + byte_at_column(&self.text[segment.start..segment.end], column);
+		let at = self.visual_position(row, column, width_limit);
 		self.cursor = self.snap_position(at, at >= self.cursor);
+		self.anchor = None;
+		self.desired = None;
+		self.break_sequence();
+	}
+
+	/// Extends the selection to a visible visual row and cell column.
+	pub fn extend_selection_visual_row(&mut self, row: usize, column: u16, width_limit: u16) {
+		let anchor = *self.anchor.get_or_insert(self.cursor);
+		let at = self.visual_position(row, column, width_limit);
+		self.cursor = self.snap_position(at, at >= anchor);
+		self.desired = None;
+		self.break_sequence();
+	}
+
+	/// Selects the coarse word around a position on a visible visual row.
+	pub fn select_word_visual_row(&mut self, row: usize, column: u16, width_limit: u16) {
+		let at = self.visual_position(row, column, width_limit);
+		let (seed_start, seed_end) = if let Some(grapheme) = self.text[at..].graphemes().next() {
+			(at, at + grapheme.len())
+		} else if let Some((start, grapheme)) = self.text[..at].grapheme_indices().next_back() {
+			(start, start + grapheme.len())
+		} else {
+			self.cursor = at;
+			self.anchor = None;
+			return;
+		};
+		let (start, end) =
+			self.expand_to_atoms(word_left(&self.text, seed_end), word_right(&self.text, seed_start));
+		self.anchor = Some(start);
+		self.cursor = end;
 		self.desired = None;
 		self.break_sequence();
 	}
@@ -218,6 +311,7 @@ impl EditBuffer {
 		};
 		self.cursor = start + replacement.len();
 		self.splice(start..end, replacement);
+		self.anchor = None;
 		self.desired = None;
 		self.break_sequence();
 	}
@@ -262,9 +356,11 @@ impl EditBuffer {
 		}
 		self.snapshot();
 		self.break_sequence();
-		let start = self.cursor;
-		self.splice(start..start, &sanitized);
-		self.cursor += sanitized.len();
+		let range = self.selection().unwrap_or(self.cursor..self.cursor);
+		let start = range.start;
+		self.splice(range, &sanitized);
+		self.cursor = start + sanitized.len();
+		self.anchor = None;
 		self.desired = None;
 		BufferOutcome::Changed
 	}
@@ -297,9 +393,11 @@ impl EditBuffer {
 		}
 		self.snapshot();
 		self.break_sequence();
-		let start = self.cursor;
-		self.splice(start..start, marker);
+		let range = self.selection().unwrap_or(self.cursor..self.cursor);
+		let start = range.start;
+		self.splice(range, marker);
 		self.cursor = start + marker.len();
+		self.anchor = None;
 		self
 			.atoms
 			.push(Atom { start, end: start + marker.len(), payload: Str::new(payload) });
@@ -324,6 +422,7 @@ impl EditBuffer {
 		let result = self.expanded_text();
 		self.text.clear();
 		self.cursor = 0;
+		self.anchor = None;
 		self.desired = None;
 		self.undo.clear();
 		self.atoms.clear();
@@ -334,6 +433,10 @@ impl EditBuffer {
 	/// Applies a decoded editor key at the given layout width.
 	pub fn handle(&mut self, key: Key, width: u16, page_rows: usize) -> BufferOutcome {
 		self.layout_width = width.max(1);
+		// The copy stash lives exactly one key: hosts drain it right after
+		// the `Copy`/`Cut` that filled it, and any other key voids it so a
+		// later drain can never emit stale clipboard contents.
+		self.copied = None;
 		self.manual_scroll.set(false);
 		if let Some(jump) = self.jump.take() {
 			return match key {
@@ -344,11 +447,13 @@ impl EditBuffer {
 		}
 		match key {
 			Key::Ctrl(']') => {
+				self.anchor = None;
 				self.jump = Some(Jump::Forward);
 				self.break_sequence();
 				BufferOutcome::Changed
 			},
 			Key::CtrlAlt(']') => {
+				self.anchor = None;
 				self.jump = Some(Jump::Backward);
 				self.break_sequence();
 				BufferOutcome::Changed
@@ -362,28 +467,68 @@ impl EditBuffer {
 			Key::WordDelete => self.kill_word_forward(),
 			Key::Backspace => self.backspace(),
 			Key::Delete | Key::Ctrl('d') => self.delete(),
-			Key::Left | Key::Ctrl('b') => self.move_left(),
-			Key::Right | Key::Ctrl('f') => self.move_right(),
-			Key::WordLeft => {
-				let at = self.word_left();
-				self.move_to(at)
+			Key::Left | Key::Ctrl('b') => self.collapse_or(false, Self::move_left),
+			Key::Right | Key::Ctrl('f') => self.collapse_or(true, Self::move_right),
+			Key::WordLeft => self.collapse_or(false, |buffer| {
+				let at = buffer.word_left();
+				buffer.move_to(at)
+			}),
+			Key::WordRight => self.collapse_or(true, |buffer| {
+				let at = buffer.word_right();
+				buffer.move_to(at)
+			}),
+			Key::Home | Key::Ctrl('a') => self.collapse_or(false, |buffer| {
+				let at = buffer.line_bounds().0;
+				buffer.move_to(at)
+			}),
+			Key::End | Key::Ctrl('e') => self.collapse_or(true, |buffer| {
+				let at = buffer.line_bounds().1;
+				buffer.move_to(at)
+			}),
+			Key::Up => self.collapse_or(false, |buffer| buffer.move_visual(-1)),
+			Key::Down => self.collapse_or(true, |buffer| buffer.move_visual(1)),
+			Key::PageUp => {
+				self.collapse_or(false, |buffer| buffer.move_visual(-(page_rows.max(1) as isize)))
 			},
-			Key::WordRight => {
-				let at = self.word_right();
-				self.move_to(at)
+			Key::PageDown => {
+				self.collapse_or(true, |buffer| buffer.move_visual(page_rows.max(1) as isize))
 			},
-			Key::Home | Key::Ctrl('a') => {
-				let at = self.line_bounds().0;
-				self.move_to(at)
+			Key::SelectLeft => self.extend(Self::move_left),
+			Key::SelectRight => self.extend(Self::move_right),
+			Key::SelectWordLeft => self.extend(|buffer| {
+				let at = buffer.word_left();
+				buffer.move_to(at)
+			}),
+			Key::SelectWordRight => self.extend(|buffer| {
+				let at = buffer.word_right();
+				buffer.move_to(at)
+			}),
+			Key::SelectHome => self.extend(|buffer| {
+				let at = buffer.line_bounds().0;
+				buffer.move_to(at)
+			}),
+			Key::SelectEnd => self.extend(|buffer| {
+				let at = buffer.line_bounds().1;
+				buffer.move_to(at)
+			}),
+			Key::SelectUp => self.extend(|buffer| buffer.move_visual(-1)),
+			Key::SelectDown => self.extend(|buffer| buffer.move_visual(1)),
+			Key::SelectAll => {
+				self.select_all();
+				BufferOutcome::Changed
 			},
-			Key::End | Key::Ctrl('e') => {
-				let at = self.line_bounds().1;
-				self.move_to(at)
+			Key::Copy => self.copy_selection(),
+			Key::Cut => self.cut_selection(),
+			Key::Esc => {
+				let changed = self.selection().is_some();
+				self.anchor = None;
+				self.break_sequence();
+				if changed {
+					BufferOutcome::Changed
+				} else {
+					BufferOutcome::Ignored
+				}
 			},
-			Key::Up => self.move_visual(-1),
-			Key::Down => self.move_visual(1),
-			Key::PageUp => self.move_visual(-(page_rows.max(1) as isize)),
-			Key::PageDown => self.move_visual(page_rows.max(1) as isize),
 			Key::Enter | Key::ShiftEnter => self.insert_char('\n'),
 			Key::Space => self.insert_char(' '),
 			Key::Char(ch) => self.insert_char(ch),
@@ -415,6 +560,8 @@ impl EditBuffer {
 		segments[first..first + visible]
 			.iter()
 			.map(|segment| VisualRow {
+				start:         segment.start,
+				end:           segment.end,
 				text:          &self.text[segment.start..segment.end],
 				cursor_column: (self.cursor >= segment.start
 					&& self.cursor <= segment.end
@@ -488,6 +635,7 @@ impl EditBuffer {
 		self.text = text;
 		self.cursor = cursor;
 		self.atoms = atoms;
+		self.anchor = None;
 		self.desired = None;
 		self.break_sequence();
 		BufferOutcome::Changed
@@ -498,10 +646,43 @@ impl EditBuffer {
 		self.last_yank = None;
 	}
 
+	fn collapse_or(
+		&mut self,
+		forward: bool,
+		motion: impl FnOnce(&mut Self) -> BufferOutcome,
+	) -> BufferOutcome {
+		if let Some(selection) = self.selection() {
+			self.cursor = if forward {
+				selection.end
+			} else {
+				selection.start
+			};
+			self.anchor = None;
+			self.desired = None;
+			self.break_sequence();
+			BufferOutcome::Changed
+		} else {
+			self.anchor = None;
+			motion(self)
+		}
+	}
+
+	fn extend(&mut self, motion: impl FnOnce(&mut Self) -> BufferOutcome) -> BufferOutcome {
+		self.anchor.get_or_insert(self.cursor);
+		motion(self)
+	}
+
 	fn insert_char(&mut self, ch: char) -> BufferOutcome {
 		let word = ch.is_alphanumeric() || ch == '_';
-		if !word || self.last_action != Action::TypeWord {
+		let selection = self.selection();
+		if selection.is_some() || !word || self.last_action != Action::TypeWord {
 			self.snapshot();
+		}
+		if let Some(range) = selection {
+			self.cursor = range.start;
+			self.splice(range, "");
+			self.anchor = None;
+			self.last_action = Action::Other;
 		}
 		if ch == '/'
 			&& self.xml
@@ -520,6 +701,7 @@ impl EditBuffer {
 			self.splice(self.cursor..self.cursor, ch.encode_utf8(&mut encoded));
 			self.cursor += ch.len_utf8();
 		}
+		self.anchor = None;
 		self.desired = None;
 		self.last_action = if word {
 			Action::TypeWord
@@ -571,11 +753,14 @@ impl EditBuffer {
 		let current = self.segment_at_cursor(&segments);
 		let target = current.saturating_add_signed(delta).min(segments.len() - 1);
 		if target == current {
-			let edge = if delta < 0 {
-				segments[current].start
-			} else {
-				segments[current].end
-			};
+			let edge = self.snap_position(
+				if delta < 0 {
+					segments[current].start
+				} else {
+					segments[current].end
+				},
+				delta > 0,
+			);
 			if edge == self.cursor {
 				return BufferOutcome::Ignored;
 			}
@@ -604,6 +789,9 @@ impl EditBuffer {
 	}
 
 	fn backspace(&mut self) -> BufferOutcome {
+		if let Some(range) = self.selection() {
+			return self.delete_range(range.start, range.end, false);
+		}
 		let Some((mut start, _)) = self.text[..self.cursor].grapheme_indices().next_back() else {
 			self.break_sequence();
 			return BufferOutcome::Ignored;
@@ -615,6 +803,9 @@ impl EditBuffer {
 	}
 
 	fn delete(&mut self) -> BufferOutcome {
+		if let Some(range) = self.selection() {
+			return self.delete_range(range.start, range.end, false);
+		}
 		let Some(grapheme) = self.text[self.cursor..].graphemes().next() else {
 			self.break_sequence();
 			return BufferOutcome::Ignored;
@@ -670,6 +861,7 @@ impl EditBuffer {
 		let backward = end == self.cursor;
 		self.splice(start..end, "");
 		self.cursor = start;
+		self.anchor = None;
 		self.desired = None;
 		self.last_yank = None;
 		if kill {
@@ -703,14 +895,32 @@ impl EditBuffer {
 			return BufferOutcome::Ignored;
 		};
 		self.snapshot();
-		let start = self.cursor;
-		self.splice(start..start, &value);
-		self.cursor += value.len();
+		let range = self.selection().unwrap_or(self.cursor..self.cursor);
+		let start = range.start;
+		self.splice(range, &value);
+		self.cursor = start + value.len();
+		self.anchor = None;
 		self.kill_index = 0;
 		self.last_yank = Some((start, self.cursor));
 		self.last_action = Action::Yank;
 		self.desired = None;
 		BufferOutcome::Changed
+	}
+
+	fn copy_selection(&mut self) -> BufferOutcome {
+		let Some(range) = self.selection() else {
+			return BufferOutcome::Ignored;
+		};
+		self.copied = Some(Str::from(&self.text[range]));
+		BufferOutcome::Changed
+	}
+
+	fn cut_selection(&mut self) -> BufferOutcome {
+		let Some(range) = self.selection() else {
+			return BufferOutcome::Ignored;
+		};
+		self.copied = Some(Str::from(&self.text[range.clone()]));
+		self.delete_range(range.start, range.end, true)
 	}
 
 	fn yank_pop(&mut self) -> BufferOutcome {
@@ -786,6 +996,17 @@ impl EditBuffer {
 			.iter()
 			.find(|atom| index >= atom.start && index < atom.end)
 			.map(|atom| (atom.start, atom.end))
+	}
+
+	fn visual_position(&self, row: usize, column: u16, width_limit: u16) -> usize {
+		let segments = self.segments(width_limit.max(1));
+		let index = self
+			.view_offset
+			.get()
+			.saturating_add(row)
+			.min(segments.len() - 1);
+		let segment = segments[index];
+		segment.start + byte_at_column(&self.text[segment.start..segment.end], column)
 	}
 
 	fn segments(&self, width_limit: u16) -> SmallVec<Segment, 16> {
@@ -1408,6 +1629,31 @@ impl Editor {
 	/// state.
 	pub fn set_cursor_visual_row(&mut self, row: usize, column: u16, width: u16) {
 		self.buffer.set_cursor_visual_row(row, column, width);
+		self.refresh();
+	}
+
+	#[must_use]
+	/// Returns the selected display-column span intersecting `row`.
+	pub fn selection_span(&self, row: &VisualRow<'_>) -> Option<(u16, u16)> {
+		self.buffer.selection_span(row)
+	}
+
+	/// Takes the text captured by the last `Copy`/`Cut`; see
+	/// [`EditBuffer::take_copied`].
+	pub fn take_copied(&mut self) -> Option<Str> {
+		self.buffer.take_copied()
+	}
+
+	/// Extends the selection to a visual input row and refreshes derived state.
+	pub fn extend_selection_visual_row(&mut self, row: usize, column: u16, width: u16) {
+		self.buffer.extend_selection_visual_row(row, column, width);
+		self.refresh();
+	}
+
+	/// Selects the word around a visual input position and refreshes derived
+	/// state.
+	pub fn select_word_visual_row(&mut self, row: usize, column: u16, width: u16) {
+		self.buffer.select_word_visual_row(row, column, width);
 		self.refresh();
 	}
 
@@ -2532,6 +2778,99 @@ mod tests {
 		assert_eq!(editor.buffer.cursor(), 10);
 		editor.handle(Key::Up);
 		assert_eq!(editor.buffer.cursor(), 4);
+	}
+
+	#[test]
+	fn shift_motion_extends_and_plain_motion_collapses_selection() {
+		let mut buffer = EditBuffer::new("abc");
+		assert_eq!(buffer.handle(Key::SelectLeft, 80, 8), BufferOutcome::Changed);
+		assert_eq!(buffer.handle(Key::SelectLeft, 80, 8), BufferOutcome::Changed);
+		assert_eq!(buffer.selection(), Some(1..3));
+		assert_eq!(buffer.selected_text(), Some("bc"));
+
+		assert_eq!(buffer.handle(Key::Left, 80, 8), BufferOutcome::Changed);
+		assert_eq!(buffer.cursor(), 1);
+		assert_eq!(buffer.selection(), None);
+	}
+
+	#[test]
+	fn typing_replaces_selection_in_one_undo_step() {
+		let mut buffer = EditBuffer::new("abcd");
+		buffer.handle(Key::SelectLeft, 80, 8);
+		buffer.handle(Key::SelectLeft, 80, 8);
+		assert_eq!(buffer.handle(Key::Char('X'), 80, 8), BufferOutcome::Changed);
+		assert_eq!(buffer.text(), "abX");
+
+		assert_eq!(buffer.handle(Key::Ctrl('_'), 80, 8), BufferOutcome::Changed);
+		assert_eq!(buffer.text(), "abcd");
+		assert_eq!(buffer.cursor(), 2);
+		assert_eq!(buffer.handle(Key::Ctrl('_'), 80, 8), BufferOutcome::Ignored);
+	}
+
+	#[test]
+	fn cut_deletes_and_yank_reinserts_selection() {
+		let mut buffer = EditBuffer::new("one two");
+		assert_eq!(buffer.handle(Key::SelectWordLeft, 80, 8), BufferOutcome::Changed);
+		assert_eq!(buffer.selected_text(), Some("two"));
+		assert_eq!(buffer.handle(Key::Cut, 80, 8), BufferOutcome::Changed);
+		assert_eq!(buffer.text(), "one ");
+		assert_eq!(buffer.take_copied().as_deref(), Some("two"), "the host drains the cut text");
+		assert_eq!(buffer.take_copied(), None, "drained once");
+		assert_eq!(buffer.handle(Key::Ctrl('y'), 80, 8), BufferOutcome::Changed);
+		assert_eq!(buffer.text(), "one two");
+	}
+
+	#[test]
+	fn copy_stashes_text_for_the_host_without_editing() {
+		let mut buffer = EditBuffer::new("one two");
+		assert_eq!(buffer.handle(Key::Copy, 80, 8), BufferOutcome::Ignored, "no selection");
+		assert_eq!(buffer.take_copied(), None);
+		buffer.handle(Key::SelectWordLeft, 80, 8);
+		assert_eq!(buffer.handle(Key::Copy, 80, 8), BufferOutcome::Changed);
+		assert_eq!(buffer.text(), "one two", "copy never edits");
+		assert_eq!(buffer.take_copied().as_deref(), Some("two"));
+	}
+
+	#[test]
+	fn undrained_copy_is_voided_by_the_next_key() {
+		let mut buffer = EditBuffer::new("one two");
+		buffer.handle(Key::SelectWordLeft, 80, 8);
+		assert_eq!(buffer.handle(Key::Copy, 80, 8), BufferOutcome::Changed);
+		// A host that skipped the drain must not surface the old text
+		// alongside a later, unrelated edit.
+		assert_eq!(buffer.handle(Key::Char('x'), 80, 8), BufferOutcome::Changed);
+		assert_eq!(buffer.take_copied(), None, "stash lives exactly one key");
+	}
+
+	#[test]
+	fn select_all_exposes_selected_text() {
+		let mut buffer = EditBuffer::new("hello\nworld");
+		assert_eq!(buffer.handle(Key::SelectAll, 80, 8), BufferOutcome::Changed);
+		assert_eq!(buffer.selection(), Some(0..11));
+		assert_eq!(buffer.selected_text(), Some("hello\nworld"));
+	}
+
+	#[test]
+	fn selection_span_maps_columns_within_a_wrapped_row() {
+		let mut buffer = EditBuffer::new("abcdefghi");
+		buffer.set_cursor_visual_row(1, 1, 4);
+		buffer.handle(Key::SelectRight, 4, 8);
+		buffer.handle(Key::SelectRight, 4, 8);
+		let rows = buffer.rows(4, 8);
+		assert_eq!(rows[1].text, "efgh");
+		assert_eq!(buffer.selection_span(&rows[1]), Some((1, 3)));
+	}
+
+	#[test]
+	fn selection_edge_inside_atomic_marker_snaps_to_the_whole_atom() {
+		let mut buffer = EditBuffer::new("a");
+		buffer.insert_reference("[chip]", "<ref/>");
+		buffer.insert_text("z");
+		buffer.set_cursor_visual_row(0, 1, 80);
+		buffer.extend_selection_visual_row(0, 3, 80);
+		assert_eq!(buffer.atom_ranges().as_slice(), &[(1, 7)]);
+		assert_eq!(buffer.selection(), Some(1..7));
+		assert_eq!(buffer.selected_text(), Some("[chip]"));
 	}
 
 	/// Toy engine: `@` mentions with any-key trigger, a fixed ghost

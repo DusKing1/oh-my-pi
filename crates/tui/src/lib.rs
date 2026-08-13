@@ -67,13 +67,18 @@ pub use editcore::{
 	EditorOptions, Picker, SlashCommands, Suggestion, SuggestionDisplay, SuggestionList,
 	Suggestions, TabAction, VisualRow,
 };
-pub use frame::{Color, Frame, LinkId, Rect, Size, Style};
+pub use frame::{
+	Cell, CellContent, Color, Decor, DecorFill, DecorKind, Frame, Gradient, LinkId, Rect, Size, Style,
+	StyleSpec, with_link_url,
+};
 pub use graphics::{
 	NotifyProtocol, ProbeParser, ProbeResults, TerminalCaps, TerminalId, TerminalPlatform, detect,
 	detect_from, negotiate, negotiate_async, probe_terminal,
 };
 pub use icons::Icon;
 pub use imagefmt::ImageFormat;
+/// Returns registered PNG bytes for renderer-side image upload.
+pub use imagereg::bytes as image_bytes;
 pub use input::{
 	Chord, InputDecoder, InputEvent, Key, Keymap, Mods, Mouse, MouseButton, MouseReport,
 	TerminalResponse, UiEvent, decode_keys,

@@ -136,9 +136,11 @@ impl CommandPalette {
 				self.query = query;
 				PaletteEvent::Consumed
 			},
-			UiEvent::None | UiEvent::Submit | UiEvent::Highlighted { .. } | UiEvent::Pressed(_) => {
-				PaletteEvent::Consumed
-			},
+			UiEvent::None
+			| UiEvent::Submit
+			| UiEvent::Highlighted { .. }
+			| UiEvent::Pressed(_)
+			| UiEvent::Copied(_) => PaletteEvent::Consumed,
 		}
 	}
 }

@@ -326,6 +326,8 @@ define_props! {
 	Edge("edge") => edge: PropColor;
 	/// Extends the background through border cells.
 	Bleed("bleed") => bleed: bool [default bool = false; "Reports whether the background extends through the border."];
+	/// Excludes the subtree's text from host-driven selection and copy.
+	NoSelect("noselect") => noselect: bool [default bool = false; "Reports whether the subtree opts out of host text selection."];
 	/// Display title for a container or step.
 	Title("title") => title: Str [ref Str; "Returns the user-facing component title."];
 	/// Horizontal placement of the border title.
@@ -1183,7 +1185,7 @@ mod tests {
 			assert_eq!(name.parse(), Ok(prop));
 			count += 1;
 		}
-		assert_eq!(count, 68);
+		assert_eq!(count, 69);
 	}
 
 	#[test]

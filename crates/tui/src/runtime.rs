@@ -719,6 +719,10 @@ impl App {
 				match self.dispatch_input(event) {
 					// `dispatch_input` already resolved `Unclaimed` fallbacks.
 					Routed::Continue | Routed::Unclaimed => continue,
+					Routed::Copy(text) => {
+						self.terminal.copy_to_clipboard(&text)?;
+						continue;
+					},
 					Routed::Event(event) => return Ok(Some(event)),
 					Routed::Stop => return Ok(None),
 				}
@@ -783,6 +787,7 @@ impl App {
 							match self.dispatch_input(event) {
 								// `dispatch_input` already resolved `Unclaimed` fallbacks.
 								Routed::Continue | Routed::Unclaimed => {},
+								Routed::Copy(text) => self.terminal.copy_to_clipboard(&text)?,
 								Routed::Event(event) => return Ok(Some(event)),
 								Routed::Stop => return Ok(None),
 							}
@@ -1115,6 +1120,7 @@ fn route_key_event(
 		@ (UiEvent::Highlighted { .. } | UiEvent::Changed { .. } | UiEvent::Filtered { .. }) => {
 			Routed::Event(select_event(event).expect("select events map to app events"))
 		},
+		UiEvent::Copied(text) => Routed::Copy(text),
 		// The claim bit, not global damage, decides whether the key falls
 		// through: animation ticks leave damage pending on every frame and
 		// must not swallow the host's scene keys.
@@ -1144,6 +1150,9 @@ enum Routed {
 	Unclaimed,
 	/// Surface this event to the host.
 	Event(AppEvent),
+	/// An editing widget copied text; the app writes it through
+	/// [`Terminal::copy_to_clipboard`] (OSC 52 + detached native fallback).
+	Copy(Str),
 	/// A quit chord (or quit-policy cancel) ends the app.
 	Stop,
 }

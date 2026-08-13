@@ -7,9 +7,9 @@ use std::{
 
 use omp_core::{Str, StrMut, fmts};
 use omp_tui::{
-	Border, Charset, Color, Command, Component, EditOutcome, Editor, EditorOptions, EventCtx, Flow,
-	Frame, Hit, HitTag, Icon, Key, Mouse, MouseReport, PaintCtx, Prop, Props, Rect, Size,
-	SlashCommands, Slot, Style, SuggestionDisplay, Theme, Ui, UiContext,
+	Border, Charset, Color, Command, Component, Decor, DecorFill, DecorKind, EditOutcome, Editor,
+	EditorOptions, EventCtx, Flow, Frame, Hit, HitTag, Icon, Key, Mouse, MouseReport, PaintCtx,
+	Prop, Props, Rect, Size, SlashCommands, Slot, Style, SuggestionDisplay, Theme, Ui, UiContext,
 	anim::{Easing, Shimmer, Tween},
 	components::{
 		Attachment, Attachments, EditorPane, Segment, Status, attachment_color, chip_label,
@@ -18,6 +18,7 @@ use omp_tui::{
 	syntax::{SyntaxRun, highlight_xml},
 };
 use smallvec::SmallVec;
+use xutf::Text;
 
 /// Only panel boxes paint a background; the rest of the chrome is
 /// transparent so the terminal's own backdrop shows through.
@@ -103,12 +104,17 @@ fn draw_shimmer(
 	text: &str,
 	shimmer: Shimmer,
 	high: Style,
+	native: bool,
 ) {
 	for grapheme in xutf::graphemes_str(text) {
 		if *column >= right {
 			return;
 		}
-		let style = shimmer.pick(*column - start, ink(FAINT), ink(MUTED), high);
+		let style = if native {
+			high
+		} else {
+			shimmer.pick(*column - start, ink(FAINT), ink(MUTED), high)
+		};
 		let next = frame.put(*column, y, grapheme, style);
 		if next == *column {
 			return;
@@ -270,15 +276,16 @@ enum Entry {
 
 /// Demo-specific focused editor leaf with completion and syntax rendering.
 struct DemoInput {
-	props:   Props,
-	slot:    Slot,
-	editor:  Rc<RefCell<Editor>>,
-	outcome: Rc<RefCell<Option<EditOutcome>>>,
+	props:      Props,
+	slot:       Slot,
+	editor:     Rc<RefCell<Editor>>,
+	outcome:    Rc<RefCell<Option<EditOutcome>>>,
+	last_click: Option<(Instant, (u16, u16))>,
 }
 
 impl DemoInput {
 	fn new(editor: Rc<RefCell<Editor>>, outcome: Rc<RefCell<Option<EditOutcome>>>) -> Self {
-		Self { props: Props::new(), slot: next_slot(), editor, outcome }
+		Self { props: Props::new(), slot: next_slot(), editor, outcome, last_click: None }
 	}
 
 	/// Cells before the editor text: the two-cell prompt plus a gap —
@@ -449,9 +456,23 @@ impl Component for DemoInput {
 			if editor.options().xml {
 				let (runs, next) = highlight_xml(row.text, &theme, in_comment);
 				in_comment = next;
-				push_row_spans(&editor, row.text, &runs, &mut spans);
+				push_row_spans(
+					&editor,
+					row.text,
+					&runs,
+					editor.selection_span(row),
+					pc.ctx.theme.selection,
+					&mut spans,
+				);
 			} else {
-				push_row_spans(&editor, row.text, &[], &mut spans);
+				push_row_spans(
+					&editor,
+					row.text,
+					&[],
+					editor.selection_span(row),
+					pc.ctx.theme.selection,
+					&mut spans,
+				);
 			}
 			draw_line(pc.frame, input_x, row_y, input_width, &spans);
 			if let Some(cursor_column) = row.cursor_column {
@@ -498,16 +519,44 @@ impl Component for DemoInput {
 		mouse: Mouse,
 	) -> Flow {
 		let width = Self::input_width(rect.width);
+		let row = usize::from(at.1.saturating_sub(rect.y));
+		let column = at
+			.0
+			.saturating_sub(rect.x.saturating_add(Self::input_offset()));
 		match mouse {
 			Mouse::Click => {
-				self.editor.borrow_mut().set_cursor_visual_row(
-					usize::from(at.1.saturating_sub(rect.y)),
-					at.0
-						.saturating_sub(rect.x.saturating_add(Self::input_offset())),
-					width,
-				);
+				let now = Instant::now();
+				let position = (at.0, at.1);
+				let double_click = self
+					.last_click
+					.is_some_and(|(previous, previous_position)| {
+						previous_position == position
+							&& now.saturating_duration_since(previous) <= Duration::from_millis(400)
+					});
+				if double_click {
+					self
+						.editor
+						.borrow_mut()
+						.select_word_visual_row(row, column, width);
+					self.last_click = None;
+				} else {
+					self
+						.editor
+						.borrow_mut()
+						.set_cursor_visual_row(row, column, width);
+					self.last_click = Some((now, position));
+				}
 				Flow::Consumed
 			},
+			Mouse::Drag => {
+				self
+					.editor
+					.borrow_mut()
+					.extend_selection_visual_row(row, column, width);
+				self.last_click = None;
+				Flow::Consumed
+			},
+			Mouse::Release => Flow::Consumed,
 			Mouse::WheelUp | Mouse::WheelDown => {
 				let delta = if mouse == Mouse::WheelUp { -1 } else { 1 };
 				if self
@@ -560,6 +609,8 @@ impl DemoStatus {
 	fn new(work: Rc<RefCell<WorkState>>, model: Rc<RefCell<Str>>, charset: Charset) -> Self {
 		let mut props = Props::new();
 		props.set(Prop::Id, STATUS_ID);
+		// HUD chrome: never part of host text selection.
+		props.set(Prop::NoSelect, true);
 		let right = Self::right_group(charset);
 		Self { props, slot: next_slot(), work, model, charset, right }
 	}
@@ -706,6 +757,17 @@ pub struct RenderedFrame<'a> {
 	pub(crate) damage:      SmallVec<(u16, u16), 4>,
 }
 
+/// Result of routing one key through the focused composer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DemoKey {
+	/// The composer handled the key.
+	Consumed,
+	/// The composer did not handle the key.
+	Ignored,
+	/// The demo requested application exit.
+	Quit,
+}
+
 /// Produces the animated transcript, work indicator, editor, and status
 /// line demo.
 pub struct Demo {
@@ -794,11 +856,11 @@ impl Demo {
 		}
 	}
 
-	/// Routes a key through the editor and reports whether the demo should
-	/// exit. Quit policy lives here, not in the editor: once the editor
-	/// reports a key unused, `esc` first cancels running work and only quits
-	/// at rest; `ctrl-c` always quits.
-	pub fn handle_key(&mut self, key: Key) -> bool {
+	/// Routes a key through the editor and reports whether it was consumed
+	/// or requests exit. Quit policy lives here, not in the editor: once
+	/// the editor reports a key unused, `esc` first cancels running work and
+	/// only quits at rest; `ctrl-c` always quits.
+	pub fn handle_key(&mut self, key: Key) -> DemoKey {
 		*self.edit_outcome.borrow_mut() = None;
 		let _ = self.editor_ui.handle_key(key);
 		let outcome = self
@@ -811,7 +873,7 @@ impl Demo {
 				let trimmed = text.trim();
 				if trimmed == "/switch" {
 					self.switch_requested = true;
-					return false;
+					return DemoKey::Consumed;
 				}
 				if let Some(path) = trimmed
 					.strip_prefix("/attach")
@@ -821,7 +883,7 @@ impl Demo {
 					if !path.is_empty() {
 						self.attach_image(&path);
 					}
-					return false;
+					return DemoKey::Consumed;
 				}
 				let _ = self.attachments.take();
 				self.refresh_composer();
@@ -833,24 +895,27 @@ impl Demo {
 						&self.ctx,
 					))));
 				self.set_working(true, self.started_at.elapsed());
-				false
+				DemoKey::Consumed
 			},
 			EditOutcome::Changed => {
 				self.reconcile_attachments();
-				false
+				DemoKey::Consumed
 			},
 			EditOutcome::Ignored => {
 				if key == Key::Ctrl('c') {
-					return true;
+					return DemoKey::Quit;
+				}
+				if key == Key::SelectAll || key == Key::Copy || key == Key::Cut {
+					return DemoKey::Consumed;
 				}
 				if key != Key::Esc {
-					return false;
+					return DemoKey::Ignored;
 				}
 				if self.work.borrow().working {
 					self.set_working(false, self.started_at.elapsed());
-					return false;
+					return DemoKey::Consumed;
 				}
-				true
+				DemoKey::Quit
 			},
 		}
 	}
@@ -858,6 +923,18 @@ impl Demo {
 	/// Consumes a pending `/switch` request submitted through the composer.
 	pub fn take_switch_request(&mut self) -> bool {
 		std::mem::take(&mut self.switch_requested)
+	}
+
+	/// Takes text the composer copied or cut; the host owns the clipboard
+	/// write (OSC 52 on the terminal, a detached native write in the GUI).
+	pub fn take_copied(&self) -> Option<Str> {
+		self.editor.borrow_mut().take_copied()
+	}
+
+	/// Height in rows of the composer block at the document tail; the GUI
+	/// host routes plain pointer gestures there to the scene.
+	pub fn composer_rows(&self) -> u16 {
+		self.editor_ui.height()
 	}
 
 	/// Routes a document-space mouse report into the editor UI.
@@ -1109,6 +1186,7 @@ impl Demo {
 			self.emitted_shards,
 			animation_frame,
 			self.ctx.charset,
+			self.ctx.native_decor,
 		);
 		let working = self.work.borrow().working;
 		let working_changed = self.last_working != working;
@@ -1118,9 +1196,22 @@ impl Demo {
 				.fill(Rect::new(0, working_y, viewport.width, 1), base_style());
 		}
 		if working {
-			Self::draw_working(&mut self.frame, working_y, elapsed, self.cancel_hint);
+			Self::draw_working(
+				&mut self.frame,
+				working_y,
+				elapsed,
+				self.cancel_hint,
+				self.ctx.native_decor,
+			);
 		}
 		Self::draw_session_title(&mut self.frame, title_y, self.right_inset);
+		// The activity row and ghost title are HUD chrome: excluded from
+		// host text selection. Re-pushed only when a suffix repaint (which
+		// shifts these rows) dropped the old mark.
+		let hud = Rect::new(0, working_y, viewport.width, 2);
+		if !self.frame.noselect().contains(&hud) {
+			self.frame.push_noselect(hud);
+		}
 		if repaint_suffix || editor_changed {
 			self
 				.frame
@@ -1181,7 +1272,7 @@ impl Demo {
 			Entry::Command => 5,
 			Entry::Message(message) => {
 				let mut scratch = Frame::new(Size::new(width, 48));
-				Self::draw_message(&mut scratch, 0, *message, width, ctx.charset)
+				Self::draw_message(&mut scratch, 0, *message, width, ctx.charset, ctx.native_decor)
 			},
 			Entry::ShardDone(_) => 1,
 			Entry::Submitted(submission) => submission.height().saturating_add(1),
@@ -1205,10 +1296,17 @@ impl Demo {
 		let content_width = width.saturating_sub(margin * 2);
 		match entry {
 			Entry::Command => {
-				draw_command_box(frame, Rect::new(margin, y, content_width, 4), ctx.charset);
+				draw_command_box(
+					frame,
+					Rect::new(margin, y, content_width, 4),
+					ctx.charset,
+					ctx.native_decor,
+				);
 				5
 			},
-			Entry::Message(message) => Self::draw_message(frame, y, *message, width, ctx.charset),
+			Entry::Message(message) => {
+				Self::draw_message(frame, y, *message, width, ctx.charset, ctx.native_decor)
+			},
 			Entry::ShardDone(shard) => {
 				Self::draw_shard_done(frame, y, *shard, width, ctx.charset);
 				1
@@ -1258,9 +1356,16 @@ impl Demo {
 			self.emitted_shards,
 			Self::animation_frame(elapsed),
 			self.ctx.charset,
+			self.ctx.native_decor,
 		);
 		if self.work.borrow().working {
-			Self::draw_working(&mut frame, working_y, elapsed, self.cancel_hint);
+			Self::draw_working(
+				&mut frame,
+				working_y,
+				elapsed,
+				self.cancel_hint,
+				self.ctx.native_decor,
+			);
 		}
 		Self::draw_session_title(&mut frame, title_y, self.right_inset);
 		frame.blit(self.editor_ui.frame(), 0, editor_height, 0, editor_y);
@@ -1292,11 +1397,23 @@ impl Demo {
 
 	/// Paints the n-th scripted message and returns rows used including
 	/// the trailing blank. Measurement draws into a scratch frame.
-	fn draw_message(frame: &mut Frame, y: u16, message: usize, width: u16, charset: Charset) -> u16 {
+	fn draw_message(
+		frame: &mut Frame,
+		y: u16,
+		message: usize,
+		width: u16,
+		charset: Charset,
+		native: bool,
+	) -> u16 {
 		let margin = u16::from(width >= 50);
 		let content_width = width.saturating_sub(margin * 2);
 		if message == 2 {
-			draw_edit_box(frame, Rect::new(margin, y, content_width, EDIT_BOX_HEIGHT), charset);
+			draw_edit_box(
+				frame,
+				Rect::new(margin, y, content_width, EDIT_BOX_HEIGHT),
+				charset,
+				native,
+			);
 			return EDIT_BOX_HEIGHT + 1;
 		}
 		let bottom = frame.size().height;
@@ -1352,7 +1469,7 @@ impl Demo {
 
 	/// Shimmering activity line above the editor. The spinner and timer
 	/// live in the status bar's brand segment; this row only narrates.
-	fn draw_working(frame: &mut Frame, y: u16, elapsed: Duration, hint: &str) {
+	fn draw_working(frame: &mut Frame, y: u16, elapsed: Duration, hint: &str, native: bool) {
 		if y >= frame.size().height || frame.size().width < 4 {
 			return;
 		}
@@ -1365,9 +1482,28 @@ impl Demo {
 		let length = u16::try_from(length).unwrap_or(u16::MAX);
 		let shimmer = Shimmer::new(elapsed, SHIMMER_PERIOD, length);
 		let right = frame.size().width.saturating_sub(1);
-		draw_shimmer(frame, &mut column, start, y, right, hint, shimmer, ink(CYAN));
-		draw_shimmer(frame, &mut column, start, y, right, " ", shimmer, ink(GREEN));
-		draw_shimmer(frame, &mut column, start, y, right, WORKING_MESSAGE, shimmer, ink(GREEN));
+		if native {
+			frame.fill(Rect::new(start, y, right.saturating_sub(start), 1), base_style());
+		}
+		draw_shimmer(frame, &mut column, start, y, right, hint, shimmer, ink(CYAN), native);
+		draw_shimmer(frame, &mut column, start, y, right, " ", shimmer, ink(GREEN), native);
+		draw_shimmer(
+			frame,
+			&mut column,
+			start,
+			y,
+			right,
+			WORKING_MESSAGE,
+			shimmer,
+			ink(GREEN),
+			native,
+		);
+		if native {
+			frame.push_decor(Decor {
+				rect: Rect::new(start, y, column.saturating_sub(start), 1),
+				kind: DecorKind::Shimmer { period: SHIMMER_PERIOD },
+			});
+		}
 	}
 
 	/// The session title resting right-aligned in the air row between
@@ -1386,8 +1522,8 @@ impl Demo {
 }
 
 /// The closed four-row command box that opens the transcript.
-fn draw_command_box(frame: &mut Frame, rect: Rect, charset: Charset) {
-	draw_box(frame, rect, ink(FAINT), panel_style(), charset);
+fn draw_command_box(frame: &mut Frame, rect: Rect, charset: Charset, native: bool) {
+	draw_box(frame, rect, ink(FAINT), panel_style(), charset, native);
 	if rect.width < 4 || rect.height < 4 {
 		return;
 	}
@@ -1418,10 +1554,11 @@ fn draw_live_panel(
 	emitted_shards: u16,
 	animation_frame: u64,
 	charset: Charset,
+	native: bool,
 ) -> bool {
 	let mut changed = repaint_chrome;
 	if repaint_chrome {
-		draw_box(frame, rect, ink(FAINT), panel_style(), charset);
+		draw_box(frame, rect, ink(FAINT), panel_style(), charset, native);
 	}
 	if rect.width < 4 || rect.height < 3 {
 		return changed;
@@ -1576,8 +1713,8 @@ fn draw_ascii_changes(
 	}
 }
 
-fn draw_edit_box(frame: &mut Frame, rect: Rect, charset: Charset) {
-	draw_box(frame, rect, ink(FAINT), panel_style(), charset);
+fn draw_edit_box(frame: &mut Frame, rect: Rect, charset: Charset, native: bool) {
+	draw_box(frame, rect, ink(FAINT), panel_style(), charset, native);
 	if rect.width < 8 || rect.height < EDIT_BOX_HEIGHT {
 		return;
 	}
@@ -1640,8 +1777,33 @@ fn explicit_line_count(text: &str) -> u16 {
 }
 
 /// Paints a rounded panel box through the tier's border glyphs.
-fn draw_box(frame: &mut Frame, rect: Rect, border: Style, fill: Style, charset: Charset) {
+fn draw_box(
+	frame: &mut Frame,
+	rect: Rect,
+	border: Style,
+	fill: Style,
+	charset: Charset,
+	native: bool,
+) {
 	if rect.width == 0 || rect.height == 0 {
+		return;
+	}
+	if native {
+		frame.push_decor(Decor {
+			rect,
+			kind: DecorKind::Fill {
+				fill:    DecorFill::Solid(fill.background_color()),
+				rounded: true,
+			},
+		});
+		frame.push_decor(Decor {
+			rect,
+			kind: DecorKind::Border {
+				border: Border::Round,
+				ink:    DecorFill::Solid(border.foreground_color()),
+				glow:   None,
+			},
+		});
 		return;
 	}
 	let (tl, tr, _, _, horizontal, vertical) = charset.border(Border::Round);
@@ -1661,7 +1823,7 @@ fn draw_box(frame: &mut Frame, rect: Rect, border: Style, fill: Style, charset: 
 	}
 
 	if rect.height > 1 {
-		draw_box_bottom(frame, rect, border, charset);
+		draw_box_bottom(frame, rect, border, charset, native);
 	}
 	for row in rect.y + 1..bottom {
 		frame.put(rect.x, row, vertical.encode_utf8(&mut glyph), border);
@@ -1669,8 +1831,23 @@ fn draw_box(frame: &mut Frame, rect: Rect, border: Style, fill: Style, charset: 
 	}
 }
 
-fn draw_box_bottom(frame: &mut Frame, rect: Rect, border: Style, charset: Charset) {
+fn draw_box_bottom(frame: &mut Frame, rect: Rect, border: Style, charset: Charset, native: bool) {
 	if rect.width < 2 || rect.height < 2 {
+		return;
+	}
+	if native {
+		frame.push_decor(Decor {
+			rect,
+			kind: DecorKind::Fill { fill: DecorFill::Solid(PANEL), rounded: true },
+		});
+		frame.push_decor(Decor {
+			rect,
+			kind: DecorKind::Border {
+				border: Border::Round,
+				ink:    DecorFill::Solid(border.foreground_color()),
+				glow:   None,
+			},
+		});
 		return;
 	}
 	let (_, _, bl, br, horizontal, _) = charset.border(Border::Round);
@@ -1767,6 +1944,8 @@ fn push_row_spans<'a>(
 	editor: &Editor,
 	row: &'a str,
 	runs: &[SyntaxRun],
+	selection: Option<(u16, u16)>,
+	selection_bg: Color,
 	spans: &mut SmallVec<Span<'a>, 16>,
 ) {
 	let text = editor.text();
@@ -1824,6 +2003,62 @@ fn push_row_spans<'a>(
 		at = end;
 	}
 	emit(row, &base, at, row.len(), spans);
+	if let Some((start, end)) = selection {
+		restyle_selection(row, start, end, selection_bg, spans);
+	}
+}
+
+/// Layers a background onto the selected display columns without disturbing
+/// syntax foregrounds or attachment-chip emphasis.
+fn restyle_selection<'a>(
+	row: &'a str,
+	start_column: u16,
+	end_column: u16,
+	background: Color,
+	spans: &mut SmallVec<Span<'a>, 16>,
+) {
+	if start_column >= end_column {
+		return;
+	}
+	let start = byte_at_display_column(row, start_column);
+	let end = byte_at_display_column(row, end_column);
+	if start >= end {
+		return;
+	}
+	let source = std::mem::take(spans);
+	let mut at = 0;
+	for span in source {
+		let span_end = at + span.text.len();
+		let selected_start = start.clamp(at, span_end);
+		let selected_end = end.clamp(at, span_end);
+		if at < selected_start {
+			spans.push(Span::new(&span.text[..selected_start - at], span.style));
+		}
+		if selected_start < selected_end {
+			spans.push(Span::new(
+				&span.text[selected_start - at..selected_end - at],
+				span.style.bg(background),
+			));
+		}
+		if selected_end < span_end {
+			spans.push(Span::new(&span.text[selected_end - at..], span.style));
+		}
+		at = span_end;
+	}
+}
+
+fn byte_at_display_column(text: &str, column: u16) -> usize {
+	let mut byte = 0;
+	let mut width: u16 = 0;
+	for grapheme in text.graphemes() {
+		let next = width.saturating_add(visible_width(grapheme));
+		if next > column {
+			break;
+		}
+		byte += grapheme.len();
+		width = next;
+	}
+	byte
 }
 
 /// Style for one atomic chip: a trailing `#N` selects the marker's
@@ -1906,13 +2141,15 @@ mod tests {
 	use std::{hint::black_box, str, time::Instant};
 
 	use omp_tui::{
-		Key, Mods, Mouse, MouseButton, MouseReport, Renderer,
+		CellContent, Key, Mods, Mouse, MouseButton, MouseReport, Renderer,
 		test_support::{TerminalModel, frame_row_text},
 	};
 
 	use super::{
-		BRAND_FADE, CANCEL_HINT, Charset, Demo, DemoInput, Duration, FAINT, GREEN, INPUT_PROMPT,
-		MUTED, RenderedFrame, Shimmer, Size, UiContext, WORKING_MESSAGE, elapsed_label, ink,
+		BRAND_FADE, CANCEL_HINT, Charset, Color, DecorFill, DecorKind, Demo, DemoInput, DemoKey,
+		Duration, FAINT, Frame, GREEN, INPUT_PROMPT, MUTED, PANEL, Rect, RenderedFrame,
+		SHIMMER_PERIOD, Shimmer, Size, Style, UiContext, WORKING_MESSAGE, draw_box, elapsed_label,
+		ink, panel_style,
 	};
 
 	/// The nerd-tier context every rendering assertion in this module
@@ -1920,6 +2157,55 @@ mod tests {
 	fn test_ctx() -> UiContext {
 		UiContext { charset: Charset::NerdFont, ..UiContext::default() }
 	}
+	#[test]
+	fn native_box_uses_decor_without_inking_cells() {
+		let mut frame = Frame::new(Size::new(8, 4));
+		let rect = Rect::new(1, 1, 6, 2);
+
+		draw_box(&mut frame, rect, ink(FAINT), panel_style(), Charset::NerdFont, true);
+
+		for y in rect.y..rect.y + rect.height {
+			for x in rect.x..rect.x + rect.width {
+				let cell = frame.cell(x, y);
+				assert!(matches!(cell.content(), CellContent::Blank));
+				assert_eq!(cell.style(), Style::default());
+			}
+		}
+		assert!(matches!(
+			frame.decors(),
+			[
+				super::Decor {
+					rect: border_rect,
+					kind: DecorKind::Fill {
+						fill: DecorFill::Solid(PANEL),
+						rounded: true,
+					},
+				},
+				super::Decor {
+					rect: ink_rect,
+					kind: DecorKind::Border {
+						border: super::Border::Round,
+						ink: DecorFill::Solid(FAINT),
+						glow: None,
+					},
+				},
+			] if *border_rect == rect && *ink_rect == rect
+		));
+	}
+
+	#[test]
+	fn native_working_line_uses_one_plain_shimmer_decor() {
+		let mut frame = Frame::new(Size::new(80, 1));
+
+		Demo::draw_working(&mut frame, 0, Duration::from_millis(500), "esc", true);
+
+		assert!(matches!(frame.decors(), [super::Decor {
+			kind: DecorKind::Shimmer { period: SHIMMER_PERIOD },
+			..
+		}]));
+		assert_eq!(frame.cell(1, 0).style().foreground_color(), Color::Rgb(62, 190, 203));
+	}
+
 	fn present<W: std::io::Write>(
 		renderer: &mut Renderer<W>,
 		rendered: RenderedFrame<'_>,
@@ -2122,20 +2408,28 @@ mod tests {
 		let mut demo = Demo::new(&test_ctx());
 		let esc = Key::Esc;
 
-		assert!(!demo.handle_key(esc), "the first esc only cancels the running work");
+		assert_eq!(
+			demo.handle_key(esc),
+			DemoKey::Consumed,
+			"the first esc only cancels the running work"
+		);
 		assert!(!demo.work.borrow().working);
 
 		for character in "go".chars() {
 			demo.handle_key(Key::Char(character));
 		}
-		assert!(!demo.handle_key(Key::Enter));
+		assert_eq!(demo.handle_key(Key::Enter), DemoKey::Consumed);
 		assert!(demo.work.borrow().working, "submitting a message resumes work");
 
-		assert!(!demo.handle_key(esc), "esc cancels the resumed work");
-		assert!(demo.handle_key(esc), "esc at rest quits");
+		assert_eq!(demo.handle_key(esc), DemoKey::Consumed, "esc cancels the resumed work");
+		assert_eq!(demo.handle_key(esc), DemoKey::Quit, "esc at rest quits");
 
 		let mut fresh = Demo::new(&test_ctx());
-		assert!(fresh.handle_key(Key::Ctrl('c')), "ctrl-c quits even while working");
+		assert_eq!(
+			fresh.handle_key(Key::Ctrl('c')),
+			DemoKey::Quit,
+			"ctrl-c quits even while working"
+		);
 	}
 
 	fn mouse_report(kind: Mouse, col: u16, row: u16, button: MouseButton) -> MouseReport {
@@ -2162,6 +2456,41 @@ mod tests {
 		let editor = demo.editor.borrow();
 		assert_eq!(editor.text(), "abcdef");
 		assert_eq!(editor.view(DemoInput::input_width(viewport.width))[0].cursor_column, Some(2));
+	}
+
+	#[test]
+	fn editor_drag_and_double_click_select_and_paint() {
+		let viewport = Size::new(80, 24);
+		let ctx = test_ctx();
+		let mut demo = Demo::new(&ctx);
+		for character in "alpha beta".chars() {
+			demo.handle_key(Key::Char(character));
+		}
+		let document_height = demo.render_at(viewport, Duration::ZERO).frame.size().height;
+		let editor_y = document_height.saturating_sub(demo.editor_ui.height());
+		let input_x = DemoInput::input_offset();
+
+		demo.handle_mouse(&mouse_report(Mouse::Click, input_x + 1, editor_y + 1, MouseButton::Left));
+		demo.handle_mouse(&mouse_report(Mouse::Drag, input_x + 5, editor_y + 1, MouseButton::Left));
+		{
+			let editor = demo.editor.borrow();
+			let rows = editor.view(DemoInput::input_width(viewport.width));
+			assert_eq!(editor.selection_span(&rows[0]), Some((1, 5)));
+		}
+		let frame = demo.render_at(viewport, Duration::ZERO).frame;
+		assert_eq!(
+			frame
+				.cell(input_x + 2, editor_y + 1)
+				.style()
+				.background_color(),
+			ctx.theme.selection
+		);
+
+		demo.handle_mouse(&mouse_report(Mouse::Click, input_x + 2, editor_y + 1, MouseButton::Left));
+		demo.handle_mouse(&mouse_report(Mouse::Click, input_x + 2, editor_y + 1, MouseButton::Left));
+		let editor = demo.editor.borrow();
+		let rows = editor.view(DemoInput::input_width(viewport.width));
+		assert_eq!(editor.selection_span(&rows[0]), Some((0, 5)));
 	}
 
 	#[test]
@@ -2277,7 +2606,7 @@ mod tests {
 		let viewport = Size::new(120, 32);
 		let mut demo = Demo::new(&test_ctx());
 		for character in ":joy".chars() {
-			assert!(!demo.handle_key(Key::Char(character)));
+			assert_eq!(demo.handle_key(Key::Char(character)), DemoKey::Consumed);
 		}
 
 		let mut renderer = Renderer::new(Vec::new());
@@ -2418,7 +2747,7 @@ mod tests {
 		let viewport = Size::new(120, 32);
 		let mut demo = Demo::new(&test_ctx());
 		for character in "Hello World!".chars() {
-			assert!(!demo.handle_key(Key::Char(character)));
+			assert_eq!(demo.handle_key(Key::Char(character)), DemoKey::Consumed);
 		}
 		let mut renderer = Renderer::new(Vec::new());
 		let rendered = demo.render_at(viewport, Duration::ZERO);
@@ -2426,12 +2755,12 @@ mod tests {
 		let output =
 			str::from_utf8(renderer.writer_mut().as_slice()).expect("renderer output is UTF-8");
 		assert!(output.contains("Hello World!"));
-		assert!(!demo.handle_key(Key::Enter));
+		assert_eq!(demo.handle_key(Key::Enter), DemoKey::Consumed);
 
-		assert!(!demo.handle_key(Key::Char('/')));
-		assert!(!demo.handle_key(Key::Char('s')));
-		assert!(!demo.handle_key(Key::Char('e')));
-		assert!(!demo.handle_key(Key::BackTab));
+		assert_eq!(demo.handle_key(Key::Char('/')), DemoKey::Consumed);
+		assert_eq!(demo.handle_key(Key::Char('s')), DemoKey::Consumed);
+		assert_eq!(demo.handle_key(Key::Char('e')), DemoKey::Consumed);
+		assert_eq!(demo.handle_key(Key::BackTab), DemoKey::Ignored);
 		renderer.writer_mut().clear();
 		let rendered = demo.render_at(viewport, Duration::ZERO);
 		present(&mut renderer, rendered, viewport).expect("picker paints after back-tab");
@@ -2439,7 +2768,7 @@ mod tests {
 			str::from_utf8(renderer.writer_mut().as_slice()).expect("renderer output is UTF-8");
 		assert!(picker_output.contains("security"), "picker remains open after back-tab");
 
-		assert!(!demo.handle_key(Key::Tab));
+		assert_eq!(demo.handle_key(Key::Tab), DemoKey::Consumed);
 		renderer.writer_mut().clear();
 		let rendered = demo.render_at(viewport, Duration::ZERO);
 		let accepted_in_frame = (0..rendered.frame.size().height)
@@ -2447,9 +2776,13 @@ mod tests {
 		present(&mut renderer, rendered, viewport).expect("accepted completion paints");
 		assert!(accepted_in_frame, "tab accepts the selected slash command");
 
-		assert!(!demo.handle_key(Key::Esc));
-		assert!(!demo.handle_key(Key::Esc), "the demo-level esc cancels the running work first");
-		assert!(demo.handle_key(Key::Esc));
+		assert_eq!(demo.handle_key(Key::Esc), DemoKey::Consumed);
+		assert_eq!(
+			demo.handle_key(Key::Esc),
+			DemoKey::Consumed,
+			"the demo-level esc cancels the running work first"
+		);
+		assert_eq!(demo.handle_key(Key::Esc), DemoKey::Quit);
 	}
 
 	#[test]
@@ -2527,7 +2860,7 @@ mod tests {
 		);
 		renderer.writer_mut().clear();
 
-		assert!(!demo.handle_key(Key::Enter));
+		assert_eq!(demo.handle_key(Key::Enter), DemoKey::Consumed);
 		let rendered = demo.render_at(viewport, Duration::ZERO);
 		present(&mut renderer, rendered, viewport)
 			.expect("multiline submission preserves the immutable seam");
@@ -2629,9 +2962,9 @@ mod tests {
 		let viewport = Size::new(120, 40);
 		let mut demo = Demo::new(&test_ctx());
 		for character in format!("/attach {}", path.display()).chars() {
-			assert!(!demo.handle_key(Key::Char(character)));
+			assert_eq!(demo.handle_key(Key::Char(character)), DemoKey::Consumed);
 		}
-		assert!(!demo.handle_key(Key::Enter));
+		assert_eq!(demo.handle_key(Key::Enter), DemoKey::Consumed);
 		let rows = rows_of(&mut demo, viewport);
 		let caption_row = rows
 			.iter()
@@ -2663,7 +2996,7 @@ mod tests {
 		for character in "ship it".chars() {
 			demo.handle_key(Key::Char(character));
 		}
-		assert!(!demo.handle_key(Key::Enter));
+		assert_eq!(demo.handle_key(Key::Enter), DemoKey::Consumed);
 		let rows = rows_of(&mut demo, viewport);
 		assert!(
 			rows.iter().any(|row| row.contains("#1 ship it")),

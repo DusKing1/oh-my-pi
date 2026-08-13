@@ -17,7 +17,7 @@ use tokio::{sync::oneshot, time::Instant};
 
 use crate::{
 	commands::{CommandPalette, PaletteAction, PaletteEvent},
-	demo::{Demo, RenderedFrame},
+	demo::{Demo, DemoKey, RenderedFrame},
 	picker::{MODELS, ModelPicker, PickerEvent},
 	sidebar::Sidebar,
 	welcome::Welcome,
@@ -214,7 +214,12 @@ async fn chat<'a>(
 							// branch below recovers input immediately.
 							paste_read = Some(PasteRead::start(scope));
 						} else {
-							let quit = demo.handle_key(key);
+							let key_result = demo.handle_key(key);
+							if let Some(text) = demo.take_copied() {
+								// OSC 52 first; remote/SSH-safe, with the
+								// terminal's detached native fallback.
+								terminal.copy_to_clipboard(&text)?;
+							}
 							if demo.take_switch_request() {
 								overlay = Some(Overlay::Picker(ModelPicker::open(current_model, ctx)));
 								open_overlay(
@@ -230,7 +235,7 @@ async fn chat<'a>(
 									&mut resize,
 								)?;
 							}
-							if quit {
+							if key_result == DemoKey::Quit {
 								break;
 							}
 						}

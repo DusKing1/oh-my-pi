@@ -15,6 +15,8 @@
 //! quick roles; `Enter` (or a click) applies the selected model for this
 //! session only.
 
+use std::{path::Path, sync::LazyLock};
+
 use omp_core::{Str, StrMut, fmts};
 use omp_tui::{
 	Charset, Color, Component, Dim, Icon, IntoComponent as _, Key, Layer, Mouse, OverlayAnchor,
@@ -183,10 +185,17 @@ const HINT_ROLES: &str = "↑/↓ roles · Enter apply role model · type to sea
 /// select's query row, a blank, facts, chips, and the hint bar.
 const FRAME_ROWS: u16 = 8;
 
-/// Vendored provider logo directory shared with the other examples; rows
-/// embed each logo as a small `<img w=2 h=1 trim/>` thumbnail — real pixels
-/// on the Kitty-placeholder tier, trimmed half-blocks everywhere else.
-const LOGO_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/assets/login");
+/// Vendored logo directory; resolved at runtime because this module is
+/// compiled into several crates (`CARGO_MANIFEST_DIR` differs per host).
+static LOGO_DIR: LazyLock<String> = LazyLock::new(|| {
+	let local = Path::new(file!())
+		.parent()
+		.map(|dir| dir.join("../assets/login"));
+	match local.filter(|dir| dir.exists()) {
+		Some(dir) => dir.to_string_lossy().into_owned(),
+		None => concat!(env!("CARGO_MANIFEST_DIR"), "/examples/assets/login").to_string(),
+	}
+});
 
 /// What a routed input event did to the picker.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -349,7 +358,9 @@ impl ModelPicker {
 				}
 				PickerEvent::Consumed
 			},
-			UiEvent::None | UiEvent::Submit | UiEvent::Pressed(_) => PickerEvent::Consumed,
+			UiEvent::None | UiEvent::Submit | UiEvent::Pressed(_) | UiEvent::Copied(_) => {
+				PickerEvent::Consumed
+			},
 		}
 	}
 
@@ -437,7 +448,7 @@ fn model_rows(tier: PerfTier, current: usize, charset: Charset) -> Vec<RowSpec> 
 		.map(|(index, model)| RowSpec {
 			value:       fmts!("{index}"),
 			label:       fmts!("{}/{}", model.provider, model.id),
-			logo:        fmts!("{LOGO_DIR}/{}.png", model.provider),
+			logo:        fmts!("{}/{}.png", &*LOGO_DIR, model.provider),
 			prefix:      fmts!("{}/", model.provider),
 			prefix_fg:   DIM,
 			name:        Str::new_static(model.id),
@@ -466,7 +477,7 @@ fn role_rows(tier: PerfTier, current: usize, charset: Charset) -> Vec<RowSpec> {
 				// The `@` stays in the haystack so `@arc` matches and the
 				// bare `@` keeps every role visible.
 				label: fmts!("@{}", role.name),
-				logo: fmts!("{LOGO_DIR}/{}.png", model.provider),
+				logo: fmts!("{}/{}.png", &*LOGO_DIR, model.provider),
 				prefix: Str::default(),
 				prefix_fg: DIM,
 				name,

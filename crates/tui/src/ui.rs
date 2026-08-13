@@ -2264,6 +2264,7 @@ mod tests {
 		"bc",
 		"edge",
 		"bleed",
+		"noselect",
 		"title",
 		"title-align",
 		"footer",

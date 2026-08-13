@@ -2,8 +2,8 @@
 name = "omp-voice-kokoro"
 version.workspace = true
 edition.workspace = true
-license = "MIT"
-authors = ["Kyle Kelley", "Can Boluk"]
+license.workspace = true
+authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
 description = "Kokoro-82M text-to-speech inference on candle with Metal acceleration"

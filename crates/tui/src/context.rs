@@ -347,46 +347,49 @@ impl Appearance {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Theme {
 	/// Default foreground.
-	pub fg:       Color,
-	/// Primary interactive accent (focus, selection, links).
-	pub accent:   Color,
+	pub fg:        Color,
+	/// Primary interactive accent (focus, active controls, links).
+	pub accent:    Color,
 	/// Informational values.
-	pub info:     Color,
+	pub info:      Color,
 	/// Success / enabled.
-	pub ok:       Color,
+	pub ok:        Color,
 	/// Caution / modified.
-	pub warn:     Color,
+	pub warn:      Color,
 	/// Errors / destructive.
-	pub err:      Color,
+	pub err:       Color,
 	/// De-emphasized chrome and hints.
-	pub muted:    Color,
+	pub muted:     Color,
 	/// Container borders and rules; dimmer than `fg`, brighter than `surface`.
-	pub border:   Color,
+	pub border:    Color,
 	/// Neutral chip / button fill.
-	pub surface:  Color,
+	pub surface:   Color,
 	/// Hover row tint.
-	pub hover:    Color,
+	pub hover:     Color,
+	/// Text-selection background tint.
+	pub selection: Color,
 	/// Drop-shadow tint painted under lifted (elevated) surfaces.
-	pub shadow:   Color,
+	pub shadow:    Color,
 	/// Text painted on top of accent/warn fills.
-	pub contrast: Color,
+	pub contrast:  Color,
 }
 
 impl Default for Theme {
 	fn default() -> Self {
 		Self {
-			fg:       Color::Rgb(0xc8, 0xcc, 0xd4),
-			accent:   Color::Rgb(0x61, 0xaf, 0xef),
-			info:     Color::Rgb(0x56, 0xb6, 0xc2),
-			ok:       Color::Rgb(0x98, 0xc3, 0x79),
-			warn:     Color::Rgb(0xe5, 0xc0, 0x7b),
-			err:      Color::Rgb(0xe0, 0x6c, 0x75),
-			muted:    Color::Rgb(0x5c, 0x63, 0x70),
-			border:   Color::Rgb(0x45, 0x4b, 0x58),
-			surface:  Color::Rgb(0x3a, 0x3f, 0x4b),
-			hover:    Color::Rgb(0x2c, 0x31, 0x3a),
-			shadow:   Color::Rgb(0x05, 0x07, 0x0c),
-			contrast: Color::Rgb(0x10, 0x12, 0x16),
+			fg:        Color::Rgb(0xc8, 0xcc, 0xd4),
+			accent:    Color::Rgb(0x61, 0xaf, 0xef),
+			info:      Color::Rgb(0x56, 0xb6, 0xc2),
+			ok:        Color::Rgb(0x98, 0xc3, 0x79),
+			warn:      Color::Rgb(0xe5, 0xc0, 0x7b),
+			err:       Color::Rgb(0xe0, 0x6c, 0x75),
+			muted:     Color::Rgb(0x5c, 0x63, 0x70),
+			border:    Color::Rgb(0x45, 0x4b, 0x58),
+			surface:   Color::Rgb(0x3a, 0x3f, 0x4b),
+			hover:     Color::Rgb(0x2c, 0x31, 0x3a),
+			selection: Color::Rgb(0x36, 0x4c, 0x61),
+			shadow:    Color::Rgb(0x05, 0x07, 0x0c),
+			contrast:  Color::Rgb(0x10, 0x12, 0x16),
 		}
 	}
 }
@@ -396,32 +399,34 @@ impl Theme {
 	pub const fn for_appearance(appearance: Appearance) -> Self {
 		match appearance {
 			Appearance::Dark => Self {
-				fg:       Color::Rgb(0xc8, 0xcc, 0xd4),
-				accent:   Color::Rgb(0x61, 0xaf, 0xef),
-				info:     Color::Rgb(0x56, 0xb6, 0xc2),
-				ok:       Color::Rgb(0x98, 0xc3, 0x79),
-				warn:     Color::Rgb(0xe5, 0xc0, 0x7b),
-				err:      Color::Rgb(0xe0, 0x6c, 0x75),
-				muted:    Color::Rgb(0x5c, 0x63, 0x70),
-				border:   Color::Rgb(0x45, 0x4b, 0x58),
-				surface:  Color::Rgb(0x3a, 0x3f, 0x4b),
-				hover:    Color::Rgb(0x2c, 0x31, 0x3a),
-				shadow:   Color::Rgb(0x05, 0x07, 0x0c),
-				contrast: Color::Rgb(0x10, 0x12, 0x16),
+				fg:        Color::Rgb(0xc8, 0xcc, 0xd4),
+				accent:    Color::Rgb(0x61, 0xaf, 0xef),
+				info:      Color::Rgb(0x56, 0xb6, 0xc2),
+				ok:        Color::Rgb(0x98, 0xc3, 0x79),
+				warn:      Color::Rgb(0xe5, 0xc0, 0x7b),
+				err:       Color::Rgb(0xe0, 0x6c, 0x75),
+				muted:     Color::Rgb(0x5c, 0x63, 0x70),
+				border:    Color::Rgb(0x45, 0x4b, 0x58),
+				surface:   Color::Rgb(0x3a, 0x3f, 0x4b),
+				hover:     Color::Rgb(0x2c, 0x31, 0x3a),
+				selection: Color::Rgb(0x36, 0x4c, 0x61),
+				shadow:    Color::Rgb(0x05, 0x07, 0x0c),
+				contrast:  Color::Rgb(0x10, 0x12, 0x16),
 			},
 			Appearance::Light => Self {
-				fg:       Color::Rgb(0x24, 0x28, 0x30),
-				accent:   Color::Rgb(0x00, 0x5f, 0xaf),
-				info:     Color::Rgb(0x00, 0x72, 0x7d),
-				ok:       Color::Rgb(0x3f, 0x70, 0x19),
-				warn:     Color::Rgb(0x8a, 0x5a, 0x00),
-				err:      Color::Rgb(0xb0, 0x24, 0x32),
-				muted:    Color::Rgb(0x6b, 0x70, 0x78),
-				border:   Color::Rgb(0xd0, 0xd7, 0xde),
-				surface:  Color::Rgb(0xe2, 0xe5, 0xea),
-				hover:    Color::Rgb(0xed, 0xef, 0xf2),
-				shadow:   Color::Rgb(0xb8, 0xbd, 0xc7),
-				contrast: Color::Rgb(0xff, 0xff, 0xff),
+				fg:        Color::Rgb(0x24, 0x28, 0x30),
+				accent:    Color::Rgb(0x00, 0x5f, 0xaf),
+				info:      Color::Rgb(0x00, 0x72, 0x7d),
+				ok:        Color::Rgb(0x3f, 0x70, 0x19),
+				warn:      Color::Rgb(0x8a, 0x5a, 0x00),
+				err:       Color::Rgb(0xb0, 0x24, 0x32),
+				muted:     Color::Rgb(0x6b, 0x70, 0x78),
+				border:    Color::Rgb(0xd0, 0xd7, 0xde),
+				surface:   Color::Rgb(0xe2, 0xe5, 0xea),
+				hover:     Color::Rgb(0xed, 0xef, 0xf2),
+				selection: Color::Rgb(0xc2, 0xda, 0xed),
+				shadow:    Color::Rgb(0xb8, 0xbd, 0xc7),
+				contrast:  Color::Rgb(0xff, 0xff, 0xff),
 			},
 		}
 	}
@@ -440,6 +445,7 @@ impl Theme {
 			"border" => self.border,
 			"surface" => self.surface,
 			"hover" => self.hover,
+			"selection" => self.selection,
 			"shadow" => self.shadow,
 			"contrast" => self.contrast,
 			_ => return SystemColor::parse(name).map(|system| system.resolve(self)),
@@ -458,6 +464,7 @@ impl Theme {
 				| "border"
 				| "surface"
 				| "hover"
+				| "selection"
 				| "shadow"
 				| "contrast"
 		) || SystemColor::parse(name).is_some()
@@ -484,49 +491,53 @@ pub enum Graphics {
 #[derive(Clone, Debug)]
 pub struct UiContext {
 	/// Terminal-reported dark or light background appearance.
-	pub appearance: Appearance,
+	pub appearance:   Appearance,
 	/// Glyph capability tier.
-	pub charset:    Charset,
+	pub charset:      Charset,
 	/// Terminal image rendering capability.
-	pub graphics:   Graphics,
+	pub graphics:     Graphics,
+	/// Pixel-capable presenter: components emit [`Decor`](crate::Decor)
+	/// primitives instead of border/fill glyphs.
+	pub native_decor: bool,
 	/// Hangul Compatibility Jamo width policy.
 	///
 	/// Prefer [`UiContext::set_jamo_width`] over direct assignment: the method
 	/// also updates the process-wide hot-path setting and invalidates width
 	/// caches.
-	pub jamo_width: JamoWidth,
+	pub jamo_width:   JamoWidth,
 	/// Semantic color palette.
-	pub theme:      Theme,
+	pub theme:        Theme,
 	/// Custom element registry.
-	pub elements:   Elements,
+	pub elements:     Elements,
 	/// Presentation clock of the pass in flight: [`crate::Ui::tick`] advances
 	/// it so size transitions can be sampled during layout, where no
 	/// [`crate::PaintCtx`] exists. Excluded from equality — a moving clock
 	/// must never read as a context change.
-	pub now:        std::time::Duration,
+	pub now:          std::time::Duration,
 	/// Cache-invalidation revision, advanced by [`crate::Ui::set_context`]
 	/// when a differing context is applied. Geometry and render memos fold
 	/// it into their keys so output derived from the previous context is
 	/// discarded. Excluded from equality, like the clock.
-	pub revision:   u64,
+	pub revision:     u64,
 	/// Off-thread image decoder. `None` decodes inline during layout for
 	/// deterministic tests and bare synchronous hosts. [`crate::App`] installs
 	/// one before building the [`crate::Ui`].
-	pub loader:     Option<crate::ImageLoader>,
+	pub loader:       Option<crate::ImageLoader>,
 }
 
 impl Default for UiContext {
 	fn default() -> Self {
 		Self {
-			appearance: Appearance::default(),
-			charset:    Charset::default(),
-			graphics:   Graphics::default(),
-			jamo_width: crate::rich::jamo_width(),
-			theme:      Theme::default(),
-			elements:   Elements::default(),
-			now:        std::time::Duration::default(),
-			revision:   0,
-			loader:     None,
+			appearance:   Appearance::default(),
+			charset:      Charset::default(),
+			graphics:     Graphics::default(),
+			native_decor: false,
+			jamo_width:   crate::rich::jamo_width(),
+			theme:        Theme::default(),
+			elements:     Elements::default(),
+			now:          std::time::Duration::default(),
+			revision:     0,
+			loader:       None,
 		}
 	}
 }
@@ -574,6 +585,7 @@ impl PartialEq for UiContext {
 		self.charset == other.charset
 			&& self.appearance == other.appearance
 			&& self.graphics == other.graphics
+			&& self.native_decor == other.native_decor
 			&& self.jamo_width == other.jamo_width
 			&& self.theme == other.theme
 			&& self.elements.ptr_eq(&other.elements)

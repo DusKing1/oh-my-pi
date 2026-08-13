@@ -1,4 +1,8 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+	cell::RefCell,
+	rc::Rc,
+	time::{Duration, Instant},
+};
 
 use omp_core::{Str, fmts};
 use serde_json::Value;
@@ -13,7 +17,7 @@ use crate::{
 	},
 	context::{Charset, UiContext},
 	frame::{Color, Frame, Rect, Style},
-	input::{Key, Mouse, byte_at_column, sanitize_paste},
+	input::{Key, Mouse, UiEvent, byte_at_column, sanitize_paste},
 	markup::Border,
 	props::{Prop, PropValue, Props},
 	syntax::{SyntaxRun, highlight_xml, xml_comment_state},
@@ -25,6 +29,8 @@ pub struct EditInput {
 	slot:        Slot,
 	buffer:      EditBuffer,
 	attachments: Option<Attachments>,
+	dragging:    bool,
+	last_click:  Option<((u16, u16), Instant)>,
 }
 
 impl EditInput {
@@ -35,6 +41,8 @@ impl EditInput {
 			slot:        next_slot(),
 			buffer:      EditBuffer::default(),
 			attachments: None,
+			dragging:    false,
+			last_click:  None,
 		}
 	}
 
@@ -177,11 +185,25 @@ impl Component for EditInput {
 			let runs = overlay_chip_runs(&runs, &chips, content.text.len());
 
 			let x = pc.frame.put(rect.x, y, pc.ctx.charset.rail(), rail);
-			let cursor = focused
+			let selection = self.buffer.selection_span(content);
+			let selection_bytes = selection.map(|(start, end)| {
+				(byte_at_column(content.text, start), byte_at_column(content.text, end))
+			});
+			let cursor = (focused && selection.is_none())
 				.then_some(content.cursor_column)
 				.flatten()
 				.map(|column| byte_at_column(content.text, column));
-			paint_xml_runs(pc.frame, x, y, content.text, &runs, cursor, cursor_style);
+			paint_xml_runs(
+				pc.frame,
+				x,
+				y,
+				content.text,
+				&runs,
+				selection_bytes,
+				pc.ctx.theme.selection,
+				cursor,
+				cursor_style,
+			);
 		}
 	}
 
@@ -206,7 +228,11 @@ impl Component for EditInput {
 				// leaf's own box.
 				ec.request_layout();
 			}
-			Flow::Consumed
+			match self.buffer.take_copied() {
+				// The host owns the clipboard write (OSC 52 / native).
+				Some(text) => Flow::Event(UiEvent::Copied(text)),
+				None => Flow::Consumed,
+			}
 		} else {
 			Flow::Skip
 		}
@@ -222,11 +248,33 @@ impl Component for EditInput {
 	) -> Flow {
 		match mouse {
 			Mouse::Click => {
-				self.buffer.set_cursor_visual_row(
+				let now = Instant::now();
+				let same_cell = self.last_click.is_some_and(|(cell, then)| {
+					cell == at && now.duration_since(then) <= Duration::from_millis(400)
+				});
+				let row = usize::from(at.1.saturating_sub(rect.y));
+				let column = at.0.saturating_sub(rect.x + 2);
+				let width = Self::text_width(rect.width);
+				if same_cell {
+					self.buffer.select_word_visual_row(row, column, width);
+					self.last_click = None;
+				} else {
+					self.buffer.set_cursor_visual_row(row, column, width);
+					self.last_click = Some((at, now));
+				}
+				self.dragging = true;
+				Flow::Consumed
+			},
+			Mouse::Drag if self.dragging => {
+				self.buffer.extend_selection_visual_row(
 					usize::from(at.1.saturating_sub(rect.y)),
 					at.0.saturating_sub(rect.x + 2),
 					Self::text_width(rect.width),
 				);
+				Flow::Consumed
+			},
+			Mouse::Release if self.dragging => {
+				self.dragging = false;
 				Flow::Consumed
 			},
 			Mouse::WheelUp | Mouse::WheelDown => {
@@ -998,12 +1046,31 @@ fn paint_xml_range(
 	runs: &[SyntaxRun],
 	start: usize,
 	end: usize,
+	selection: Option<(usize, usize)>,
+	selection_color: Color,
 ) -> u16 {
 	for run in runs {
 		let from = run.start.max(start);
 		let to = run.end.min(end);
-		if from < to {
+		if from >= to {
+			continue;
+		}
+		let Some((selection_start, selection_end)) = selection else {
 			x = frame.put(x, y, &text[from..to], run.style);
+			continue;
+		};
+		let selected_from = from.max(selection_start);
+		let selected_to = to.min(selection_end);
+		if selected_from >= selected_to {
+			x = frame.put(x, y, &text[from..to], run.style);
+			continue;
+		}
+		if from < selected_from {
+			x = frame.put(x, y, &text[from..selected_from], run.style);
+		}
+		x = frame.put(x, y, &text[selected_from..selected_to], run.style.bg(selection_color));
+		if selected_to < to {
+			x = frame.put(x, y, &text[selected_to..to], run.style);
 		}
 	}
 	x
@@ -1015,22 +1082,33 @@ fn paint_xml_runs(
 	y: u16,
 	text: &str,
 	runs: &[SyntaxRun],
-
+	selection: Option<(usize, usize)>,
+	selection_color: Color,
 	cursor: Option<usize>,
 	cursor_style: Style,
 ) {
 	let Some(cursor) = cursor else {
-		paint_xml_range(frame, x, y, text, runs, 0, text.len());
+		paint_xml_range(frame, x, y, text, runs, 0, text.len(), selection, selection_color);
 		return;
 	};
-	let mut x = paint_xml_range(frame, x, y, text, runs, 0, cursor);
+	let mut x = paint_xml_range(frame, x, y, text, runs, 0, cursor, selection, selection_color);
 	if cursor == text.len() {
 		frame.put(x, y, " ", cursor_style);
 		return;
 	}
 	let under = text[cursor..].graphemes().next().unwrap_or(" ");
 	x = frame.put(x, y, under, cursor_style);
-	paint_xml_range(frame, x, y, text, runs, cursor + under.len(), text.len());
+	paint_xml_range(
+		frame,
+		x,
+		y,
+		text,
+		runs,
+		cursor + under.len(),
+		text.len(),
+		selection,
+		selection_color,
+	);
 }
 
 #[cfg(test)]
@@ -1057,6 +1135,61 @@ mod tests {
 			.comp()
 			.downcast_ref::<EditorPane>()
 			.expect("UI root is an editor pane")
+	}
+
+	#[test]
+	fn selection_paint_replaces_only_the_glyph_background() {
+		let mut frame = Frame::new(Size::new(3, 1));
+		let foreground = Color::Rgb(0x11, 0x22, 0x33);
+		let selection = Color::Rgb(0x44, 0x55, 0x66);
+		let style = Style::new().fg(foreground).bold();
+		let runs = [SyntaxRun { start: 0, end: 3, style }];
+		paint_xml_runs(&mut frame, 0, 0, "abc", &runs, Some((1, 2)), selection, None, Style::new());
+
+		assert_eq!(frame.cell(0, 0).style(), style);
+		assert_eq!(frame.cell(1, 0).style(), style.bg(selection));
+		assert_eq!(frame.cell(2, 0).style(), style);
+	}
+
+	#[test]
+	fn editor_mouse_drag_and_double_click_select_text() {
+		let mut ui = Ui::from_root(
+			EditInput::new()
+				.with(Prop::Id, "composer")
+				.with(Prop::Value, "hello world"),
+			40,
+			UiContext::default(),
+		);
+		ui.focus_first();
+		let hit = ui
+			.hits()
+			.iter()
+			.find(|hit| hit.tag == HitTag::Press)
+			.copied()
+			.expect("editor press target");
+
+		ui.handle_mouse(hit.rect.x + 2, hit.rect.y, Mouse::Click);
+		ui.handle_mouse(hit.rect.x + 7, hit.rect.y, Mouse::Drag);
+		ui.handle_mouse(hit.rect.x + 7, hit.rect.y, Mouse::Release);
+		let selected = ui
+			.root()
+			.comp()
+			.downcast_ref::<EditInput>()
+			.expect("editor input")
+			.buffer()
+			.selected_text();
+		assert_eq!(selected, Some("hello"));
+
+		ui.handle_mouse(hit.rect.x + 8, hit.rect.y, Mouse::Click);
+		ui.handle_mouse(hit.rect.x + 8, hit.rect.y, Mouse::Click);
+		let selected = ui
+			.root()
+			.comp()
+			.downcast_ref::<EditInput>()
+			.expect("editor input")
+			.buffer()
+			.selected_text();
+		assert_eq!(selected, Some("world"));
 	}
 
 	struct GrowingInput {
