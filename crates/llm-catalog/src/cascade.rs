@@ -347,25 +347,25 @@ pub struct OverlapDetails {
 /// One exact or glob model selector.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Selector {
-	/// Whole-identifier match (ASCII-case-insensitive).
+	/// Whole-identifier match (case-sensitive: identifiers are exact).
 	Exact(Str),
-	/// `*`-wildcard match (ASCII-case-insensitive).
+	/// `*`-wildcard match (ASCII-case-insensitive: patterns span the chaotic
+	/// aggregator spellings of one lineage).
 	Glob(Str),
 }
 
 impl Selector {
 	fn new(pattern: &str) -> Self {
-		let lowered: String = pattern.to_ascii_lowercase();
 		if pattern.contains('*') {
-			Self::Glob(lowered.to_str())
+			Self::Glob(pattern.to_ascii_lowercase().to_str())
 		} else {
-			Self::Exact(lowered.to_str())
+			Self::Exact(pattern.to_str())
 		}
 	}
 
-	fn matches(&self, model_lower: &str) -> bool {
+	fn matches(&self, model: &str, model_lower: &str) -> bool {
 		match self {
-			Self::Exact(id) => id.as_str() == model_lower,
+			Self::Exact(id) => id.as_str() == model,
 			Self::Glob(pattern) => glob_match(pattern.as_str(), model_lower),
 		}
 	}
@@ -430,7 +430,13 @@ impl Rule {
 	}
 
 	/// `(exactness, dimensions, priority)` rank when the rule matches.
-	fn rank(&self, provider: &str, family: &str, model_lower: &str) -> Option<(u8, u8, i64)> {
+	fn rank(
+		&self,
+		provider: &str,
+		family: &str,
+		model: &str,
+		model_lower: &str,
+	) -> Option<(u8, u8, i64)> {
 		if let Some(required) = &self.family {
 			if required.as_str() != family {
 				return None;
@@ -448,7 +454,7 @@ impl Rule {
 			None => 0,
 			Some(selectors) => selectors
 				.iter()
-				.filter(|s| s.matches(model_lower))
+				.filter(|s| s.matches(model, model_lower))
 				.map(Selector::exactness)
 				.max()?,
 		};
@@ -530,7 +536,7 @@ impl CompatCascade {
 			if !reasoning && rule.wire.is_empty() {
 				continue;
 			}
-			let Some(rank) = rule.rank(provider, family, &model_lower) else {
+			let Some(rank) = rule.rank(provider, family, model, &model_lower) else {
 				continue;
 			};
 			contest(&mut wire, &rule.wire, rank, rule, provider, model)?;
@@ -1047,19 +1053,26 @@ mod tests {
 	}
 
 	#[test]
-	fn model_selectors_match_case_insensitively() {
+	fn exact_selectors_are_case_sensitive_and_globs_are_not() {
 		let cascade = parse_one(
 			r#"family "glm" {
 				models "zai-org/GLM-4.7" "glm-5.*" { thinking-format "zai" }
 			}"#,
 		)
 		.expect("valid cascade");
-		for id in ["zai-org/glm-4.7", "ZAI-ORG/GLM-4.7", "GLM-5.2"] {
+		for id in ["zai-org/GLM-4.7", "GLM-5.2", "glm-5.2-fast"] {
 			let resolved = cascade
 				.resolve("anyhost", "glm", id, true)
 				.expect("resolves");
 			assert_eq!(resolved.wire["thinking_format"], Value::from("zai"), "{id}");
 		}
+		let miss = cascade
+			.resolve("anyhost", "glm", "zai-org/glm-4.7", true)
+			.expect("resolves");
+		assert!(
+			!miss.wire.contains_key("thinking_format"),
+			"exact ids are distinct identifiers across case"
+		);
 	}
 
 	#[test]
