@@ -9,7 +9,8 @@ use std::{
 use bytes::Bytes;
 use nix::{errno::Errno, sys::signal, unistd::Pid};
 use omp_app::envd::worker::{
-	CommittedToolCall, ToolWorkerConfig, ToolWorkerSupervisor, WorkerAbortKind, WorkerEvent,
+	CommittedToolCall, PY_EVAL_MODULE, ToolWorkerConfig, ToolWorkerSupervisor, WorkerAbortKind,
+	WorkerEvent,
 };
 use omp_core::Str;
 use omp_proto::{thread::v1::part, toolhost::v1::ToolComplete};
@@ -204,6 +205,162 @@ async fn same_binary_worker_kills_native_call_and_respawns() {
 	assert_ne!(second_pid, blocked_pid, "supervisor reused the cancelled worker process");
 
 	supervisor.shutdown().await;
+}
+
+#[tokio::test]
+async fn opt_in_py_eval_survives_cancel_and_respawn() {
+	let disabled = ToolWorkerSupervisor::spawn(ToolWorkerConfig::new(
+		env!("CARGO_BIN_EXE_omp").into(),
+	))
+	.await
+	.expect("spawn default Python worker");
+	assert!(
+		disabled.registrations().is_empty(),
+		"default worker unexpectedly advertised a Python tool"
+	);
+	disabled.shutdown().await;
+
+	let mut config = ToolWorkerConfig::new(env!("CARGO_BIN_EXE_omp").into());
+	config.modules.push(Str::new_static(PY_EVAL_MODULE));
+	config.interrupt_grace = Duration::from_millis(150);
+	config.initial_backoff = Duration::from_millis(10);
+	config.max_backoff = Duration::from_millis(50);
+	let interrupt_grace = config.interrupt_grace;
+	let supervisor = tokio::time::timeout(
+		Duration::from_secs(10),
+		ToolWorkerSupervisor::spawn(config),
+	)
+	.await
+	.expect("py_eval worker registration timed out")
+	.expect("spawn py_eval worker");
+
+	let [declaration] = supervisor.registrations() else {
+		panic!("expected exactly one py_eval declaration");
+	};
+	let definition = declaration.definition.as_ref().expect("py_eval definition");
+	assert_eq!(definition.name, "py_eval");
+	assert_eq!(declaration.rev, "1");
+	assert_eq!(definition.strict, Some(true));
+	assert_eq!(
+		serde_json::from_slice::<Value>(&definition.schema_json).expect("py_eval schema JSON"),
+		json!({
+			"type": "object",
+			"properties": { "code": { "type": "string", "minLength": 1 } },
+			"required": ["code"],
+			"additionalProperties": false,
+		})
+	);
+
+	let first = py_eval_roundtrip(&supervisor, "py-eval-before", "6 * 7").await;
+	assert_eq!(
+		serde_json::from_slice::<Value>(&first.details_json).expect("py_eval result JSON"),
+		json!({ "result": 42 })
+	);
+
+	let repr = py_eval_roundtrip(&supervisor, "py-eval-repr", "{3, 1, 2}").await;
+	assert_eq!(
+		serde_json::from_slice::<Value>(&repr.details_json).expect("py_eval repr JSON"),
+		json!({ "result": "{1, 2, 3}" })
+	);
+
+	let mut fault = supervisor
+		.invoke_committed(py_eval_call("py-eval-fault", "1 / 0", Duration::from_secs(5)))
+		.expect("dispatch failing py_eval");
+	match fault.next().await.expect("py_eval fault event") {
+		WorkerEvent::Complete(complete) => {
+			assert!(complete.is_error, "Python exception reported clean success");
+			let details: Value =
+				serde_json::from_slice(&complete.details_json).expect("py_eval fault details");
+			assert!(
+				details["error"]
+					.as_str()
+					.is_some_and(|error| error.contains("ZeroDivisionError")),
+				"typed Python fault omitted ZeroDivisionError: {details}"
+			);
+		},
+		WorkerEvent::Update(_) => panic!("failing py_eval unexpectedly emitted an update"),
+		WorkerEvent::Aborted(abort) => panic!("failing py_eval aborted: {}", abort.reason),
+	}
+
+	let mut sleeping = supervisor
+		.invoke_committed(py_eval_call(
+			"py-eval-sleep",
+			"__import__('time').sleep(30)",
+			Duration::from_secs(60),
+		))
+		.expect("dispatch sleeping py_eval");
+	tokio::time::sleep(Duration::from_millis(100)).await;
+	let cancelled_at = Instant::now();
+	sleeping.cancel("cancel sleeping evaluation");
+	let abort = match tokio::time::timeout(Duration::from_secs(3), sleeping.next())
+		.await
+		.expect("py_eval cancellation exceeded kill window")
+		.expect("supervisor closed before reporting py_eval cancellation")
+	{
+		WorkerEvent::Aborted(abort) => abort,
+		WorkerEvent::Complete(complete) => {
+			panic!("cancelled py_eval reported clean completion: {complete:?}")
+		},
+		WorkerEvent::Update(_) => panic!("py_eval unexpectedly emitted an update"),
+	};
+	assert_eq!(abort.kind, WorkerAbortKind::Cancelled);
+	assert!(abort.effects_unknown);
+	let cancel_elapsed = cancelled_at.elapsed();
+	assert!(
+		cancel_elapsed >= interrupt_grace.saturating_sub(Duration::from_millis(25)),
+		"sleeping evaluation ended before the hard-kill grace elapsed: {cancel_elapsed:?}"
+	);
+	assert!(
+		cancel_elapsed <= interrupt_grace + Duration::from_secs(1),
+		"sleeping worker was not killed promptly after the interrupt grace: {cancel_elapsed:?}"
+	);
+
+	let second = tokio::time::timeout(
+		Duration::from_secs(5),
+		py_eval_roundtrip(&supervisor, "py-eval-after", "40 + 2"),
+	)
+	.await
+	.expect("respawned py_eval worker did not recover");
+	assert_eq!(
+		serde_json::from_slice::<Value>(&second.details_json).expect("respawn result JSON"),
+		json!({ "result": 42 })
+	);
+	assert_eq!(supervisor.registrations(), [declaration.clone()]);
+	supervisor.shutdown().await;
+}
+
+fn py_eval_call(
+	call_id: &'static str,
+	code: &'static str,
+	deadline: Duration,
+) -> CommittedToolCall {
+	CommittedToolCall {
+		call_id: Str::new_static(call_id),
+		name: Str::new_static("py_eval"),
+		rev: Str::new_static("1"),
+		args_json: Bytes::from(
+			serde_json::to_vec(&json!({ "code": code })).expect("serialize py_eval arguments"),
+		),
+		deadline,
+	}
+}
+
+async fn py_eval_roundtrip(
+	supervisor: &ToolWorkerSupervisor,
+	call_id: &'static str,
+	code: &'static str,
+) -> ToolComplete {
+	let mut invocation = supervisor
+		.invoke_committed(py_eval_call(call_id, code, Duration::from_secs(5)))
+		.expect("dispatch py_eval");
+	match invocation.next().await.expect("py_eval event") {
+		WorkerEvent::Complete(complete) => {
+			assert!(!complete.is_error, "py_eval completion reported an error");
+			complete
+		},
+		WorkerEvent::Update(_) => panic!("py_eval unexpectedly emitted an update"),
+		WorkerEvent::Aborted(abort) => panic!("py_eval aborted: {}", abort.reason),
+	}
 }
 
 fn call(

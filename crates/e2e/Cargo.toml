@@ -1,0 +1,54 @@
+[package]
+name = "omp-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Executable cross-crate acceptance proofs for the OMP agent mesh"
+readme = "README.md"
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+async-stream = { workspace = true }
+bytes = { workspace = true }
+flume = { workspace = true }
+futures = { workspace = true }
+libc = { workspace = true }
+nix = { workspace = true }
+omp-agent = { workspace = true }
+omp-app = { workspace = true }
+omp-core = { workspace = true }
+omp-docserver = { workspace = true }
+omp-env = { workspace = true }
+omp-hashline = { workspace = true }
+omp-llm-catalog = { workspace = true }
+omp-llm-inference = { workspace = true, features = ["test-support"] }
+omp-proto = { workspace = true }
+omp-rpc = { workspace = true }
+omp-shell = { workspace = true }
+omp-shell-engine = { workspace = true }
+omp-storage = { workspace = true }
+omp-telemetry = { workspace = true }
+omp-tool = { workspace = true }
+omp-tools = { workspace = true }
+omp-tui = { workspace = true }
+parking_lot = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
+tower = { workspace = true }
+tracing = { workspace = true }
+ulid = { workspace = true }
+url = { workspace = true }
+xutf = { workspace = true }
+
+[lints]
+workspace = true

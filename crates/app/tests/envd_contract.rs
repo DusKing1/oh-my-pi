@@ -12,7 +12,7 @@ use futures::Stream;
 use omp_app::envd::{
 	exec::{ExecEvent as HostExecEvent, ExecHost},
 	server::EnvServer,
-	worker::{ToolWorkerConfig, ToolWorkerSupervisor},
+	worker::{PY_EVAL_MODULE, ToolWorkerConfig, ToolWorkerSupervisor},
 	workspace::{WorkspaceError, WorkspaceHost},
 };
 use omp_core::Str;
@@ -21,13 +21,13 @@ use omp_proto::{
 	SCHEMA_REV,
 	blob::v1::{Chunk, GetRequest},
 	env::v1::{
-		ClientHello, ExecOutcome, ExecRequest, ListProcesses, OpenSessionRequest, ProcessSpec,
-		Script, StartProcess, StopProcess,
+		ClientHello, ExecOutcome, ExecRequest, InvokeTool, ListProcesses, OpenSessionRequest,
+		ProcessSpec, Script, StartProcess, StopProcess,
 	},
 };
 use omp_tool::{
-	Abort, Constraint, Ev, IncomingParams, Outcome, ParamError, Part, PromptCaps, Registry, Rev,
-	Tool, ToolSpec, Verdict,
+	Abort, Constraint, Ev, IncomingParams, LoweringCaps, Outcome, ParamError, Part, PromptCaps,
+	Registry, Rev, Tool, ToolRoute, ToolSpec, Verdict,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -85,6 +85,85 @@ impl Tool for EffectTool {
 		Vec::new()
 	}
 }
+struct SpeculativeLease {
+	marker: PathBuf,
+}
+
+impl Drop for SpeculativeLease {
+	fn drop(&mut self) {
+		let _ = std::fs::remove_file(&self.marker);
+	}
+}
+
+struct StreamingTool {
+	spec:   ToolSpec,
+	lease:  PathBuf,
+	effect: PathBuf,
+}
+
+impl StreamingTool {
+	fn new(lease: PathBuf, effect: PathBuf) -> Self {
+		Self {
+			spec: ToolSpec {
+				name:        Str::new_static("streaming_probe"),
+				rev:         Rev { family: Str::new_static("test"), n: 1 },
+				description: Str::new_static("prepares from streamed arguments before commitment"),
+				schema:      Bytes::from_static(
+					br#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#,
+				),
+				constraint:  Constraint::None,
+			},
+			lease,
+			effect,
+		}
+	}
+}
+
+impl Tool for StreamingTool {
+	type Fault = Value;
+	type Params = Value;
+	type Payload = Value;
+	type Update = Value;
+
+	fn spec(&self) -> &ToolSpec {
+		&self.spec
+	}
+
+	fn call<'c>(
+		&'c self,
+		mut params: IncomingParams<'c>,
+	) -> impl Stream<Item = Ev<Value, Value, Value>> + Send + 'c {
+		stream! {
+			let path = match params.pull(|mut doc| async move {
+				doc.json().object().key("path").string().finish().await
+			}).await {
+				Ok(path) => path,
+				Err(_) => {
+					yield Ev::Aborted(Abort::InputDropped);
+					return;
+				},
+			};
+			std::fs::write(&self.lease, path.as_bytes()).expect("open speculative lease");
+			let _lease = SpeculativeLease { marker: self.lease.clone() };
+			yield Ev::Update(json!({"state": "prepared", "path": path}));
+			if params.committed().await.is_err() {
+				yield Ev::Aborted(Abort::InputDropped);
+				return;
+			}
+			std::fs::write(&self.effect, path.as_bytes()).expect("record committed effect");
+			tokio::time::sleep(Duration::from_millis(100)).await;
+			yield Ev::Done(Outcome::Done {
+				result: Ok(json!({"path": path})),
+				useless: false,
+			});
+		}
+	}
+
+	fn prompt(&self, _view: Result<&Value, &Value>, _caps: &PromptCaps) -> Vec<Part> {
+		Vec::new()
+	}
+}
+
 
 struct BlockingTool {
 	spec:    ToolSpec,
@@ -229,7 +308,7 @@ OMP_TOOLS = [
             "required": ["started", "seconds"],
             "additionalProperties": False,
         },
-        "rev": "r1",
+        "rev": "r.1",
         "strict": True,
         "handler": block,
     },
@@ -242,7 +321,7 @@ OMP_TOOLS = [
             "required": ["message"],
             "additionalProperties": False,
         },
-        "rev": "r1",
+        "rev": "r.1",
         "strict": True,
         "handler": echo,
     },
@@ -255,7 +334,7 @@ OMP_TOOLS = [
             "required": ["code"],
             "additionalProperties": False,
         },
-        "rev": "r1",
+        "rev": "r.1",
         "strict": True,
         "handler": fail,
     },
@@ -283,7 +362,7 @@ impl Harness {
 		let root = tempfile::tempdir().expect("workspace scratch directory");
 		let state = tempfile::tempdir().expect("state scratch directory");
 		let server = Arc::new(
-			EnvServer::open_local(root.path(), state.path(), Arc::new(registry), worker)
+			EnvServer::open_local(root.path(), state.path(), registry, worker)
 				.await
 				.expect("real local environment host"),
 		);
@@ -358,89 +437,336 @@ async fn collect_exec(run: &mut omp_env::ExecRun) -> (Vec<u8>, omp_proto::env::v
 	}
 }
 
+async fn invoke_builtin(
+	client: &EnvClient,
+	invocation_id: &str,
+	name: &str,
+	rev: &str,
+	args: Value,
+) -> omp_proto::env::v1::Verdict {
+	let mut invocation = client
+		.invoke(InvokeTool {
+			invocation_id: invocation_id.into(),
+			name: name.into(),
+			rev: rev.into(),
+			..InvokeTool::default()
+		})
+		.await
+		.expect("open built-in invocation");
+	assert!(matches!(
+		invocation.next_event().await.expect("built-in accepted"),
+		Some(InvocationEvent::Accepted(_))
+	));
+	invocation
+		.commit_args(Bytes::from(serde_json::to_vec(&args).expect("encode built-in args")))
+		.await
+		.expect("commit built-in arguments");
+	loop {
+		match invocation
+			.next_event()
+			.await
+			.expect("built-in event")
+			.expect("built-in stream closed")
+		{
+			InvocationEvent::Verdict(verdict) => return verdict,
+			InvocationEvent::Update(_) => {},
+			InvocationEvent::Accepted(_) => panic!("built-in invocation was accepted twice"),
+			InvocationEvent::StreamError(error) => panic!("built-in stream failed: {}", error.message),
+		}
+	}
+}
+
 #[tokio::test]
-async fn effects_wait_for_commit_and_cancellation_is_request_scoped() {
-	let scratch = tempfile::tempdir().expect("effect scratch");
-	let marker = scratch.path().join("effect");
+async fn production_registry_advertises_and_dispatches_all_native_adapters() {
+	let harness = Harness::start(Registry::new()).await;
+	std::fs::write(harness.root.path().join("note.txt"), "before\n").expect("workspace fixture");
+	let registry = harness.server.registry();
+	let agent_registry = harness.server.registry();
+	assert!(Arc::ptr_eq(&registry, &agent_registry));
+	assert_eq!(registry.live_hash(), agent_registry.live_hash());
+	let advertised = registry.advertise(LoweringCaps {
+		strict_schema: true,
+		grammar: omp_llm_catalog::GrammarBits::empty(),
+	});
+	let identities = advertised
+		.iter()
+		.map(|tool| (tool.identity.name.as_str(), tool.identity.rev.to_string()))
+		.collect::<Vec<_>>();
+	assert_eq!(
+		identities,
+		[
+			("edit", "hl.1".to_owned()),
+			("glob", "1".to_owned()),
+			("grep", "1".to_owned()),
+			("read", "1".to_owned()),
+			("shell", "1".to_owned()),
+		]
+	);
+
+	let read = invoke_builtin(
+		harness.client(),
+		"builtin-read",
+		"read",
+		"1",
+		json!({"path":"note.txt"}),
+	)
+	.await;
+	assert!(!read.is_error, "read adapter returned an error");
+	let read_verdict: Verdict<Value, Value> =
+		serde_json::from_slice(&read.json).expect("typed read verdict");
+	let Verdict::Ok(read_payload) = read_verdict else {
+		panic!("read did not return an ok payload");
+	};
+	assert!(!read_payload["revision"].as_str().expect("read revision").is_empty());
+	let patch = "PUT 1.=1:\n+after\n";
+	let edit = invoke_builtin(
+		harness.client(),
+		"builtin-edit",
+		"edit",
+		"hl.1",
+		json!({"path":"note.txt","patch":patch}),
+	)
+	.await;
+	assert!(
+		!edit.is_error,
+		"edit adapter returned an error: {}",
+		String::from_utf8_lossy(&edit.json)
+	);
+	assert_eq!(
+		std::fs::read_to_string(harness.root.path().join("note.txt")).expect("edited fixture"),
+		"after\n"
+	);
+
+	let shell = invoke_builtin(
+		harness.client(),
+		"builtin-shell",
+		"shell",
+		"1",
+		json!({"command":"printf shell-ok"}),
+	)
+	.await;
+	assert!(!shell.is_error, "shell adapter returned an error");
+	let grep = invoke_builtin(
+		harness.client(),
+		"builtin-grep",
+		"grep",
+		"1",
+		json!({"patterns":["after"],"limit":10}),
+	)
+	.await;
+	assert!(!grep.is_error, "grep adapter returned an error");
+	let glob = invoke_builtin(
+		harness.client(),
+		"builtin-glob",
+		"glob",
+		"1",
+		json!({"patterns":["*.txt"],"limit":10}),
+	)
+	.await;
+	assert!(!glob.is_error, "glob adapter returned an error");
+}
+
+
+#[tokio::test]
+async fn opt_in_python_adds_one_worker_route_and_default_adds_none() {
+	let mut worker = ToolWorkerConfig::new(PathBuf::from(env!("CARGO_BIN_EXE_omp")));
+	worker.modules.push(Str::new_static(PY_EVAL_MODULE));
+	let harness = Harness::start_with_worker(Registry::new(), worker).await;
+	let registry = harness.server.registry();
+	let advertised = registry.advertise(LoweringCaps {
+		strict_schema: true,
+		grammar: omp_llm_catalog::GrammarBits::empty(),
+	});
+	assert_eq!(advertised.len(), 6);
+	assert_eq!(registry.route("py_eval").expect("python route"), ToolRoute::Worker);
+	assert_eq!(
+		registry
+			.live_identity("py_eval")
+			.map(|(_, revision)| revision.to_string())
+			.as_deref(),
+		Some("1")
+	);
+	let verdict = invoke_builtin(
+		harness.client(),
+		"builtin-python",
+		"py_eval",
+		"1",
+		json!({"code":"40 + 2"}),
+	)
+	.await;
+	assert!(!verdict.is_error, "python worker route returned an error");
+}
+#[tokio::test]
+async fn native_streaming_prepares_before_commit_and_fuses_commit_cancel_terminals() {
+	let scratch = tempfile::tempdir().expect("streaming native scratch");
+	let lease = scratch.path().join("lease");
+	let effect = scratch.path().join("effect");
 	let mut registry = Registry::new();
 	registry
-		.register(EffectTool::new(marker.clone()))
-		.expect("register effect tool");
+		.register(StreamingTool::new(lease.clone(), effect.clone()))
+		.expect("register streaming tool");
 	let harness = Harness::start(registry).await;
 
-	let mut invocation = harness
+	let mut cancelled = harness
 		.client()
 		.invoke(omp_proto::env::v1::InvokeTool {
-			invocation_id: "cancelled".into(),
-			name: "effect_probe".into(),
+			invocation_id: "stream-cancel".into(),
+			name: "streaming_probe".into(),
 			rev: "test.1".into(),
 			..Default::default()
 		})
 		.await
-		.expect("open invocation");
+		.expect("open cancellable streaming invocation");
 	assert!(matches!(
-		invocation.next_event().await.expect("accepted"),
+		cancelled.next_event().await.expect("cancel accepted"),
 		Some(InvocationEvent::Accepted(_))
 	));
-	invocation
-		.arg_text(Str::new_static("{}"))
+	cancelled
+		.arg_text(Str::new_static(r#"{"pa"#))
 		.await
-		.expect("argument fragment");
-	tokio::time::sleep(Duration::from_millis(50)).await;
-	assert!(!marker.exists(), "tool effect ran before ArgsCommitted");
-	invocation.guard().cancel();
-	let cancelled = tokio::time::timeout(Duration::from_secs(2), invocation.next_event())
+		.expect("first cancellable argument fragment");
+	cancelled
+		.arg_text(Str::new_static(r#"th":"cancel"}"#))
 		.await
-		.expect("uncommitted cancellation terminal timeout")
-		.expect("uncommitted cancellation event")
-		.expect("uncommitted cancellation stream closed");
-	let InvocationEvent::Verdict(cancelled) = cancelled else {
-		panic!("uncommitted cancellation did not produce a verdict");
+		.expect("second cancellable argument fragment");
+	let update = tokio::time::timeout(Duration::from_secs(1), cancelled.next_event())
+		.await
+		.expect("speculative update timeout")
+		.expect("speculative update event")
+		.expect("speculative stream closed");
+	assert!(matches!(update, InvocationEvent::Update(_)));
+	assert_eq!(std::fs::read(&lease).expect("speculative lease marker"), b"cancel");
+	assert!(!effect.exists(), "streamed preparation performed an effect before commit");
+
+	cancelled.guard().cancel();
+	let terminal = cancelled
+		.next_event()
+		.await
+		.expect("cancel terminal event")
+		.expect("cancel stream closed");
+	let InvocationEvent::Verdict(terminal) = terminal else {
+		panic!("precommit cancel did not produce a verdict");
 	};
 	let verdict: Verdict<Value, Value> =
-		serde_json::from_slice(&cancelled.json).expect("decode skipped verdict");
-	assert!(matches!(verdict, Verdict::Aborted(Abort::Skipped { .. })));
-	assert!(cancelled.is_error);
-	assert!(!cancelled.useless);
+		serde_json::from_slice(&terminal.json).expect("decode precommit cancel verdict");
+	assert!(matches!(&verdict, Verdict::Aborted(Abort::Skipped { .. })));
+	assert!(!matches!(&verdict, Verdict::Aborted(Abort::EffectsUnknown { .. })));
 	assert!(
-		invocation
+		cancelled
 			.next_event()
 			.await
-			.expect("closed cancelled invocation stream")
+			.expect("closed cancelled invocation")
 			.is_none(),
-		"cancelled invocation leaked an event after its verdict",
+		"precommit cancellation emitted more than one terminal",
 	);
-	assert!(!marker.exists(), "cancelled uncommitted invocation performed an effect");
+	tokio::time::timeout(Duration::from_secs(1), async {
+		while lease.exists() {
+			tokio::task::yield_now().await;
+		}
+	})
+	.await
+	.expect("speculative lease was not released");
+	assert!(!effect.exists(), "cancelled precommit invocation performed an effect");
 
 	let mut committed = harness
 		.client()
 		.invoke(omp_proto::env::v1::InvokeTool {
-			invocation_id: "committed".into(),
-			name: "effect_probe".into(),
+			invocation_id: "stream-commit".into(),
+			name: "streaming_probe".into(),
 			rev: "test.1".into(),
 			..Default::default()
 		})
 		.await
-		.expect("second invocation");
+		.expect("open committed streaming invocation");
 	assert!(matches!(
-		committed.next_event().await.expect("accepted"),
+		committed.next_event().await.expect("commit accepted"),
 		Some(InvocationEvent::Accepted(_))
 	));
 	committed
-		.commit_args(Bytes::from_static(b"{}"))
+		.arg_text(Str::new_static(r#"{"path":"comm"#))
 		.await
-		.expect("commit arguments");
-	let committed = committed
+		.expect("first committed argument fragment");
+	committed
+		.arg_text(Str::new_static(r#"itted"}"#))
+		.await
+		.expect("second committed argument fragment");
+	assert!(matches!(
+		committed.next_event().await.expect("committed speculative update"),
+		Some(InvocationEvent::Update(_))
+	));
+	assert!(!effect.exists(), "effect marker appeared before ArgsCommitted");
+	committed
+		.commit_args(Bytes::from_static(br#"{"path":"committed"}"#))
+		.await
+		.expect("commit streamed arguments");
+	let terminal = committed
 		.next_event()
 		.await
-		.expect("verdict")
-		.expect("committed invocation stream closed");
-	let InvocationEvent::Verdict(committed) = committed else {
-		panic!("committed invocation did not produce a verdict");
+		.expect("committed verdict")
+		.expect("committed stream closed");
+	assert!(matches!(terminal, InvocationEvent::Verdict(_)));
+	assert_eq!(std::fs::read(&effect).expect("committed effect marker"), b"committed");
+	assert!(!lease.exists(), "committed speculative lease was not released");
+
+	let mut duplicate = harness
+		.client()
+		.invoke(omp_proto::env::v1::InvokeTool {
+			invocation_id: "stream-duplicate".into(),
+			name: "streaming_probe".into(),
+			rev: "test.1".into(),
+			..Default::default()
+		})
+		.await
+		.expect("open duplicate-commit invocation");
+	assert!(matches!(
+		duplicate.next_event().await.expect("duplicate accepted"),
+		Some(InvocationEvent::Accepted(_))
+	));
+	duplicate
+		.arg_text(Str::new_static(r#"{"path":"duplicate"}"#))
+		.await
+		.expect("duplicate argument fragment");
+	assert!(matches!(
+		duplicate.next_event().await.expect("duplicate speculative update"),
+		Some(InvocationEvent::Update(_))
+	));
+	duplicate
+		.commit_args(Bytes::from_static(br#"{"path":"duplicate"}"#))
+		.await
+		.expect("first duplicate commit");
+	duplicate
+		.commit_args(Bytes::from_static(br#"{"path":"duplicate"}"#))
+		.await
+		.expect("send duplicate commit");
+	let error = duplicate
+		.next_event()
+		.await
+		.expect_err("duplicate ArgsCommitted was not rejected");
+	let omp_env::ClientError::Protocol(error) = error else {
+		panic!("duplicate ArgsCommitted returned a non-protocol error");
 	};
-	assert!(!committed.is_error);
-	assert!(committed.useless);
-	assert_eq!(std::fs::read(marker).expect("committed effect"), b"committed");
+	assert_eq!(
+		error.code,
+		omp_proto::env::v1::ProtocolErrorCode::AlreadyExists as i32
+	);
+	tokio::time::sleep(Duration::from_millis(200)).await;
+	assert_eq!(std::fs::read(&effect).expect("duplicate committed effect"), b"duplicate");
+	assert!(!lease.exists(), "duplicate-commit request leaked its speculative lease");
+	let mut reopened = harness
+		.client()
+		.invoke(omp_proto::env::v1::InvokeTool {
+			invocation_id: "stream-duplicate".into(),
+			name: "streaming_probe".into(),
+			rev: "test.1".into(),
+			..Default::default()
+		})
+		.await
+		.expect("reopen cleaned duplicate invocation");
+	assert!(matches!(
+		reopened.next_event().await.expect("reopened accepted"),
+		Some(InvocationEvent::Accepted(_))
+	));
+	reopened.guard().cancel();
 }
 
 #[tokio::test]
@@ -654,7 +980,7 @@ async fn worker_cancel_forwards_effects_unknown_once_and_respawn_serves_next_req
 		.invoke(omp_proto::env::v1::InvokeTool {
 			invocation_id: "worker-cancel".into(),
 			name: "worker_block".into(),
-			rev: "r1".into(),
+			rev: "r.1".into(),
 			..Default::default()
 		})
 		.await
@@ -709,7 +1035,7 @@ async fn worker_cancel_forwards_effects_unknown_once_and_respawn_serves_next_req
 		.invoke(omp_proto::env::v1::InvokeTool {
 			invocation_id: "worker-next".into(),
 			name: "worker_echo".into(),
-			rev: "r1".into(),
+			rev: "r.1".into(),
 			..Default::default()
 		})
 		.await
@@ -757,7 +1083,7 @@ async fn worker_cancel_forwards_effects_unknown_once_and_respawn_serves_next_req
 		.invoke(omp_proto::env::v1::InvokeTool {
 			invocation_id: "worker-fault".into(),
 			name: "worker_fail".into(),
-			rev: "r1".into(),
+			rev: "r.1".into(),
 			..Default::default()
 		})
 		.await
@@ -819,7 +1145,7 @@ async fn same_worker_invocation_id_on_two_connections_cancels_only_its_owner() {
 		.invoke(omp_proto::env::v1::InvokeTool {
 			invocation_id: "shared-id".into(),
 			name: "worker_block".into(),
-			rev: "r1".into(),
+			rev: "r.1".into(),
 			..Default::default()
 		})
 		.await
@@ -850,7 +1176,7 @@ async fn same_worker_invocation_id_on_two_connections_cancels_only_its_owner() {
 		.invoke(omp_proto::env::v1::InvokeTool {
 			invocation_id: "shared-id".into(),
 			name: "worker_block".into(),
-			rev: "r1".into(),
+			rev: "r.1".into(),
 			..Default::default()
 		})
 		.await
@@ -907,7 +1233,7 @@ async fn same_worker_invocation_id_on_two_connections_cancels_only_its_owner() {
 		.invoke(omp_proto::env::v1::InvokeTool {
 			invocation_id: "shared-id".into(),
 			name: "worker_echo".into(),
-			rev: "r1".into(),
+			rev: "r.1".into(),
 			..Default::default()
 		})
 		.await
@@ -1078,6 +1404,92 @@ async fn blob_and_named_process_frames_route_through_one_host() {
 			break;
 		}
 	}
+	let mut exited_attachment = client
+		.attach_output(omp_proto::env::v1::AttachOutput {
+			name: "contract-process".into(),
+			..Default::default()
+		})
+		.await
+		.expect("attach already-terminal process");
+	assert!(matches!(
+		exited_attachment.next_event().await.expect("attached"),
+		Some(ProcessAttachmentEvent::Attached(_))
+	));
+	loop {
+		let event = tokio::time::timeout(Duration::from_secs(2), exited_attachment.next_event())
+			.await
+			.expect("already-terminal attachment state timeout")
+			.expect("already-terminal process state");
+		if let Some(ProcessAttachmentEvent::State(state)) = event
+			&& state
+				.process
+				.as_ref()
+				.and_then(|process| process.status.as_ref())
+				.is_some()
+		{
+			break;
+		}
+	}
+}
+
+#[tokio::test]
+async fn named_process_attach_has_no_gap_between_backlog_and_future_output() {
+	let harness = Harness::start(Registry::new()).await;
+	let client = harness.client();
+	client
+		.start_process(StartProcess {
+			name: "attach-race".into(),
+			spec: Some(ProcessSpec {
+				source: Some(Script {
+					text: "i=0; while [ $i -lt 50 ]; do echo output; sleep 0.01; i=$((i + 1)); done".into(),
+					..Default::default()
+				}),
+				cwd_uri: cwd_uri(harness.root.path()),
+				..Default::default()
+			}),
+			..Default::default()
+		})
+		.await
+		.expect("start racing named process");
+	let mut attachment = client
+		.attach_output(omp_proto::env::v1::AttachOutput {
+			name: "attach-race".into(),
+			..Default::default()
+		})
+		.await
+		.expect("attach while output is active");
+	assert!(matches!(
+		attachment.next_event().await.expect("attached"),
+		Some(ProcessAttachmentEvent::Attached(_))
+	));
+
+	let mut sequences = Vec::new();
+	loop {
+		let event = tokio::time::timeout(Duration::from_secs(10), attachment.next_event())
+			.await
+			.expect("attach race timeout")
+			.expect("attachment event")
+			.expect("attachment remains open");
+		match event {
+			ProcessAttachmentEvent::Output(output) => sequences.push(output.sequence),
+			ProcessAttachmentEvent::State(state)
+				if state
+					.process
+					.as_ref()
+					.and_then(|process| process.status.as_ref())
+					.is_some() =>
+			{
+				break;
+			},
+			_ => {},
+		}
+	}
+	assert!(!sequences.is_empty());
+	assert_eq!(sequences[0], 1);
+	assert!(
+		sequences.windows(2).all(|pair| pair[1] == pair[0] + 1),
+		"attachment must not lose output at the snapshot/subscription boundary"
+	);
 }
 
 #[tokio::test]

@@ -23,7 +23,7 @@ use omp_llm_catalog::{
 	snapshot::{Catalog, SnapshotProvenance},
 };
 use omp_llm_inference::{
-	Answer, Error as InferenceError, Registry,
+	Answer, Error as InferenceError, ErrorKind, ErrorPhase, Registry, RetryAction,
 	call::{Call, OpaqueJson},
 	event::{
 		BlockKind, ChatEvent, Completion, FinishReason, ToolCall, WorkflowAction, WorkflowResponse,
@@ -178,6 +178,15 @@ fn scripted_registry(
 			Ok(ChatEvent::TextDelta { index: 0, text: Str::from("The live result arrived.") }),
 			Ok(completion(FinishReason::Stop, 1)),
 		]),
+		FakeScript::precommit(
+			OperationKind::Chat,
+			InferenceError::new(
+				ErrorKind::RateLimited,
+				ErrorPhase::Streaming,
+				RetryAction::SameRoute { after: Duration::from_millis(37) },
+				ExecutionReceipt::default(),
+			),
+		),
 	]);
 	let route_service = RouteProviderService::new(FakeRoute(fake.clone()));
 	let mut builder = Registry::builder(catalog.clone());
@@ -459,7 +468,12 @@ async fn rpc_turn_client_proves_stateful_replay_duplex_and_recovery_over_owner_u
 		)
 		.await
 		.expect("conflict stream opens");
-	assert!(matches!(next_event(&mut conflict).await, Some(Err(TurnError::Conflict(_)))));
+	match next_event(&mut conflict).await {
+		Some(Err(TurnError::Conflict(error))) => {
+			assert_eq!(error.actual, second.revision, "conflict must carry authoritative head");
+		},
+		other => panic!("expected typed conflict, got {other:?}"),
+	}
 
 	let mut need_full = client
 		.turn(
@@ -477,6 +491,25 @@ async fn rpc_turn_client_proves_stateful_replay_duplex_and_recovery_over_owner_u
 		.expect("need-full stream opens");
 	assert!(matches!(next_event(&mut need_full).await, Some(Err(TurnError::NeedFull(_)))));
 	assert_eq!(fake.calls().len(), 2, "recovery errors must not reach the provider");
+
+	let terminal_options = TurnOptions { context_id: None, ..options.clone() };
+	let mut limited = client
+		.turn(
+			ProviderTurnId::from("turn-rate-limited"),
+			TurnInput::Full(thread_pb::Thread::default()),
+			&terminal_options,
+		)
+		.await
+		.expect("classified terminal stream opens");
+	match next_event(&mut limited).await {
+		Some(Err(TurnError::Terminal(error))) => {
+			assert_eq!(error.kind(), pb::turn_error::Kind::RateLimited);
+			assert_eq!(error.retry_after_ms, 37);
+			assert!(error.detail.contains("RateLimited"));
+		},
+		other => panic!("expected classified terminal failure, got {other:?}"),
+	}
+	assert_eq!(fake.calls().len(), 3);
 
 	drop(client);
 	daemon.shutdown().await.expect("gateway shutdown");
@@ -505,8 +538,14 @@ impl Tool for HistoryTool {
 		futures::stream::empty()
 	}
 
-	fn prompt(&self, _view: Result<&Self::Payload, &Self::Fault>, _caps: &PromptCaps) -> Vec<Part> {
-		Vec::new()
+	fn prompt(&self, view: Result<&Self::Payload, &Self::Fault>, caps: &PromptCaps) -> Vec<Part> {
+		let branch = if view.is_ok() { "ok" } else { "fault" };
+		vec![Part::Text {
+			text: Str::from(format!(
+				"{branch}|parts={}|text={}|media={}",
+				caps.maximum_parts, caps.maximum_text_bytes, caps.media
+			)),
+		}]
 	}
 
 	fn lift(&self, from: &Rev, call: RecordedCall<'_>) -> Option<LiftedCall> {
@@ -517,6 +556,7 @@ impl Tool for HistoryTool {
 		let legacy = args.get("legacy")?.clone();
 		let mut verdict: serde_json::Value = serde_json::from_slice(call.verdict).ok()?;
 		*verdict.get_mut("value")?.get_mut("dialect")? = serde_json::json!("hl.2");
+		verdict["kind"] = serde_json::json!("fault");
 		Some(LiftedCall {
 			raw_args: Bytes::from(
 				serde_json::to_vec(&serde_json::json!({
@@ -606,6 +646,7 @@ fn historical_outcome() -> pb::Outcome {
 						("kind", string_value("ok")),
 						("value", map_value([("dialect", string_value("hl.1"))])),
 					])),
+					useless: Some(true),
 					..Default::default()
 				})),
 				props:         None,
@@ -627,7 +668,7 @@ fn provider_schema_bytes(request: &omp_llm_inference::call::ChatRequest) -> Vec<
 }
 
 #[test]
-fn canonical_history_lifts_deterministically_while_caller_tool_def_reaches_provider_unchanged() {
+fn canonical_history_uses_only_live_definitions_and_lifts_deterministically() {
 	let outcome = historical_outcome();
 	let thread = thread_pb::Thread { items: outcome.output.clone() };
 	let params = pb::ChatParams {
@@ -652,8 +693,11 @@ fn canonical_history_lifts_deterministically_while_caller_tool_def_reaches_provi
 		"an incomplete lift path must preserve the exact canonical items"
 	);
 	let data_schema = provider_schema_bytes(&data_request);
-	assert!(data_schema.windows(8).any(|window| window == b"hl1_only"));
-	assert!(!data_schema.windows(8).any(|window| window == b"hl2_only"));
+	assert!(data_schema.windows(8).any(|window| window == b"hl2_only"));
+	assert!(
+		!data_schema.windows(8).any(|window| window == b"hl1_only"),
+		"historical schema bytes must not enter the provider request"
+	);
 
 	let with_lift = history_registry(true);
 	let (first, first_request) =
@@ -679,18 +723,34 @@ fn canonical_history_lifts_deterministically_while_caller_tool_def_reaches_provi
 		.and_then(|props| props.fields.get("omp/tool-rev"))
 		.and_then(|value| value.kind.as_ref());
 	assert!(matches!(revision, Some(pb::value::Kind::String(value)) if value == "hl.2"));
-	let lifted_schema = provider_schema_bytes(&first_request);
-	assert!(
-		lifted_schema.windows(8).any(|window| window == b"hl1_only"),
-		"the caller ToolDef schema must survive provider request projection"
+	let lifted_result = match first.items[1].kind.as_ref() {
+		Some(thread_pb::item::Kind::ToolResult(result)) => result,
+		other => panic!("expected lifted ToolResult, got {other:?}"),
+	};
+	assert!(lifted_result.is_error, "Ok-to-Fault lift must recompute branch metadata");
+	assert_eq!(
+		lifted_result.useless,
+		Some(true),
+		"Ok-to-Fault lift preserves sibling compaction metadata"
 	);
-	assert!(!lifted_schema.windows(8).any(|window| window == b"hl2_only"));
+	assert!(matches!(
+		lifted_result.parts.as_slice(),
+		[thread_pb::Part {
+			kind: Some(thread_pb::part::Kind::Text(text)),
+		}] if text == "fault|parts=1|text=65536|media=false"
+	));
+	let lifted_schema = provider_schema_bytes(&first_request);
+	assert!(lifted_schema.windows(8).any(|window| window == b"hl2_only"));
+	assert!(
+		!lifted_schema.windows(8).any(|window| window == b"hl1_only"),
+		"historical schema bytes must not enter the provider request"
+	);
 	let empty_registry = omp_tool::Registry::new();
-	let (_, provider_request) = omp_app::rpc_adapter::project_provider_turn_for_test(
+	let error = omp_app::rpc_adapter::project_provider_turn_for_test(
 		&thread_pb::Thread::default(),
 		&params,
 		&empty_registry,
 	)
-	.expect("caller-defined provider tool does not require a harness registry identity");
-	assert_eq!(provider_schema_bytes(&provider_request), params.tools[0].schema_json);
+	.expect_err("caller definitions cannot invent an unversioned executable tool");
+	assert_eq!(error.code(), tonic::Code::FailedPrecondition);
 }
