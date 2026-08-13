@@ -1,9 +1,13 @@
-use std::{future::{self, Future}, time::Duration};
+use std::{
+	future::{self, Future},
+	time::Duration,
+};
 
 use omp_core::{CowBytes, Str, encoding::hex, fmts};
 use omp_proto::env::v1::{
-	ExecOutcome as EnvExecOutcome, ExecRequest, OpenSessionRequest, OutputChannel as EnvOutputChannel,
-	ProcessSpec, RestartPolicy, RestartSpec, Script, StartProcess,
+	ExecOutcome as EnvExecOutcome, ExecRequest, OpenSessionRequest,
+	OutputChannel as EnvOutputChannel, ProcessSpec, RestartPolicy, RestartSpec, Script,
+	StartProcess,
 };
 use omp_tool::{BlobRef, JobOwner};
 use omp_tools::shell::{
@@ -35,9 +39,7 @@ pub(crate) struct HostShellRun {
 }
 
 impl ShellRun for HostShellRun {
-	fn next_event(
-		&mut self,
-	) -> impl Future<Output = Result<Option<RunEvent>, Fault>> + Send + '_ {
+	fn next_event(&mut self) -> impl Future<Output = Result<Option<RunEvent>, Fault>> + Send + '_ {
 		async move {
 			if let Some(exec_id) = self.started.take() {
 				return Ok(Some(RunEvent::Started { exec_id }));
@@ -84,10 +86,7 @@ impl ShellExec for ShellExecHost {
 				.exec(
 					ExecRequest {
 						session: session.id.clone(),
-						source: Some(Script {
-							text: request.command.to_string(),
-							..Default::default()
-						}),
+						source: Some(Script { text: request.command.to_string(), ..Default::default() }),
 						..Default::default()
 					},
 					request.timeout_ms.map(Duration::from_millis),
@@ -108,10 +107,7 @@ impl ShellExec for ShellExecHost {
 				.start_process(StartProcess {
 					name: request.name.to_string(),
 					spec: Some(ProcessSpec {
-						source: Some(Script {
-							text: request.command.to_string(),
-							..Default::default()
-						}),
+						source: Some(Script { text: request.command.to_string(), ..Default::default() }),
 						cwd_uri: self.cwd_uri.to_string(),
 						restart: Some(RestartSpec {
 							policy: RestartPolicy::Never as i32,
@@ -127,7 +123,7 @@ impl ShellExec for ShellExecHost {
 			Ok(DetachedJob {
 				id,
 				owner: JobOwner::NamedProcess {
-					name: Str::from(started.name),
+					name:       Str::from(started.name),
 					generation: started.generation,
 				},
 			})
@@ -174,9 +170,9 @@ fn map_event(event: ExecEvent) -> Result<RunEvent, Fault> {
 			};
 			let signal = (!status.signal.is_empty()).then(|| Str::from(status.signal));
 			let spilled_output = status.spilled_output.map(|blob| BlobRef {
-				hash: Str::from(hex::encode(&blob.hash).into_string()),
+				hash:       Str::from(hex::encode(&blob.hash).into_string()),
 				media_type: Str::from(blob.mime),
-				byte_len: blob.size,
+				byte_len:   blob.size,
 			});
 			Ok(RunEvent::Exit(ExecStatus {
 				outcome,

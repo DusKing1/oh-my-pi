@@ -81,9 +81,12 @@ fn profile_shapes(raw: &str, strip: Option<&str>) -> BTreeMap<String, BTreeMap<S
 			.shape
 			.into_iter()
 			.map(|(key, value)| match strip {
-				Some(prefix) => {
-					(key.strip_prefix(prefix).expect("prefixed oracle key").into(), value)
-				}
+				Some(prefix) => (
+					key.strip_prefix(prefix)
+						.expect("prefixed oracle key")
+						.into(),
+					value,
+				),
 				None => (key, value),
 			})
 			.collect();
@@ -112,7 +115,11 @@ fn census_thinking_format(provider: &str, family: &str) -> Option<&'static str> 
 }
 
 fn family_of(model: &NormalizedModel) -> &str {
-	if model.family.is_empty() { "unknown" } else { model.family.as_str() }
+	if model.family.is_empty() {
+		"unknown"
+	} else {
+		model.family.as_str()
+	}
 }
 
 #[test]
@@ -123,15 +130,21 @@ fn bundled_sources_match_the_compat_tree() {
 		for entry in fs::read_dir(root.join(group)).expect("compat group exists") {
 			let path = entry.expect("readable dir entry").path();
 			if path.extension().is_some_and(|extension| extension == "kdl") {
-				let stem =
-					path.file_stem().expect("file stem").to_str().expect("utf-8 name").to_owned();
+				let stem = path
+					.file_stem()
+					.expect("file stem")
+					.to_str()
+					.expect("utf-8 name")
+					.to_owned();
 				on_disk.push(format!("{group}/{stem}"));
 			}
 		}
 	}
 	on_disk.sort();
-	let mut bundled: Vec<String> =
-		BUNDLED_COMPAT.iter().map(|&(name, _)| name.to_owned()).collect();
+	let mut bundled: Vec<String> = BUNDLED_COMPAT
+		.iter()
+		.map(|&(name, _)| name.to_owned())
+		.collect();
 	bundled.sort();
 	assert_eq!(bundled, on_disk, "BUNDLED_COMPAT must list exactly compat/{{families,providers}}");
 }
@@ -146,12 +159,24 @@ fn axis_vocabulary_matches_the_oracles_exactly() {
 		.profiles
 		.iter()
 		.flat_map(|profile| profile.shape.keys())
-		.map(|key| key.strip_prefix("wire/").expect("wire/-prefixed key").to_owned())
-		.chain(thinking.profiles.iter().flat_map(|profile| profile.shape.keys().cloned()))
+		.map(|key| {
+			key.strip_prefix("wire/")
+				.expect("wire/-prefixed key")
+				.to_owned()
+		})
+		.chain(
+			thinking
+				.profiles
+				.iter()
+				.flat_map(|profile| profile.shape.keys().cloned()),
+		)
 		.collect();
 	oracle_axes.sort_unstable();
 	oracle_axes.dedup();
-	let mut known: Vec<String> = KNOWN_AXES.iter().map(|&(_, _, key, _)| key.to_owned()).collect();
+	let mut known: Vec<String> = KNOWN_AXES
+		.iter()
+		.map(|&(_, _, key, _)| key.to_owned())
+		.collect();
 	known.sort_unstable();
 	assert_eq!(known, oracle_axes, "KNOWN_AXES drifted from the oracle vocabularies");
 }
@@ -169,7 +194,10 @@ fn cascade_resolves_every_catalog_model_to_oracle_plus_census_overlay() {
 	let mut overlay_applied = 0_usize;
 	for model in &normalized.models {
 		let family = family_of(model);
-		let reasoning = model.behavior.as_ref().is_some_and(|b| b.thinking.is_some());
+		let reasoning = model
+			.behavior
+			.as_ref()
+			.is_some_and(|b| b.thinking.is_some());
 		let resolved = cascade
 			.resolve(&model.provider, family, &model.model, reasoning)
 			.unwrap_or_else(|error| panic!("{}: {error}", model.id));
@@ -242,8 +270,12 @@ fn every_ready_census_case_executes_against_real_machinery() {
 }
 
 fn run_identity_case(case: &Case) {
-	let provider = case.input["provider"].as_str().expect("identity input provider");
-	let model = case.input["model_id"].as_str().expect("identity input model_id");
+	let provider = case.input["provider"]
+		.as_str()
+		.expect("identity input provider");
+	let model = case.input["model_id"]
+		.as_str()
+		.expect("identity input model_id");
 	let classification = classify(ClassificationInput {
 		phase: ClassificationPhase::CatalogCompiler,
 		provider,
@@ -260,7 +292,7 @@ fn run_identity_case(case: &Case) {
 					"{}: family",
 					case.id
 				);
-			}
+			},
 			"logical_model" => {
 				assert_eq!(
 					classification.logical_model.as_str(),
@@ -268,7 +300,7 @@ fn run_identity_case(case: &Case) {
 					"{}: logical_model",
 					case.id
 				);
-			}
+			},
 			"thinking_variant" => {
 				assert_eq!(
 					classification.thinking_variant,
@@ -276,7 +308,7 @@ fn run_identity_case(case: &Case) {
 					"{}: thinking_variant",
 					case.id
 				);
-			}
+			},
 			"effort" => {
 				let effort = classification.effort.map(|tier| match tier {
 					EffortTier::Off => "off",
@@ -288,19 +320,27 @@ fn run_identity_case(case: &Case) {
 					EffortTier::Max => "max",
 				});
 				assert_eq!(effort, want.as_str(), "{}: effort", case.id);
-			}
+			},
 			other => panic!("{}: unhandled identity expectation `{other}`", case.id),
 		}
 	}
 }
 
 fn run_policy_case(cascade: &CompatCascade, case: &Case) {
-	let provider = case.input["provider"].as_str().expect("policy input provider");
-	let model = case.input["model_id"].as_str().expect("policy input model_id");
+	let provider = case.input["provider"]
+		.as_str()
+		.expect("policy input provider");
+	let model = case.input["model_id"]
+		.as_str()
+		.expect("policy input model_id");
 	let family = case.input["family"].as_str().unwrap_or("unknown");
 	let reasoning = case.input["reasoning"].as_bool().unwrap_or(false);
-	let resolved = cascade.resolve(provider, family, model, reasoning).expect("policy resolves");
-	let overrides = case.expected["overrides"].as_object().expect("expected overrides object");
+	let resolved = cascade
+		.resolve(provider, family, model, reasoning)
+		.expect("policy resolves");
+	let overrides = case.expected["overrides"]
+		.as_object()
+		.expect("expected overrides object");
 	let subset = case.r#match.as_deref() == Some("subset");
 	if subset {
 		for (axis, want) in overrides {
@@ -311,10 +351,15 @@ fn run_policy_case(cascade: &CompatCascade, case: &Case) {
 			assert_eq!(got, want, "{}: axis {axis}", case.id);
 		}
 	} else {
-		let resolved_json: BTreeMap<&str, &Value> =
-			resolved.wire.iter().map(|(key, value)| (key.as_str(), value)).collect();
-		let mut expected: BTreeMap<&str, &Value> =
-			overrides.iter().map(|(key, value)| (key.as_str(), value)).collect();
+		let resolved_json: BTreeMap<&str, &Value> = resolved
+			.wire
+			.iter()
+			.map(|(key, value)| (key.as_str(), value))
+			.collect();
+		let mut expected: BTreeMap<&str, &Value> = overrides
+			.iter()
+			.map(|(key, value)| (key.as_str(), value))
+			.collect();
 		// Census overlay applies on top of the archived expectations.
 		let overlay = census_thinking_format(provider, family).map(Value::from);
 		if let Some(overlay) = overlay.as_ref() {
@@ -332,7 +377,10 @@ fn run_policy_case(cascade: &CompatCascade, case: &Case) {
 		for (axis, want) in baseline {
 			assert_eq!(axis, "max_tokens_field", "{}: only max_tokens_field is pinned", case.id);
 			let policy = WirePolicy::baseline();
-			let field = policy.context.max_tokens_field.expect("baseline pins max_tokens_field");
+			let field = policy
+				.context
+				.max_tokens_field
+				.expect("baseline pins max_tokens_field");
 			let field = serde_json::to_value(field).expect("field serializes");
 			assert_eq!(&field, want, "{}: baseline {axis}", case.id);
 		}
@@ -350,15 +398,16 @@ fn run_compile_error_case(case: &Case) {
 				}"#,
 			)
 			.expect("rule set parses");
-			let error =
-				cascade.resolve("acme", "unknown", "foo-bar", false).expect_err("must reject");
+			let error = cascade
+				.resolve("acme", "unknown", "foo-bar", false)
+				.expect_err("must reject");
 			assert!(
 				matches!(&error, CascadeError::AmbiguousOverlap(details)
 					if details.axis.as_str() == "thinking_format"),
 				"{}: {error}",
 				case.id
 			);
-		}
+		},
 		"compile.accept.disjoint-axes-overlap" => {
 			let cascade = parse(
 				r#"provider "acme" {
@@ -367,11 +416,12 @@ fn run_compile_error_case(case: &Case) {
 				}"#,
 			)
 			.expect("rule set parses");
-			let resolved =
-				cascade.resolve("acme", "unknown", "foo-bar", false).expect("disjoint is legal");
+			let resolved = cascade
+				.resolve("acme", "unknown", "foo-bar", false)
+				.expect("disjoint is legal");
 			assert_eq!(resolved.wire["thinking_format"], Value::from("zai"), "{}", case.id);
 			assert_eq!(resolved.wire["supports_store"], Value::Bool(false), "{}", case.id);
-		}
+		},
 		"compile.accept.explicit-priority" => {
 			let cascade = parse(
 				r#"provider "acme" {
@@ -380,10 +430,11 @@ fn run_compile_error_case(case: &Case) {
 				}"#,
 			)
 			.expect("rule set parses");
-			let resolved =
-				cascade.resolve("acme", "unknown", "foo-bar", false).expect("priority wins");
+			let resolved = cascade
+				.resolve("acme", "unknown", "foo-bar", false)
+				.expect("priority wins");
 			assert_eq!(resolved.wire["thinking_format"], Value::from("zai"), "{}", case.id);
-		}
+		},
 		"compile.reject.unconsumed-directive" => {
 			let error = parse(r#"provider "acme" { schema-flavor "mfjs" }"#)
 				.expect_err("unconsumed axis must fail");
@@ -393,7 +444,7 @@ fn run_compile_error_case(case: &Case) {
 				"{}: {error}",
 				case.id
 			);
-		}
+		},
 		"compile.reject.unknown-directive" => {
 			let error =
 				parse(r#"provider "acme" { thinkign-format "zai" }"#).expect_err("typo must fail");
@@ -403,7 +454,7 @@ fn run_compile_error_case(case: &Case) {
 				"{}: {error}",
 				case.id
 			);
-		}
+		},
 		other => panic!("unmapped compile-error case {other}"),
 	}
 }

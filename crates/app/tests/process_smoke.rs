@@ -65,7 +65,8 @@ fn all_executable_command_paths_parse_with_omp_names() {
 			| Command::Infer(_)
 			| Command::Auth(_)
 			| Command::Catalog(_)
-			| Command::Local(_) => {},
+			| Command::Local(_)
+			| Command::Chat(_) => {},
 		}
 	}
 }

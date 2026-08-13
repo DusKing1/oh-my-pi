@@ -458,7 +458,7 @@ impl EnvClient {
 		self
 			.inner
 			.next_id
-			.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |request_id| request_id.checked_add(1))
+			.try_update(Ordering::Relaxed, Ordering::Relaxed, |request_id| request_id.checked_add(1))
 			.map_err(|_| ClientError::RequestIdExhausted)
 	}
 }

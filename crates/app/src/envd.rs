@@ -4,31 +4,25 @@ pub mod blobs;
 pub mod docs;
 pub mod exec;
 pub mod server;
-pub mod worker;
-pub mod workspace;
 mod tool_document;
 mod tool_search;
 mod tool_shell;
 mod tools;
-pub use server::EnvdError;
-
-use std::{
-	io,
-	path::Path,
-	sync::Arc,
-};
+pub mod worker;
+pub mod workspace;
+use std::{io, path::Path, sync::Arc};
 
 use omp_core::Str;
 use omp_env::EnvClient;
 use omp_proto::env::v1::ClientHello;
 use omp_tool::Registry;
+pub use server::EnvdError;
 use tokio_util::sync::CancellationToken;
 
 use self::{
 	server::EnvServer,
 	worker::{PY_EVAL_MODULE, ToolWorkerConfig},
 };
-
 use crate::cli::EnvdArgs;
 
 /// Starts the project environment daemon and serves until process shutdown.
@@ -88,17 +82,13 @@ impl ProjectEnvironment {
 				let server = Arc::new(server);
 				let registry = server.registry();
 				let lifecycle = ProjectLifecycle {
-					shutdown: None,
-					_tasks: Vec::new(),
+					shutdown:      None,
+					_tasks:        Vec::new(),
 					remote_bridge: Some(bridge),
-					_server: server,
-					_docserver: docserver,
+					_server:       server,
+					_docserver:    docserver,
 				};
-				Ok(Self {
-					client,
-					registry,
-					_lifecycle: lifecycle,
-				})
+				Ok(Self { client, registry, _lifecycle: lifecycle })
 			},
 			Err(EnvdError::Io(error))
 				if matches!(
@@ -120,14 +110,9 @@ impl ProjectEnvironment {
 		py_eval: bool,
 	) -> Result<Self, EnvdError> {
 		let worker_config = worker_config(py_eval)?;
-		let (server, docserver) = EnvServer::open_project(
-			root,
-			state_dir,
-			docserver_socket,
-			Registry::new(),
-			worker_config,
-		)
-		.await?;
+		let (server, docserver) =
+			EnvServer::open_project(root, state_dir, docserver_socket, Registry::new(), worker_config)
+				.await?;
 		let server = Arc::new(server);
 		let registry = server.registry();
 		let (client, transport) = EnvClient::in_process(64);
@@ -143,11 +128,11 @@ impl ProjectEnvironment {
 			let _ = uds_server.serve_uds(&socket, uds_shutdown).await;
 		});
 		let lifecycle = ProjectLifecycle {
-			shutdown: Some(shutdown),
-			_tasks: vec![in_process, uds],
+			shutdown:      Some(shutdown),
+			_tasks:        vec![in_process, uds],
 			remote_bridge: None,
-			_server: server,
-			_docserver: docserver,
+			_server:       server,
+			_docserver:    docserver,
 		};
 		hello(&client).await?;
 		Ok(Self { client, registry, _lifecycle: lifecycle })

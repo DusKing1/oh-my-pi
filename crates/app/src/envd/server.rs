@@ -20,7 +20,9 @@ use omp_proto::{
 	env::v1::{self as pb, client_frame, server_frame},
 	prost::Message as _,
 };
-use omp_tool::{ErasedEv, ErasedOutcome, IncomingParams, Interrupt, Registry, RegistryError, ToolRoute};
+use omp_tool::{
+	ErasedEv, ErasedOutcome, IncomingParams, Interrupt, Registry, RegistryError, ToolRoute,
+};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tokio_util::sync::CancellationToken;
@@ -29,9 +31,9 @@ use super::{
 	blobs::{BlobError, BlobHost},
 	docs::{DocumentError, DocumentHost},
 	exec::{ExecError, ExecEvent, ExecHost, ProcessEvent},
+	tools::production_registry,
 	worker::{CommittedToolCall, ToolWorkerConfig, ToolWorkerSupervisor, WorkerError, WorkerEvent},
 	workspace::{WorkspaceError, WorkspaceHost},
-	tools::production_registry,
 };
 use crate::cli::EnvdArgs;
 
@@ -64,7 +66,8 @@ pub enum EnvdError {
 	/// A native or worker tool declaration could not be registered.
 	#[error(transparent)]
 	Registry(#[from] RegistryError),
-	/// A worker advertised a declaration that cannot have a stable registry identity.
+	/// A worker advertised a declaration that cannot have a stable registry
+	/// identity.
 	#[error("invalid worker tool declaration: {0}")]
 	WorkerDeclaration(Str),
 	/// Production assembly encountered a second live declaration for one name.
@@ -197,6 +200,7 @@ impl EnvServer {
 		};
 		Ok(Self::new(identity, documents, exec, workspace, blobs, registry, workers))
 	}
+
 	/// Opens project resources through the owner-local document authority.
 	///
 	/// The returned child is present only when this call started the document
@@ -231,12 +235,8 @@ impl EnvServer {
 			server_epoch:   hello.server_epoch,
 			server_version: Str::from(env!("CARGO_PKG_VERSION")),
 		};
-		Ok((
-			Self::new(identity, documents, exec, workspace, blobs, registry, workers),
-			docserver,
-		))
+		Ok((Self::new(identity, documents, exec, workspace, blobs, registry, workers), docserver))
 	}
-
 
 	/// Connects an `EnvClient` transport to an owner-only environment socket.
 	#[cfg(unix)]
@@ -250,11 +250,13 @@ impl EnvServer {
 			|| metadata.uid() != nix::unistd::geteuid().as_raw()
 			|| metadata.permissions().mode() & 0o077 != 0
 		{
-			return Err(io::Error::new(
-				io::ErrorKind::PermissionDenied,
-				"environment socket must be owner-only and owned by the current user",
-			)
-			.into());
+			return Err(
+				io::Error::new(
+					io::ErrorKind::PermissionDenied,
+					"environment socket must be owner-only and owned by the current user",
+				)
+				.into(),
+			);
 		}
 		let stream = tokio::net::UnixStream::connect(path).await?;
 		let (client, transport) = EnvClient::in_process(64);
@@ -295,6 +297,7 @@ impl EnvServer {
 		});
 		Ok((client, task))
 	}
+
 	/// Returns the exact registry shared by this server's dispatch paths.
 	#[must_use]
 	pub fn registry(&self) -> Arc<Registry> {
@@ -621,7 +624,8 @@ impl EnvServer {
 				let result = connection.invocation_mut(frame.request_id, &request.invocation_id);
 				match result {
 					Ok(InvocationState::Native { feed, lifecycle, .. })
-						if !lifecycle.is_committed() && !lifecycle.is_terminal() => {
+						if !lifecycle.is_committed() && !lifecycle.is_terminal() =>
+					{
 						if feed.arg_text(Str::from(request.fragment)).is_err() {
 							send_error(
 								responses,
@@ -1324,8 +1328,7 @@ impl NativeLifecycle {
 		self
 			.state
 			.try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
-				(state & (NATIVE_COMMITTED | NATIVE_TERMINAL) == 0)
-					.then_some(state | NATIVE_COMMITTED)
+				(state & (NATIVE_COMMITTED | NATIVE_TERMINAL) == 0).then_some(state | NATIVE_COMMITTED)
 			})
 			.map(|_| ())
 			.map_err(|state| {
@@ -2412,7 +2415,6 @@ async fn send_invocation_terminal_body(
 		Err(_) => {
 			let responses = responses.clone();
 			tokio::spawn(async move {
-
 				let _ = responses.send_async(retry).await;
 			});
 		},
@@ -2578,16 +2580,13 @@ pub async fn run_with_registry(args: EnvdArgs, registry: Registry) -> Result<(),
 		.unwrap_or_else(|| state_dir.join("docserver.sock"));
 	let mut worker_config = ToolWorkerConfig::current()?;
 	if args.py_eval {
-		worker_config.modules.push(Str::new_static(crate::envd::worker::PY_EVAL_MODULE));
+		worker_config
+			.modules
+			.push(Str::new_static(crate::envd::worker::PY_EVAL_MODULE));
 	}
-	let (server, mut docserver) = EnvServer::open_project(
-		&root,
-		&state_dir,
-		&docserver_socket,
-		registry,
-		worker_config,
-	)
-	.await?;
+	let (server, mut docserver) =
+		EnvServer::open_project(&root, &state_dir, &docserver_socket, registry, worker_config)
+			.await?;
 	let server = Arc::new(server);
 	let shutdown = CancellationToken::new();
 	let signal = shutdown.clone();

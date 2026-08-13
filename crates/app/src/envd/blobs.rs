@@ -41,18 +41,30 @@ pub struct BlobRead {
 /// A blob request or backing-store operation failed.
 #[derive(Debug, Error)]
 pub enum BlobError {
+	/// Backing blob storage error.
 	#[error(transparent)]
 	Store(#[from] omp_storage::blob::Error),
+	/// Blob hash format was not 32 bytes.
 	#[error("blob hash must be exactly 32 bytes")]
 	InvalidHash,
+	/// Blob bytes did not match the expected digest.
 	#[error("uploaded blob digest differs from the expected digest")]
 	HashMismatch,
+	/// Blob byte count differed from expected.
 	#[error("uploaded blob size differs from expected {expected} bytes (received {actual})")]
-	SizeMismatch { expected: u64, actual: u64 },
+	SizeMismatch {
+		/// Expected byte count.
+		expected: u64,
+		/// Received byte count.
+		actual:   u64,
+	},
+	/// Requested range started beyond content bounds.
 	#[error("blob range starts after the end of the content")]
 	InvalidRange,
+	/// Content length exceeded host address limits.
 	#[error("blob length cannot be represented on this host")]
 	LengthOverflow,
+	/// Underlying filesystem removal operation failed.
 	#[error("blob removal failed: {0}")]
 	Remove(#[source] io::Error),
 }

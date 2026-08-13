@@ -209,11 +209,10 @@ async fn same_binary_worker_kills_native_call_and_respawns() {
 
 #[tokio::test]
 async fn opt_in_py_eval_survives_cancel_and_respawn() {
-	let disabled = ToolWorkerSupervisor::spawn(ToolWorkerConfig::new(
-		env!("CARGO_BIN_EXE_omp").into(),
-	))
-	.await
-	.expect("spawn default Python worker");
+	let disabled =
+		ToolWorkerSupervisor::spawn(ToolWorkerConfig::new(env!("CARGO_BIN_EXE_omp").into()))
+			.await
+			.expect("spawn default Python worker");
 	assert!(
 		disabled.registrations().is_empty(),
 		"default worker unexpectedly advertised a Python tool"
@@ -226,13 +225,11 @@ async fn opt_in_py_eval_survives_cancel_and_respawn() {
 	config.initial_backoff = Duration::from_millis(10);
 	config.max_backoff = Duration::from_millis(50);
 	let interrupt_grace = config.interrupt_grace;
-	let supervisor = tokio::time::timeout(
-		Duration::from_secs(10),
-		ToolWorkerSupervisor::spawn(config),
-	)
-	.await
-	.expect("py_eval worker registration timed out")
-	.expect("spawn py_eval worker");
+	let supervisor =
+		tokio::time::timeout(Duration::from_secs(10), ToolWorkerSupervisor::spawn(config))
+			.await
+			.expect("py_eval worker registration timed out")
+			.expect("spawn py_eval worker");
 
 	let [declaration] = supervisor.registrations() else {
 		panic!("expected exactly one py_eval declaration");

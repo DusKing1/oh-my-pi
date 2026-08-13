@@ -92,9 +92,7 @@ impl ReadLease for DocumentReadLease {
 			if matches!(self.kind, DocumentKind::Binary { .. }) {
 				return read_binary(&self.host, &self.lease).await;
 			}
-			if structural
-				&& let Some(summary) = read_summary(&self.host, &self.lease).await?
-			{
+			if structural && let Some(summary) = read_summary(&self.host, &self.lease).await? {
 				return Ok(summary);
 			}
 			read_text(&self.host, &self.lease, ranges).await
@@ -137,7 +135,10 @@ impl EditPrepared for PreparedDocument {
 impl EditDocuments for DocumentHost {
 	type Prepared = PreparedDocument;
 
-	fn prepare(&self, path: Str) -> impl Future<Output = Result<Self::Prepared, EditFault>> + Send + '_ {
+	fn prepare(
+		&self,
+		path: Str,
+	) -> impl Future<Output = Result<Self::Prepared, EditFault>> + Send + '_ {
 		async move {
 			let resolved = resolve_document(self, &path).map_err(edit_invalid)?;
 			let lease = DocumentHost::open(self, resolved.uri, None, &CancellationToken::new())
@@ -182,7 +183,7 @@ impl EditDocuments for DocumentHost {
 			}
 			if base_revision != prepared.base_revision {
 				return Err(EditCommitError::Rejected(EditFault {
-					reason: RejectionReason::StaleUnrecoverable,
+					reason:    RejectionReason::StaleUnrecoverable,
 					conflicts: Vec::new(),
 				}));
 			}
@@ -271,7 +272,7 @@ async fn read_text(
 	let slices = match response.body {
 		Some(pb::read_document_response::Body::Content(content)) => vec![TextSlice {
 			start_line: 1,
-			text: Str::from_utf8_owned(content)
+			text:       Str::from_utf8_owned(content)
 				.map_err(|error| read_fault(error.to_string()))?,
 		}],
 		Some(pb::read_document_response::Body::Slices(content)) => content
@@ -283,7 +284,7 @@ async fn read_text(
 						.start
 						.checked_add(1)
 						.ok_or_else(|| read_fault("document line coordinate overflowed"))?,
-					text: Str::from_utf8_owned(slice.content)
+					text:       Str::from_utf8_owned(slice.content)
 						.map_err(|error| read_fault(error.to_string()))?,
 				})
 			})
@@ -495,7 +496,7 @@ fn classify_head(head: &pb::DocumentHead, path: &str) -> Result<DocumentKind, St
 		Ok(pb::DocumentKind::Text) => Ok(DocumentKind::Text),
 		Ok(pb::DocumentKind::Binary) => Ok(DocumentKind::Binary {
 			media_type: Str::new_static(BINARY_MEDIA_TYPE),
-			fallback: fmts!("{path} is binary content ({0} bytes)", head.byte_length),
+			fallback:   fmts!("{path} is binary content ({0} bytes)", head.byte_length),
 		}),
 		_ => Err("document head omitted a recognized text/binary kind".into()),
 	}
@@ -543,12 +544,12 @@ fn text_mutation(
 ) -> pb::TextMutation {
 	pb::TextMutation {
 		base_revision: None,
-		change: Some(pb::text_mutation::Change::Proposal(pb::EditFormatProposal {
-			format: format.into(),
-			payload: Bytes::from(payload),
+		change:        Some(pb::text_mutation::Change::Proposal(pb::EditFormatProposal {
+			format:       format.into(),
+			payload:      Bytes::from(payload),
 			options_json: Bytes::new(),
 		})),
-		stale_policy: match stale_policy {
+		stale_policy:  match stale_policy {
 			StalePolicy::RebaseNonOverlapping => pb::StalePolicy::RebaseNonOverlapping as i32,
 		},
 		format_policy: match format_policy {
@@ -570,7 +571,6 @@ fn transaction_id(server_epoch: &[u8]) -> Bytes {
 	hasher.update(&now.to_le_bytes());
 	Bytes::copy_from_slice(&hasher.finalize().as_bytes()[..16])
 }
-
 
 fn map_rejection(rejected: &pb::TransactionRejected, base: &[u8]) -> EditFault {
 	let reason = match pb::TransactionRejectReason::try_from(rejected.reason) {
@@ -603,23 +603,23 @@ fn map_rejection(rejected: &pb::TransactionRejected, base: &[u8]) -> EditFault {
 		.flat_map(|conflict| conflict.conflicting_ranges.iter())
 		.map(|range| Conflict {
 			start_line: line_at_offset(base, range.start),
-			end_line: line_at_offset(base, range.end.saturating_sub(1).max(range.start)),
-			message: Str::from(rejected.message.as_str()),
+			end_line:   line_at_offset(base, range.end.saturating_sub(1).max(range.start)),
+			message:    Str::from(rejected.message.as_str()),
 		})
 		.collect();
 	EditFault { reason, conflicts }
 }
 
-
 fn line_at_offset(bytes: &[u8], offset: u64) -> usize {
-	let offset = usize::try_from(offset).unwrap_or(usize::MAX).min(bytes.len());
+	let offset = usize::try_from(offset)
+		.unwrap_or(usize::MAX)
+		.min(bytes.len());
 	bytes[..offset]
 		.iter()
 		.filter(|&&byte| byte == b'\n')
 		.count()
 		.saturating_add(1)
 }
-
 
 fn read_open_fault(message: impl Into<String>) -> ReadFault {
 	ReadFault::Open { message: Str::from(message.into()) }
@@ -631,7 +631,7 @@ fn read_fault(message: impl Into<String>) -> ReadFault {
 
 fn edit_invalid(message: impl Into<String>) -> EditFault {
 	EditFault {
-		reason: RejectionReason::InvalidPatch { message: Str::from(message.into()) },
+		reason:    RejectionReason::InvalidPatch { message: Str::from(message.into()) },
 		conflicts: Vec::new(),
 	}
 }
@@ -646,18 +646,16 @@ mod tests {
 
 	#[test]
 	fn converts_one_based_inclusive_ranges_to_protocol_coordinates() {
-		let selection = line_selection(&[LineRange { start: 1, end: 1 }, LineRange {
-			start: 4,
-			end: 9,
-		}])
-		.expect("valid ranges");
+		let selection =
+			line_selection(&[LineRange { start: 1, end: 1 }, LineRange { start: 4, end: 9 }])
+				.expect("valid ranges");
 		let Some(pb::read_selection::Selection::Lines(lines)) = selection.selection else {
 			panic!("expected line selection");
 		};
-		assert_eq!(lines.ranges, vec![
-			pb::LineRange { start: 0, end: 1 },
-			pb::LineRange { start: 3, end: 9 },
-		]);
+		assert_eq!(lines.ranges, vec![pb::LineRange { start: 0, end: 1 }, pb::LineRange {
+			start: 3,
+			end:   9,
+		},]);
 	}
 
 	#[test]
@@ -683,12 +681,11 @@ mod tests {
 		assert!(ensure_canonical_containment(&root, &root.join("link/secret")).is_err());
 	}
 
-
 	#[test]
 	fn revision_identity_includes_sequence_and_exact_hash() {
 		let head = pb::DocumentHead {
 			revision: Some(pb::Revision {
-				sequence: 7,
+				sequence:     7,
 				content_hash: Bytes::from_static(&[0xab; 32]),
 			}),
 			..Default::default()
@@ -725,10 +722,9 @@ mod tests {
 			},
 			b"one\ntwo\nthree\n",
 		);
-		assert_eq!(
-			format.reason,
-			RejectionReason::Format { message: "opaque formatter diagnostic".into() }
-		);
+		assert_eq!(format.reason, RejectionReason::Format {
+			message: "opaque formatter diagnostic".into(),
+		});
 
 		let conflict = map_rejection(
 			&pb::TransactionRejected {

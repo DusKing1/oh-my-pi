@@ -3,20 +3,13 @@
 use std::sync::Arc;
 
 use omp_core::Str;
-use omp_proto::toolhost::v1::{
-	GrammarSyntax as WorkerGrammarSyntax, ToolDecl, tool_constraint,
-};
+use omp_proto::toolhost::v1::{GrammarSyntax as WorkerGrammarSyntax, ToolDecl, tool_constraint};
 use omp_tool::{Constraint, GrammarSyntax, Registry, Rev, ToolSpec};
 use omp_tools::edit::FormatPolicy;
 
 use super::{
-	EnvdError,
-	blobs::BlobHost,
-	docs::DocumentHost,
-	exec::ExecHost,
-	tool_search::WorkspaceSearchAdapter,
-	tool_shell::ShellExecHost,
-	worker::ToolWorkerSupervisor,
+	EnvdError, blobs::BlobHost, docs::DocumentHost, exec::ExecHost,
+	tool_search::WorkspaceSearchAdapter, tool_shell::ShellExecHost, worker::ToolWorkerSupervisor,
 	workspace::WorkspaceHost,
 };
 
@@ -39,10 +32,8 @@ pub(crate) fn production_registry(
 	}
 	registry.register(omp_tools::read::tool(documents.clone(), blobs.clone()))?;
 	registry.register(omp_tools::edit::tool(documents.clone(), FormatPolicy::Configured))?;
-	registry.register(omp_tools::shell::shell(ShellExecHost::new(
-		exec.clone(),
-		root_uri.clone(),
-	)))?;
+	registry
+		.register(omp_tools::shell::shell(ShellExecHost::new(exec.clone(), root_uri.clone())))?;
 	let search = WorkspaceSearchAdapter::new(workspace.clone());
 	registry.register(omp_tools::grep::tool(search.clone()))?;
 	registry.register(omp_tools::glob::tool(search))?;
@@ -66,11 +57,11 @@ fn worker_spec(declaration: &ToolDecl) -> Result<ToolSpec, EnvdError> {
 		EnvdError::WorkerDeclaration(Str::new_static("worker tool declaration has no definition"))
 	})?;
 	Ok(ToolSpec {
-		name: Str::from(definition.name.as_str()),
-		rev: parse_revision(&declaration.rev)?,
+		name:        Str::from(definition.name.as_str()),
+		rev:         parse_revision(&declaration.rev)?,
 		description: Str::from(definition.description.as_str()),
-		schema: definition.schema_json.clone(),
-		constraint: worker_constraint(declaration)?,
+		schema:      definition.schema_json.clone(),
+		constraint:  worker_constraint(declaration)?,
 	})
 }
 
@@ -87,7 +78,11 @@ fn parse_revision(value: &str) -> Result<Rev, EnvdError> {
 }
 
 fn worker_constraint(declaration: &ToolDecl) -> Result<Constraint, EnvdError> {
-	let Some(kind) = declaration.constraint.as_ref().and_then(|value| value.kind.as_ref()) else {
+	let Some(kind) = declaration
+		.constraint
+		.as_ref()
+		.and_then(|value| value.kind.as_ref())
+	else {
 		let strict = declaration
 			.definition
 			.as_ref()
@@ -100,9 +95,9 @@ fn worker_constraint(declaration: &ToolDecl) -> Result<Constraint, EnvdError> {
 		});
 	};
 	match kind {
-		tool_constraint::Kind::Schema(schema) => Ok(Constraint::Schema {
-			priority: constraint_priority(schema.priority)?,
-		}),
+		tool_constraint::Kind::Schema(schema) => {
+			Ok(Constraint::Schema { priority: constraint_priority(schema.priority)? })
+		},
 		tool_constraint::Kind::Grammar(grammar) => {
 			let syntax = match WorkerGrammarSyntax::try_from(grammar.syntax) {
 				Ok(WorkerGrammarSyntax::Lark) => GrammarSyntax::Lark,

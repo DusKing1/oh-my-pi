@@ -399,14 +399,14 @@ impl ExecHost {
 			generation,
 			control: run.control.clone(),
 			stream: Mutex::new(ProcessStreamState {
-				info: ProcessInfo {
+				info:        ProcessInfo {
 					name: name.to_string(),
 					generation,
 					state: ProcessState::Running as i32,
 					status: None,
 					props: Default::default(),
 				},
-				history: Vec::new(),
+				history:     Vec::new(),
 				subscribers: Vec::new(),
 			}),
 		});

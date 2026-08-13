@@ -7,6 +7,7 @@ use std::{
 
 use omp_core::Str;
 use serde::{Deserialize, Serialize};
+use strum::IntoStaticStr;
 
 pub use crate::body::{AttemptBodyEvidence, Replayability};
 use crate::{
@@ -297,7 +298,8 @@ pub struct AttemptReceipt {
 }
 
 /// Kind of deterministic recovery applied to canonical output.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, IntoStaticStr, PartialEq, Serialize)]
+#[strum(serialize_all = "snake_case", const_into_str)]
 pub enum RecoveryKind {
 	/// Malformed JSON was repaired within configured bounds.
 	JsonRepair,

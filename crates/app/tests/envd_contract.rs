@@ -164,7 +164,6 @@ impl Tool for StreamingTool {
 	}
 }
 
-
 struct BlockingTool {
 	spec:    ToolSpec,
 	started: PathBuf,
@@ -486,38 +485,35 @@ async fn production_registry_advertises_and_dispatches_all_native_adapters() {
 	assert_eq!(registry.live_hash(), agent_registry.live_hash());
 	let advertised = registry.advertise(LoweringCaps {
 		strict_schema: true,
-		grammar: omp_llm_catalog::GrammarBits::empty(),
+		grammar:       omp_llm_catalog::GrammarBits::empty(),
 	});
 	let identities = advertised
 		.iter()
 		.map(|tool| (tool.identity.name.as_str(), tool.identity.rev.to_string()))
 		.collect::<Vec<_>>();
-	assert_eq!(
-		identities,
-		[
-			("edit", "hl.1".to_owned()),
-			("glob", "1".to_owned()),
-			("grep", "1".to_owned()),
-			("read", "1".to_owned()),
-			("shell", "1".to_owned()),
-		]
-	);
+	assert_eq!(identities, [
+		("edit", "hl.1".to_owned()),
+		("glob", "1".to_owned()),
+		("grep", "1".to_owned()),
+		("read", "1".to_owned()),
+		("shell", "1".to_owned()),
+	]);
 
-	let read = invoke_builtin(
-		harness.client(),
-		"builtin-read",
-		"read",
-		"1",
-		json!({"path":"note.txt"}),
-	)
-	.await;
+	let read =
+		invoke_builtin(harness.client(), "builtin-read", "read", "1", json!({"path":"note.txt"}))
+			.await;
 	assert!(!read.is_error, "read adapter returned an error");
 	let read_verdict: Verdict<Value, Value> =
 		serde_json::from_slice(&read.json).expect("typed read verdict");
 	let Verdict::Ok(read_payload) = read_verdict else {
 		panic!("read did not return an ok payload");
 	};
-	assert!(!read_payload["revision"].as_str().expect("read revision").is_empty());
+	assert!(
+		!read_payload["revision"]
+			.as_str()
+			.expect("read revision")
+			.is_empty()
+	);
 	let patch = "PUT 1.=1:\n+after\n";
 	let edit = invoke_builtin(
 		harness.client(),
@@ -566,7 +562,6 @@ async fn production_registry_advertises_and_dispatches_all_native_adapters() {
 	assert!(!glob.is_error, "glob adapter returned an error");
 }
 
-
 #[tokio::test]
 async fn opt_in_python_adds_one_worker_route_and_default_adds_none() {
 	let mut worker = ToolWorkerConfig::new(PathBuf::from(env!("CARGO_BIN_EXE_omp")));
@@ -575,7 +570,7 @@ async fn opt_in_python_adds_one_worker_route_and_default_adds_none() {
 	let registry = harness.server.registry();
 	let advertised = registry.advertise(LoweringCaps {
 		strict_schema: true,
-		grammar: omp_llm_catalog::GrammarBits::empty(),
+		grammar:       omp_llm_catalog::GrammarBits::empty(),
 	});
 	assert_eq!(advertised.len(), 6);
 	assert_eq!(registry.route("py_eval").expect("python route"), ToolRoute::Worker);
@@ -586,14 +581,9 @@ async fn opt_in_python_adds_one_worker_route_and_default_adds_none() {
 			.as_deref(),
 		Some("1")
 	);
-	let verdict = invoke_builtin(
-		harness.client(),
-		"builtin-python",
-		"py_eval",
-		"1",
-		json!({"code":"40 + 2"}),
-	)
-	.await;
+	let verdict =
+		invoke_builtin(harness.client(), "builtin-python", "py_eval", "1", json!({"code":"40 + 2"}))
+			.await;
 	assert!(!verdict.is_error, "python worker route returned an error");
 }
 #[tokio::test]
@@ -691,7 +681,10 @@ async fn native_streaming_prepares_before_commit_and_fuses_commit_cancel_termina
 		.await
 		.expect("second committed argument fragment");
 	assert!(matches!(
-		committed.next_event().await.expect("committed speculative update"),
+		committed
+			.next_event()
+			.await
+			.expect("committed speculative update"),
 		Some(InvocationEvent::Update(_))
 	));
 	assert!(!effect.exists(), "effect marker appeared before ArgsCommitted");
@@ -727,7 +720,10 @@ async fn native_streaming_prepares_before_commit_and_fuses_commit_cancel_termina
 		.await
 		.expect("duplicate argument fragment");
 	assert!(matches!(
-		duplicate.next_event().await.expect("duplicate speculative update"),
+		duplicate
+			.next_event()
+			.await
+			.expect("duplicate speculative update"),
 		Some(InvocationEvent::Update(_))
 	));
 	duplicate
@@ -745,10 +741,7 @@ async fn native_streaming_prepares_before_commit_and_fuses_commit_cancel_termina
 	let omp_env::ClientError::Protocol(error) = error else {
 		panic!("duplicate ArgsCommitted returned a non-protocol error");
 	};
-	assert_eq!(
-		error.code,
-		omp_proto::env::v1::ProtocolErrorCode::AlreadyExists as i32
-	);
+	assert_eq!(error.code, omp_proto::env::v1::ProtocolErrorCode::AlreadyExists as i32);
 	tokio::time::sleep(Duration::from_millis(200)).await;
 	assert_eq!(std::fs::read(&effect).expect("duplicate committed effect"), b"duplicate");
 	assert!(!lease.exists(), "duplicate-commit request leaked its speculative lease");
@@ -1441,7 +1434,8 @@ async fn named_process_attach_has_no_gap_between_backlog_and_future_output() {
 			name: "attach-race".into(),
 			spec: Some(ProcessSpec {
 				source: Some(Script {
-					text: "i=0; while [ $i -lt 50 ]; do echo output; sleep 0.01; i=$((i + 1)); done".into(),
+					text: "i=0; while [ $i -lt 50 ]; do echo output; sleep 0.01; i=$((i + 1)); done"
+						.into(),
 					..Default::default()
 				}),
 				cwd_uri: cwd_uri(harness.root.path()),

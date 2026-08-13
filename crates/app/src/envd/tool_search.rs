@@ -1,6 +1,9 @@
 //! App-owned workspace adapter for the generic grep and glob executors.
 
-use std::{future::Future, path::{Component, Path}};
+use std::{
+	future::Future,
+	path::{Component, Path},
+};
 
 use omp_core::Str;
 use omp_tools::{
@@ -36,12 +39,11 @@ impl WorkspaceSearch for WorkspaceSearchAdapter {
 		async move {
 			let cancel = CancellationToken::new();
 			let cancel_on_drop = CancelOnDrop(cancel.clone());
-			let operation = tokio::task::spawn_blocking(move || search_blocking(&host, request, &cancel));
-			let result = operation
-				.await
-				.map_err(|error| grep::Fault::Workspace {
-					message: Str::from(format!("workspace search task failed: {error}")),
-				})?;
+			let operation =
+				tokio::task::spawn_blocking(move || search_blocking(&host, request, &cancel));
+			let result = operation.await.map_err(|error| grep::Fault::Workspace {
+				message: Str::from(format!("workspace search task failed: {error}")),
+			})?;
 			drop(cancel_on_drop);
 			result
 		}
@@ -55,12 +57,11 @@ impl WorkspaceSearch for WorkspaceSearchAdapter {
 		async move {
 			let cancel = CancellationToken::new();
 			let cancel_on_drop = CancelOnDrop(cancel.clone());
-			let operation = tokio::task::spawn_blocking(move || glob_blocking(&host, request, &cancel));
-			let result = operation
-				.await
-				.map_err(|error| glob::Fault::Workspace {
-					message: Str::from(format!("workspace walk task failed: {error}")),
-				})?;
+			let operation =
+				tokio::task::spawn_blocking(move || glob_blocking(&host, request, &cancel));
+			let result = operation.await.map_err(|error| glob::Fault::Workspace {
+				message: Str::from(format!("workspace walk task failed: {error}")),
+			})?;
 			drop(cancel_on_drop);
 			result
 		}
@@ -81,24 +82,20 @@ fn search_blocking(
 	cancel: &CancellationToken,
 ) -> Result<SearchResult, grep::Fault> {
 	if let Some(index) = request.patterns.iter().position(Str::is_empty) {
-		return Err(grep::Fault::EmptyPattern {
-			index: u64::try_from(index).unwrap_or(u64::MAX),
-		});
+		return Err(grep::Fault::EmptyPattern { index: u64::try_from(index).unwrap_or(u64::MAX) });
 	}
 	if request.patterns.is_empty() {
 		return Err(grep::Fault::EmptyPattern { index: 0 });
 	}
 
-	let include = compile_globs(&request.include).map_err(|(pattern, message)| {
-		grep::Fault::Workspace {
+	let include =
+		compile_globs(&request.include).map_err(|(pattern, message)| grep::Fault::Workspace {
 			message: Str::from(format!("invalid include glob {pattern}: {message}")),
-		}
-	})?;
-	let exclude = compile_globs(&request.exclude).map_err(|(pattern, message)| {
-		grep::Fault::Workspace {
+		})?;
+	let exclude =
+		compile_globs(&request.exclude).map_err(|(pattern, message)| grep::Fault::Workspace {
 			message: Str::from(format!("invalid exclude glob {pattern}: {message}")),
-		}
-	})?;
+		})?;
 	let mut walk = build_walk(host, &request.path, request.gitignore, request.hidden)
 		.map_err(grep_workspace_fault)?
 		.filter(match include {
@@ -106,13 +103,18 @@ fn search_blocking(
 			None => WalkFilter::files_only(),
 		});
 	walk = walk.no_limit();
-	let candidates = host.candidates(&walk, cancel).map_err(grep_workspace_fault)?;
+	let candidates = host
+		.candidates(&walk, cancel)
+		.map_err(grep_workspace_fault)?;
 	let mut matches = Vec::new();
 	let mut binary_skipped = Vec::new();
 
 	for candidate in candidates {
 		check_cancel(cancel).map_err(grep_workspace_fault)?;
-		if exclude.as_ref().is_some_and(|glob| glob.is_match(&candidate.relative)) {
+		if exclude
+			.as_ref()
+			.is_some_and(|glob| glob.is_match(&candidate.relative))
+		{
 			continue;
 		}
 		let path = workspace_relative(host.root(), &candidate.path).map_err(grep_workspace_fault)?;
@@ -137,7 +139,9 @@ fn search_blocking(
 			spans.dedup();
 			matches.push(SearchMatch {
 				path: path.clone(),
-				line: u64::try_from(line_index).unwrap_or(u64::MAX).saturating_add(1),
+				line: u64::try_from(line_index)
+					.unwrap_or(u64::MAX)
+					.saturating_add(1),
 				spans,
 				line_text: Str::from(line),
 			});
@@ -170,12 +174,12 @@ fn glob_blocking(
 			message: Str::from("glob pattern must not be empty"),
 		});
 	}
-	let include = compile_globs(&request.patterns).map_err(glob_pattern_fault)?.ok_or_else(|| {
-		glob::Fault::InvalidPattern {
+	let include = compile_globs(&request.patterns)
+		.map_err(glob_pattern_fault)?
+		.ok_or_else(|| glob::Fault::InvalidPattern {
 			pattern: Str::new(""),
 			message: Str::from("at least one glob pattern is required"),
-		}
-	})?;
+		})?;
 	let exclude = compile_globs(&request.exclude).map_err(glob_pattern_fault)?;
 	let walk = build_walk(host, &request.path, request.gitignore, request.hidden)
 		.map_err(glob_workspace_fault)?
@@ -185,7 +189,10 @@ fn glob_blocking(
 	let mut paths = Vec::with_capacity(outcome.entries.len());
 	for entry in outcome.entries {
 		check_cancel(cancel).map_err(glob_workspace_fault)?;
-		if exclude.as_ref().is_some_and(|glob| glob.is_match(&entry.path)) {
+		if exclude
+			.as_ref()
+			.is_some_and(|glob| glob.is_match(&entry.path))
+		{
 			continue;
 		}
 		paths.push(
@@ -237,7 +244,7 @@ fn exact_spans(line: &[u8], patterns: &[Str]) -> Vec<ByteSpan> {
 			if window == pattern {
 				spans.push(ByteSpan {
 					start: u64::try_from(start).unwrap_or(u64::MAX),
-					end: u64::try_from(start + pattern.len()).unwrap_or(u64::MAX),
+					end:   u64::try_from(start + pattern.len()).unwrap_or(u64::MAX),
 				});
 			}
 		}
@@ -246,7 +253,9 @@ fn exact_spans(line: &[u8], patterns: &[Str]) -> Vec<ByteSpan> {
 }
 
 fn workspace_relative(root: &Path, path: &Path) -> Result<Str, WorkspaceError> {
-	let relative = path.strip_prefix(root).map_err(|_| WorkspaceError::OutsideWorkspace)?;
+	let relative = path
+		.strip_prefix(root)
+		.map_err(|_| WorkspaceError::OutsideWorkspace)?;
 	let mut normalized = String::new();
 	for component in relative.components() {
 		match component {
@@ -275,18 +284,14 @@ fn check_cancel(cancel: &CancellationToken) -> Result<(), WorkspaceError> {
 
 fn grep_workspace_fault(error: WorkspaceError) -> grep::Fault {
 	match error {
-		WorkspaceError::Cancelled => grep::Fault::Cancelled {
-			reason: Str::from(CANCELLED_REASON),
-		},
+		WorkspaceError::Cancelled => grep::Fault::Cancelled { reason: Str::from(CANCELLED_REASON) },
 		other => grep::Fault::Workspace { message: Str::from(other.to_string()) },
 	}
 }
 
 fn glob_workspace_fault(error: WorkspaceError) -> glob::Fault {
 	match error {
-		WorkspaceError::Cancelled => glob::Fault::Cancelled {
-			reason: Str::from(CANCELLED_REASON),
-		},
+		WorkspaceError::Cancelled => glob::Fault::Cancelled { reason: Str::from(CANCELLED_REASON) },
 		other => glob::Fault::Workspace { message: Str::from(other.to_string()) },
 	}
 }
@@ -336,14 +341,10 @@ mod tests {
 		]);
 		spans.sort_unstable();
 		spans.dedup();
-		assert_eq!(
-			spans,
-			[
-				ByteSpan { start: 0, end: 2 },
-				ByteSpan { start: 2, end: 8 },
-				ByteSpan { start: 9, end: 15 },
-			]
-		);
+		assert_eq!(spans, [ByteSpan { start: 0, end: 2 }, ByteSpan { start: 2, end: 8 }, ByteSpan {
+			start: 9,
+			end:   15,
+		},]);
 	}
 
 	#[test]
@@ -356,27 +357,24 @@ mod tests {
 		let result = search_blocking(
 			&host,
 			grep::SearchRequest {
-				path: Str::from("."),
-				patterns: vec![Str::from("needle"), Str::from("λ")],
-				include: Vec::new(),
-				exclude: Vec::new(),
+				path:      Str::from("."),
+				patterns:  vec![Str::from("needle"), Str::from("λ")],
+				include:   Vec::new(),
+				exclude:   Vec::new(),
 				gitignore: false,
-				hidden: false,
-				limit: 2,
+				hidden:    false,
+				limit:     2,
 			},
 			&CancellationToken::new(),
 		)
 		.expect("search result");
 		assert_eq!(result.matches.len(), 1);
 		assert_eq!(result.matches[0].path, "text.txt");
-		assert_eq!(
-			result.matches[0].spans,
-			[
-				ByteSpan { start: 0, end: 2 },
-				ByteSpan { start: 2, end: 8 },
-				ByteSpan { start: 9, end: 15 },
-			]
-		);
+		assert_eq!(result.matches[0].spans, [
+			ByteSpan { start: 0, end: 2 },
+			ByteSpan { start: 2, end: 8 },
+			ByteSpan { start: 9, end: 15 },
+		]);
 		assert_eq!(result.binary_skipped, [Str::from("raw.bin")]);
 		assert!(!result.truncated);
 	}
@@ -389,13 +387,13 @@ mod tests {
 		let result = search_blocking(
 			&host,
 			grep::SearchRequest {
-				path: Str::from("."),
-				patterns: vec![Str::from("needle")],
-				include: Vec::new(),
-				exclude: Vec::new(),
+				path:      Str::from("."),
+				patterns:  vec![Str::from("needle")],
+				include:   Vec::new(),
+				exclude:   Vec::new(),
 				gitignore: false,
-				hidden: false,
-				limit: 1,
+				hidden:    false,
+				limit:     1,
 			},
 			&CancellationToken::new(),
 		)
@@ -414,12 +412,12 @@ mod tests {
 		let result = glob_blocking(
 			&host,
 			glob::WalkRequest {
-				path: Str::from("src"),
-				patterns: vec![Str::from("*.rs")],
-				exclude: Vec::new(),
+				path:      Str::from("src"),
+				patterns:  vec![Str::from("*.rs")],
+				exclude:   Vec::new(),
 				gitignore: false,
-				hidden: false,
-				limit: 2,
+				hidden:    false,
+				limit:     2,
 			},
 			&CancellationToken::new(),
 		)

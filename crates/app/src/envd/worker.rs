@@ -812,7 +812,7 @@ async fn respawn(config: &ToolWorkerConfig, expected: &[ToolDecl]) -> WorkerProc
 	loop {
 		tokio::time::sleep(delay).await;
 		match WorkerProcess::spawn(config).await {
-			Ok(mut process) if process.registrations.as_slice() == expected => return process,
+			Ok(process) if process.registrations.as_slice() == expected => return process,
 			Ok(mut process) => process.terminate(config.interrupt_grace).await,
 			Err(_) => {},
 		}
@@ -868,8 +868,8 @@ fn evaluate_python_expression<'py>(
 	if code.is_empty() {
 		return Err(PyValueError::new_err("py_eval code must be nonempty"));
 	}
-	let code = CString::new(code)
-		.map_err(|_| PyValueError::new_err("py_eval code contains a null byte"))?;
+	let code =
+		CString::new(code).map_err(|_| PyValueError::new_err("py_eval code contains a null byte"))?;
 	let globals = PyDict::new(py);
 	globals.set_item("__builtins__", PyModule::import(py, "builtins")?)?;
 	let value = py.eval(code.as_c_str(), Some(&globals), Some(&globals))?;
@@ -920,7 +920,10 @@ fn omp_py_eval(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// Returns a worker startup, extension import, or stdio protocol error.
 pub fn run_worker_entry() -> Result<(), WorkerError> {
 	let modules = configured_modules();
-	if modules.iter().any(|module| module.as_str() == PY_EVAL_MODULE) {
+	if modules
+		.iter()
+		.any(|module| module.as_str() == PY_EVAL_MODULE)
+	{
 		pyo3::append_to_inittab!(omp_py_eval);
 	}
 	let engine = omp_py::Engine::builder()

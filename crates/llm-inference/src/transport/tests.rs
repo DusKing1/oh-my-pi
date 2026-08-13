@@ -362,10 +362,8 @@ async fn drain_captures_exact_multi_chunk_request_body() {
 #[tokio::test]
 async fn bounded_request_body_capture_reports_observed_bytes_and_truncation() {
 	let factory = BodyFactoryHandle::new(|| {
-		let body: ByteStream = Box::pin(stream::iter([
-			Ok(Bytes::from_static(b"ab")),
-			Ok(Bytes::from_static(b"cdef")),
-		]));
+		let body: ByteStream =
+			Box::pin(stream::iter([Ok(Bytes::from_static(b"ab")), Ok(Bytes::from_static(b"cdef"))]));
 		std::future::ready(Ok(body))
 	});
 	let mut service = CassetteTransport::new(Arc::from([attempt(
@@ -444,8 +442,11 @@ async fn request_body_capture_finalizes_when_in_flight_attempt_is_dropped() {
 	)]))
 	.with_request_body_capture(NonZeroUsize::new(32).expect("nonzero capture bound"));
 	service.ready().await.expect("cassette ready");
-	let mut pending =
-		Box::pin(service.call(request(BodySource::Factory(factory), EmitDecoder, Cancellation::default())));
+	let mut pending = Box::pin(service.call(request(
+		BodySource::Factory(factory),
+		EmitDecoder,
+		Cancellation::default(),
+	)));
 	assert!(pending.as_mut().now_or_never().is_none());
 	drop(pending);
 

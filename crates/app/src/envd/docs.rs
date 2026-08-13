@@ -90,14 +90,24 @@ impl Drop for DocumentLease {
 /// A document host connection, protocol, or server operation failed.
 #[derive(Debug, Error)]
 pub enum DocumentError {
+	/// Transport framing or serialization error.
 	#[error(transparent)]
 	Wire(#[from] wire::WireError),
+	/// Server connection was closed unexpectedly.
 	#[error("document-server connection closed")]
 	Disconnected,
+	/// Document operation was cancelled before completion.
 	#[error("document operation was cancelled")]
 	Cancelled,
+	/// Document server rejected the operation.
 	#[error("document server rejected the operation ({code}): {message}")]
-	Protocol { code: i32, message: Str },
+	Protocol {
+		/// Server status code.
+		code:    i32,
+		/// Server error message.
+		message: Str,
+	},
+	/// Server response frame was invalid or unexpected.
 	#[error("malformed document-server response: {0}")]
 	MalformedResponse(Str),
 }

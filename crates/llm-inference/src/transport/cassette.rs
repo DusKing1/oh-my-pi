@@ -104,21 +104,20 @@ pub struct CapturedRequestBody {
 	pub truncated:      bool,
 }
 
-
 /// Deterministic evidence retained for one cassette attempt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CassetteCapture {
 	/// Zero-based scripted attempt index.
-	pub attempt: usize,
+	pub attempt:      usize,
 	/// Request URI; credential middleware must never place secrets here.
-	pub uri:     Str,
+	pub uri:          Str,
 	/// Exact request-body lifecycle evidence.
-	pub body:    AttemptBodyEvidence,
+	pub body:         AttemptBodyEvidence,
 	/// Opt-in bounded request payload evidence. `None` unless explicitly
 	/// configured on the cassette transport.
 	pub request_body: Option<CapturedRequestBody>,
 	/// Bounded, payload-free provider frame records.
-	pub frames:  Box<[CapturedFrame]>,
+	pub frames:       Box<[CapturedFrame]>,
 }
 
 #[derive(Clone, Default)]
@@ -132,12 +131,12 @@ struct CaptureLog(Arc<Mutex<Vec<CassetteCapture>>>);
 /// and `call`.
 #[derive(Clone)]
 pub struct CassetteTransport {
-	attempts:            Arc<[CassetteAttempt]>,
-	cursor:              usize,
-	pending_ready_polls: usize,
-	ready_permit:        bool,
+	attempts:                   Arc<[CassetteAttempt]>,
+	cursor:                     usize,
+	pending_ready_polls:        usize,
+	ready_permit:               bool,
 	request_body_capture_limit: Option<NonZeroUsize>,
-	captures:            CaptureLog,
+	captures:                   CaptureLog,
 }
 
 struct CassetteCaptureFinalizer {
@@ -159,10 +158,10 @@ struct RequestBodyCaptureSink {
 impl RequestBodyCaptureSink {
 	fn new(limit: NonZeroUsize) -> Self {
 		Self {
-			bytes: BytesMut::new(),
-			limit: limit.get(),
+			bytes:          BytesMut::new(),
+			limit:          limit.get(),
 			observed_bytes: 0,
-			truncated: false,
+			truncated:      false,
 		}
 	}
 
@@ -335,18 +334,18 @@ async fn run_attempt(
 		deadline,
 		capture.request_body.as_mut(),
 	)
-		.await
-		.map_err(|error| {
-			record_failure(
-				error,
-				&transport_attempt,
-				&evidence,
-				attempt.status,
-				attempt.provider_request_id.as_ref(),
-				started,
-				false,
-			)
-		})?;
+	.await
+	.map_err(|error| {
+		record_failure(
+			error,
+			&transport_attempt,
+			&evidence,
+			attempt.status,
+			attempt.provider_request_id.as_ref(),
+			started,
+			false,
+		)
+	})?;
 	let mut decoder = request.decoder.take().ok_or_else(|| {
 		record_failure(
 			transport_error(ErrorPhase::Handshake, false, "ordinary-decoder-missing"),
@@ -547,18 +546,18 @@ async fn run_realtime_attempt(
 		deadline,
 		capture.request_body.as_mut(),
 	)
-		.await
-		.map_err(|error| {
-			record_failure(
-				error,
-				&transport_attempt,
-				&evidence,
-				attempt.status,
-				attempt.provider_request_id.as_ref(),
-				started,
-				false,
-			)
-		})?;
+	.await
+	.map_err(|error| {
+		record_failure(
+			error,
+			&transport_attempt,
+			&evidence,
+			attempt.status,
+			attempt.provider_request_id.as_ref(),
+			started,
+			false,
+		)
+	})?;
 	if request.encoded.operation != OperationKind::Realtime {
 		return Err(record_failure(
 			transport_error(ErrorPhase::Handshake, false, "realtime-codec-on-non-realtime-operation"),

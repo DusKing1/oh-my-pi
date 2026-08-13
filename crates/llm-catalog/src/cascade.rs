@@ -870,7 +870,7 @@ fn string_arguments(node: &KdlNode, file: &str, directive: &str) -> Result<Vec<S
 		.entries()
 		.iter()
 		.filter(|entry| entry.name().is_none())
-		.map(|entry| entry.value().as_string().map(omp_core::IntoStr::to_str))
+		.map(|entry| entry.value().as_string().map(|text| text.to_str()))
 		.collect();
 	match values {
 		Some(values) if !values.is_empty() => Ok(values),
@@ -1055,7 +1055,9 @@ mod tests {
 		)
 		.expect("valid cascade");
 		for id in ["zai-org/glm-4.7", "ZAI-ORG/GLM-4.7", "GLM-5.2"] {
-			let resolved = cascade.resolve("anyhost", "glm", id).expect("resolves");
+			let resolved = cascade
+				.resolve("anyhost", "glm", id, true)
+				.expect("resolves");
 			assert_eq!(resolved.wire["thinking_format"], Value::from("zai"), "{id}");
 		}
 	}
