@@ -1107,8 +1107,11 @@ pub fn paint_gradients(
 					},
 				});
 			} else {
-				pc.frame
-					.underlay_gradient(background, gradient, projection.unwrap_or(background_bounds));
+				pc.frame.underlay_gradient(
+					background,
+					gradient,
+					projection.unwrap_or(background_bounds),
+				);
 			}
 		} else {
 			let bg = props.style(&pc.ctx.theme).background_color();
@@ -1200,10 +1203,8 @@ fn paint_border(
 	if pc.ctx.native_decor {
 		let ink = ramp.map_or(DecorFill::Solid(solid), DecorFill::Gradient);
 		let glow = glow.map(|glow| (glow.start, glow.strength.clamp(0.0, 1.0)));
-		pc.frame.push_decor(Decor {
-			rect,
-			kind: DecorKind::Border { border, ink, glow },
-		});
+		pc.frame
+			.push_decor(Decor { rect, kind: DecorKind::Border { border, ink, glow } });
 		return;
 	}
 	let (tl, tr, bl, br, horizontal, vertical) = pc.ctx.charset.border(border);

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "revision": "catalog-5283ee4f9c50bca135bfbf491e50ed0ecc5a15c5147c3d366e43efe03b998e96",
+  "revision": "catalog-872acee3be7aa479e854a697ae599fda7b5c7db389a47e3b98bb54fa350ccbd0",
   "census": {
-    "raw_models": 4293,
-    "logical_models": 4218,
+    "raw_models": 4302,
+    "logical_models": 4227,
     "providers": 94,
     "raw_provider_keys": 80,
     "urls": 108,
@@ -110503,6 +110503,109 @@
       "premium_multiplier_millionths": null
     },
     {
+      "key": "google-antigravity/gemini-3.7-flash",
+      "family": "gemini",
+      "display_name": "Gemini 3.7 Flash",
+      "wire_ids": [
+        [
+          "route-231a935691ef25e7916df1b8d7181ebea999dbc05262de875aefc2a47f8f79cc",
+          "gemini-3.7-flash-low"
+        ]
+      ],
+      "routes": [
+        "route-231a935691ef25e7916df1b8d7181ebea999dbc05262de875aefc2a47f8f79cc"
+      ],
+      "capabilities": {
+        "operations": 1,
+        "chat": {
+          "roles": "unknown",
+          "mid_session_roles": "unknown",
+          "tools": "unknown",
+          "structured_output": "unknown",
+          "grammar": "unknown",
+          "text_verbosity": "unknown",
+          "reasoning": "unknown",
+          "input_modalities": {
+            "native": 3
+          },
+          "hosted_tools": "unknown",
+          "prompt_caching": "unknown",
+          "service_tiers": "unknown",
+          "sampling": "unknown",
+          "safety": "unknown",
+          "determinism": "unknown",
+          "server_state": "unknown",
+          "logprobs": "unknown"
+        },
+        "embeddings": null,
+        "image": null,
+        "video": null,
+        "speech": null,
+        "transcription": null,
+        "realtime": null,
+        "search": null,
+        "tokenization": null
+      },
+      "limits": {
+        "context_window": 1048576,
+        "maximum_input_tokens": null,
+        "maximum_output_tokens": 65536,
+        "maximum_batch": null
+      },
+      "thinking": "thinking-sha256-2a0cb22713f6d8b3ee103fc0d951e17b4b8c3637940df200b2be6568638d76bd",
+      "thinking_routing": {
+        "effortMap": {},
+        "effortRouting": {
+          "minimal": "gemini-3.7-flash-low",
+          "low": "gemini-3.7-flash-low",
+          "medium": "gemini-3.7-flash-medium",
+          "high": "gemini-3.7-flash-high"
+        },
+        "reasoningMode": null
+      },
+      "wire_policy": "wire-sha256-a714a9ac357ee19ee4399d6ed5c215248c56c962cf3ce9b6a7a0f11338108758",
+      "context": "replay",
+      "pricing": {
+        "components": [
+          {
+            "unit": "mtok_input",
+            "nanos_usd": 750000000
+          },
+          {
+            "unit": "mtok_output",
+            "nanos_usd": 3750000000
+          },
+          {
+            "unit": "mtok_cache_read",
+            "nanos_usd": 75000000
+          },
+          {
+            "unit": "mtok_cache_write",
+            "nanos_usd": 0
+          }
+        ],
+        "tiers": []
+      },
+      "availability": "unspecified",
+      "provenance": {
+        "sources": [
+          {
+            "kind": "bundled",
+            "origin": "catalog-oracle/models.json.zst",
+            "revision": null,
+            "confidence": "declared",
+            "observed_at_ms": null
+          }
+        ],
+        "updated_at_ms": null,
+        "blocked_until_ms": null,
+        "deprecated": false
+      },
+      "context_promotion_target": null,
+      "remote_compaction": null,
+      "premium_multiplier_millionths": null
+    },
+    {
       "key": "google-antigravity/gpt-oss-120b",
       "family": "gpt-oss",
       "display_name": "GPT OSS 120B",
@@ -134214,19 +134317,19 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 1500000000
+            "nanos_usd": 750000000
           },
           {
             "unit": "mtok_output",
-            "nanos_usd": 7500000000
+            "nanos_usd": 3750000000
           },
           {
             "unit": "mtok_cache_read",
-            "nanos_usd": 150000000
+            "nanos_usd": 75000000
           },
           {
             "unit": "mtok_cache_write",
-            "nanos_usd": 83333000
+            "nanos_usd": 41667000
           }
         ],
         "tiers": []
@@ -134244,6 +134347,111 @@
           {
             "kind": "bundled",
             "origin": "catalog-oracle:inherit:google/gemini-3.6-flash",
+            "revision": null,
+            "confidence": "inferred",
+            "observed_at_ms": null
+          }
+        ],
+        "updated_at_ms": null,
+        "blocked_until_ms": null,
+        "deprecated": false
+      },
+      "context_promotion_target": null,
+      "remote_compaction": null,
+      "premium_multiplier_millionths": null
+    },
+    {
+      "key": "kilo/google/gemini-3.7-flash",
+      "family": "gemini",
+      "display_name": "Gemini 3.7 Flash",
+      "wire_ids": [
+        [
+          "route-959ab6e9fc1b7c372a5f0c2d6f79a99758f15d4bafc09bd98a0325e155be653d",
+          "google/gemini-3.7-flash"
+        ]
+      ],
+      "routes": [
+        "route-959ab6e9fc1b7c372a5f0c2d6f79a99758f15d4bafc09bd98a0325e155be653d"
+      ],
+      "capabilities": {
+        "operations": 1,
+        "chat": {
+          "roles": "unknown",
+          "mid_session_roles": "unknown",
+          "tools": "unknown",
+          "structured_output": "unknown",
+          "grammar": "unknown",
+          "text_verbosity": "unknown",
+          "reasoning": "unknown",
+          "input_modalities": {
+            "native": 3
+          },
+          "hosted_tools": "unknown",
+          "prompt_caching": "unknown",
+          "service_tiers": "unknown",
+          "sampling": "unknown",
+          "safety": "unknown",
+          "determinism": "unknown",
+          "server_state": "unknown",
+          "logprobs": "unknown"
+        },
+        "embeddings": null,
+        "image": null,
+        "video": null,
+        "speech": null,
+        "transcription": null,
+        "realtime": null,
+        "search": null,
+        "tokenization": null
+      },
+      "limits": {
+        "context_window": 1048576,
+        "maximum_input_tokens": null,
+        "maximum_output_tokens": 65536,
+        "maximum_batch": null
+      },
+      "thinking": "thinking-sha256-c319fd05a981dbffdd27567b484fd97e4c187548815a02b0994c209f3190ca6f",
+      "thinking_routing": {
+        "effortMap": {},
+        "effortRouting": {},
+        "reasoningMode": null
+      },
+      "wire_policy": "wire-sha256-a714a9ac357ee19ee4399d6ed5c215248c56c962cf3ce9b6a7a0f11338108758",
+      "context": "replay",
+      "pricing": {
+        "components": [
+          {
+            "unit": "mtok_input",
+            "nanos_usd": 750000000
+          },
+          {
+            "unit": "mtok_output",
+            "nanos_usd": 3750000000
+          },
+          {
+            "unit": "mtok_cache_read",
+            "nanos_usd": 75000000
+          },
+          {
+            "unit": "mtok_cache_write",
+            "nanos_usd": 41667000
+          }
+        ],
+        "tiers": []
+      },
+      "availability": "unspecified",
+      "provenance": {
+        "sources": [
+          {
+            "kind": "bundled",
+            "origin": "catalog-oracle/models.json.zst",
+            "revision": null,
+            "confidence": "declared",
+            "observed_at_ms": null
+          },
+          {
+            "kind": "bundled",
+            "origin": "catalog-oracle:inherit:google-antigravity/gemini-3.7-flash",
             "revision": null,
             "confidence": "inferred",
             "observed_at_ms": null
@@ -171523,15 +171731,15 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 550000000
+            "nanos_usd": 500000000
           },
           {
             "unit": "mtok_output",
-            "nanos_usd": 2200000000
+            "nanos_usd": 2000000000
           },
           {
             "unit": "mtok_cache_read",
-            "nanos_usd": 110000000
+            "nanos_usd": 100000000
           },
           {
             "unit": "mtok_cache_write",
@@ -171838,15 +172046,15 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 600000000
+            "nanos_usd": 400000000
           },
           {
             "unit": "mtok_output",
-            "nanos_usd": 2200000000
+            "nanos_usd": 1750000000
           },
           {
             "unit": "mtok_cache_read",
-            "nanos_usd": 110000000
+            "nanos_usd": 80000000
           },
           {
             "unit": "mtok_cache_write",
@@ -171943,7 +172151,7 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 70000000
+            "nanos_usd": 60000000
           },
           {
             "unit": "mtok_output",
@@ -172048,11 +172256,11 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 1000000000
+            "nanos_usd": 950000000
           },
           {
             "unit": "mtok_output",
-            "nanos_usd": 3200000000
+            "nanos_usd": 2550000000
           },
           {
             "unit": "mtok_cache_read",
@@ -172258,7 +172466,7 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 1380000000
+            "nanos_usd": 1400000000
           },
           {
             "unit": "mtok_output",
@@ -172346,9 +172554,9 @@
         "tokenization": null
       },
       "limits": {
-        "context_window": 262144,
+        "context_window": 1048576,
         "maximum_input_tokens": null,
-        "maximum_output_tokens": 262144,
+        "maximum_output_tokens": 131072,
         "maximum_batch": null
       },
       "thinking": "thinking-sha256-50b5fdfa05ad9730b6f813fe373bf7676409cf233d436061dcd7d0e7a21e9ad9",
@@ -172392,7 +172600,7 @@
           },
           {
             "kind": "bundled",
-            "origin": "catalog-oracle:inherit:openrouter/z-ai/glm-5.2",
+            "origin": "catalog-oracle:inherit:fireworks/glm-5.2",
             "revision": null,
             "confidence": "inferred",
             "observed_at_ms": null
@@ -172976,9 +173184,9 @@
         "tokenization": null
       },
       "limits": {
-        "context_window": 1048576,
+        "context_window": 262144,
         "maximum_input_tokens": null,
-        "maximum_output_tokens": 131072,
+        "maximum_output_tokens": 262144,
         "maximum_batch": null
       },
       "thinking": "thinking-sha256-c023d5a7fb382ce9a89dc23a9ceb5e47ec1734ff0eae92c55b5a1c9d01a1e2d1",
@@ -172993,15 +173201,15 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 79996000
+            "nanos_usd": 72000000
           },
           {
             "unit": "mtok_output",
-            "nanos_usd": 252000000
+            "nanos_usd": 144000000
           },
           {
             "unit": "mtok_cache_read",
-            "nanos_usd": 25200000
+            "nanos_usd": 16000000
           },
           {
             "unit": "mtok_cache_write",
@@ -173022,7 +173230,7 @@
           },
           {
             "kind": "bundled",
-            "origin": "catalog-oracle:inherit:nanogpt/deepseek/deepseek-v4-flash-latest",
+            "origin": "catalog-oracle:inherit:openrouter/~deepseek/deepseek-v4-flash-latest",
             "revision": null,
             "confidence": "inferred",
             "observed_at_ms": null
@@ -173098,19 +173306,19 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 1500000000
+            "nanos_usd": 375000000
           },
           {
             "unit": "mtok_output",
-            "nanos_usd": 7500000000
+            "nanos_usd": 1875000000
           },
           {
             "unit": "mtok_cache_read",
-            "nanos_usd": 150000000
+            "nanos_usd": 37500000
           },
           {
             "unit": "mtok_cache_write",
-            "nanos_usd": 83333000
+            "nanos_usd": 20833000
           }
         ],
         "tiers": []
@@ -173291,9 +173499,9 @@
         "tokenization": null
       },
       "limits": {
-        "context_window": 1048576,
+        "context_window": 974842,
         "maximum_input_tokens": null,
-        "maximum_output_tokens": 1048576,
+        "maximum_output_tokens": 974842,
         "maximum_batch": null
       },
       "thinking": "thinking-sha256-8f962913526d0f5c7a7af9ff7d328c3c43cc0394c567c92a9621ea4df4240a47",
@@ -173308,15 +173516,15 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 2800000000
+            "nanos_usd": 2400000000
           },
           {
             "unit": "mtok_output",
-            "nanos_usd": 14000000000
+            "nanos_usd": 12000000000
           },
           {
             "unit": "mtok_cache_read",
-            "nanos_usd": 290000000
+            "nanos_usd": 240000000
           },
           {
             "unit": "mtok_cache_write",
@@ -173337,7 +173545,7 @@
           },
           {
             "kind": "bundled",
-            "origin": "catalog-oracle:inherit:nanogpt/moonshotai/kimi-latest",
+            "origin": "catalog-oracle:inherit:openrouter/~moonshotai/kimi-latest",
             "revision": null,
             "confidence": "inferred",
             "observed_at_ms": null
@@ -229059,7 +229267,7 @@
           },
           {
             "unit": "mtok_cache_write",
-            "nanos_usd": 0
+            "nanos_usd": 83333000
           }
         ],
         "tiers": []
@@ -229269,7 +229477,7 @@
           },
           {
             "unit": "mtok_cache_write",
-            "nanos_usd": 0
+            "nanos_usd": 41667000
           }
         ],
         "tiers": []
@@ -229287,6 +229495,111 @@
           {
             "kind": "bundled",
             "origin": "catalog-oracle:inherit:kilo/google/gemini-3.6-flash",
+            "revision": null,
+            "confidence": "inferred",
+            "observed_at_ms": null
+          }
+        ],
+        "updated_at_ms": null,
+        "blocked_until_ms": null,
+        "deprecated": false
+      },
+      "context_promotion_target": null,
+      "remote_compaction": null,
+      "premium_multiplier_millionths": null
+    },
+    {
+      "key": "nanogpt/google/gemini-3.7-flash",
+      "family": "gemini",
+      "display_name": "Gemini 3.7 Flash",
+      "wire_ids": [
+        [
+          "route-ff95e87b47f48413972e9e23f2dbc10d8db4f43bbe6422e9d303cb0c5d8c15f4",
+          "google/gemini-3.7-flash"
+        ]
+      ],
+      "routes": [
+        "route-ff95e87b47f48413972e9e23f2dbc10d8db4f43bbe6422e9d303cb0c5d8c15f4"
+      ],
+      "capabilities": {
+        "operations": 1,
+        "chat": {
+          "roles": "unknown",
+          "mid_session_roles": "unknown",
+          "tools": "unknown",
+          "structured_output": "unknown",
+          "grammar": "unknown",
+          "text_verbosity": "unknown",
+          "reasoning": "unknown",
+          "input_modalities": {
+            "native": 3
+          },
+          "hosted_tools": "unknown",
+          "prompt_caching": "unknown",
+          "service_tiers": "unknown",
+          "sampling": "unknown",
+          "safety": "unknown",
+          "determinism": "unknown",
+          "server_state": "unknown",
+          "logprobs": "unknown"
+        },
+        "embeddings": null,
+        "image": null,
+        "video": null,
+        "speech": null,
+        "transcription": null,
+        "realtime": null,
+        "search": null,
+        "tokenization": null
+      },
+      "limits": {
+        "context_window": 1048576,
+        "maximum_input_tokens": null,
+        "maximum_output_tokens": 65536,
+        "maximum_batch": null
+      },
+      "thinking": "thinking-sha256-c319fd05a981dbffdd27567b484fd97e4c187548815a02b0994c209f3190ca6f",
+      "thinking_routing": {
+        "effortMap": {},
+        "effortRouting": {},
+        "reasoningMode": null
+      },
+      "wire_policy": "wire-sha256-a714a9ac357ee19ee4399d6ed5c215248c56c962cf3ce9b6a7a0f11338108758",
+      "context": "replay",
+      "pricing": {
+        "components": [
+          {
+            "unit": "mtok_input",
+            "nanos_usd": 375000000
+          },
+          {
+            "unit": "mtok_output",
+            "nanos_usd": 1875000000
+          },
+          {
+            "unit": "mtok_cache_read",
+            "nanos_usd": 37500000
+          },
+          {
+            "unit": "mtok_cache_write",
+            "nanos_usd": 20833000
+          }
+        ],
+        "tiers": []
+      },
+      "availability": "unspecified",
+      "provenance": {
+        "sources": [
+          {
+            "kind": "bundled",
+            "origin": "catalog-oracle/models.json.zst",
+            "revision": null,
+            "confidence": "declared",
+            "observed_at_ms": null
+          },
+          {
+            "kind": "bundled",
+            "origin": "catalog-oracle:inherit:kilo/google/gemini-3.7-flash",
             "revision": null,
             "confidence": "inferred",
             "observed_at_ms": null
@@ -294520,15 +294833,15 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 760000000
+            "nanos_usd": 1400000000
           },
           {
             "unit": "mtok_output",
-            "nanos_usd": 2420000000
+            "nanos_usd": 4400000000
           },
           {
             "unit": "mtok_cache_read",
-            "nanos_usd": 140000000
+            "nanos_usd": 260000000
           },
           {
             "unit": "mtok_cache_write",
@@ -294549,7 +294862,7 @@
           },
           {
             "kind": "bundled",
-            "origin": "catalog-oracle:inherit:openrouter/z-ai/glm-5.2",
+            "origin": "catalog-oracle:inherit:kilo/z-ai/glm-5.2",
             "revision": null,
             "confidence": "inferred",
             "observed_at_ms": null
@@ -295553,6 +295866,104 @@
             "origin": "catalog-oracle:inherit:fireworks/deepseek-v4-pro",
             "revision": null,
             "confidence": "inferred",
+            "observed_at_ms": null
+          }
+        ],
+        "updated_at_ms": null,
+        "blocked_until_ms": null,
+        "deprecated": false
+      },
+      "context_promotion_target": null,
+      "remote_compaction": null,
+      "premium_multiplier_millionths": null
+    },
+    {
+      "key": "ollama-cloud/deepseek-v4-pro:preview",
+      "family": "deepseek",
+      "display_name": "deepseek-v4-pro:preview",
+      "wire_ids": [
+        [
+          "route-b1b24373467d4c7657ffe11ad2ec43727cb7842ddc30bdd40de54f0c3c5d1482",
+          "deepseek-v4-pro:preview"
+        ]
+      ],
+      "routes": [
+        "route-b1b24373467d4c7657ffe11ad2ec43727cb7842ddc30bdd40de54f0c3c5d1482"
+      ],
+      "capabilities": {
+        "operations": 1,
+        "chat": {
+          "roles": "unknown",
+          "mid_session_roles": "unknown",
+          "tools": "unknown",
+          "structured_output": "unknown",
+          "grammar": "unknown",
+          "text_verbosity": "unknown",
+          "reasoning": "unknown",
+          "input_modalities": {
+            "native": 1
+          },
+          "hosted_tools": "unknown",
+          "prompt_caching": "unknown",
+          "service_tiers": "unknown",
+          "sampling": "unknown",
+          "safety": "unknown",
+          "determinism": "unknown",
+          "server_state": "unknown",
+          "logprobs": "unknown"
+        },
+        "embeddings": null,
+        "image": null,
+        "video": null,
+        "speech": null,
+        "transcription": null,
+        "realtime": null,
+        "search": null,
+        "tokenization": null
+      },
+      "limits": {
+        "context_window": 524288,
+        "maximum_input_tokens": null,
+        "maximum_output_tokens": 65536,
+        "maximum_batch": null
+      },
+      "thinking": "thinking-sha256-c023d5a7fb382ce9a89dc23a9ceb5e47ec1734ff0eae92c55b5a1c9d01a1e2d1",
+      "thinking_routing": {
+        "effortMap": {},
+        "effortRouting": {},
+        "reasoningMode": null
+      },
+      "wire_policy": "wire-sha256-c186538d164fb9241b4a3eaa9ddf0ae2dad770339b019da0504d66379503a45d",
+      "context": "replay",
+      "pricing": {
+        "components": [
+          {
+            "unit": "mtok_input",
+            "nanos_usd": 0
+          },
+          {
+            "unit": "mtok_output",
+            "nanos_usd": 0
+          },
+          {
+            "unit": "mtok_cache_read",
+            "nanos_usd": 0
+          },
+          {
+            "unit": "mtok_cache_write",
+            "nanos_usd": 0
+          }
+        ],
+        "tiers": []
+      },
+      "availability": "unspecified",
+      "provenance": {
+        "sources": [
+          {
+            "kind": "bundled",
+            "origin": "catalog-oracle/models.json.zst",
+            "revision": null,
+            "confidence": "declared",
             "observed_at_ms": null
           }
         ],
@@ -311418,6 +311829,111 @@
           {
             "kind": "bundled",
             "origin": "catalog-oracle:inherit:google/gemini-3.6-flash",
+            "revision": null,
+            "confidence": "inferred",
+            "observed_at_ms": null
+          }
+        ],
+        "updated_at_ms": null,
+        "blocked_until_ms": null,
+        "deprecated": false
+      },
+      "context_promotion_target": null,
+      "remote_compaction": null,
+      "premium_multiplier_millionths": null
+    },
+    {
+      "key": "opencode-zen/gemini-3.7-flash",
+      "family": "gemini",
+      "display_name": "Gemini 3.7 Flash",
+      "wire_ids": [
+        [
+          "route-1a759c7faf663a3d4dbf6196b2757f3049efeb2974511dc0418a439352e013ba",
+          "gemini-3.7-flash"
+        ]
+      ],
+      "routes": [
+        "route-1a759c7faf663a3d4dbf6196b2757f3049efeb2974511dc0418a439352e013ba"
+      ],
+      "capabilities": {
+        "operations": 1,
+        "chat": {
+          "roles": "unknown",
+          "mid_session_roles": "unknown",
+          "tools": "unknown",
+          "structured_output": "unknown",
+          "grammar": "unknown",
+          "text_verbosity": "unknown",
+          "reasoning": "unknown",
+          "input_modalities": {
+            "native": 3
+          },
+          "hosted_tools": "unknown",
+          "prompt_caching": "unknown",
+          "service_tiers": "unknown",
+          "sampling": "unknown",
+          "safety": "unknown",
+          "determinism": "unknown",
+          "server_state": "unknown",
+          "logprobs": "unknown"
+        },
+        "embeddings": null,
+        "image": null,
+        "video": null,
+        "speech": null,
+        "transcription": null,
+        "realtime": null,
+        "search": null,
+        "tokenization": null
+      },
+      "limits": {
+        "context_window": 1048576,
+        "maximum_input_tokens": null,
+        "maximum_output_tokens": 65536,
+        "maximum_batch": null
+      },
+      "thinking": "thinking-sha256-2a0cb22713f6d8b3ee103fc0d951e17b4b8c3637940df200b2be6568638d76bd",
+      "thinking_routing": {
+        "effortMap": {},
+        "effortRouting": {},
+        "reasoningMode": null
+      },
+      "wire_policy": "wire-sha256-a714a9ac357ee19ee4399d6ed5c215248c56c962cf3ce9b6a7a0f11338108758",
+      "context": "replay",
+      "pricing": {
+        "components": [
+          {
+            "unit": "mtok_input",
+            "nanos_usd": 1500000000
+          },
+          {
+            "unit": "mtok_output",
+            "nanos_usd": 7500000000
+          },
+          {
+            "unit": "mtok_cache_read",
+            "nanos_usd": 150000000
+          },
+          {
+            "unit": "mtok_cache_write",
+            "nanos_usd": 0
+          }
+        ],
+        "tiers": []
+      },
+      "availability": "unspecified",
+      "provenance": {
+        "sources": [
+          {
+            "kind": "bundled",
+            "origin": "catalog-oracle/models.json.zst",
+            "revision": null,
+            "confidence": "declared",
+            "observed_at_ms": null
+          },
+          {
+            "kind": "bundled",
+            "origin": "catalog-oracle:inherit:google-antigravity/gemini-3.7-flash",
             "revision": null,
             "confidence": "inferred",
             "observed_at_ms": null
@@ -327921,19 +328437,19 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 1500000000
+            "nanos_usd": 750000000
           },
           {
             "unit": "mtok_output",
-            "nanos_usd": 7500000000
+            "nanos_usd": 3750000000
           },
           {
             "unit": "mtok_cache_read",
-            "nanos_usd": 150000000
+            "nanos_usd": 75000000
           },
           {
             "unit": "mtok_cache_write",
-            "nanos_usd": 83333333
+            "nanos_usd": 41666667
           }
         ],
         "tiers": []
@@ -328026,19 +328542,222 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 750000000
+            "nanos_usd": 375000000
           },
           {
             "unit": "mtok_output",
-            "nanos_usd": 3750000000
+            "nanos_usd": 1875000000
           },
           {
             "unit": "mtok_cache_read",
-            "nanos_usd": 75000000
+            "nanos_usd": 37500000
           },
           {
             "unit": "mtok_cache_write",
-            "nanos_usd": 83333333
+            "nanos_usd": 41666667
+          }
+        ],
+        "tiers": []
+      },
+      "availability": "unspecified",
+      "provenance": {
+        "sources": [
+          {
+            "kind": "bundled",
+            "origin": "catalog-oracle/models.json.zst",
+            "revision": null,
+            "confidence": "declared",
+            "observed_at_ms": null
+          }
+        ],
+        "updated_at_ms": null,
+        "blocked_until_ms": null,
+        "deprecated": false
+      },
+      "context_promotion_target": null,
+      "remote_compaction": null,
+      "premium_multiplier_millionths": null
+    },
+    {
+      "key": "openrouter/google/gemini-3.7-flash",
+      "family": "gemini",
+      "display_name": "Gemini 3.7 Flash",
+      "wire_ids": [
+        [
+          "route-e7ffe58ba9329e5fbb69c4eaaac136c86ff4b91e42ac9a94888962bb3cfe10a1",
+          "google/gemini-3.7-flash"
+        ]
+      ],
+      "routes": [
+        "route-e7ffe58ba9329e5fbb69c4eaaac136c86ff4b91e42ac9a94888962bb3cfe10a1"
+      ],
+      "capabilities": {
+        "operations": 1,
+        "chat": {
+          "roles": "unknown",
+          "mid_session_roles": "unknown",
+          "tools": "unknown",
+          "structured_output": "unknown",
+          "grammar": "unknown",
+          "text_verbosity": "unknown",
+          "reasoning": "unknown",
+          "input_modalities": {
+            "native": 3
+          },
+          "hosted_tools": "unknown",
+          "prompt_caching": "unknown",
+          "service_tiers": "unknown",
+          "sampling": "unknown",
+          "safety": "unknown",
+          "determinism": "unknown",
+          "server_state": "unknown",
+          "logprobs": "unknown"
+        },
+        "embeddings": null,
+        "image": null,
+        "video": null,
+        "speech": null,
+        "transcription": null,
+        "realtime": null,
+        "search": null,
+        "tokenization": null
+      },
+      "limits": {
+        "context_window": 1048576,
+        "maximum_input_tokens": null,
+        "maximum_output_tokens": 65536,
+        "maximum_batch": null
+      },
+      "thinking": "thinking-sha256-c319fd05a981dbffdd27567b484fd97e4c187548815a02b0994c209f3190ca6f",
+      "thinking_routing": {
+        "effortMap": {},
+        "effortRouting": {},
+        "reasoningMode": null
+      },
+      "wire_policy": "wire-sha256-8383a1f6c99f2849346672d4e743106e01238dc9f12b75ae638c70f96c560eb3",
+      "context": "replay",
+      "pricing": {
+        "components": [
+          {
+            "unit": "mtok_input",
+            "nanos_usd": 375000000
+          },
+          {
+            "unit": "mtok_output",
+            "nanos_usd": 1875000000
+          },
+          {
+            "unit": "mtok_cache_read",
+            "nanos_usd": 37500000
+          },
+          {
+            "unit": "mtok_cache_write",
+            "nanos_usd": 20833333
+          }
+        ],
+        "tiers": []
+      },
+      "availability": "unspecified",
+      "provenance": {
+        "sources": [
+          {
+            "kind": "bundled",
+            "origin": "catalog-oracle/models.json.zst",
+            "revision": null,
+            "confidence": "declared",
+            "observed_at_ms": null
+          },
+          {
+            "kind": "bundled",
+            "origin": "catalog-oracle:inherit:kilo/google/gemini-3.7-flash",
+            "revision": null,
+            "confidence": "inferred",
+            "observed_at_ms": null
+          }
+        ],
+        "updated_at_ms": null,
+        "blocked_until_ms": null,
+        "deprecated": false
+      },
+      "context_promotion_target": null,
+      "remote_compaction": null,
+      "premium_multiplier_millionths": null
+    },
+    {
+      "key": "openrouter/google/gemini-3.7-flash:batch",
+      "family": "gemini",
+      "display_name": "Gemini 3.7 Flash (batch)",
+      "wire_ids": [
+        [
+          "route-e7ffe58ba9329e5fbb69c4eaaac136c86ff4b91e42ac9a94888962bb3cfe10a1",
+          "google/gemini-3.7-flash:batch"
+        ]
+      ],
+      "routes": [
+        "route-e7ffe58ba9329e5fbb69c4eaaac136c86ff4b91e42ac9a94888962bb3cfe10a1"
+      ],
+      "capabilities": {
+        "operations": 1,
+        "chat": {
+          "roles": "unknown",
+          "mid_session_roles": "unknown",
+          "tools": "unknown",
+          "structured_output": "unknown",
+          "grammar": "unknown",
+          "text_verbosity": "unknown",
+          "reasoning": "unknown",
+          "input_modalities": {
+            "native": 3
+          },
+          "hosted_tools": "unknown",
+          "prompt_caching": "unknown",
+          "service_tiers": "unknown",
+          "sampling": "unknown",
+          "safety": "unknown",
+          "determinism": "unknown",
+          "server_state": "unknown",
+          "logprobs": "unknown"
+        },
+        "embeddings": null,
+        "image": null,
+        "video": null,
+        "speech": null,
+        "transcription": null,
+        "realtime": null,
+        "search": null,
+        "tokenization": null
+      },
+      "limits": {
+        "context_window": 1048576,
+        "maximum_input_tokens": null,
+        "maximum_output_tokens": 65536,
+        "maximum_batch": null
+      },
+      "thinking": "thinking-sha256-c319fd05a981dbffdd27567b484fd97e4c187548815a02b0994c209f3190ca6f",
+      "thinking_routing": {
+        "effortMap": {},
+        "effortRouting": {},
+        "reasoningMode": null
+      },
+      "wire_policy": "wire-sha256-8383a1f6c99f2849346672d4e743106e01238dc9f12b75ae638c70f96c560eb3",
+      "context": "replay",
+      "pricing": {
+        "components": [
+          {
+            "unit": "mtok_input",
+            "nanos_usd": 187500000
+          },
+          {
+            "unit": "mtok_output",
+            "nanos_usd": 937500000
+          },
+          {
+            "unit": "mtok_cache_read",
+            "nanos_usd": 18750000
+          },
+          {
+            "unit": "mtok_cache_write",
+            "nanos_usd": 20833333
           }
         ],
         "tiers": []
@@ -335999,15 +336718,15 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 950000000
+            "nanos_usd": 560500000
           },
           {
             "unit": "mtok_output",
-            "nanos_usd": 4000000000
+            "nanos_usd": 2360000000
           },
           {
             "unit": "mtok_cache_read",
-            "nanos_usd": 160000000
+            "nanos_usd": 94400000
           },
           {
             "unit": "mtok_cache_write",
@@ -338105,6 +338824,104 @@
             "origin": "catalog-oracle:inherit:nanogpt/nvidia/nemotron-3-ultra-550b-a55b",
             "revision": null,
             "confidence": "inferred",
+            "observed_at_ms": null
+          }
+        ],
+        "updated_at_ms": null,
+        "blocked_until_ms": null,
+        "deprecated": false
+      },
+      "context_promotion_target": null,
+      "remote_compaction": null,
+      "premium_multiplier_millionths": null
+    },
+    {
+      "key": "openrouter/nvidia/nemotron-3.5-lightning",
+      "family": "unknown",
+      "display_name": "Nvidia Nemotron 3.5 Lightning",
+      "wire_ids": [
+        [
+          "route-e7ffe58ba9329e5fbb69c4eaaac136c86ff4b91e42ac9a94888962bb3cfe10a1",
+          "nvidia/nemotron-3.5-lightning"
+        ]
+      ],
+      "routes": [
+        "route-e7ffe58ba9329e5fbb69c4eaaac136c86ff4b91e42ac9a94888962bb3cfe10a1"
+      ],
+      "capabilities": {
+        "operations": 1,
+        "chat": {
+          "roles": "unknown",
+          "mid_session_roles": "unknown",
+          "tools": "unknown",
+          "structured_output": "unknown",
+          "grammar": "unknown",
+          "text_verbosity": "unknown",
+          "reasoning": "unknown",
+          "input_modalities": {
+            "native": 1
+          },
+          "hosted_tools": "unknown",
+          "prompt_caching": "unknown",
+          "service_tiers": "unknown",
+          "sampling": "unknown",
+          "safety": "unknown",
+          "determinism": "unknown",
+          "server_state": "unknown",
+          "logprobs": "unknown"
+        },
+        "embeddings": null,
+        "image": null,
+        "video": null,
+        "speech": null,
+        "transcription": null,
+        "realtime": null,
+        "search": null,
+        "tokenization": null
+      },
+      "limits": {
+        "context_window": 1000000,
+        "maximum_input_tokens": null,
+        "maximum_output_tokens": 262144,
+        "maximum_batch": null
+      },
+      "thinking": "thinking-sha256-aa34f4116b182181b685b4ef6a0ee95037e3306ea26a47a7853a6c7cd2e1411f",
+      "thinking_routing": {
+        "effortMap": {},
+        "effortRouting": {},
+        "reasoningMode": null
+      },
+      "wire_policy": "wire-sha256-8383a1f6c99f2849346672d4e743106e01238dc9f12b75ae638c70f96c560eb3",
+      "context": "replay",
+      "pricing": {
+        "components": [
+          {
+            "unit": "mtok_input",
+            "nanos_usd": 100000000
+          },
+          {
+            "unit": "mtok_output",
+            "nanos_usd": 250000000
+          },
+          {
+            "unit": "mtok_cache_read",
+            "nanos_usd": 50000000
+          },
+          {
+            "unit": "mtok_cache_write",
+            "nanos_usd": 0
+          }
+        ],
+        "tiers": []
+      },
+      "availability": "unspecified",
+      "provenance": {
+        "sources": [
+          {
+            "kind": "bundled",
+            "origin": "catalog-oracle/models.json.zst",
+            "revision": null,
+            "confidence": "declared",
             "observed_at_ms": null
           }
         ],
@@ -362114,7 +362931,7 @@
       "limits": {
         "context_window": 1048576,
         "maximum_input_tokens": null,
-        "maximum_output_tokens": 262144,
+        "maximum_output_tokens": 131072,
         "maximum_batch": null
       },
       "thinking": "thinking-sha256-8f962913526d0f5c7a7af9ff7d328c3c43cc0394c567c92a9621ea4df4240a47",
@@ -362129,15 +362946,15 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 760000000
+            "nanos_usd": 392000000
           },
           {
             "unit": "mtok_output",
-            "nanos_usd": 2420000000
+            "nanos_usd": 1232000000
           },
           {
             "unit": "mtok_cache_read",
-            "nanos_usd": 140000000
+            "nanos_usd": 72800000
           },
           {
             "unit": "mtok_cache_write",
@@ -362158,7 +362975,7 @@
           },
           {
             "kind": "bundled",
-            "origin": "catalog-oracle:inherit:fireworks/glm-5.2",
+            "origin": "catalog-oracle:inherit:kilo/z-ai/glm-5.2",
             "revision": null,
             "confidence": "inferred",
             "observed_at_ms": null
@@ -362842,7 +363659,7 @@
       "limits": {
         "context_window": 1048576,
         "maximum_input_tokens": null,
-        "maximum_output_tokens": 131072,
+        "maximum_output_tokens": 262144,
         "maximum_batch": null
       },
       "thinking": "thinking-sha256-c023d5a7fb382ce9a89dc23a9ceb5e47ec1734ff0eae92c55b5a1c9d01a1e2d1",
@@ -362857,15 +363674,15 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 79996000
+            "nanos_usd": 72000000
           },
           {
             "unit": "mtok_output",
-            "nanos_usd": 252000000
+            "nanos_usd": 144000000
           },
           {
             "unit": "mtok_cache_read",
-            "nanos_usd": 25200000
+            "nanos_usd": 16000000
           },
           {
             "unit": "mtok_cache_write",
@@ -362886,7 +363703,7 @@
           },
           {
             "kind": "bundled",
-            "origin": "catalog-oracle:inherit:kilo/~deepseek/deepseek-v4-flash-latest",
+            "origin": "catalog-oracle:inherit:nanogpt/deepseek/deepseek-v4-flash-latest",
             "revision": null,
             "confidence": "inferred",
             "observed_at_ms": null
@@ -362962,19 +363779,19 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 1500000000
+            "nanos_usd": 375000000
           },
           {
             "unit": "mtok_output",
-            "nanos_usd": 7500000000
+            "nanos_usd": 1875000000
           },
           {
             "unit": "mtok_cache_read",
-            "nanos_usd": 150000000
+            "nanos_usd": 37500000
           },
           {
             "unit": "mtok_cache_write",
-            "nanos_usd": 83333333
+            "nanos_usd": 20833333
           }
         ],
         "tiers": []
@@ -363157,7 +363974,7 @@
       "limits": {
         "context_window": 1048576,
         "maximum_input_tokens": null,
-        "maximum_output_tokens": 1048576,
+        "maximum_output_tokens": 974842,
         "maximum_batch": null
       },
       "thinking": "thinking-sha256-aa34f4116b182181b685b4ef6a0ee95037e3306ea26a47a7853a6c7cd2e1411f",
@@ -363172,15 +363989,15 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 2800000000
+            "nanos_usd": 2400000000
           },
           {
             "unit": "mtok_output",
-            "nanos_usd": 14000000000
+            "nanos_usd": 12000000000
           },
           {
             "unit": "mtok_cache_read",
-            "nanos_usd": 290000000
+            "nanos_usd": 240000000
           },
           {
             "unit": "mtok_cache_write",
@@ -363201,7 +364018,7 @@
           },
           {
             "kind": "bundled",
-            "origin": "catalog-oracle:inherit:kilo/~moonshotai/kimi-latest",
+            "origin": "catalog-oracle:inherit:nanogpt/moonshotai/kimi-latest",
             "revision": null,
             "confidence": "inferred",
             "observed_at_ms": null
@@ -388993,6 +389810,104 @@
       "premium_multiplier_millionths": null
     },
     {
+      "key": "vercel-ai-gateway/alibaba/qwen3.8-2.4t-a95b",
+      "family": "qwen",
+      "display_name": "Qwen3.8 2.4T A95B",
+      "wire_ids": [
+        [
+          "route-f8edb8f9a3683ba9853d9ef13791c631767da37a52d061ce4b9cc3d3ca520fd1",
+          "alibaba/qwen3.8-2.4t-a95b"
+        ]
+      ],
+      "routes": [
+        "route-f8edb8f9a3683ba9853d9ef13791c631767da37a52d061ce4b9cc3d3ca520fd1"
+      ],
+      "capabilities": {
+        "operations": 1,
+        "chat": {
+          "roles": "unknown",
+          "mid_session_roles": "unknown",
+          "tools": "unknown",
+          "structured_output": "unknown",
+          "grammar": "unknown",
+          "text_verbosity": "unknown",
+          "reasoning": "unknown",
+          "input_modalities": {
+            "native": 1
+          },
+          "hosted_tools": "unknown",
+          "prompt_caching": "unknown",
+          "service_tiers": "unknown",
+          "sampling": "unknown",
+          "safety": "unknown",
+          "determinism": "unknown",
+          "server_state": "unknown",
+          "logprobs": "unknown"
+        },
+        "embeddings": null,
+        "image": null,
+        "video": null,
+        "speech": null,
+        "transcription": null,
+        "realtime": null,
+        "search": null,
+        "tokenization": null
+      },
+      "limits": {
+        "context_window": 262144,
+        "maximum_input_tokens": null,
+        "maximum_output_tokens": 131072,
+        "maximum_batch": null
+      },
+      "thinking": "thinking-sha256-f975d3e22a598d36154613fd9c62911c517075c575da27e6eeb224f8397961af",
+      "thinking_routing": {
+        "effortMap": {},
+        "effortRouting": {},
+        "reasoningMode": null
+      },
+      "wire_policy": "wire-sha256-3f9b8b6ea1495e563813319d2d1f5ddea57ff83df740d68ff8e672bb90a36107",
+      "context": "replay",
+      "pricing": {
+        "components": [
+          {
+            "unit": "mtok_input",
+            "nanos_usd": 2000000000
+          },
+          {
+            "unit": "mtok_output",
+            "nanos_usd": 6000000000
+          },
+          {
+            "unit": "mtok_cache_read",
+            "nanos_usd": 250000000
+          },
+          {
+            "unit": "mtok_cache_write",
+            "nanos_usd": 0
+          }
+        ],
+        "tiers": []
+      },
+      "availability": "unspecified",
+      "provenance": {
+        "sources": [
+          {
+            "kind": "bundled",
+            "origin": "catalog-oracle/models.json.zst",
+            "revision": null,
+            "confidence": "declared",
+            "observed_at_ms": null
+          }
+        ],
+        "updated_at_ms": null,
+        "blocked_until_ms": null,
+        "deprecated": false
+      },
+      "context_promotion_target": null,
+      "remote_compaction": null,
+      "premium_multiplier_millionths": null
+    },
+    {
       "key": "vercel-ai-gateway/alibaba/qwen3.8-max",
       "family": "qwen",
       "display_name": "Qwen 3.8 Max",
@@ -394959,7 +395874,7 @@
         "tokenization": null
       },
       "limits": {
-        "context_window": 256000,
+        "context_window": 262144,
         "maximum_input_tokens": null,
         "maximum_output_tokens": 131072,
         "maximum_batch": null
@@ -441563,7 +442478,7 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 70000000
+            "nanos_usd": 60000000
           },
           {
             "unit": "mtok_output",
@@ -442117,7 +443032,7 @@
           },
           {
             "kind": "bundled",
-            "origin": "catalog-oracle:inherit:openrouter/z-ai/glm-5.2",
+            "origin": "catalog-oracle:inherit:kilo/z-ai/glm-5.2",
             "revision": null,
             "confidence": "inferred",
             "observed_at_ms": null
@@ -442193,15 +443108,15 @@
         "components": [
           {
             "unit": "mtok_input",
-            "nanos_usd": 760000000
+            "nanos_usd": 1400000000
           },
           {
             "unit": "mtok_output",
-            "nanos_usd": 2420000000
+            "nanos_usd": 4400000000
           },
           {
             "unit": "mtok_cache_read",
-            "nanos_usd": 140000000
+            "nanos_usd": 260000000
           },
           {
             "unit": "mtok_cache_write",
@@ -442222,7 +443137,7 @@
           },
           {
             "kind": "bundled",
-            "origin": "catalog-oracle:inherit:openrouter/z-ai/glm-5.2",
+            "origin": "catalog-oracle:inherit:kilo/z-ai/glm-5.2",
             "revision": null,
             "confidence": "inferred",
             "observed_at_ms": null
@@ -449236,6 +450151,87 @@
       },
       "audio": {
         "api_version": null
+      }
+    },
+    {
+      "role": {
+        "supports_developer_role": null,
+        "multiple_system_messages": true,
+        "supports_mid_conversation_system": null
+      },
+      "tool": {
+        "supports_tool_choice": null,
+        "named_choice": true,
+        "forced_choice": true,
+        "strict_mode": "mixed",
+        "schema_flavor": "json_schema",
+        "id_profile": "unconstrained",
+        "escape_builtin_names": null,
+        "requires_result_id": null,
+        "eager_input_streaming": null,
+        "requires_assistant_content": null,
+        "thinking_conflict": "none",
+        "apply_patch": null,
+        "computer_use": "unsupported",
+        "computer_use_config": null,
+        "disable_reasoning_on_choice": null
+      },
+      "structured": {
+        "penalties": true,
+        "sampling_params": true,
+        "stop_sequences": true
+      },
+      "reasoning": {
+        "wire_format": "open_ai",
+        "thinking_format": null,
+        "supports_effort": null,
+        "omit_effort": null,
+        "effort_map": {},
+        "disable_mode": null,
+        "content_field": null,
+        "requires_content_for_tool_calls": null,
+        "requires_content_for_all_assistant_turns": null,
+        "allows_synthetic_content_for_tool_calls": null,
+        "filter_history": null,
+        "include_encrypted": null,
+        "replay_unsigned": null,
+        "requires_enabled": null,
+        "disable_adaptive": null,
+        "interleaved_thinking": null,
+        "official_endpoint": null,
+        "signing_endpoint": null,
+        "extra_body": null,
+        "when_thinking": null,
+        "leaked_healer": "none",
+        "loop_guard": false
+      },
+      "cache": {
+        "control_format": "none",
+        "supports_long_retention": null
+      },
+      "context": {
+        "max_tokens_field": "max_completion_tokens",
+        "max_output_tokens": "omit",
+        "supports_store": null,
+        "stateful_response_chaining": false,
+        "extended_mode": null
+      },
+      "streaming": {
+        "protocol": "sse_data",
+        "watchdog": {
+          "first_event_ms": null,
+          "idle_ms": null
+        }
+      },
+      "usage": {
+        "in_streaming": true
+      },
+      "image": {
+        "encoding": "open_ai_url",
+        "supports_detail_original": null
+      },
+      "audio": {
+        "api_version": "none"
       }
     },
     {

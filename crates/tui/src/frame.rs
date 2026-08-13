@@ -595,7 +595,8 @@ impl Frame {
 		let area = usize::from(self.size.width).saturating_mul(usize::from(height));
 		self.cells.resize(area, Cell::blank(style));
 		if height < self.size.height {
-			self.decors
+			self
+				.decors
 				.retain(|decor| decor.rect.y.saturating_add(decor.rect.height) <= height);
 			self
 				.noselect
@@ -723,7 +724,9 @@ impl Frame {
 		}
 		self.touch();
 		let fill_rect = Rect::new(left, top, right - left, bottom - top);
-		self.decors.retain(|decor| !fill_rect.contains_rect(decor.rect));
+		self
+			.decors
+			.retain(|decor| !fill_rect.contains_rect(decor.rect));
 		self.noselect.retain(|rect| !fill_rect.contains_rect(*rect));
 		// Blanking any part of a row invalidates its exact joinability;
 		// painters re-flag when they redraw.
@@ -1076,8 +1079,12 @@ impl Frame {
 		}
 		if width > 0 && copied > 0 {
 			let destination = Rect::new(dst_x, dst_y, width, copied);
-			self.decors.retain(|decor| !destination.contains_rect(decor.rect));
-			self.noselect.retain(|rect| !destination.contains_rect(*rect));
+			self
+				.decors
+				.retain(|decor| !destination.contains_rect(decor.rect));
+			self
+				.noselect
+				.retain(|rect| !destination.contains_rect(*rect));
 			let source_band = Rect::new(0, src_top, src.size.width, rows);
 			let translate = |rect: Rect| {
 				Rect::new(

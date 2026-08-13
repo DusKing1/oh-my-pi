@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source_digest": "014f704280b74121dc29f843c9f3805db537cabf0806514c44ca53e66e373404",
+  "source_digest": "c806f909ef60359d775bebb9da2c57c93543e661a7442655236fd1a732cb75c8",
   "inputs": [
     {
       "id": "catalog-policy.manifest.v1",
@@ -23,7 +23,7 @@
     {
       "id": "catalog.models.compressed.v1",
       "path": "fixtures/llm-oracle/catalog/models.json.zst",
-      "sha256": "7995339f8a7b17d3ad9dc0728801003f9046c10307f6df84defb25b92c5b269c",
+      "sha256": "499bc740d00a4551d4ddf30f2c4b0ece30991af007754b269cb8cc21bc73964b",
       "source": "oracle:catalog.models.compressed.v1"
     },
     {
@@ -35,7 +35,7 @@
     {
       "id": "catalog.models.raw.v1",
       "path": "fixtures/llm-oracle/catalog/models.raw.json",
-      "sha256": "0ae9cdbb875e95c15bbfdea64bb331ee26dcbe10d75d45cbc3464909820dc042",
+      "sha256": "310e4e09256a1a4a9562cafbdf5c9da3c8854311361e2bc5ec68b9820549a3f6",
       "source": "oracle:catalog.models.raw.v1"
     },
     {

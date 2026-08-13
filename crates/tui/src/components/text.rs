@@ -214,15 +214,8 @@ impl Component for TextLeaf {
 					.x
 					.saturating_add(alignment_slack(self.props.align(), slack));
 				pc.frame.push_decor(Decor {
-					rect: Rect {
-						x,
-						y: rect.y.saturating_add(row),
-						width,
-						height: 1,
-					},
-					kind: DecorKind::Reveal {
-						front: f32::from(x.saturating_add(width)),
-					},
+					rect: Rect { x, y: rect.y.saturating_add(row), width, height: 1 },
+					kind: DecorKind::Reveal { front: f32::from(x.saturating_add(width)) },
 				});
 			}
 			pc.wake_layout(self.slot, pc.now.saturating_add(anim::FRAME));
@@ -634,10 +627,8 @@ fn paint_rich_shimmer(
 ) {
 	if pc.ctx.native_decor {
 		paint_rich(pc, text_rect, rich, align);
-		pc.frame.push_decor(Decor {
-			rect: text_rect,
-			kind: DecorKind::Shimmer { period },
-		});
+		pc.frame
+			.push_decor(Decor { rect: text_rect, kind: DecorKind::Shimmer { period } });
 		return;
 	}
 	let right = text_rect.x.saturating_add(text_rect.width);
@@ -648,7 +639,10 @@ fn paint_rich_shimmer(
 		if y >= clip {
 			break;
 		}
-		if full_row && row > 0 && rich.row_soft_wrap(row - 1) && rich.row_width(row - 1) == text_rect.width
+		if full_row
+			&& row > 0
+			&& rich.row_soft_wrap(row - 1)
+			&& rich.row_width(row - 1) == text_rect.width
 		{
 			pc.frame.set_soft_wrap(y - 1);
 		}
@@ -855,32 +849,19 @@ mod tests {
 
 	#[test]
 	fn native_reveal_tracks_the_painted_front_row() {
-		let ctx = UiContext {
-			native_decor: true,
-			..UiContext::default()
-		};
-		let mut ui = Ui::from_root(
-			TextLeaf::new().with(Prop::Reveal, true).text("aaa bbb"),
-			3,
-			ctx,
-		);
-		assert_eq!(
-			ui.frame().decors(),
-			&[Decor {
-				rect: Rect::new(0, 0, 0, 1),
-				kind: DecorKind::Reveal { front: 0.0 },
-			}]
-		);
+		let ctx = UiContext { native_decor: true, ..UiContext::default() };
+		let mut ui = Ui::from_root(TextLeaf::new().with(Prop::Reveal, true).text("aaa bbb"), 3, ctx);
+		assert_eq!(ui.frame().decors(), &[Decor {
+			rect: Rect::new(0, 0, 0, 1),
+			kind: DecorKind::Reveal { front: 0.0 },
+		}]);
 
 		assert!(ui.tick(Duration::from_millis(34)));
 		assert!(ui.tick(Duration::from_millis(67)));
-		assert_eq!(
-			ui.frame().decors(),
-			&[Decor {
-				rect: Rect::new(0, 1, 1, 1),
-				kind: DecorKind::Reveal { front: 1.0 },
-			}]
-		);
+		assert_eq!(ui.frame().decors(), &[Decor {
+			rect: Rect::new(0, 1, 1, 1),
+			kind: DecorKind::Reveal { front: 1.0 },
+		}]);
 
 		assert!(ui.tick(Duration::from_millis(100)));
 		assert_eq!(ui.frame().decors(), &[]);
