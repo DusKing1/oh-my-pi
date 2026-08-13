@@ -4512,12 +4512,14 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tower",
+ "ulid",
 ]
 
 [[package]]
 name = "omp-app"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-stream",
  "async-trait",
  "blake3",
@@ -4534,18 +4536,24 @@ dependencies = [
  "omp-core",
  "omp-docserver",
  "omp-env",
+ "omp-hashline",
  "omp-llm-catalog",
  "omp-llm-inference",
  "omp-proto",
  "omp-py",
  "omp-rpc",
  "omp-shell-engine",
+ "omp-slopjson",
  "omp-storage",
  "omp-telemetry",
  "omp-tool",
+ "omp-tools",
+ "omp-tui",
  "omp-walker",
  "parking_lot",
+ "pyo3",
  "secrecy",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
@@ -4555,6 +4563,7 @@ dependencies = [
  "tonic-health",
  "tower",
  "tracing",
+ "ulid",
  "url",
  "windows-sys 0.61.2",
  "zeroize",
@@ -4695,6 +4704,50 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "omp-e2e"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "bytes",
+ "flume",
+ "futures",
+ "libc",
+ "nix 0.31.3",
+ "omp-agent",
+ "omp-app",
+ "omp-core",
+ "omp-docserver",
+ "omp-env",
+ "omp-hashline",
+ "omp-llm-catalog",
+ "omp-llm-inference",
+ "omp-proto",
+ "omp-rpc",
+ "omp-shell",
+ "omp-shell-engine",
+ "omp-storage",
+ "omp-telemetry",
+ "omp-tool",
+ "omp-tools",
+ "omp-tui",
+ "parking_lot",
+ "prost",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tonic",
+ "tower",
+ "tracing",
+ "ulid",
+ "url",
+ "xutf",
 ]
 
 [[package]]
@@ -5011,6 +5064,7 @@ dependencies = [
  "bytes",
  "omp-core",
  "omp-proto",
+ "omp-tool",
  "pretty_assertions",
  "proptest",
  "serde",
@@ -5045,16 +5099,40 @@ name = "omp-tool"
 version = "0.1.0"
 dependencies = [
  "async-stream",
+ "blake3",
  "bytes",
  "flume",
  "futures",
  "omp-core",
  "omp-llm-catalog",
  "omp-llm-inference",
+ "omp-proto",
  "omp-slopjson",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "omp-tools"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "bytes",
+ "flume",
+ "futures",
+ "omp-core",
+ "omp-env",
+ "omp-hashline",
+ "omp-proto",
+ "omp-tool",
+ "omp-walker",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -8389,6 +8467,16 @@ dependencies = [
  "serde",
  "thiserror 1.0.69",
  "ug",
+]
+
+[[package]]
+name = "ulid"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "947dde63b6d514cc5e044edad4e0ca7261afd1099d16c83d942cb2b2f348689c"
+dependencies = [
+ "rand 0.10.2",
+ "web-time",
 ]
 
 [[package]]

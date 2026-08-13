@@ -102,6 +102,7 @@ objc2-app-kit = "0.3"
 notify = { version = "=8.2.0", features = ["macos_kqueue"] }
 num-bigint = "0.4"
 num-traits = "0.2"
+omp-agent = { path = "crates/agent", version = "0.1.0" }
 omp-app = { path = "crates/app", version = "0.1.0" }
 omp-ar = { path = "crates/ar", version = "0.1.0" }
 omp-ast = { path = "crates/ast", version = "0.1.0" }
@@ -122,6 +123,7 @@ omp-slopjson = { path = "crates/slopjson", version = "0.1.0" }
 omp-storage = { path = "crates/storage", version = "0.1.0" }
 omp-telemetry = { path = "crates/telemetry", version = "0.1.0" }
 omp-tool = { path = "crates/tool", version = "0.1.0" }
+omp-tools = { path = "crates/tools", version = "0.1.0" }
 omp-tui = { path = "crates/tui", version = "0.1.0" }
 omp-tui-macros = { path = "crates/tui-macros", version = "0.1.0" }
 omp-voice-kokoro = { path = "crates/voice-kokoro", version = "0.1.0" }
