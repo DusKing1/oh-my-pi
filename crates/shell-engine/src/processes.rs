@@ -9,6 +9,70 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{error, openfiles::OpenFile, sys};
 
+/// A portable subset of signals accepted by environment process controls.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessSignal {
+	/// Hang up the process group.
+	Hangup,
+	/// Interrupt the process group.
+	Interrupt,
+	/// Request a core-producing quit.
+	Quit,
+	/// Ask the process group to terminate cleanly.
+	Terminate,
+	/// Unconditionally kill the process group.
+	Kill,
+	/// Send the first user-defined signal.
+	User1,
+	/// Send the second user-defined signal.
+	User2,
+	/// Continue stopped processes.
+	Continue,
+	/// Stop the process group.
+	Stop,
+	/// Notify the process group of a terminal window change.
+	WindowChanged,
+}
+
+/// Sends `signal` to every process in `pgid`.
+///
+/// Process groups are the cancellation ownership boundary used by embedders.
+/// A missing group is treated as already stopped.
+#[cfg(unix)]
+pub fn signal_process_group(pgid: i32, signal: ProcessSignal) -> Result<(), std::io::Error> {
+	if pgid <= 0 {
+		return Err(std::io::Error::new(
+			std::io::ErrorKind::InvalidInput,
+			"process-group id must be positive",
+		));
+	}
+	let signal = match signal {
+		ProcessSignal::Hangup => nix::sys::signal::Signal::SIGHUP,
+		ProcessSignal::Interrupt => nix::sys::signal::Signal::SIGINT,
+		ProcessSignal::Quit => nix::sys::signal::Signal::SIGQUIT,
+		ProcessSignal::Terminate => nix::sys::signal::Signal::SIGTERM,
+		ProcessSignal::Kill => nix::sys::signal::Signal::SIGKILL,
+		ProcessSignal::User1 => nix::sys::signal::Signal::SIGUSR1,
+		ProcessSignal::User2 => nix::sys::signal::Signal::SIGUSR2,
+		ProcessSignal::Continue => nix::sys::signal::Signal::SIGCONT,
+		ProcessSignal::Stop => nix::sys::signal::Signal::SIGSTOP,
+		ProcessSignal::WindowChanged => nix::sys::signal::Signal::SIGWINCH,
+	};
+	match nix::sys::signal::kill(nix::unistd::Pid::from_raw(-pgid), signal) {
+		Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
+		Err(error) => Err(std::io::Error::from_raw_os_error(error as i32)),
+	}
+}
+
+/// Sends `signal` to a process when process groups are unavailable.
+#[cfg(not(unix))]
+pub fn signal_process_group(_pgid: i32, _signal: ProcessSignal) -> Result<(), std::io::Error> {
+	Err(std::io::Error::new(
+		std::io::ErrorKind::Unsupported,
+		"process-group signalling is unsupported on this platform",
+	))
+}
+
 struct CompletionMarker {
 	output:            OpenFile,
 	end_marker_prefix: String,

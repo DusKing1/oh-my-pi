@@ -1,14 +1,5 @@
 //! Behavioral coverage for the growing-document cursor.
 
-use std::{
-	future::{Future, poll_fn},
-	sync::{
-		Arc,
-		atomic::{AtomicUsize, Ordering},
-	},
-	thread,
-};
-
 use futures::{FutureExt, executor::block_on};
 use omp_slopjson::{
 	IncomingDoc, IncomingError, PullIssueKind, PullPathSegment, Str, Value, json, parse,
@@ -16,16 +7,12 @@ use omp_slopjson::{
 
 #[test]
 fn key_string_is_available_before_object_finishes() {
-	let (mut feed, args) = IncomingDoc::channel();
+	let (mut feed, mut args) = IncomingDoc::channel();
 	feed.push(r#"{"meta":{"name":"hel"#).unwrap();
 
-	let mut name = args
-		.json()
-		.object()
-		.key("meta")
-		.object()
-		.key("name")
-		.string();
+	let mut args_object = args.json().object();
+	let mut meta_object = args_object.key("meta").object();
+	let mut name = meta_object.key("name").string();
 	assert_eq!(block_on(name.next_chunk()).unwrap().as_deref(), Some("hel"));
 	assert!(name.next_chunk().now_or_never().is_none());
 
@@ -37,9 +24,10 @@ fn key_string_is_available_before_object_finishes() {
 
 #[test]
 fn split_escapes_emit_only_stable_decoded_chunks() {
-	let (mut feed, args) = IncomingDoc::channel();
+	let (mut feed, mut args) = IncomingDoc::channel();
 	feed.push("{text:\"a\\").unwrap();
-	let mut text = args.json().object().key("text").string();
+	let mut object = args.json().object();
+	let mut text = object.key("text").string();
 	assert_eq!(block_on(text.next_chunk()).unwrap().as_deref(), Some("a"));
 
 	feed.push("n\\uD83").unwrap();
@@ -53,13 +41,14 @@ fn split_escapes_emit_only_stable_decoded_chunks() {
 
 #[test]
 fn nested_array_elements_arrive_as_they_begin_and_collect() {
-	let (mut feed, args) = IncomingDoc::channel();
+	let (mut feed, mut args) = IncomingDoc::channel();
 	feed.push("{items:[{x:1},[").unwrap();
-	let mut items = args.json().object().key("items").array();
+	let mut object = args.json().object();
+	let mut items = object.key("items").array();
 
-	let first = block_on(items.next()).unwrap().unwrap();
+	let mut first = block_on(items.next()).unwrap().unwrap();
 	assert_eq!(block_on(first.value()).unwrap(), json!({"x": 1}));
-	let second = block_on(items.next()).unwrap().unwrap();
+	let mut second = block_on(items.next()).unwrap().unwrap();
 	assert!(second.value().now_or_never().is_none());
 
 	feed.push("True,None]]}").unwrap();
@@ -70,7 +59,7 @@ fn nested_array_elements_arrive_as_they_begin_and_collect() {
 
 #[test]
 fn whole_array_and_scalar_awaiters_use_tolerant_parser() {
-	let (mut feed, args) = IncomingDoc::channel();
+	let (mut feed, mut args) = IncomingDoc::channel();
 	feed
 		.push("{n:12.5, yes:True, nil:None, values:[1,'two',False]}")
 		.unwrap();
@@ -94,7 +83,7 @@ fn whole_array_and_scalar_awaiters_use_tolerant_parser() {
 #[test]
 fn comments_and_radix_literals_match_the_final_parser() {
 	let text = "{\"a\"/*c*/: 0x1F, // note\n 'b': 0b101}";
-	let (mut feed, args) = IncomingDoc::channel();
+	let (mut feed, mut args) = IncomingDoc::channel();
 	feed.push(text).unwrap();
 	feed.finish();
 
@@ -115,12 +104,13 @@ fn comments_and_radix_literals_match_the_final_parser() {
 
 #[test]
 fn edge_quote_does_not_commit_string_end_while_feed_is_open() {
-	let (mut feed, args) = IncomingDoc::channel();
+	let (mut feed, mut args) = IncomingDoc::channel();
 	feed.push("{text:'a'").unwrap();
 
 	// The closing quote sits at the buffer edge: more text may still reopen
 	// it via inner-quote recovery, so the string must not end yet.
-	let mut text = args.json().object().key("text").string();
+	let mut object = args.json().object();
+	let mut text = object.key("text").string();
 	assert_eq!(block_on(text.next_chunk()).unwrap().as_deref(), Some("a"));
 	assert!(text.next_chunk().now_or_never().is_none());
 
@@ -139,10 +129,11 @@ fn lone_slash_at_edge_defers_chunks_until_comment_or_content_resolves() {
 	for (head, tail, full) in
 		[("{text:\"a\"/", "*c*/}", "{text:\"a\"/*c*/}"), ("{text:'a'/", "*c*/}", "{text:'a'/*c*/}")]
 	{
-		let (mut feed, args) = IncomingDoc::channel();
+		let (mut feed, mut args) = IncomingDoc::channel();
 		feed.push(head).unwrap();
 
-		let mut text = args.json().object().key("text").string();
+		let mut object = args.json().object();
+		let mut text = object.key("text").string();
 		assert_eq!(block_on(text.next_chunk()).unwrap().as_deref(), Some("a"), "for {full}");
 		assert!(text.next_chunk().now_or_never().is_none(), "for {full}");
 
@@ -160,10 +151,11 @@ fn unterminated_comment_after_edge_close_only_appends_to_chunks() {
 	// chunks stay prefixes of the final string. Single quotes recover
 	// identically in the final parser, so the completed pull stays valid
 	// (the double-quoted variant is rejected by both as Malformed).
-	let (mut feed, args) = IncomingDoc::channel();
+	let (mut feed, mut args) = IncomingDoc::channel();
 	feed.push("{text:'a'/*c").unwrap();
 
-	let mut text = args.json().object().key("text").string();
+	let mut object = args.json().object();
+	let mut text = object.key("text").string();
 	assert_eq!(block_on(text.next_chunk()).unwrap().as_deref(), Some("a"));
 	assert!(text.next_chunk().now_or_never().is_none());
 
@@ -181,10 +173,11 @@ fn poll_once<T>(future: std::pin::Pin<&mut impl Future<Output = T>>) -> std::tas
 
 #[test]
 fn finish_alone_completes_an_edge_closed_string_pending_mid_poll() {
-	let (mut feed, args) = IncomingDoc::channel();
+	let (mut feed, mut args) = IncomingDoc::channel();
 	feed.push("{text:'a'").unwrap();
 
-	let mut text = args.json().object().key("text").string();
+	let mut object = args.json().object();
+	let mut text = object.key("text").string();
 	assert_eq!(block_on(text.next_chunk()).unwrap().as_deref(), Some("a"));
 
 	// Hold a pending pull across finish(): the wake carries no new text, only
@@ -201,10 +194,11 @@ fn finish_alone_completes_an_edge_closed_string_pending_mid_poll() {
 
 #[test]
 fn finish_alone_still_reports_truly_unterminated_string_incomplete() {
-	let (mut feed, args) = IncomingDoc::channel();
+	let (mut feed, mut args) = IncomingDoc::channel();
 	feed.push("{text:'a").unwrap();
 
-	let mut text = args.json().object().key("text").string();
+	let mut object = args.json().object();
+	let mut text = object.key("text").string();
 	assert_eq!(block_on(text.next_chunk()).unwrap().as_deref(), Some("a"));
 
 	let mut pending = std::pin::pin!(text.next_chunk());
@@ -221,10 +215,11 @@ fn finish_alone_still_reports_truly_unterminated_string_incomplete() {
 
 #[test]
 fn pending_chunk_poll_becomes_ready_from_a_single_push() {
-	let (mut feed, args) = IncomingDoc::channel();
+	let (mut feed, mut args) = IncomingDoc::channel();
 	feed.push("{text:'hel").unwrap();
 
-	let mut text = args.json().object().key("text").string();
+	let mut object = args.json().object();
+	let mut text = object.key("text").string();
 	assert_eq!(block_on(text.next_chunk()).unwrap().as_deref(), Some("hel"));
 
 	// Waker registration and chunk readiness are decided under one lock, so
@@ -240,11 +235,12 @@ fn pending_chunk_poll_becomes_ready_from_a_single_push() {
 
 #[test]
 fn chunk_pull_surfaces_type_mismatch_for_non_string_values() {
-	let (mut feed, args) = IncomingDoc::channel();
+	let (mut feed, mut args) = IncomingDoc::channel();
 	feed.push("{text: 42}").unwrap();
 	feed.finish();
 
-	let mut text = args.json().object().key("text").string();
+	let mut object = args.json().object();
+	let mut text = object.key("text").string();
 	let IncomingError::Pull(issue) = block_on(text.next_chunk()).unwrap_err() else {
 		panic!("expected structured pull issue")
 	};
@@ -264,7 +260,7 @@ fn pulled_string_does_not_swallow_a_sibling_through_quote_recovery() {
 		(r#"{"a" "b":1}"#, "a"),     // dq key would swallow the next key's quote
 	] {
 		assert!(parse(text).is_err(), "parse must reject {text}");
-		let (mut feed, args) = IncomingDoc::channel();
+		let (mut feed, mut args) = IncomingDoc::channel();
 		feed.push(text).unwrap();
 		feed.finish();
 		let error = block_on(args.json().object().key(key).value()).unwrap_err();
@@ -276,7 +272,7 @@ fn pulled_string_does_not_swallow_a_sibling_through_quote_recovery() {
 
 	// The recovered key spelling must not match either: the key token itself
 	// never swallows.
-	let (mut feed, args) = IncomingDoc::channel();
+	let (mut feed, mut args) = IncomingDoc::channel();
 	feed.push(r#"{"a" "b":1}"#).unwrap();
 	feed.finish();
 	let error = block_on(args.json().object().key(r#"a" "b"#).number()).unwrap_err();
@@ -289,7 +285,7 @@ fn pulled_string_does_not_swallow_a_sibling_through_quote_recovery() {
 	// both sides accept it, so the pull stays lenient.
 	let text = "{'a':'x' 'y'}";
 	assert_eq!(parse(text).unwrap(), json!({ "a": "x' 'y" }));
-	let (mut feed, args) = IncomingDoc::channel();
+	let (mut feed, mut args) = IncomingDoc::channel();
 	feed.push(text).unwrap();
 	feed.finish();
 	assert_eq!(
@@ -300,9 +296,10 @@ fn pulled_string_does_not_swallow_a_sibling_through_quote_recovery() {
 
 #[test]
 fn truncated_string_has_distinct_incomplete_end() {
-	let (mut feed, args) = IncomingDoc::channel();
+	let (mut feed, mut args) = IncomingDoc::channel();
 	feed.push("{message:\"not done").unwrap();
-	let message = args.json().object().key("message").string();
+	let mut object = args.json().object();
+	let message = object.key("message").string();
 	feed.finish();
 
 	let error = block_on(message.finish()).unwrap_err();
@@ -316,7 +313,7 @@ fn truncated_string_has_distinct_incomplete_end() {
 
 #[test]
 fn duplicate_key_cursor_is_first_wins_but_collection_is_last_wins() {
-	let (mut feed, args) = IncomingDoc::channel();
+	let (mut feed, mut args) = IncomingDoc::channel();
 	feed.push("{dup:1, dup:2}").unwrap();
 	feed.finish();
 
@@ -327,14 +324,14 @@ fn duplicate_key_cursor_is_first_wins_but_collection_is_last_wins() {
 
 #[test]
 fn pulling_defines_required_keys_and_unpulled_members_are_ignored() {
-	let (mut feed, params) = IncomingDoc::channel();
+	let (mut feed, mut params) = IncomingDoc::channel();
 	feed.push("{path:'ok', unknown:[unfinished").unwrap();
 	feed.finish();
 	let path = block_on(params.json().object().key("path").string().finish()).unwrap();
 	assert_eq!(path, Str::from("ok"));
 	assert!(matches!(block_on(params.whole::<Value>()), Err(IncomingError::Parse(_))));
 
-	let (mut feed, params) = IncomingDoc::channel();
+	let (mut feed, mut params) = IncomingDoc::channel();
 	feed.push("{path:'ok'}").unwrap();
 	feed.finish();
 	let missing = block_on(params.json().object().key("missing").value()).unwrap_err();
@@ -352,6 +349,29 @@ fn pulling_defines_required_keys_and_unpulled_members_are_ignored() {
 	assert_eq!(mistyped.path, vec![PullPathSegment::Key(Str::from("path"))]);
 	assert_eq!(mistyped.expected, "number");
 	assert_eq!(mistyped.kind, PullIssueKind::TypeMismatch { found: "string" });
+
+	let (mut feed, mut params) = IncomingDoc::channel();
+	feed.push("{meta:{count:'many'}}").unwrap();
+	feed.finish();
+	let mistyped = block_on(
+		params
+			.json()
+			.object()
+			.key("meta")
+			.object()
+			.key("count")
+			.number(),
+	)
+	.unwrap_err();
+	let IncomingError::Pull(mistyped) = mistyped else {
+		panic!("expected structured pull issue")
+	};
+	assert_eq!(mistyped.path, vec![
+		PullPathSegment::Key(Str::from("meta")),
+		PullPathSegment::Key(Str::from("count")),
+	]);
+	assert_eq!(mistyped.expected, "number");
+	assert_eq!(mistyped.kind, PullIssueKind::TypeMismatch { found: "string" });
 }
 
 #[test]
@@ -362,7 +382,7 @@ fn whole_document_validation_is_an_explicit_pull() {
 		enabled: bool,
 	}
 
-	let (mut feed, params) = IncomingDoc::channel();
+	let (mut feed, mut params) = IncomingDoc::channel();
 	feed.push("{path: packages/foo/*, enabled: True}").unwrap();
 	feed.finish();
 	assert_eq!(block_on(params.whole::<AllParams>()).unwrap(), AllParams {
@@ -370,7 +390,7 @@ fn whole_document_validation_is_an_explicit_pull() {
 		enabled: true,
 	});
 
-	let (mut feed, params) = IncomingDoc::channel();
+	let (mut feed, mut params) = IncomingDoc::channel();
 	feed.push("{path: packages/foo/*, ignored: 1}").unwrap();
 	feed.finish();
 	assert_eq!(
@@ -380,54 +400,61 @@ fn whole_document_validation_is_an_explicit_pull() {
 }
 
 #[test]
-fn concurrent_pending_pulls_are_all_woken() {
-	let (mut feed, doc) = IncomingDoc::channel();
-	let first = doc.json().object().key("a");
-	let second = doc.json().object().key("b");
-	let pending = Arc::new(AtomicUsize::new(0));
-	let spawn_pull = |cursor: omp_slopjson::IncomingJson| {
-		let pending = Arc::clone(&pending);
-		thread::spawn(move || {
-			block_on(async move {
-				let mut future = std::pin::pin!(cursor.number());
-				let mut announced = false;
-				poll_fn(|cx| {
-					let poll = future.as_mut().poll(cx);
-					if poll.is_pending() && !announced {
-						announced = true;
-						pending.fetch_add(1, Ordering::Release);
-					}
-					poll
-				})
-				.await
-			})
-		})
-	};
-	let first = spawn_pull(first);
-	let second = spawn_pull(second);
-	while pending.load(Ordering::Acquire) != 2 {
-		thread::yield_now();
+fn typed_subtree_pull_is_path_scoped() {
+	#[derive(Debug, PartialEq, serde::Deserialize)]
+	struct Payload {
+		count: u64,
 	}
 
-	feed.push("{a:1,").unwrap();
-	feed.push("b:2}").unwrap();
+	let (mut feed, mut params) = IncomingDoc::channel();
+	feed
+		.push("{payload:{count:'many'}, ignored:[unfinished")
+		.unwrap();
 	feed.finish();
-	assert_eq!(first.join().unwrap().unwrap().as_u64(), Some(1));
-	assert_eq!(second.join().unwrap().unwrap().as_u64(), Some(2));
+
+	let error = block_on(params.json().object().key("payload").whole::<Payload>()).unwrap_err();
+	let IncomingError::Pull(issue) = error else {
+		panic!("expected structured pull issue")
+	};
+	assert_eq!(issue.path, vec![PullPathSegment::Key(Str::from("payload"))]);
+	assert_eq!(issue.expected, std::any::type_name::<Payload>());
+	assert_eq!(issue.kind, PullIssueKind::Malformed);
+}
+
+#[test]
+fn cancelled_pull_releases_the_linear_cursor() {
+	let (mut feed, mut doc) = IncomingDoc::channel();
+	feed.push("{a:").unwrap();
+
+	{
+		let mut object = doc.json().object();
+		let mut a = object.key("a");
+		let mut pending = std::pin::pin!(a.number());
+		assert!(poll_once(pending.as_mut()).is_pending());
+		// Cancelling a plain pull future releases the exclusive reborrow. It
+		// leaves no subscription, snapshot, or field event to drain.
+	}
+
+	feed.push("1,b:2}").unwrap();
+	feed.finish();
+	let mut object = doc.json().object();
+	assert_eq!(block_on(object.key("a").number()).unwrap().as_u64(), Some(1));
+	assert_eq!(block_on(object.key("b").number()).unwrap().as_u64(), Some(2));
 }
 
 #[test]
 fn finished_and_aborted_are_distinct_terminal_states() {
-	let (feed, doc) = IncomingDoc::channel();
+	let (feed, mut doc) = IncomingDoc::channel();
 	feed.finish();
 	block_on(doc.finished()).unwrap();
 
-	let (feed, doc) = IncomingDoc::channel();
+	let (feed, mut doc) = IncomingDoc::channel();
 	feed.abort();
 	assert!(matches!(block_on(doc.finished()), Err(IncomingError::Aborted)));
 
-	let (feed, doc) = IncomingDoc::channel();
-	let pending = doc.json().object().key("missing");
+	let (feed, mut doc) = IncomingDoc::channel();
+	let mut object = doc.json().object();
+	let mut pending = object.key("missing");
 	drop(feed);
 	let error = block_on(pending.value()).unwrap_err();
 	let IncomingError::Pull(issue) = error else {

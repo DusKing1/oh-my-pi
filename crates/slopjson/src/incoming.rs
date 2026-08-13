@@ -3,9 +3,10 @@
 //! [`IncomingDoc::channel`] returns a push-side [`IncomingFeed`] and a
 //! read-side root cursor. The producer appends UTF-8 fragments, then explicitly
 //! calls [`IncomingFeed::finish`] or [`IncomingFeed::abort`]. Dropping the feed
-//! aborts it. There is one shared append-only buffer and one parser cursor path
-//! per await — no per-consumer event broadcast, per-item channel, or boxed
-//! future. Every state change wakes all currently pending pulls.
+//! aborts it. There is one shared append-only buffer and one exclusive linear
+//! cursor: child cursors retain a mutable borrow of their parent, and pulls are
+//! ordinary futures whose cancellation releases that borrow. There are no
+//! snapshots, per-field events, or broadcast/fan-out channels.
 //!
 //! A scalar completes at its closing quote/delimiter, and a container completes
 //! only when its closing delimiter arrives. Finished-but-truncated input yields
@@ -37,6 +38,7 @@
 use std::{
 	fmt,
 	future::poll_fn,
+	marker::PhantomData,
 	sync::Arc,
 	task::{Poll, Waker},
 };
@@ -238,16 +240,22 @@ impl IncomingDoc {
 	/// Deserialize the entire finished document into `T`.
 	///
 	/// This is an explicit whole-document pull and waits for
-	/// [`IncomingFeed::finish`]. Aborted input is not decoded.
-	pub async fn whole<T: DeserializeOwned>(&self) -> Result<T, IncomingError> {
+	/// [`IncomingFeed::finish`]. The mutable borrow makes it one ordinary,
+	/// cancellation-composable pull: dropping the future releases the cursor
+	/// rather than leaving a subscription behind. Aborted input is not decoded.
+	pub async fn whole<T: DeserializeOwned>(&mut self) -> Result<T, IncomingError> {
 		self.finished().await?;
 		let state = self.shared.state.lock();
 		crate::from_str(&state.text).map_err(IncomingError::from)
 	}
 
-	/// Return a cursor for the root JSON value.
-	pub fn json(&self) -> IncomingJson {
-		IncomingJson { shared: Arc::clone(&self.shared), path: Vec::new() }
+	/// Borrow the single linear cursor for the root JSON value.
+	///
+	/// A cursor and every child derived from it retain this mutable borrow.
+	/// Consequently a document cannot be snapshotted or fanned out into
+	/// concurrent pulls; cancelling or completing the pull releases it.
+	pub fn json(&mut self) -> IncomingJson<'_> {
+		IncomingJson { shared: Arc::clone(&self.shared), path: Vec::new(), _linear: PhantomData }
 	}
 }
 
@@ -258,34 +266,48 @@ enum PathPart {
 }
 
 /// Cursor for one JSON value in the incoming document.
-pub struct IncomingJson {
-	shared: Arc<Shared>,
-	path:   Vec<PathPart>,
+pub struct IncomingJson<'doc> {
+	shared:  Arc<Shared>,
+	path:    Vec<PathPart>,
+	_linear: PhantomData<&'doc mut IncomingDoc>,
 }
 
-impl IncomingJson {
+impl<'doc> IncomingJson<'doc> {
 	/// Await and parse the complete value.
-	pub async fn value(&self) -> Result<Value, IncomingError> {
+	pub async fn value(&mut self) -> Result<Value, IncomingError> {
 		self.value_with("value").await
 	}
 
+	/// Await and deserialize this complete value into `T`.
+	///
+	/// Choosing this method explicitly opts the pulled subtree into complete
+	/// typed validation. A malformed or mistyped subtree is reported at this
+	/// cursor's structured pull path.
+	pub async fn whole<T: DeserializeOwned>(&mut self) -> Result<T, IncomingError> {
+		let expected = std::any::type_name::<T>();
+		let located = wait_for(&self.shared, &self.path, WaitMode::Complete, expected).await?;
+		let state = self.shared.state.lock();
+		crate::from_str(&state.text[located.start..located.end.expect("complete wait has an end")])
+			.map_err(|_| pull_issue(&self.path, expected, PullIssueKind::Malformed))
+	}
+
 	/// Convert this cursor into a decoded incremental string cursor.
-	pub fn string(self) -> IncomingString {
+	pub fn string(self) -> IncomingString<'doc> {
 		IncomingString { json: self, emitted: 0, done: false }
 	}
 
 	/// Convert this cursor into an array element cursor.
-	pub fn array(self) -> IncomingArray {
+	pub fn array(self) -> IncomingArray<'doc> {
 		IncomingArray { json: self, next: 0 }
 	}
 
 	/// Convert this cursor into an object cursor.
-	pub fn object(self) -> IncomingObject {
+	pub fn object(self) -> IncomingObject<'doc> {
 		IncomingObject { json: self }
 	}
 
 	/// Await a complete number.
-	pub async fn number(&self) -> Result<Number, IncomingError> {
+	pub async fn number(&mut self) -> Result<Number, IncomingError> {
 		match self.value_with("number").await? {
 			Value::Number(value) => Ok(value),
 			other => Err(type_mismatch(&self.path, "number", value_name(&other))),
@@ -293,7 +315,7 @@ impl IncomingJson {
 	}
 
 	/// Await a complete boolean.
-	pub async fn boolean(&self) -> Result<bool, IncomingError> {
+	pub async fn boolean(&mut self) -> Result<bool, IncomingError> {
 		match self.value_with("boolean").await? {
 			Value::Bool(value) => Ok(value),
 			other => Err(type_mismatch(&self.path, "boolean", value_name(&other))),
@@ -301,7 +323,7 @@ impl IncomingJson {
 	}
 
 	/// Await a complete null value.
-	pub async fn null(&self) -> Result<(), IncomingError> {
+	pub async fn null(&mut self) -> Result<(), IncomingError> {
 		match self.value_with("null").await? {
 			Value::Null => Ok(()),
 			other => Err(type_mismatch(&self.path, "null", value_name(&other))),
@@ -330,13 +352,13 @@ impl IncomingJson {
 /// async caller holds a chunk. They are emitted in order without overlap;
 /// [`finish`](Self::finish) returns the complete decoded string independently
 /// of whether chunks were consumed.
-pub struct IncomingString {
-	json:    IncomingJson,
+pub struct IncomingString<'doc> {
+	json:    IncomingJson<'doc>,
 	emitted: usize,
 	done:    bool,
 }
 
-impl IncomingString {
+impl IncomingString<'_> {
 	/// Await the next stable decoded chunk, or `None` after the closing quote.
 	pub async fn next_chunk(&mut self) -> Result<Option<Str>, IncomingError> {
 		if self.done {
@@ -369,17 +391,18 @@ impl IncomingString {
 }
 
 /// Linear cursor over elements of an incoming array.
-pub struct IncomingArray {
-	json: IncomingJson,
+pub struct IncomingArray<'doc> {
+	json: IncomingJson<'doc>,
 	next: usize,
 }
 
-impl IncomingArray {
+impl IncomingArray<'_> {
 	/// Await the start of the next element.
 	///
-	/// The returned element cursor may be consumed before the element itself is
-	/// complete. `None` is returned only after the array's closing bracket.
-	pub async fn next(&mut self) -> Result<Option<IncomingJson>, IncomingError> {
+	/// The returned element cursor mutably reborrows this array, so the caller
+	/// must consume or cancel it before advancing again. `None` is returned
+	/// only after the array's closing bracket.
+	pub async fn next(&mut self) -> Result<Option<IncomingJson<'_>>, IncomingError> {
 		let root = wait_for(&self.json.shared, &self.json.path, WaitMode::Started, "array").await?;
 		if !matches!(root.kind, Kind::Array) {
 			return Err(type_mismatch(&self.json.path, "array", root.kind.name()));
@@ -389,7 +412,11 @@ impl IncomingArray {
 		match wait_for_raw(&self.json.shared, &path, WaitMode::Started, "value").await? {
 			Some(_) => {
 				self.next += 1;
-				Ok(Some(IncomingJson { shared: Arc::clone(&self.json.shared), path }))
+				Ok(Some(IncomingJson {
+					shared: Arc::clone(&self.json.shared),
+					path,
+					_linear: PhantomData,
+				}))
 			},
 			None => Ok(None),
 		}
@@ -404,19 +431,21 @@ impl IncomingArray {
 	}
 }
 
-/// Cursor for keys and final collection of an incoming object.
-pub struct IncomingObject {
-	json: IncomingJson,
+/// Linear cursor for keyed pulls and final collection of an incoming object.
+pub struct IncomingObject<'doc> {
+	json: IncomingJson<'doc>,
 }
 
-impl IncomingObject {
+impl IncomingObject<'_> {
 	/// Return a cursor bound to the first occurrence of `name`.
 	///
-	/// Awaiting that cursor resolves as soon as the key's value starts.
-	pub fn key(&self, name: impl Into<Str>) -> IncomingJson {
+	/// The returned cursor mutably reborrows this object. Awaiting it resolves
+	/// as soon as the key's value starts; consuming or cancelling it permits
+	/// the next keyed pull.
+	pub fn key(&mut self, name: impl Into<Str>) -> IncomingJson<'_> {
 		let mut path = self.json.path.clone();
 		path.push(PathPart::Key(name.into()));
-		IncomingJson { shared: Arc::clone(&self.json.shared), path }
+		IncomingJson { shared: Arc::clone(&self.json.shared), path, _linear: PhantomData }
 	}
 
 	/// Await the closing brace and collect the object.
@@ -890,7 +919,7 @@ fn byte_name(byte: u8) -> &'static str {
 	}
 }
 
-impl fmt::Debug for IncomingJson {
+impl fmt::Debug for IncomingJson<'_> {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		f.debug_struct("IncomingJson")
 			.field("path_len", &self.path.len())

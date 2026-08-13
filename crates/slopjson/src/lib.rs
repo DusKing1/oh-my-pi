@@ -16,6 +16,9 @@
 //!   documents are not silently accepted.
 //! - [`parse_streaming`] — mid-stream parse: never fails, auto-closes truncated
 //!   structure, and rolls incomplete atoms back to the last valid prefix.
+//! - [`IncomingDoc`] — an exclusive pull cursor over a growing document:
+//!   strings, arrays, and keyed object values become available incrementally;
+//!   unpulled object members are never validated or materialized.
 //! - [`classify_json_prefix`] — strict RFC 8259 prefix classification for
 //!   disambiguating streaming deltas; deliberately unforgiving because repair
 //!   would mask exactly the corruption signals the caller needs.
