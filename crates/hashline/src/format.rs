@@ -119,10 +119,18 @@ pub fn format_numbered_line(line: usize, text: &str) -> Str {
 	fmts!("{line}:{text}")
 }
 
+/// Splits LF-delimited text into rows that hashline anchors can address.
+///
+/// A terminal newline terminates the preceding row; its empty split sentinel
+/// is not content. Genuine blank rows before that terminator remain visible.
+pub fn split_addressable_file_lines(text: &str) -> std::str::Split<'_, char> {
+	text.strip_suffix('\n').unwrap_or(text).split('\n')
+}
+
 /// Formats source text with one-indexed line prefixes.
 pub fn format_numbered_lines(text: &str, start_line: usize) -> String {
 	let mut output = String::with_capacity(text.len());
-	for (index, line) in text.split('\n').enumerate() {
+	for (index, line) in split_addressable_file_lines(text).enumerate() {
 		if index > 0 {
 			output.push('\n');
 		}
@@ -145,5 +153,12 @@ mod tests {
 				.chars()
 				.all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_lowercase())
 		);
+	}
+
+	#[test]
+	fn terminal_newline_is_not_addressable() {
+		assert_eq!(format_numbered_lines("a\nb\n", 1), "1:a\n2:b");
+		assert_eq!(format_numbered_lines("a\nb\n\n", 1), "1:a\n2:b\n3:");
+		assert_eq!(split_addressable_file_lines("a\n\nb\n").collect::<Vec<_>>(), ["a", "", "b"]);
 	}
 }

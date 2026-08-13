@@ -1,7 +1,7 @@
 //! Conservative exact-byte recovery of edits authored against retained
 //! snapshots.
 
-use std::{collections::BTreeMap, error::Error, fmt};
+use std::collections::BTreeMap;
 
 use bytes::Bytes;
 use similar::{Algorithm, DiffOp, capture_diff_slices};
@@ -20,7 +20,7 @@ impl ByteRange {
 	/// Creates a valid half-open byte range.
 	pub const fn new(start: u64, end: u64) -> Result<Self, RecoveryError> {
 		if start > end {
-			return Err(RecoveryError::InvalidRange { range: Self { start, end }, length: None });
+			return Err(RecoveryError::ReversedRange { start, end });
 		}
 		Ok(Self { start, end })
 	}
@@ -220,18 +220,41 @@ impl RecoveryResult {
 }
 
 /// A conservative recovery or edit-validation failure.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum RecoveryError {
 	/// Snapshot selection failed or its short tag was ambiguous.
-	Snapshot(SnapshotLookupError),
-	/// A range was reversed, out of bounds, or did not fit this platform.
-	InvalidRange {
-		/// Invalid half-open byte range.
-		range:  ByteRange,
-		/// Exact content length when bounds were available.
-		length: Option<u64>,
+	#[error(transparent)]
+	Snapshot(#[from] SnapshotLookupError),
+	/// A half-open byte range has its end before its start.
+	#[error("byte range {start}..{end} is reversed; use a start no greater than the end")]
+	ReversedRange {
+		/// Inclusive byte start supplied by the caller.
+		start: u64,
+		/// Exclusive byte end supplied by the caller.
+		end:   u64,
+	},
+	/// A half-open byte range extends past the retained content.
+	#[error(
+		"byte range {start}..{end} exceeds the {length}-byte snapshot; re-read the file and \
+		 re-issue the edit against its fresh tag"
+	)]
+	OutOfBounds {
+		/// Inclusive byte start supplied by the caller.
+		start:  u64,
+		/// Exclusive byte end supplied by the caller.
+		end:    u64,
+		/// Exact retained content length.
+		length: u64,
 	},
 	/// Authored edits or their live relocations overlap.
+	#[error(
+		"edits {}..{} and {}..{} overlap; submit non-overlapping ranges in ascending order",
+		.previous.start,
+		.previous.end,
+		.next.start,
+		.next.end
+	)]
 	Overlap {
 		/// Earlier conflicting byte range.
 		previous: ByteRange,
@@ -239,11 +262,19 @@ pub enum RecoveryError {
 		next:     ByteRange,
 	},
 	/// A base line was changed or deleted in the live revision.
+	#[error(
+		"retained line {line} changed in the live revision; re-read the file and re-issue the edit \
+		 against its fresh tag"
+	)]
 	ChangedLine {
 		/// One-indexed retained-base line that could not be mapped.
 		line: usize,
 	},
 	/// Equal content admits more than one safe live destination.
+	#[error(
+		"retained line {line} has {candidates} valid live destinations; include more unchanged \
+		 context or re-read the file and re-issue against its fresh tag"
+	)]
 	AmbiguousLine {
 		/// One-indexed retained-base line whose destination is ambiguous.
 		line:       usize,
@@ -251,56 +282,33 @@ pub enum RecoveryError {
 		candidates: usize,
 	},
 	/// Neighboring unchanged context does not validate a candidate relocation.
+	#[error(
+		"unchanged neighbors do not validate retained line {line}; re-read the file and re-issue \
+		 the edit against its fresh tag"
+	)]
 	ContextMismatch {
 		/// One-indexed retained-base line whose context failed validation.
 		line: usize,
 	},
+	/// An in-bounds byte position could not be assigned to a retained line.
+	#[error(
+		"byte position {position} cannot be mapped to a retained line; re-read the file and \
+		 re-issue the edit against its fresh tag"
+	)]
+	PositionUnmappable {
+		/// Retained-base byte position that could not be mapped.
+		position: u64,
+	},
 	/// Final output size overflowed the platform address space.
+	#[error("recovered output is too large for this platform")]
 	OutputTooLarge,
 }
 
-impl fmt::Display for RecoveryError {
-	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match self {
-			Self::Snapshot(error) => error.fmt(formatter),
-			Self::InvalidRange { range, length } => write!(
-				formatter,
-				"invalid byte range {}..{}{}",
-				range.start,
-				range.end,
-				length.map_or(String::new(), |value| format!(" for {value}-byte content"))
-			),
-			Self::Overlap { previous, next } => write!(
-				formatter,
-				"overlapping edits {}..{} and {}..{}",
-				previous.start, previous.end, next.start, next.end
-			),
-			Self::ChangedLine { line } => {
-				write!(formatter, "retained line {line} is not unchanged in the live revision")
-			},
-			Self::AmbiguousLine { line, candidates } => {
-				write!(formatter, "retained line {line} has {candidates} valid live destinations")
-			},
-			Self::ContextMismatch { line } => {
-				write!(formatter, "unchanged neighbors do not validate retained line {line}")
-			},
-			Self::OutputTooLarge => formatter.write_str("recovered output is too large"),
-		}
-	}
-}
-
-impl Error for RecoveryError {
-	fn source(&self) -> Option<&(dyn Error + 'static)> {
-		match self {
-			Self::Snapshot(error) => Some(error),
-			_ => None,
-		}
-	}
-}
-
-impl From<SnapshotLookupError> for RecoveryError {
-	fn from(value: SnapshotLookupError) -> Self {
-		Self::Snapshot(value)
+impl RecoveryError {
+	/// Returns the stable machine-readable diagnostic code.
+	#[must_use]
+	pub fn code(&self) -> &'static str {
+		self.into()
 	}
 }
 
@@ -438,8 +446,18 @@ fn validate_authored_edits(base_len: usize, edits: &[RecoveryEdit]) -> Result<()
 	let length = u64::try_from(base_len).map_err(|_| RecoveryError::OutputTooLarge)?;
 	let mut previous: Option<ByteRange> = None;
 	for edit in edits {
-		if edit.range.start > edit.range.end || edit.range.end > length {
-			return Err(RecoveryError::InvalidRange { range: edit.range, length: Some(length) });
+		if edit.range.start > edit.range.end {
+			return Err(RecoveryError::ReversedRange {
+				start: edit.range.start,
+				end:   edit.range.end,
+			});
+		}
+		if edit.range.end > length {
+			return Err(RecoveryError::OutOfBounds {
+				start: edit.range.start,
+				end: edit.range.end,
+				length,
+			});
 		}
 		if let Some(prior) = previous
 			&& (edit.range.start < prior.end
@@ -483,9 +501,10 @@ fn line_at(
 ) -> Result<usize, RecoveryError> {
 	let position = usize::try_from(position).map_err(|_| RecoveryError::OutputTooLarge)?;
 	if position > lines.last().map_or(0, |line| line.end) {
-		return Err(RecoveryError::InvalidRange {
-			range:  ByteRange { start: position as u64, end: position as u64 },
-			length: lines.last().map(|line| line.end as u64),
+		return Err(RecoveryError::OutOfBounds {
+			start:  position as u64,
+			end:    position as u64,
+			length: lines.last().map_or(0, |line| line.end as u64),
 		});
 	}
 	match bias {
@@ -502,7 +521,7 @@ fn line_at(
 					line.start <= position && position < line.end
 						|| line.start == line.end && position == line.start
 				})
-				.ok_or(RecoveryError::OutputTooLarge)
+				.ok_or(RecoveryError::PositionUnmappable { position: position as u64 })
 		},
 		PositionBias::End => lines
 			.iter()
@@ -510,7 +529,7 @@ fn line_at(
 				line.start < position && position <= line.end
 					|| line.start == line.end && position == line.start
 			})
-			.ok_or(RecoveryError::OutputTooLarge),
+			.ok_or(RecoveryError::PositionUnmappable { position: position as u64 }),
 	}
 }
 
@@ -635,7 +654,7 @@ fn map_position(
 	let position = usize::try_from(position).map_err(|_| RecoveryError::OutputTooLarge)?;
 	let offset = position
 		.checked_sub(base[line_index].start)
-		.ok_or(RecoveryError::OutputTooLarge)?;
+		.ok_or(RecoveryError::ContextMismatch { line: line_index + 1 })?;
 	let mapped = current[current_index]
 		.start
 		.checked_add(offset)

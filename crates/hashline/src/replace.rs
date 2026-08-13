@@ -1,7 +1,5 @@
 //! Pure exact and fuzzy text replacement over immutable byte snapshots.
 
-use std::{error::Error, fmt};
-
 use bytes::{Bytes, BytesMut};
 use omp_core::Str;
 use xutf::IntoUnicodeNormalized as _;
@@ -197,26 +195,63 @@ pub struct ReplaceResult {
 }
 
 /// Failure from pure replacement preparation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum ReplaceError {
 	/// The exact base snapshot is not UTF-8 text.
+	#[error("base snapshot is not valid UTF-8 and cannot be edited as text")]
 	InvalidUtf8,
 	/// Empty search text is not a valid replacement operation.
+	#[error("old text must not be empty; provide the exact text to replace")]
 	EmptyOldText,
-	/// No safe exact or fuzzy candidate was found.
-	NoMatch {
-		/// Best candidate, when one exists.
-		closest:       Option<FuzzyMatch>,
-		/// Normalized requested text used by closest-match diagnostics.
-		search_text:   Bytes,
-		/// Effective fuzzy threshold.
-		threshold:     f64,
-		/// Number of candidates above that threshold.
-		fuzzy_matches: Option<usize>,
-		/// Whether fuzzy matching was enabled.
-		allow_fuzzy:   bool,
+	/// Exact matching found no candidate or useful near-match.
+	#[error("could not find the exact text; old text must match including whitespace and newlines")]
+	ExactNotFound,
+	/// Exact matching failed but produced a useful near-match.
+	#[error(
+		"could not find the exact text; closest match was {similarity_percent:.0}% similar at line \
+		 {line}:\n  - {expected_line}\n  + {actual_line}\nfuzzy matching is disabled; copy the \
+		 exact text from the file or enable fuzzy matching"
+	)]
+	ExactMismatch {
+		/// Similarity of the closest candidate as a percentage.
+		similarity_percent: f64,
+		/// One-based line containing the closest candidate.
+		line:               usize,
+		/// First requested line that differs from the candidate.
+		expected_line:      Str,
+		/// First candidate line that differs from the request.
+		actual_line:        Str,
+	},
+	/// Fuzzy matching found no candidate worth reporting.
+	#[error(
+		"could not find a close enough match above the {threshold_percent:.0}% threshold; copy more \
+		 exact text from the file"
+	)]
+	NoCloseMatch {
+		/// Effective fuzzy threshold as a percentage.
+		threshold_percent: f64,
+	},
+	/// The closest fuzzy candidate did not meet the configured threshold.
+	#[error(
+		"closest match was {similarity_percent:.0}% similar at line {line}:\n  - {expected_line}\n  \
+		 + {actual_line}\nclosest match was below the {threshold_percent:.0}% threshold; copy more \
+		 exact text or lower the threshold"
+	)]
+	FuzzyBelowThreshold {
+		/// Similarity of the closest candidate as a percentage.
+		similarity_percent: f64,
+		/// Effective fuzzy threshold as a percentage.
+		threshold_percent:  f64,
+		/// One-based line containing the closest candidate.
+		line:               usize,
+		/// First requested line that differs from the candidate.
+		expected_line:      Str,
+		/// First candidate line that differs from the request.
+		actual_line:        Str,
 	},
 	/// A non-all operation found several exact occurrences.
+	#[error("found {occurrences} exact occurrences; provide more context or enable replace-all")]
 	AmbiguousExact {
 		/// Total occurrence count.
 		occurrences: usize,
@@ -225,72 +260,36 @@ pub enum ReplaceError {
 		/// Context previews for retained occurrences.
 		previews:    Vec<Str>,
 	},
-	/// Fuzzy replace-all found an ambiguous candidate group.
+	/// Fuzzy matching found an ambiguous candidate group.
+	#[error(
+		"found {matches} high-confidence fuzzy matches; closest was {similarity_percent:.0}% \
+		 similar at line {line}:\n  - {expected_line}\n  + {actual_line}\nprovide more unchanged \
+		 context"
+	)]
 	AmbiguousFuzzy {
 		/// Number of candidates above the threshold.
-		matches: usize,
-		/// Best candidate in the group.
-		closest: FuzzyMatch,
+		matches:            usize,
+		/// Similarity of the closest candidate as a percentage.
+		similarity_percent: f64,
+		/// One-based line containing the closest candidate.
+		line:               usize,
+		/// First requested line that differs from the candidate.
+		expected_line:      Str,
+		/// First candidate line that differs from the request.
+		actual_line:        Str,
 	},
 	/// The requested replacement would leave the bytes unchanged.
+	#[error("replacement resulted in no changes; choose replacement text that differs")]
 	NoChanges,
 }
 
-impl fmt::Display for ReplaceError {
-	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match self {
-			Self::InvalidUtf8 => formatter.write_str("base snapshot is not valid UTF-8"),
-			Self::EmptyOldText => formatter.write_str("old text must not be empty"),
-			Self::NoMatch { closest: None, allow_fuzzy: false, .. } => formatter.write_str(
-				"could not find the exact text; old text must match including whitespace and newlines",
-			),
-			Self::NoMatch { closest: None, .. } => {
-				formatter.write_str("could not find a close enough match")
-			},
-			Self::NoMatch {
-				closest: Some(closest),
-				search_text,
-				threshold,
-				fuzzy_matches,
-				allow_fuzzy,
-			} => {
-				let percentage = (closest.confidence * 100.0).round();
-				let searched = std::str::from_utf8(search_text).unwrap_or("");
-				let actual = std::str::from_utf8(&closest.actual_text).unwrap_or("");
-				let (old_line, actual_line) = first_different_line(searched, actual);
-				write!(
-					formatter,
-					"closest match was {percentage:.0}% similar at line {}:\n  - {old_line}\n  + \
-					 {actual_line}\n",
-					closest.start_line,
-				)?;
-				if !allow_fuzzy {
-					formatter.write_str("fuzzy matching is disabled")
-				} else if fuzzy_matches.unwrap_or(0) > 1 {
-					write!(
-						formatter,
-						"found {} high-confidence matches; provide more context",
-						fuzzy_matches.unwrap_or(0)
-					)
-				} else {
-					write!(formatter, "closest match was below the {:.0}% threshold", threshold * 100.0)
-				}
-			},
-			Self::AmbiguousExact { occurrences, .. } => {
-				write!(
-					formatter,
-					"found {occurrences} exact occurrences; provide more context or enable replace-all"
-				)
-			},
-			Self::AmbiguousFuzzy { matches, .. } => {
-				write!(formatter, "found {matches} high-confidence fuzzy matches; provide more context")
-			},
-			Self::NoChanges => formatter.write_str("replacement resulted in no changes"),
-		}
+impl ReplaceError {
+	/// Returns the stable machine-readable diagnostic code.
+	#[must_use]
+	pub fn code(&self) -> &'static str {
+		self.into()
 	}
 }
-
-impl Error for ReplaceError {}
 
 fn first_different_line<'old, 'actual>(
 	old: &'old str,
@@ -313,6 +312,49 @@ fn first_different_line<'old, 'actual>(
 		}
 	}
 }
+
+fn no_match_error(
+	outcome: &MatchOutcome,
+	search_text: &str,
+	options: ReplaceOptions,
+) -> ReplaceError {
+	let Some(closest) = &outcome.closest else {
+		return if options.allow_fuzzy {
+			ReplaceError::NoCloseMatch { threshold_percent: options.threshold * 100.0 }
+		} else {
+			ReplaceError::ExactNotFound
+		};
+	};
+	let actual_text =
+		std::str::from_utf8(&closest.actual_text).expect("match candidates are valid UTF-8");
+	let (expected_line, actual_line) = first_different_line(search_text, actual_text);
+	let similarity_percent = closest.confidence * 100.0;
+	if !options.allow_fuzzy {
+		ReplaceError::ExactMismatch {
+			similarity_percent,
+			line: closest.start_line,
+			expected_line: expected_line.into(),
+			actual_line: actual_line.into(),
+		}
+	} else if let Some(matches) = outcome.fuzzy_matches.filter(|count| *count > 1) {
+		ReplaceError::AmbiguousFuzzy {
+			matches,
+			similarity_percent,
+			line: closest.start_line,
+			expected_line: expected_line.into(),
+			actual_line: actual_line.into(),
+		}
+	} else {
+		ReplaceError::FuzzyBelowThreshold {
+			similarity_percent,
+			threshold_percent: options.threshold * 100.0,
+			line: closest.start_line,
+			expected_line: expected_line.into(),
+			actual_line: actual_line.into(),
+		}
+	}
+}
+
 #[derive(Clone, Debug)]
 struct IndexedMatches {
 	first:   Option<usize>,
@@ -1568,26 +1610,16 @@ pub fn apply_replace(
 				threshold:       Some(options.threshold),
 				excluded_ranges: &excluded,
 			});
-			if outcome.matched.is_none()
-				&& let Some(count) = outcome.fuzzy_matches.filter(|count| *count > 1)
-			{
-				let closest = outcome
-					.closest
-					.expect("fuzzy match count has a closest candidate");
-				return Err(ReplaceError::AmbiguousFuzzy { matches: count, closest });
+			if outcome.matched.is_none() && outcome.fuzzy_matches.is_some_and(|count| count > 1) {
+				return Err(no_match_error(&outcome, old, options));
 			}
-			let Some(found) = outcome.matched else {
+			if outcome.matched.is_none() {
 				if normalized_edits.is_empty() {
-					return Err(ReplaceError::NoMatch {
-						closest:       outcome.closest,
-						threshold:     options.threshold,
-						search_text:   Bytes::copy_from_slice(old.as_bytes()),
-						fuzzy_matches: outcome.fuzzy_matches,
-						allow_fuzzy:   options.allow_fuzzy,
-					});
+					return Err(no_match_error(&outcome, old, options));
 				}
 				break;
-			};
+			}
+			let found = outcome.matched.expect("match presence checked");
 			let actual = std::str::from_utf8(&found.actual_text).expect("match slices valid UTF-8");
 			let adjusted = adjust_indentation(old, actual, new);
 			if adjusted.as_bytes() == found.actual_text.as_ref() {
@@ -1610,15 +1642,10 @@ pub fn apply_replace(
 				previews:    outcome.occurrence_previews,
 			});
 		}
-		let Some(found) = outcome.matched else {
-			return Err(ReplaceError::NoMatch {
-				closest:       outcome.closest,
-				threshold:     options.threshold,
-				search_text:   Bytes::copy_from_slice(old.as_bytes()),
-				fuzzy_matches: outcome.fuzzy_matches,
-				allow_fuzzy:   options.allow_fuzzy,
-			});
-		};
+		if outcome.matched.is_none() {
+			return Err(no_match_error(&outcome, old, options));
+		}
+		let found = outcome.matched.expect("match presence checked");
 		let actual = std::str::from_utf8(&found.actual_text).expect("match slices valid UTF-8");
 		let adjusted = adjust_indentation(old, actual, new);
 		normalized_edits.push((found.start, found.end(), adjusted));
@@ -1963,12 +1990,14 @@ mod tests {
 		})
 		.unwrap();
 		assert_eq!(single.count, 1);
+		let error = apply_replace(b"hello world", "missing", "x", ReplaceOptions {
+			replace_all: true,
+			..ReplaceOptions::default()
+		})
+		.unwrap_err();
 		assert!(matches!(
-			apply_replace(b"hello world", "missing", "x", ReplaceOptions {
-				replace_all: true,
-				..ReplaceOptions::default()
-			}),
-			Err(ReplaceError::NoMatch { .. })
+			error,
+			ReplaceError::FuzzyBelowThreshold { .. } | ReplaceError::NoCloseMatch { .. }
 		));
 	}
 
@@ -2034,13 +2063,12 @@ mod tests {
 
 	#[test]
 	fn exact_mode_and_no_op_are_strict() {
-		assert!(matches!(
-			apply_replace(b"foo   bar", "foo bar", "x", ReplaceOptions {
-				allow_fuzzy: false,
-				..ReplaceOptions::default()
-			}),
-			Err(ReplaceError::NoMatch { allow_fuzzy: false, .. })
-		));
+		let error = apply_replace(b"foo   bar", "foo bar", "x", ReplaceOptions {
+			allow_fuzzy: false,
+			..ReplaceOptions::default()
+		})
+		.unwrap_err();
+		assert_eq!(error.code(), "exact_mismatch");
 		assert!(matches!(
 			apply_replace(b"same", "same", "same", ReplaceOptions::default()),
 			Err(ReplaceError::NoChanges)

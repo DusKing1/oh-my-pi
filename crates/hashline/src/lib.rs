@@ -41,7 +41,7 @@ pub use clipboard::Clipboard;
 pub use format::{
 	compute_file_hash, format_cut_header, format_gap_locator, format_hashline_header,
 	format_insert_header, format_numbered_line, format_numbered_lines, format_register,
-	format_replace_header, normalize_file_hash_text,
+	format_replace_header, normalize_file_hash_text, split_addressable_file_lines,
 };
 pub use input::{
 	Patch, PatchSection, contains_recognizable_hashline_operations, split_patch_input,
@@ -64,7 +64,7 @@ pub use tokenizer::{
 	split_hashline_lines,
 };
 pub use types::{
-	Anchor, BlockMode, BlockResolution, BlockSpan, Cursor, Diagnostic, DiagnosticCode,
+	Anchor, ApplyWarning, BlockMode, BlockResolution, BlockSpan, Cursor, Diagnostic, DiagnosticCode,
 	DiagnosticSeverity, Edit, FileOp, InsertMode, ParseError, ParsedPatch, ParsedRange, PasteTarget,
 	SplitOptions,
 };

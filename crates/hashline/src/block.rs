@@ -1,12 +1,13 @@
 //! Syntax-aware lowering of deferred block edits.
 
-use std::{error::Error, fmt};
-
 use omp_ast::block::{BlockRangeOptions, block_range_at};
-use omp_core::{Str, fmts};
 
-use crate::types::{
-	Anchor, BlockMode, BlockResolution, Cursor, Edit, InsertMode, ParsedRange, PasteTarget,
+use crate::{
+	format::split_addressable_file_lines,
+	types::{
+		Anchor, ApplyWarning, BlockMode, BlockResolution, Cursor, Edit, InsertMode, ParsedRange,
+		PasteTarget,
+	},
 };
 
 /// Handling for an unresolved block anchor.
@@ -19,19 +20,40 @@ pub enum UnresolvedBlockMode {
 }
 
 /// Block lowering failure.
-#[derive(Debug)]
-pub struct BlockError {
-	/// Patch-language source line associated with the failure.
-	pub line_num: usize,
-	/// Human-readable failure description.
-	pub message:  Str,
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum BlockError {
+	/// No multi-line syntactic block begins at the requested anchor.
+	#[error(
+		"line {patch_line}: no multi-line syntactic block begins on line {block_line}; re-read the \
+		 region and point the block operation at the construct's opening line"
+	)]
+	Unresolved {
+		/// The authored patch line containing the block operation.
+		patch_line: usize,
+		/// The requested source anchor.
+		block_line: usize,
+	},
+	/// The requested anchor resolves only to a single-line statement.
+	#[error(
+		"line {patch_line}: line {block_line} is a single-line statement, not a multi-line block; \
+		 use a line edit instead of a block locator"
+	)]
+	SingleLine {
+		/// The authored patch line containing the block operation.
+		patch_line: usize,
+		/// The requested source anchor.
+		block_line: usize,
+	},
 }
-impl fmt::Display for BlockError {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "line {}: {}", self.line_num, self.message)
+
+impl BlockError {
+	/// Returns the stable machine-readable diagnostic code.
+	#[must_use]
+	pub fn code(&self) -> &'static str {
+		self.into()
 	}
 }
-impl Error for BlockError {}
 
 /// Result of syntax-aware block lowering.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +63,7 @@ pub struct BlockLowering {
 	/// Successfully resolved original-coordinate spans.
 	pub resolutions: Vec<BlockResolution>,
 	/// Non-fatal fallback diagnostics.
-	pub warnings:    Vec<Str>,
+	pub warnings:    Vec<ApplyWarning>,
 }
 
 /// Returns whether any edit still requires block resolution.
@@ -72,7 +94,7 @@ pub fn resolve_block_edits(
 			warnings:    Vec::new(),
 		});
 	}
-	let lines: Vec<&str> = text.split('\n').collect();
+	let lines: Vec<&str> = split_addressable_file_lines(text).collect();
 	let mut out = Vec::new();
 	let mut resolutions = Vec::new();
 	let mut warnings = Vec::new();
@@ -95,16 +117,11 @@ pub fn resolve_block_edits(
 				let closer = lines
 					.get(anchor.line.saturating_sub(1))
 					.is_some_and(|line| structural_closer(line));
-				warnings.push(fmts!(
-					"line {line_num}: block at line {} could not be resolved{}; lowered to after-line \
-					 insertion",
-					anchor.line,
-					if closer {
-						" because the anchor is a closer"
-					} else {
-						""
-					}
-				));
+				warnings.push(ApplyWarning::BlockLoweringFallback {
+					patch_line:        *line_num,
+					block_line:        anchor.line,
+					structural_closer: closer,
+				});
 				let cursor = Cursor::AfterAnchor { anchor: *anchor };
 				if *block_mode == BlockMode::PasteAfter {
 					out.push(Edit::Paste {
@@ -133,10 +150,7 @@ pub fn resolve_block_edits(
 			if mode == UnresolvedBlockMode::Drop {
 				continue;
 			}
-			return Err(BlockError {
-				line_num: *line_num,
-				message:  fmts!("no multi-line syntactic block begins on line {}", anchor.line),
-			});
+			return Err(BlockError::Unresolved { patch_line: *line_num, block_line: anchor.line });
 		};
 		let start = span.start_line as usize;
 		let end = span.end_line as usize;
@@ -144,13 +158,7 @@ pub fn resolve_block_edits(
 			if mode == UnresolvedBlockMode::Drop {
 				continue;
 			}
-			return Err(BlockError {
-				line_num: *line_num,
-				message:  fmts!(
-					"line {} is a single-line statement, not a multi-line block",
-					anchor.line
-				),
-			});
+			return Err(BlockError::SingleLine { patch_line: *line_num, block_line: anchor.line });
 		}
 		resolutions.push(BlockResolution { anchor_line: anchor.line, start, end, mode: *block_mode });
 		match block_mode {

@@ -1,17 +1,17 @@
 //! In-memory clipboard lowering for `CUT` and register-backed `PUT` edits.
 
-use std::{collections::BTreeMap, error::Error, fmt};
+use std::collections::BTreeMap;
 
-use omp_core::{Str, fmts};
+use omp_core::Str;
 
-use crate::types::{Anchor, Cursor, Edit, InsertMode, ParsedRange, PasteTarget};
+use crate::types::{Anchor, ApplyWarning, Cursor, Edit, InsertMode, ParsedRange, PasteTarget};
 
 /// Clipboard state shared by sections in one transaction.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Clipboard {
 	anonymous:              Option<Vec<Str>>,
 	named:                  BTreeMap<Str, Vec<Str>>,
-	pending_anonymous_cuts: Vec<Str>,
+	pending_anonymous_cuts: Vec<ParsedRange>,
 }
 
 impl Clipboard {
@@ -41,21 +41,76 @@ pub enum EmptyPasteMode {
 	Drop,
 }
 
-/// Clipboard lowering failure.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClipboardError {
-	/// Patch-language source line associated with the failure.
-	pub line_num: usize,
-	/// Human-readable failure description.
-	pub message:  Str,
+/// The clipboard operation whose source range is invalid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
+#[strum(serialize_all = "lowercase")]
+pub enum ClipboardRangeOperation {
+	/// Capturing source rows into a register.
+	Cut,
+	/// Replacing a span with register contents.
+	Paste,
 }
 
-impl fmt::Display for ClipboardError {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "line {}: {}", self.line_num, self.message)
+/// Clipboard lowering failure.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum ClipboardError {
+	/// A named register is empty and a span paste would delete source rows.
+	#[error(
+		"line {patch_line}: register @{register} is empty; refusing to delete a span. Populate the \
+		 register with a named CUT before replacing a span."
+	)]
+	EmptyNamedSpan {
+		/// The authored patch line containing the paste.
+		patch_line: usize,
+		/// The empty register name without the `@` prefix.
+		register:   Str,
+	},
+	/// Multiple anonymous cuts make the anonymous paste source ambiguous.
+	#[error(
+		"line {patch_line}: anonymous paste is ambiguous because more than one anonymous CUT can \
+		 supply it. Name each CUT register and paste the intended register explicitly."
+	)]
+	AmbiguousAnonymousPaste {
+		/// The authored patch line containing the paste.
+		patch_line: usize,
+		/// The candidate anonymous cut ranges in authored order.
+		cuts:       Vec<ParsedRange>,
+	},
+	/// No anonymous cut has populated the anonymous register.
+	#[error(
+		"line {patch_line}: anonymous register is empty; issue an anonymous CUT before this paste"
+	)]
+	EmptyAnonymousRegister {
+		/// The authored patch line containing the paste.
+		patch_line: usize,
+	},
+	/// A cut or span paste addresses source rows outside the file.
+	#[error(
+		"line {patch_line}: {operation} range {start}..={end} is out of range (file has {total} \
+		 addressable lines); re-read the file and use an existing range"
+	)]
+	RangeOutOfBounds {
+		/// The authored patch line containing the operation.
+		patch_line: usize,
+		/// Whether the invalid range belongs to a cut or paste.
+		operation:  ClipboardRangeOperation,
+		/// The first requested source line.
+		start:      usize,
+		/// The last requested source line.
+		end:        usize,
+		/// The number of addressable source lines.
+		total:      usize,
+	},
+}
+
+impl ClipboardError {
+	/// Returns the stable machine-readable diagnostic code.
+	#[must_use]
+	pub fn code(&self) -> &'static str {
+		self.into()
 	}
 }
-impl Error for ClipboardError {}
 
 /// Result of clipboard lowering.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,7 +118,7 @@ pub struct ClipboardResolution {
 	/// Concrete edits with all cuts and pastes removed.
 	pub edits:    Vec<Edit>,
 	/// Non-fatal diagnostics.
-	pub warnings: Vec<Str>,
+	pub warnings: Vec<ApplyWarning>,
 }
 
 /// Returns whether any edit reads or writes a register.
@@ -85,22 +140,13 @@ const fn range_ok(range: ParsedRange, line_count: usize) -> bool {
 	range.start.line >= 1 && range.end.line >= range.start.line && range.end.line <= line_count
 }
 
-fn cut_description(range: ParsedRange, register: Option<&str>) -> Str {
-	let span = if range.start.line == range.end.line {
-		range.start.line.to_string()
-	} else {
-		format!("{}.={}", range.start.line, range.end.line)
-	};
-	fmts!("CUT {span}{}", register.map_or(String::new(), |r| format!(" @{r}")))
-}
-
 fn read_register(
 	clipboard: &mut Clipboard,
 	register: Option<&Str>,
 	span: bool,
 	line_num: usize,
 	mode: EmptyPasteMode,
-	warnings: &mut Vec<Str>,
+	warnings: &mut Vec<ApplyWarning>,
 ) -> Result<Option<Vec<Str>>, ClipboardError> {
 	if let Some(name) = register {
 		if let Some(lines) = clipboard.named.get(name) {
@@ -110,36 +156,29 @@ fn read_register(
 			return Ok(None);
 		}
 		if span {
-			return Err(ClipboardError {
-				line_num,
-				message: fmts!("register @{name} is empty; refusing to delete a span"),
+			return Err(ClipboardError::EmptyNamedSpan {
+				patch_line: line_num,
+				register:   name.clone(),
 			});
 		}
-		warnings.push(fmts!("line {line_num}: register @{name} is empty; pasted nothing"));
+		warnings
+			.push(ApplyWarning::EmptyRegisterPaste { patch_line: line_num, register: name.clone() });
 		return Ok(Some(Vec::new()));
 	}
 	if clipboard.pending_anonymous_cuts.len() > 1 {
 		if mode == EmptyPasteMode::Drop {
 			return Ok(None);
 		}
-		return Err(ClipboardError {
-			line_num,
-			message: fmts!(
-				"anonymous paste is ambiguous after cuts: {}",
-				clipboard
-					.pending_anonymous_cuts
-					.iter()
-					.map(AsRef::as_ref)
-					.collect::<Vec<_>>()
-					.join(", ")
-			),
+		return Err(ClipboardError::AmbiguousAnonymousPaste {
+			patch_line: line_num,
+			cuts:       clipboard.pending_anonymous_cuts.clone(),
 		});
 	}
 	let Some(lines) = clipboard.anonymous.clone() else {
 		if mode == EmptyPasteMode::Drop {
 			return Ok(None);
 		}
-		return Err(ClipboardError { line_num, message: Str::new("anonymous register is empty") });
+		return Err(ClipboardError::EmptyAnonymousRegister { patch_line: line_num });
 	};
 	clipboard.pending_anonymous_cuts.clear();
 	Ok(Some(lines))
@@ -162,14 +201,12 @@ pub fn resolve_clipboard_edits(
 		match edit {
 			Edit::Cut { range, register, line_num, .. } => {
 				if !range_ok(*range, original_lines.len()) {
-					return Err(ClipboardError {
-						line_num: *line_num,
-						message:  fmts!(
-							"cut {}..={} is out of range (file has {} lines)",
-							range.start.line,
-							range.end.line,
-							original_lines.len()
-						),
+					return Err(ClipboardError::RangeOutOfBounds {
+						patch_line: *line_num,
+						operation:  ClipboardRangeOperation::Cut,
+						start:      range.start.line,
+						end:        range.end.line,
+						total:      original_lines.len(),
 					});
 				}
 				let captured = original_lines[range.start.line - 1..range.end.line].to_vec();
@@ -177,9 +214,7 @@ pub fn resolve_clipboard_edits(
 					clipboard.named.insert(name.clone(), captured);
 				} else {
 					clipboard.anonymous = Some(captured);
-					clipboard
-						.pending_anonymous_cuts
-						.push(cut_description(*range, None));
+					clipboard.pending_anonymous_cuts.push(*range);
 				}
 			},
 			Edit::Paste { at, register, line_num, block_start, .. } => {
@@ -211,14 +246,12 @@ pub fn resolve_clipboard_edits(
 					},
 					PasteTarget::Span { range } => {
 						if !range_ok(*range, original_lines.len()) {
-							return Err(ClipboardError {
-								line_num: *line_num,
-								message:  fmts!(
-									"paste span {}..={} is out of range (file has {} lines)",
-									range.start.line,
-									range.end.line,
-									original_lines.len()
-								),
+							return Err(ClipboardError::RangeOutOfBounds {
+								patch_line: *line_num,
+								operation:  ClipboardRangeOperation::Paste,
+								start:      range.start.line,
+								end:        range.end.line,
+								total:      original_lines.len(),
 							});
 						}
 						for text in lines {
@@ -259,9 +292,7 @@ pub fn validate_clipboard_sequence(
 					fork.named.insert(name.clone(), Vec::new());
 				} else {
 					fork.anonymous = Some(Vec::new());
-					fork
-						.pending_anonymous_cuts
-						.push(cut_description(*range, None));
+					fork.pending_anonymous_cuts.push(*range);
 				}
 			},
 			Edit::Paste { at, register, line_num, .. } => {

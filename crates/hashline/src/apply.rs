@@ -1,10 +1,6 @@
 //! Pure application of parsed hashline edits to exact UTF-8 bytes.
 
-use std::{
-	collections::{BTreeMap, BTreeSet},
-	error::Error,
-	fmt,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 use bytes::Bytes;
 use omp_core::{Str, fmts};
@@ -14,8 +10,9 @@ use smallvec::SmallVec;
 use crate::{
 	block::{BlockError, BlockLowering, UnresolvedBlockMode, resolve_block_edits},
 	clipboard::{Clipboard, ClipboardError, EmptyPasteMode, resolve_clipboard_edits},
+	format::split_addressable_file_lines,
 	normalize::{detect_line_ending, normalize_to_lf, restore_bom, restore_line_endings, strip_bom},
-	types::{Cursor, Edit, InsertMode, ParsedPatch},
+	types::{Anchor, ApplyWarning, Cursor, Edit, InsertMode, ParsedPatch},
 };
 
 /// One canonical replacement in coordinates of the exact input bytes.
@@ -63,42 +60,105 @@ pub struct ApplyResult {
 	/// First changed model-facing line, when any.
 	pub first_changed_line: Option<usize>,
 	/// Non-fatal application diagnostics.
-	pub warnings:           Vec<Str>,
+	pub warnings:           Vec<ApplyWarning>,
 	/// Syntax-aware block resolutions.
 	pub block_resolutions:  Vec<crate::types::BlockResolution>,
 }
 
+#[derive(Clone, Copy)]
+enum BoundarySide {
+	Leading,
+	Trailing,
+}
+
 /// Structural application failure.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum ApplyError {
 	/// Input was not exact UTF-8.
-	InvalidUtf8(std::str::Utf8Error),
+	#[error("source is not UTF-8: {0}")]
+	InvalidUtf8(#[from] std::str::Utf8Error),
 	/// A syntax-aware block could not be lowered.
-	Block(BlockError),
+	#[error(transparent)]
+	Block(#[from] BlockError),
 	/// A clipboard operation was invalid.
-	Clipboard(ClipboardError),
-	/// An original-coordinate edit was invalid.
-	InvalidEdit(Str),
+	#[error(transparent)]
+	Clipboard(#[from] ClipboardError),
+	/// A high-level operation remained after lowering.
+	#[error(
+		"an unresolved high-level edit reached materialization; resolve block, CUT, and register \
+		 paste operations before applying the patch"
+	)]
+	UnresolvedEdit,
+	/// An edit refers to a source line outside the addressable file.
+	#[error(
+		"line {line} does not exist (file has {total} addressable lines); re-read the file and use \
+		 an existing line"
+	)]
+	LineOutOfRange {
+		/// The requested one-indexed source line.
+		line:  usize,
+		/// The number of addressable source lines.
+		total: usize,
+	},
+	/// Two deletes target the same original source line.
+	#[error(
+		"overlapping delete at line {line}; combine overlapping operations into one replacement \
+		 range"
+	)]
+	OverlappingDelete {
+		/// The multiply deleted source line.
+		line: usize,
+	},
+	/// A replacement boundary could be placed in more than one valid location.
+	#[error(
+		"`PUT {start}.={end}:` rejected: a selected boundary row is required for the file to parse, \
+		 but the body indentation does not establish whether it belongs before or after that row. \
+		 Re-read the region and re-issue with a range that excludes every unchanged boundary row."
+	)]
+	AmbiguousBoundaryPlacement {
+		/// The first selected source line.
+		start: usize,
+		/// The last selected source line.
+		end:   usize,
+	},
+	/// A replacement body begins with an incomplete echo above its range.
+	#[error(
+		"`PUT {start}.={end}:` rejected: the body starts by restating {count} line(s) just above \
+		 the range, but is too short to be the full final content of the selected range. Re-issue \
+		 with the range covering exactly the lines that change and the body as their complete final \
+		 content."
+	)]
+	LeadingBoundaryEchoTooShort {
+		/// The first selected source line.
+		start: usize,
+		/// The last selected source line.
+		end:   usize,
+		/// The number of echoed body rows.
+		count: usize,
+	},
+	/// A replacement body ends with an incomplete echo below its range.
+	#[error(
+		"`PUT {start}.={end}:` rejected: the body ends by restating {count} line(s) just below the \
+		 range, but is too short to be the full final content of the selected range. Re-issue with \
+		 the range covering exactly the lines that change and the body as their complete final \
+		 content."
+	)]
+	TrailingBoundaryEchoTooShort {
+		/// The first selected source line.
+		start: usize,
+		/// The last selected source line.
+		end:   usize,
+		/// The number of echoed body rows.
+		count: usize,
+	},
 }
-impl fmt::Display for ApplyError {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match self {
-			Self::InvalidUtf8(e) => write!(f, "source is not UTF-8: {e}"),
-			Self::Block(e) => write!(f, "{e}"),
-			Self::Clipboard(e) => write!(f, "{e}"),
-			Self::InvalidEdit(e) => write!(f, "{e}"),
-		}
-	}
-}
-impl Error for ApplyError {}
-impl From<BlockError> for ApplyError {
-	fn from(value: BlockError) -> Self {
-		Self::Block(value)
-	}
-}
-impl From<ClipboardError> for ApplyError {
-	fn from(value: ClipboardError) -> Self {
-		Self::Clipboard(value)
+
+impl ApplyError {
+	/// Returns the stable machine-readable diagnostic code.
+	#[must_use]
+	pub fn code(&self) -> &'static str {
+		self.into()
 	}
 }
 
@@ -125,9 +185,12 @@ fn indent(text: &str) -> &str {
 	&text[..text.len() - text.trim_start_matches([' ', '\t']).len()]
 }
 
-fn repair_replacement_indentation(edits: &mut [Edit], lines: &[Str], warnings: &mut Vec<Str>) {
+fn repair_replacement_indentation(
+	edits: &mut [Edit],
+	lines: &[Str],
+	warnings: &mut Vec<ApplyWarning>,
+) {
 	let mut at = 0;
-	let mut repaired = false;
 	while at < edits.len() {
 		let Edit::Insert {
 			cursor: Cursor::BeforeAnchor { anchor },
@@ -213,16 +276,15 @@ fn repair_replacement_indentation(edits: &mut [Edit], lines: &[Str], warnings: &
 				*text = fmts!("{shift}{text}");
 			}
 		}
-		repaired = true;
-	}
-	if repaired {
-		warnings.push(Str::new(
-			"Auto-indented a replacement body to preserve its surrounding block depth",
-		));
+		let bodies = edits[insert_start..insert_end]
+			.iter()
+			.filter(|edit| matches!(edit, Edit::Insert { text, .. } if !text.trim().is_empty()))
+			.count();
+		warnings.push(ApplyWarning::ReplacementIndentationRepaired { line: op_line, bodies });
 	}
 }
 
-fn repair_landings(edits: &mut [Edit], lines: &[Str], warnings: &mut Vec<Str>) {
+fn repair_landings(edits: &mut [Edit], lines: &[Str], warnings: &mut Vec<ApplyWarning>) {
 	let mut groups: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
 	let targeted: BTreeSet<usize> = edits.iter().filter_map(anchor_line).collect();
 	for (i, edit) in edits.iter().enumerate() {
@@ -291,51 +353,35 @@ fn repair_landings(edits: &mut [Edit], lines: &[Str], warnings: &mut Vec<Str>) {
 					*cursor = Cursor::AfterAnchor { anchor: crate::types::Anchor { line: landing } };
 				}
 			}
-			warnings.push(fmts!(
-				"after-line insertion shifted from line {anchor} to {landing} across {crossed} closer \
-				 line(s)"
-			));
+			warnings.push(ApplyWarning::AfterLineLandingShifted {
+				from: anchor,
+				to: landing,
+				crossed,
+			});
 		}
 	}
 }
 
 fn validate(edits: &[Edit], lines: &[Str]) -> Result<(), ApplyError> {
 	let mut deleted = BTreeSet::new();
-	let phantom = lines.len() > 1 && lines.last().is_some_and(|line| line.is_empty());
 	for edit in edits {
 		match edit {
 			Edit::Block { .. } | Edit::Cut { .. } | Edit::Paste { .. } => {
-				return Err(ApplyError::InvalidEdit(Str::new(
-					"unresolved high-level edit reached materialization",
-				)));
+				return Err(ApplyError::UnresolvedEdit);
 			},
 			Edit::Delete { anchor, .. } => {
 				if anchor.line < 1 || anchor.line > lines.len() {
-					return Err(ApplyError::InvalidEdit(fmts!(
-						"line {} does not exist (file has {} lines)",
-						anchor.line,
-						lines.len()
-					)));
-				}
-				if phantom && anchor.line == lines.len() {
-					continue;
+					return Err(ApplyError::LineOutOfRange { line: anchor.line, total: lines.len() });
 				}
 				if !deleted.insert(anchor.line) {
-					return Err(ApplyError::InvalidEdit(fmts!(
-						"overlapping delete at line {}",
-						anchor.line
-					)));
+					return Err(ApplyError::OverlappingDelete { line: anchor.line });
 				}
 			},
 			Edit::Insert {
 				cursor: Cursor::BeforeAnchor { anchor } | Cursor::AfterAnchor { anchor },
 				..
 			} if anchor.line < 1 || anchor.line > lines.len() => {
-				return Err(ApplyError::InvalidEdit(fmts!(
-					"line {} does not exist (file has {} lines)",
-					anchor.line,
-					lines.len()
-				)));
+				return Err(ApplyError::LineOutOfRange { line: anchor.line, total: lines.len() });
 			},
 			Edit::Insert { .. } => {},
 		}
@@ -343,90 +389,783 @@ fn validate(edits: &[Edit], lines: &[Str]) -> Result<(), ApplyError> {
 	Ok(())
 }
 
-fn repair_boundaries(
-	edits: &mut Vec<Edit>,
-	lines: &[Str],
-	path: Option<&str>,
-	warnings: &mut Vec<Str>,
-) {
-	let mut original =
-		String::with_capacity(lines.iter().map(Str::len).sum::<usize>() + lines.len());
-	for (index, line) in lines.iter().enumerate() {
-		if index > 0 {
-			original.push('\n');
+// Replacement-boundary repair first removes exact outside-row echoes whose
+// coverage is unambiguous. If the authored result still fails to parse, a
+// bounded whole-patch search retains syntax-essential selected edges and/or
+// removes exact echoes. Cost ordering is fewer touched groups, then fewer
+// retained rows, then fewer dropped echoes; distinct texts tied at minimum
+// cost are never guessed.
+
+#[derive(Clone)]
+struct ReplacementGroup {
+	insert_indices: SmallVec<usize, 8>,
+	delete_indices: SmallVec<usize, 8>,
+	payload:        SmallVec<Str, 8>,
+	start_line:     usize,
+	end_line:       usize,
+}
+
+fn find_replacement_group(edits: &[Edit], start: usize) -> Option<ReplacementGroup> {
+	let Edit::Insert {
+		cursor: Cursor::BeforeAnchor { anchor },
+		line_num,
+		mode: InsertMode::Replacement,
+		..
+	} = edits.get(start)?
+	else {
+		return None;
+	};
+	let anchor_line = anchor.line;
+	let op_line = *line_num;
+	let mut insert_indices = SmallVec::new();
+	let mut payload = SmallVec::new();
+	let mut index = start;
+	while let Some(Edit::Insert {
+		cursor: Cursor::BeforeAnchor { anchor },
+		text,
+		line_num,
+		mode: InsertMode::Replacement,
+		..
+	}) = edits.get(index)
+	{
+		if anchor.line != anchor_line || *line_num != op_line {
+			break;
 		}
-		original.push_str(line);
+		insert_indices.push(index);
+		payload.push(text.clone());
+		index += 1;
 	}
-	if !crate::syntax::parses_cleanly(path, &original) {
-		return;
+	let mut delete_indices = SmallVec::new();
+	let mut expected = anchor_line;
+	while let Some(Edit::Delete { anchor, line_num, .. }) = edits.get(index) {
+		if anchor.line != expected || *line_num != op_line {
+			break;
+		}
+		delete_indices.push(index);
+		expected += 1;
+		index += 1;
 	}
-	let (authored, _) = materialize(lines, edits);
-	if crate::syntax::parses_cleanly(path, &authored) {
-		return;
+	if delete_indices.is_empty() {
+		return None;
 	}
-	let mut proposed = edits.clone();
-	let mut changed = false;
-	let op_lines: BTreeSet<usize> = proposed
-		.iter()
-		.filter_map(|edit| match edit {
-			Edit::Insert { mode: InsertMode::Replacement, line_num, .. } => Some(*line_num),
-			_ => None,
-		})
-		.collect();
-	for op_line in op_lines {
-		let deleted: SmallVec<(usize, usize), 8> = proposed
+	Some(ReplacementGroup {
+		insert_indices,
+		delete_indices,
+		payload,
+		start_line: anchor_line,
+		end_line: expected - 1,
+	})
+}
+
+fn has_non_whitespace(text: &str) -> bool {
+	text
+		.bytes()
+		.any(|byte| !matches!(byte, b'\t' | b'\n' | 0x0b | 0x0c | b'\r' | b' '))
+}
+
+fn count_duplicate_leading(group: &ReplacementGroup, lines: &[Str]) -> usize {
+	let max = group.payload.len().min(group.start_line - 1);
+	for count in (1..=max).rev() {
+		let outside = &lines[group.start_line - 1 - count..group.start_line - 1];
+		let payload = &group.payload[..count];
+		if payload
 			.iter()
-			.enumerate()
-			.filter_map(|(i, edit)| match edit {
-				Edit::Delete { anchor, line_num, .. } if *line_num == op_line => Some((i, anchor.line)),
-				_ => None,
-			})
-			.collect();
-		let inserted: SmallVec<usize, 8> = proposed
+			.zip(outside)
+			.all(|(left, right)| left == right)
+			&& payload.iter().any(|line| has_non_whitespace(line))
+		{
+			return count;
+		}
+	}
+	0
+}
+
+fn count_duplicate_trailing(group: &ReplacementGroup, lines: &[Str]) -> usize {
+	let max = group
+		.payload
+		.len()
+		.min(lines.len().saturating_sub(group.end_line));
+	for count in (1..=max).rev() {
+		let outside = &lines[group.end_line..group.end_line + count];
+		let payload = &group.payload[group.payload.len() - count..];
+		if payload
 			.iter()
-			.enumerate()
-			.filter_map(|(i, edit)| match edit {
-				Edit::Insert { mode: InsertMode::Replacement, line_num, .. }
-					if *line_num == op_line =>
-				{
-					Some(i)
-				},
-				_ => None,
-			})
-			.collect();
-		let (Some(&(_, start)), Some(&(last_delete_index, end))) = (deleted.first(), deleted.last())
-		else {
+			.zip(outside)
+			.all(|(left, right)| left == right)
+			&& payload.iter().any(|line| has_non_whitespace(line))
+		{
+			return count;
+		}
+	}
+	0
+}
+
+#[derive(Clone)]
+struct BoundaryAmbiguity {
+	start_line: usize,
+	end_line:   usize,
+	side:       BoundarySide,
+	count:      usize,
+}
+
+struct BoundaryNormalization {
+	edits:       Vec<Edit>,
+	warnings:    Vec<ApplyWarning>,
+	ambiguities: Vec<BoundaryAmbiguity>,
+}
+
+fn textual_boundary_warning(start_line: usize, leading: usize, trailing: usize) -> ApplyWarning {
+	ApplyWarning::BoundaryEchoDropped { line: start_line, leading, trailing }
+}
+
+fn normalize_textual_boundary_echoes(edits: &[Edit], lines: &[Str]) -> BoundaryNormalization {
+	let mut out = Vec::with_capacity(edits.len());
+	let mut warnings = Vec::new();
+	let mut ambiguities = Vec::new();
+	let mut index = 0;
+	while index < edits.len() {
+		let Some(group) = find_replacement_group(edits, index) else {
+			out.push(edits[index].clone());
+			index += 1;
 			continue;
 		};
-		if let Some(&last_insert_index) = inserted.last() {
-			let Edit::Insert { text, .. } = &proposed[last_insert_index] else {
-				continue;
-			};
-			if lines.get(end).is_some_and(|next| next == text) && closer(text) {
-				proposed.remove(last_insert_index);
-				changed = true;
-				continue;
+		let leading = count_duplicate_leading(&group, lines);
+		let trailing = count_duplicate_trailing(&group, lines);
+		let range_len = group.delete_indices.len();
+		let mut drop_leading = 0;
+		let mut drop_trailing = 0;
+		if leading > 0 && trailing > 0 {
+			if group.payload.len().saturating_sub(leading + trailing) == range_len {
+				drop_leading = leading;
+				drop_trailing = trailing;
+			}
+		} else if leading > 0 && range_len > 1 {
+			if group.payload.len() - leading >= range_len {
+				drop_leading = leading;
+			} else {
+				ambiguities.push(BoundaryAmbiguity {
+					start_line: group.start_line,
+					end_line:   group.end_line,
+					side:       BoundarySide::Leading,
+					count:      leading,
+				});
+			}
+		} else if trailing > 0 && range_len > 1 {
+			if group.payload.len() - trailing >= range_len {
+				drop_trailing = trailing;
+			} else {
+				ambiguities.push(BoundaryAmbiguity {
+					start_line: group.start_line,
+					end_line:   group.end_line,
+					side:       BoundarySide::Trailing,
+					count:      trailing,
+				});
 			}
 		}
-		if lines.get(end - 1).is_some_and(|line| closer(line)) && inserted.iter().any(|&i| matches!(&proposed[i], Edit::Insert { text, .. } if !text.trim().is_empty() && indent(text).len() > indent(&lines[end - 1]).len())) {
-            proposed.remove(last_delete_index);
-            changed = true;
-        } else if lines.get(start - 1).is_some_and(|line| closer(line)) && inserted.iter().any(|&i| matches!(&proposed[i], Edit::Insert { text, .. } if !text.trim().is_empty() && indent(text).len() <= indent(&lines[start - 1]).len()))
-            && let Some((first_delete_index, _)) = deleted.first() { proposed.remove(*first_delete_index); changed = true; }
-	}
-	if changed {
-		let (candidate, _) = materialize(lines, &proposed);
-		if crate::syntax::parses_cleanly(path, &candidate) {
-			*edits = proposed;
-			warnings.push(Str::new(
-				"Repaired replacement boundaries after a syntax-verified delimiter-balance check",
-			));
+		let insert_end = group.insert_indices.len() - drop_trailing;
+		for &edit_index in &group.insert_indices[drop_leading..insert_end] {
+			out.push(edits[edit_index].clone());
 		}
+		for &edit_index in &group.delete_indices {
+			out.push(edits[edit_index].clone());
+		}
+		if drop_leading > 0 || drop_trailing > 0 {
+			warnings.push(textual_boundary_warning(group.start_line, drop_leading, drop_trailing));
+		}
+		index = group.delete_indices.last().copied().unwrap_or(index) + 1;
+	}
+	BoundaryNormalization { edits: out, warnings, ambiguities }
+}
+
+const INDENT_TAB_WIDTH: usize = 4;
+
+fn indent_columns(line: &str) -> usize {
+	let mut column = 0;
+	for byte in line.bytes() {
+		match byte {
+			b' ' => column += 1,
+			b'\t' => column += INDENT_TAB_WIDTH - column % INDENT_TAB_WIDTH,
+			_ => break,
+		}
+	}
+	column
+}
+
+fn nearest_content_line(lines: &[Str], start: isize, step: isize) -> Option<&str> {
+	let mut index = start;
+	while index >= 0 && (index as usize) < lines.len() {
+		let line = &lines[index as usize];
+		if has_non_whitespace(line) {
+			return Some(line);
+		}
+		index += step;
+	}
+	None
+}
+
+fn payload_edge(payload: &[Str], leading: bool) -> Option<&str> {
+	if leading {
+		payload
+			.iter()
+			.find(|line| has_non_whitespace(line))
+			.map(|line| line.as_str())
+	} else {
+		payload
+			.iter()
+			.rev()
+			.find(|line| has_non_whitespace(line))
+			.map(|line| line.as_str())
 	}
 }
 
+fn is_source_line_deleted(edits: &[Edit], line: usize) -> bool {
+	edits
+		.iter()
+		.any(|edit| matches!(edit, Edit::Delete { anchor, .. } if anchor.line == line))
+}
+
+fn effective_trailing_boundary(group: &ReplacementGroup, edits: &[Edit], lines: &[Str]) -> usize {
+	let mut line = group.end_line;
+	let mut survivor = group.end_line + 1;
+	while line > group.start_line
+		&& survivor <= lines.len()
+		&& !is_source_line_deleted(edits, survivor)
+		&& lines[line - 1] == lines[survivor - 1]
+	{
+		line -= 1;
+		survivor += 1;
+	}
+	line
+}
+
+fn syntax_essential_row(lines: &[Str], path: &str, line: usize, baseline_parses: bool) -> bool {
+	if !baseline_parses {
+		return true;
+	}
+	let capacity = lines.iter().map(Str::len).sum::<usize>() + lines.len().saturating_sub(2);
+	let mut without = String::with_capacity(capacity);
+	let mut first = true;
+	for (index, text) in lines.iter().enumerate() {
+		if index + 1 == line {
+			continue;
+		}
+		if !first {
+			without.push('\n');
+		}
+		without.push_str(text);
+		first = false;
+	}
+	!crate::syntax::parses_cleanly(Some(path), &without)
+}
+
+#[derive(Clone, Copy)]
+struct EdgeEvidence {
+	first:             bool,
+	last:              bool,
+	leading_structure: bool,
+}
+
+fn contains_boundary(
+	source: &str,
+	path: &str,
+	start_line: usize,
+	end_line: usize,
+	boundary: usize,
+) -> bool {
+	if start_line > end_line {
+		return false;
+	}
+	let Ok(boundary) = u32::try_from(boundary) else {
+		return false;
+	};
+	crate::syntax::is_enclosing_boundary(source, path, start_line, end_line, boundary)
+}
+
+fn edge_evidence(
+	lines: &[Str],
+	source: &str,
+	path: &str,
+	group: &ReplacementGroup,
+	trailing_line: usize,
+	baseline_parses: bool,
+) -> EdgeEvidence {
+	if !baseline_parses {
+		return EdgeEvidence {
+			first:             true,
+			last:              true,
+			leading_structure: false,
+		};
+	}
+	let first = syntax_essential_row(lines, path, group.start_line, true);
+	let last = if trailing_line == group.start_line {
+		first
+	} else {
+		syntax_essential_row(lines, path, trailing_line, true)
+	};
+	EdgeEvidence {
+		first,
+		last,
+		leading_structure: contains_boundary(
+			source,
+			path,
+			group.start_line + 1,
+			trailing_line,
+			group.start_line,
+		),
+	}
+}
+
+#[derive(Clone, Copy)]
+struct KeepPlan {
+	before_line: Option<usize>,
+	after_line:  Option<usize>,
+	kept:        usize,
+}
+
+struct KeepPlans {
+	plans:     SmallVec<KeepPlan, 3>,
+	ambiguous: bool,
+}
+
+fn build_keep_plans(
+	group: &ReplacementGroup,
+	trailing_line: usize,
+	payload: &[Str],
+	lines: &[Str],
+	source: &str,
+	path: &str,
+	evidence: EdgeEvidence,
+	baseline_parses: bool,
+) -> KeepPlans {
+	let mut plans = SmallVec::new();
+	plans.push(KeepPlan { before_line: None, after_line: None, kept: 0 });
+	let (Some(leading_payload), Some(trailing_payload)) =
+		(payload_edge(payload, true), payload_edge(payload, false))
+	else {
+		return KeepPlans { plans, ambiguous: false };
+	};
+	let first = lines
+		.get(group.start_line - 1)
+		.map_or("", |line| line.as_str());
+	let last = lines
+		.get(trailing_line - 1)
+		.map_or("", |line| line.as_str());
+	let leading_indent = indent_columns(leading_payload);
+	let trailing_indent = indent_columns(trailing_payload);
+	let first_indent = indent_columns(first);
+	let last_indent = indent_columns(last);
+	let mut ambiguous = false;
+
+	if group.start_line == trailing_line {
+		let previous = nearest_content_line(lines, group.start_line as isize - 2, -1);
+		let fits_before = previous.is_none_or(|line| indent_columns(line) == trailing_indent);
+		if evidence.first && fits_before && trailing_indent > first_indent {
+			plans.push(KeepPlan {
+				before_line: None,
+				after_line:  Some(group.start_line),
+				kept:        1,
+			});
+		} else if baseline_parses && evidence.first && trailing_indent == first_indent {
+			ambiguous = true;
+		}
+		return KeepPlans { plans, ambiguous };
+	}
+
+	let next = nearest_content_line(lines, group.start_line as isize, 1);
+	let previous = nearest_content_line(lines, trailing_line as isize - 2, -1);
+	let before_first = nearest_content_line(lines, group.start_line as isize - 2, -1);
+	let selected_leading_boundary =
+		contains_boundary(source, path, group.start_line + 1, group.end_line, group.start_line);
+	let first_text = first.trim();
+	let selected_structural_edge = closer(first_text)
+		&& first_indent == leading_indent
+		&& first_indent
+			== lines
+				.get(group.end_line - 1)
+				.map_or(0, |line| indent_columns(line));
+	let underfilled_effective_edge =
+		trailing_line < group.end_line && payload.len() < group.end_line - group.start_line + 1;
+	let keeps_leading = evidence.first
+		&& (evidence.leading_structure
+			|| selected_leading_boundary
+			|| selected_structural_edge
+			|| underfilled_effective_edge)
+		&& if next.is_none() || selected_structural_edge {
+			leading_indent >= first_indent
+		} else {
+			next.is_some_and(|line| indent_columns(line) == leading_indent)
+		};
+	let keeps_trailing = (evidence.last || underfilled_effective_edge)
+		&& !keeps_leading
+		&& trailing_indent > last_indent
+		&& previous.is_none_or(|line| indent_columns(line) == trailing_indent);
+	if keeps_leading {
+		plans.push(KeepPlan {
+			before_line: Some(group.start_line),
+			after_line:  None,
+			kept:        1,
+		});
+	}
+	if keeps_trailing {
+		plans.push(KeepPlan { before_line: None, after_line: Some(trailing_line), kept: 1 });
+	}
+	if baseline_parses
+		&& evidence.first
+		&& before_first.is_some_and(|line| first_indent < indent_columns(line))
+		&& leading_indent > first_indent
+	{
+		ambiguous = true;
+	}
+	KeepPlans { plans, ambiguous }
+}
+
+#[derive(Clone)]
+struct GroupVariant {
+	edits:   Vec<Edit>,
+	kept:    usize,
+	dropped: usize,
+}
+
+struct GroupVariants {
+	variants:  Vec<GroupVariant>,
+	ambiguous: bool,
+}
+
+fn apply_group_variant(
+	inserts: &[Edit],
+	deletes: &[Edit],
+	keep: KeepPlan,
+	drop_leading: usize,
+	drop_trailing: usize,
+	file_line_count: usize,
+) -> Vec<Edit> {
+	let mut retained_inserts = inserts[drop_leading..inserts.len() - drop_trailing].to_vec();
+	let retained_deletes = deletes.iter().filter(|edit| {
+		!matches!(edit, Edit::Delete { anchor, .. } if Some(anchor.line) == keep.before_line || Some(anchor.line) == keep.after_line)
+	});
+	if let Some(before_line) = keep.before_line {
+		let cursor = if before_line >= file_line_count {
+			Cursor::Eof
+		} else {
+			Cursor::BeforeAnchor { anchor: Anchor { line: before_line + 1 } }
+		};
+		for edit in &mut retained_inserts {
+			if let Edit::Insert { cursor: old, .. } = edit {
+				*old = cursor;
+			}
+		}
+	}
+	retained_inserts.extend(retained_deletes.cloned());
+	retained_inserts
+}
+
+fn build_group_variants(
+	group: &ReplacementGroup,
+	edits: &[Edit],
+	lines: &[Str],
+	source: &str,
+	path: &str,
+	baseline_parses: bool,
+) -> GroupVariants {
+	let inserts: Vec<Edit> = group
+		.insert_indices
+		.iter()
+		.map(|&index| edits[index].clone())
+		.collect();
+	let deletes: Vec<Edit> = group
+		.delete_indices
+		.iter()
+		.map(|&index| edits[index].clone())
+		.collect();
+	let trailing_line = effective_trailing_boundary(group, edits, lines);
+	let evidence = edge_evidence(lines, source, path, group, trailing_line, baseline_parses);
+	let leading_drop = count_duplicate_leading(group, lines);
+	let trailing_drop = count_duplicate_trailing(group, lines);
+	let mut leading_drops: SmallVec<usize, 2> = SmallVec::new();
+	leading_drops.push(0);
+	if leading_drop > 0 {
+		leading_drops.push(leading_drop);
+	}
+	let mut trailing_drops: SmallVec<usize, 2> = SmallVec::new();
+	trailing_drops.push(0);
+	if trailing_drop > 0 {
+		trailing_drops.push(trailing_drop);
+	}
+	let mut variants = Vec::new();
+	let mut ambiguous = false;
+	for &drop_leading in &leading_drops {
+		for &drop_trailing in &trailing_drops {
+			let dropped = drop_leading + drop_trailing;
+			if dropped >= inserts.len() {
+				continue;
+			}
+			let payload = &group.payload[drop_leading..group.payload.len() - drop_trailing];
+			let keep_plans = build_keep_plans(
+				group,
+				trailing_line,
+				payload,
+				lines,
+				source,
+				path,
+				evidence,
+				baseline_parses,
+			);
+			ambiguous |= keep_plans.ambiguous;
+			for keep in keep_plans.plans {
+				if keep.kept == 0 && dropped == 0 {
+					continue;
+				}
+				if keep.kept > 0
+					&& group.delete_indices.len() > 1
+					&& payload.len() > group.delete_indices.len()
+				{
+					continue;
+				}
+				variants.push(GroupVariant {
+					edits: apply_group_variant(
+						&inserts,
+						&deletes,
+						keep,
+						drop_leading,
+						drop_trailing,
+						lines.len(),
+					),
+					kept: keep.kept,
+					dropped,
+				});
+			}
+		}
+	}
+	variants.sort_by_key(|variant| (variant.kept, variant.dropped));
+	GroupVariants { variants, ambiguous }
+}
+
+#[derive(Clone)]
+struct BoundaryCombo {
+	variants: Vec<Option<usize>>,
+	touched:  usize,
+	kept:     usize,
+	dropped:  usize,
+}
+
+impl BoundaryCombo {
+	const fn cost(&self) -> (usize, usize, usize) {
+		(self.touched, self.kept, self.dropped)
+	}
+}
+
+struct VariantGroup {
+	group:    ReplacementGroup,
+	variants: Vec<GroupVariant>,
+}
+
+const MAX_BOUNDARY_COMBOS: usize = 512;
+
+fn splice_boundary_combo(
+	edits: &[Edit],
+	groups: &[VariantGroup],
+	combo: &BoundaryCombo,
+) -> Vec<Edit> {
+	let mut chosen = BTreeMap::new();
+	for (index, entry) in groups.iter().enumerate() {
+		if let Some(variant) = combo.variants[index] {
+			chosen.insert(entry.group.insert_indices[0], &entry.variants[variant]);
+		}
+	}
+	let mut out = Vec::with_capacity(edits.len());
+	let mut index = 0;
+	while index < edits.len() {
+		let Some(group) = find_replacement_group(edits, index) else {
+			out.push(edits[index].clone());
+			index += 1;
+			continue;
+		};
+		if let Some(variant) = chosen.get(&group.insert_indices[0]) {
+			out.extend_from_slice(&variant.edits);
+		} else {
+			for &edit_index in &group.insert_indices {
+				out.push(edits[edit_index].clone());
+			}
+			for &edit_index in &group.delete_indices {
+				out.push(edits[edit_index].clone());
+			}
+		}
+		index = group.delete_indices.last().copied().unwrap_or(index) + 1;
+	}
+	out
+}
+
+fn materialize_for_probe(lines: &[Str], edits: &[Edit]) -> String {
+	if !edits.iter().any(|edit| {
+		matches!(edit, Edit::Insert {
+			cursor: Cursor::AfterAnchor { .. },
+			mode: InsertMode::Literal,
+			..
+		})
+	}) {
+		return materialize(lines, edits).0;
+	}
+	let mut landed = edits.to_vec();
+	repair_landings(&mut landed, lines, &mut Vec::new());
+	materialize(lines, &landed).0
+}
+
+fn ambiguous_placement(group: &ReplacementGroup) -> ApplyError {
+	ApplyError::AmbiguousBoundaryPlacement { start: group.start_line, end: group.end_line }
+}
+
+fn repair_boundary_variants(
+	edits: &[Edit],
+	lines: &[Str],
+	source: &str,
+	path: Option<&str>,
+	baseline_parses: bool,
+) -> Result<Option<(Vec<Edit>, Vec<ApplyWarning>)>, ApplyError> {
+	let Some(path) = path else { return Ok(None) };
+	let mut groups = Vec::new();
+	let mut ambiguous_group = None;
+	let mut index = 0;
+	while index < edits.len() {
+		let Some(group) = find_replacement_group(edits, index) else {
+			index += 1;
+			continue;
+		};
+		let built = build_group_variants(&group, edits, lines, source, path, baseline_parses);
+		if built.ambiguous && ambiguous_group.is_none() {
+			ambiguous_group = Some(group.clone());
+		}
+		if !built.variants.is_empty() {
+			groups.push(VariantGroup { group: group.clone(), variants: built.variants });
+		}
+		index = group.delete_indices.last().copied().unwrap_or(index) + 1;
+	}
+	if groups.is_empty() {
+		return ambiguous_group.map_or(Ok(None), |group| Err(ambiguous_placement(&group)));
+	}
+
+	let mut combos =
+		vec![BoundaryCombo { variants: Vec::new(), touched: 0, kept: 0, dropped: 0 }];
+	for group in &groups {
+		let mut next = Vec::with_capacity(
+			combos
+				.len()
+				.saturating_mul(group.variants.len().saturating_add(1)),
+		);
+		for combo in &combos {
+			let mut authored = combo.clone();
+			authored.variants.push(None);
+			next.push(authored);
+			for (variant_index, variant) in group.variants.iter().enumerate() {
+				let mut candidate = combo.clone();
+				candidate.variants.push(Some(variant_index));
+				candidate.touched += 1;
+				candidate.kept += variant.kept;
+				candidate.dropped += variant.dropped;
+				next.push(candidate);
+			}
+		}
+		next.sort_by_key(BoundaryCombo::cost);
+		next.truncate(MAX_BOUNDARY_COMBOS);
+		combos = next;
+	}
+	let authored = materialize_for_probe(lines, edits);
+	combos.retain(|combo| combo.touched > 0);
+	combos.sort_by_key(BoundaryCombo::cost);
+	let mut best: Option<(BoundaryCombo, String)> = None;
+	for combo in combos {
+		if best
+			.as_ref()
+			.is_some_and(|(current, _)| combo.cost() > current.cost())
+		{
+			break;
+		}
+		let candidate = splice_boundary_combo(edits, &groups, &combo);
+		let text = materialize_for_probe(lines, &candidate);
+		if text == authored || !crate::syntax::parses_cleanly(Some(path), &text) {
+			continue;
+		}
+		let Some((_, best_text)) = &best else {
+			best = Some((combo, text));
+			continue;
+		};
+		if text.as_str() != best_text.as_str() {
+			if let Some(group) = ambiguous_group.as_ref() {
+				return Err(ambiguous_placement(group));
+			}
+			return Ok(None);
+		}
+	}
+	let Some((best, _)) = best else {
+		return ambiguous_group.map_or(Ok(None), |group| Err(ambiguous_placement(&group)));
+	};
+	let mut warnings = Vec::new();
+	for (index, entry) in groups.iter().enumerate() {
+		if let Some(variant_index) = best.variants[index] {
+			let variant = &entry.variants[variant_index];
+			let warning = match (variant.kept, variant.dropped) {
+				(0, dropped) => {
+					ApplyWarning::BoundaryRowsDropped { line: entry.group.start_line, dropped }
+				},
+				(kept, 0) => ApplyWarning::BoundaryRowsRetained { line: entry.group.start_line, kept },
+				(kept, dropped) => ApplyWarning::BoundaryRowsRetainedAndDropped {
+					line: entry.group.start_line,
+					kept,
+					dropped,
+				},
+			};
+			warnings.push(warning);
+		}
+	}
+	Ok(Some((splice_boundary_combo(edits, &groups, &best), warnings)))
+}
+
+fn ambiguous_echo(ambiguity: &BoundaryAmbiguity) -> ApplyError {
+	match ambiguity.side {
+		BoundarySide::Leading => ApplyError::LeadingBoundaryEchoTooShort {
+			start: ambiguity.start_line,
+			end:   ambiguity.end_line,
+			count: ambiguity.count,
+		},
+		BoundarySide::Trailing => ApplyError::TrailingBoundaryEchoTooShort {
+			start: ambiguity.start_line,
+			end:   ambiguity.end_line,
+			count: ambiguity.count,
+		},
+	}
+}
+
+fn repair_boundaries(
+	edits: &mut Vec<Edit>,
+	lines: &[Str],
+	source: &str,
+	path: Option<&str>,
+	baseline_parses: bool,
+	warnings: &mut Vec<ApplyWarning>,
+) -> Result<(), ApplyError> {
+	let normalized = normalize_textual_boundary_echoes(edits, lines);
+	warnings.extend(normalized.warnings);
+	*edits = normalized.edits;
+	let authored = materialize_for_probe(lines, edits);
+	if crate::syntax::parses_cleanly(path, &authored) {
+		if let Some(ambiguity) = normalized.ambiguities.first() {
+			return Err(ambiguous_echo(ambiguity));
+		}
+		return Ok(());
+	}
+	if let Some((repaired, repair_warnings)) =
+		repair_boundary_variants(edits, lines, source, path, baseline_parses)?
+	{
+		*edits = repaired;
+		warnings.extend(repair_warnings);
+		return Ok(());
+	}
+	if let Some(ambiguity) = normalized.ambiguities.first() {
+		return Err(ambiguous_echo(ambiguity));
+	}
+	Ok(())
+}
+
 fn materialize(lines: &[Str], edits: &[Edit]) -> (String, Option<usize>) {
-	let phantom = lines.len() > 1 && lines.last().is_some_and(|line| line.is_empty());
 	let mut buckets: BTreeMap<usize, Vec<(usize, &Edit)>> = BTreeMap::new();
 	let mut bof = Vec::new();
 	let mut eof = Vec::new();
@@ -451,9 +1190,7 @@ fn materialize(lines: &[Str], edits: &[Edit]) -> (String, Option<usize>) {
 		for (_, edit) in bucket {
 			match edit {
 				Edit::Delete { .. } => {
-					if !(phantom && line == lines.len()) {
-						delete = true;
-					}
+					delete = true;
 				},
 				Edit::Insert { text, mode: InsertMode::Replacement, .. } => {
 					replacement.push(text.clone());
@@ -496,13 +1233,15 @@ fn materialize(lines: &[Str], edits: &[Edit]) -> (String, Option<usize>) {
 		out.splice(at..at, eof.into_iter().map(Str::new));
 		first = Some(first.map_or(at + 1, |old| old.min(at + 1)));
 	}
-	(
-		out.iter()
-			.map(AsRef::as_ref)
-			.collect::<Vec<&str>>()
-			.join("\n"),
-		first,
-	)
+	let capacity = out.iter().map(Str::len).sum::<usize>() + out.len().saturating_sub(1);
+	let mut text = String::with_capacity(capacity);
+	for (index, line) in out.iter().enumerate() {
+		if index > 0 {
+			text.push('\n');
+		}
+		text.push_str(line);
+	}
+	(text, first)
 }
 
 fn canonical_edit(base: &[u8], final_bytes: &[u8]) -> Vec<ByteEdit> {
@@ -538,6 +1277,8 @@ pub fn apply_parsed_patch(
 	let bom = strip_bom(exact);
 	let normalized = normalize_to_lf(bom.text);
 	let lines: Vec<Str> = normalized.split('\n').map(Str::new).collect();
+	let addressable_count = split_addressable_file_lines(&normalized).count();
+	let addressable_lines = &lines[..addressable_count];
 	let BlockLowering { edits: blocked, resolutions, mut warnings } = resolve_block_edits(
 		&patch.edits,
 		&normalized,
@@ -550,7 +1291,7 @@ pub fn apply_parsed_patch(
 	)?;
 	let clip = resolve_clipboard_edits(
 		&blocked,
-		&lines,
+		addressable_lines,
 		clipboard,
 		if options.mode == ApplyMode::Strict {
 			EmptyPasteMode::Strict
@@ -560,11 +1301,25 @@ pub fn apply_parsed_patch(
 	)?;
 	warnings.extend(clip.warnings);
 	let mut concrete = clip.edits;
-	validate(&concrete, &lines)?;
-	repair_replacement_indentation(&mut concrete, &lines, &mut warnings);
-	repair_boundaries(&mut concrete, &lines, options.path, &mut warnings);
-	repair_landings(&mut concrete, &lines, &mut warnings);
+	validate(&concrete, addressable_lines)?;
+	repair_replacement_indentation(&mut concrete, addressable_lines, &mut warnings);
+	let baseline_parses = crate::syntax::parses_cleanly(options.path, &normalized);
+	repair_boundaries(
+		&mut concrete,
+		addressable_lines,
+		&normalized,
+		options.path,
+		baseline_parses,
+		&mut warnings,
+	)?;
+	repair_landings(&mut concrete, addressable_lines, &mut warnings);
 	let (model, first_changed_line) = materialize(&lines, &concrete);
+	if baseline_parses
+		&& !crate::syntax::parses_cleanly(options.path, &model)
+		&& let Some(line) = first_changed_line
+	{
+		warnings.push(ApplyWarning::SyntaxBreak { path: options.path.map(Str::new), line });
+	}
 	let restored_endings = restore_line_endings(&model, ending);
 	let restored = restore_bom(&restored_endings, bom.had_bom);
 	let bytes = Bytes::copy_from_slice(restored.as_bytes());
@@ -609,5 +1364,99 @@ mod tests {
 			&replayed[b"FIRST\n".len()..b"FIRST\nunchanged middle\n".len()],
 			b"unchanged middle\n"
 		);
+	}
+
+	fn apply_patch(source: &str, patch: &str, path: &str) -> Result<ApplyResult, ApplyError> {
+		let parsed = crate::parser::parse_patch(patch).expect("fixture patch parses");
+		apply_parsed_patch(
+			Bytes::copy_from_slice(source.as_bytes()),
+			&parsed,
+			&mut Clipboard::default(),
+			ApplyOptions { mode: ApplyMode::Strict, path: Some(path) },
+		)
+	}
+
+	#[test]
+	fn retains_syntax_essential_opening_comment_boundary() {
+		let source = "class C {\n\t/**\n\t * Old summary.\n\t */\n\tmethod() {}\n}\n";
+		let result = apply_patch(source, "PUT 2.=4:\n+\t * New summary.\n+\t */", "fixture.ts")
+			.expect("boundary repair succeeds");
+		assert_eq!(
+			result.bytes,
+			Bytes::from_static(b"class C {\n\t/**\n\t * New summary.\n\t */\n\tmethod() {}\n}\n")
+		);
+		assert!(result.warnings.iter().any(|warning| matches!(
+			warning,
+			ApplyWarning::BoundaryRowsRetained { .. }
+				| ApplyWarning::BoundaryRowsDropped { .. }
+				| ApplyWarning::BoundaryRowsRetainedAndDropped { .. }
+		)));
+	}
+
+	#[test]
+	fn searches_boundary_variants_across_replacement_groups() {
+		let source = "fn a() {\n\told();\n}\nfn b() {\n\told();\n}\n";
+		let patch = "PUT 2.=3:\n+\tnew_a();\nPUT 5.=6:\n+\tnew_b();";
+		let result = apply_patch(source, patch, "fixture.rs").expect("combined repair succeeds");
+		assert_eq!(
+			result.bytes,
+			Bytes::from_static(b"fn a() {\n\tnew_a();\n}\nfn b() {\n\tnew_b();\n}\n")
+		);
+		assert_eq!(
+			result
+				.warnings
+				.iter()
+				.filter(|warning| matches!(
+					warning,
+					ApplyWarning::BoundaryRowsRetained { .. }
+						| ApplyWarning::BoundaryRowsDropped { .. }
+						| ApplyWarning::BoundaryRowsRetainedAndDropped { .. }
+				))
+				.count(),
+			2
+		);
+	}
+
+	#[test]
+	fn drops_tsx_boundary_echo_only_after_parse_validation() {
+		let source = "const view = (\n  <section>\n    <Old />\n  </section>\n);\n";
+		let patch = "PUT 3.=3:\n+    <New />\n+  </section>";
+		let result = apply_patch(source, patch, "fixture.tsx").expect("echo repair succeeds");
+		assert_eq!(
+			result.bytes,
+			Bytes::from_static(b"const view = (\n  <section>\n    <New />\n  </section>\n);\n")
+		);
+		assert!(result.warnings.iter().any(|warning| matches!(
+			warning,
+			ApplyWarning::BoundaryRowsRetained { .. }
+				| ApplyWarning::BoundaryRowsDropped { .. }
+				| ApplyWarning::BoundaryRowsRetainedAndDropped { .. }
+		)));
+	}
+
+	#[test]
+	fn parse_breakage_is_advisory_not_rejection() {
+		let source = "fn f() {\n\tlet value = make()\n\t\t.finish();\n}\n";
+		let result = apply_patch(source, "PUT 3.=3:\n+\treturn 1;", "fixture.rs")
+			.expect("authored edit remains applied");
+		assert!(
+			std::str::from_utf8(&result.bytes)
+				.unwrap()
+				.contains("\treturn 1;")
+		);
+		assert!(result.warnings.iter().any(|warning| matches!(
+			warning,
+			ApplyWarning::SyntaxBreak { path, line: 3 }
+				if path.as_deref() == Some("fixture.rs")
+		)));
+	}
+
+	#[test]
+	fn terminal_newline_sentinel_cannot_be_targeted() {
+		let error = apply_patch("a\nb\n", "CUT 3", "fixture.txt").expect_err("line 3 is not content");
+		assert!(matches!(
+			error,
+			ApplyError::Clipboard(ClipboardError::RangeOutOfBounds { start: 3, end: 3, total: 2, .. })
+		));
 	}
 }

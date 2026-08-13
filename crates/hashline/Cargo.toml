@@ -19,5 +19,7 @@ omp-core = { workspace = true }
 parking_lot = { workspace = true }
 similar = { workspace = true }
 smallvec = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
 xutf = { workspace = true }
 xxhash-rust = { workspace = true }

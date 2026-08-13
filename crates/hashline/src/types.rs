@@ -1,7 +1,5 @@
 //! Pure domain types shared by hashline parsing and later application stages.
 
-use std::{error::Error, fmt};
-
 use omp_core::Str;
 
 /// A one-indexed source line anchor.
@@ -96,6 +94,178 @@ pub struct BlockResolution {
 	pub end:         usize,
 	/// The deferred operation that produced the resolution.
 	pub mode:        BlockMode,
+}
+
+/// A non-fatal repair or fallback reported while applying a patch.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum ApplyWarning {
+	/// Replacement rows were re-indented to match their source block.
+	#[error(
+		"line {line}: auto-indented {bodies} replacement body line(s) to preserve the surrounding \
+		 block depth. Re-issue the replacement body with indentation matching the selected source \
+		 block."
+	)]
+	ReplacementIndentationRepaired {
+		/// The authored patch line containing the replacement.
+		line:   usize,
+		/// The number of non-empty body rows re-indented.
+		bodies: usize,
+	},
+	/// An after-line insertion was moved past structural closers.
+	#[error(
+		"shifted an after-line insertion from line {from} to line {to} across {crossed} structural \
+		 closer line(s) so it lands at the surrounding block depth. Use an explicit adjacent gap if \
+		 the insertion belongs inside those closers."
+	)]
+	AfterLineLandingShifted {
+		/// The originally selected source line.
+		from:    usize,
+		/// The repaired source line.
+		to:      usize,
+		/// The number of structural closer rows crossed.
+		crossed: usize,
+	},
+	/// Exact body rows duplicated outside a replacement were removed.
+	#[error(
+		"auto-repaired a replacement boundary echo at line {line}: dropped {leading} leading and \
+		 {trailing} trailing body line(s) already present outside the range. Issue the body as \
+		 final content for the selected range only."
+	)]
+	BoundaryEchoDropped {
+		/// The first selected source line.
+		line:     usize,
+		/// The number of duplicated leading body rows removed.
+		leading:  usize,
+		/// The number of duplicated trailing body rows removed.
+		trailing: usize,
+	},
+	/// Syntax-essential selected boundary rows were retained.
+	#[error(
+		"auto-repaired replacement boundaries at line {line}: retained {kept} syntax-essential \
+		 source boundary row(s) selected by the range. The syntax probe verified the result; \
+		 re-issue with the range covering exactly the changed lines and the body as their complete \
+		 final content."
+	)]
+	BoundaryRowsRetained {
+		/// The first selected source line.
+		line: usize,
+		/// The number of selected boundary rows retained.
+		kept: usize,
+	},
+	/// Body rows duplicated outside a replacement were removed after syntax
+	/// probing.
+	#[error(
+		"auto-repaired replacement boundaries at line {line}: dropped {dropped} body row(s) \
+		 duplicated just outside the range. The syntax probe verified the result; re-issue with the \
+		 range covering exactly the changed lines and the body as their complete final content."
+	)]
+	BoundaryRowsDropped {
+		/// The first selected source line.
+		line:    usize,
+		/// The number of duplicated body rows removed.
+		dropped: usize,
+	},
+	/// Selected boundary rows were retained and duplicated body rows removed.
+	#[error(
+		"auto-repaired replacement boundaries at line {line}: retained {kept} syntax-essential \
+		 source boundary row(s) selected by the range and dropped {dropped} body row(s) duplicated \
+		 just outside the range. The syntax probe verified the result; re-issue with the range \
+		 covering exactly the changed lines and the body as their complete final content."
+	)]
+	BoundaryRowsRetainedAndDropped {
+		/// The first selected source line.
+		line:    usize,
+		/// The number of selected boundary rows retained.
+		kept:    usize,
+		/// The number of duplicated body rows removed.
+		dropped: usize,
+	},
+	/// A patch caused a previously valid file to fail its syntax probe.
+	#[error(
+		"this edit introduced a syntax error near line {line}: the file parsed before the patch and \
+		 no longer does. It was applied exactly as written, so a line number or range endpoint is \
+		 likely wrong; re-read the touched region and re-issue a correcting edit."
+	)]
+	SyntaxBreak {
+		/// The path whose syntax probe failed, when language inference used one.
+		path: Option<Str>,
+		/// The first source line changed by the patch.
+		line: usize,
+	},
+	/// A block operation fell back to a plain after-line insertion.
+	#[error(
+		"line {patch_line}: block at line {block_line} could not be resolved; lowered to after-line \
+		 insertion (anchor is a structural closer: {structural_closer}). Re-read the region and use \
+		 a plain after-line insertion if this fallback is intended."
+	)]
+	BlockLoweringFallback {
+		/// The authored patch line containing the block operation.
+		patch_line:        usize,
+		/// The source line used as the block anchor.
+		block_line:        usize,
+		/// Whether the anchor consists only of structural closers.
+		structural_closer: bool,
+	},
+	/// A paste from an empty named register inserted no rows.
+	#[error(
+		"line {patch_line}: register @{register} is empty; pasted nothing. Populate the register \
+		 with a named CUT before pasting it."
+	)]
+	EmptyRegisterPaste {
+		/// The authored patch line containing the paste.
+		patch_line: usize,
+		/// The empty register name without the `@` prefix.
+		register:   Str,
+	},
+}
+
+impl ApplyWarning {
+	/// Returns the stable machine-readable diagnostic code.
+	#[must_use]
+	pub fn code(&self) -> &'static str {
+		self.into()
+	}
+
+	/// Returns the authored patch line this warning was reported against, when
+	/// the warning names one.
+	///
+	/// Distinct from [`ApplyWarning::source_line`]: hashline addresses both
+	/// patch-language rows and source rows, and a warning names at most one of
+	/// the two coordinate spaces.
+	#[must_use]
+	pub const fn patch_line(&self) -> Option<usize> {
+		match self {
+			Self::ReplacementIndentationRepaired { line, .. } => Some(*line),
+			Self::BlockLoweringFallback { patch_line, .. }
+			| Self::EmptyRegisterPaste { patch_line, .. } => Some(*patch_line),
+			Self::AfterLineLandingShifted { .. }
+			| Self::BoundaryEchoDropped { .. }
+			| Self::BoundaryRowsRetained { .. }
+			| Self::BoundaryRowsDropped { .. }
+			| Self::BoundaryRowsRetainedAndDropped { .. }
+			| Self::SyntaxBreak { .. } => None,
+		}
+	}
+
+	/// Returns the source line this warning refers to, when the warning names
+	/// one.
+	///
+	/// For [`ApplyWarning::AfterLineLandingShifted`] this is the repaired
+	/// landing, not the originally authored anchor.
+	#[must_use]
+	pub const fn source_line(&self) -> Option<usize> {
+		match self {
+			Self::AfterLineLandingShifted { to, .. } => Some(*to),
+			Self::BoundaryEchoDropped { line, .. }
+			| Self::BoundaryRowsRetained { line, .. }
+			| Self::BoundaryRowsDropped { line, .. }
+			| Self::BoundaryRowsRetainedAndDropped { line, .. }
+			| Self::SyntaxBreak { line, .. } => Some(*line),
+			Self::BlockLoweringFallback { block_line, .. } => Some(*block_line),
+			Self::ReplacementIndentationRepaired { .. } | Self::EmptyRegisterPaste { .. } => None,
+		}
+	}
 }
 
 /// Optional lexical path hints used while splitting patch input.
@@ -327,7 +497,8 @@ impl Diagnostic {
 }
 
 /// A fatal parse failure with a structured diagnostic.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{}", diagnostic.message)]
 pub struct ParseError {
 	/// The diagnostic describing the rejected construct.
 	pub diagnostic: Diagnostic,
@@ -339,14 +510,6 @@ impl ParseError {
 		Self { diagnostic }
 	}
 }
-
-impl fmt::Display for ParseError {
-	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		fmt::Display::fmt(&self.diagnostic.message, formatter)
-	}
-}
-
-impl Error for ParseError {}
 
 /// The parser output for one section body.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

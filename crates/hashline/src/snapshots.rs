@@ -2,7 +2,6 @@
 
 use std::{
 	collections::{BTreeSet, HashMap, VecDeque},
-	error::Error,
 	fmt,
 	sync::Arc,
 };
@@ -120,41 +119,91 @@ impl Default for SnapshotStoreOptions {
 }
 
 /// A snapshot-store mutation failure.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum SnapshotStoreError {
-	/// A configured retention bound was zero.
-	ZeroCapacity,
+	/// One or more configured retention bounds were zero.
+	#[error(
+		"snapshot retention bounds must be nonzero (paths: {max_paths}, revisions per path: \
+		 {max_revisions_per_path}, total bytes: {max_total_bytes})"
+	)]
+	InvalidCapacity {
+		/// Maximum retained canonical paths.
+		max_paths:              usize,
+		/// Maximum retained revisions per canonical path.
+		max_revisions_per_path: usize,
+		/// Maximum retained exact-byte total.
+		max_total_bytes:        usize,
+	},
 	/// One revision token was reused with different exact bytes.
+	#[error(
+		"revision token identifies conflicting bytes at {path}; re-read the file before retaining \
+		 or editing it again"
+	)]
 	RevisionConflict {
 		/// Canonical path whose token was reused.
-		path: Str,
+		path:     Str,
+		/// Exact opaque revision reused for different bytes.
+		revision: RevisionToken,
 	},
 }
 
-impl fmt::Display for SnapshotStoreError {
-	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match self {
-			Self::ZeroCapacity => formatter.write_str("snapshot retention capacities must be nonzero"),
-			Self::RevisionConflict { path } => {
-				write!(formatter, "revision token identifies conflicting bytes at {path}")
-			},
-		}
+impl SnapshotStoreError {
+	/// Returns the stable machine-readable diagnostic code.
+	#[must_use]
+	pub fn code(&self) -> &'static str {
+		self.into()
 	}
 }
 
-impl Error for SnapshotStoreError {}
-
 /// A collision-aware snapshot lookup failure.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum SnapshotLookupError {
-	/// No retained revision matches the requested path and identity.
+	/// No retained revision matches the requested path and tag.
+	#[error(
+		"no retained snapshot matches {path}#{tag}; re-read the file and re-issue the edit against \
+		 its fresh tag"
+	)]
 	Missing {
 		/// Canonical path requested by the caller.
 		path: Str,
 		/// Four-hex representation tag requested by the caller.
 		tag:  Str,
 	},
+	/// The requested exact revision is no longer retained.
+	#[error(
+		"the requested revision of {path} is not retained for tag {tag}; re-read the file and \
+		 re-issue the edit against its fresh revision and tag"
+	)]
+	RevisionMissing {
+		/// Canonical path requested by the caller.
+		path:     Str,
+		/// Four-hex representation tag requested by the caller.
+		tag:      Str,
+		/// Exact opaque revision requested by the caller.
+		revision: RevisionToken,
+	},
+	/// The requested tag does not identify the requested exact revision.
+	#[error(
+		"tag {requested_tag} does not match retained tag {retained_tag} for {path}; re-read the \
+		 file and re-issue the edit against its fresh revision and tag"
+	)]
+	RevisionTagMismatch {
+		/// Canonical path requested by the caller.
+		path:          Str,
+		/// Four-hex representation tag requested by the caller.
+		requested_tag: Str,
+		/// Four-hex representation tag retained for the exact revision.
+		retained_tag:  Str,
+		/// Exact opaque revision requested by the caller.
+		revision:      RevisionToken,
+	},
 	/// Several exact revisions share the requested representation tag.
+	#[error(
+		"snapshot tag {path}#{tag} is ambiguous across {candidates} retained revisions; re-read the \
+		 file and re-issue the edit with its exact fresh revision"
+	)]
 	Ambiguous {
 		/// Canonical path containing the colliding revisions.
 		path:       Str,
@@ -165,19 +214,13 @@ pub enum SnapshotLookupError {
 	},
 }
 
-impl fmt::Display for SnapshotLookupError {
-	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match self {
-			Self::Missing { path, tag } => write!(formatter, "no retained snapshot for {path}#{tag}"),
-			Self::Ambiguous { path, tag, candidates } => write!(
-				formatter,
-				"snapshot tag {path}#{tag} is ambiguous across {candidates} retained revisions"
-			),
-		}
+impl SnapshotLookupError {
+	/// Returns the stable machine-readable diagnostic code.
+	#[must_use]
+	pub fn code(&self) -> &'static str {
+		self.into()
 	}
 }
-
-impl Error for SnapshotLookupError {}
 
 #[derive(Debug)]
 struct PathHistory {
@@ -208,7 +251,11 @@ impl SnapshotStore {
 			|| options.max_revisions_per_path == 0
 			|| options.max_total_bytes == 0
 		{
-			return Err(SnapshotStoreError::ZeroCapacity);
+			return Err(SnapshotStoreError::InvalidCapacity {
+				max_paths:              options.max_paths,
+				max_revisions_per_path: options.max_revisions_per_path,
+				max_total_bytes:        options.max_total_bytes,
+			});
 		}
 		Ok(Self { options, histories: HashMap::new(), clock: 0, total_bytes: 0 })
 	}
@@ -238,7 +285,7 @@ impl SnapshotStore {
 		{
 			let existing = &history.revisions[index];
 			if existing.bytes != bytes {
-				return Err(SnapshotStoreError::RevisionConflict { path });
+				return Err(SnapshotStoreError::RevisionConflict { path, revision });
 			}
 			let mut merged = existing.seen_lines.as_ref().clone();
 			merged.extend(observed);
@@ -345,10 +392,22 @@ impl SnapshotStore {
 		revision: Option<&RevisionToken>,
 	) -> Result<Arc<Snapshot>, SnapshotLookupError> {
 		if let Some(revision) = revision {
-			return self
-				.by_revision(path, revision)
-				.filter(|snapshot| snapshot.tag == tag)
-				.ok_or_else(|| SnapshotLookupError::Missing { path: path.into(), tag: tag.into() });
+			let Some(snapshot) = self.by_revision(path, revision) else {
+				return Err(SnapshotLookupError::RevisionMissing {
+					path:     path.into(),
+					tag:      tag.into(),
+					revision: revision.clone(),
+				});
+			};
+			if snapshot.tag != tag {
+				return Err(SnapshotLookupError::RevisionTagMismatch {
+					path:          path.into(),
+					requested_tag: tag.into(),
+					retained_tag:  snapshot.tag.clone(),
+					revision:      revision.clone(),
+				});
+			}
+			return Ok(snapshot);
 		}
 		let mut candidates = self.tag_candidates(path, tag);
 		match candidates.len() {
@@ -405,18 +464,19 @@ impl SnapshotStore {
 			return Ok(());
 		};
 		let now = self.tick();
-		let conflict = self.histories.get(&to).is_some_and(|destination| {
-			source.revisions.iter().any(|source_item| {
+		let conflict = self.histories.get(&to).and_then(|destination| {
+			source.revisions.iter().find_map(|source_item| {
 				destination
 					.revisions
 					.iter()
 					.find(|item| item.revision == source_item.revision)
-					.is_some_and(|destination_item| destination_item.bytes != source_item.bytes)
+					.filter(|destination_item| destination_item.bytes != source_item.bytes)
+					.map(|_| source_item.revision.clone())
 			})
 		});
-		if conflict {
+		if let Some(revision) = conflict {
 			self.histories.insert(from.into(), source);
-			return Err(SnapshotStoreError::RevisionConflict { path: to });
+			return Err(SnapshotStoreError::RevisionConflict { path: to, revision });
 		}
 
 		let mut merged = VecDeque::new();
