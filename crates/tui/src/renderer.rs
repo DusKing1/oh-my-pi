@@ -238,6 +238,26 @@ struct ScreenCursor {
 	row: u16,
 	col: u16,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EpochCommit {
+	epoch:        u32,
+	frame_from:   u16,
+	frame_to:     u16,
+	native_from:  u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WidthEpoch {
+	id:            u32,
+	width:         u16,
+	seam:          u16,
+	baseline_rows: u16,
+}
+
+struct WidthEpochCapture {
+	frame:  Frame,
+	window: Window,
+}
 
 struct RegisteredImage {
 	png:            CowBytes<'static>,
@@ -290,6 +310,10 @@ pub struct Renderer<W: Write> {
 	window_top:           u16,
 	committed_rows:       u16,
 	stable_rows:          u16,
+	width_epoch:          Option<WidthEpoch>,
+	width_epoch_capture:  Option<WidthEpochCapture>,
+	epoch_commits:        SmallVec<EpochCommit, 8>,
+	next_epoch:           u32,
 	cursor:               Option<ScreenCursor>,
 	poisoned:             bool,
 	output_state:         OutputState,
@@ -302,6 +326,7 @@ pub struct Renderer<W: Write> {
 	cell_pixel_width:     u16,
 	cell_pixel_height:    u16,
 	tmux_passthrough:     bool,
+	preserve_resize_history: bool,
 	sync_output:          bool,
 	screen_to_scrollback: bool,
 	hyperlinks:           bool,
@@ -326,6 +351,10 @@ impl<W: Write> Renderer<W> {
 			window_top: 0,
 			committed_rows: 0,
 			stable_rows: 0,
+			width_epoch: None,
+			width_epoch_capture: None,
+			epoch_commits: SmallVec::new(),
+			next_epoch: 1,
 			cursor: None,
 			poisoned: false,
 			output_state: OutputState::Connected,
@@ -338,6 +367,7 @@ impl<W: Write> Renderer<W> {
 			cell_pixel_width: DEFAULT_CELL_PIXEL_WIDTH,
 			cell_pixel_height: DEFAULT_CELL_PIXEL_HEIGHT,
 			tmux_passthrough: false,
+			preserve_resize_history: false,
 			sync_output: true,
 			screen_to_scrollback: false,
 			margin_scrollback: false,
@@ -357,6 +387,7 @@ impl<W: Write> Renderer<W> {
 		self.set_margin_scrollback(caps.margin_scrollback);
 		self.set_hyperlinks(caps.hyperlinks);
 		self.set_tmux_passthrough(caps.inside_tmux);
+		self.set_preserve_resize_history(caps.inside_multiplexer);
 		if let Some((width, height)) = caps.cell_px {
 			self.set_cell_pixel_size(width, height)?;
 		}
@@ -467,6 +498,16 @@ impl<W: Write> Renderer<W> {
 	/// direct terminal output.
 	pub const fn set_tmux_passthrough(&mut self, enabled: bool) {
 		self.tmux_passthrough = enabled;
+	}
+
+	/// Keeps native history intact when terminal geometry changes.
+	///
+	/// Multiplexers own pane scrollback and may reflow it independently. In
+	/// this mode a width change starts a new row-coordinate epoch and repaints
+	/// only the viewport; later finalized growth advances through an explicit
+	/// current-width seam instead of indexing old-width commits.
+	pub const fn set_preserve_resize_history(&mut self, enabled: bool) {
+		self.preserve_resize_history = enabled;
 	}
 
 	/// Paints a logical document with an immutable leading-row boundary.
@@ -730,6 +771,9 @@ impl<W: Write> Renderer<W> {
 		damaged: Option<&[(u16, u16)]>,
 		layers: &[ResolvedLayer<'_>],
 	) -> io::Result<PaintStats> {
+		if self.width_epoch.is_some() {
+			return self.paint_width_epoch_next(next, viewport_height, stable_rows, damaged, layers);
+		}
 		self.sync_screen_buffer();
 		let image_prefix = self.image_prefix(next, layers);
 		let mut output = std::mem::take(&mut self.output_scratch);
@@ -980,6 +1024,14 @@ impl<W: Write> Renderer<W> {
 			top:    next.size().height.saturating_sub(viewport_height),
 			height: viewport_height,
 		};
+		if self.preserve_resize_history
+			&& self.width_epoch_capture.is_none()
+			&& self.previous.as_ref().is_some_and(|previous| {
+				previous.size().width != next.size().width || self.viewport_height != viewport_height
+			})
+		{
+			self.width_epoch_capture = Some(WidthEpochCapture { frame: next.clone(), window });
+		}
 		let can_diff = leading_sequence.is_empty()
 			&& self.preview_window == Some(window)
 			&& self
@@ -1123,16 +1175,17 @@ impl<W: Write> Renderer<W> {
 		Ok(stats)
 	}
 
-	/// Clears and reconstructs native history at new terminal geometry.
+	/// Reconciles the document after terminal geometry changes.
 	///
-	/// The synchronized update emits `leading_sequence`, clears scrollback once,
-	/// then writes the stable prefix and current viewport. The reconstructed
-	/// frame becomes the baseline for subsequent [`Self::present`] calls.
+	/// Direct terminals clear and reconstruct native history. Multiplexer
+	/// sessions retain immutable pane history: a width change starts a new
+	/// coordinate epoch, and the synchronized update repaints only the bounded
+	/// viewport plus any finalized rows that genuinely crossed its seam.
 	///
 	/// # Errors
 	///
 	/// Rejects zero geometry or a stable boundary beyond the document. Writer
-	/// failure poisons the renderer because history may be partially rebuilt.
+	/// failure poisons the renderer because physical state may be partially updated.
 	pub fn rebuild(
 		&mut self,
 		next: Frame,
@@ -1145,8 +1198,22 @@ impl<W: Write> Renderer<W> {
 		if stable_rows > next.size().height {
 			return Err(contract_error("stable_rows exceeds the document height"));
 		}
-		let stats =
-			self.full_paint(next, viewport_height, stable_rows, leading_sequence, REBUILD_HISTORY)?;
+		let preserve_geometry = self.preserve_resize_history
+			&& self.previous.as_ref().is_some_and(|previous| {
+				previous.size().width != next.size().width
+					|| self.viewport_height != viewport_height
+					|| self.width_epoch_capture.is_some()
+			});
+		let preserving_first_paint = self.preserve_resize_history && self.previous.is_none();
+		let stats = if preserve_geometry {
+			self.repaint_preserving_history(next, viewport_height, stable_rows, leading_sequence)?
+		} else {
+			self.width_epoch = None;
+			self.width_epoch_capture = None;
+			self.epoch_commits.clear();
+			let clear = if preserving_first_paint { CLEAR_VIEWPORT } else { REBUILD_HISTORY };
+			self.full_paint(next, viewport_height, stable_rows, leading_sequence, clear)?
+		};
 		self.publish_debug_screen();
 		Ok(stats)
 	}
@@ -1250,16 +1317,18 @@ impl<W: Write> Renderer<W> {
 		if stable_rows < self.stable_rows {
 			return Err(contract_error("stable_rows cannot retreat"));
 		}
-		if next.size().height < self.committed_rows {
-			return Err(contract_error(
-				"document is shorter than rows already committed to native history",
-			));
-		}
-		if next.size().height.saturating_sub(viewport_height) < self.committed_rows {
-			return Err(contract_error(
-				"document tail shrank below committed history; document height must stay monotonic \
-				 between rebuilds",
-			));
+		if self.width_epoch.is_none() {
+			if next.size().height < self.committed_rows {
+				return Err(contract_error(
+					"document is shorter than rows already committed to native history",
+				));
+			}
+			if next.size().height.saturating_sub(viewport_height) < self.committed_rows {
+				return Err(contract_error(
+					"document tail shrank below committed history; document height must stay monotonic \
+					 between rebuilds",
+				));
+			}
 		}
 		if let Some(previous) = &self.previous
 			&& (previous.size().width != next.size().width || self.viewport_height != viewport_height)
@@ -1270,6 +1339,301 @@ impl<W: Write> Renderer<W> {
 			));
 		}
 		Ok(())
+	}
+
+	fn repaint_preserving_history(
+		&mut self,
+		next: Frame,
+		viewport_height: u16,
+		stable_rows: u16,
+		leading_sequence: &str,
+	) -> io::Result<PaintStats> {
+		let previous = self
+			.previous
+			.as_ref()
+			.expect("preserving rebuild requires an established normal screen");
+		let width_changed = previous.size().width != next.size().width;
+		let captured = self.width_epoch_capture.take();
+		let epoch_reset = width_changed || captured.is_some();
+		let natural_top = next.size().height.saturating_sub(viewport_height);
+		let previous_natural_top = previous.size().height.saturating_sub(self.viewport_height);
+		let unresolved_tail = self.width_epoch.is_some_and(|epoch| {
+			epoch.width == previous.size().width
+				&& epoch.seam < previous_natural_top.min(epoch.baseline_rows)
+		});
+		let mut seam = if epoch_reset {
+			match captured {
+				Some(capture) if !unresolved_tail => {
+					resolve_width_epoch_capture(&capture, &next).unwrap_or(0)
+				},
+				Some(_) => 0,
+				None => natural_top,
+			}
+		} else if let Some(epoch) = self.width_epoch {
+			map_epoch_boundary(previous, &next, epoch.seam)
+		} else {
+			natural_top
+		};
+
+		if !epoch_reset && viewport_height < self.viewport_height {
+			let previous_viewport_rows = self
+				.viewport_height
+				.min(previous.size().height.saturating_sub(self.window_top));
+			let host_rows = natural_top
+				.saturating_sub(seam)
+				.min(previous_viewport_rows.saturating_sub(viewport_height));
+			seam = seam.saturating_add(host_rows);
+		}
+		seam = seam.min(natural_top);
+
+		let epoch_id = if epoch_reset || self.width_epoch.is_none() {
+			let id = self.next_epoch;
+			self.next_epoch = self.next_epoch.wrapping_add(1).max(1);
+			id
+		} else {
+			self.width_epoch.expect("checked above").id
+		};
+		self.width_epoch = Some(WidthEpoch {
+			id: epoch_id,
+			width: next.size().width,
+			seam,
+			baseline_rows: next.size().height,
+		});
+		let commit_to = stable_rows.min(natural_top).max(seam);
+		let stats = self.emit_width_epoch_paint(
+			&next,
+			viewport_height,
+			stable_rows,
+			None,
+			&[],
+			seam,
+			commit_to,
+			leading_sequence,
+			true,
+		)?;
+		self.previous = Some(next);
+		Ok(stats)
+	}
+
+	fn paint_width_epoch_next(
+		&mut self,
+		next: &Frame,
+		viewport_height: u16,
+		stable_rows: u16,
+		damaged: Option<&[(u16, u16)]>,
+		layers: &[ResolvedLayer<'_>],
+	) -> io::Result<PaintStats> {
+		let epoch = self.width_epoch.expect("caller checked width epoch");
+		let previous = self
+			.previous
+			.as_ref()
+			.expect("width epoch requires an established normal screen");
+		debug_assert_eq!(epoch.width, next.size().width);
+		let natural_top = next.size().height.saturating_sub(viewport_height);
+		let mut seam = map_epoch_boundary(previous, next, epoch.seam).min(natural_top);
+		let commit_to = stable_rows.min(natural_top).max(seam);
+		let stats = self.emit_width_epoch_paint(
+			next,
+			viewport_height,
+			stable_rows,
+			damaged,
+			layers,
+			seam,
+			commit_to,
+			"",
+			false,
+		)?;
+		seam = commit_to;
+		self.width_epoch = Some(WidthEpoch {
+			seam,
+			baseline_rows: next.size().height,
+			..epoch
+		});
+		Ok(stats)
+	}
+
+	#[allow(clippy::too_many_arguments, reason = "epoch paint inputs are independent frame state")]
+	fn emit_width_epoch_paint(
+		&mut self,
+		next: &Frame,
+		viewport_height: u16,
+		stable_rows: u16,
+		damaged: Option<&[(u16, u16)]>,
+		layers: &[ResolvedLayer<'_>],
+		commit_from: u16,
+		commit_to: u16,
+		leading_sequence: &str,
+		force_viewport: bool,
+	) -> io::Result<PaintStats> {
+		self.sync_screen_buffer();
+		let image_prefix = self.image_prefix(next, layers);
+		self.prepare_sixels(next);
+		let previous_window = Window { top: self.window_top, height: self.viewport_height };
+		let next_window = Window {
+			top:    next.size().height.saturating_sub(viewport_height),
+			height: viewport_height,
+		};
+		let mut incoming = std::mem::take(&mut self.layer_scratch);
+		store_layers_into(layers, next_window, next.size().width, &mut incoming);
+		let previous = self
+			.previous
+			.as_ref()
+			.expect("width epoch requires an established normal screen");
+		let comparable = previous.size().width == next.size().width
+			&& self.viewport_height == viewport_height;
+		let previous_image = comparable.then_some((previous, previous_window));
+		let sixels = self.sixel_output(next, next_window, previous_image, damaged, !comparable);
+		let kitty_direct = kitty_direct_output(
+			self.graphics,
+			&mut self.images,
+			next,
+			next_window,
+			previous_image,
+			damaged,
+			!comparable || force_viewport,
+			self.cell_pixel_width,
+			self.cell_pixel_height,
+			self.tmux_passthrough,
+		);
+		let iterm2 = iterm2_output(
+			self.graphics,
+			self
+				.images
+				.iter()
+				.map(|(&id, image)| Iterm2Image { id, png: &image.png }),
+			next,
+			Iterm2Viewport { top: next_window.top, height: next_window.height },
+			previous_image.map(|(frame, window)| {
+				(frame, Iterm2Viewport { top: window.top, height: window.height })
+			}),
+			damaged,
+			!comparable || force_viewport,
+			self.tmux_passthrough,
+		);
+
+		let mut stats = PaintStats {
+			committed_rows: commit_to.saturating_sub(commit_from),
+			clipped_rows: next_window.top.saturating_sub(commit_to),
+			..PaintStats::default()
+		};
+		let next_view = ComposedFrame { base: next, layers: &incoming };
+		let mut paint = std::mem::take(&mut self.paint_scratch);
+		paint.clear();
+		if commit_to > commit_from {
+			let raw = ComposedFrame { base: next, layers: &[] };
+			emit_epoch_scroll(
+				&mut paint,
+				&raw,
+				&next_view,
+				commit_from,
+				commit_to,
+				next_window,
+				self.graphics,
+				self.hyperlinks,
+			);
+			stats.full_repaint = true;
+			stats.runs = usize::from(viewport_height.saturating_add(commit_to - commit_from));
+			stats.changed_cells = usize::from(next.size().width).saturating_mul(stats.runs);
+		} else if force_viewport || !comparable {
+			emit_bounded_window(
+				&mut paint,
+				&next_view,
+				next_window,
+				self.graphics,
+				self.hyperlinks,
+			);
+			stats.full_repaint = true;
+			stats.runs = usize::from(viewport_height);
+			stats.changed_cells =
+				usize::from(next.size().width).saturating_mul(usize::from(viewport_height));
+		} else {
+			let dirty_rows = damaged.and_then(|damaged| {
+				(previous_window.top == next_window.top && previous_window.height == next_window.height)
+					.then(|| changed_screen_rows(damaged, &self.layers, &incoming, next_window))
+			});
+			let previous_view = ComposedFrame { base: previous, layers: &self.layers };
+			emit_window_diff_rows(
+				&mut paint,
+				&previous_view,
+				previous_window,
+				&next_view,
+				next_window,
+				0,
+				viewport_height,
+				dirty_rows.as_deref(),
+				self.graphics,
+				self.hyperlinks,
+				&mut stats,
+			);
+		}
+
+		let next_cursor = compose_cursor(next, &incoming, next_window, next.size().width);
+		let auxiliary =
+			!image_prefix.is_empty() || !sixels.is_empty() || !kitty_direct.is_empty() || !iterm2.is_empty();
+		let mut output = std::mem::take(&mut self.output_scratch);
+		output.clear();
+		if !paint.is_empty() || auxiliary || next_cursor != self.cursor || !leading_sequence.is_empty() {
+			if self.sync_output {
+				output.push_str(SYNC_OUTPUT_BEGIN);
+			}
+			output.push_str(HIDE_CURSOR);
+			output.push_str(leading_sequence);
+			output.push_str(&image_prefix);
+			if !stats.full_repaint {
+				output.push_str(VIEWPORT_BOTTOM);
+			}
+			output.push_str(&paint);
+			output.push_str(&sixels);
+			output.push_str(&kitty_direct);
+			output.push_str(&iterm2);
+			if stats.full_repaint {
+				place_cursor_absolute(&mut output, next_cursor, next_window, next.size().height);
+			} else {
+				place_cursor(&mut output, next_cursor, viewport_height);
+			}
+			if self.sync_output {
+				output.push_str(SYNC_OUTPUT_END);
+			}
+		}
+		let bytes = output.len();
+		let write_result = self.write(&output);
+		self.paint_scratch = paint;
+		self.output_scratch = output;
+		write_result?;
+
+		if commit_to > commit_from {
+			let epoch_id = self.width_epoch.expect("epoch established before paint").id;
+			self.record_epoch_commit(epoch_id, commit_from, commit_to);
+			self.committed_rows =
+				self.committed_rows.saturating_add(commit_to.saturating_sub(commit_from));
+		}
+		if let Some(epoch) = &mut self.width_epoch {
+			epoch.seam = commit_to;
+			epoch.baseline_rows = next.size().height;
+		}
+		self.viewport_height = viewport_height;
+		self.window_top = next_window.top;
+		self.stable_rows = stable_rows;
+		self.cursor = next_cursor;
+		stats.bytes = bytes;
+		let previous_layers = std::mem::replace(&mut self.layers, incoming);
+		self.layer_scratch = previous_layers;
+		Ok(stats)
+	}
+
+	fn record_epoch_commit(&mut self, epoch: u32, frame_from: u16, frame_to: u16) {
+		let native_from = self.committed_rows;
+		if let Some(last) = self.epoch_commits.last_mut()
+			&& last.epoch == epoch
+			&& last.frame_to == frame_from
+			&& last.native_from.saturating_add(last.frame_to - last.frame_from) == native_from
+		{
+			last.frame_to = frame_to;
+			return;
+		}
+		self
+			.epoch_commits
+			.push(EpochCommit { epoch, frame_from, frame_to, native_from });
 	}
 
 	fn initial_paint(
@@ -1874,6 +2238,53 @@ pub fn image_placement(frame: &Frame, id: u32) -> Option<(u16, u16, u16, u16)> {
 	None
 }
 
+fn resolve_width_epoch_capture(capture: &WidthEpochCapture, next: &Frame) -> Option<u16> {
+	if capture.frame.size().width != next.size().width {
+		return None;
+	}
+	let rows = capture
+		.window
+		.height
+		.min(capture.frame.size().height.saturating_sub(capture.window.top));
+	if rows == 0 || rows > next.size().height {
+		return None;
+	}
+	for offset in (0..=next.size().height - rows).rev() {
+		if (0..rows).all(|row| {
+			capture
+				.frame
+				.row_equals(capture.window.top.saturating_add(row), next, offset.saturating_add(row))
+		}) {
+			return Some(offset);
+		}
+	}
+	None
+}
+
+fn map_epoch_boundary(previous: &Frame, next: &Frame, boundary: u16) -> u16 {
+	let previous_height = previous.size().height;
+	let next_height = next.size().height;
+	let shared = previous_height.min(next_height);
+	let mut prefix = 0;
+	while prefix < shared && previous.row_equals(prefix, next, prefix) {
+		prefix += 1;
+	}
+	if boundary <= prefix {
+		return boundary.min(next_height);
+	}
+
+	let mut suffix = 0;
+	while suffix < shared.saturating_sub(prefix)
+		&& previous.row_equals(previous_height - 1 - suffix, next, next_height - 1 - suffix)
+	{
+		suffix += 1;
+	}
+	let suffix_start = previous_height.saturating_sub(suffix);
+	if boundary >= suffix_start {
+		return next_height.saturating_sub(previous_height.saturating_sub(boundary));
+	}
+	prefix
+}
 fn contract_error(message: &'static str) -> io::Error {
 	io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -2193,6 +2604,78 @@ fn reconcile_wrap_boundaries(
 		output.push('\r');
 	}
 }
+fn emit_bounded_window(
+	output: &mut String,
+	frame: &ComposedFrame<'_>,
+	window: Window,
+	graphics: Graphics,
+	hyperlinks: bool,
+) {
+	output.push_str(esc!(cursor_home));
+	emit_rows(output, frame, 0..0, window, graphics, hyperlinks);
+	output.push_str(RESET_STYLE);
+	output.push('\r');
+}
+
+fn emit_epoch_scroll(
+	output: &mut String,
+	raw: &ComposedFrame<'_>,
+	composed: &ComposedFrame<'_>,
+	commit_from: u16,
+	commit_to: u16,
+	window: Window,
+	graphics: Graphics,
+	hyperlinks: bool,
+) {
+	emit_bounded_window(
+		output,
+		raw,
+		Window { top: commit_from, height: window.height },
+		graphics,
+		hyperlinks,
+	);
+	output.push_str(VIEWPORT_BOTTOM);
+	let entering_from = commit_from.saturating_add(window.height);
+	let entering_to = commit_to.saturating_add(window.height);
+	let any_join =
+		(entering_from..entering_to).any(|row| row > 0 && wrap_joinable(raw, row - 1));
+	if any_join {
+		output.push_str(esc!(autowrap));
+	}
+	for row in entering_from..entering_to {
+		if row > 0 && wrap_joinable(raw, row - 1) {
+			arm_wrap_boundary(output, raw, row - 1, graphics, hyperlinks);
+		} else {
+			output.push_str("\r\n");
+		}
+		encode_frame_row(output, raw, row, graphics, hyperlinks);
+	}
+	if any_join {
+		output.push_str(esc!(!autowrap));
+	}
+	emit_bounded_window(output, composed, window, graphics, hyperlinks);
+}
+
+fn place_cursor_absolute(
+	output: &mut String,
+	cursor: Option<ScreenCursor>,
+	window: Window,
+	document_height: u16,
+) {
+	let (row, col, visible) = match cursor {
+		Some(cursor) => (cursor.row.min(window.height - 1), cursor.col, true),
+		None => {
+			let content_rows = window
+				.height
+				.min(document_height.saturating_sub(window.top))
+				.max(1);
+			(content_rows - 1, 0, false)
+		},
+	};
+	let _ = write!(output, "\x1b[{};{}H", row + 1, col + 1);
+	output.push_str(if visible { SHOW_CURSOR } else { HIDE_CURSOR });
+}
+
 fn emit_scroll_append(
 	output: &mut String,
 	previous: &ComposedFrame<'_>,
@@ -2878,6 +3361,17 @@ mod tests {
 
 	fn document(lines: &[&str]) -> Frame {
 		let mut frame = Frame::new(Size::new(8, u16::try_from(lines.len()).expect("small fixture")));
+		for (row, line) in lines.iter().enumerate() {
+			frame.put(0, u16::try_from(row).expect("small fixture"), line, Style::default());
+		}
+		frame
+	}
+
+	fn document_at_width(width: u16, lines: &[&str]) -> Frame {
+		let mut frame = Frame::new(Size::new(
+			width,
+			u16::try_from(lines.len()).expect("small fixture"),
+		));
 		for (row, line) in lines.iter().enumerate() {
 			frame.put(0, u16::try_from(row).expect("small fixture"), line, Style::default());
 		}
@@ -3995,6 +4489,233 @@ mod tests {
 		apply_paint(&mut renderer, &mut terminal);
 		assert_eq!(terminal.history, ["new00", "new01", "new02", "new03"]);
 		assert_eq!(terminal.visible_rows(), ["live04", "footer"]);
+	}
+
+	#[test]
+	fn multiplexer_first_rebuild_keeps_existing_shell_history() {
+		let mut renderer = Renderer::new(Vec::new());
+		renderer.set_preserve_resize_history(true);
+		let mut terminal = TerminalModel::new(8, 2);
+		terminal.history.push("shell-output".to_owned());
+		renderer
+			.rebuild(document(&["app0", "app1"]), 2, 0, "")
+			.expect("initial multiplexer paint succeeds");
+		let output = String::from_utf8(std::mem::take(renderer.writer_mut())).unwrap();
+		assert!(!output.contains("\x1b[3J"));
+		terminal.apply(&output);
+		assert_eq!(terminal.history, ["shell-output"]);
+		assert_eq!(terminal.visible_rows(), ["app0", "app1"]);
+	}
+
+	#[test]
+	fn multiplexer_width_epoch_preserves_history_and_queued_output() {
+		let mut renderer = Renderer::new(Vec::new());
+		renderer.set_preserve_resize_history(true);
+		let mut terminal = TerminalModel::new(8, 3);
+		renderer
+			.present(
+				document_at_width(8, &["old00", "old01", "old02", "old03", "old04"]),
+				3,
+				4,
+			)
+			.expect("initial paint succeeds");
+		apply_paint(&mut renderer, &mut terminal);
+		assert_eq!(terminal.history, ["old00", "old01"]);
+
+		terminal.resize(6, 3);
+		renderer
+			.preview(
+				&document_at_width(6, &["old00", "old01", "old02", "old03", "old04"]),
+				3,
+				"",
+			)
+			.expect("resize preview succeeds");
+		apply_paint(&mut renderer, &mut terminal);
+
+		let settled = document_at_width(
+			6,
+			&["old00", "old01", "old02", "old03", "old04", "queued", "stream"],
+		);
+		let stats = renderer
+			.rebuild(settled, 3, 6, "")
+			.expect("settled multiplexer repaint succeeds");
+		let output = String::from_utf8(std::mem::take(renderer.writer_mut())).unwrap();
+		assert_eq!(stats.committed_rows, 2);
+		assert!(!output.contains("\x1b[3J"));
+		assert!(!output.contains("\x1b[2J"));
+		assert!(!output.contains("\x1b[22J"));
+		terminal.apply(&output);
+		assert_eq!(terminal.history, ["old00", "old01", "old02", "old03"]);
+		assert_eq!(terminal.visible_rows(), ["old04", "queued", "stream"]);
+
+		renderer
+			.present(
+				document_at_width(
+					6,
+					&["old00", "old01", "old02", "old03", "old04", "queued", "stream", "after"],
+				),
+				3,
+				7,
+			)
+			.expect("post-epoch append succeeds");
+		apply_paint(&mut renderer, &mut terminal);
+		assert_eq!(
+			terminal.history,
+			["old00", "old01", "old02", "old03", "old04"]
+		);
+		assert_eq!(terminal.visible_rows(), ["queued", "stream", "after"]);
+		assert_eq!(renderer.epoch_commits.len(), 1, "adjacent commits share one epoch span");
+		assert_eq!(renderer.epoch_commits[0].frame_from, 2);
+		assert_eq!(renderer.epoch_commits[0].frame_to, 5);
+	}
+
+	#[test]
+	fn width_epoch_maps_non_prefix_append_before_trailing_root() {
+		let mut renderer = Renderer::new(Vec::new());
+		renderer.set_preserve_resize_history(true);
+		let mut terminal = TerminalModel::new(8, 2);
+		renderer
+			.present(document_at_width(8, &["h0", "h1", "live", "footer"]), 2, 2)
+			.unwrap();
+		apply_paint(&mut renderer, &mut terminal);
+
+		terminal.resize(6, 2);
+		let baseline = document_at_width(6, &["h0", "h1", "live", "footer"]);
+		renderer.preview(&baseline, 2, "").unwrap();
+		apply_paint(&mut renderer, &mut terminal);
+		renderer.rebuild(baseline, 2, 2, "").unwrap();
+		apply_paint(&mut renderer, &mut terminal);
+
+		renderer
+			.present(
+				document_at_width(6, &["h0", "h1", "live", "new-a", "new-b", "footer"]),
+				2,
+				5,
+			)
+			.expect("middle insertion maps around the retained footer");
+		apply_paint(&mut renderer, &mut terminal);
+		assert_eq!(terminal.history, ["h0", "h1", "live", "new-a"]);
+		assert_eq!(terminal.visible_rows(), ["new-b", "footer"]);
+
+		renderer
+			.present(
+				document_at_width(6, &["h0", "h1", "live", "new-a", "new-b", "status"]),
+				2,
+				5,
+			)
+			.expect("replaced trailing root remains viewport-local");
+		apply_paint(&mut renderer, &mut terminal);
+		assert_eq!(terminal.history, ["h0", "h1", "live", "new-a"]);
+		assert_eq!(terminal.visible_rows(), ["new-b", "status"]);
+	}
+
+	#[test]
+	fn width_epoch_separates_host_height_shrink_from_append_overflow() {
+		let mut renderer = Renderer::new(Vec::new());
+		renderer.set_preserve_resize_history(true);
+		let mut terminal = TerminalModel::new(8, 4);
+		let initial = ["r0", "r1", "r2", "r3", "r4", "r5", "r6"];
+		renderer
+			.present(document_at_width(8, &initial), 4, 7)
+			.unwrap();
+		apply_paint(&mut renderer, &mut terminal);
+
+		terminal.resize(6, 4);
+		let baseline = document_at_width(6, &initial);
+		renderer.preview(&baseline, 4, "").unwrap();
+		apply_paint(&mut renderer, &mut terminal);
+		renderer.rebuild(baseline, 4, 7, "").unwrap();
+		apply_paint(&mut renderer, &mut terminal);
+
+		// TerminalModel intentionally resets its screen on resize; model the
+		// occupied rows a real multiplexer moves into pane history on shrink.
+		terminal.history.extend(["r3".to_owned(), "r4".to_owned()]);
+		terminal.resize(6, 2);
+		let grown = document_at_width(6, &[
+			"r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8",
+		]);
+		let stats = renderer
+			.rebuild(grown, 2, 9, "")
+			.expect("height shrink and append repaint succeeds");
+		apply_paint(&mut renderer, &mut terminal);
+		assert_eq!(stats.committed_rows, 2, "host-owned shrink rows are not recommitted");
+		assert_eq!(terminal.history, ["r0", "r1", "r2", "r3", "r4", "r5", "r6"]);
+		assert_eq!(terminal.visible_rows(), ["r7", "r8"]);
+	}
+
+	#[test]
+	fn width_epoch_backfills_finalized_growth_under_an_overlay() {
+		let mut renderer = Renderer::new(Vec::new());
+		renderer.set_preserve_resize_history(true);
+		let mut terminal = TerminalModel::new(8, 3);
+		renderer
+			.present(document_at_width(8, &["p0", "p1", "p2", "p3", "p4"]), 3, 2)
+			.unwrap();
+		apply_paint(&mut renderer, &mut terminal);
+
+		terminal.resize(6, 3);
+		let baseline = document_at_width(6, &["p0", "p1", "p2", "p3", "p4"]);
+		renderer.preview(&baseline, 3, "").unwrap();
+		apply_paint(&mut renderer, &mut terminal);
+		renderer.rebuild(baseline, 3, 2, "").unwrap();
+		apply_paint(&mut renderer, &mut terminal);
+
+		let growth = document_at_width(6, &["p0", "p1", "p2", "p3", "p4", "p5", "p6"]);
+		let mut overlay = Frame::new(Size::new(2, 1));
+		overlay.put(0, 0, "OV", Style::default());
+		let layer = ResolvedLayer {
+			frame: &overlay,
+			x: 0,
+			y: 0,
+			src_top: 0,
+			rows: 1,
+			active: false,
+		};
+		let deferred = renderer
+			.present_resolved(&growth, &[(5, 7)], 3, 2, &[layer])
+			.expect("mutable growth stays viewport-local");
+		apply_paint(&mut renderer, &mut terminal);
+		assert_eq!(deferred.committed_rows, 0);
+		assert_eq!(terminal.history, ["p0", "p1"]);
+
+		let finalized = renderer
+			.present_resolved(&growth, &[], 3, 7, &[layer])
+			.expect("finalization backfills the epoch seam");
+		apply_paint(&mut renderer, &mut terminal);
+		assert_eq!(finalized.committed_rows, 2);
+		assert_eq!(terminal.history, ["p0", "p1", "p2", "p3"]);
+		assert!(terminal.history.iter().all(|row| !row.contains("OV")));
+
+		renderer.present_ref(&growth, 3, 7).expect("overlay exit repaints raw cells");
+		apply_paint(&mut renderer, &mut terminal);
+		assert_eq!(terminal.visible_rows(), ["p4", "p5", "p6"]);
+	}
+
+	#[test]
+	fn kitty_direct_placement_survives_width_epoch_repaint() {
+		fn image_frame(width: u16) -> Frame {
+			let mut frame = Frame::new(Size::new(width, 3));
+			frame.put_image_cell(1, 1, 7, 0, 0, 1, 2);
+			frame.put_image_cell(2, 1, 7, 0, 1, 1, 2);
+			frame
+		}
+
+		let mut renderer = Renderer::new(Vec::new());
+		renderer.set_graphics(Graphics::KittyDirect);
+		renderer.set_preserve_resize_history(true);
+		renderer.register_image(7, vec![1, 2, 3]).unwrap();
+		renderer.present(image_frame(4), 3, 0).unwrap();
+		renderer.writer_mut().clear();
+		let resized = image_frame(6);
+		renderer.preview(&resized, 3, "").unwrap();
+		renderer.writer_mut().clear();
+		renderer.rebuild(resized, 3, 0, "").unwrap();
+		let output = String::from_utf8(std::mem::take(renderer.writer_mut())).unwrap();
+
+		assert!(output.contains("a=p"), "the visible direct placement is refreshed");
+		assert!(!output.contains("a=d"), "width repaint must not delete the placement");
+		assert!(!output.contains("\x1b[3J"));
+		assert!(!output.contains("\x1b[2J"));
 	}
 
 	#[test]
