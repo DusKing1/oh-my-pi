@@ -3,6 +3,7 @@
 use std::{
 	collections::{HashSet, VecDeque},
 	env,
+	ffi::CString,
 	io::{self, Read, Write},
 	num::NonZeroUsize,
 	path::PathBuf,
@@ -25,10 +26,11 @@ use omp_proto::{
 		host_frame, worker_frame,
 	},
 };
-use omp_py::pyo3::{
-	exceptions::{PyKeyError, PyTypeError},
+use pyo3::{
+	exceptions::{PyKeyError, PyTypeError, PyValueError},
 	prelude::*,
-	types::{PyDict, PyIterator, PyModule},
+	types::{PyDict, PyIterator, PyList, PyModule},
+	wrap_pyfunction,
 };
 use thiserror::Error;
 use tokio::{
@@ -44,6 +46,8 @@ pub const WORKER_ARG: &str = "__omp-tool-worker";
 
 /// Python ABI revision required by this worker implementation.
 pub const PYTHON_REV: &str = "3.14t";
+/// Canonical import name for the opt-in built-in Python evaluation tool.
+pub const PY_EVAL_MODULE: &str = "omp_py_eval";
 
 /// Default upper bound for one encoded tool-host frame.
 pub const DEFAULT_MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
@@ -55,7 +59,7 @@ pub struct ToolWorkerConfig {
 	pub executable:      PathBuf,
 	/// Optional site-packages directory passed through as `OMP_PY_SITE`.
 	pub python_site:     Option<PathBuf>,
-	/// Import names exposed by the configured site-packages directory.
+	/// Python import names enabled for this worker.
 	pub modules:         Vec<Str>,
 	/// Expected workspace protobuf schema revision.
 	pub schema_rev:      u32,
@@ -391,6 +395,8 @@ impl WorkerProcess {
 				.collect::<Vec<_>>()
 				.join(",");
 			command.env("OMP_PY_MODULES", modules);
+		} else {
+			command.env_remove("OMP_PY_MODULES");
 		}
 		#[cfg(unix)]
 		{
@@ -850,31 +856,86 @@ fn invocation_id(call_id: &str) -> u64 {
 	hash.max(1)
 }
 
+#[pyfunction]
+fn evaluate_python_expression<'py>(
+	py: Python<'py>,
+	params: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+	let code = params
+		.get_item("code")?
+		.ok_or_else(|| PyKeyError::new_err("py_eval requires code"))?
+		.extract::<String>()?;
+	if code.is_empty() {
+		return Err(PyValueError::new_err("py_eval code must be nonempty"));
+	}
+	let code = CString::new(code)
+		.map_err(|_| PyValueError::new_err("py_eval code contains a null byte"))?;
+	let globals = PyDict::new(py);
+	globals.set_item("__builtins__", PyModule::import(py, "builtins")?)?;
+	let value = py.eval(code.as_c_str(), Some(&globals), Some(&globals))?;
+	let json = PyModule::import(py, "json")?;
+	let json_options = PyDict::new(py);
+	json_options.set_item("allow_nan", false)?;
+	let details = PyDict::new(py);
+	if json
+		.getattr("dumps")?
+		.call((&value,), Some(&json_options))
+		.is_ok()
+	{
+		details.set_item("result", value)?;
+	} else {
+		details.set_item("result", value.repr()?.to_str()?)?;
+	}
+	let completion = PyDict::new(py);
+	completion.set_item("details", details)?;
+	Ok(completion)
+}
+
+#[pymodule(gil_used = false)]
+fn omp_py_eval(m: &Bound<'_, PyModule>) -> PyResult<()> {
+	let py = m.py();
+	let declaration = PyDict::new(py);
+	declaration.set_item("name", "py_eval")?;
+	declaration.set_item("description", "Evaluate one Python expression")?;
+	declaration.set_item(
+		"schema",
+		r#"{"type":"object","properties":{"code":{"type":"string","minLength":1}},"required":["code"],"additionalProperties":false}"#,
+	)?;
+	declaration.set_item("rev", "1")?;
+	declaration.set_item("strict", true)?;
+	declaration.set_item("handler", wrap_pyfunction!(evaluate_python_expression, m)?)?;
+	m.add("OMP_TOOLS", PyList::new(py, [declaration])?)
+}
+
 /// Boots embedded Python, imports configured extension modules, registers their
 /// declarations, and serves toolhost/v1 on stdin/stdout.
 ///
-/// `OMP_PY_SITE` selects the site-packages directory. `OMP_PY_MODULES` is a
-/// comma-separated list of import names from that directory. Every module may
-/// expose `OMP_TOOLS`, an iterable of declaration dictionaries with `name`,
-/// `description`, `schema`, `rev`, `strict`, and callable `handler` entries.
+/// `OMP_PY_SITE` selects the optional site-packages directory.
+/// `OMP_PY_MODULES` is the comma-separated list of import names enabled for
+/// this worker. Every module may expose `OMP_TOOLS`, an iterable of declaration
+/// dictionaries with `name`, `description`, `schema`, `rev`, `strict`, and
+/// callable `handler` entries.
 ///
 /// # Errors
 /// Returns a worker startup, extension import, or stdio protocol error.
 pub fn run_worker_entry() -> Result<(), WorkerError> {
+	let modules = configured_modules();
+	if modules.iter().any(|module| module.as_str() == PY_EVAL_MODULE) {
+		pyo3::append_to_inittab!(omp_py_eval);
+	}
 	let engine = omp_py::Engine::builder()
 		.init()
 		.map_err(|error| WorkerError::Python(Str::from(error.to_string())))?;
-	serve_worker(&engine)
+	serve_worker(&engine, &modules)
 }
 
-fn serve_worker(engine: &omp_py::Engine) -> Result<(), WorkerError> {
+fn serve_worker(engine: &omp_py::Engine, modules: &[Str]) -> Result<(), WorkerError> {
 	engine.attach(|py| -> PyResult<()> {
 		let sys = PyModule::import(py, "sys")?;
 		sys.setattr("stdout", sys.getattr("stderr")?)?;
 		Ok(())
 	})?;
-	let modules = configured_modules();
-	let tools = load_tools(engine, &modules)?;
+	let tools = load_tools(engine, modules)?;
 	let declarations = tools.iter().map(|tool| tool.decl.clone()).collect();
 	let stdin = io::stdin();
 	let stdout = io::stdout();

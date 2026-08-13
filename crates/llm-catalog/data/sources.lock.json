@@ -1,23 +1,23 @@
 {
   "schema_version": 1,
-  "source_digest": "c806f909ef60359d775bebb9da2c57c93543e661a7442655236fd1a732cb75c8",
+  "source_digest": "1f64fafbdd6822afcb9f31d490759bee35f756277eba2c171afecb27c2d61d7f",
   "inputs": [
     {
       "id": "catalog-policy.manifest.v1",
       "path": "fixtures/llm-oracle/catalog-policy/manifest.json",
-      "sha256": "9c8461a386acd03fd8db05f362a255ded9d3177953494867904df6c9e511a8b0",
+      "sha256": "3be6794b87b3e36dc7100b3833fa66c65a5864594a13c031a66b07ffa8b188bf",
       "source": "oracle:catalog-policy.manifest.v1"
     },
     {
       "id": "catalog.census.v1",
       "path": "fixtures/llm-oracle/catalog/census.json",
-      "sha256": "066a0def0df1dff67a27e4b93321856bebdb626520b909e00d9016be64ed8f27",
+      "sha256": "7484b6349d60661028796c1108574841003fd7c0c2a0dd6787023a1d6cdff66b",
       "source": "oracle:catalog.census.v1"
     },
     {
       "id": "catalog.manifest.v1",
       "path": "fixtures/llm-oracle/catalog/manifest.json",
-      "sha256": "9165abb229e0c305ac50be4fc2849e4367ac4317944770536e77a953139d0a9d",
+      "sha256": "f2ee805673517bdba7473a5611d5e10b38ebdedff4b2295bfbe15de90500f910",
       "source": "oracle:catalog.manifest.v1"
     },
     {
@@ -29,7 +29,7 @@
     {
       "id": "catalog.models.normalized.v1",
       "path": "fixtures/llm-oracle/catalog/models.normalized.json",
-      "sha256": "05c729f0b4fa0e59b21f6c3ad1be36835e60b2d47e4abc86689982a05b9b2691",
+      "sha256": "d2d69608f4bb67df61bf38f98c92b9124686a5889339fc34c233612633d1fe08",
       "source": "oracle:catalog.models.normalized.v1"
     },
     {
@@ -137,7 +137,7 @@
     {
       "id": "catalog.policy.thinking-profiles.v1",
       "path": "fixtures/llm-oracle/catalog-policy/thinking-profiles.json",
-      "sha256": "f9343a0d1454f8729e172719207d6325e7f1c5bd4ab3e084612e41e6348c5853",
+      "sha256": "4fe929d1a139eae0fc3dca672838ffdeb44e3b8ac48ab53d4fc52b09a493f564",
       "source": "oracle:catalog.policy.thinking-profiles.v1"
     },
     {

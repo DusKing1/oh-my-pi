@@ -868,10 +868,10 @@ fn compiled_catalog_matches_the_complete_frozen_census() {
 	assert_eq!(expected.schema_version, 1);
 	assert_eq!(compiled.schema_version, 1);
 	assert_eq!(expected.curated_provider_catalog.provider_count, 94);
-	assert_eq!(expected.normalized_catalog.model_count, 4_218);
-	assert_eq!(expected.normalized_catalog.unique_identity_count, 4_218);
+	assert_eq!(expected.normalized_catalog.model_count, 4_227);
+	assert_eq!(expected.normalized_catalog.unique_identity_count, 4_227);
 	assert_eq!(expected.raw_catalog.provider_key_count, 80);
-	assert_eq!(expected.raw_catalog.row_count, 4_293);
+	assert_eq!(expected.raw_catalog.row_count, 4_302);
 	assert_eq!(expected.raw_catalog.row_count - expected.normalized_catalog.model_count, 75);
 	assert_eq!(expected.transports.variant_count, 16);
 	assert_eq!(expected.transports.active_count, 13);
@@ -1107,7 +1107,7 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 	let raw: RawPricingOracle =
 		serde_json::from_slice(&raw_bytes).expect("raw pricing projection is valid");
 	let mut inherited_price_models = 0usize;
-	assert_eq!(oracle.models.len(), 4_218);
+	assert_eq!(oracle.models.len(), 4_227);
 	assert_eq!(compiled.models.len(), oracle.models.len());
 	let actual_by_key = compiled
 		.models

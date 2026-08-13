@@ -2748,7 +2748,8 @@ pub struct GoogleCodecError {
 	pub detail:         Str,
 	/// Numeric status when supplied.
 	pub status:         Option<u16>,
-	/// Structured provider reason, or symbolic status when no reason was supplied.
+	/// Structured provider reason, or symbolic status when no reason was
+	/// supplied.
 	pub code:           Option<Str>,
 	/// Provider-suggested minimum delay; policy decides whether retry is legal.
 	pub retry_after_ms: u64,
@@ -3913,12 +3914,9 @@ mod tests {
 			assert_eq!(actual.retry_after_ms, expected_delay, "{reason} {retry_delay:?}");
 			assert_eq!(actual.code.as_deref(), Some(reason));
 			if retry_delay == Some("30s") {
-				assert_eq!(
-					actual.into_inference(false).action,
-					RetryAction::SameRoute {
-						after: std::time::Duration::from_secs(30),
-					}
-				);
+				assert_eq!(actual.into_inference(false).action, RetryAction::SameRoute {
+					after: std::time::Duration::from_secs(30),
+				});
 			}
 		}
 

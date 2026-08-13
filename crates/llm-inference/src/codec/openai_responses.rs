@@ -2941,8 +2941,8 @@ impl super::Codec for OpenAiResponsesCodec {
 #[cfg(test)]
 mod tests {
 	use std::sync::Arc;
-	use omp_core::Str;
 
+	use omp_core::Str;
 	use omp_llm_catalog::{Catalog, WireTarget};
 
 	use super::{

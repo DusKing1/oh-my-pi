@@ -26,7 +26,7 @@ use omp_llm_inference::{
 		QuotaProvenance, QuotaWindowId, RefreshCoordinator, RefreshPolicy, RotationPolicy,
 	},
 	answer::{
-		AccountState, AccountSummary, Answer, AnswerBody, AuthAnswer, DetokenizedText,
+		AccountState, AccountSummary, Answer, AnswerBody, AuthAnswer, ChatStream, DetokenizedText,
 		EmbeddingBatch, GenerationSession, ModelDiscoveryPage, NativeResponse, NativeResponseBody,
 		RealtimeEvent, RealtimeInput, RealtimeSession, ResponseMeta, SearchResults, TokenCount,
 		TokenSequence, TokenizerProvenance, UsageReport,

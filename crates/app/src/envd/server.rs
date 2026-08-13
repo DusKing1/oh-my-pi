@@ -4,20 +4,23 @@ use std::{
 	collections::HashMap,
 	io,
 	path::{Path, PathBuf},
-	sync::Arc,
+	sync::{
+		Arc,
+		atomic::{AtomicU8, Ordering},
+	},
 	time::Duration,
 };
 
 use bytes::{Bytes, BytesMut};
 use futures::StreamExt as _;
 use omp_core::Str;
-use omp_env::InProcessEnvTransport;
+use omp_env::{EnvClient, InProcessEnvTransport};
 use omp_proto::{
 	blob::v1 as blob_pb,
 	env::v1::{self as pb, client_frame, server_frame},
 	prost::Message as _,
 };
-use omp_tool::{ErasedEv, ErasedOutcome, IncomingParams, Interrupt, Registry};
+use omp_tool::{ErasedEv, ErasedOutcome, IncomingParams, Interrupt, Registry, RegistryError, ToolRoute};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tokio_util::sync::CancellationToken;
@@ -28,6 +31,7 @@ use super::{
 	exec::{ExecError, ExecEvent, ExecHost, ProcessEvent},
 	worker::{CommittedToolCall, ToolWorkerConfig, ToolWorkerSupervisor, WorkerError, WorkerEvent},
 	workspace::{WorkspaceError, WorkspaceHost},
+	tools::production_registry,
 };
 use crate::cli::EnvdArgs;
 
@@ -57,6 +61,18 @@ pub enum EnvdError {
 	/// The Python tool worker could not be started or supervised.
 	#[error(transparent)]
 	Worker(#[from] WorkerError),
+	/// A native or worker tool declaration could not be registered.
+	#[error(transparent)]
+	Registry(#[from] RegistryError),
+	/// A worker advertised a declaration that cannot have a stable registry identity.
+	#[error("invalid worker tool declaration: {0}")]
+	WorkerDeclaration(Str),
+	/// Production assembly encountered a second live declaration for one name.
+	#[error("duplicate production tool name: {0}")]
+	DuplicateToolName(Str),
+	/// The environment client could not complete its protocol handshake.
+	#[error(transparent)]
+	Client(#[from] omp_env::ClientError),
 	/// A spawned environment connection task failed.
 	#[error("environment connection task failed: {0}")]
 	Task(#[from] tokio::task::JoinError),
@@ -142,7 +158,7 @@ impl EnvServer {
 	pub async fn open_local(
 		root: &Path,
 		state_dir: &Path,
-		registry: Arc<Registry>,
+		registry: Registry,
 		worker_config: ToolWorkerConfig,
 	) -> Result<Self, EnvdError> {
 		let workspace = WorkspaceHost::open(root)?;
@@ -161,21 +177,128 @@ impl EnvServer {
 		});
 		let documents = DocumentHost::connect(document_client).await?;
 		let hello = documents.hello().clone();
+		let exec = ExecHost::new();
+		let blobs = BlobHost::open(state_dir.join("blobs"))?;
+		let workers = ToolWorkerSupervisor::spawn(worker_config).await?;
+		let registry = production_registry(
+			&documents,
+			&blobs,
+			&exec,
+			&workspace,
+			&hello.root_uri,
+			&workers,
+			registry,
+		)?;
 		let identity = ServerIdentity {
 			workspace_id:   hello.workspace_id,
 			root_uri:       hello.root_uri,
 			server_epoch:   hello.server_epoch,
 			server_version: Str::from(env!("CARGO_PKG_VERSION")),
 		};
-		Ok(Self::new(
-			identity,
-			documents,
-			ExecHost::new(),
-			workspace,
-			BlobHost::open(state_dir.join("blobs"))?,
+		Ok(Self::new(identity, documents, exec, workspace, blobs, registry, workers))
+	}
+	/// Opens project resources through the owner-local document authority.
+	///
+	/// The returned child is present only when this call started the document
+	/// server and must be retained for the lifetime of this environment.
+	#[cfg(unix)]
+	pub(crate) async fn open_project(
+		root: &Path,
+		state_dir: &Path,
+		docserver_socket: &Path,
+		registry: Registry,
+		worker_config: ToolWorkerConfig,
+	) -> Result<(Self, Option<tokio::process::Child>), EnvdError> {
+		let workspace = WorkspaceHost::open(root)?;
+		let root = workspace.root().to_path_buf();
+		let (documents, docserver) = connect_or_start_docserver(&root, docserver_socket).await?;
+		let hello = documents.hello().clone();
+		let exec = ExecHost::new();
+		let blobs = BlobHost::open(state_dir.join("blobs"))?;
+		let workers = ToolWorkerSupervisor::spawn(worker_config).await?;
+		let registry = production_registry(
+			&documents,
+			&blobs,
+			&exec,
+			&workspace,
+			&hello.root_uri,
+			&workers,
 			registry,
-			ToolWorkerSupervisor::spawn(worker_config).await?,
+		)?;
+		let identity = ServerIdentity {
+			workspace_id:   hello.workspace_id,
+			root_uri:       hello.root_uri,
+			server_epoch:   hello.server_epoch,
+			server_version: Str::from(env!("CARGO_PKG_VERSION")),
+		};
+		Ok((
+			Self::new(identity, documents, exec, workspace, blobs, registry, workers),
+			docserver,
 		))
+	}
+
+
+	/// Connects an `EnvClient` transport to an owner-only environment socket.
+	#[cfg(unix)]
+	pub(crate) async fn connect_owner_uds(
+		path: &Path,
+	) -> Result<(EnvClient, tokio::task::JoinHandle<Result<(), EnvdError>>), EnvdError> {
+		use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
+
+		let metadata = tokio::fs::symlink_metadata(path).await?;
+		if !metadata.file_type().is_socket()
+			|| metadata.uid() != nix::unistd::geteuid().as_raw()
+			|| metadata.permissions().mode() & 0o077 != 0
+		{
+			return Err(io::Error::new(
+				io::ErrorKind::PermissionDenied,
+				"environment socket must be owner-only and owned by the current user",
+			)
+			.into());
+		}
+		let stream = tokio::net::UnixStream::connect(path).await?;
+		let (client, transport) = EnvClient::in_process(64);
+		let (requests, responses) = transport.into_parts();
+		let task = tokio::spawn(async move {
+			let (mut reader, mut writer) = stream.into_split();
+			let shutdown = CancellationToken::new();
+			let read_shutdown = shutdown.clone();
+			let read = async move {
+				let mut scratch = BytesMut::new();
+				loop {
+					let frame = tokio::select! {
+						() = read_shutdown.cancelled() => return Ok::<(), io::Error>(()),
+						result = read_server_frame(&mut reader, &mut scratch) => result?,
+					};
+					let Some(frame) = frame else { return Ok(()) };
+					if responses.send_async(frame).await.is_err() {
+						return Ok(());
+					}
+				}
+			};
+			let write = async move {
+				let result = async {
+					let mut scratch = BytesMut::new();
+					while let Ok(frame) = requests.recv_async().await {
+						write_client_frame(&mut writer, &frame, &mut scratch).await?;
+					}
+					Ok::<(), io::Error>(())
+				}
+				.await;
+				shutdown.cancel();
+				result
+			};
+			let (read_result, write_result) = tokio::join!(read, write);
+			read_result?;
+			write_result?;
+			Ok(())
+		});
+		Ok((client, task))
+	}
+	/// Returns the exact registry shared by this server's dispatch paths.
+	#[must_use]
+	pub fn registry(&self) -> Arc<Registry> {
+		Arc::clone(&self.registry)
 	}
 
 	/// Serves the server half returned by [`omp_env::EnvClient::in_process`].
@@ -497,7 +620,8 @@ impl EnvServer {
 			client_frame::Body::ArgText(request) => {
 				let result = connection.invocation_mut(frame.request_id, &request.invocation_id);
 				match result {
-					Ok(InvocationState::Native { feed, committed, .. }) if !*committed => {
+					Ok(InvocationState::Native { feed, lifecycle, .. })
+						if !lifecycle.is_committed() && !lifecycle.is_terminal() => {
 						if feed.arg_text(Str::from(request.fragment)).is_err() {
 							send_error(
 								responses,
@@ -669,6 +793,15 @@ impl EnvServer {
 							)
 							.await;
 						}
+						send_body(
+							responses,
+							frame.request_id,
+							server_frame::Body::ProcessState(pb::ProcessStateEvent {
+								process: Some(attachment.state),
+								props:   Default::default(),
+							}),
+						)
+						.await;
 						spawn_process_attachment(
 							frame.request_id,
 							process_name,
@@ -790,7 +923,7 @@ impl EnvServer {
 		request_id: u64,
 		request: pb::InvokeTool,
 		responses: &flume::Sender<pb::ServerFrame>,
-		_finished: &flume::Sender<Finished>,
+		finished: &flume::Sender<Finished>,
 		connection: &mut ConnectionState,
 	) {
 		if reject_duplicate_open(connection, request_id, responses).await {
@@ -817,33 +950,47 @@ impl EnvServer {
 			.await;
 			return;
 		}
+		let Some((_, revision)) = self.registry.live_identity(&request.name) else {
+			send_error(
+				responses,
+				request_id,
+				pb::ProtocolErrorCode::NotFound,
+				"tool name and revision are not registered",
+			)
+			.await;
+			return;
+		};
+		if revision.to_string() != request.rev {
+			send_error(
+				responses,
+				request_id,
+				pb::ProtocolErrorCode::PreconditionFailed,
+				"requested tool revision is not live",
+			)
+			.await;
+			return;
+		}
+		let route = self
+			.registry
+			.route(&request.name)
+			.expect("a live registry identity always has an execution route");
 		let cancel = CancellationToken::new();
-		if let Some((_, revision)) = self.registry.live_identity(&request.name) {
-			if revision.to_string() != request.rev {
-				send_error(
-					responses,
-					request_id,
-					pb::ProtocolErrorCode::PreconditionFailed,
-					"requested tool revision is not live",
-				)
-				.await;
-				return;
-			}
+		if route == ToolRoute::Native {
 			let (feed, params) = IncomingParams::channel();
+			let lifecycle = Arc::new(NativeLifecycle::default());
+			let name = Str::from(request.name);
+			let deadline = if request.deadline_ms == 0 {
+				DEFAULT_TOOL_DEADLINE
+			} else {
+				Duration::from_millis(request.deadline_ms)
+			};
 			connection.requests.insert(
 				request_id,
 				RequestState::Invocation(InvocationState::Native {
-					id: invocation_id.clone(),
-					name: Str::from(request.name),
-					deadline: if request.deadline_ms == 0 {
-						DEFAULT_TOOL_DEADLINE
-					} else {
-						Duration::from_millis(request.deadline_ms)
-					},
-					feed,
-					params: Some(params),
-					committed: false,
-					cancel,
+					id:        invocation_id.clone(),
+					feed:      feed.clone(),
+					lifecycle: Arc::clone(&lifecycle),
+					cancel:    cancel.clone(),
 				}),
 			);
 			connection
@@ -858,7 +1005,20 @@ impl EnvServer {
 				}),
 			)
 			.await;
-		} else if self.worker_decl(&request.name, &request.rev) {
+			spawn_native_invocation(
+				request_id,
+				invocation_id,
+				name,
+				feed,
+				deadline,
+				params,
+				Arc::clone(&self.registry),
+				lifecycle,
+				cancel,
+				responses.clone(),
+				finished.clone(),
+			);
+		} else if route == ToolRoute::Worker && self.worker_decl(&request.name, &request.rev) {
 			let (interrupt, interrupts) = flume::unbounded();
 			connection.requests.insert(
 				request_id,
@@ -911,17 +1071,7 @@ impl EnvServer {
 	) {
 		let result = connection.invocation_mut(request_id, &request.invocation_id);
 		match result {
-			Ok(InvocationState::Native { id, name, feed, params, deadline, committed, cancel }) => {
-				if *committed {
-					send_error(
-						responses,
-						request_id,
-						pb::ProtocolErrorCode::AlreadyExists,
-						"ArgsCommitted was already received",
-					)
-					.await;
-					return;
-				}
+			Ok(InvocationState::Native { feed, lifecycle, .. }) => {
 				let Ok(raw) = std::str::from_utf8(&request.raw) else {
 					send_error(
 						responses,
@@ -932,6 +1082,29 @@ impl EnvServer {
 					.await;
 					return;
 				};
+				match lifecycle.commit() {
+					Ok(()) => {},
+					Err(NativeCommitError::AlreadyCommitted) => {
+						send_error(
+							responses,
+							request_id,
+							pb::ProtocolErrorCode::AlreadyExists,
+							"ArgsCommitted was already received",
+						)
+						.await;
+						return;
+					},
+					Err(NativeCommitError::Terminal) => {
+						send_error(
+							responses,
+							request_id,
+							pb::ProtocolErrorCode::PreconditionFailed,
+							"native invocation is already terminal",
+						)
+						.await;
+						return;
+					},
+				}
 				if feed.args_committed(Str::from(raw)).is_err() {
 					send_error(
 						responses,
@@ -940,31 +1113,7 @@ impl EnvServer {
 						"invocation input is closed",
 					)
 					.await;
-					return;
 				}
-				let Some(params) = params.take() else {
-					send_error(
-						responses,
-						request_id,
-						pb::ProtocolErrorCode::PreconditionFailed,
-						"native invocation was already dispatched",
-					)
-					.await;
-					return;
-				};
-				*committed = true;
-				spawn_native_invocation(
-					request_id,
-					id.clone(),
-					name.clone(),
-					feed.clone(),
-					*deadline,
-					params,
-					Arc::clone(&self.registry),
-					cancel.clone(),
-					responses.clone(),
-					finished.clone(),
-				);
 			},
 			Ok(InvocationState::Worker {
 				id,
@@ -1141,11 +1290,8 @@ enum RequestState {
 enum InvocationState {
 	Native {
 		id:        Str,
-		name:      Str,
 		feed:      omp_tool::InvocationFeed,
-		deadline:  Duration,
-		params:    Option<IncomingParams<'static>>,
-		committed: bool,
+		lifecycle: Arc<NativeLifecycle>,
 		cancel:    CancellationToken,
 	},
 	Worker {
@@ -1158,6 +1304,62 @@ enum InvocationState {
 		interrupts: Option<flume::Receiver<Str>>,
 		cancel:     CancellationToken,
 	},
+}
+
+const NATIVE_COMMITTED: u8 = 1;
+const NATIVE_TERMINAL: u8 = 2;
+
+#[derive(Default)]
+struct NativeLifecycle {
+	state: AtomicU8,
+}
+
+enum NativeCommitError {
+	AlreadyCommitted,
+	Terminal,
+}
+
+impl NativeLifecycle {
+	fn commit(&self) -> Result<(), NativeCommitError> {
+		self
+			.state
+			.try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+				(state & (NATIVE_COMMITTED | NATIVE_TERMINAL) == 0)
+					.then_some(state | NATIVE_COMMITTED)
+			})
+			.map(|_| ())
+			.map_err(|state| {
+				if state & NATIVE_COMMITTED != 0 {
+					NativeCommitError::AlreadyCommitted
+				} else {
+					NativeCommitError::Terminal
+				}
+			})
+	}
+
+	fn is_committed(&self) -> bool {
+		self.state.load(Ordering::Acquire) & NATIVE_COMMITTED != 0
+	}
+
+	fn is_terminal(&self) -> bool {
+		self.state.load(Ordering::Acquire) & NATIVE_TERMINAL != 0
+	}
+
+	fn claim_terminal(&self) -> bool {
+		self
+			.state
+			.try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+				(state & NATIVE_TERMINAL == 0).then_some(state | NATIVE_TERMINAL)
+			})
+			.is_ok()
+	}
+
+	fn claim_precommit_terminal(&self) -> bool {
+		self
+			.state
+			.compare_exchange(0, NATIVE_TERMINAL, Ordering::AcqRel, Ordering::Acquire)
+			.is_ok()
+	}
 }
 
 #[derive(Default)]
@@ -1291,19 +1493,22 @@ impl ConnectionState {
 	) {
 		if let Some(RequestState::Invocation(state)) = self.requests.get_mut(&request_id) {
 			let terminal = match state {
-				InvocationState::Native { id, feed, committed, cancel, .. } => {
-					if *committed {
+				InvocationState::Native { id, feed, lifecycle, cancel, .. } => {
+					if lifecycle.is_committed() {
 						let _ = feed.interrupt(Interrupt {
 							class:  Str::new_static("cancel"),
 							reason: Str::new_static("invocation cancelled by client"),
 						});
 						cancel.cancel();
 						None
-					} else {
+					} else if lifecycle.claim_precommit_terminal() {
 						cancel.cancel();
 						Some((id.clone(), omp_tool::Abort::Skipped {
 							reason: Str::new_static("invocation cancelled before argument commitment"),
 						}))
+					} else {
+						cancel.cancel();
+						None
 					}
 				},
 				InvocationState::Worker { id, committed, cancel, .. } => {
@@ -1358,17 +1563,20 @@ impl ConnectionState {
 	) {
 		let result = self.invocation_mut(request_id, &request.invocation_id);
 		let terminal = match result {
-			Ok(InvocationState::Native { id, feed, committed, cancel, .. }) => {
+			Ok(InvocationState::Native { id, feed, lifecycle, cancel, .. }) => {
 				let reason = Str::from(request.reason);
 				let _ = feed.interrupt(Interrupt {
 					class:  Str::new_static("immediate"),
 					reason: reason.clone(),
 				});
-				if *committed {
+				if lifecycle.is_committed() {
 					None
-				} else {
+				} else if lifecycle.claim_precommit_terminal() {
 					cancel.cancel();
 					Some((id.clone(), omp_tool::Abort::Interrupted { reason }))
+				} else {
+					cancel.cancel();
+					None
 				}
 			},
 			Ok(InvocationState::Worker { id, committed, cancel, interrupt, .. }) => {
@@ -1403,14 +1611,15 @@ impl ConnectionState {
 		for (_, state) in std::mem::take(&mut self.requests) {
 			match state {
 				RequestState::Invocation(InvocationState::Native {
-					feed, committed, cancel, ..
+					feed, lifecycle, cancel, ..
 				}) => {
-					if committed {
+					if lifecycle.is_committed() {
 						let _ = feed.interrupt(Interrupt {
 							class:  Str::new_static("disconnect"),
 							reason: Str::new_static("environment connection closed"),
 						});
 					}
+					lifecycle.claim_terminal();
 					cancel.cancel();
 				},
 				RequestState::Invocation(InvocationState::Worker { cancel, .. }) => cancel.cancel(),
@@ -1477,6 +1686,7 @@ fn spawn_native_invocation(
 	deadline: Duration,
 	params: IncomingParams<'static>,
 	registry: Arc<Registry>,
+	lifecycle: Arc<NativeLifecycle>,
 	cancel: CancellationToken,
 	responses: flume::Sender<pb::ServerFrame>,
 	finished: flume::Sender<Finished>,
@@ -1490,6 +1700,9 @@ fn spawn_native_invocation(
 				let mut timed_out = false;
 				let mut grace_expired = false;
 				loop {
+					if lifecycle.is_terminal() {
+						break;
+					}
 					if let Some(grace) = cancel_grace.as_mut() {
 						tokio::select! {
 							biased;
@@ -1510,6 +1723,7 @@ fn spawn_native_invocation(
 										reason,
 										request_id,
 										&invocation_id,
+										&lifecycle,
 										&responses,
 									)
 									.await,
@@ -1523,19 +1737,37 @@ fn spawn_native_invocation(
 						tokio::select! {
 							biased;
 							() = deadline.as_mut() => {
-								timed_out = true;
+								let reason = Str::new_static("native invocation deadline exceeded");
 								let _ = feed.interrupt(Interrupt {
 									class: Str::new_static("deadline"),
-									reason: Str::new_static("native invocation deadline exceeded"),
+									reason: reason.clone(),
 								});
-								cancel_grace = Some(Box::pin(tokio::time::sleep(
-									NATIVE_CANCEL_GRACE,
-								)));
+								if lifecycle.is_committed() {
+									timed_out = true;
+									cancel_grace = Some(Box::pin(tokio::time::sleep(
+										NATIVE_CANCEL_GRACE,
+									)));
+								} else if lifecycle.claim_precommit_terminal() {
+									send_abort_verdict(
+										&responses,
+										request_id,
+										&invocation_id,
+										omp_tool::Abort::Interrupted { reason },
+									)
+									.await;
+									break;
+								} else {
+									break;
+								}
 							},
 							() = cancel.cancelled() => {
-								cancel_grace = Some(Box::pin(tokio::time::sleep(
-									NATIVE_CANCEL_GRACE,
-								)));
+								if lifecycle.is_committed() {
+									cancel_grace = Some(Box::pin(tokio::time::sleep(
+										NATIVE_CANCEL_GRACE,
+									)));
+								} else {
+									break;
+								}
 							},
 							event = stream.next() => {
 								match forward_native_event(
@@ -1544,6 +1776,7 @@ fn spawn_native_invocation(
 									"",
 									request_id,
 									&invocation_id,
+									&lifecycle,
 									&responses,
 								)
 								.await
@@ -1557,16 +1790,21 @@ fn spawn_native_invocation(
 												"invocation response consumer stopped reading",
 											),
 										});
-										cancel_grace = Some(Box::pin(tokio::time::sleep(
-											NATIVE_CANCEL_GRACE,
-										)));
+										if lifecycle.is_committed() {
+											cancel_grace = Some(Box::pin(tokio::time::sleep(
+												NATIVE_CANCEL_GRACE,
+											)));
+										} else {
+											lifecycle.claim_terminal();
+											break;
+										}
 									},
 								}
 							},
 						}
 					}
 				}
-				if grace_expired {
+				if grace_expired && lifecycle.is_committed() && lifecycle.claim_terminal() {
 					drop(stream);
 					let reason = if timed_out {
 						Str::new_static(
@@ -1585,13 +1823,15 @@ fn spawn_native_invocation(
 				}
 			},
 			Err(error) => {
-				let _ = send_invocation_error(
-					&responses,
-					request_id,
-					pb::ProtocolErrorCode::NotFound,
-					&error.to_string(),
-				)
-				.await;
+				if lifecycle.claim_terminal() {
+					let _ = send_invocation_error(
+						&responses,
+						request_id,
+						pb::ProtocolErrorCode::NotFound,
+						&error.to_string(),
+					)
+					.await;
+				}
 			},
 		}
 		let _ = finished
@@ -1606,10 +1846,12 @@ async fn forward_native_event(
 	fallback_reason: &str,
 	request_id: u64,
 	invocation_id: &Str,
+	lifecycle: &NativeLifecycle,
 	responses: &flume::Sender<pb::ServerFrame>,
 ) -> NativeForward {
 	match event {
 		Some(Ok(ErasedEv::Update(_))) if cancelling => NativeForward::Continue,
+		Some(Ok(ErasedEv::Update(_))) if lifecycle.is_terminal() => NativeForward::Terminal,
 		Some(Ok(ErasedEv::Update(json))) => {
 			if send_invocation_body(
 				responses,
@@ -1628,50 +1870,58 @@ async fn forward_native_event(
 			}
 		},
 		Some(Ok(ErasedEv::Done(outcome))) => {
-			let (json, is_error, useless) = erased_outcome_wire(outcome);
-			send_invocation_terminal_body(
-				responses,
-				request_id,
-				server_frame::Body::Verdict(pb::Verdict {
-					invocation_id: invocation_id.to_string(),
-					json,
-					parts: Vec::new(),
-					is_error,
-					useless,
-					props: Default::default(),
-				}),
-			)
-			.await;
+			if lifecycle.claim_terminal() {
+				let (json, is_error, useless) = erased_outcome_wire(outcome);
+				send_invocation_terminal_body(
+					responses,
+					request_id,
+					server_frame::Body::Verdict(pb::Verdict {
+						invocation_id: invocation_id.to_string(),
+						json,
+						parts: Vec::new(),
+						is_error,
+						useless,
+						props: Default::default(),
+					}),
+				)
+				.await;
+			}
 			NativeForward::Terminal
 		},
 		Some(Err(error)) if !cancelling => {
-			let _ = send_invocation_error(
-				responses,
-				request_id,
-				pb::ProtocolErrorCode::Internal,
-				&error.to_string(),
-			)
-			.await;
+			if lifecycle.claim_terminal() {
+				let _ = send_invocation_error(
+					responses,
+					request_id,
+					pb::ProtocolErrorCode::Internal,
+					&error.to_string(),
+				)
+				.await;
+			}
 			NativeForward::Terminal
 		},
 		None if !cancelling => {
-			let _ = send_invocation_stream_error(
-				responses,
-				request_id,
-				invocation_id,
-				"tool event stream closed without a terminal verdict",
-			)
-			.await;
+			if lifecycle.claim_terminal() {
+				let _ = send_invocation_stream_error(
+					responses,
+					request_id,
+					invocation_id,
+					"tool event stream closed without a terminal verdict",
+				)
+				.await;
+			}
 			NativeForward::Terminal
 		},
 		Some(Err(_)) | None => {
-			send_abort_verdict(
-				responses,
-				request_id,
-				invocation_id,
-				omp_tool::Abort::EffectsUnknown { reason: Str::from(fallback_reason) },
-			)
-			.await;
+			if lifecycle.is_committed() && lifecycle.claim_terminal() {
+				send_abort_verdict(
+					responses,
+					request_id,
+					invocation_id,
+					omp_tool::Abort::EffectsUnknown { reason: Str::from(fallback_reason) },
+				)
+				.await;
+			}
 			NativeForward::Terminal
 		},
 	}
@@ -2162,6 +2412,7 @@ async fn send_invocation_terminal_body(
 		Err(_) => {
 			let responses = responses.clone();
 			tokio::spawn(async move {
+
 				let _ = responses.send_async(retry).await;
 			});
 		},
@@ -2187,6 +2438,51 @@ fn server_frame(request_id: u64, body: server_frame::Body) -> pb::ServerFrame {
 	pb::ServerFrame { request_id, body: Some(body), props: Default::default() }
 }
 
+async fn read_server_frame<R>(
+	reader: &mut R,
+	scratch: &mut BytesMut,
+) -> io::Result<Option<pb::ServerFrame>>
+where
+	R: AsyncRead + Unpin,
+{
+	let Some(length) = read_length(reader).await? else {
+		return Ok(None);
+	};
+	if length > FRAME_LIMIT {
+		return Err(io::Error::new(
+			io::ErrorKind::InvalidData,
+			"environment frame exceeds the configured limit",
+		));
+	}
+	scratch.clear();
+	scratch.resize(length, 0);
+	reader.read_exact(scratch).await?;
+	pb::ServerFrame::decode(&scratch[..])
+		.map(Some)
+		.map_err(io::Error::other)
+}
+
+async fn write_client_frame<W>(
+	writer: &mut W,
+	frame: &pb::ClientFrame,
+	scratch: &mut BytesMut,
+) -> io::Result<()>
+where
+	W: AsyncWrite + Unpin,
+{
+	if frame.encoded_len() > FRAME_LIMIT {
+		return Err(io::Error::new(
+			io::ErrorKind::InvalidData,
+			"environment frame exceeds the configured limit",
+		));
+	}
+	scratch.clear();
+	frame
+		.encode_length_delimited(&mut *scratch)
+		.map_err(io::Error::other)?;
+	writer.write_all(scratch).await?;
+	writer.flush().await
+}
 async fn read_client_frame<R>(
 	reader: &mut R,
 	scratch: &mut BytesMut,
@@ -2262,16 +2558,16 @@ where
 	Err(io::Error::new(io::ErrorKind::InvalidData, "invalid environment frame length"))
 }
 
-/// Assembles and runs the standalone environment daemon with one empty shared
-/// registry.
+/// Assembles and runs the standalone environment daemon with the production
+/// built-in registry.
 #[cfg(unix)]
 pub async fn run(args: EnvdArgs) -> Result<(), EnvdError> {
-	run_with_registry(args, Arc::new(Registry::new())).await
+	run_with_registry(args, Registry::new()).await
 }
 
-/// Assembles environment dispatch around a caller-shared revision registry.
+/// Assembles production dispatch plus caller-provided tool revisions.
 #[cfg(unix)]
-pub async fn run_with_registry(args: EnvdArgs, registry: Arc<Registry>) -> Result<(), EnvdError> {
+pub async fn run_with_registry(args: EnvdArgs, registry: Registry) -> Result<(), EnvdError> {
 	let workspace = WorkspaceHost::open(&args.root)?;
 	let root = workspace.root().to_path_buf();
 	let state_dir = args.state_dir.unwrap_or_else(|| root.join(".omp"));
@@ -2280,19 +2576,19 @@ pub async fn run_with_registry(args: EnvdArgs, registry: Arc<Registry>) -> Resul
 	let docserver_socket = args
 		.docserver_socket
 		.unwrap_or_else(|| state_dir.join("docserver.sock"));
-	let (documents, mut docserver) = connect_or_start_docserver(&root, &docserver_socket).await?;
-	let hello = documents.hello().clone();
-	let blobs = BlobHost::open(state_dir.join("blobs"))?;
-	let exec = ExecHost::new();
-	let workers = ToolWorkerSupervisor::spawn(ToolWorkerConfig::current()?).await?;
-	let identity = ServerIdentity {
-		workspace_id:   hello.workspace_id,
-		root_uri:       hello.root_uri,
-		server_epoch:   hello.server_epoch,
-		server_version: Str::from(env!("CARGO_PKG_VERSION")),
-	};
-	let server =
-		Arc::new(EnvServer::new(identity, documents, exec, workspace, blobs, registry, workers));
+	let mut worker_config = ToolWorkerConfig::current()?;
+	if args.py_eval {
+		worker_config.modules.push(Str::new_static(crate::envd::worker::PY_EVAL_MODULE));
+	}
+	let (server, mut docserver) = EnvServer::open_project(
+		&root,
+		&state_dir,
+		&docserver_socket,
+		registry,
+		worker_config,
+	)
+	.await?;
+	let server = Arc::new(server);
 	let shutdown = CancellationToken::new();
 	let signal = shutdown.clone();
 	let signal_task = tokio::spawn(async move {

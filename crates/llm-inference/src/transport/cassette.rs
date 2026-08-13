@@ -4,6 +4,7 @@
 use std::{
 	collections::VecDeque,
 	future::Future,
+	num::NonZeroUsize,
 	pin::Pin,
 	sync::{
 		Arc,
@@ -13,7 +14,7 @@ use std::{
 	time::Instant,
 };
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt as _, future::poll_fn};
 use omp_core::Str;
 use parking_lot::Mutex;
@@ -88,6 +89,21 @@ pub struct CapturedFrame {
 	/// Fixed redaction token, truncated to the configured capture budget.
 	pub redaction:      Bytes,
 }
+/// Exact provider request bytes retained for deterministic test evidence.
+///
+/// Request payload capture is test-only, explicitly opt-in, potentially
+/// sensitive, and bounded. It never includes request headers or credentials.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapturedRequestBody {
+	/// Retained prefix of the exact body chunks consumed by the cassette.
+	pub bytes:          Bytes,
+	/// Total bytes observed in consumed body chunks, including bytes beyond the
+	/// retention bound.
+	pub observed_bytes: u64,
+	/// Whether any observed body bytes exceeded the retention bound.
+	pub truncated:      bool,
+}
+
 
 /// Deterministic evidence retained for one cassette attempt.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -98,6 +114,9 @@ pub struct CassetteCapture {
 	pub uri:     Str,
 	/// Exact request-body lifecycle evidence.
 	pub body:    AttemptBodyEvidence,
+	/// Opt-in bounded request payload evidence. `None` unless explicitly
+	/// configured on the cassette transport.
+	pub request_body: Option<CapturedRequestBody>,
 	/// Bounded, payload-free provider frame records.
 	pub frames:  Box<[CapturedFrame]>,
 }
@@ -117,24 +136,60 @@ pub struct CassetteTransport {
 	cursor:              usize,
 	pending_ready_polls: usize,
 	ready_permit:        bool,
+	request_body_capture_limit: Option<NonZeroUsize>,
 	captures:            CaptureLog,
 }
 
 struct CassetteCaptureFinalizer {
-	log:      CaptureLog,
-	attempt:  usize,
-	uri:      Str,
-	evidence: AttemptEvidenceHandle,
-	frames:   Vec<CapturedFrame>,
+	log:          CaptureLog,
+	attempt:      usize,
+	uri:          Str,
+	evidence:     AttemptEvidenceHandle,
+	frames:       Vec<CapturedFrame>,
+	request_body: Option<RequestBodyCaptureSink>,
+}
+
+struct RequestBodyCaptureSink {
+	bytes:          BytesMut,
+	limit:          usize,
+	observed_bytes: u64,
+	truncated:      bool,
+}
+
+impl RequestBodyCaptureSink {
+	fn new(limit: NonZeroUsize) -> Self {
+		Self {
+			bytes: BytesMut::new(),
+			limit: limit.get(),
+			observed_bytes: 0,
+			truncated: false,
+		}
+	}
+
+	fn observe(&mut self, chunk: &Bytes) {
+		self.observed_bytes = self.observed_bytes.saturating_add(chunk.len() as u64);
+		let retained = (self.limit - self.bytes.len()).min(chunk.len());
+		self.bytes.extend_from_slice(&chunk[..retained]);
+		self.truncated |= retained < chunk.len();
+	}
+
+	fn finish(self) -> CapturedRequestBody {
+		CapturedRequestBody {
+			bytes:          self.bytes.freeze(),
+			observed_bytes: self.observed_bytes,
+			truncated:      self.truncated,
+		}
+	}
 }
 
 impl Drop for CassetteCaptureFinalizer {
 	fn drop(&mut self) {
 		self.log.0.lock().push(CassetteCapture {
-			attempt: self.attempt,
-			uri:     self.uri.clone(),
-			body:    self.evidence.evidence(),
-			frames:  std::mem::take(&mut self.frames).into_boxed_slice(),
+			attempt:      self.attempt,
+			uri:          self.uri.clone(),
+			body:         self.evidence.evidence(),
+			request_body: self.request_body.take().map(RequestBodyCaptureSink::finish),
+			frames:       std::mem::take(&mut self.frames).into_boxed_slice(),
 		});
 	}
 }
@@ -144,11 +199,12 @@ impl CassetteTransport {
 	#[must_use]
 	pub fn new(attempts: impl Into<Arc<[CassetteAttempt]>>) -> Self {
 		Self {
-			attempts:            attempts.into(),
-			cursor:              0,
-			pending_ready_polls: 0,
-			ready_permit:        false,
-			captures:            CaptureLog::default(),
+			attempts:                   attempts.into(),
+			cursor:                     0,
+			pending_ready_polls:        0,
+			ready_permit:               false,
+			captures:                   CaptureLog::default(),
+			request_body_capture_limit: None,
 		}
 	}
 
@@ -159,7 +215,21 @@ impl CassetteTransport {
 		self
 	}
 
-	/// Returns a stable snapshot of sanitized captures.
+	/// Enables bounded capture of exact request payload bytes for tests.
+	///
+	/// Payload capture is opt-in because request bodies may be sensitive. At
+	/// most `max_bytes` are retained per attempt, while the capture reports the
+	/// exact total observed byte count and whether retention was truncated.
+	/// Headers and credentials are never captured; provider frames remain
+	/// redacted.
+	#[must_use]
+	pub fn with_request_body_capture(mut self, max_bytes: NonZeroUsize) -> Self {
+		self.request_body_capture_limit = Some(max_bytes);
+		self
+	}
+
+	/// Returns a stable snapshot of structural captures and any explicitly
+	/// enabled request payload evidence.
 	#[must_use]
 	pub fn captures(&self) -> Vec<CassetteCapture> {
 		let mut captures = self.captures.0.lock().clone();
@@ -199,13 +269,14 @@ impl Service<TransportRequest> for CassetteTransport {
 		}
 		let attempt = self.attempts.get(index).cloned();
 		let captures = self.captures.clone();
+		let request_body_capture_limit = self.request_body_capture_limit;
 		async move {
 			if !permit {
 				return Err(transport_error(ErrorPhase::Readiness, false, "call-without-readiness"));
 			}
 			let attempt = attempt
 				.ok_or_else(|| transport_error(ErrorPhase::Readiness, false, "cassette-exhausted"))?;
-			run_attempt(index, attempt, request, captures).await
+			run_attempt(index, attempt, request, captures, request_body_capture_limit).await
 		}
 	}
 }
@@ -215,10 +286,20 @@ async fn run_attempt(
 	attempt: CassetteAttempt,
 	mut request: TransportRequest,
 	captures: CaptureLog,
+	request_body_capture_limit: Option<NonZeroUsize>,
 ) -> Result<HandshakenResponse, Error> {
 	match (request.decoder.is_some(), request.realtime.is_some()) {
 		(true, false) => {},
-		(false, true) => return run_realtime_attempt(index, attempt, request, captures).await,
+		(false, true) => {
+			return run_realtime_attempt(
+				index,
+				attempt,
+				request,
+				captures,
+				request_body_capture_limit,
+			)
+			.await;
+		},
 		_ => {
 			let started = Instant::now();
 			let body_attempt = request.encoded.body.begin_attempt();
@@ -240,13 +321,20 @@ async fn run_attempt(
 	let evidence = body_attempt.evidence_handle();
 	let deadline = tokio::time::Instant::now() + transport_attempt.timeout;
 	let mut capture = CassetteCaptureFinalizer {
-		log:      captures,
-		attempt:  index,
-		uri:      request.encoded.uri.clone(),
-		evidence: evidence.clone(),
-		frames:   Vec::new(),
+		log:          captures,
+		attempt:      index,
+		uri:          request.encoded.uri.clone(),
+		evidence:     evidence.clone(),
+		frames:       Vec::new(),
+		request_body: request_body_capture_limit.map(RequestBodyCaptureSink::new),
 	};
-	consume_body(&mut body_attempt, attempt.body, &request.cancel, deadline)
+	consume_body(
+		&mut body_attempt,
+		attempt.body,
+		&request.cancel,
+		deadline,
+		capture.request_body.as_mut(),
+	)
 		.await
 		.map_err(|error| {
 			record_failure(
@@ -437,6 +525,7 @@ async fn run_realtime_attempt(
 	attempt: CassetteAttempt,
 	mut request: TransportRequest,
 	captures: CaptureLog,
+	request_body_capture_limit: Option<NonZeroUsize>,
 ) -> Result<HandshakenResponse, Error> {
 	let started = Instant::now();
 	let transport_attempt = request.attempt.clone();
@@ -444,13 +533,20 @@ async fn run_realtime_attempt(
 	let mut body_attempt = request.encoded.body.begin_attempt();
 	let evidence = body_attempt.evidence_handle();
 	let mut capture = CassetteCaptureFinalizer {
-		log:      captures,
-		attempt:  index,
-		uri:      request.encoded.uri.clone(),
-		evidence: evidence.clone(),
-		frames:   Vec::new(),
+		log:          captures,
+		attempt:      index,
+		uri:          request.encoded.uri.clone(),
+		evidence:     evidence.clone(),
+		frames:       Vec::new(),
+		request_body: request_body_capture_limit.map(RequestBodyCaptureSink::new),
 	};
-	consume_body(&mut body_attempt, attempt.body, &request.cancel, deadline)
+	consume_body(
+		&mut body_attempt,
+		attempt.body,
+		&request.cancel,
+		deadline,
+		capture.request_body.as_mut(),
+	)
 		.await
 		.map_err(|error| {
 			record_failure(
@@ -736,6 +832,7 @@ async fn consume_body(
 	action: CassetteBodyAction,
 	cancel: &Cancellation,
 	deadline: tokio::time::Instant,
+	mut capture: Option<&mut RequestBodyCaptureSink>,
 ) -> Result<(), Error> {
 	if action == CassetteBodyAction::Unopened {
 		return Ok(());
@@ -773,7 +870,12 @@ async fn consume_body(
 			},
 		};
 		match next {
-			Some(Ok(_)) => polled += 1,
+			Some(Ok(chunk)) => {
+				if let Some(capture) = capture.as_deref_mut() {
+					capture.observe(&chunk);
+				}
+				polled += 1;
+			},
 			Some(Err(error)) => return Err(precommit(error)),
 			None => break,
 		}

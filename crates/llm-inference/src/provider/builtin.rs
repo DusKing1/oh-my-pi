@@ -14,13 +14,17 @@ use omp_llm_catalog::{
 	provider::{AuthSpecKind, CodecProfile, DiscoveryKind, RouteDef, TransportKind},
 	snapshot::Catalog,
 };
+use secrecy::ExposeSecret as _;
 use tower::{Service, util::BoxCloneSyncService};
 
 use crate::{
 	account::{
 		AccountPool, AccountSelection, AccountSelectionRequest, RateAvailability, RotationPolicy,
 	},
-	auth::{AuthManager, CredentialBroker, CredentialNeed, CredentialSource},
+	auth::{
+		AuthManager, CredentialBroker, CredentialNeed, CredentialSource, OAuthHttpClient,
+		OAuthHttpRequest,
+	},
 	call::{Call, NativeResponseFraming, OperationCall, Setting, ToolChoice},
 	codec::{
 		Cancellation, Codec, DecodeContext, DecoderState, EncodeAttempt, EncodeContext,
@@ -86,6 +90,33 @@ pub struct GoogleCcaConfig {
 	pub antigravity_headers: CcaHeaders,
 	/// Typed Antigravity lowering policy.
 	pub antigravity_policy:  AntigravityPolicy,
+}
+
+/// Fetches the latest Antigravity client version from the official update
+/// manifest.
+///
+/// Returns `None` on any transport, status, or parse failure; callers keep
+/// the pinned [`DEFAULT_ANTIGRAVITY_VERSION`] fallback valid. The request
+/// mimics electron-builder's update probe so the endpoint serves the same
+/// manifest the real client sees.
+///
+/// [`DEFAULT_ANTIGRAVITY_VERSION`]: crate::codec::google_cca::DEFAULT_ANTIGRAVITY_VERSION
+pub async fn discover_antigravity_version(client: &dyn OAuthHttpClient) -> Option<Str> {
+	let mut headers = http::HeaderMap::new();
+	headers.insert(http::header::CACHE_CONTROL, http::HeaderValue::from_static("no-cache"));
+	headers.insert(http::header::USER_AGENT, http::HeaderValue::from_static("electron-builder"));
+	let request = OAuthHttpRequest::new(
+		http::Method::GET,
+		crate::codec::google_cca::ANTIGRAVITY_VERSION_MANIFEST_URL,
+		headers,
+		None,
+	)
+	.ok()?;
+	let response = client.execute(request).await.ok()?;
+	if response.status != 200 {
+		return None;
+	}
+	crate::codec::google_cca::parse_antigravity_manifest_version(response.body.expose_secret())
 }
 
 /// Resolved non-secret signing regions supplied by the application.

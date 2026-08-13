@@ -46,6 +46,8 @@ pub enum Command {
 	Serve(ServeArgs),
 	/// Start the project environment daemon.
 	Envd(EnvdArgs),
+	/// Start an interactive project agent session.
+	Chat(ChatArgs),
 	/// Run one typed operation in process.
 	Infer(InferArgs),
 	/// Manage provider credentials.
@@ -81,6 +83,31 @@ pub struct EnvdArgs {
 	/// Environment state directory. Defaults to `<root>/.omp`.
 	#[arg(long, value_name = "PATH")]
 	pub state_dir:        Option<PathBuf>,
+	/// Enable the built-in Python expression-evaluation tool.
+	///
+	/// This executes Python inside the environment owner's process sandbox and
+	/// is disabled unless explicitly requested.
+	#[arg(long)]
+	pub py_eval:          bool,
+}
+/// Interactive project-chat options.
+#[derive(Clone, Debug, Args)]
+pub struct ChatArgs {
+	/// Catalog model key, alias, or role.
+	#[arg(long)]
+	pub model:   Str,
+	/// Project root whose environment and durable sessions are used.
+	#[arg(long, value_name = "PATH", default_value = ".")]
+	pub project: PathBuf,
+	/// Existing inference gateway endpoint. Omit to run inference in process.
+	#[arg(long, value_name = "LOCAL_ENDPOINT")]
+	pub gateway: Option<LocalEndpoint>,
+	/// Existing ULID session to reopen strictly.
+	#[arg(long, value_name = "ULID")]
+	pub resume:  Option<Str>,
+	/// Enable the environment-owned Python expression-evaluation tool.
+	#[arg(long)]
+	pub py_eval: bool,
 }
 
 /// Direct typed inference options.
@@ -179,6 +206,7 @@ pub struct LocalInferArgs {
 enum DispatchTarget {
 	Serve,
 	Envd,
+	Chat,
 	Infer,
 	Auth,
 	CatalogImport,
@@ -190,6 +218,7 @@ const fn dispatch_target(command: &Command) -> DispatchTarget {
 	match command {
 		Command::Serve(_) => DispatchTarget::Serve,
 		Command::Envd(_) => DispatchTarget::Envd,
+		Command::Chat(_) => DispatchTarget::Chat,
 		Command::Infer(_) => DispatchTarget::Infer,
 		Command::Auth(_) => DispatchTarget::Auth,
 		Command::Catalog(CatalogArgs { command: CatalogCommand::Import(_) }) => {
@@ -204,6 +233,7 @@ pub async fn dispatch(cli: OmpCli) -> crate::Result<()> {
 	match cli.command {
 		Command::Serve(args) => serve(args).await,
 		Command::Envd(args) => crate::envd::run(args).await,
+		Command::Chat(args) => crate::chat::run(args).await,
 		Command::Infer(args) => infer(args).await,
 		Command::Auth(args) => auth(args).await,
 		Command::Catalog(CatalogArgs { command: CatalogCommand::Import(args) }) => {
@@ -290,7 +320,7 @@ async fn auth(args: AuthArgs) -> crate::Result<()> {
 	crate::auth_backend::run(data.join("credentials.db"), args.command).await
 }
 
-fn data_dir(explicit: Option<PathBuf>) -> crate::Result<PathBuf> {
+pub(crate) fn data_dir(explicit: Option<PathBuf>) -> crate::Result<PathBuf> {
 	if let Some(path) = explicit {
 		return Ok(path);
 	}
@@ -378,6 +408,10 @@ mod tests {
 			(&["omp", "serve", "--endpoint", TEST_ENDPOINT][..], DispatchTarget::Serve),
 			(&["omp", "envd"][..], DispatchTarget::Envd),
 			(
+				&["omp", "chat", "--model", "provider/model", "--project", "."][..],
+				DispatchTarget::Chat,
+			),
+			(
 				&["omp", "infer", "--model", "provider/model", "--prompt", "hello"][..],
 				DispatchTarget::Infer,
 			),
@@ -404,6 +438,32 @@ mod tests {
 			assert_eq!(dispatch_target(&parse(arguments).command), expected);
 		}
 	}
+	#[test]
+	fn parses_chat_composition_options() {
+		let Command::Chat(args) = parse(&[
+			"omp",
+			"chat",
+			"--model",
+			"provider/model",
+			"--project",
+			"workspace",
+			"--gateway",
+			TEST_ENDPOINT,
+			"--resume",
+			"01ARZ3NDEKTSV4RRFFQ69G5FAV",
+			"--py-eval",
+		])
+		.command
+		else {
+			panic!("chat command");
+		};
+		assert_eq!(args.model, Str::from("provider/model"));
+		assert_eq!(args.project, PathBuf::from("workspace"));
+		assert_eq!(args.gateway.as_ref().map(LocalEndpoint::as_path), Some(Path::new(TEST_ENDPOINT)));
+		assert_eq!(args.resume, Some(Str::from("01ARZ3NDEKTSV4RRFFQ69G5FAV")));
+		assert!(args.py_eval);
+	}
+
 
 	#[test]
 	fn parses_every_auth_branch() {
@@ -429,6 +489,7 @@ mod tests {
 	fn rejects_incomplete_commands() {
 		for arguments in [
 			&["omp", "serve"][..],
+			&["omp", "chat"][..],
 			&["omp", "infer", "--model", "provider/model"][..],
 			&["omp", "local", "infer"][..],
 			&["omp", "catalog", "import", "--providers", "providers.toml", "--oauth", "oauth.toml"][..],

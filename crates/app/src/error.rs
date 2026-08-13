@@ -13,6 +13,9 @@ pub enum AppError {
 	/// Project environment-daemon startup or serving failure.
 	#[error(transparent)]
 	Environment(#[from] crate::envd::EnvdError),
+	/// Interactive chat composition or session-state failure.
+	#[error(transparent)]
+	Chat(#[from] crate::chat::ChatError),
 	/// RPC communication failure.
 	#[error(transparent)]
 	Rpc(#[from] omp_rpc::Error),

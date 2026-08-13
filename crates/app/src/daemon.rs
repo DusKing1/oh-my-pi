@@ -22,7 +22,10 @@ use omp_llm_inference::{
 		SystemOAuthHttpClient, UnavailableKeySource,
 	},
 	call::AuthMethod,
-	codec::google_cca::{AntigravityPolicy, CcaHeaders},
+	codec::google_cca::{
+		AntigravityFingerprint, AntigravityPolicy, CcaHeaders, DEFAULT_ANTIGRAVITY_ARCH,
+		DEFAULT_ANTIGRAVITY_CL, DEFAULT_ANTIGRAVITY_OS, DEFAULT_ANTIGRAVITY_VERSION,
+	},
 	layer::{
 		admission::AdmissionController,
 		observe::{ExecutionFinished, ExecutionStarted, Observer},
@@ -30,6 +33,7 @@ use omp_llm_inference::{
 	},
 	provider::builtin::{
 		AuthApplicationConfig, GoogleCcaConfig, LocalRouteBackend, ProductionDependencies,
+		discover_antigravity_version,
 	},
 	router::Router,
 	session::{ConversationError, ConversationSessionPlanner},
@@ -51,6 +55,12 @@ const DATA_DIR_ENV: &str = "OMP_DATA_DIR";
 const KEYCHAIN_OPT_IN_ENV: &str = "OMP_LLM_KEYCHAIN";
 const KEYCHAIN_SERVICE: &str = "dev.omp.llm";
 const KEYCHAIN_ACCOUNT: &str = "credential-store-master";
+const ANTIGRAVITY_VERSION_ENV: &str = "OMP_ANTIGRAVITY_VERSION";
+const ANTIGRAVITY_CL_ENV: &str = "OMP_ANTIGRAVITY_CL";
+const ANTIGRAVITY_OS_ENV: &str = "OMP_ANTIGRAVITY_OS";
+const ANTIGRAVITY_ARCH_ENV: &str = "OMP_ANTIGRAVITY_ARCH";
+const ANTIGRAVITY_VERSION_CACHE_FILE: &str = "antigravity-version";
+const ANTIGRAVITY_VERSION_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Selection of the credential encryption-key source.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -217,6 +227,21 @@ pub async fn production_registry(
 		.await
 		.map(|(registry, _)| registry)
 }
+/// Builds the production inference RPC authority used by both the standalone
+/// gateway and in-process chat turns.
+///
+/// Keeping this seam crate-private ensures credentials, provider routing, and
+/// provider-session state are assembled exactly once without becoming a public
+/// application API.
+pub(crate) async fn production_inference(
+	data_dir: &Path,
+	tool_registry: Arc<omp_tool::Registry>,
+) -> Result<(Registry, InferenceRpc), DaemonError> {
+	let credential_store = open_credential_store(data_dir.join("credentials.db"))?;
+	let (registry, sessions) = production_assembly(data_dir, credential_store).await?;
+	let inference = InferenceRpc::new(registry.clone(), sessions, tool_registry);
+	Ok((registry, inference))
+}
 
 async fn production_assembly(
 	data_dir: &Path,
@@ -255,6 +280,10 @@ async fn production_assembly(
 	let database = data_dir.join("credentials.db");
 	let accounts = AccountPool::with_store(Arc::new(AccountStateStore::open(&database)?))?;
 	let oauth_http = Arc::new(SystemOAuthHttpClient::new());
+	// Resolve the Antigravity client version concurrently with the remaining
+	// assembly: route codecs freeze their headers at construction, so the
+	// bounded manifest probe must settle before `GoogleCcaConfig` is built.
+	let antigravity_version = antigravity_version_task(data_dir, oauth_http.clone());
 	let oauth_clock = Arc::new(SystemOAuthClock);
 	let oauth_custom = Arc::new(OAuthCustomDispatcher::new());
 	let refresh_coordinator =
@@ -325,15 +354,19 @@ async fn production_assembly(
 	)?;
 	let sessions = ConversationSessionPlanner::open(&database, catalog.clone())?;
 	let auth_application = AuthApplicationConfig { signing_regions: Arc::new(BTreeMap::new()) };
+	let antigravity_fingerprint = AntigravityFingerprint {
+		version: antigravity_version.await,
+		cl:      env_override(ANTIGRAVITY_CL_ENV)
+			.unwrap_or_else(|| Str::new_static(DEFAULT_ANTIGRAVITY_CL)),
+		os:      env_override(ANTIGRAVITY_OS_ENV)
+			.unwrap_or_else(|| Str::new_static(DEFAULT_ANTIGRAVITY_OS)),
+		arch:    env_override(ANTIGRAVITY_ARCH_ENV)
+			.unwrap_or_else(|| Str::new_static(DEFAULT_ANTIGRAVITY_ARCH)),
+	};
 	let google_cca = GoogleCcaConfig {
 		gemini_cli_platform: Str::from(std::env::consts::OS),
 		gemini_cli_arch:     Str::from(std::env::consts::ARCH),
-		antigravity_headers: CcaHeaders::antigravity(
-			std::env::consts::OS,
-			std::env::consts::ARCH,
-			false,
-			None,
-		),
+		antigravity_headers: CcaHeaders::antigravity(&antigravity_fingerprint, false, None),
 		antigravity_policy:  AntigravityPolicy::default(),
 	};
 	let dependencies = ProductionDependencies::new(
@@ -378,6 +411,76 @@ async fn production_assembly(
 	Ok((registry, sessions))
 }
 
+/// Resolves the Antigravity client version without blocking assembly work:
+/// explicit `OMP_ANTIGRAVITY_VERSION` override → bounded update-manifest
+/// discovery → last discovered release persisted in the data directory →
+/// pinned reference fallback.
+fn antigravity_version_task(
+	data_dir: &Path,
+	client: Arc<SystemOAuthHttpClient>,
+) -> impl Future<Output = Str> {
+	let override_version = env_override(ANTIGRAVITY_VERSION_ENV);
+	let cache_path = data_dir.join(ANTIGRAVITY_VERSION_CACHE_FILE);
+	let fetch = override_version.is_none().then(|| {
+		tokio::spawn(async move {
+			tokio::time::timeout(
+				ANTIGRAVITY_VERSION_FETCH_TIMEOUT,
+				discover_antigravity_version(client.as_ref()),
+			)
+			.await
+			.ok()
+			.flatten()
+		})
+	});
+	async move {
+		if let Some(version) = override_version {
+			return version;
+		}
+		if let Some(fetch) = fetch
+			&& let Ok(Some(version)) = fetch.await
+		{
+			// Best-effort persistence so offline boots keep the discovered release.
+			let _ = std::fs::write(&cache_path, version.as_str());
+			return version;
+		}
+		// Discovery failed: prefer the persisted release over the pinned default
+		// only when it is actually newer (a stale cache must not undo a shipped
+		// fallback bump).
+		let cached = std::fs::read_to_string(&cache_path).ok().and_then(|raw| {
+			let raw = raw.trim();
+			release_ordinal(raw).map(|ordinal| (Str::from(raw), ordinal))
+		});
+		let pinned = release_ordinal(DEFAULT_ANTIGRAVITY_VERSION).unwrap_or_default();
+		match cached {
+			Some((version, ordinal)) if ordinal > pinned => version,
+			_ => Str::new_static(DEFAULT_ANTIGRAVITY_VERSION),
+		}
+	}
+}
+
+/// Parses a `major.minor.patch` release into an orderable key; any other
+/// shape is rejected.
+fn release_ordinal(version: &str) -> Option<[u64; 3]> {
+	let mut ordinal = [0_u64; 3];
+	let mut parts = version.split('.');
+	for slot in &mut ordinal {
+		let part = parts.next()?;
+		if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+			return None;
+		}
+		*slot = part.parse().ok()?;
+	}
+	parts.next().is_none().then_some(ordinal)
+}
+
+/// Reads a non-empty trimmed environment override.
+fn env_override(name: &str) -> Option<Str> {
+	std::env::var(name).ok().and_then(|value| {
+		let value = value.trim();
+		(!value.is_empty()).then(|| Str::from(value))
+	})
+}
+
 #[derive(Clone, Copy)]
 struct TracingObservation;
 
@@ -417,9 +520,7 @@ impl DaemonHandle {
 			.clone()
 			.ok_or(DaemonError::MissingDataDirectory)?;
 		std::fs::create_dir_all(&data_dir).map_err(DaemonError::PrepareState)?;
-		let credential_store = open_credential_store(data_dir.join("credentials.db"))?;
-		let (registry, sessions) = production_assembly(&data_dir, credential_store).await?;
-		let inference = InferenceRpc::new(registry.clone(), sessions, tool_registry);
+		let (registry, inference) = production_inference(&data_dir, tool_registry).await?;
 		Self::start_rpc(config, data_dir, registry, inference).await
 	}
 
@@ -547,6 +648,30 @@ mod credential_key_mode_tests {
 		for value in [None, Some(OsStr::new("")), Some(OsStr::new("true")), Some(OsStr::new("0"))] {
 			assert_eq!(CredentialKeyMode::from_value(value), CredentialKeyMode::Unavailable);
 		}
+	}
+}
+
+#[cfg(test)]
+mod antigravity_version_tests {
+	use super::release_ordinal;
+
+	#[test]
+	fn only_strict_release_triples_are_orderable() {
+		assert_eq!(release_ordinal("2.8.0"), Some([2, 8, 0]));
+		assert_eq!(release_ordinal("10.0.3"), Some([10, 0, 3]));
+		assert!(release_ordinal("2.8").is_none());
+		assert!(release_ordinal("2.8.0.1").is_none());
+		assert!(release_ordinal("2.8.0-beta").is_none());
+		assert!(release_ordinal("+1.2.3").is_none());
+		assert!(release_ordinal("").is_none());
+	}
+
+	#[test]
+	fn cached_release_only_beats_a_newer_pinned_fallback_by_ordering() {
+		// The downgrade guard in `antigravity_version_task` compares ordinals.
+		assert!(release_ordinal("2.9.0") > release_ordinal("2.8.0"));
+		assert!(release_ordinal("2.8.0") > release_ordinal("2.7.9"));
+		assert!(release_ordinal("3.0.0") > release_ordinal("2.99.99"));
 	}
 }
 

@@ -12,7 +12,7 @@ use futures::{Stream, StreamExt as _, stream};
 use omp_agent::project_thread_history;
 use omp_core::Str;
 use omp_llm_catalog::{
-	ModelAvailability, ModelKey, ModelSpec, OperationKind, ProviderDef, ProviderId,
+	GrammarBits, ModelAvailability, ModelKey, ModelSpec, OperationKind, ProviderDef, ProviderId,
 };
 use omp_llm_inference::{
 	Client, Registry,
@@ -46,9 +46,14 @@ use omp_llm_inference::{
 	session::{ConversationSessionPlanner, TurnReplay},
 };
 use omp_proto::{inference::v1 as pb, prost::Message as _, thread::v1 as thread_pb};
-use omp_tool::{Registry as ToolRegistry, TOOL_REV_PROP};
+use omp_tool::{LoweringCaps, PromptCaps, Registry as ToolRegistry, TOOL_REV_PROP};
 use parking_lot::Mutex;
 use tonic::{Request, Response, Status};
+
+// env/v1/turn carries no per-model projection caps; this bounded text-only
+// fallback is valid for every transport and never silently exposes media.
+const RPC_HISTORY_PROMPT_CAPS: PromptCaps =
+	PromptCaps { maximum_parts: 1, maximum_text_bytes: 64 * 1024, media: false };
 
 /// Stream returned by RPC methods whose typed operation produces events.
 pub type RpcStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;
@@ -271,7 +276,8 @@ impl InferenceRpc {
 					.thread
 					.as_ref()
 					.ok_or_else(|| Status::invalid_argument("Seed.thread is required"))?;
-				let projected = project_thread_history(thread, &self.tool_registry)
+				let projected =
+					project_thread_history(thread, &self.tool_registry, &RPC_HISTORY_PROMPT_CAPS)
 					.map_err(|error| Status::invalid_argument(error.to_string()))?;
 				let messages = thread_messages(&projected)?;
 				if seed.context_id.is_empty() {
@@ -341,6 +347,7 @@ impl InferenceRpc {
 				let projected = project_thread_history(
 					&thread_pb::Thread { items: delta.append.clone() },
 					&self.tool_registry,
+					&RPC_HISTORY_PROMPT_CAPS,
 				)
 				.map_err(|error| Status::invalid_argument(error.to_string()))?;
 				let appended = thread_messages(&projected)?;
@@ -474,7 +481,8 @@ impl pb::inference_server::Inference for InferenceRpc {
 		let mut resolved = match self.resolve_turn_input(turn.clone(), open.input.as_ref()) {
 			Ok(resolved) => resolved,
 			Err(status) => {
-				let Some(event) = turn_recovery_event(&status) else {
+				let Some(event) = turn_recovery_event(&status, open.input.as_ref(), &self.contexts)
+				else {
 					return Err(status);
 				};
 				return Ok(Response::new(Box::pin(stream::once(async move { Ok(event) }))));
@@ -503,10 +511,20 @@ impl pb::inference_server::Inference for InferenceRpc {
 				},
 			);
 		}
-		let chat = chat_request(std::mem::take(&mut resolved.request_messages), params)?;
+		let chat = chat_request(
+			std::mem::take(&mut resolved.request_messages),
+			params,
+			&self.tool_registry,
+		)?;
 		let target = self.target(&params.model, OperationKind::Chat)?;
 		let mut client = self.turn_client(target, request_id, resolved.provider_session.clone());
-		let events = client.execute(chat).await.map_err(inference_status)?;
+		let events = match client.execute(chat).await {
+			Ok(events) => events,
+			Err(error) => {
+				let event = inference_turn_error(error);
+				return Ok(Response::new(Box::pin(stream::once(async move { Ok(event) }))));
+			},
+		};
 		let output = turn_events(
 			events,
 			incoming,
@@ -1413,6 +1431,34 @@ fn inference_status(error: Error) -> Status {
 		_ => Status::internal(message),
 	}
 }
+fn inference_turn_error(error: Error) -> pb::TurnEvent {
+	let kind = match error.kind {
+		ErrorKind::Authentication
+		| ErrorKind::Authorization
+		| ErrorKind::AccountDisabled
+		| ErrorKind::PaymentRequired => pb::turn_error::Kind::Auth,
+		ErrorKind::RateLimited | ErrorKind::QuotaExhausted => pb::turn_error::Kind::RateLimited,
+		ErrorKind::BudgetExhausted | ErrorKind::ResourceExhausted => pb::turn_error::Kind::Overloaded,
+		_ => pb::turn_error::Kind::Upstream,
+	};
+	let retry_after_ms = match error.action {
+		omp_llm_inference::RetryAction::SameRoute { after } => {
+			after.as_millis().try_into().unwrap_or(u64::MAX)
+		},
+		_ => 0,
+	};
+	pb::TurnEvent {
+		event: Some(pb::turn_event::Event::Error(pb::TurnError {
+			kind: kind as i32,
+			detail: format!("{:?} during {:?}", error.kind, error.phase),
+			actual: None,
+			unsupported: Vec::new(),
+			retry_after_ms,
+			diagnostics: Vec::new(),
+			error_id: None,
+		})),
+	}
+}
 
 fn conversation_status(error: omp_llm_inference::session::ConversationError) -> Status {
 	match error {
@@ -1463,9 +1509,9 @@ pub fn project_provider_turn_for_test(
 	params: &pb::ChatParams,
 	tool_registry: &ToolRegistry,
 ) -> Result<(thread_pb::Thread, omp_llm_inference::call::ChatRequest), Status> {
-	let projected = project_thread_history(thread, tool_registry)
+	let projected = project_thread_history(thread, tool_registry, &RPC_HISTORY_PROMPT_CAPS)
 		.map_err(|error| Status::invalid_argument(error.to_string()))?;
-	let request = chat_request(thread_messages(&projected)?, params)?;
+	let request = chat_request(thread_messages(&projected)?, params, tool_registry)?;
 	Ok((projected, request))
 }
 
@@ -1613,12 +1659,28 @@ fn tool_definition(tool: &pb::ToolDef) -> Result<ToolDefinition, Status> {
 fn chat_request(
 	messages: Vec<Message>,
 	params: &pb::ChatParams,
+	tool_registry: &ToolRegistry,
 ) -> Result<omp_llm_inference::call::ChatRequest, Status> {
-	let tools = params
+	let advertised = tool_registry
+		.advertise(LoweringCaps { strict_schema: false, grammar: GrammarBits::empty() });
+	if let Some(tool) = params
 		.tools
 		.iter()
-		.map(tool_definition)
-		.collect::<Result<Vec<_>, _>>()?;
+		.find(|tool| tool_registry.live_identity(&tool.name).is_none())
+	{
+		return Err(Status::failed_precondition(format!(
+			"executable harness tool `{}` has no live registry identity",
+			tool.name
+		)));
+	}
+	let tools: Vec<ToolDefinition> = advertised
+		.into_iter()
+		.filter(|tool| {
+			params.tools.is_empty()
+				|| params.tools.iter().any(|requested| requested.name == tool.identity.name.as_str())
+		})
+		.map(|tool| tool.definition)
+		.collect();
 	let tool_choice = params
 		.tool_choice
 		.as_ref()
@@ -1975,21 +2037,41 @@ fn workflow_action_result(complete: &pb::InvokeComplete) -> Result<(Bytes, bool)
 	))
 }
 
-fn turn_recovery_event(status: &Status) -> Option<pb::TurnEvent> {
+fn turn_recovery_event(
+	status: &Status,
+	input: Option<&pb::turn_request::Input>,
+	contexts: &Mutex<BTreeMap<String, RpcContext>>,
+) -> Option<pb::TurnEvent> {
 	let kind = match status.code() {
 		tonic::Code::Aborted => pb::turn_error::Kind::Conflict,
 		tonic::Code::NotFound => pb::turn_error::Kind::NeedFull,
 		_ => return None,
 	};
+	let context_id = match input {
+		Some(pb::turn_request::Input::Seed(seed)) => Some(seed.context_id.as_str()),
+		Some(pb::turn_request::Input::Incremental(incremental)) => incremental
+			.context
+			.as_ref()
+			.map(|context| context.context_id.as_str()),
+		None => None,
+	};
+	let actual = (kind == pb::turn_error::Kind::Conflict)
+		.then(|| {
+			let context_id = context_id?;
+			let held = contexts.lock();
+			let context = held.get(context_id)?;
+			Some(revision(context_id, context.revision))
+		})
+		.flatten();
 	Some(pb::TurnEvent {
 		event: Some(pb::turn_event::Event::Error(pb::TurnError {
-			kind:           kind as i32,
-			detail:         status.message().to_owned(),
-			actual:         None,
-			unsupported:    Vec::new(),
+			kind: kind as i32,
+			detail: status.message().to_owned(),
+			actual,
+			unsupported: Vec::new(),
 			retry_after_ms: 0,
-			diagnostics:    Vec::new(),
-			error_id:       None,
+			diagnostics: Vec::new(),
+			error_id: None,
 		})),
 	})
 }
@@ -2084,7 +2166,10 @@ fn turn_events(
 					yield invoke_timeout(&invocation_id);
 					return;
 				},
-				Err(error) => Err(inference_status(error))?,
+				Err(error) => {
+					yield inference_turn_error(error);
+					return;
+				},
 			};
 			match event {
 				ChatEvent::Started(_) => {},

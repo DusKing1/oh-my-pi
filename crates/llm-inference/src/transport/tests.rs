@@ -1,10 +1,13 @@
-use std::sync::{
-	Arc,
-	atomic::{AtomicUsize, Ordering},
+use std::{
+	num::NonZeroUsize,
+	sync::{
+		Arc,
+		atomic::{AtomicUsize, Ordering},
+	},
 };
 
 use bytes::Bytes;
-use futures::{StreamExt as _, stream};
+use futures::{FutureExt as _, StreamExt as _, stream};
 use omp_core::Str;
 use omp_llm_catalog::{OperationKind, ProviderId, RouteId};
 use serde::Deserialize;
@@ -302,6 +305,161 @@ async fn readiness_cancellation_and_capture_are_deterministic() {
 }
 
 #[tokio::test]
+async fn request_body_capture_is_disabled_by_default() {
+	let mut service = CassetteTransport::new(Arc::from([attempt(
+		CassetteBodyAction::Drain,
+		CassetteTerminal::Complete,
+		1,
+	)]));
+	service.ready().await.expect("cassette ready");
+	let response = service
+		.call(request(
+			BodySource::Bytes(Bytes::from_static(b"sensitive-request")),
+			EmitDecoder,
+			Cancellation::default(),
+		))
+		.await
+		.expect("handshake");
+	drop(response.events.expect("ordinary event stream"));
+
+	let captures = service.captures();
+	assert_eq!(captures.len(), 1);
+	assert_eq!(captures[0].request_body, None);
+}
+
+#[tokio::test]
+async fn drain_captures_exact_multi_chunk_request_body() {
+	let factory = BodyFactoryHandle::new(|| {
+		let body: ByteStream = Box::pin(stream::iter([
+			Ok(Bytes::from_static(b"first-")),
+			Ok(Bytes::from_static(b"second")),
+		]));
+		std::future::ready(Ok(body))
+	});
+	let mut service = CassetteTransport::new(Arc::from([attempt(
+		CassetteBodyAction::Drain,
+		CassetteTerminal::Complete,
+		1,
+	)]))
+	.with_request_body_capture(NonZeroUsize::new(64).expect("nonzero capture bound"));
+	service.ready().await.expect("cassette ready");
+	let response = service
+		.call(request(BodySource::Factory(factory), EmitDecoder, Cancellation::default()))
+		.await
+		.expect("handshake");
+	drop(response.events.expect("ordinary event stream"));
+
+	assert_eq!(
+		service.captures()[0].request_body,
+		Some(CapturedRequestBody {
+			bytes:          Bytes::from_static(b"first-second"),
+			observed_bytes: 12,
+			truncated:      false,
+		})
+	);
+}
+
+#[tokio::test]
+async fn bounded_request_body_capture_reports_observed_bytes_and_truncation() {
+	let factory = BodyFactoryHandle::new(|| {
+		let body: ByteStream = Box::pin(stream::iter([
+			Ok(Bytes::from_static(b"ab")),
+			Ok(Bytes::from_static(b"cdef")),
+		]));
+		std::future::ready(Ok(body))
+	});
+	let mut service = CassetteTransport::new(Arc::from([attempt(
+		CassetteBodyAction::Drain,
+		CassetteTerminal::Complete,
+		1,
+	)]))
+	.with_request_body_capture(NonZeroUsize::new(3).expect("nonzero capture bound"));
+	service.ready().await.expect("cassette ready");
+	let response = service
+		.call(request(BodySource::Factory(factory), EmitDecoder, Cancellation::default()))
+		.await
+		.expect("handshake");
+	drop(response.events.expect("ordinary event stream"));
+
+	assert_eq!(
+		service.captures()[0].request_body,
+		Some(CapturedRequestBody {
+			bytes:          Bytes::from_static(b"abc"),
+			observed_bytes: 6,
+			truncated:      true,
+		})
+	);
+}
+
+#[tokio::test]
+async fn request_body_capture_finalizes_on_stream_error() {
+	let factory = BodyFactoryHandle::new(|| {
+		let error = Error::new(
+			ErrorKind::Connectivity,
+			ErrorPhase::Streaming,
+			RetryAction::Never,
+			ExecutionReceipt::default(),
+		);
+		let body: ByteStream =
+			Box::pin(stream::iter([Ok(Bytes::from_static(b"prefix")), Err(error)]));
+		std::future::ready(Ok(body))
+	});
+	let mut service = CassetteTransport::new(Arc::from([attempt(
+		CassetteBodyAction::Drain,
+		CassetteTerminal::Complete,
+		1,
+	)]))
+	.with_request_body_capture(NonZeroUsize::new(4).expect("nonzero capture bound"));
+	service.ready().await.expect("cassette ready");
+	let error = service
+		.call(request(BodySource::Factory(factory), EmitDecoder, Cancellation::default()))
+		.await
+		.err()
+		.expect("body stream failure");
+	assert_eq!(error.kind, ErrorKind::Connectivity);
+	assert_eq!(error.action, RetryAction::Never);
+	assert_eq!(
+		service.captures()[0].request_body,
+		Some(CapturedRequestBody {
+			bytes:          Bytes::from_static(b"pref"),
+			observed_bytes: 6,
+			truncated:      true,
+		})
+	);
+}
+
+#[tokio::test]
+async fn request_body_capture_finalizes_when_in_flight_attempt_is_dropped() {
+	let factory = BodyFactoryHandle::new(|| {
+		let body: ByteStream = Box::pin(
+			stream::once(std::future::ready(Ok(Bytes::from_static(b"observed"))))
+				.chain(stream::pending::<Result<Bytes, Error>>()),
+		);
+		std::future::ready(Ok(body))
+	});
+	let mut service = CassetteTransport::new(Arc::from([attempt(
+		CassetteBodyAction::Drain,
+		CassetteTerminal::Complete,
+		1,
+	)]))
+	.with_request_body_capture(NonZeroUsize::new(32).expect("nonzero capture bound"));
+	service.ready().await.expect("cassette ready");
+	let mut pending =
+		Box::pin(service.call(request(BodySource::Factory(factory), EmitDecoder, Cancellation::default())));
+	assert!(pending.as_mut().now_or_never().is_none());
+	drop(pending);
+
+	assert_eq!(
+		service.captures()[0].request_body,
+		Some(CapturedRequestBody {
+			bytes:          Bytes::from_static(b"observed"),
+			observed_bytes: 8,
+			truncated:      false,
+		})
+	);
+}
+
+#[tokio::test]
 async fn replayable_factory_opens_a_fresh_body_for_every_attempt() {
 	let opens = Arc::new(AtomicUsize::new(0));
 	let factory_opens = Arc::clone(&opens);
@@ -316,7 +474,8 @@ async fn replayable_factory_opens_a_fresh_body_for_every_attempt() {
 		attempt(CassetteBodyAction::PollChunks(1), CassetteTerminal::Complete, 1),
 		attempt(CassetteBodyAction::Drain, CassetteTerminal::Complete, 1),
 	]);
-	let mut service = CassetteTransport::new(attempts);
+	let mut service = CassetteTransport::new(attempts)
+		.with_request_body_capture(NonZeroUsize::new(16).expect("nonzero capture bound"));
 	for index in 0..2 {
 		service.ready().await.expect("cassette ready");
 		let mut request = request(source.clone(), EmitDecoder, Cancellation::default());
@@ -325,6 +484,24 @@ async fn replayable_factory_opens_a_fresh_body_for_every_attempt() {
 		drop(response.events.expect("ordinary event stream"));
 	}
 	assert_eq!(opens.load(Ordering::SeqCst), 2);
+	let captures = service.captures();
+	assert_eq!(captures.len(), 2);
+	assert_eq!(
+		captures[0].request_body,
+		Some(CapturedRequestBody {
+			bytes:          Bytes::from_static(b"a"),
+			observed_bytes: 1,
+			truncated:      false,
+		})
+	);
+	assert_eq!(
+		captures[1].request_body,
+		Some(CapturedRequestBody {
+			bytes:          Bytes::from_static(b"ab"),
+			observed_bytes: 2,
+			truncated:      false,
+		})
+	);
 }
 
 #[test]
@@ -392,7 +569,8 @@ async fn factory_error_is_preserved_and_captured_with_exact_evidence() {
 		CassetteBodyAction::Opened,
 		CassetteTerminal::Complete,
 		1,
-	)]));
+	)]))
+	.with_request_body_capture(NonZeroUsize::new(8).expect("nonzero capture bound"));
 	service.ready().await.expect("cassette ready");
 	let error = service
 		.call(request(BodySource::Factory(factory), EmitDecoder, Cancellation::default()))
@@ -403,8 +581,17 @@ async fn factory_error_is_preserved_and_captured_with_exact_evidence() {
 	assert_eq!(error.action, RetryAction::Never);
 	assert_eq!(error.phase, ErrorPhase::Encoding);
 	assert!(matches!(error.detail, Some(ErrorDetail::Protocol { .. })));
-	assert_eq!(service.captures().len(), 1);
-	assert!(!service.captures()[0].body.opened);
+	let captures = service.captures();
+	assert_eq!(captures.len(), 1);
+	assert!(!captures[0].body.opened);
+	assert_eq!(
+		captures[0].request_body,
+		Some(CapturedRequestBody {
+			bytes:          Bytes::new(),
+			observed_bytes: 0,
+			truncated:      false,
+		})
+	);
 }
 
 #[tokio::test]
@@ -648,7 +835,8 @@ async fn stalled_body_preserves_factory_replay_and_suppresses_consumed_one_shot(
 		CassetteBodyAction::PollChunks(1),
 		CassetteTerminal::Complete,
 		1,
-	)]));
+	)]))
+	.with_request_body_capture(NonZeroUsize::new(8).expect("nonzero capture bound"));
 	consumed.ready().await.expect("cassette ready");
 	let mut call = request(BodySource::OneShot(one_shot), EmitDecoder, Cancellation::default());
 	call.attempt.timeout = std::time::Duration::from_millis(5);
@@ -656,6 +844,14 @@ async fn stalled_body_preserves_factory_replay_and_suppresses_consumed_one_shot(
 	let body = error.receipt.attempts.last().expect("attempt receipt").body;
 	assert_eq!(body.retry_decision, RetryDecision::Suppress);
 	assert_eq!(body.reason, RetryDecisionReason::ConsumedOneShot);
+	assert_eq!(
+		consumed.captures()[0].request_body,
+		Some(CapturedRequestBody {
+			bytes:          Bytes::new(),
+			observed_bytes: 0,
+			truncated:      false,
+		})
+	);
 }
 
 struct RealtimeEchoCodec;
@@ -681,12 +877,17 @@ impl RealtimeWireCodec for RealtimeEchoCodec {
 #[tokio::test]
 async fn cassette_transfers_owned_realtime_session_only_after_first_frame() {
 	let mut service = CassetteTransport::new(Arc::from([attempt(
-		CassetteBodyAction::Unopened,
+		CassetteBodyAction::Drain,
 		CassetteTerminal::Complete,
 		1,
-	)]));
+	)]))
+	.with_request_body_capture(NonZeroUsize::new(32).expect("nonzero capture bound"));
 	service.ready().await.expect("cassette ready");
-	let mut call = request(BodySource::Bytes(Bytes::new()), EmitDecoder, Cancellation::default());
+	let mut call = request(
+		BodySource::Bytes(Bytes::from_static(b"realtime-body")),
+		EmitDecoder,
+		Cancellation::default(),
+	);
 	call.encoded.operation = OperationKind::Realtime;
 	call.encoded.framing = FramingProtocol::WebSocket;
 	call.decoder = None;
@@ -694,6 +895,14 @@ async fn cassette_transfers_owned_realtime_session_only_after_first_frame() {
 	let response = service.call(call).await.expect("realtime handshake");
 	assert!(response.events.is_none());
 	assert!(response.realtime.is_some());
+	assert_eq!(
+		service.captures()[0].request_body,
+		Some(CapturedRequestBody {
+			bytes:          Bytes::from_static(b"realtime-body"),
+			observed_bytes: 13,
+			truncated:      false,
+		})
+	);
 }
 #[tokio::test]
 async fn openai_realtime_cassette_preserves_normal_response_through_done() {

@@ -119,6 +119,8 @@ pub struct ProcessAttachment {
 	pub attached: OutputAttached,
 	/// Buffered output strictly newer than the requested sequence.
 	pub backlog:  Vec<ProcessOutput>,
+	/// Process state captured atomically with the backlog and subscription.
+	pub state:    ProcessInfo,
 	/// Future output and state transitions.
 	pub events:   flume::Receiver<ProcessEvent>,
 }
@@ -144,12 +146,16 @@ struct SessionHandle {
 }
 
 struct NamedProcess {
-	name:        Str,
-	generation:  u64,
-	control:     Arc<RunControl>,
-	state:       Mutex<ProcessInfo>,
-	history:     Mutex<Vec<ProcessOutput>>,
-	subscribers: Mutex<Vec<flume::Sender<ProcessEvent>>>,
+	name:       Str,
+	generation: u64,
+	control:    Arc<RunControl>,
+	stream:     Mutex<ProcessStreamState>,
+}
+
+struct ProcessStreamState {
+	info:        ProcessInfo,
+	history:     Vec<ProcessOutput>,
+	subscribers: Vec<flume::Sender<ProcessEvent>>,
 }
 
 struct ProcessReservation {
@@ -392,15 +398,17 @@ impl ExecHost {
 			name: name.clone(),
 			generation,
 			control: run.control.clone(),
-			state: Mutex::new(ProcessInfo {
-				name: name.to_string(),
-				generation,
-				state: ProcessState::Running as i32,
-				status: None,
-				props: Default::default(),
+			stream: Mutex::new(ProcessStreamState {
+				info: ProcessInfo {
+					name: name.to_string(),
+					generation,
+					state: ProcessState::Running as i32,
+					status: None,
+					props: Default::default(),
+				},
+				history: Vec::new(),
+				subscribers: Vec::new(),
 			}),
-			history: Mutex::new(Vec::new()),
-			subscribers: Mutex::new(Vec::new()),
 		});
 		self.inner.processes.lock().insert(name, process.clone());
 		tokio::spawn(forward_named_process(process.clone(), run, started.exec));
@@ -414,7 +422,7 @@ impl ExecHost {
 			.processes
 			.lock()
 			.values()
-			.map(|process| process.state.lock().clone())
+			.map(|process| process.stream.lock().info.clone())
 			.collect();
 		processes.sort_unstable_by(|left, right| left.name.cmp(&right.name));
 		ProcessList { processes, props: Default::default() }
@@ -430,15 +438,17 @@ impl ExecHost {
 			.get(&name)
 			.cloned()
 			.ok_or_else(|| ExecError::ProcessNotFound(name.clone()))?;
-		let backlog = process
+		let (tx, events) = flume::unbounded();
+		let mut stream = process.stream.lock();
+		let backlog = stream
 			.history
-			.lock()
 			.iter()
 			.filter(|event| event.sequence > request.after_sequence)
 			.cloned()
 			.collect();
-		let (tx, events) = flume::unbounded();
-		process.subscribers.lock().push(tx);
+		stream.subscribers.push(tx);
+		let state = stream.info.clone();
+		drop(stream);
 		Ok(ProcessAttachment {
 			attached: OutputAttached {
 				name:       request.name.clone(),
@@ -446,6 +456,7 @@ impl ExecHost {
 				props:      Default::default(),
 			},
 			backlog,
+			state,
 			events,
 		})
 	}
@@ -785,33 +796,33 @@ async fn forward_named_process(process: Arc<NamedProcess>, run: ExecRun, _exec: 
 					sequence:   output.sequence,
 					props:      Default::default(),
 				};
-				process.history.lock().push(output.clone());
-				process.broadcast(ProcessEvent::Output(output));
+				let mut stream = process.stream.lock();
+				stream.history.push(output.clone());
+				stream.broadcast(ProcessEvent::Output(output));
 			},
 			ExecEvent::Exit(exit) => {
-				let mut info = process.state.lock();
-				info.status = exit.status;
-				info.state = match info.status.as_ref().map(|status| status.outcome) {
+				let mut stream = process.stream.lock();
+				stream.info.status = exit.status;
+				stream.info.state = match stream.info.status.as_ref().map(|status| status.outcome) {
 					Some(value) if value == ExecOutcome::Exited as i32 => ProcessState::Exited as i32,
 					Some(value) if value == ExecOutcome::Cancelled as i32 => {
 						ProcessState::Stopped as i32
 					},
 					_ => ProcessState::Failed as i32,
 				};
-				let info = info.clone();
+				let info = stream.info.clone();
 				drop(process.control.input.lock());
-				process.broadcast(ProcessEvent::State(info));
+				stream.broadcast(ProcessEvent::State(info));
 				break;
 			},
 		}
 	}
 }
 
-impl NamedProcess {
-	fn broadcast(&self, event: ProcessEvent) {
+impl ProcessStreamState {
+	fn broadcast(&mut self, event: ProcessEvent) {
 		self
 			.subscribers
-			.lock()
 			.retain(|subscriber| subscriber.send(event.clone()).is_ok());
 	}
 }

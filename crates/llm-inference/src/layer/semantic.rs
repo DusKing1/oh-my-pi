@@ -333,7 +333,8 @@ mod tests {
 	}
 
 	fn context() -> ExecutionContext {
-		let context = ExecutionContext::new(ExecutionBudget::default());
+		let budget = ExecutionBudget { max_provisional_bytes: 1024, ..ExecutionBudget::default() };
+		let context = ExecutionContext::new(budget);
 		context.with_receipt(|destination| *destination = receipt());
 		context
 	}
