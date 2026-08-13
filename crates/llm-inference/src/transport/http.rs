@@ -453,6 +453,7 @@ async fn execute(
 		meta:     HandshakeMeta { status: Some(status), headers, provider_request_id },
 		body:     evidence,
 		events:   Some(events),
+		control:  None,
 		realtime: None,
 	})
 }

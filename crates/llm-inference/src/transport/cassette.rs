@@ -427,6 +427,7 @@ async fn run_attempt(
 		},
 		body:     evidence,
 		events:   Some(stream),
+		control:  None,
 		realtime: None,
 	})
 }
@@ -700,6 +701,7 @@ async fn run_realtime_attempt(
 		},
 		body:     evidence,
 		events:   None,
+		control:  None,
 		realtime: Some(RealtimeSession::from_channels(outbound, inbound, closed)),
 	})
 }

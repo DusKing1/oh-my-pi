@@ -886,23 +886,28 @@ fn tool_config(
 	if request.tools.is_empty() && !history_has_tools {
 		return Ok(None);
 	}
-	if request.tools.iter().any(|tool| tool.strict) {
-		return Err(encoding_error(
-			ErrorKind::CapabilityMismatch,
-			"bedrock.tools.strict_unsupported",
-		));
-	}
-	let mut tools = request
-		.tools
-		.iter()
-		.map(|tool| ToolSpecEnvelope {
+	let mut tools = Vec::with_capacity(request.tools.len());
+	for tool in request.tools.iter() {
+		let Some((parameters, strict)) = tool.input.json_schema() else {
+			return Err(encoding_error(
+				ErrorKind::CapabilityMismatch,
+				"bedrock.tools.grammar_unsupported",
+			));
+		};
+		if strict {
+			return Err(encoding_error(
+				ErrorKind::CapabilityMismatch,
+				"bedrock.tools.strict_unsupported",
+			));
+		}
+		tools.push(ToolSpecEnvelope {
 			tool_spec: ToolSpec {
 				name:         wire_tool_name(&tool.name, context),
 				description:  tool.description.clone(),
-				input_schema: InputSchema { json: WireJson::from(&tool.parameters) },
+				input_schema: InputSchema { json: WireJson::from(parameters) },
 			},
-		})
-		.collect::<Vec<_>>();
+		});
+	}
 	let sentinel = tools.is_empty();
 	if sentinel {
 		let empty_schema = OpaqueJson::new(
@@ -2177,7 +2182,7 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		call::{NegotiationPolicy, ReasoningRequest, Sampling, ToolDefinition},
+		call::{NegotiationPolicy, ReasoningRequest, Sampling, ToolDefinition, ToolInputConstraint},
 		codec::EncodeAttempt,
 		id::RequestId,
 		transport::{EventStreamDecoder, FramingError},
@@ -2341,13 +2346,15 @@ mod tests {
 		request.tools = vec![ToolDefinition {
 			name:        Str::new_static("calculator"),
 			description: Some(Str::new_static("Evaluate a mathematical expression.")),
-			parameters:  OpaqueJson::new(
-				serde_json::from_str(
-					r#"{"type":"object","properties":{"expression":{"type":"string"}},"required":["expression"]}"#,
-				)
-				.expect("schema"),
-			),
-			strict:      false,
+			input: ToolInputConstraint::JsonSchema {
+				parameters: OpaqueJson::new(
+					serde_json::from_str(
+						r#"{"type":"object","properties":{"expression":{"type":"string"}},"required":["expression"]}"#,
+					)
+					.expect("schema"),
+				),
+				strict: false,
+			},
 		}]
 		.into();
 		request.tool_choice = Setting::Require(ToolChoice::Auto);

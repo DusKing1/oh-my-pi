@@ -35,9 +35,10 @@ pub enum SessionAction {
 }
 /// Private terminal transaction prepared by session policy for one response.
 ///
-/// Implementations own the concrete `TurnDraft`; `commit` must append history
-/// and its pending provider binding in one store transaction. Dropping or
-/// failing a response calls `abort`.
+/// Implementations own the concrete `TurnDraft`; `commit` must append history,
+/// its pending provider binding, and any terminal replay outcome in one store
+/// transaction. Dropping or failing a response calls `abort` and publishes none
+/// of them.
 pub trait SessionCompletion: Send + Sync + 'static {
 	/// Incrementally records one recovered canonical event in the private
 	/// assistant-message builder.
@@ -46,7 +47,8 @@ pub trait SessionCompletion: Send + Sync + 'static {
 		event: &ChatEvent,
 		context: &crate::layer::ExecutionContext,
 	) -> Result<(), Error>;
-	/// Atomically commits the successful turn and provider-state evidence.
+	/// Atomically commits the successful turn, provider-state evidence, and any
+	/// staged terminal replay outcome.
 	fn commit(
 		&self,
 		provider_state: Vec<ProviderStateEvent>,

@@ -504,16 +504,18 @@ mod tests {
 	use serde_json::json;
 
 	use super::*;
-	use crate::call::OpaqueJson;
+	use crate::call::{OpaqueJson, ToolInputConstraint};
 
 	fn definition() -> ToolDefinition {
 		ToolDefinition {
 			name:        Str::from("echo"),
 			description: None,
-			parameters:  OpaqueJson::new(
-				json!({"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}),
-			),
-			strict:      true,
+			input:       ToolInputConstraint::JsonSchema {
+				parameters: OpaqueJson::new(
+					json!({"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}),
+				),
+				strict:     true,
+			},
 		}
 	}
 

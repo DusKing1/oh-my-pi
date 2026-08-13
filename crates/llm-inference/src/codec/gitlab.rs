@@ -16,11 +16,11 @@ use crate::{
 	call::{ChatRequest, ContentPart, Message, OperationCall, Role, Setting, ToolResultContent},
 	codec::{
 		Codec, DecodeContext, Decoder, DecoderState, EncodeContext, EncodedRequest,
-		ProviderStateEvent, RawCompletion, RawEvent, RequestHeader, RequestMethod, SizeBounds,
-		ToolInputKind, UnvalidatedToolCall,
+		ProviderControlEvent, ProviderControlInput, ProviderStateEvent, RawCompletion, RawEvent,
+		RequestHeader, RequestMethod, SizeBounds, ToolInputKind, UnvalidatedToolCall,
 	},
 	error::{Error, ErrorDetail, ErrorKind, ErrorPhase, RetryAction},
-	event::{BlockKind, ChatEvent, FinishReason, UsageUpdate},
+	event::{BlockKind, ChatEvent, FinishReason, UsageUpdate, WorkflowResponse},
 	id::ToolCallId,
 	receipt::{ExecutionReceipt, ReasonId, Usage, UsageSource},
 	transport::{Frame, FramingProtocol, WebSocketMessage},
@@ -632,12 +632,15 @@ fn build_start_request(
 	}
 	let mut tools = Vec::with_capacity(request.tools.len());
 	for tool in request.tools.iter() {
+		let Some((parameters, _)) = tool.input.json_schema() else {
+			return Err(capability_error("gitlab.workflow.tool_grammar.unsupported"));
+		};
 		tools.push(McpTool {
 			name:               tool.name.clone(),
 			original_tool_name: tool.name.clone(),
 			server_name:        "omp",
 			description:        tool.description.clone().unwrap_or_default(),
-			input_schema:       serde_json::to_string(tool.parameters.as_value())
+			input_schema:       serde_json::to_string(parameters.as_value())
 				.map_err(|_| invalid_request("gitlab.workflow.tool_schema.serialization"))?,
 			is_approved:        true,
 		});
@@ -956,6 +959,28 @@ impl Decoder for WorkflowDecoder {
 		self.push_inbound(inbound, emit)
 	}
 
+	fn supports_control(&self) -> bool {
+		true
+	}
+
+	fn encode_control(&mut self, input: ProviderControlInput) -> Result<Option<Bytes>, Error> {
+		let WorkflowResponse::WorkflowActionResponse(response) = input else {
+			return Err(protocol_error(
+				ErrorPhase::Streaming,
+				"gitlab.workflow.control_kind_unsupported",
+			));
+		};
+		let text = std::str::from_utf8(&response.response)
+			.map_err(|_| protocol_error(ErrorPhase::Streaming, "gitlab.action_response.utf8"))?;
+		WorkflowActionResult {
+			request_id: response.invocation,
+			text:       Str::from(text),
+			is_error:   response.is_error,
+		}
+		.encode()
+		.map(Some)
+	}
+
 	fn finish(&mut self, _emit: &mut dyn FnMut(RawEvent)) -> Result<(), Error> {
 		if self.completed {
 			Ok(())
@@ -1041,7 +1066,7 @@ impl WorkflowDecoder {
 		}
 
 		match status.as_deref() {
-			Some("FINISHED" | "INPUT_REQUIRED") => {
+			Some("FINISHED") => {
 				emit(RawEvent::Chat(ChatEvent::Usage(UsageUpdate {
 					usage:        self.usage,
 					final_update: true,
@@ -1075,24 +1100,13 @@ impl WorkflowDecoder {
 		emit: &mut dyn FnMut(RawEvent),
 	) -> Result<(), Error> {
 		self.text_index = None;
-		let index = self.next_index;
-		self.next_index = self.next_index.saturating_add(1);
 		let arguments = action.arguments_bytes()?;
-		emit(RawEvent::Chat(ChatEvent::ToolCallStarted {
-			index,
-			id: ToolCallId::new(action.request_id.as_str()),
-			name: action.tool_name.clone(),
+		emit(RawEvent::Control(ProviderControlEvent::WorkflowAction {
+			request_id: action.request_id,
+			name: action.tool_name,
+			arguments,
+			timeout_ms: Some(DEFAULT_INVOKE_TIMEOUT_MS),
 		}));
-		emit(RawEvent::Chat(ChatEvent::ToolArgumentsDelta { index, bytes: arguments.clone() }));
-		emit(RawEvent::ToolCallComplete {
-			index,
-			call: UnvalidatedToolCall {
-				id: ToolCallId::new(action.request_id.as_str()),
-				name: action.tool_name,
-				input_kind: ToolInputKind::Json,
-				arguments,
-			},
-		});
 		Ok(())
 	}
 }
@@ -1338,6 +1352,12 @@ fn invalid_request(reason: &'static str) -> Error {
 	error
 }
 
+fn capability_error(reason: &'static str) -> Error {
+	let mut error = protocol_error(ErrorPhase::Encoding, reason);
+	error.kind = ErrorKind::CapabilityMismatch;
+	error
+}
+
 fn protocol_error_dynamic(phase: ErrorPhase, reason: String) -> Error {
 	let mut error =
 		Error::new(ErrorKind::Protocol, phase, RetryAction::Never, ExecutionReceipt::default());
@@ -1359,10 +1379,21 @@ pub const fn default_invoke_timeout_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+	use std::sync::Arc;
+
+	use omp_llm_catalog::Catalog;
 	use serde::Deserialize;
 	use serde_json::value::RawValue;
 
 	use super::*;
+	use crate::{
+		call::{
+			NegotiationPolicy, Sampling, ToolDefinition, ToolGrammar, ToolGrammarSyntax,
+			ToolInputConstraint,
+		},
+		codec::EncodeAttempt,
+		id::RequestId,
+	};
 
 	#[derive(Deserialize)]
 	struct CassetteLine {
@@ -1415,15 +1446,12 @@ mod tests {
 		)));
 		assert!(events.iter().any(|event| matches!(
 			event,
-			RawEvent::ToolCallComplete {
-				call: UnvalidatedToolCall {
-					name,
-					input_kind: ToolInputKind::Json,
-					arguments,
-					..
-				},
+			RawEvent::Control(ProviderControlEvent::WorkflowAction {
+				name,
+				arguments,
+				timeout_ms: Some(DEFAULT_INVOKE_TIMEOUT_MS),
 				..
-			} if name.as_str() == "edit" && arguments.as_ref() == br#"{"path":"a.rs"}"#
+			}) if name.as_str() == "edit" && arguments.as_ref() == br#"{"path":"a.rs"}"#
 		)));
 		assert!(events.iter().any(|event| matches!(
 			event,
@@ -1585,10 +1613,11 @@ mod tests {
 				result.expect("supported action shape");
 				assert!(events.iter().any(|event| matches!(
 					event,
-					RawEvent::ToolCallComplete {
-						call: UnvalidatedToolCall { id, name, .. },
+					RawEvent::Control(ProviderControlEvent::WorkflowAction {
+						request_id,
+						name,
 						..
-					} if id.as_str() == expected.request_id.as_str()
+					}) if request_id.as_str() == expected.request_id.as_str()
 						&& name.as_str() == expected.tool_name.as_str()
 				)));
 			} else if case.input.get().contains("\"action\"") {
@@ -1834,5 +1863,68 @@ mod tests {
 				"transport" | "timeout" | "unsupported" | "auth" | "malformed_frame"
 			));
 		}
+	}
+
+	#[test]
+	fn workflow_codec_rejects_custom_tool_grammars_before_wire_encoding() {
+		let catalog = Catalog::embedded();
+		let model = catalog.models().first().expect("embedded model");
+		let route = model
+			.routes
+			.iter()
+			.find_map(|route| catalog.route(route))
+			.expect("embedded route");
+		let policy = catalog
+			.wire_policy(&model.wire_policy)
+			.expect("embedded wire policy");
+		let request_id = RequestId::new("gitlab-grammar-rejection");
+		let context = EncodeContext {
+			request_id: &request_id,
+			route,
+			target: None,
+			policy_model: None,
+			policy,
+			thinking_policy: None,
+			thinking_selection: None,
+			session: None,
+			server_state: None,
+			account: None,
+			attempt: EncodeAttempt { index: 0, provisional: false },
+		};
+		let request = ChatRequest {
+			messages:          Arc::from([]),
+			tools:             Arc::from([ToolDefinition {
+				name:        Str::new_static("match_input"),
+				description: None,
+				input:       ToolInputConstraint::Grammar(ToolGrammar {
+					syntax:     ToolGrammarSyntax::Lark,
+					definition: Str::new_static("start: WORD"),
+				}),
+			}]),
+			hosted_tools:      Arc::from([]),
+			tool_choice:       Setting::Unset,
+			output:            Setting::Unset,
+			reasoning:         Setting::Unset,
+			verbosity:         Setting::Unset,
+			cache_retention:   Setting::Unset,
+			service_tier:      Setting::Unset,
+			sampling:          Sampling::default(),
+			max_output_tokens: None,
+			top_logprobs:      None,
+			safety:            Arc::from([]),
+			negotiation:       NegotiationPolicy::default(),
+		};
+		let error =
+			match build_start_request(&request, &context, WorkflowSession::new("workflow", "session"))
+			{
+				Ok(_) => panic!("GitLab Workflow must reject custom tool grammars"),
+				Err(error) => error,
+			};
+		assert_eq!(error.kind, ErrorKind::CapabilityMismatch);
+		assert!(matches!(
+			error.detail,
+			Some(ErrorDetail::Protocol { reason })
+				if reason.0.as_str() == "gitlab.workflow.tool_grammar.unsupported"
+		));
 	}
 }

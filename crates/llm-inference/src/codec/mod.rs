@@ -457,12 +457,9 @@ pub enum ProviderControlEvent {
 	/// Provider rolls back uncommitted incremental state.
 	Rollback { sequence: u64 },
 	/// Provider requests an externally executed workflow action.
-	WorkflowAction { request_id: Str, name: Str, arguments: Bytes },
+	WorkflowAction { request_id: Str, name: Str, arguments: Bytes, timeout_ms: Option<u64> },
 	/// Provider supplies a reconnect/resume cursor for a workflow.
 	WorkflowResume { workflow_id: Str, session_id: Str, last_event_id: Option<Str> },
-	/// Client-correlated workflow action result sent through a bidirectional
-	/// protocol.
-	WorkflowActionResponse { request_id: Str, response: Bytes, is_error: bool },
 	/// Internal envelope accepted a request and reports whether it is replayed.
 	Accepted { replay: bool },
 	/// Internal envelope reports an opaque revision conflict.
@@ -472,6 +469,9 @@ pub enum ProviderControlEvent {
 	/// Internal envelope confirms cancellation.
 	Cancelled,
 }
+
+/// Client response accepted only by a live bidirectional provider attempt.
+pub type ProviderControlInput = crate::event::WorkflowResponse;
 
 /// Codec-emitted terminal facts before final accounting is merged.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -530,6 +530,16 @@ pub trait Decoder: Send {
 	/// Completes the stream, flushing partial state or returning a typed
 	/// truncation error.
 	fn finish(&mut self, emit: &mut dyn FnMut(RawEvent)) -> Result<(), Error>;
+
+	/// Returns whether this ordinary decoder owns a live provider response path.
+	fn supports_control(&self) -> bool {
+		false
+	}
+
+	/// Encodes one correlated client response for the same provider session.
+	fn encode_control(&mut self, _input: ProviderControlInput) -> Result<Option<Bytes>, Error> {
+		Ok(None)
+	}
 }
 
 /// Construction-time decoder erasure at the transport I/O boundary.
@@ -724,8 +734,10 @@ pub struct HandshakenResponse {
 	pub meta:     HandshakeMeta,
 	/// Live request-body evidence retained until response stream termination.
 	pub body:     AttemptEvidenceHandle,
-	/// Ordinary decoded event stream; present exactly when `realtime` is absent.
+	/// Ordinary decoded event stream.
 	pub events:   Option<RawEventStream>,
-	/// Owned bidirectional session; present exactly when `events` is absent.
+	/// Same-session response path for an ordinary bidirectional stream.
+	pub control:  Option<flume::Sender<ProviderControlInput>>,
+	/// Owned realtime session; present exactly when `events` is absent.
 	pub realtime: Option<RealtimeSession>,
 }

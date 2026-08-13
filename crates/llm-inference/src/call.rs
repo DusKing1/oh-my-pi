@@ -481,17 +481,68 @@ pub struct Message {
 	pub name:    Option<Str>,
 }
 
-/// JSON-schema declaration used for tool parameters.
+/// Grammar language for a freeform tool input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToolGrammarSyntax {
+	/// Lark grammar.
+	Lark,
+	/// Regular expression.
+	Regex,
+	/// Extended Backus-Naur form.
+	Ebnf,
+}
+
+/// Complete constrained format for a freeform tool input.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ToolGrammar {
+	/// Grammar language.
+	pub syntax:     ToolGrammarSyntax,
+	/// Complete grammar definition.
+	pub definition: Str,
+}
+
+/// Complete syntax declaration for one callable tool's input.
+#[derive(Clone, Debug)]
+pub enum ToolInputConstraint {
+	/// JSON arguments validated against an opaque JSON Schema.
+	JsonSchema {
+		/// Opaque JSON Schema for tool arguments.
+		parameters: OpaqueJson,
+		/// Whether schema conformance must be enforced strictly.
+		strict:     bool,
+	},
+	/// Freeform text constrained by the exact grammar declaration.
+	Grammar(ToolGrammar),
+}
+impl ToolInputConstraint {
+	/// Returns the JSON Schema declaration when this input is structured JSON.
+	#[must_use]
+	pub const fn json_schema(&self) -> Option<(&OpaqueJson, bool)> {
+		match self {
+			Self::JsonSchema { parameters, strict } => Some((parameters, *strict)),
+			Self::Grammar(_) => None,
+		}
+	}
+
+	/// Returns the exact grammar declaration when this input is freeform text.
+	#[must_use]
+	pub const fn grammar(&self) -> Option<&ToolGrammar> {
+		match self {
+			Self::JsonSchema { .. } => None,
+			Self::Grammar(grammar) => Some(grammar),
+		}
+	}
+}
+
+/// One caller-executable tool declaration.
 #[derive(Clone, Debug)]
 pub struct ToolDefinition {
 	/// Stable tool name.
 	pub name:        Str,
 	/// Human-readable tool purpose.
 	pub description: Option<Str>,
-	/// Opaque JSON Schema for tool arguments.
-	pub parameters:  OpaqueJson,
-	/// Whether schema conformance must be enforced strictly.
-	pub strict:      bool,
+	/// Complete, unambiguous input syntax declaration.
+	pub input:       ToolInputConstraint,
 }
 
 /// Hosted tool offered directly by a selected provider route.

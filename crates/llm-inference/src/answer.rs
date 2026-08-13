@@ -1,17 +1,19 @@
 //! Typed unary, streaming, artifact, and session answers.
 
 use std::{
+	collections::BTreeMap,
 	fmt,
 	pin::Pin,
 	sync::{
 		Arc,
 		atomic::{AtomicBool, Ordering},
 	},
-	time::{Duration, SystemTime},
+	task::{Context, Poll},
+	time::{Duration, Instant, SystemTime},
 };
 
 use bytes::Bytes;
-use futures::Stream;
+use futures::{Stream, StreamExt as _};
 use omp_core::Str;
 use secrecy::SecretString;
 
@@ -19,7 +21,7 @@ use crate::{
 	body::ByteStream,
 	catalog::{ModelKey, ModelSpec, ProviderId, RouteId},
 	error::Error,
-	event::ChatEvent,
+	event::{ChatEvent, WorkflowResponse},
 	id::{AccountId, GenerationHandle, LoginSessionId, PrincipalId, RequestId, ToolCallId},
 	operation::job::{
 		JobCancelError, JobCancelHandle, JobCancellationReceipt, JobCheckpoint, JobCheckpointHandle,
@@ -31,8 +33,146 @@ use crate::{
 /// Owned asynchronous stream of fallible values.
 pub type OutputStream<T> = Pin<Box<dyn Stream<Item = Result<T, Error>> + Send + 'static>>;
 
-/// Canonical chat event stream.
-pub type ChatStream = OutputStream<ChatEvent>;
+/// Canonical chat event stream and its optional same-session response path.
+pub struct ChatStream {
+	events:  OutputStream<ChatEvent>,
+	control: Option<ChatControl>,
+}
+
+impl ChatStream {
+	/// Creates an ordinary one-way chat stream without allocating control state.
+	pub fn ordinary(events: OutputStream<ChatEvent>) -> Self {
+		Self { events, control: None }
+	}
+
+	/// Creates a bidirectional chat stream over the provider's live response
+	/// channel.
+	pub(crate) fn duplex(
+		events: OutputStream<ChatEvent>,
+		responses: flume::Sender<WorkflowResponse>,
+	) -> Self {
+		Self {
+			events,
+			control: Some(ChatControl {
+				responses,
+				state: Arc::new(parking_lot::Mutex::new(ChatControlState::default())),
+				closed: Arc::new(tokio::sync::Notify::new()),
+			}),
+		}
+	}
+
+	/// Returns a response handle only when the selected provider route is
+	/// genuinely bidirectional.
+	pub fn control(&self) -> Option<ChatControl> {
+		self.control.clone()
+	}
+}
+
+impl Stream for ChatStream {
+	type Item = Result<ChatEvent, Error>;
+
+	fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+		let item = self.events.poll_next_unpin(context);
+		if let Some(control) = self.control.as_ref() {
+			match &item {
+				Poll::Ready(Some(Ok(ChatEvent::WorkflowAction(action)))) => {
+					let deadline = action.timeout.map(|timeout| Instant::now() + timeout);
+					control
+						.state
+						.lock()
+						.pending
+						.insert(action.invocation.clone(), deadline);
+				},
+				Poll::Ready(Some(Ok(ChatEvent::WorkflowCancelled { invocation }))) => {
+					control.state.lock().pending.remove(invocation);
+				},
+				Poll::Ready(Some(Ok(ChatEvent::Completed(_))))
+				| Poll::Ready(Some(Err(_)))
+				| Poll::Ready(None) => control.close(),
+				_ => {},
+			}
+		}
+		item
+	}
+}
+
+impl Drop for ChatStream {
+	fn drop(&mut self) {
+		if let Some(control) = self.control.as_ref() {
+			control.close();
+		}
+	}
+}
+
+#[derive(Default)]
+struct ChatControlState {
+	closed:  bool,
+	pending: BTreeMap<Str, Option<Instant>>,
+}
+
+/// Clone-cheap handle for responding to live provider workflow actions.
+#[derive(Clone)]
+pub struct ChatControl {
+	responses: flume::Sender<WorkflowResponse>,
+	state:     Arc<parking_lot::Mutex<ChatControlState>>,
+	closed:    Arc<tokio::sync::Notify>,
+}
+
+impl ChatControl {
+	/// Sends one correlated response to the provider session that emitted the
+	/// action.
+	pub async fn submit(&self, response: WorkflowResponse) -> Result<(), ChatControlError> {
+		let invocation = response.invocation().clone();
+		let closed = self.closed.notified();
+		let deadline = {
+			let mut state = self.state.lock();
+			if state.closed {
+				return Err(ChatControlError::Closed);
+			}
+			let Some(deadline) = state.pending.get(&invocation).copied() else {
+				return Err(ChatControlError::UnknownInvocation);
+			};
+			if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+				state.pending.remove(&invocation);
+				return Err(ChatControlError::DeadlineExceeded);
+			}
+			deadline
+		};
+		let result = match deadline {
+			Some(deadline) => tokio::select! {
+				result = self.responses.send_async(response.clone()) => result.map_err(|_| ChatControlError::Closed),
+				_ = closed => Err(ChatControlError::Closed),
+				_ = tokio::time::sleep_until(deadline.into()) => Err(ChatControlError::DeadlineExceeded),
+			},
+			None => tokio::select! {
+				result = self.responses.send_async(response.clone()) => result.map_err(|_| ChatControlError::Closed),
+				_ = closed => Err(ChatControlError::Closed),
+			},
+		};
+		if response.is_terminal() || result == Err(ChatControlError::DeadlineExceeded) {
+			self.state.lock().pending.remove(&invocation);
+		}
+		result
+	}
+
+	fn close(&self) {
+		let mut state = self.state.lock();
+		state.closed = true;
+		state.pending.clear();
+		self.closed.notify_waiters();
+	}
+}
+
+/// Rejection from a live chat response path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChatControlError {
+	/// The stream reached terminal completion or disconnected.
+	Closed,
+	/// No live provider action has this correlation identity.
+	UnknownInvocation,
+	/// The provider action deadline elapsed before this response.
+	DeadlineExceeded,
+}
 
 /// Stream of long-running generation state and artifacts.
 pub type GenerationStream<T> = OutputStream<GenerationEvent<T>>;
@@ -836,8 +976,14 @@ pub struct NativeResponse {
 
 #[cfg(test)]
 mod tests {
+	use futures::StreamExt as _;
+
 	use super::*;
-	use crate::{catalog::OperationKind, operation::job::JobCommand};
+	use crate::{
+		catalog::OperationKind,
+		event::{WorkflowAction, WorkflowActionResponse, WorkflowResponseKind},
+		operation::job::JobCommand,
+	};
 
 	fn job(handle: &'static str) -> JobRef {
 		JobRef {
@@ -857,6 +1003,94 @@ mod tests {
 			expires_at: None,
 			created_at: SystemTime::UNIX_EPOCH,
 		})
+	}
+
+	fn workflow_action(invocation: &'static str, timeout: Option<Duration>) -> ChatEvent {
+		ChatEvent::WorkflowAction(WorkflowAction {
+			invocation: Str::new_static(invocation),
+			call: None,
+			name: Str::new_static("host_action"),
+			arguments: Bytes::from_static(b"request"),
+			timeout,
+			response_kind: WorkflowResponseKind::Action,
+		})
+	}
+
+	fn workflow_response(invocation: &'static str) -> WorkflowResponse {
+		WorkflowResponse::WorkflowActionResponse(WorkflowActionResponse {
+			invocation: Str::new_static(invocation),
+			response:   Bytes::from_static(b"response"),
+			is_error:   false,
+		})
+	}
+
+	#[tokio::test]
+	async fn workflow_action_uses_the_live_response_sink_and_resumes_the_same_stream() {
+		let (responses, received) = flume::unbounded::<WorkflowResponse>();
+		let events = Box::pin(async_stream::stream! {
+			yield Ok(workflow_action("invoke-1", None));
+			let response = received.recv_async().await.expect("same live response sink");
+			assert_eq!(response.invocation().as_str(), "invoke-1");
+			yield Ok(ChatEvent::TextDelta { index: 0, text: Str::new_static("resumed") });
+		});
+		let mut stream = ChatStream::duplex(events, responses);
+		let control = stream.control().expect("duplex control");
+		assert!(matches!(
+			stream.next().await,
+			Some(Ok(ChatEvent::WorkflowAction(WorkflowAction { invocation, .. })))
+				if invocation.as_str() == "invoke-1"
+		));
+
+		control
+			.submit(workflow_response("invoke-1"))
+			.await
+			.expect("live response accepted");
+		assert!(matches!(
+			stream.next().await,
+			Some(Ok(ChatEvent::TextDelta { text, .. })) if text.as_str() == "resumed"
+		));
+		assert_eq!(
+			control.submit(workflow_response("invoke-1")).await,
+			Err(ChatControlError::UnknownInvocation),
+			"a completed invocation rejects duplicate responses",
+		);
+	}
+
+	#[tokio::test]
+	async fn cancelled_and_expired_workflow_actions_reject_late_responses() {
+		let (responses, _received) = flume::unbounded();
+		let events = futures::stream::iter([
+			Ok(workflow_action("cancelled", None)),
+			Ok(ChatEvent::WorkflowCancelled { invocation: Str::new_static("cancelled") }),
+			Ok(workflow_action("expired", Some(Duration::ZERO))),
+		]);
+		let mut stream = ChatStream::duplex(Box::pin(events), responses);
+		let control = stream.control().expect("duplex control");
+		assert!(matches!(stream.next().await, Some(Ok(ChatEvent::WorkflowAction(_)))));
+		assert!(matches!(stream.next().await, Some(Ok(ChatEvent::WorkflowCancelled { .. }))));
+		assert_eq!(
+			control.submit(workflow_response("cancelled")).await,
+			Err(ChatControlError::UnknownInvocation),
+		);
+		assert!(matches!(stream.next().await, Some(Ok(ChatEvent::WorkflowAction(_)))));
+		assert_eq!(
+			control.submit(workflow_response("expired")).await,
+			Err(ChatControlError::DeadlineExceeded),
+		);
+	}
+
+	#[tokio::test]
+	async fn ordinary_chat_remains_one_way_and_forwards_events() {
+		let mut stream =
+			ChatStream::ordinary(Box::pin(futures::stream::iter([Ok(ChatEvent::TextDelta {
+				index: 0,
+				text:  Str::new_static("ordinary"),
+			})])));
+		assert!(stream.control().is_none());
+		assert!(matches!(
+			stream.next().await,
+			Some(Ok(ChatEvent::TextDelta { text, .. })) if text.as_str() == "ordinary"
+		));
 	}
 
 	#[test]

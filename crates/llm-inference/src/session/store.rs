@@ -2,11 +2,13 @@
 //! implementations.
 
 use std::{
+	collections::HashMap,
 	hash::{DefaultHasher, Hash, Hasher},
 	path::Path,
 	sync::Arc,
 };
 
+use bytes::Bytes;
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Serialize, de::DeserializeOwned};
@@ -20,6 +22,15 @@ use super::{
 	revision::{CommittedRevision, HistoryDelta},
 };
 use crate::id::{ConversationId, Revision, TurnId};
+
+/// Exact terminal turn response retained for idempotent RPC replay.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TurnReplay {
+	/// Canonical opening request bytes used to reject turn-ID payload reuse.
+	pub request: Bytes,
+	/// Canonical terminal outcome bytes replayed without running inference.
+	pub outcome: Bytes,
+}
 
 /// Append/fork conversation persistence contract.
 pub trait ConversationStore<I>: Send + Sync {
@@ -44,6 +55,12 @@ pub trait ConversationStore<I>: Send + Sync {
 		turn: TurnId,
 		append: Arc<[I]>,
 	) -> Result<Self::Draft, ConversationError>;
+	/// Returns a committed revision by its conversation-scoped turn identity.
+	fn committed_turn(
+		&self,
+		conversation: &ConversationId,
+		turn: &TurnId,
+	) -> Result<Option<CommittedRevision<I>>, ConversationError>;
 	/// Extracts immutable items after `base`, or a complete replay from the
 	/// root.
 	fn delta(
@@ -67,12 +84,16 @@ pub trait ConversationStore<I>: Send + Sync {
 
 /// Lock-efficient in-memory append-only conversation store.
 pub struct InMemoryConversationStore<I> {
-	state: SharedState<I>,
+	state:   SharedState<I>,
+	replays: Arc<Mutex<HashMap<TurnId, TurnReplay>>>,
 }
 
 impl<I> Default for InMemoryConversationStore<I> {
 	fn default() -> Self {
-		Self { state: Arc::new(Mutex::new(ConversationState::default())) }
+		Self {
+			state:   Arc::new(Mutex::new(ConversationState::default())),
+			replays: Arc::new(Mutex::new(HashMap::new())),
+		}
 	}
 }
 
@@ -87,6 +108,72 @@ impl<I> InMemoryConversationStore<I> {
 	pub fn active_drafts(&self) -> usize {
 		self.state.lock().drafts.len()
 	}
+
+	/// Returns the terminal response for a globally unique logical turn.
+	pub fn turn_replay(&self, turn: &TurnId) -> Option<TurnReplay> {
+		self.replays.lock().get(turn).cloned()
+	}
+
+	/// Retains one terminal response, rejecting reuse with different bytes.
+	pub fn commit_turn_replay(
+		&self,
+		turn: TurnId,
+		request: Bytes,
+		outcome: Bytes,
+	) -> Result<(), ConversationError> {
+		let mut replays = self.replays.lock();
+		validate_turn_replay(&replays, &turn, &request, &outcome)?;
+		replays
+			.entry(turn)
+			.or_insert(TurnReplay { request, outcome });
+		Ok(())
+	}
+
+	/// Commits history, provider state, and replay visibility as one in-memory
+	/// operation. Replay readers remain blocked until the history commit is
+	/// complete, and a replay conflict is checked before history can advance.
+	pub(crate) fn commit_draft(
+		&self,
+		mut draft: TurnDraft<I>,
+		replay: Option<(TurnId, Bytes, Bytes)>,
+		binding: Option<PendingServerStateBinding>,
+	) -> Result<CommittedRevision<I>, ConversationError>
+	where
+		I: PartialEq,
+	{
+		if let Some(binding) = binding {
+			draft.capture_server_state(binding)?;
+		}
+		let mut replays = self.replays.lock();
+		if let Some((turn, request, outcome)) = replay.as_ref() {
+			if turn != &draft.turn {
+				return Err(ConversationError::CorruptStore);
+			}
+			validate_turn_replay(&replays, turn, request, outcome)?;
+		}
+		let committed = draft.commit()?;
+		if let Some((turn, request, outcome)) = replay {
+			replays
+				.entry(turn)
+				.or_insert(TurnReplay { request, outcome });
+		}
+		Ok(committed)
+	}
+}
+
+fn validate_turn_replay(
+	replays: &HashMap<TurnId, TurnReplay>,
+	turn: &TurnId,
+	request: &Bytes,
+	outcome: &Bytes,
+) -> Result<(), ConversationError> {
+	if let Some(existing) = replays.get(turn)
+		&& (existing.request.as_ref() != request.as_ref()
+			|| existing.outcome.as_ref() != outcome.as_ref())
+	{
+		return Err(ConversationError::TurnConflict(turn.clone()));
+	}
+	Ok(())
 }
 
 impl<I: PartialEq + Send + Sync + 'static> ConversationStore<I> for InMemoryConversationStore<I> {
@@ -168,6 +255,18 @@ impl<I: PartialEq + Send + Sync + 'static> ConversationStore<I> for InMemoryConv
 		})
 	}
 
+	fn committed_turn(
+		&self,
+		conversation: &ConversationId,
+		turn: &TurnId,
+	) -> Result<Option<CommittedRevision<I>>, ConversationError> {
+		let state = self.state.lock();
+		let Some(committed) = state.turns.get(&(conversation.clone(), turn.clone())) else {
+			return Ok(None);
+		};
+		revision(&state, committed).map(Some)
+	}
+
 	fn delta(
 		&self,
 		base: Option<&Revision>,
@@ -231,13 +330,79 @@ impl<I> SqliteConversationStore<I> {
 				 TEXT, turn TEXT, items BLOB NOT NULL);
 			CREATE UNIQUE INDEX IF NOT EXISTS revisions_turn ON revisions(conversation, turn) WHERE turn IS \
 				 NOT NULL;
-			CREATE TABLE IF NOT EXISTS bindings (conversation TEXT PRIMARY KEY, binding BLOB NOT NULL);",
+			CREATE TABLE IF NOT EXISTS bindings (conversation TEXT PRIMARY KEY, binding BLOB NOT NULL);
+			CREATE TABLE IF NOT EXISTS turn_replays (
+				turn TEXT PRIMARY KEY,
+				request BLOB NOT NULL,
+				outcome BLOB NOT NULL
+			);",
 			)
 			.map_err(|_| ConversationError::Persistence)?;
 		Ok(Self {
 			connection: Arc::new(Mutex::new(connection)),
 			marker:     std::marker::PhantomData,
 		})
+	}
+
+	/// Returns the exact terminal response for a globally unique logical turn.
+	pub fn turn_replay(&self, turn: &TurnId) -> Result<Option<TurnReplay>, ConversationError> {
+		self
+			.connection
+			.lock()
+			.query_row(
+				"SELECT request,outcome FROM turn_replays WHERE turn=?1",
+				[turn.as_str()],
+				|row| {
+					Ok(TurnReplay {
+						request: Bytes::from(row.get::<_, Vec<u8>>(0)?),
+						outcome: Bytes::from(row.get::<_, Vec<u8>>(1)?),
+					})
+				},
+			)
+			.optional()
+			.map_err(|_| ConversationError::Persistence)
+	}
+
+	/// Atomically retains one terminal response, rejecting turn-ID payload
+	/// reuse with different bytes.
+	pub fn commit_turn_replay(
+		&self,
+		turn: TurnId,
+		request: Bytes,
+		outcome: Bytes,
+	) -> Result<(), ConversationError> {
+		let mut connection = self.connection.lock();
+		let transaction = connection
+			.transaction_with_behavior(TransactionBehavior::Immediate)
+			.map_err(|_| ConversationError::Persistence)?;
+		if let Some(existing) = transaction
+			.query_row(
+				"SELECT request,outcome FROM turn_replays WHERE turn=?1",
+				[turn.as_str()],
+				|row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+			)
+			.optional()
+			.map_err(|_| ConversationError::Persistence)?
+		{
+			if existing.0.as_slice() != request.as_ref() || existing.1.as_slice() != outcome.as_ref() {
+				return Err(ConversationError::TurnConflict(turn));
+			}
+			transaction
+				.commit()
+				.map_err(|_| ConversationError::Persistence)?;
+			return Ok(());
+		}
+		transaction
+			.execute("INSERT INTO turn_replays(turn,request,outcome) VALUES (?1,?2,?3)", params![
+				turn.as_str(),
+				request.as_ref(),
+				outcome.as_ref()
+			])
+			.map_err(|_| ConversationError::Persistence)?;
+		transaction
+			.commit()
+			.map_err(|_| ConversationError::Persistence)?;
+		Ok(())
 	}
 }
 
@@ -250,6 +415,7 @@ pub struct SqliteTurnDraft<I> {
 	turn:         TurnId,
 	items:        Option<Arc<[I]>>,
 	binding:      Option<PendingServerStateBinding>,
+	replay:       Option<(TurnId, Bytes, Bytes)>,
 }
 
 impl<I> SqliteTurnDraft<I> {
@@ -263,6 +429,21 @@ impl<I> SqliteTurnDraft<I> {
 			return Err(ConversationError::CorruptStore);
 		}
 		self.binding = Some(binding);
+		Ok(())
+	}
+
+	/// Stages an exact logical-turn response in the same transaction as the
+	/// provider-history commit.
+	pub fn capture_turn_replay(
+		&mut self,
+		turn: TurnId,
+		request: Bytes,
+		outcome: Bytes,
+	) -> Result<(), ConversationError> {
+		if turn != self.turn {
+			return Err(ConversationError::CorruptStore);
+		}
+		self.replay = Some((turn, request, outcome));
 		Ok(())
 	}
 
@@ -296,8 +477,8 @@ impl<I: Serialize + DeserializeOwned> SqliteTurnDraft<I> {
 		self.commit()
 	}
 
-	/// Atomically commits history and provider state, idempotently by
-	/// conversation and turn ID.
+	/// Atomically commits history, provider state, and any staged terminal
+	/// replay, idempotently by conversation and turn ID.
 	pub fn commit(mut self) -> Result<CommittedRevision<I>, ConversationError> {
 		let items = self.items.take().ok_or(ConversationError::CorruptStore)?;
 		let encoded =
@@ -326,6 +507,7 @@ impl<I: Serialize + DeserializeOwned> SqliteTurnDraft<I> {
 			}
 			let decoded: Arc<[I]> =
 				postcard::from_bytes(&existing.2).map_err(|_| ConversationError::CorruptStore)?;
+			sqlite_commit_turn_replay(&transaction, self.replay.take())?;
 			transaction
 				.commit()
 				.map_err(|_| ConversationError::Persistence)?;
@@ -382,6 +564,7 @@ impl<I: Serialize + DeserializeOwned> SqliteTurnDraft<I> {
 				)
 				.map_err(|_| ConversationError::Persistence)?;
 		}
+		sqlite_commit_turn_replay(&transaction, self.replay.take())?;
 		transaction
 			.commit()
 			.map_err(|_| ConversationError::Persistence)?;
@@ -393,6 +576,35 @@ impl<I: Serialize + DeserializeOwned> SqliteTurnDraft<I> {
 			items,
 		))
 	}
+}
+
+fn sqlite_commit_turn_replay(
+	transaction: &rusqlite::Transaction<'_>,
+	replay: Option<(TurnId, Bytes, Bytes)>,
+) -> Result<(), ConversationError> {
+	let Some((turn, request, outcome)) = replay else {
+		return Ok(());
+	};
+	if let Some(existing) = transaction
+		.query_row("SELECT request,outcome FROM turn_replays WHERE turn=?1", [turn.as_str()], |row| {
+			Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+		})
+		.optional()
+		.map_err(|_| ConversationError::Persistence)?
+	{
+		if existing.0.as_slice() != request.as_ref() || existing.1.as_slice() != outcome.as_ref() {
+			return Err(ConversationError::TurnConflict(turn));
+		}
+		return Ok(());
+	}
+	transaction
+		.execute("INSERT INTO turn_replays(turn,request,outcome) VALUES (?1,?2,?3)", params![
+			turn.as_str(),
+			request.as_ref(),
+			outcome.as_ref()
+		])
+		.map_err(|_| ConversationError::Persistence)?;
+	Ok(())
 }
 
 fn sqlite_next_conversation_id(connection: &Connection) -> Result<i64, ConversationError> {
@@ -521,7 +733,27 @@ impl<I: Serialize + DeserializeOwned + Send + Sync + 'static> ConversationStore<
 			turn,
 			items: Some(append),
 			binding: None,
+			replay: None,
 		})
+	}
+
+	fn committed_turn(
+		&self,
+		conversation: &ConversationId,
+		turn: &TurnId,
+	) -> Result<Option<CommittedRevision<I>>, ConversationError> {
+		let connection = self.connection.lock();
+		let revision = connection
+			.query_row(
+				"SELECT id FROM revisions WHERE conversation=?1 AND turn=?2",
+				params![conversation.as_str(), turn.as_str()],
+				|row| row.get::<_, String>(0),
+			)
+			.optional()
+			.map_err(|_| ConversationError::Persistence)?;
+		revision
+			.map(|revision| sqlite_revision(&connection, &Revision::new(revision)))
+			.transpose()
 	}
 
 	fn delta(

@@ -1080,16 +1080,21 @@ fn lower_tools(
 	tools
 		.iter()
 		.map(|tool| {
+			let Some((parameters, declared_strict)) = tool.input.json_schema() else {
+				return Err(tool_capability_error("openai.chat.tools.grammar_unsupported"));
+			};
 			let (strict, normalize) = match profile.tool_strict {
-				ToolStrictWire::Mixed => (Some(tool.strict), tool.strict),
+				ToolStrictWire::Mixed => (Some(declared_strict), declared_strict),
 				ToolStrictWire::All => (Some(true), true),
-				ToolStrictWire::Unsupported if tool.strict => return Err(capability_error()),
+				ToolStrictWire::Unsupported if declared_strict => {
+					return Err(tool_capability_error("openai.chat.tools.strict_unsupported"));
+				},
 				ToolStrictWire::Unsupported => (None, false),
 			};
 			let parameters = if normalize {
-				strict_schema(tool.parameters.as_value())?
+				strict_schema(parameters.as_value())?
 			} else {
-				tool.parameters.as_value().clone()
+				parameters.as_value().clone()
 			};
 			Ok(WireTool::Function {
 				function: WireFunction {
@@ -1934,6 +1939,12 @@ fn capability_error() -> Error {
 	)
 }
 
+fn tool_capability_error(reason: &'static str) -> Error {
+	let mut error = capability_error();
+	error.code = Some(Str::new_static(reason));
+	error
+}
+
 fn encoding_error(kind: ErrorKind) -> Error {
 	Error::new(kind, ErrorPhase::Encoding, RetryAction::Never, ExecutionReceipt::default())
 }
@@ -1949,7 +1960,7 @@ mod tests {
 	use crate::{
 		call::{
 			ChatRequest, ContentPart, Message, NegotiationPolicy, OpaqueJson, Role, Sampling, Setting,
-			ToolDefinition,
+			ToolDefinition, ToolInputConstraint,
 		},
 		codec::{Decoder, RawEvent},
 		error::ErrorKind,
@@ -2046,11 +2057,13 @@ mod tests {
 		request.tools = Arc::from([ToolDefinition {
 			name:        "lookup".into(),
 			description: None,
-			parameters:  OpaqueJson::new(
-				serde_json::from_str(r#"{"type":"object","properties":{"q":{"type":"string"}}}"#)
-					.expect("schema fixture"),
-			),
-			strict:      true,
+			input:       ToolInputConstraint::JsonSchema {
+				parameters: OpaqueJson::new(
+					serde_json::from_str(r#"{"type":"object","properties":{"q":{"type":"string"}}}"#)
+						.expect("schema fixture"),
+				),
+				strict:     true,
+			},
 		}]);
 		let bytes = OpenAiChatCodec::default()
 			.encode_chat("gpt", &request)

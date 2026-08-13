@@ -74,6 +74,94 @@ pub struct Completion {
 	pub receipt: ExecutionReceipt,
 }
 
+/// Wire response vocabulary expected by a provider workflow action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkflowResponseKind {
+	/// One provider-native action result closes the invocation.
+	Action,
+	/// Canonical incremental invocation frames and a terminal completion.
+	Invoke,
+}
+
+/// Provider-requested action that must be answered on the live chat session.
+#[derive(Clone, Debug)]
+pub struct WorkflowAction {
+	/// Provider correlation identity.
+	pub invocation:    Str,
+	/// Canonical transcript call identity; absent for pure control actions.
+	pub call:          Option<ToolCallId>,
+	/// Executor dispatch name.
+	pub name:          Str,
+	/// Exact provider action arguments.
+	pub arguments:     Bytes,
+	/// Provider completion deadline relative to this event.
+	pub timeout:       Option<std::time::Duration>,
+	/// Response vocabulary accepted by the requesting provider.
+	pub response_kind: WorkflowResponseKind,
+}
+
+/// Provider reconnect cursor surfaced independently of generated output.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowResume {
+	/// Stable provider workflow identity.
+	pub workflow_id:   Str,
+	/// Stable provider session identity.
+	pub session_id:    Str,
+	/// Last fully decoded provider event.
+	pub last_event_id: Option<Str>,
+}
+
+/// Provider-native response to one workflow action.
+#[derive(Clone, Debug)]
+pub struct WorkflowActionResponse {
+	pub invocation: Str,
+	pub response:   Bytes,
+	pub is_error:   bool,
+}
+
+/// Incremental input for one live invocation.
+#[derive(Clone, Debug)]
+pub struct InvokeInput {
+	pub invocation: Str,
+	/// Lossless canonical invocation payload.
+	pub payload:    Bytes,
+}
+
+/// Terminal completion for one live invocation.
+#[derive(Clone, Debug)]
+pub struct InvokeComplete {
+	pub invocation: Str,
+	/// Lossless canonical completion payload.
+	pub payload:    Bytes,
+}
+
+/// One live response sent back through the provider session that requested it.
+#[derive(Clone, Debug)]
+pub enum WorkflowResponse {
+	/// Provider-native action response.
+	WorkflowActionResponse(WorkflowActionResponse),
+	/// Incremental canonical invocation frame.
+	InvokeInput(InvokeInput),
+	/// Terminal canonical invocation frame.
+	InvokeComplete(InvokeComplete),
+}
+
+impl WorkflowResponse {
+	/// Borrows the provider correlation identity.
+	pub fn invocation(&self) -> &Str {
+		match self {
+			Self::WorkflowActionResponse(response) => &response.invocation,
+			Self::InvokeInput(input) => &input.invocation,
+			Self::InvokeComplete(completion) => &completion.invocation,
+		}
+	}
+
+	/// Returns whether this response closes its invocation.
+	pub const fn is_terminal(&self) -> bool {
+		matches!(self, Self::WorkflowActionResponse(_) | Self::InvokeComplete(_))
+	}
+}
+
 /// Canonical chat stream vocabulary.
 ///
 /// There is deliberately no restart or rollback event. Once ordinary output is
@@ -135,6 +223,15 @@ pub enum ChatEvent {
 	},
 	/// Incremental usage observation.
 	Usage(UsageUpdate),
+	/// Provider requests an action whose response must use this live session.
+	WorkflowAction(WorkflowAction),
+	/// Provider publishes a reconnect cursor without ending the turn.
+	WorkflowResume(WorkflowResume),
+	/// Provider cancelled one live invocation.
+	WorkflowCancelled {
+		/// Provider correlation identity.
+		invocation: Str,
+	},
 	/// Successful terminal completion.
 	Completed(Completion),
 }
@@ -146,6 +243,14 @@ impl ChatEvent {
 			Self::ToolCallReady { call, .. } => Some(call),
 			_ => None,
 		}
+	}
+
+	/// Returns whether this event belongs to the live provider control plane.
+	pub const fn is_workflow_control(&self) -> bool {
+		matches!(
+			self,
+			Self::WorkflowAction(_) | Self::WorkflowResume(_) | Self::WorkflowCancelled { .. }
+		)
 	}
 
 	/// Returns whether this event is ordinary output that commits the stream.

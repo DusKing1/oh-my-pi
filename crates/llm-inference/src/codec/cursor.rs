@@ -1278,7 +1278,10 @@ fn encode_chat_call(
 		.tools
 		.iter()
 		.map(|tool| {
-			let schema = serde_json::to_string(tool.parameters.as_value())
+			let Some((parameters, _)) = tool.input.json_schema() else {
+				return Err(encoding_error("cursor_tool_grammar_unsupported"));
+			};
+			let schema = serde_json::to_string(parameters.as_value())
 				.map_err(|_| encoding_error("cursor_tool_schema_not_serializable"))?;
 			Ok(CursorToolDefinition {
 				name:              tool.name.clone(),

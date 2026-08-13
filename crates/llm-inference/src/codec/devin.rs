@@ -521,7 +521,14 @@ impl DevinCodec {
 			.tools
 			.iter()
 			.map(|tool| {
-				serde_json::to_string(tool.parameters.as_value())
+				let Some((parameters, strict)) = tool.input.json_schema() else {
+					return Err(protocol_error_with_kind(
+						ErrorKind::CapabilityMismatch,
+						ErrorPhase::Encoding,
+						"devin.tool_grammar.unsupported",
+					));
+				};
+				serde_json::to_string(parameters.as_value())
 					.map(|schema| ChatToolDefinition {
 						name: tool.name.to_string(),
 						description: tool
@@ -529,7 +536,7 @@ impl DevinCodec {
 							.as_ref()
 							.map_or_else(String::new, ToString::to_string),
 						json_schema_string: schema,
-						strict: tool.strict,
+						strict,
 						..ChatToolDefinition::default()
 					})
 					.map_err(|_| invalid_request("devin.tool_schema.serialization"))

@@ -474,7 +474,7 @@ async fn close_document(
 	cancellation: CancellationToken,
 ) -> DispatchResult<proto::CloseDocumentResponse> {
 	let lease_id = parse_lease_id(&request.lease_id)?;
-	if !session.owns_lease(lease_id) {
+	if !session.release_lease(lease_id) {
 		return Err(Failure::not_found("document lease is not owned by this connection"));
 	}
 	let result = session
@@ -483,8 +483,6 @@ async fn close_document(
 		.close_document(lease_id, cancellation)
 		.await
 		.map_err(Failure::from_registry);
-	let released = session.release_lease(lease_id);
-	debug_assert!(released, "closed lease remained connection-owned");
 	result?;
 	Ok(proto::CloseDocumentResponse {})
 }

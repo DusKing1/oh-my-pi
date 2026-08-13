@@ -221,8 +221,10 @@ where
 					.is_some_and(|evidence| evidence.retry_decision == RetryDecision::Allow);
 				let retryable_action =
 					matches!(&error.action, RetryAction::SemanticRetry | RetryAction::SameRoute { .. });
-				if semantic_retry >= max_retries || !replay_safe || !retryable_action {
-					error.action = RetryAction::Never;
+				let retries_exhausted = semantic_retry >= max_retries;
+				if retries_exhausted || !replay_safe || !retryable_action {
+					error.action =
+						exhausted_action(&error, retries_exhausted, replay_safe, retryable_action);
 					request.context.finalize_error(&mut error);
 					return Err(error);
 				}
@@ -230,5 +232,201 @@ where
 				poll_fn(|cx| service.poll_ready(cx)).await?;
 			}
 		}
+	}
+}
+
+fn exhausted_action(
+	error: &Error,
+	retries_exhausted: bool,
+	replay_safe: bool,
+	retryable_action: bool,
+) -> RetryAction {
+	if retries_exhausted
+		&& replay_safe
+		&& retryable_action
+		&& !error.committed
+		&& error.kind == ErrorKind::EmptyCompletion
+	{
+		// Thinking-only silence is specific to endpoints such as Antigravity's
+		// daily endpoint. Reselecting an uncommitted route mirrors pi's
+		// `!emittedVisibleContent` guard (#8480); `registry::fallback_is_safe`
+		// still requires replay permission before advancing to the sibling route.
+		RetryAction::ReselectRoute
+	} else {
+		RetryAction::Never
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::{
+		sync::{
+			Arc,
+			atomic::{AtomicUsize, Ordering},
+		},
+		time::Duration,
+	};
+
+	use bytes::Bytes;
+	use futures::stream;
+	use omp_core::Str;
+	use tower::{Layer, Service, service_fn};
+
+	use super::{SemanticLayer, SemanticPolicy, exhausted_action};
+	use crate::{
+		body::{AttemptBodyEvidence, BodySource, Replayability, RetryDecision, RetryDecisionReason},
+		codec::{HandshakeMeta, HandshakenResponse, RawEvent},
+		error::{Error, ErrorKind, ErrorPhase, RetryAction},
+		event::ChatEvent,
+		gate::GateCondition,
+		layer::{ExecutionContext, LayerCall},
+		receipt::{
+			AttemptOutcome, AttemptReceipt, Cost, ExecutionBudget, ExecutionReceipt, ProviderEvidence,
+			Usage,
+		},
+	};
+
+	#[derive(Clone, Copy)]
+	struct WholeAttemptPolicy;
+
+	impl SemanticPolicy<()> for WholeAttemptPolicy {
+		fn condition(&self, _: &()) -> Option<GateCondition> {
+			Some(GateCondition::WholeAttempt)
+		}
+
+		fn max_retries(&self, _: &()) -> u32 {
+			1
+		}
+	}
+
+	fn replayable_body() -> AttemptBodyEvidence {
+		AttemptBodyEvidence {
+			opened:         true,
+			consumed:       true,
+			replayability:  Replayability::Replayable,
+			retry_decision: RetryDecision::Allow,
+			reason:         RetryDecisionReason::ReplayableSource,
+		}
+	}
+
+	fn attempt() -> AttemptReceipt {
+		AttemptReceipt {
+			index:             0,
+			hidden:            false,
+			provider:          None,
+			route:             None,
+			account:           None,
+			principal:         None,
+			body:              replayable_body(),
+			outcome:           AttemptOutcome::FailedPreCommit,
+			usage:             Usage::default(),
+			cost:              Cost::default(),
+			provider_evidence: ProviderEvidence::default(),
+			elapsed:           Duration::ZERO,
+		}
+	}
+
+	fn receipt() -> ExecutionReceipt {
+		let mut receipt = ExecutionReceipt::default();
+		receipt.record_attempt(attempt());
+		receipt
+	}
+
+	fn context() -> ExecutionContext {
+		let context = ExecutionContext::new(ExecutionBudget::default());
+		context.with_receipt(|destination| *destination = receipt());
+		context
+	}
+
+	async fn exhaust(kind: ErrorKind) -> (Error, usize) {
+		let calls = Arc::new(AtomicUsize::new(0));
+		let inner_calls = Arc::clone(&calls);
+		let inner = service_fn(move |call: LayerCall<()>| {
+			inner_calls.fetch_add(1, Ordering::SeqCst);
+			async move {
+				let body = BodySource::bytes(Bytes::new())
+					.begin_attempt()
+					.evidence_handle();
+				let error = Error::new(
+					kind,
+					ErrorPhase::Recovery,
+					RetryAction::SemanticRetry,
+					call.context.receipt(),
+				);
+				Ok::<_, Error>(HandshakenResponse {
+					meta: HandshakeMeta {
+						status:              None,
+						headers:             Box::new([]),
+						provider_request_id: None,
+					},
+					body,
+					events: Some(Box::pin(stream::iter([
+						Ok(RawEvent::Chat(ChatEvent::ThinkingDelta {
+							index: 0,
+							text:  Str::new_static("private reasoning"),
+						})),
+						Err(error),
+					]))),
+					control: None,
+					realtime: None,
+				})
+			}
+		});
+		let mut service = SemanticLayer::new(WholeAttemptPolicy).layer(inner);
+		futures::future::poll_fn(|cx| service.poll_ready(cx))
+			.await
+			.unwrap();
+		let error = match service
+			.call(LayerCall { payload: (), context: context() })
+			.await
+		{
+			Ok(_) => panic!("semantic exhaustion must fail"),
+			Err(error) => error,
+		};
+		(error, calls.load(Ordering::SeqCst))
+	}
+
+	#[tokio::test]
+	async fn empty_completion_exhaustion_reselects_preplanned_fallback() {
+		let (error, calls) = exhaust(ErrorKind::EmptyCompletion).await;
+
+		assert_eq!(error.action, RetryAction::ReselectRoute);
+		assert!(!error.committed);
+		assert_eq!(calls, 2, "{error:?}");
+		assert!(error.receipt.attempts.last().is_some_and(|attempt| {
+			attempt.outcome != AttemptOutcome::FailedCommitted
+				&& attempt.body.retry_decision == RetryDecision::Allow
+		}));
+		let has_next = true;
+		assert!(
+			has_next
+				&& !error.committed
+				&& error.action == RetryAction::ReselectRoute
+				&& error.receipt.attempts.last().is_some_and(|attempt| {
+					attempt.outcome != AttemptOutcome::FailedCommitted
+						&& attempt.body.retry_decision == RetryDecision::Allow
+				})
+		);
+	}
+
+	#[tokio::test]
+	async fn non_empty_semantic_exhaustion_stays_terminal() {
+		let (error, calls) = exhaust(ErrorKind::ToolNonCompliance).await;
+
+		assert_eq!(error.action, RetryAction::Never);
+		assert_eq!(calls, 2, "{error:?}");
+	}
+
+	#[test]
+	fn committed_empty_completion_exhaustion_stays_terminal() {
+		let mut error = Error::new(
+			ErrorKind::EmptyCompletion,
+			ErrorPhase::Recovery,
+			RetryAction::SemanticRetry,
+			receipt(),
+		);
+		error.committed = true;
+
+		assert_eq!(exhausted_action(&error, true, true, true), RetryAction::Never);
 	}
 }

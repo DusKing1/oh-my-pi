@@ -1180,7 +1180,11 @@ mod tests {
 		let cca = GoogleCcaConfig {
 			gemini_cli_platform: Str::from("test"),
 			gemini_cli_arch:     Str::from("test"),
-			antigravity_headers: CcaHeaders::antigravity("test", "test", false, None),
+			antigravity_headers: CcaHeaders::antigravity(
+				&crate::codec::google_cca::AntigravityFingerprint::default(),
+				false,
+				None,
+			),
 			antigravity_policy:  AntigravityPolicy::default(),
 		};
 		let binding = codec_binding(&route, &cca).expect("route codec binding");

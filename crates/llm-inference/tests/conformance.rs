@@ -166,7 +166,9 @@ fn every_operation_has_a_typed_extraction_bound_to_the_operations_manifest() {
 		revision:  Str::from("1"),
 		exact:     true,
 	};
-	assert!(ChatRequest::extract(answer(AnswerBody::Chat(empty_stream()))).is_ok());
+	assert!(
+		ChatRequest::extract(answer(AnswerBody::Chat(ChatStream::ordinary(empty_stream())))).is_ok()
+	);
 	assert!(
 		CountTokensRequest::extract(answer(AnswerBody::Tokens(TokenCount {
 			tokens:     17,

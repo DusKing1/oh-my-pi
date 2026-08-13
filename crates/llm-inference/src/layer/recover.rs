@@ -13,7 +13,7 @@ use tower::{Layer, Service};
 
 use crate::{
 	answer::{AnswerBody, ModelDiscoveryPage},
-	call::{Call, OperationCall, Setting, StructuredOutput, ToolDefinition},
+	call::{Call, OperationCall, Setting, StructuredOutput, ToolDefinition, ToolInputConstraint},
 	codec::{HandshakenResponse, RawCompletion, RawEvent, ToolInputKind, UnvalidatedToolCall},
 	error::{Error, ErrorDetail, ErrorKind, ErrorPhase, RetryAction},
 	event::{ChatEvent, Completion},
@@ -557,8 +557,18 @@ fn recover_tool(
 	definitions: &[ToolDefinition],
 	context: &crate::layer::ExecutionContext,
 ) -> Result<ChatEvent, Error> {
-	if call.input_kind != ToolInputKind::Json {
-		return Err(recovery_error("tool.freeform-not-declared", context));
+	let Some(definition) = definitions
+		.iter()
+		.find(|definition| definition.name == call.name)
+	else {
+		return Err(recovery_error("tool.not-declared", context));
+	};
+	let declared_kind = match &definition.input {
+		ToolInputConstraint::JsonSchema { .. } => ToolInputKind::Json,
+		ToolInputConstraint::Grammar(_) => ToolInputKind::Freeform,
+	};
+	if call.input_kind != declared_kind {
+		return Err(recovery_error("tool.input-kind-mismatch", context));
 	}
 	let mut assembler = ToolAssembler::new(
 		definitions,

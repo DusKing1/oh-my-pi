@@ -215,6 +215,10 @@ impl OutputGate {
 				return Err(self.inactive_error());
 			},
 		}
+		if event.is_workflow_control() {
+			emit(event);
+			return Ok(GateProgress::PassThrough);
+		}
 
 		if self.event_satisfies(&event) {
 			let flushed = self.commit(Some(event), emit)?;
@@ -573,6 +577,13 @@ pub fn event_size(event: &ChatEvent) -> u64 {
 		ChatEvent::ToolArgumentsDelta { bytes, .. } => usize_to_u64(bytes.len()),
 		ChatEvent::ToolCallReady { call, .. } => tool_call_size(call),
 		ChatEvent::Artifact { artifact, .. } => artifact_size(artifact),
+		ChatEvent::WorkflowAction(action) => usize_to_u64(action.invocation.len())
+			.saturating_add(usize_to_u64(action.name.len()))
+			.saturating_add(usize_to_u64(action.arguments.len())),
+		ChatEvent::WorkflowResume(resume) => usize_to_u64(resume.workflow_id.len())
+			.saturating_add(usize_to_u64(resume.session_id.len()))
+			.saturating_add(usize_to_u64(resume.last_event_id.as_ref().map_or(0, Str::len))),
+		ChatEvent::WorkflowCancelled { invocation } => usize_to_u64(invocation.len()),
 		ChatEvent::Completed(completion) => receipt_heap_size(&completion.receipt),
 	};
 	usize_to_u64(size_of::<(ChatEvent, u64)>()).saturating_add(payload)

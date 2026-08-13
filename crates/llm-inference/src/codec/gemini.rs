@@ -21,7 +21,7 @@ use crate::{
 		ChatRequest, ContentPart, CountTokensRequest, EmbedRequest, EmbeddingInput, HostedTool,
 		MediaInput, Message, OpaqueJson, OperationCall, ProviderProof, ReasoningRequest,
 		ReasoningVisibility, Role, SafetySetting, SafetyThreshold, Setting, StructuredOutput,
-		ToolChoice, ToolDefinition, ToolResultContent, TruncationPolicy,
+		ToolChoice, ToolDefinition, ToolInputConstraint, ToolResultContent, TruncationPolicy,
 	},
 	codec::{
 		Codec, DecodeContext, Decoder, DecoderState, EncodeContext, EncodedRequest,
@@ -89,21 +89,24 @@ pub struct GoogleProofScope {
 #[derive(Clone, Debug, Default)]
 pub struct GoogleRequestOptions {
 	/// Existing Google cached-content resource name.
-	pub cached_content:      Option<Str>,
+	pub cached_content:          Option<Str>,
 	/// Explicit safety policy. An empty list means no safetySettings field.
-	pub safety_settings:     Vec<GoogleSafetySetting>,
+	pub safety_settings:         Vec<GoogleSafetySetting>,
 	/// Explicit output modalities.
-	pub response_modalities: Vec<Str>,
+	pub response_modalities:     Vec<Str>,
 	/// Whether the Google Search hosted tool is enabled.
-	pub google_search:       bool,
+	pub google_search:           bool,
 	/// Whether the code-execution hosted tool is enabled.
-	pub code_execution:      bool,
+	pub code_execution:          bool,
 	/// Selected wire identity required whenever historical continuation proofs
 	/// are present.
-	pub proof_scope:         Option<GoogleProofScope>,
+	pub proof_scope:             Option<GoogleProofScope>,
+	/// Whether assistant reasoning without a continuation proof is omitted from
+	/// the wire request instead of sent as an unsigned thought part.
+	pub drop_unsigned_reasoning: bool,
 	/// Legacy typed remote-file substitutions keyed by `(message index, part
 	/// index)`.
-	pub remote_files:        BTreeMap<(usize, usize), GoogleFileData>,
+	pub remote_files:            BTreeMap<(usize, usize), GoogleFileData>,
 }
 
 /// One explicit Google harm-policy entry.
@@ -839,6 +842,11 @@ impl GeminiCodec {
 				});
 				continue;
 			}
+			if options.drop_unsigned_reasoning
+				&& matches!(part, ContentPart::Reasoning { proof: None, .. })
+			{
+				continue;
+			}
 			if matches!(
 				part,
 				ContentPart::Image(MediaInput::Bytes { data, .. })
@@ -958,11 +966,14 @@ impl GeminiCodec {
 		if !request.tools.is_empty() {
 			let mut declarations = Vec::with_capacity(request.tools.len());
 			for tool in request.tools.iter() {
-				let mut schema = GoogleSchema::from_opaque(&tool.parameters)?;
+				let Some((parameters, strict)) = tool.input.json_schema() else {
+					return Err(GoogleCodecError::capability("gemini.tools.grammar_unsupported"));
+				};
+				let mut schema = GoogleSchema::from_opaque(parameters)?;
 				if matches!(self.endpoint, GoogleEndpointKind::CloudCodeAssist) {
 					schema.normalize_for_cca();
 				}
-				if tool.strict {
+				if strict {
 					adjustments.push(GoogleAdjustment {
 						what:   format!("tools.{}.strict", tool.name).into(),
 						detail: "Gemini function declarations do not expose a strict boolean".into(),
@@ -1559,6 +1570,23 @@ pub struct GoogleWireError {
 	pub message: Option<Str>,
 	/// Symbolic provider status.
 	pub status:  Option<Str>,
+	/// Structured Google RPC error evidence.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub details: Vec<GoogleErrorDetail>,
+}
+
+/// One structured `google.rpc.Status` detail.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct GoogleErrorDetail {
+	/// Fully qualified protobuf detail type.
+	#[serde(rename = "@type")]
+	pub type_url:    Str,
+	/// Provider classification supplied by `google.rpc.ErrorInfo`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason:      Option<Str>,
+	/// Retry delay supplied by `google.rpc.RetryInfo`.
+	#[serde(default, rename = "retryDelay", skip_serializing_if = "Option::is_none")]
+	pub retry_delay: Option<Str>,
 }
 
 /// Provider-reported usage counters.
@@ -2680,15 +2708,31 @@ impl Decoder for CanonicalGeminiDecoder {
 	}
 }
 
+const GOOGLE_RPC_ERROR_INFO_TYPE: &str = "type.googleapis.com/google.rpc.ErrorInfo";
+const GOOGLE_RPC_RETRY_INFO_TYPE: &str = "type.googleapis.com/google.rpc.RetryInfo";
+const LONG_RATE_LIMIT_DELAY_MS: u64 = 5 * 60 * 1_000;
+
+fn parse_google_retry_delay_ms(delay: &str) -> Option<u64> {
+	let seconds = delay.strip_suffix('s')?.parse::<f64>().ok()?;
+	let milliseconds = seconds * 1_000.0;
+	(seconds.is_finite() && seconds >= 0.0 && milliseconds <= u64::MAX as f64)
+		.then(|| milliseconds as u64)
+}
+
 /// Stable Google codec error category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GoogleCodecErrorKind {
 	/// Canonical request could not be encoded.
 	Encoding,
+	/// Selected Google route cannot represent a required declaration.
+	Capability,
 	/// Provider bytes violated the wire schema.
 	Decode,
 	/// Provider reported rate limiting.
 	RateLimited,
+	/// Provider reported exhausted account or credit quota; sibling credentials
+	/// may still be usable.
+	QuotaExhausted,
 	/// Provider reported overload.
 	Overloaded,
 	/// Other provider contract failure.
@@ -2704,7 +2748,7 @@ pub struct GoogleCodecError {
 	pub detail:         Str,
 	/// Numeric status when supplied.
 	pub status:         Option<u16>,
-	/// Symbolic provider status when supplied.
+	/// Structured provider reason, or symbolic status when no reason was supplied.
 	pub code:           Option<Str>,
 	/// Provider-suggested minimum delay; policy decides whether retry is legal.
 	pub retry_after_ms: u64,
@@ -2714,6 +2758,16 @@ impl GoogleCodecError {
 	fn encoding(detail: impl Into<Str>) -> Self {
 		Self {
 			kind:           GoogleCodecErrorKind::Encoding,
+			detail:         detail.into(),
+			status:         None,
+			code:           None,
+			retry_after_ms: 0,
+		}
+	}
+
+	fn capability(detail: impl Into<Str>) -> Self {
+		Self {
+			kind:           GoogleCodecErrorKind::Capability,
 			detail:         detail.into(),
 			status:         None,
 			code:           None,
@@ -2741,45 +2795,102 @@ impl GoogleCodecError {
 		}
 	}
 
-	fn from_wire(error: GoogleWireError) -> Self {
-		let kind = match (error.code, error.status.as_deref()) {
+	/// Classifies a typed wire error, retaining a structured Google RPC reason
+	/// in `code` so receipts can distinguish provider quota categories.
+	pub(super) fn from_wire(error: GoogleWireError) -> Self {
+		let GoogleWireError { code, message, status, details } = error;
+		let mut kind = match (code, status.as_deref()) {
 			(Some(429), _) | (_, Some("RESOURCE_EXHAUSTED")) => GoogleCodecErrorKind::RateLimited,
 			(Some(503), _) | (_, Some("UNAVAILABLE")) => GoogleCodecErrorKind::Overloaded,
 			_ => GoogleCodecErrorKind::Upstream,
 		};
-		let retry_after_ms =
-			if matches!(kind, GoogleCodecErrorKind::RateLimited | GoogleCodecErrorKind::Overloaded) {
-				1_000
-			} else {
-				0
+		let structured_reason = (kind == GoogleCodecErrorKind::RateLimited)
+			.then(|| {
+				details
+					.iter()
+					.find(|detail| {
+						detail.type_url == GOOGLE_RPC_ERROR_INFO_TYPE && detail.reason.is_some()
+					})
+					.and_then(|detail| detail.reason.as_deref())
+					.map(|reason| Str::from(reason.trim().to_ascii_uppercase()))
+			})
+			.flatten();
+		let structured_retry_after_ms = (kind == GoogleCodecErrorKind::RateLimited)
+			.then(|| {
+				details
+					.iter()
+					.find(|detail| detail.type_url == GOOGLE_RPC_RETRY_INFO_TYPE)
+					.and_then(|detail| detail.retry_delay.as_deref())
+					.and_then(parse_google_retry_delay_ms)
+			})
+			.flatten();
+		if let Some(reason) = structured_reason.as_deref() {
+			kind = match reason {
+				"QUOTA_EXHAUSTED" | "INSUFFICIENT_G1_CREDITS_BALANCE" => {
+					GoogleCodecErrorKind::QuotaExhausted
+				},
+				"RATE_LIMIT_EXCEEDED"
+					if structured_retry_after_ms
+						.is_some_and(|delay| delay >= LONG_RATE_LIMIT_DELAY_MS) =>
+				{
+					GoogleCodecErrorKind::QuotaExhausted
+				},
+				_ => GoogleCodecErrorKind::RateLimited,
 			};
+		}
+		let retry_after_ms = if matches!(
+			kind,
+			GoogleCodecErrorKind::RateLimited | GoogleCodecErrorKind::QuotaExhausted
+		) {
+			structured_retry_after_ms.unwrap_or(1_000)
+		} else if kind == GoogleCodecErrorKind::Overloaded {
+			1_000
+		} else {
+			0
+		};
 		Self {
 			kind,
-			detail: error
-				.message
-				.unwrap_or_else(|| "Google provider error".into()),
-			status: error.code,
-			code: error.status,
+			detail: message.unwrap_or_else(|| "Google provider error".into()),
+			status: code,
+			code: structured_reason.or(status),
 			retry_after_ms,
 		}
 	}
 
-	/// Converts protocol evidence to the shared inference error without
-	/// authorizing retry.
+	/// Converts protocol evidence to the shared inference error, attaching
+	/// retry or account-rotation intent only before output is committed.
 	pub fn into_inference(self, committed: bool) -> Error {
 		let kind = match self.kind {
 			GoogleCodecErrorKind::Encoding => ErrorKind::InvalidRequest,
+			GoogleCodecErrorKind::Capability => ErrorKind::CapabilityMismatch,
 			GoogleCodecErrorKind::Decode => ErrorKind::StreamCorruption,
 			GoogleCodecErrorKind::RateLimited => ErrorKind::RateLimited,
+			GoogleCodecErrorKind::QuotaExhausted => ErrorKind::QuotaExhausted,
 			GoogleCodecErrorKind::Overloaded => ErrorKind::ResourceExhausted,
 			GoogleCodecErrorKind::Upstream => ErrorKind::Protocol,
 		};
-		let phase = if matches!(self.kind, GoogleCodecErrorKind::Encoding) {
+		let phase = if matches!(
+			self.kind,
+			GoogleCodecErrorKind::Encoding | GoogleCodecErrorKind::Capability
+		) {
 			ErrorPhase::Encoding
 		} else {
 			ErrorPhase::Streaming
 		};
-		let mut error = Error::new(kind, phase, RetryAction::Never, ExecutionReceipt::default());
+		let action = if committed {
+			RetryAction::Never
+		} else {
+			match self.kind {
+				GoogleCodecErrorKind::RateLimited | GoogleCodecErrorKind::Overloaded => {
+					RetryAction::SameRoute {
+						after: std::time::Duration::from_millis(self.retry_after_ms.max(1)),
+					}
+				},
+				GoogleCodecErrorKind::QuotaExhausted => RetryAction::RotateAccount,
+				_ => RetryAction::Never,
+			}
+		};
+		let mut error = Error::new(kind, phase, action, ExecutionReceipt::default());
 		error.committed = committed;
 		error.status = self.status;
 		error.code = self.code;
@@ -2806,6 +2917,38 @@ mod tests {
 
 	fn opaque(source: &str) -> OpaqueJson {
 		OpaqueJson(Arc::new(serde_json::from_str(source).expect("valid test JSON")))
+	}
+	fn google_rpc_429(reason: &str, retry_delay: Option<&str>) -> String {
+		let mut details = vec![serde_json::json!({
+			"@type": GOOGLE_RPC_ERROR_INFO_TYPE,
+			"reason": reason,
+		})];
+		if let Some(retry_delay) = retry_delay {
+			details.push(serde_json::json!({
+				"@type": GOOGLE_RPC_RETRY_INFO_TYPE,
+				"retryDelay": retry_delay,
+			}));
+		}
+		serde_json::json!({
+			"error": {
+				"code": 429,
+				"message": "Resource exhausted",
+				"status": "RESOURCE_EXHAUSTED",
+				"details": details,
+			},
+		})
+		.to_string()
+	}
+
+	fn decode_google_error(body: &str) -> GoogleCodecError {
+		let mut decoder = GeminiDecoder::default();
+		let events = decoder
+			.push_json(body.as_bytes())
+			.expect("Google RPC error body decodes");
+		let [GoogleDecodedEvent::Error(error)] = events.as_slice() else {
+			panic!("Google RPC error body produces exactly one error");
+		};
+		error.clone()
 	}
 
 	fn empty_chat_request() -> ChatRequest {
@@ -3296,8 +3439,10 @@ mod tests {
 		request.tools = vec![ToolDefinition {
 			name:        "lookup".into(),
 			description: None,
-			parameters:  opaque(r#"{"type":"object"}"#),
-			strict:      true,
+			input:       ToolInputConstraint::JsonSchema {
+				parameters: opaque(r#"{"type":"object"}"#),
+				strict:     true,
+			},
 		}]
 		.into();
 		let projection = GeminiCodec::generative_language(None)
@@ -3442,10 +3587,12 @@ mod tests {
 			tools:             vec![ToolDefinition {
 				name:        "lookup".into(),
 				description: Some("Look up a record".into()),
-				parameters:  opaque(
-					r#"{"type":"object","properties":{"q":{"type":["string","null"]}},"required":["q"]}"#,
-				),
-				strict:      false,
+				input:       ToolInputConstraint::JsonSchema {
+					parameters: opaque(
+						r#"{"type":"object","properties":{"q":{"type":["string","null"]}},"required":["q"]}"#,
+					),
+					strict:     false,
+				},
 			}]
 			.into(),
 			hosted_tools:      Arc::from([]),
@@ -3740,6 +3887,52 @@ mod tests {
 			matches!(&incomplete.finish().expect("finish")[0], GoogleDecodedEvent::Error(error) if error.detail.as_str() == "Google stream ended without a finish reason")
 		);
 		assert!(incomplete.finish().expect("idempotent finish").is_empty());
+	}
+
+	#[test]
+	fn structured_google_rpc_rate_limits_classify_quota_and_backoff() {
+		let quota = decode_google_error(&google_rpc_429("QUOTA_EXHAUSTED", Some("21600s")));
+		assert_eq!(quota.kind, GoogleCodecErrorKind::QuotaExhausted);
+		assert_eq!(quota.retry_after_ms, 21_600_000);
+		assert_eq!(quota.code.as_deref(), Some("QUOTA_EXHAUSTED"));
+		assert_eq!(quota.clone().into_inference(true).action, RetryAction::Never);
+		let inference = quota.into_inference(false);
+		assert_eq!(inference.kind, ErrorKind::QuotaExhausted);
+		assert_eq!(inference.phase, ErrorPhase::Streaming);
+		assert_eq!(inference.action, RetryAction::RotateAccount);
+
+		for (reason, retry_delay, expected_kind, expected_delay) in [
+			("RATE_LIMIT_EXCEEDED", Some("30s"), GoogleCodecErrorKind::RateLimited, 30_000),
+			("RATE_LIMIT_EXCEEDED", None, GoogleCodecErrorKind::RateLimited, 1_000),
+			("RATE_LIMIT_EXCEEDED", Some("300s"), GoogleCodecErrorKind::QuotaExhausted, 300_000),
+			("RATE_LIMIT_EXCEEDED", Some("21600s"), GoogleCodecErrorKind::QuotaExhausted, 21_600_000),
+			("RATE_LIMIT_EXCEEDED", Some("0.5s"), GoogleCodecErrorKind::RateLimited, 500),
+		] {
+			let actual = decode_google_error(&google_rpc_429(reason, retry_delay));
+			assert_eq!(actual.kind, expected_kind, "{reason} {retry_delay:?}");
+			assert_eq!(actual.retry_after_ms, expected_delay, "{reason} {retry_delay:?}");
+			assert_eq!(actual.code.as_deref(), Some(reason));
+			if retry_delay == Some("30s") {
+				assert_eq!(
+					actual.into_inference(false).action,
+					RetryAction::SameRoute {
+						after: std::time::Duration::from_secs(30),
+					}
+				);
+			}
+		}
+
+		let credits = decode_google_error(&google_rpc_429(" insufficient_g1_credits_balance ", None));
+		assert_eq!(credits.kind, GoogleCodecErrorKind::QuotaExhausted);
+		assert_eq!(credits.retry_after_ms, 1_000);
+		assert_eq!(credits.code.as_deref(), Some("INSUFFICIENT_G1_CREDITS_BALANCE"));
+
+		let plain = decode_google_error(
+			r#"{"error":{"code":429,"message":"Too many requests","status":"RESOURCE_EXHAUSTED"}}"#,
+		);
+		assert_eq!(plain.kind, GoogleCodecErrorKind::RateLimited);
+		assert_eq!(plain.retry_after_ms, 1_000);
+		assert_eq!(plain.code.as_deref(), Some("RESOURCE_EXHAUSTED"));
 	}
 
 	#[test]

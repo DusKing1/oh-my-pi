@@ -12,7 +12,7 @@ use xutf::BufReadCharsExt as _;
 
 use super::{RecoveryError, Stage};
 use crate::{
-	call::{OpaqueJson, ToolDefinition},
+	call::{OpaqueJson, ToolDefinition, ToolInputConstraint},
 	event::ToolCall,
 	id::ToolCallId,
 	receipt::{ReasonId, RecoveryKind, RecoveryRecord},
@@ -381,30 +381,45 @@ impl<'a> ToolAssembler<'a> {
 		else {
 			return ToolAssemblyEvent::Rejected { source_index, reason: ToolRejection::InvalidName };
 		};
-		let arguments: Value = match serde_json::from_slice(&call.arguments) {
-			Ok(arguments) => arguments,
-			Err(error) => {
-				return ToolAssemblyEvent::Rejected {
-					source_index,
-					reason: ToolRejection::MalformedArguments {
-						offset: error.column(),
-						reason: Str::from(error.to_string()),
+		let arguments = match &definition.input {
+			ToolInputConstraint::JsonSchema { parameters, strict } => {
+				let arguments: Value = match serde_json::from_slice(&call.arguments) {
+					Ok(arguments) => arguments,
+					Err(error) => {
+						return ToolAssemblyEvent::Rejected {
+							source_index,
+							reason: ToolRejection::MalformedArguments {
+								offset: error.column(),
+								reason: Str::from(error.to_string()),
+							},
+						};
 					},
 				};
+				if let Err(reason) =
+					validate_schema(parameters.as_value(), &arguments, *strict, self.limits)
+				{
+					return ToolAssemblyEvent::Rejected {
+						source_index,
+						reason: ToolRejection::SchemaViolation(reason),
+					};
+				}
+				self.record("tool.complete-schema-valid", call.arguments.len() as u64, 1);
+				arguments
+			},
+			ToolInputConstraint::Grammar(_) => {
+				let Ok(arguments) = std::str::from_utf8(&call.arguments) else {
+					return ToolAssemblyEvent::Rejected {
+						source_index,
+						reason: ToolRejection::MalformedArguments {
+							offset: 0,
+							reason: Str::new_static("freeform tool input is not UTF-8"),
+						},
+					};
+				};
+				self.record("tool.complete-freeform-valid", call.arguments.len() as u64, 1);
+				Value::String(arguments.to_owned())
 			},
 		};
-		if let Err(reason) = validate_schema(
-			definition.parameters.as_value(),
-			&arguments,
-			definition.strict,
-			self.limits,
-		) {
-			return ToolAssemblyEvent::Rejected {
-				source_index,
-				reason: ToolRejection::SchemaViolation(reason),
-			};
-		}
-		self.record("tool.complete-schema-valid", call.arguments.len() as u64, 1);
 		ToolAssemblyEvent::Ready {
 			source_index,
 			call: ToolCall {
@@ -860,10 +875,12 @@ mod tests {
 		ToolDefinition {
 			name:        Str::from("search"),
 			description: None,
-			parameters:  OpaqueJson::new(
-				json!({"type":"object","properties":{"query":{"type":"string","minLength":1}},"required":["query"],"additionalProperties":false}),
-			),
-			strict:      true,
+			input:       ToolInputConstraint::JsonSchema {
+				parameters: OpaqueJson::new(
+					json!({"type":"object","properties":{"query":{"type":"string","minLength":1}},"required":["query"],"additionalProperties":false}),
+				),
+				strict:     true,
+			},
 		}
 	}
 
@@ -1021,13 +1038,15 @@ mod tests {
 		let nested = ToolDefinition {
 			name:        Str::from("search"),
 			description: None,
-			parameters:  OpaqueJson::new(json!({
-				"type":"object",
-				"properties":{"query":{"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}},
-				"required":["query"],
-				"additionalProperties":false
-			})),
-			strict:      true,
+			input:       ToolInputConstraint::JsonSchema {
+				parameters: OpaqueJson::new(json!({
+					"type":"object",
+					"properties":{"query":{"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}},
+					"required":["query"],
+					"additionalProperties":false
+				})),
+				strict:     true,
+			},
 		};
 		let mut repair = JsonRepairStage::new(
 			JsonEnforcement::NativeOrRepair,

@@ -8,7 +8,7 @@ pub mod store;
 use std::{
 	collections::{BTreeMap, HashMap},
 	sync::Arc,
-	time::SystemTime,
+	time::{Duration, SystemTime},
 };
 
 pub use binding::{
@@ -26,14 +26,17 @@ use parking_lot::Mutex;
 pub use revision::{CommittedRevision, HistoryDelta};
 pub use store::{
 	ConversationStore, InMemoryConversationStore, SqliteConversationStore, SqliteTurnDraft,
+	TurnReplay,
 };
 
 use crate::{
 	answer::ArtifactBody,
-	call::{ContextStrategy, Message, OperationCall},
+	call::{
+		CacheRetention, ContextStrategy, Message, OperationCall, PrefixCachePolicy, ServerStatePolicy,
+	},
 	codec::ProviderStateEvent,
 	error::{Error, ErrorKind, ErrorPhase, RetryAction},
-	event::{BlockKind, ChatEvent},
+	event::{BlockKind, ChatEvent, Completion},
 	id::{RequestId, Revision},
 	layer::{
 		ExecutionContext, SessionAffinity,
@@ -141,6 +144,16 @@ struct PreparedTurn {
 	credential_policy: CredentialGenerationPolicy,
 }
 
+type TurnReplayEncoder =
+	dyn Fn(&Completion) -> Result<Bytes, ConversationError> + Send + Sync + 'static;
+
+#[derive(Clone)]
+struct PendingTurnReplay {
+	turn:    crate::id::TurnId,
+	request: Bytes,
+	encode:  Arc<TurnReplayEncoder>,
+}
+
 #[derive(Clone)]
 enum PlannerStore {
 	Sqlite(Arc<SqliteConversationStore<StoredMessage>>),
@@ -149,10 +162,61 @@ enum PlannerStore {
 
 enum PlannerDraft {
 	Sqlite(SqliteTurnDraft<StoredMessage>),
-	Memory(TurnDraft<StoredMessage>),
+	Memory {
+		draft:  TurnDraft<StoredMessage>,
+		store:  Arc<InMemoryConversationStore<StoredMessage>>,
+		replay: Option<(crate::id::TurnId, Bytes, Bytes)>,
+	},
 }
 
 impl PlannerStore {
+	fn create(&self) -> Result<CommittedRevision<StoredMessage>, ConversationError> {
+		match self {
+			Self::Sqlite(store) => store.create(),
+			Self::Memory(store) => store.create(),
+		}
+	}
+
+	fn fork(&self, at: &Revision) -> Result<crate::id::ConversationId, ConversationError> {
+		match self {
+			Self::Sqlite(store) => store.fork(at),
+			Self::Memory(store) => store.fork(at),
+		}
+	}
+
+	fn committed_turn(
+		&self,
+		conversation: &crate::id::ConversationId,
+		turn: &crate::id::TurnId,
+	) -> Result<Option<CommittedRevision<StoredMessage>>, ConversationError> {
+		match self {
+			Self::Sqlite(store) => store.committed_turn(conversation, turn),
+			Self::Memory(store) => store.committed_turn(conversation, turn),
+		}
+	}
+
+	fn turn_replay(
+		&self,
+		turn: &crate::id::TurnId,
+	) -> Result<Option<TurnReplay>, ConversationError> {
+		match self {
+			Self::Sqlite(store) => store.turn_replay(turn),
+			Self::Memory(store) => Ok(store.turn_replay(turn)),
+		}
+	}
+
+	fn commit_turn_replay(
+		&self,
+		turn: crate::id::TurnId,
+		request: Bytes,
+		outcome: Bytes,
+	) -> Result<(), ConversationError> {
+		match self {
+			Self::Sqlite(store) => store.commit_turn_replay(turn, request, outcome),
+			Self::Memory(store) => store.commit_turn_replay(turn, request, outcome),
+		}
+	}
+
 	fn server_state(
 		&self,
 		conversation: &crate::id::ConversationId,
@@ -200,7 +264,7 @@ impl PlannerStore {
 				.map(PlannerDraft::Sqlite),
 			Self::Memory(store) => store
 				.begin(conversation, revision, turn, input)
-				.map(PlannerDraft::Memory),
+				.map(|draft| PlannerDraft::Memory { draft, store: Arc::clone(store), replay: None }),
 		}
 	}
 }
@@ -209,14 +273,32 @@ impl PlannerDraft {
 	fn append(&mut self, items: Arc<[StoredMessage]>) {
 		match self {
 			Self::Sqlite(draft) => draft.append(items),
-			Self::Memory(draft) => draft.append(items),
+			Self::Memory { draft, .. } => draft.append(items),
+		}
+	}
+
+	fn capture_turn_replay(
+		&mut self,
+		turn: crate::id::TurnId,
+		request: Bytes,
+		outcome: Bytes,
+	) -> Result<(), ConversationError> {
+		match self {
+			Self::Sqlite(draft) => draft.capture_turn_replay(turn, request, outcome),
+			Self::Memory { draft, replay, .. } => {
+				if turn != draft.turn {
+					return Err(ConversationError::CorruptStore);
+				}
+				*replay = Some((turn, request, outcome));
+				Ok(())
+			},
 		}
 	}
 
 	fn commit(self) -> Result<CommittedRevision<StoredMessage>, ConversationError> {
 		match self {
 			Self::Sqlite(draft) => draft.commit(),
-			Self::Memory(draft) => draft.commit(),
+			Self::Memory { draft, store, replay } => store.commit_draft(draft, replay, None),
 		}
 	}
 
@@ -226,7 +308,7 @@ impl PlannerDraft {
 	) -> Result<CommittedRevision<StoredMessage>, ConversationError> {
 		match self {
 			Self::Sqlite(draft) => draft.commit_successful_turn(binding),
-			Self::Memory(draft) => draft.commit_successful_turn(binding),
+			Self::Memory { draft, store, replay } => store.commit_draft(draft, replay, Some(binding)),
 		}
 	}
 }
@@ -238,6 +320,7 @@ pub struct ConversationSessionPlanner {
 	store:    PlannerStore,
 	catalog:  Arc<crate::catalog::snapshot::Catalog>,
 	prepared: Arc<Mutex<HashMap<RequestId, PreparedTurn>>>,
+	replays:  Arc<Mutex<HashMap<RequestId, PendingTurnReplay>>>,
 }
 
 impl ConversationSessionPlanner {
@@ -251,6 +334,7 @@ impl ConversationSessionPlanner {
 			store: PlannerStore::Sqlite(store),
 			catalog,
 			prepared: Arc::new(Mutex::new(HashMap::new())),
+			replays: Arc::new(Mutex::new(HashMap::new())),
 		}
 	}
 
@@ -264,6 +348,7 @@ impl ConversationSessionPlanner {
 			store: PlannerStore::Memory(store),
 			catalog,
 			prepared: Arc::new(Mutex::new(HashMap::new())),
+			replays: Arc::new(Mutex::new(HashMap::new())),
 		}
 	}
 
@@ -275,6 +360,69 @@ impl ConversationSessionPlanner {
 		Ok(Self::new(Arc::new(SqliteConversationStore::open(path)?), catalog))
 	}
 
+	/// Creates a fresh provider conversation and returns its immutable root.
+	pub fn create_conversation(
+		&self,
+	) -> Result<CommittedRevision<StoredMessage>, ConversationError> {
+		self.store.create()
+	}
+
+	/// Forks provider history at an immutable committed revision.
+	pub fn fork_conversation(
+		&self,
+		at: &Revision,
+	) -> Result<crate::id::ConversationId, ConversationError> {
+		self.store.fork(at)
+	}
+
+	/// Returns the provider-history commit for one conversation-scoped turn.
+	pub fn committed_turn(
+		&self,
+		conversation: &crate::id::ConversationId,
+		turn: &crate::id::TurnId,
+	) -> Result<Option<CommittedRevision<StoredMessage>>, ConversationError> {
+		self.store.committed_turn(conversation, turn)
+	}
+
+	/// Returns an exact terminal RPC response retained for logical-turn replay.
+	pub fn turn_replay(
+		&self,
+		turn: &crate::id::TurnId,
+	) -> Result<Option<TurnReplay>, ConversationError> {
+		self.store.turn_replay(turn)
+	}
+
+	/// Retains an exact terminal response outside a provider-session commit.
+	///
+	/// Stateful turns should use [`Self::stage_turn_replay`] so provider history
+	/// and replay become visible in one transaction.
+	pub fn commit_turn_replay(
+		&self,
+		turn: crate::id::TurnId,
+		request: Bytes,
+		outcome: Bytes,
+	) -> Result<(), ConversationError> {
+		self.store.commit_turn_replay(turn, request, outcome)
+	}
+
+	/// Stages an exact terminal-response encoder to be committed atomically with
+	/// the provider conversation turn.
+	pub fn stage_turn_replay<F>(
+		&self,
+		request: RequestId,
+		turn: crate::id::TurnId,
+		request_bytes: Bytes,
+		encode: F,
+	) where
+		F: Fn(&Completion) -> Result<Bytes, ConversationError> + Send + Sync + 'static,
+	{
+		self.replays.lock().insert(request, PendingTurnReplay {
+			turn,
+			request: request_bytes,
+			encode: Arc::new(encode),
+		});
+	}
+
 	fn prepare_inner(
 		&self,
 		call: &mut crate::call::Call,
@@ -282,7 +430,7 @@ impl ConversationSessionPlanner {
 		force_replay: bool,
 		input_override: Option<Arc<[StoredMessage]>>,
 	) -> Result<SessionAction, Error> {
-		let Some(session) = call.session.clone() else {
+		let Some(mut session) = call.session.clone() else {
 			context.set_session_affinity(None);
 			context.set_session_state(None);
 			return Ok(SessionAction::None);
@@ -298,6 +446,9 @@ impl ConversationSessionPlanner {
 			.catalog
 			.route(&plan.route)
 			.ok_or_else(|| session_error(context, ErrorKind::SessionConflict, RetryAction::Never))?;
+		if let Some(policy_model) = plan.policy_model.as_ref() {
+			session.strategy = provider_context_strategy(policy_model.context);
+		}
 		let OperationCall::Chat(request) = &call.operation else {
 			return Err(session_error(context, ErrorKind::InvalidRequest, RetryAction::Never));
 		};
@@ -472,8 +623,10 @@ impl SessionPlanner for ConversationSessionPlanner {
 		Ok(Some(Arc::new(DurableCompletion {
 			draft: Mutex::new(Some(draft)),
 			blocks: Mutex::new(BTreeMap::new()),
+			completion: Mutex::new(None),
 			prepared,
 			prepared_turns: Arc::clone(&self.prepared),
+			replays: Arc::clone(&self.replays),
 		})))
 	}
 }
@@ -487,8 +640,10 @@ enum AssistantBlock {
 struct DurableCompletion {
 	draft:          Mutex<Option<PlannerDraft>>,
 	blocks:         Mutex<BTreeMap<u32, AssistantBlock>>,
+	completion:     Mutex<Option<Completion>>,
 	prepared:       PreparedTurn,
 	prepared_turns: Arc<Mutex<HashMap<crate::id::RequestId, PreparedTurn>>>,
+	replays:        Arc<Mutex<HashMap<RequestId, PendingTurnReplay>>>,
 }
 
 impl SessionCompletion for DurableCompletion {
@@ -508,7 +663,12 @@ impl SessionCompletion for DurableCompletion {
 			ChatEvent::BlockStarted { .. }
 			| ChatEvent::Started(_)
 			| ChatEvent::Usage(_)
-			| ChatEvent::Completed(_) => {},
+			| ChatEvent::WorkflowAction(_)
+			| ChatEvent::WorkflowResume(_)
+			| ChatEvent::WorkflowCancelled { .. } => {},
+			ChatEvent::Completed(completion) => {
+				*self.completion.lock() = Some(completion.clone());
+			},
 			ChatEvent::TextDelta { index, text } => match blocks
 				.entry(*index)
 				.or_insert_with(|| AssistantBlock::Text(String::new()))
@@ -660,6 +820,16 @@ impl SessionCompletion for DurableCompletion {
 			self.draft.lock().take().ok_or_else(|| {
 				session_error(context, ErrorKind::SessionConflict, RetryAction::Never)
 			})?;
+		if let Some(replay) = self.replays.lock().get(&self.prepared.request).cloned() {
+			let completion = self.completion.lock().clone().ok_or_else(|| {
+				session_error(context, ErrorKind::SessionConflict, RetryAction::Never)
+			})?;
+			let outcome = (replay.encode)(&completion)
+				.map_err(|_| session_error(context, ErrorKind::SessionConflict, RetryAction::Never))?;
+			draft
+				.capture_turn_replay(replay.turn, replay.request, outcome)
+				.map_err(|_| session_error(context, ErrorKind::SessionConflict, RetryAction::Never))?;
+		}
 		draft.append(Arc::from([assistant]));
 		let capture_binding =
 			matches!(self.prepared.session.strategy, ContextStrategy::ServerState(_))
@@ -707,6 +877,7 @@ impl SessionCompletion for DurableCompletion {
 				.map_err(|_| session_error(context, ErrorKind::SessionConflict, RetryAction::Never))?;
 		}
 		self.prepared_turns.lock().remove(&self.prepared.request);
+		self.replays.lock().remove(&self.prepared.request);
 		Ok(())
 	}
 
@@ -719,7 +890,36 @@ impl SessionCompletion for DurableCompletion {
 				.insert(self.prepared.request.clone(), self.prepared.clone());
 		} else {
 			self.prepared_turns.lock().remove(&self.prepared.request);
+			self.replays.lock().remove(&self.prepared.request);
 		}
+	}
+}
+
+fn provider_context_strategy(strategy: crate::catalog::model::ContextStrategy) -> ContextStrategy {
+	match strategy {
+		crate::catalog::model::ContextStrategy::Replay => ContextStrategy::Replay,
+		crate::catalog::model::ContextStrategy::PrefixCache(policy) => {
+			let retention = if policy
+				.retention
+				.contains(crate::catalog::capability::CacheRetentionBits::LONG)
+			{
+				CacheRetention::Long
+			} else if policy
+				.retention
+				.contains(crate::catalog::capability::CacheRetentionBits::STANDARD)
+			{
+				CacheRetention::Session
+			} else {
+				CacheRetention::Request
+			};
+			ContextStrategy::PrefixCache(PrefixCachePolicy { retention, allow_reseed: true })
+		},
+		crate::catalog::model::ContextStrategy::ServerState(policy) => {
+			ContextStrategy::ServerState(ServerStatePolicy {
+				allow_reseed: true,
+				max_age:      policy.maximum_lifetime_ms.map(Duration::from_millis),
+			})
+		},
 	}
 }
 
@@ -897,8 +1097,10 @@ mod tests {
 		let completion = super::DurableCompletion {
 			draft:          parking_lot::Mutex::new(Some(draft)),
 			blocks:         parking_lot::Mutex::new(BTreeMap::new()),
+			completion:     parking_lot::Mutex::new(None),
 			prepared:       prepared.clone(),
 			prepared_turns: Arc::clone(&prepared_turns),
+			replays:        Arc::new(parking_lot::Mutex::new(HashMap::new())),
 		};
 		crate::layer::session::SessionCompletion::abort(&completion, true);
 		assert_eq!(store.active_drafts(), 0);
@@ -1279,6 +1481,14 @@ mod tests {
 			.commit()
 			.unwrap();
 		assert_eq!(first.revision(), repeated.revision());
+		assert_eq!(
+			store
+				.committed_turn(root.conversation(), &TurnId::new("same"))
+				.unwrap()
+				.unwrap()
+				.revision(),
+			first.revision()
+		);
 		let fork = store.fork(first.revision()).unwrap();
 		let next = store
 			.begin(&fork, first.revision(), TurnId::new("fork"), Arc::from([2_i32]))
@@ -1294,5 +1504,121 @@ mod tests {
 				.collect::<Vec<_>>(),
 			vec![2]
 		);
+	}
+
+	#[test]
+	fn sqlite_turn_replay_survives_reopen_and_rejects_payload_reuse() {
+		let state = tempfile::tempdir().unwrap();
+		let database = state.path().join("turns.db");
+		let turn = TurnId::new("durable-turn");
+		{
+			let store = super::store::SqliteConversationStore::<i32>::open(&database).unwrap();
+			store
+				.commit_turn_replay(
+					turn.clone(),
+					Bytes::from_static(b"request"),
+					Bytes::from_static(b"outcome"),
+				)
+				.unwrap();
+		}
+		let reopened = super::store::SqliteConversationStore::<i32>::open(&database).unwrap();
+		assert_eq!(
+			reopened.turn_replay(&turn).unwrap(),
+			Some(super::store::TurnReplay {
+				request: Bytes::from_static(b"request"),
+				outcome: Bytes::from_static(b"outcome"),
+			})
+		);
+		assert!(matches!(
+			reopened.commit_turn_replay(
+				turn.clone(),
+				Bytes::from_static(b"different"),
+				Bytes::from_static(b"outcome"),
+			),
+			Err(super::ConversationError::TurnConflict(conflict)) if conflict == turn
+		));
+	}
+
+	#[test]
+	fn sqlite_turn_commit_publishes_history_and_replay_together() {
+		let state = tempfile::tempdir().unwrap();
+		let database = state.path().join("atomic-turns.db");
+		let turn = TurnId::new("atomic-turn");
+		let conversation;
+		let revision;
+		{
+			let store = super::store::SqliteConversationStore::<i32>::open(&database).unwrap();
+			let root = store.create().unwrap();
+			conversation = root.conversation().clone();
+			revision = root.revision().clone();
+
+			let mut dropped = store
+				.begin(&conversation, &revision, TurnId::new("dropped"), Arc::from([7]))
+				.unwrap();
+			dropped
+				.capture_turn_replay(
+					TurnId::new("dropped"),
+					Bytes::from_static(b"dropped-request"),
+					Bytes::from_static(b"dropped-outcome"),
+				)
+				.unwrap();
+			drop(dropped);
+			assert!(
+				store
+					.turn_replay(&TurnId::new("dropped"))
+					.unwrap()
+					.is_none()
+			);
+			assert!(
+				store
+					.committed_turn(&conversation, &TurnId::new("dropped"))
+					.unwrap()
+					.is_none()
+			);
+
+			let mut draft = store
+				.begin(&conversation, &revision, turn.clone(), Arc::from([9]))
+				.unwrap();
+			draft
+				.capture_turn_replay(
+					turn.clone(),
+					Bytes::from_static(b"request"),
+					Bytes::from_static(b"outcome"),
+				)
+				.unwrap();
+			draft.commit().unwrap();
+		}
+
+		let reopened = super::store::SqliteConversationStore::<i32>::open(&database).unwrap();
+		assert_eq!(
+			reopened
+				.committed_turn(&conversation, &turn)
+				.unwrap()
+				.unwrap()
+				.items(),
+			&[9]
+		);
+		assert_eq!(
+			reopened.turn_replay(&turn).unwrap(),
+			Some(super::store::TurnReplay {
+				request: Bytes::from_static(b"request"),
+				outcome: Bytes::from_static(b"outcome"),
+			})
+		);
+
+		let mut conflict = reopened
+			.begin(&conversation, &revision, turn.clone(), Arc::from([9]))
+			.unwrap();
+		conflict
+			.capture_turn_replay(
+				turn.clone(),
+				Bytes::from_static(b"different"),
+				Bytes::from_static(b"outcome"),
+			)
+			.unwrap();
+		assert!(matches!(
+			conflict.commit(),
+			Err(super::ConversationError::TurnConflict(conflicting)) if conflicting == turn
+		));
 	}
 }

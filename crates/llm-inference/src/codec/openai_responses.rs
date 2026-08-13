@@ -2282,27 +2282,54 @@ impl OpenAiResponsesCodec {
 			.tools
 			.iter()
 			.map(|tool| {
-				let freeform_patch = tool.name == "apply_patch"
-					&& apply_patch == Some(crate::catalog::policy::ApplyPatchWireKind::Freeform);
-				ResponsesTool {
-					kind:                if freeform_patch {
-						ResponsesToolKind::Custom
-					} else {
-						ResponsesToolKind::Function
+				let freeform_patch =
+					matches!(&tool.input, crate::call::ToolInputConstraint::JsonSchema { .. })
+						&& tool.name == "apply_patch"
+						&& apply_patch == Some(crate::catalog::policy::ApplyPatchWireKind::Freeform);
+				let (kind, parameters, strict, format) = match &tool.input {
+					crate::call::ToolInputConstraint::JsonSchema { parameters, strict }
+						if !freeform_patch =>
+					{
+						(
+							ResponsesToolKind::Function,
+							Some(parameters.as_value().clone()),
+							Some(*strict),
+							None,
+						)
 					},
-					name:                Some(tool.name.clone()),
-					description:         tool.description.clone(),
-					parameters:          (!freeform_patch).then(|| tool.parameters.as_value().clone()),
-					strict:              (!freeform_patch).then_some(tool.strict),
-					format:              None,
-					display_width:       None,
-					display_height:      None,
-					environment:         None,
+					crate::call::ToolInputConstraint::JsonSchema { .. } => {
+						(ResponsesToolKind::Custom, None, None, None)
+					},
+					crate::call::ToolInputConstraint::Grammar(grammar) => (
+						ResponsesToolKind::Custom,
+						None,
+						None,
+						Some(ResponsesCustomToolFormat {
+							kind:       Str::new_static("grammar"),
+							syntax:     Some(Str::new_static(match grammar.syntax {
+								crate::call::ToolGrammarSyntax::Lark => "lark",
+								crate::call::ToolGrammarSyntax::Regex => "regex",
+								crate::call::ToolGrammarSyntax::Ebnf => "ebnf",
+							})),
+							definition: Some(grammar.definition.clone()),
+						}),
+					),
+				};
+				ResponsesTool {
+					kind,
+					name: Some(tool.name.clone()),
+					description: tool.description.clone(),
+					parameters,
+					strict,
+					format,
+					display_width: None,
+					display_height: None,
+					environment: None,
 					search_context_size: None,
-					allowed_domains:     Vec::new(),
-					blocked_domains:     Vec::new(),
-					vector_store_ids:    Vec::new(),
-					container:           None,
+					allowed_domains: Vec::new(),
+					blocked_domains: Vec::new(),
+					vector_store_ids: Vec::new(),
+					container: None,
 				}
 			})
 			.collect::<Vec<_>>();
@@ -2913,11 +2940,24 @@ impl super::Codec for OpenAiResponsesCodec {
 
 #[cfg(test)]
 mod tests {
+	use std::sync::Arc;
+	use omp_core::Str;
+
+	use omp_llm_catalog::{Catalog, WireTarget};
+
 	use super::{
-		OpenAiResponsesDecoder, ResponsesContinuationFailure, ResponsesProjection,
-		classify_continuation_error,
+		OpenAiResponsesCodec, OpenAiResponsesDecoder, ResponsesContinuationFailure,
+		ResponsesProjection, classify_continuation_error,
 	};
-	use crate::event::{ChatEvent, FinishReason};
+	use crate::{
+		call::{
+			ChatRequest, NegotiationPolicy, OpaqueJson, Sampling, Setting, ToolDefinition,
+			ToolGrammar, ToolGrammarSyntax, ToolInputConstraint,
+		},
+		codec::{EncodeAttempt, EncodeContext},
+		event::{ChatEvent, FinishReason},
+		id::RequestId,
+	};
 
 	fn replay_sse(fixture: &str) -> Vec<ResponsesProjection> {
 		let mut decoder = OpenAiResponsesDecoder::default();
@@ -2931,6 +2971,125 @@ mod tests {
 		}
 		events.extend(decoder.finish());
 		events
+	}
+
+	fn request_with_tool(input: ToolInputConstraint) -> ChatRequest {
+		ChatRequest {
+			messages:          Arc::from([]),
+			tools:             Arc::from([ToolDefinition {
+				name: Str::new_static("match_input"),
+				description: None,
+				input,
+			}]),
+			hosted_tools:      Arc::from([]),
+			tool_choice:       Setting::Unset,
+			output:            Setting::Unset,
+			reasoning:         Setting::Unset,
+			verbosity:         Setting::Unset,
+			cache_retention:   Setting::Unset,
+			service_tier:      Setting::Unset,
+			sampling:          Sampling::default(),
+			max_output_tokens: None,
+			top_logprobs:      None,
+			safety:            Arc::from([]),
+			negotiation:       NegotiationPolicy::default(),
+		}
+	}
+
+	fn encode_tool(input: ToolInputConstraint) -> Vec<u8> {
+		let catalog = Catalog::embedded();
+		let model = catalog
+			.models()
+			.iter()
+			.find(|model| {
+				model.routes.iter().any(|route| {
+					catalog
+						.route(route)
+						.is_some_and(|route| route.codec.as_str() == "openai-responses")
+				})
+			})
+			.expect("embedded Responses model");
+		let route = model
+			.routes
+			.iter()
+			.filter_map(|route| catalog.route(route))
+			.find(|route| route.codec.as_str() == "openai-responses")
+			.expect("embedded Responses route");
+		let wire_model = model
+			.wire_ids
+			.iter()
+			.find(|(candidate, _)| candidate == &route.id)
+			.expect("embedded Responses wire model")
+			.1
+			.clone();
+		let target = WireTarget {
+			route: route.id.clone(),
+			codec: route.codec.clone(),
+			endpoint: route.endpoint.clone(),
+			wire_model,
+		};
+		let policy = catalog
+			.wire_policy(&model.wire_policy)
+			.expect("embedded Responses wire policy");
+		let request_id = RequestId::new("responses-tool-encoding");
+		let context = EncodeContext {
+			request_id: &request_id,
+			route,
+			target: Some(&target),
+			policy_model: None,
+			policy,
+			thinking_policy: None,
+			thinking_selection: None,
+			session: None,
+			server_state: None,
+			account: None,
+			attempt: EncodeAttempt { index: 0, provisional: false },
+		};
+		let encoded = OpenAiResponsesCodec::default()
+			.encode_chat(&context, &request_with_tool(input))
+			.expect("tool request encodes");
+		serde_json::to_vec(&encoded.request.tools).expect("tools serialize")
+	}
+
+	#[test]
+	fn custom_tool_grammars_preserve_exact_syntax_and_definition_on_wire() {
+		let cases: [(ToolGrammarSyntax, &'static str, &'static [u8]); 3] = [
+			(
+				ToolGrammarSyntax::Regex,
+				"[a-z]+",
+				br#"[{"type":"custom","name":"match_input","format":{"type":"grammar","syntax":"regex","definition":"[a-z]+"}}]"#,
+			),
+			(
+				ToolGrammarSyntax::Lark,
+				"start: WORD\n%import common.WORD",
+				br#"[{"type":"custom","name":"match_input","format":{"type":"grammar","syntax":"lark","definition":"start: WORD\n%import common.WORD"}}]"#,
+			),
+			(
+				ToolGrammarSyntax::Ebnf,
+				r#"root = "yes" | "no";"#,
+				br#"[{"type":"custom","name":"match_input","format":{"type":"grammar","syntax":"ebnf","definition":"root = \"yes\" | \"no\";"}}]"#,
+			),
+		];
+		for (syntax, definition, expected) in cases {
+			assert_eq!(
+				encode_tool(ToolInputConstraint::Grammar(ToolGrammar {
+					syntax,
+					definition: Str::from(definition),
+				})),
+				expected,
+			);
+		}
+	}
+
+	#[test]
+	fn json_schema_tool_encoding_remains_a_strict_function_tool() {
+		assert_eq!(
+			encode_tool(ToolInputConstraint::JsonSchema {
+				parameters: OpaqueJson::new(serde_json::json!({"type": "object"})),
+				strict: true,
+			}),
+			br#"[{"type":"function","name":"match_input","parameters":{"type":"object"},"strict":true}]"#,
+		);
 	}
 
 	#[test]

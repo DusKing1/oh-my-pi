@@ -304,7 +304,11 @@ fn lower_session(request: &RealtimeRequest) -> Result<RealtimeSessionConfig<'_>,
 			},
 		},
 	};
-	let tools = request.tools.iter().map(lower_tool).collect();
+	let tools = request
+		.tools
+		.iter()
+		.map(lower_tool)
+		.collect::<Result<Vec<_>, _>>()?;
 	Ok(RealtimeSessionConfig {
 		instructions: request.instructions.as_ref().map(Str::as_str),
 		modalities: request
@@ -322,13 +326,16 @@ fn lower_session(request: &RealtimeRequest) -> Result<RealtimeSessionConfig<'_>,
 		tools,
 	})
 }
-fn lower_tool(tool: &ToolDefinition) -> RealtimeTool<'_> {
-	RealtimeTool {
+fn lower_tool(tool: &ToolDefinition) -> Result<RealtimeTool<'_>, Error> {
+	let Some((parameters, _)) = tool.input.json_schema() else {
+		return Err(capability_error());
+	};
+	Ok(RealtimeTool {
 		kind:        "function",
 		name:        tool.name.as_str(),
 		description: tool.description.as_ref().map(Str::as_str),
-		parameters:  tool.parameters.as_value(),
-	}
+		parameters:  parameters.as_value(),
+	})
 }
 fn audio_format(format: AudioFormat) -> Result<&'static str, Error> {
 	match format {

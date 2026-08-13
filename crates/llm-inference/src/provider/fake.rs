@@ -442,7 +442,9 @@ impl FakeAnswer {
 
 	fn into_body(self) -> AnswerBody {
 		match self {
-			Self::Chat(items) => AnswerBody::Chat(Box::pin(stream::iter(items))),
+			Self::Chat(items) => {
+				AnswerBody::Chat(crate::answer::ChatStream::ordinary(Box::pin(stream::iter(items))))
+			},
 			Self::Tokens(value) => AnswerBody::Tokens(value),
 			Self::TokenIds(value) => AnswerBody::TokenIds(value),
 			Self::Text(value) => AnswerBody::Text(value),

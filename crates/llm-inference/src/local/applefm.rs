@@ -796,6 +796,7 @@ async fn execute_transport(
 			},
 			body:     evidence,
 			events:   Some(Box::pin(events)),
+			control:  None,
 			realtime: None,
 		});
 	}
@@ -900,6 +901,7 @@ async fn execute_transport(
 		},
 		body:     evidence,
 		events:   Some(Box::pin(stream)),
+		control:  None,
 		realtime: None,
 	})
 }

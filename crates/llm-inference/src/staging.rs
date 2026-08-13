@@ -1893,6 +1893,11 @@ fn encode_chat_event(event: &ChatEvent, out: &mut Vec<u8>) -> Result<(), GateSpo
 			encode_usage(update.usage, out);
 			put_bool(out, update.final_update);
 		},
+		ChatEvent::WorkflowAction(_)
+		| ChatEvent::WorkflowResume(_)
+		| ChatEvent::WorkflowCancelled { .. } => {
+			return Err(gate_unavailable("secure_gate_control_event"));
+		},
 		ChatEvent::Completed(completion) => {
 			put_u8(out, 9);
 			encode_finish_reason(&completion.reason, out)?;

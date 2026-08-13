@@ -11,7 +11,7 @@ use std::{
 	time::Instant,
 };
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::{SinkExt as _, StreamExt as _, future::poll_fn};
 use http::{Request, header};
 use omp_core::Str;
@@ -25,7 +25,7 @@ use tower::Service;
 use crate::{
 	answer::{RealtimeEvent, RealtimeInput, RealtimeSession},
 	body::{AttemptBodyEvidence, AttemptEvidenceHandle, BodyOpenError},
-	codec::{HandshakeMeta, HandshakenResponse, TransportRequest},
+	codec::{HandshakeMeta, HandshakenResponse, RawEvent, RawEventStream, TransportRequest},
 	error::{Error, ErrorDetail, ErrorKind, ErrorPhase, RetryAction},
 	receipt::{ExecutionReceipt, ReasonId},
 	transport::{
@@ -147,8 +147,10 @@ async fn execute(
 	let mut body_attempt = request.encoded.body.begin_attempt();
 	let evidence = body_attempt.evidence_handle();
 	if request.encoded.framing != FramingProtocol::WebSocket
-		|| !matches!((request.decoder.is_some(), request.realtime.is_some()), (false, true))
-	{
+		|| !matches!(
+			(request.decoder.is_some(), request.realtime.is_some()),
+			(true, false) | (false, true)
+		) {
 		return Err(failure(
 			simple_error(
 				ErrorKind::Protocol,
@@ -176,6 +178,7 @@ async fn execute(
 		.await
 		.map_err(|error| failure(body_error(error), &request, &evidence, started, false))?;
 	let mut observed = 0_u64;
+	let mut request_payload = BytesMut::new();
 	while let Some(chunk) = tokio::select! {
 		chunk = reader.next() => chunk,
 		() = tokio::time::sleep_until(deadline) => {
@@ -194,6 +197,7 @@ async fn execute(
 				false,
 			));
 		}
+		request_payload.extend_from_slice(&chunk);
 	}
 	let upgrade = request
 		.encoded
@@ -287,6 +291,159 @@ async fn execute(
 		remaining: request.attempt.capture_limit,
 	}));
 	captures.lock().push(Arc::clone(&capture));
+	if let Some(mut decoder) = request.decoder.take() {
+		let payload = request_payload.freeze();
+		if payload.len() as u64 > request.encoded.bounds.frame {
+			return Err(failure(
+				simple_error(
+					ErrorKind::Protocol,
+					ErrorPhase::Handshake,
+					false,
+					"websocket-initial-frame-limit",
+				),
+				&request,
+				&evidence,
+				started,
+				false,
+			));
+		}
+		tokio::select! {
+			result = socket.send(wire_message(payload)) => result.map_err(|_| failure(simple_error(ErrorKind::Connectivity, ErrorPhase::Handshake, false, "websocket-initial-send"), &request, &evidence, started, false))?,
+			() = tokio::time::sleep_until(deadline) => {
+				request.cancel.cancel();
+				return Err(failure(simple_error(ErrorKind::DeadlineExceeded, ErrorPhase::Handshake, false, "websocket-initial-send-timeout"), &request, &evidence, started, false));
+			},
+		}
+		let (event_tx, event_rx) = flume::bounded::<Result<RawEvent, Error>>(CHANNEL_CAPACITY);
+		let (control, control_rx) = if decoder.supports_control() {
+			let (sender, receiver) = flume::bounded(CHANNEL_CAPACITY);
+			(Some(sender), Some(receiver))
+		} else {
+			(None, None)
+		};
+		let cancel = request.cancel.clone();
+		let stream_cancel = cancel.clone();
+		let bounds = request.encoded.bounds;
+		let pump_capture = Arc::clone(&capture);
+		let pump_attempt = request.attempt.clone();
+		let pump_evidence = evidence.clone();
+		let pump_provider_request_id = provider_request_id.clone();
+		tokio::spawn(async move {
+			loop {
+				tokio::select! {
+					input = async {
+						match control_rx.as_ref() {
+							Some(receiver) => receiver.recv_async().await.ok(),
+							None => std::future::pending().await,
+						}
+					} => {
+						let Some(input) = input else { break };
+						match decoder.encode_control(input) {
+							Ok(Some(frame)) if frame.len() as u64 <= bounds.frame => {
+								if socket.send(wire_message(frame)).await.is_err() { break; }
+							},
+							Ok(Some(_)) => {
+								let error = pump_error(simple_error(ErrorKind::StreamCorruption, ErrorPhase::Streaming, true, "websocket-outbound-frame-limit"), &pump_attempt, &pump_evidence, status, pump_provider_request_id.as_ref(), started);
+								let _ = event_tx.send_async(Err(error)).await;
+								break;
+							},
+							Ok(None) => {
+								let error = pump_error(simple_error(ErrorKind::Protocol, ErrorPhase::Streaming, true, "websocket-control-unsupported"), &pump_attempt, &pump_evidence, status, pump_provider_request_id.as_ref(), started);
+								let _ = event_tx.send_async(Err(error)).await;
+								break;
+							},
+							Err(error) => {
+								let error = pump_error(error, &pump_attempt, &pump_evidence, status, pump_provider_request_id.as_ref(), started);
+								let _ = event_tx.send_async(Err(error)).await;
+								break;
+							},
+						}
+					},
+					message = socket.next() => match message {
+						Some(Ok(Message::Ping(data))) => {
+							if socket.send(Message::Pong(data)).await.is_err() { break; }
+						},
+						Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => {},
+						Some(Ok(Message::Text(text))) => {
+							let payload = Bytes::copy_from_slice(text.as_bytes());
+							if payload.len() as u64 > bounds.frame { break; }
+							let frame = Frame::WebSocket(WebSocketMessage::Text(payload));
+							capture_socket_frame(&pump_capture, &frame);
+							let mut decoded = Vec::new();
+							match decoder.push(frame, &mut |event| decoded.push(event)) {
+								Ok(()) => for event in decoded {
+									if event_tx.send_async(Ok(event)).await.is_err() { return; }
+								},
+								Err(error) => {
+									let error = pump_error(error, &pump_attempt, &pump_evidence, status, pump_provider_request_id.as_ref(), started);
+									let _ = event_tx.send_async(Err(error)).await;
+									break;
+								},
+							}
+						},
+						Some(Ok(Message::Binary(payload))) => {
+							if payload.len() as u64 > bounds.frame { break; }
+							let frame = Frame::WebSocket(WebSocketMessage::Binary(payload));
+							capture_socket_frame(&pump_capture, &frame);
+							let mut decoded = Vec::new();
+							match decoder.push(frame, &mut |event| decoded.push(event)) {
+								Ok(()) => for event in decoded {
+									if event_tx.send_async(Ok(event)).await.is_err() { return; }
+								},
+								Err(error) => {
+									let error = pump_error(error, &pump_attempt, &pump_evidence, status, pump_provider_request_id.as_ref(), started);
+									let _ = event_tx.send_async(Err(error)).await;
+									break;
+								},
+							}
+						},
+						Some(Ok(Message::Close(_))) | None => {
+							let mut decoded = Vec::new();
+							match decoder.finish(&mut |event| decoded.push(event)) {
+								Ok(()) => for event in decoded {
+									if event_tx.send_async(Ok(event)).await.is_err() { return; }
+								},
+								Err(error) => {
+									let error = pump_error(error, &pump_attempt, &pump_evidence, status, pump_provider_request_id.as_ref(), started);
+									let _ = event_tx.send_async(Err(error)).await;
+								},
+							}
+							break;
+						},
+						Some(Err(_)) => break,
+					},
+					() = poll_fn(|context| cancel.poll_cancelled(context)) => break,
+					() = tokio::time::sleep_until(deadline) => {
+						cancel.cancel();
+						let error = pump_error(simple_error(ErrorKind::DeadlineExceeded, ErrorPhase::Streaming, true, "websocket-timeout"), &pump_attempt, &pump_evidence, status, pump_provider_request_id.as_ref(), started);
+						let _ = event_tx.send_async(Err(error)).await;
+						break;
+					},
+				}
+			}
+		});
+		let first = tokio::select! {
+			first = event_rx.recv_async() => first.map_err(|_| failure(simple_error(ErrorKind::Connectivity, ErrorPhase::Handshake, false, "websocket-close-before-first-frame"), &request, &evidence, started, false))?,
+			() = tokio::time::sleep_until(deadline) => {
+				request.cancel.cancel();
+				return Err(failure(simple_error(ErrorKind::DeadlineExceeded, ErrorPhase::Handshake, false, "websocket-first-frame-timeout"), &request, &evidence, started, false));
+			},
+		};
+		let events: RawEventStream = Box::pin(async_stream::stream! {
+			let _guard = WebSocketCancelOnDrop(stream_cancel);
+			yield first;
+			while let Ok(event) = event_rx.recv_async().await {
+				yield event;
+			}
+		});
+		return Ok(HandshakenResponse {
+			meta: HandshakeMeta { status: Some(status), headers, provider_request_id },
+			body: evidence,
+			events: Some(events),
+			control,
+			realtime: None,
+		});
+	}
 	let mut codec = request.realtime.take().expect("cardinality checked");
 	let initial = codec
 		.initial_frames()
@@ -567,6 +724,7 @@ async fn execute(
 		meta:     HandshakeMeta { status: Some(status), headers, provider_request_id },
 		body:     evidence,
 		events:   None,
+		control:  None,
 		realtime: Some(RealtimeSession::from_channels(outbound, inbound, closed)),
 	})
 }
@@ -645,6 +803,14 @@ fn simple_error(
 	error.committed = committed;
 	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
 	error
+}
+
+struct WebSocketCancelOnDrop(crate::codec::Cancellation);
+
+impl Drop for WebSocketCancelOnDrop {
+	fn drop(&mut self) {
+		self.0.cancel();
+	}
 }
 
 struct ClosedGuard(Arc<AtomicBool>);

@@ -86,7 +86,9 @@ impl Service<LayerCall<Call>> for CountingRoute {
 			provider_request_id: Some(Str::from("route-probe")),
 			created_at:          SystemTime::UNIX_EPOCH,
 		};
-		let body = AnswerBody::Chat(Box::pin(futures::stream::empty()));
+		let body = AnswerBody::Chat(omp_llm_inference::answer::ChatStream::ordinary(Box::pin(
+			futures::stream::empty(),
+		)));
 		ready(Ok(Answer { meta, receipt: context.receipt(), body }))
 	}
 }

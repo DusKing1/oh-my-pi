@@ -402,7 +402,10 @@ fn encode_chat(
 		.iter()
 		.filter(|tool| named_tool.is_none_or(|name| tool.name.as_str() == name))
 		.map(|tool| {
-			if tool.strict {
+			let Some((parameters, strict)) = tool.input.json_schema() else {
+				return Err(capability_error("ollama_tool_grammar_unsupported"));
+			};
+			if strict {
 				return Err(invalid_request("ollama_strict_tool_schema_unsupported"));
 			}
 			Ok(OllamaTool {
@@ -410,7 +413,7 @@ fn encode_chat(
 				function: OllamaToolFunction {
 					name:        tool.name.as_str(),
 					description: tool.description.as_ref().map(Str::as_str),
-					parameters:  tool.parameters.as_value(),
+					parameters:  parameters.as_value(),
 				},
 			})
 		})
@@ -870,6 +873,12 @@ fn invalid_request(reason: &'static str) -> Error {
 		ExecutionReceipt::default(),
 	);
 	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
+	error
+}
+
+fn capability_error(reason: &'static str) -> Error {
+	let mut error = invalid_request(reason);
+	error.kind = ErrorKind::CapabilityMismatch;
 	error
 }
 

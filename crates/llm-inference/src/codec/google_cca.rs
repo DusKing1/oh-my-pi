@@ -41,12 +41,20 @@ pub const ANTIGRAVITY_SANDBOX_BASE: &str = "https://daily-cloudcode-pa.sandbox.g
 /// Gemini CLI's public client fingerprint metadata.
 pub const GEMINI_CLI_CLIENT_METADATA: &str =
 	"ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI";
-/// Identity instruction emitted by the real Antigravity agent client.
-pub const ANTIGRAVITY_SYSTEM_INSTRUCTION: &str =
-	"You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind \
-	 team working on Advanced Agentic Coding.You are pair programming with a USER to solve their \
-	 coding task. The task may require creating a new codebase, modifying or debugging an existing \
-	 codebase, or simply answering a question.**Absolute paths only****Proactiveness**";
+/// Pinned Antigravity client version used when discovery and overrides are
+/// absent.
+pub const DEFAULT_ANTIGRAVITY_VERSION: &str = "2.8.0";
+/// Build changelist reported by the reference Antigravity client.
+pub const DEFAULT_ANTIGRAVITY_CL: &str = "963137146";
+/// `os_type` of the darwin/arm64 reference client the fingerprint is captured
+/// from; deliberately independent of the host platform.
+pub const DEFAULT_ANTIGRAVITY_OS: &str = "darwin";
+/// `arch` of the darwin/arm64 reference client the fingerprint is captured
+/// from; deliberately independent of the host platform.
+pub const DEFAULT_ANTIGRAVITY_ARCH: &str = "arm64";
+/// Electron-builder update manifest publishing the latest Antigravity release
+/// for the darwin/arm64 reference channel.
+pub const ANTIGRAVITY_VERSION_MANIFEST_URL: &str = "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml";
 /// Beta header required for interleaved Claude reasoning in the Antigravity
 /// client.
 pub const CLAUDE_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
@@ -93,8 +101,6 @@ pub struct AntigravityRequestMetadata {
 	pub model_enum:                   Option<Str>,
 	/// Whether the conversation has used a Claude-routed model.
 	pub used_claude:                  bool,
-	/// Explicit Antigravity identity instruction supplied by route policy.
-	pub system_identity:              Option<Str>,
 	/// Whether Antigravity's `VALIDATED` function-calling mode is required.
 	pub validated_tool_config:        bool,
 	/// Whether planning intentionally appends the forced-tool directive.
@@ -182,25 +188,12 @@ pub fn wrap_antigravity_request(
 			.get_or_insert_with(Default::default);
 		config.max_output_tokens = Some(limit);
 	}
-	if let Some(identity) = &metadata.system_identity {
-		let system =
-			request
-				.system_instruction
-				.get_or_insert_with(|| super::gemini::GoogleSystemInstruction {
-					role:  Some("user".into()),
-					parts: Vec::new(),
-				});
+	if let Some(system) = request.system_instruction.as_mut() {
+		// The real Antigravity client tags system instructions with role "user".
+		// The caller's prompt is forwarded unmodified: Cloud Code Assist accepts
+		// arbitrary system instructions on gemini-3.x and Claude routes, so no
+		// identity prompt is injected.
 		system.role = Some("user".into());
-		if !system
-			.parts
-			.first()
-			.is_some_and(|part| part.text.as_ref() == Some(identity))
-		{
-			system.parts.insert(0, super::gemini::GooglePart {
-				text: Some(identity.clone()),
-				..Default::default()
-			});
-		}
 	}
 	if metadata.validated_tool_config {
 		request.tool_config = Some(super::gemini::GoogleToolConfig {
@@ -272,13 +265,12 @@ impl CcaHeaders {
 	/// Builds Antigravity's public fingerprint from explicit policy inputs.
 	#[must_use]
 	pub fn antigravity(
-		os: &str,
-		arch: &str,
+		fingerprint: &AntigravityFingerprint,
 		interleaved_thinking: bool,
 		quota_project: Option<Str>,
 	) -> Self {
 		Self {
-			user_agent: format!("antigravity/hub/2.1.4 {os}/{arch}").into(),
+			user_agent: fingerprint.user_agent(),
 			client_metadata: None,
 			anthropic_beta: interleaved_thinking.then(|| CLAUDE_THINKING_BETA.into()),
 			quota_project,
@@ -286,11 +278,117 @@ impl CcaHeaders {
 	}
 }
 
+/// Antigravity client coordinates reproduced in the `User-Agent` header.
+///
+/// Format captured from the real 2.8.0 `antigravity/hub` client:
+/// `antigravity/hub/2.8.0 (aidev_client; os_type=darwin; arch=arm64;
+/// cl=963137146)`. The backend gates newer models (e.g. gemini-3.7-flash) on
+/// the client version, so `version` should track the latest release published
+/// by the update manifest (see [`ANTIGRAVITY_VERSION_MANIFEST_URL`] and
+/// [`parse_antigravity_manifest_version`]); `os`/`arch`/`cl` stay pinned to
+/// the darwin/arm64 reference client the fingerprint was captured from,
+/// independent of the host platform.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AntigravityFingerprint {
+	/// Client version; the backend gates model availability on it.
+	pub version: Str,
+	/// Build changelist of the reference client.
+	pub cl:      Str,
+	/// Reported `os_type`.
+	pub os:      Str,
+	/// Reported `arch`.
+	pub arch:    Str,
+}
+
+impl Default for AntigravityFingerprint {
+	fn default() -> Self {
+		Self {
+			version: Str::new_static(DEFAULT_ANTIGRAVITY_VERSION),
+			cl:      Str::new_static(DEFAULT_ANTIGRAVITY_CL),
+			os:      Str::new_static(DEFAULT_ANTIGRAVITY_OS),
+			arch:    Str::new_static(DEFAULT_ANTIGRAVITY_ARCH),
+		}
+	}
+}
+
+impl AntigravityFingerprint {
+	/// Renders the `User-Agent` value expected by Cloud Code Assist.
+	#[must_use]
+	pub fn user_agent(&self) -> Str {
+		omp_core::fmts!(
+			"antigravity/hub/{} (aidev_client; os_type={}; arch={}; cl={})",
+			self.version,
+			self.os,
+			self.arch,
+			self.cl,
+		)
+	}
+}
+
+/// Extracts the client version from an electron-builder update manifest.
+///
+/// Returns `None` when no well-formed `version:` line carries a
+/// `major.minor.patch` release triple; malformed values on a matching line
+/// stop the scan, mirroring the reference parser.
+#[must_use]
+pub fn parse_antigravity_manifest_version(manifest: &str) -> Option<Str> {
+	for line in manifest.lines() {
+		let Some(rest) = line.trim_start().strip_prefix("version") else {
+			continue;
+		};
+		let Some(rest) = rest.trim_start().strip_prefix(':') else {
+			continue;
+		};
+		let Some(value) = manifest_scalar(rest) else {
+			continue;
+		};
+		return is_release_triple(value).then(|| Str::from(value));
+	}
+	None
+}
+
+/// Returns a YAML plain or quoted scalar when the remainder of the line is
+/// only whitespace or a `#` comment.
+fn manifest_scalar(raw: &str) -> Option<&str> {
+	let raw = raw.trim_start();
+	let (value, rest) = if let Some(body) = raw.strip_prefix('"') {
+		body.split_once('"')?
+	} else if let Some(body) = raw.strip_prefix('\'') {
+		body.split_once('\'')?
+	} else {
+		let end = raw
+			.find(|c: char| c.is_whitespace() || c == '#')
+			.unwrap_or(raw.len());
+		if end == 0 {
+			return None;
+		}
+		raw.split_at(end)
+	};
+	let rest = rest.trim_start();
+	(rest.is_empty() || rest.starts_with('#')).then_some(value)
+}
+
+fn is_release_triple(value: &str) -> bool {
+	let mut parts = value.split('.');
+	let mut component = || {
+		parts
+			.next()
+			.is_some_and(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+	};
+	component() && component() && component() && parts.next().is_none()
+}
+
+/// Returns whether a CCA wire id addresses an Anthropic model.
+///
+/// Antigravity exposes Claude under `claude-*` wire ids; the id prefix is the
+/// only per-model signal available at encode time.
+fn is_claude_wire_model(wire_model: &str) -> bool {
+	wire_model.len() >= 6 && wire_model.as_bytes()[..6].eq_ignore_ascii_case(b"claude")
+}
+
 /// Explicit Antigravity lowering policy supplied by catalog/route composition.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AntigravityPolicy {
-	/// Identity instruction to prepend, if any.
-	pub system_identity:              Option<Str>,
 	/// Whether function calling uses `VALIDATED`.
 	pub validated_tool_config:        bool,
 	/// Whether a forced-tool directive is appended.
@@ -503,6 +601,12 @@ impl Codec for GoogleCcaCodec {
 				provider: context.route.provider.clone(),
 				codec:    target.codec.clone(),
 			}),
+			// Antigravity's Claude routes reject thought parts lacking a
+			// continuation proof with HTTP 400 (session resume, model switch), so
+			// unsigned reasoning is dropped instead of replayed. The wire-id check
+			// mirrors the reference client; Gemini routes accept unsigned thoughts.
+			drop_unsigned_reasoning: self.flavor == CcaFlavor::Antigravity
+				&& is_claude_wire_model(target.wire_model.as_str()),
 			..GoogleRequestOptions::default()
 		};
 		let projection = self
@@ -543,7 +647,6 @@ impl Codec for GoogleCcaCodec {
 					last_step_index: None,
 					model_enum: policy.model_enum.clone(),
 					used_claude: policy.used_claude,
-					system_identity: policy.system_identity.clone(),
 					validated_tool_config: policy.validated_tool_config,
 					append_forced_tool_directive: policy.append_forced_tool_directive,
 					max_output_tokens: policy.max_output_tokens,
@@ -661,6 +764,9 @@ pub struct CcaWireError {
 	/// Symbolic status.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub status:  Option<Str>,
+	/// Structured Google RPC error evidence.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub details: Vec<super::gemini::GoogleErrorDetail>,
 }
 
 /// Decodes and unwraps one CCA response envelope without generic JSON
@@ -674,6 +780,14 @@ pub fn unwrap_response(data: &[u8]) -> Result<GenerateContentResponse, GoogleCod
 	let envelope: CcaResponseEnvelope = serde_json::from_str(raw.get())
 		.map_err(|error| cca_decode_error(format!("invalid CCA response JSON: {error}")))?;
 	if let Some(error) = envelope.error {
+		if error.code == Some(429) || error.status.as_deref() == Some("RESOURCE_EXHAUSTED") {
+			return Err(GoogleCodecError::from_wire(super::gemini::GoogleWireError {
+				code:    error.code,
+				message: error.message,
+				status:  error.status,
+				details: error.details,
+			}));
+		}
 		let encoded = serde_json::to_string(&error)
 			.map_err(|failure| cca_decode_error(format!("invalid CCA error envelope: {failure}")))?;
 		return Err(cca_provider_error(format!("CCA in-band error: {encoded}")));
@@ -1307,7 +1421,6 @@ mod tests {
 			last_step_index:              Some(1),
 			model_enum:                   Some("MODEL_PLACEHOLDER_M20".into()),
 			used_claude:                  false,
-			system_identity:              Some(ANTIGRAVITY_SYSTEM_INSTRUCTION.into()),
 			validated_tool_config:        true,
 			append_forced_tool_directive: false,
 			max_output_tokens:            Some(65_536),
@@ -1364,6 +1477,17 @@ mod tests {
 				.detail
 				.starts_with("invalid CCA response JSON:")
 		);
+	}
+
+	#[test]
+	fn cca_quota_error_uses_google_rpc_classification() {
+		let error = unwrap_response(
+			br#"{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED"}]}}"#,
+		)
+		.expect_err("quota envelope is an in-band provider error");
+		assert_eq!(error.kind, GoogleCodecErrorKind::QuotaExhausted);
+		assert_eq!(error.code.as_deref(), Some("QUOTA_EXHAUSTED"));
+		assert_eq!(error.retry_after_ms, 1_000);
 	}
 
 	#[test]
@@ -1447,7 +1571,11 @@ mod tests {
 	fn discovery_request_matches_fetch_available_models_wire_contract() {
 		let codec = GoogleCcaCodec::antigravity(
 			None,
-			CcaHeaders::antigravity("darwin", "arm64", false, Some("quota-project".into())),
+			CcaHeaders::antigravity(
+				&AntigravityFingerprint::default(),
+				false,
+				Some("quota-project".into()),
+			),
 			AntigravityPolicy::default(),
 		);
 		let request = DiscoveryRequest {
@@ -1476,7 +1604,8 @@ mod tests {
 		}));
 		assert!(encoded.headers.iter().any(|header| {
 			header.name.as_str() == "user-agent"
-				&& header.value.as_str() == "antigravity/hub/2.1.4 darwin/arm64"
+				&& header.value.as_str()
+					== "antigravity/hub/2.8.0 (aidev_client; os_type=darwin; arch=arm64; cl=963137146)"
 		}));
 		assert!(encoded.headers.iter().any(|header| {
 			header.name.as_str() == "x-goog-user-project" && header.value.as_str() == "quota-project"
@@ -1683,9 +1812,15 @@ mod tests {
 
 	#[test]
 	fn antigravity_headers_and_forced_tool_directive_use_explicit_policy() {
-		let headers =
-			CcaHeaders::antigravity("darwin", "arm64", true, Some("project-REDACTED".into()));
-		assert_eq!(headers.user_agent.as_str(), "antigravity/hub/2.1.4 darwin/arm64");
+		let headers = CcaHeaders::antigravity(
+			&AntigravityFingerprint::default(),
+			true,
+			Some("project-REDACTED".into()),
+		);
+		assert_eq!(
+			headers.user_agent.as_str(),
+			"antigravity/hub/2.8.0 (aidev_client; os_type=darwin; arch=arm64; cl=963137146)",
+		);
 		assert_eq!(headers.anthropic_beta.as_deref(), Some(CLAUDE_THINKING_BETA));
 		assert_eq!(headers.quota_project.as_deref(), Some("project-REDACTED"));
 
@@ -1701,7 +1836,6 @@ mod tests {
 				last_step_index:              None,
 				model_enum:                   None,
 				used_claude:                  false,
-				system_identity:              None,
 				validated_tool_config:        false,
 				append_forced_tool_directive: true,
 				max_output_tokens:            None,
@@ -1729,5 +1863,115 @@ mod tests {
 			user_agent.value.as_str(),
 			"GeminiCLI/0.46.0/gemini-selected (darwin; arm64; terminal)",
 		);
+	}
+
+	#[test]
+	fn antigravity_manifest_version_parsing_follows_reference_rules() {
+		assert_eq!(
+			parse_antigravity_manifest_version("version: 2.9.1\nfiles: []").as_deref(),
+			Some("2.9.1"),
+		);
+		assert_eq!(
+			parse_antigravity_manifest_version("  version: \"3.0.12\"  # channel").as_deref(),
+			Some("3.0.12"),
+		);
+		assert_eq!(parse_antigravity_manifest_version("version: '2.8.0'").as_deref(), Some("2.8.0"));
+		// A matching line with a malformed value stops the scan.
+		assert_eq!(parse_antigravity_manifest_version("version: 2.9.1-beta\nversion: 2.9.2"), None);
+		assert_eq!(parse_antigravity_manifest_version("version: \"2.9\""), None);
+		// Non-matching lines are skipped, including bare and trailing-garbage forms.
+		assert_eq!(
+			parse_antigravity_manifest_version("version:\nversion: 1.2.3 extra\nversion: 2.9.3")
+				.as_deref(),
+			Some("2.9.3"),
+		);
+		assert_eq!(parse_antigravity_manifest_version("path: app.zip"), None);
+	}
+
+	#[test]
+	fn antigravity_claude_projection_drops_only_unsigned_reasoning() {
+		let provider = ProviderId::from("google-antigravity");
+		let codec_id = crate::catalog::CodecId::from("google-cca");
+		let request = crate::call::ChatRequest {
+			messages:          vec![
+				crate::call::Message {
+					role:    crate::call::Role::Assistant,
+					content: vec![
+						crate::call::ContentPart::Reasoning {
+							text:  "signed reasoning".into(),
+							proof: Some(crate::call::ProviderProof {
+								provider: provider.clone(),
+								codec:    codec_id.clone(),
+								value:    Bytes::from_static(b"c2lnbmVk"),
+							}),
+						},
+						crate::call::ContentPart::Reasoning {
+							text:  "unsigned reasoning".into(),
+							proof: None,
+						},
+						crate::call::ContentPart::Text { text: "answer".into(), proof: None },
+					]
+					.into(),
+					name:    None,
+				},
+				crate::call::Message {
+					role:    crate::call::Role::User,
+					content: vec![crate::call::ContentPart::Text {
+						text:  "continue".into(),
+						proof: None,
+					}]
+					.into(),
+					name:    None,
+				},
+			]
+			.into(),
+			tools:             std::sync::Arc::from([]),
+			hosted_tools:      std::sync::Arc::from([]),
+			tool_choice:       crate::call::Setting::Unset,
+			output:            crate::call::Setting::Unset,
+			reasoning:         crate::call::Setting::Unset,
+			verbosity:         crate::call::Setting::Unset,
+			cache_retention:   crate::call::Setting::Unset,
+			service_tier:      crate::call::Setting::Unset,
+			sampling:          crate::call::Sampling::default(),
+			max_output_tokens: None,
+			top_logprobs:      None,
+			safety:            std::sync::Arc::from([]),
+			negotiation:       Default::default(),
+		};
+		let scope = GoogleProofScope { provider, codec: codec_id };
+		let dropping = GeminiCodec::cloud_code_assist(None)
+			.project(&request, &GoogleRequestOptions {
+				proof_scope: Some(scope.clone()),
+				drop_unsigned_reasoning: true,
+				..GoogleRequestOptions::default()
+			})
+			.expect("claude projection succeeds");
+		let parts = &dropping.request.contents[0].parts;
+		assert_eq!(parts.len(), 2);
+		assert_eq!(parts[0].thought, Some(true));
+		assert_eq!(parts[0].text.as_deref(), Some("signed reasoning"));
+		assert_eq!(parts[0].thought_signature.as_deref(), Some("c2lnbmVk"));
+		assert_eq!(parts[1].text.as_deref(), Some("answer"));
+
+		let keeping = GeminiCodec::cloud_code_assist(None)
+			.project(&request, &GoogleRequestOptions {
+				proof_scope: Some(scope),
+				..GoogleRequestOptions::default()
+			})
+			.expect("gemini projection succeeds");
+		let parts = &keeping.request.contents[0].parts;
+		assert_eq!(parts.len(), 3);
+		assert_eq!(parts[1].thought, Some(true));
+		assert_eq!(parts[1].text.as_deref(), Some("unsigned reasoning"));
+		assert_eq!(parts[1].thought_signature, None);
+	}
+
+	#[test]
+	fn claude_wire_ids_match_case_insensitively() {
+		assert!(is_claude_wire_model("claude-sonnet-4-6"));
+		assert!(is_claude_wire_model("Claude-Opus-4-6"));
+		assert!(!is_claude_wire_model("gemini-3.7-flash-low"));
+		assert!(!is_claude_wire_model("clau"));
 	}
 }

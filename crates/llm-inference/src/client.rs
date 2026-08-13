@@ -278,7 +278,10 @@ mod tests {
 			revision:  Str::from("1"),
 			exact:     true,
 		};
-		assert!(ChatRequest::extract(answer(AnswerBody::Chat(empty_stream()))).is_ok());
+		assert!(
+			ChatRequest::extract(answer(AnswerBody::Chat(ChatStream::ordinary(empty_stream()))))
+				.is_ok()
+		);
 		assert!(
 			CountTokensRequest::extract(answer(AnswerBody::Tokens(TokenCount {
 				tokens:     1,

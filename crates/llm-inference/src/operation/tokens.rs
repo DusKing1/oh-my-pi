@@ -366,7 +366,14 @@ impl EstimatedTokenCounter {
 					.as_ref()
 					.map_or(0, |description| description.len() as u64),
 			);
-			bytes = bytes.saturating_add(serialized_len(tool.parameters.as_value())?);
+			bytes = bytes.saturating_add(if let Some((parameters, _)) = tool.input.json_schema() {
+				serialized_len(parameters.as_value())?
+			} else {
+				tool
+					.input
+					.grammar()
+					.map_or(0, |grammar| grammar.definition.len() as u64)
+			});
 		}
 		let divisor = u64::from(self.bytes_per_token.get());
 		let tokens = bytes.saturating_add(divisor - 1) / divisor;

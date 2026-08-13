@@ -494,11 +494,14 @@ fn lower_count_tokens(
 		}
 	}
 	for tool in request.tools.iter() {
+		let Some((parameters, strict)) = tool.input.json_schema() else {
+			return Err(capability_error("anthropic.tools.grammar_unsupported"));
+		};
 		body.tools.push(Tool::Client(ClientTool {
 			name:                  tool.name.clone(),
 			description:           tool.description.clone(),
-			input_schema:          tool.parameters.as_value().clone(),
-			strict:                Some(tool.strict),
+			input_schema:          parameters.as_value().clone(),
+			strict:                Some(strict),
 			eager_input_streaming: None,
 			cache_control:         None,
 		}));
@@ -600,12 +603,14 @@ pub fn lower_chat(
 		}
 	}
 	for tool in request.tools.iter() {
-		let schema = tool.parameters.as_value().clone();
+		let Some((parameters, strict)) = tool.input.json_schema() else {
+			return Err(capability_error("anthropic.tools.grammar_unsupported"));
+		};
 		body.tools.push(Tool::Client(ClientTool {
 			name:                  tool.name.clone(),
 			description:           tool.description.clone(),
-			input_schema:          schema,
-			strict:                Some(tool.strict),
+			input_schema:          parameters.as_value().clone(),
+			strict:                Some(strict),
 			eager_input_streaming: None,
 			cache_control:         cache.clone(),
 		}));

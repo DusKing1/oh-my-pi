@@ -13,12 +13,14 @@ use omp_core::Str;
 use tower::{Layer, Service};
 
 use crate::{
-	answer::{Answer, AnswerBody, AnswerKind, NativeResponse, NativeResponseBody, ResponseMeta},
+	answer::{
+		Answer, AnswerBody, AnswerKind, ChatStream, NativeResponse, NativeResponseBody, ResponseMeta,
+	},
 	call::{Call, NativeResponseFraming, OperationCall, RawJson},
 	catalog::OperationKind,
-	codec::{HandshakenResponse, RawEvent},
+	codec::{HandshakenResponse, ProviderControlEvent, RawEvent},
 	error::{Error, ErrorDetail, ErrorKind, ErrorPhase, RetryAction},
-	event::ChatEvent,
+	event::{ChatEvent, WorkflowAction, WorkflowResponseKind, WorkflowResume},
 	layer::LayerCall,
 	receipt::ReasonId,
 };
@@ -108,7 +110,7 @@ where
 					.realtime
 					.take()
 					.ok_or_else(|| invariant("realtime.missing-session", &request.context))?;
-				if response.events.is_some() {
+				if response.events.is_some() || response.control.is_some() {
 					return Err(invariant("realtime.unexpected-events", &request.context));
 				}
 				abort.disarm();
@@ -126,13 +128,20 @@ where
 				.take()
 				.ok_or_else(|| invariant("answer.missing-events", &request.context))?;
 			if operation == OperationKind::Chat {
-				let output = chat_stream(events, meta.clone(), request.context.clone());
+				let events = chat_stream(events, meta.clone(), request.context.clone());
+				let output = match response.control.take() {
+					Some(control) => ChatStream::duplex(events, control),
+					None => ChatStream::ordinary(events),
+				};
 				abort.disarm();
 				return Ok(Answer {
 					meta,
 					receipt: request.context.receipt(),
 					body: AnswerBody::Chat(output),
 				});
+			}
+			if response.control.is_some() {
+				return Err(invariant("answer.unexpected-control-path", &request.context));
 			}
 			if operation == OperationKind::GenerateImage {
 				let output = image_stream(events, request.context.clone());
@@ -214,7 +223,7 @@ fn chat_stream(
 	mut input: crate::codec::RawEventStream,
 	meta: ResponseMeta,
 	context: crate::layer::ExecutionContext,
-) -> crate::answer::ChatStream {
+) -> crate::answer::OutputStream<ChatEvent> {
 	Box::pin(async_stream::stream! {
 		let mut abort = AbortOnDrop(context.clone(), true);
 		if let Err(mut error) = context.checkpoint(ErrorPhase::Streaming) {
@@ -254,6 +263,52 @@ fn chat_stream(
 					}
 					yield Ok(event);
 					if terminal { abort.disarm(); break; }
+				},
+				Some(Ok(RawEvent::Control(ProviderControlEvent::WorkflowAction { request_id, name, arguments, timeout_ms }))) => {
+					yield Ok(ChatEvent::WorkflowAction(WorkflowAction {
+						invocation: request_id.clone(),
+						call: Some(crate::id::ToolCallId::from(request_id.as_str())),
+						name,
+						arguments,
+						timeout: timeout_ms.map(std::time::Duration::from_millis),
+						response_kind: WorkflowResponseKind::Action,
+					}));
+				},
+				Some(Ok(RawEvent::Control(ProviderControlEvent::WorkflowResume { workflow_id, session_id, last_event_id }))) => {
+					yield Ok(ChatEvent::WorkflowResume(WorkflowResume {
+						workflow_id,
+						session_id,
+						last_event_id,
+					}));
+				},
+				Some(Ok(RawEvent::Control(ProviderControlEvent::Cancel { call }))) => {
+					yield Ok(ChatEvent::WorkflowCancelled { invocation: call.into_inner() });
+				},
+				Some(Ok(RawEvent::Control(ProviderControlEvent::ShellInvoke { invocation, call, command, cwd, timeout_ms, exec, streaming }))) => {
+					let arguments = bytes::Bytes::from(serde_json::json!({
+						"command": command.as_str(),
+						"cwd": cwd.as_ref().map(Str::as_str),
+						"exec_id": exec.as_ref().map(Str::as_str),
+						"streaming": streaming,
+					}).to_string());
+					yield Ok(ChatEvent::WorkflowAction(WorkflowAction {
+						invocation,
+						call: Some(call),
+						name: Str::new_static("exec.shell"),
+						arguments,
+						response_kind: WorkflowResponseKind::Invoke,
+						timeout: timeout_ms.map(std::time::Duration::from_millis),
+					}));
+				},
+				Some(Ok(RawEvent::Control(ProviderControlEvent::InteractionQuery { id, kind, payload }))) => {
+					yield Ok(ChatEvent::WorkflowAction(WorkflowAction {
+						invocation: Str::from(id.to_string()),
+						call: None,
+						name: kind,
+						arguments: payload,
+						timeout: None,
+						response_kind: WorkflowResponseKind::Invoke,
+					}));
 				},
 				Some(Err(mut error)) => { context.finalize_error(&mut error); error.committed = context.is_committed(); context.abort_session(); abort.disarm(); yield Err(error); break; },
 				Some(Ok(other)) => { let error = mismatch(OperationKind::Chat, raw_kind(&other), &context); context.abort_session(); abort.disarm(); yield Err(error); break; },
