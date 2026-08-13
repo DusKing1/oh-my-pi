@@ -1,32 +1,49 @@
 #![cfg(unix)]
 
-use std::{io, path::{Path, PathBuf}, sync::Arc, time::Duration};
+use std::{
+	io,
+	path::{Path, PathBuf},
+	sync::Arc,
+	time::Duration,
+};
 
 use anyhow::{Context as _, Result};
 use bytes::BytesMut;
 use omp_app::envd::{server::EnvServer, worker::ToolWorkerConfig};
 use omp_env::{BlobDownloadEvent, EnvClient};
-use omp_proto::{SCHEMA_REV, blob::v1::GetRequest, env::v1::{ClientFrame, ClientHello, ServerFrame}, prost::Message};
+use omp_proto::{
+	SCHEMA_REV,
+	blob::v1::GetRequest,
+	env::v1::{ClientFrame, ClientHello, ServerFrame},
+	prost::Message,
+};
 use omp_tool::Registry;
-use tokio::{io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _}, net::UnixStream, process::Command, task::JoinHandle};
+use tokio::{
+	io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
+	net::UnixStream,
+	process::Command,
+	task::JoinHandle,
+};
 use tokio_util::sync::CancellationToken;
 
 use super::{DEFAULT_TIMEOUT, OwnedProcess, Scratch, omp_binary, within};
 
 const FRAME_LIMIT: usize = 64 * 1024 * 1024;
 
-/// Real local environment authority with framed UDS transport and owned worker/process resources.
+/// Real local environment authority with framed UDS transport and owned
+/// worker/process resources.
 pub struct EnvHarness {
-	client: EnvClient,
-	socket: PathBuf,
-	shutdown: CancellationToken,
+	client:      EnvClient,
+	socket:      PathBuf,
+	shutdown:    CancellationToken,
 	server_task: Option<JoinHandle<Result<(), omp_app::envd::EnvdError>>>,
 	client_task: Option<JoinHandle<io::Result<()>>>,
-	_server: Arc<EnvServer>,
+	_server:     Arc<EnvServer>,
 }
 
 impl EnvHarness {
-	/// Opens all real local environment resources and completes a framed client hello.
+	/// Opens all real local environment resources and completes a framed client
+	/// hello.
 	pub async fn spawn(scratch: &Scratch, registry: Registry) -> Result<Self> {
 		let socket = scratch.socket("env.sock");
 		let worker = ToolWorkerConfig::new(omp_binary().context("resolving worker-capable host")?);
@@ -39,9 +56,8 @@ impl EnvHarness {
 		let task_server = Arc::clone(&server);
 		let task_socket = socket.clone();
 		let task_shutdown = shutdown.clone();
-		let server_task = tokio::spawn(async move {
-			task_server.serve_uds(&task_socket, task_shutdown).await
-		});
+		let server_task =
+			tokio::spawn(async move { task_server.serve_uds(&task_socket, task_shutdown).await });
 		wait_socket(&socket).await?;
 		let (client, client_task) = connect_env(&socket).await?;
 		within(
@@ -52,7 +68,8 @@ impl EnvHarness {
 				schema_rev: SCHEMA_REV,
 				..Default::default()
 			}),
-		).await??;
+		)
+		.await??;
 		Ok(Self {
 			client,
 			socket,
@@ -63,7 +80,8 @@ impl EnvHarness {
 		})
 	}
 
-	/// Starts the production `envd` process attached to an existing real docserver.
+	/// Starts the production `envd` process attached to an existing real
+	/// docserver.
 	pub async fn spawn_attached(
 		scratch: &Scratch,
 		docserver_socket: &Path,
@@ -84,7 +102,12 @@ impl EnvHarness {
 		wait_socket(&socket).await?;
 		let (client, client_task) = connect_env(&socket).await?;
 		hello_env(&client, "omp-e2e-attached").await?;
-		Ok(ProcessEnvHarness { client, socket, client_task: Some(client_task), process: Some(process) })
+		Ok(ProcessEnvHarness {
+			client,
+			socket,
+			client_task: Some(client_task),
+			process: Some(process),
+		})
 	}
 
 	/// Opens an independent framed connection and completes its hello.
@@ -104,7 +127,8 @@ impl EnvHarness {
 		self.client.clone()
 	}
 
-	/// Returns the final production registry assembled beside environment resources.
+	/// Returns the final production registry assembled beside environment
+	/// resources.
 	#[must_use]
 	pub fn registry(&self) -> Arc<Registry> {
 		self._server.registry()
@@ -124,7 +148,8 @@ impl EnvHarness {
 	async fn stop(&mut self) -> Result<()> {
 		self.shutdown.cancel();
 		if let Some(task) = self.server_task.take() {
-			within("environment shutdown", DEFAULT_TIMEOUT, task).await??
+			within("environment shutdown", DEFAULT_TIMEOUT, task)
+				.await??
 				.context("environment server stopped with an error")?;
 		}
 		if let Some(task) = self.client_task.take() {
@@ -149,12 +174,13 @@ impl Drop for EnvHarness {
 	}
 }
 
-/// Production environment-daemon child attached to a caller-owned document authority.
+/// Production environment-daemon child attached to a caller-owned document
+/// authority.
 pub struct ProcessEnvHarness {
-	client: EnvClient,
-	socket: PathBuf,
+	client:      EnvClient,
+	socket:      PathBuf,
 	client_task: Option<JoinHandle<io::Result<()>>>,
-	process: Option<OwnedProcess>,
+	process:     Option<OwnedProcess>,
 }
 
 impl ProcessEnvHarness {
@@ -208,7 +234,7 @@ impl Drop for ProcessEnvHarness {
 /// One independently correlated framed environment connection.
 pub struct FramedEnvConnection {
 	client: EnvClient,
-	task: Option<JoinHandle<io::Result<()>>>,
+	task:   Option<JoinHandle<io::Result<()>>>,
 }
 
 impl FramedEnvConnection {
@@ -240,9 +266,11 @@ impl Drop for FramedEnvConnection {
 	}
 }
 
-/// Opens a decoded [`EnvClient`] over the production varint/protobuf byte framing.
+/// Opens a decoded [`EnvClient`] over the production varint/protobuf byte
+/// framing.
 pub async fn connect_env(path: &Path) -> Result<(EnvClient, JoinHandle<io::Result<()>>)> {
-	let stream = within("environment socket connection", DEFAULT_TIMEOUT, UnixStream::connect(path)).await??;
+	let stream =
+		within("environment socket connection", DEFAULT_TIMEOUT, UnixStream::connect(path)).await??;
 	let (outgoing, requests) = flume::bounded(64);
 	let (responses, incoming) = flume::bounded(64);
 	let client = EnvClient::from_channels(outgoing, incoming);
@@ -259,12 +287,17 @@ async fn hello_env(client: &EnvClient, name: &str) -> Result<()> {
 			schema_rev: SCHEMA_REV,
 			..Default::default()
 		}),
-	).await??;
+	)
+	.await??;
 	Ok(())
 }
 
 /// Downloads one complete blob through the real environment blob plane.
-pub async fn read_blob(client: &EnvClient, request: GetRequest, limit: Duration) -> Result<Vec<u8>> {
+pub async fn read_blob(
+	client: &EnvClient,
+	request: GetRequest,
+	limit: Duration,
+) -> Result<Vec<u8>> {
 	let mut download = within("blob get open", limit, client.blob_get(request)).await??;
 	within("blob download", limit, async {
 		let mut bytes = Vec::new();
@@ -275,7 +308,8 @@ pub async fn read_blob(client: &EnvClient, request: GetRequest, limit: Duration)
 				None => return Err(anyhow::anyhow!("blob stream closed before completion")),
 			}
 		}
-	}).await?
+	})
+	.await?
 }
 
 async fn wait_socket(path: &Path) -> Result<()> {
@@ -286,15 +320,17 @@ async fn wait_socket(path: &Path) -> Result<()> {
 					drop(stream);
 					return Ok(());
 				},
-				Err(error) if error.kind() == io::ErrorKind::NotFound
-					|| error.kind() == io::ErrorKind::ConnectionRefused =>
+				Err(error)
+					if error.kind() == io::ErrorKind::NotFound
+						|| error.kind() == io::ErrorKind::ConnectionRefused =>
 				{
 					tokio::time::sleep(Duration::from_millis(10)).await;
 				},
 				Err(error) => return Err(error),
 			}
 		}
-	}).await??;
+	})
+	.await??;
 	Ok(())
 }
 
@@ -311,7 +347,9 @@ where
 		let mut bytes = BytesMut::new();
 		while let Ok(frame) = requests.recv_async().await {
 			bytes.clear();
-			frame.encode_length_delimited(&mut bytes).map_err(io::Error::other)?;
+			frame
+				.encode_length_delimited(&mut bytes)
+				.map_err(io::Error::other)?;
 			writer.write_all(&bytes).await?;
 			writer.flush().await?;
 		}
@@ -321,7 +359,10 @@ where
 		let mut payload = BytesMut::new();
 		while let Some(length) = read_length(&mut reader).await? {
 			if length > FRAME_LIMIT {
-				return Err(io::Error::new(io::ErrorKind::InvalidData, "environment frame exceeds limit"));
+				return Err(io::Error::new(
+					io::ErrorKind::InvalidData,
+					"environment frame exceeds limit",
+				));
 			}
 			payload.resize(length, 0);
 			reader.read_exact(&mut payload).await?;
@@ -343,7 +384,9 @@ async fn read_length<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Option<
 	for shift in (0..70).step_by(7) {
 		let byte = match reader.read_u8().await {
 			Ok(byte) => byte,
-			Err(error) if error.kind() == io::ErrorKind::UnexpectedEof && shift == 0 => return Ok(None),
+			Err(error) if error.kind() == io::ErrorKind::UnexpectedEof && shift == 0 => {
+				return Ok(None);
+			},
 			Err(error) => return Err(error),
 		};
 		value |= u64::from(byte & 0x7f) << shift;

@@ -10,7 +10,7 @@ use omp_tool::{TOOL_REV_PROP, ToolIdentity};
 pub fn message_item(role: thread::Role, text: impl Into<String>) -> thread::Item {
 	thread::Item {
 		kind: Some(thread::item::Kind::Message(thread::Message {
-			role: role as i32,
+			role:  role as i32,
 			parts: vec![thread::Part { kind: Some(thread::part::Kind::Text(text.into())) }],
 		})),
 		..Default::default()

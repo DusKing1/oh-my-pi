@@ -64,19 +64,20 @@ impl ScriptedTurn {
 #[derive(Clone, Debug)]
 pub struct CapturedTurn {
 	/// Stable logical turn identity.
-	pub turn_id: TurnId,
+	pub turn_id:   TurnId,
 	/// Full or incremental canonical input.
-	pub input: TurnInput,
+	pub input:     TurnInput,
 	/// Per-turn options seen by the transport.
-	pub options: TurnOptions,
+	pub options:   TurnOptions,
 	/// Duplex frames submitted in response to server invocations.
 	pub submitted: Arc<Mutex<Vec<InvokeFrame>>>,
 }
 
-/// Queue-backed deterministic [`TurnClient`] that records every request and duplex response.
+/// Queue-backed deterministic [`TurnClient`] that records every request and
+/// duplex response.
 #[derive(Clone, Debug)]
 pub struct ScriptedTurnClient {
-	scripts: Arc<Mutex<VecDeque<ScriptedTurn>>>,
+	scripts:  Arc<Mutex<VecDeque<ScriptedTurn>>>,
 	captured: Arc<Mutex<Vec<CapturedTurn>>>,
 }
 
@@ -85,12 +86,13 @@ impl ScriptedTurnClient {
 	#[must_use]
 	pub fn new(scripts: impl IntoIterator<Item = ScriptedTurn>) -> Self {
 		Self {
-			scripts: Arc::new(Mutex::new(scripts.into_iter().collect())),
+			scripts:  Arc::new(Mutex::new(scripts.into_iter().collect())),
 			captured: Arc::new(Mutex::new(Vec::new())),
 		}
 	}
 
-	/// Returns a stable snapshot of all opened turns and submitted invocation frames.
+	/// Returns a stable snapshot of all opened turns and submitted invocation
+	/// frames.
 	#[must_use]
 	pub fn captures(&self) -> Vec<CapturedTurn> {
 		self.captured.lock().clone()
@@ -132,7 +134,7 @@ impl TurnClient for ScriptedTurnClient {
 /// One live scripted turn session.
 #[derive(Debug)]
 pub struct ScriptedTurnSession {
-	steps: VecDeque<ScriptedStep>,
+	steps:     VecDeque<ScriptedStep>,
 	submitted: Arc<Mutex<Vec<InvokeFrame>>>,
 }
 
@@ -148,7 +150,7 @@ impl TurnSession for ScriptedTurnSession {
 }
 
 struct ScriptedEventStream<'session> {
-	steps: &'session mut VecDeque<ScriptedStep>,
+	steps:   &'session mut VecDeque<ScriptedStep>,
 	waiting: Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
 }
 

@@ -1,3 +1,6 @@
+//! Executable P6 proof for durable replay and interrupted-batch recovery after
+//! crashes.
+
 #![cfg(unix)]
 
 use std::{
@@ -5,6 +8,7 @@ use std::{
 	fs::{self, OpenOptions},
 	future::{Future, ready},
 	io::Write as _,
+	os::unix::process::CommandExt as _,
 	path::{Path, PathBuf},
 	pin::Pin,
 	process::{Child, Command, ExitStatus, Stdio},
@@ -15,15 +19,14 @@ use std::{
 	task::{Context, Poll},
 	time::{Duration, Instant},
 };
-use std::os::unix::process::CommandExt as _;
 
 use async_stream::stream;
 use bytes::Bytes;
 use futures::{Stream, StreamExt as _};
 use omp_agent::{
-	Agent, AgentError, AgentSnapshot, AgentState, Error as TurnError, InvokeFrame, Journal,
-	PromptHash, RpcTurnClient, RpcTurnSession, TurnClient, TurnId, TurnInput, TurnInputRecord,
-	TurnOptions, TurnOptionsRecord, TurnSession, TurnStart, project_journal,
+	Agent, AgentError, AgentEvent, AgentSnapshot, AgentState, Error as TurnError, InvokeFrame,
+	Journal, PromptHash, RpcTurnClient, RpcTurnSession, TurnClient, TurnId, TurnInput,
+	TurnInputRecord, TurnOptions, TurnOptionsRecord, TurnSession, TurnStart, project_journal,
 };
 use omp_app::{
 	daemon::{DaemonConfig, DaemonHandle},
@@ -48,16 +51,12 @@ use omp_llm_inference::{
 	session::ConversationSessionPlanner,
 };
 use omp_proto::{
-	SCHEMA_REV,
-	env::v1::ClientHello,
-	inference::v1 as pb,
-	prost::Message as _,
-	thread::v1 as thread,
+	SCHEMA_REV, env::v1::ClientHello, inference::v1 as pb, prost::Message as _, thread::v1 as thread,
 };
 use omp_storage::transcript::{self, AmendPatch, Entry, Header, Kind, SessionId};
 use omp_tool::{
 	Abort, Constraint, Ev, IncomingParams, Part as ToolPart, PromptCaps, Registry, Rev,
-	TOOL_REV_PROP, Tool, ToolSpec,
+	TOOL_REV_PROP, Tool, ToolSpec, Verdict,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -66,27 +65,37 @@ use tower::Service;
 const TEST_NAME: &str = "crash_resume_replays_exact_durable_truth";
 const CHILD_ENV: &str = "OMP_P6_CHILD";
 const ROOT_ENV: &str = "OMP_P6_ROOT";
-const ROOT_TURN: &str = "p6-root-turn";
-const BATCH_TURN: &str = "p6-batch-turn";
+const ROOT_TURN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const BATCH_TURN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+const FALLBACK_TURN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+const TOOLSET_TURN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
+const RECEIPT_TURN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
 const TOOL_NAME: &str = "p6_hang";
 
+fn assert_fixed_turn_ids() {
+	let ids = [ROOT_TURN, BATCH_TURN, FALLBACK_TURN, TOOLSET_TURN, RECEIPT_TURN];
+	for (index, id) in ids.iter().enumerate() {
+		assert!(id.parse::<ulid::Ulid>().is_ok(), "invalid fixed test TurnId {id}");
+		assert!(!ids[..index].contains(id), "duplicate fixed test TurnId {id}");
+	}
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 struct OpenRecord {
 	turn_id: Str,
-	input: TurnInputRecord,
+	input:   TurnInputRecord,
 	options: TurnOptionsRecord,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 struct GatewayTurn {
-	open: OpenRecord,
+	open:    OpenRecord,
 	outcome: pb::Outcome,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 struct GatewayState {
-	turns: Vec<GatewayTurn>,
+	turns:    Vec<GatewayTurn>,
 	accepted: Vec<bool>,
 }
 
@@ -105,9 +114,7 @@ impl TurnClient for NeverTurnClient {
 		_options: &'client TurnOptions,
 	) -> impl Future<Output = Result<Self::Session<'client>, TurnError>> + Send + 'client {
 		self.opens.fetch_add(1, Ordering::SeqCst);
-		ready(Err(TurnError::Protocol(
-			"toolset mismatch must fail before opening the turn client",
-		)))
+		ready(Err(TurnError::Protocol("toolset mismatch must fail before opening the turn client")))
 	}
 }
 
@@ -129,12 +136,15 @@ impl DiskTurnClient {
 	) -> Result<DiskTurnSession, TurnError> {
 		let open = OpenRecord {
 			turn_id: turn_id.as_str().into(),
-			input: input_record(&input),
+			input:   input_record(&input),
 			options: options_record(options),
 		};
 		let mut state = load_gateway(&self.path);
 		assert!(
-			state.turns.iter().all(|record| record.open.turn_id != open.turn_id),
+			state
+				.turns
+				.iter()
+				.all(|record| record.open.turn_id != open.turn_id),
 			"receipt recovery reopened an already terminal scripted provider turn"
 		);
 		let (outcome, events) = if state.turns.is_empty() {
@@ -184,17 +194,22 @@ impl Stream for DiskEvents<'_> {
 }
 
 impl TurnSession for DiskTurnSession {
-	fn events(&mut self) -> impl Stream<Item = Result<pb::TurnEvent, TurnError>> + Send + Unpin + '_ {
+	fn events(
+		&mut self,
+	) -> impl Stream<Item = Result<pb::TurnEvent, TurnError>> + Send + Unpin + '_ {
 		DiskEvents { session: self }
 	}
 
-	fn submit(&mut self, _frame: InvokeFrame) -> impl Future<Output = Result<(), TurnError>> + Send + '_ {
+	fn submit(
+		&mut self,
+		_frame: InvokeFrame,
+	) -> impl Future<Output = Result<(), TurnError>> + Send + '_ {
 		ready(Ok(()))
 	}
 }
 
 struct HangingTool {
-	spec: ToolSpec,
+	spec:    ToolSpec,
 	effects: PathBuf,
 }
 
@@ -202,13 +217,13 @@ impl HangingTool {
 	fn new(effects: PathBuf) -> Self {
 		Self {
 			spec: ToolSpec {
-				name: TOOL_NAME.into(),
-				rev: Rev { family: "p6".into(), n: 1 },
+				name:        TOOL_NAME.into(),
+				rev:         Rev { family: "p6".into(), n: 1 },
 				description: "waits forever after its durable effect gate".into(),
-				schema: Bytes::from_static(
+				schema:      Bytes::from_static(
 					br#"{"type":"object","properties":{"call":{"type":"string"}},"required":["call"]}"#,
 				),
-				constraint: Constraint::None,
+				constraint:  Constraint::None,
 			},
 			effects,
 		}
@@ -279,10 +294,10 @@ async fn rpc_host(
 			.expect("normalized catalog");
 	for provider in &mut compiled.providers {
 		provider.management = ManagementCapabilities {
-			operations: OperationBits::empty(),
+			operations:        OperationBits::empty(),
 			multiple_accounts: false,
-			refresh: false,
-			principal_quota: false,
+			refresh:           false,
+			principal_quota:   false,
 		};
 	}
 	let artifacts = Catalog::encode(compiled, SnapshotProvenance { source_digest: [0; 32] })
@@ -291,7 +306,12 @@ async fn rpc_host(
 	let model = catalog
 		.models()
 		.iter()
-		.find(|candidate| candidate.capabilities.operations.contains_kind(OperationKind::Chat))
+		.find(|candidate| {
+			candidate
+				.capabilities
+				.operations
+				.contains_kind(OperationKind::Chat)
+		})
 		.expect("chat model");
 	let route_id = model.routes.first().expect("chat route").clone();
 	let route = catalog.route(&route_id).expect("catalog route");
@@ -299,14 +319,11 @@ async fn rpc_host(
 	if first {
 		fake.extend([FakeScript::chat(vec![
 			Ok(ChatEvent::BlockStarted { index: 0, kind: BlockKind::Text }),
-			Ok(ChatEvent::TextDelta {
-				index: 0,
-				text: Str::from("the durable RPC outcome"),
-			}),
+			Ok(ChatEvent::TextDelta { index: 0, text: Str::from("the durable RPC outcome") }),
 			Ok(ChatEvent::Completed(Completion {
-				reason: FinishReason::Stop,
-				blocks: 1,
-				usage: Usage::default(),
+				reason:  FinishReason::Stop,
+				blocks:  1,
+				usage:   Usage::default(),
 				receipt: ExecutionReceipt::default(),
 			})),
 		])]);
@@ -321,8 +338,8 @@ async fn rpc_host(
 		} else {
 			builder
 				.register_unavailable(RouteUnavailable {
-					route: candidate.id.clone(),
-					reason: ReasonId(Str::from("p6-route-unavailable")),
+					route:     candidate.id.clone(),
+					reason:    ReasonId(Str::from("p6-route-unavailable")),
 					operation: None,
 				})
 				.expect("register unavailable route")
@@ -331,10 +348,15 @@ async fn rpc_host(
 	let registry = builder.build().expect("P6 inference registry");
 	let sessions = ConversationSessionPlanner::open(root.join("sessions.db"), Arc::clone(&catalog))
 		.expect("open durable conversation store");
-	let socket = root.join(if first { "gateway-first.sock" } else { "gateway-resume.sock" });
+	let socket = root.join(if first {
+		"gateway-first.sock"
+	} else {
+		"gateway-resume.sock"
+	});
 	let (responses_tx, responses_rx) = flume::bounded(8);
 	let daemon = DaemonHandle::start_for_test(
-		DaemonConfig::local(LocalEndpoint::from(socket.clone())).with_data_dir(root.join("gateway-data")),
+		DaemonConfig::local(LocalEndpoint::from(socket.clone()))
+			.with_data_dir(root.join("gateway-data")),
 		registry,
 		sessions,
 		Arc::new(Registry::new()),
@@ -342,7 +364,9 @@ async fn rpc_host(
 	)
 	.await
 	.expect("start real RPC gateway");
-	let channel = omp_rpc::uds::connect(&socket).await.expect("connect real RPC gateway");
+	let channel = omp_rpc::uds::connect(&socket)
+		.await
+		.expect("connect real RPC gateway");
 	(daemon, RpcTurnClient::new(channel), model.key.as_str().to_owned(), responses_rx)
 }
 
@@ -370,6 +394,7 @@ async fn rpc_outcome(session: &mut RpcTurnSession) -> pb::Outcome {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn crash_resume_replays_exact_durable_truth() {
+	assert_fixed_turn_ids();
 	if let (Ok(stage), Ok(root)) = (std::env::var(CHILD_ENV), std::env::var(ROOT_ENV)) {
 		run_child(&stage, Path::new(&root)).await;
 		return;
@@ -415,6 +440,7 @@ async fn crash_resume_replays_exact_durable_truth() {
 
 #[tokio::test]
 async fn resume_rejects_changed_toolset_before_opening_any_authority() {
+	assert_fixed_turn_ids();
 	let scratch = tempfile::tempdir().expect("toolset mismatch scratch directory");
 	let journal_path = scratch.path().join("journal.jsonl");
 	let mut journal = Journal::create(&journal_path, &header(scratch.path(), "toolset-mismatch"))
@@ -429,15 +455,15 @@ async fn resume_rejects_changed_toolset_before_opening_any_authority() {
 	let options = TurnOptions::default();
 	journal
 		.start_turn(2, TurnStart {
-			turn_id: "toolset-mismatch-turn".into(),
-			item_events: vec![input_event],
-			prompt_hash: hash.into_bytes(),
+			turn_id:            TOOLSET_TURN.into(),
+			item_events:        vec![input_event],
+			prompt_hash:        hash.into_bytes(),
 			prompt_head_events: Vec::new(),
-			toolset_hash: durable_registry.live_hash(),
-			enabled_tools: Vec::new(),
-			sequence_targets: vec![input_event],
-			input: input_record(&input),
-			options: options_record(&options),
+			toolset_hash:       durable_registry.live_hash(),
+			enabled_tools:      Vec::new(),
+			sequence_targets:   vec![input_event],
+			input:              input_record(&input),
+			options:            options_record(&options),
 		})
 		.expect("record pending turn under original toolset");
 
@@ -455,7 +481,7 @@ async fn resume_rejects_changed_toolset_before_opening_any_authority() {
 	let mut agent = Agent::new(client, env, AgentState::new(snapshot), journal, caps());
 
 	let error = agent
-		.submit(Vec::<thread::Item>::new(), TurnId::new("ignored-resume-root"))
+		.submit(Vec::<thread::Item>::new(), TurnId::new(FALLBACK_TURN))
 		.await
 		.expect_err("changed toolset must reject resume");
 	assert!(matches!(error, AgentError::ToolsetMismatch { .. }));
@@ -499,15 +525,15 @@ async fn replay_child(root: &Path, create: bool, _mutated: bool) {
 		};
 		journal
 			.start_turn(3, TurnStart {
-				turn_id: ROOT_TURN.into(),
-				item_events: vec![input_event],
-				prompt_hash: hash.into_bytes(),
+				turn_id:            ROOT_TURN.into(),
+				item_events:        vec![input_event],
+				prompt_hash:        hash.into_bytes(),
 				prompt_head_events: vec![prompt_event],
-				toolset_hash: Registry::new().live_hash(),
-				enabled_tools: Vec::new(),
-				sequence_targets: vec![prompt_event, input_event],
-				input: input_record(&input),
-				options: options_record(&options),
+				toolset_hash:       Registry::new().live_hash(),
+				enabled_tools:      Vec::new(),
+				sequence_targets:   vec![prompt_event, input_event],
+				input:              input_record(&input),
+				options:            options_record(&options),
 			})
 			.expect("durable TurnStart before RPC");
 		let mut session = client
@@ -526,44 +552,57 @@ async fn replay_child(root: &Path, create: bool, _mutated: bool) {
 			std::thread::park();
 		}
 	} else {
-		let mut journal = Journal::open(&journal_path).expect("reopen pending RPC journal");
-		let start = journal.pending_turn().cloned().expect("pending durable TurnStart");
+		let journal = Journal::open(&journal_path).expect("reopen pending RPC journal");
+		let start = journal
+			.pending_turn()
+			.cloned()
+			.expect("pending durable TurnStart");
 		let poison = TurnOptions {
 			context_id: Some("poison-context".into()),
 			params: pb::ChatParams { model: "poison/model".to_owned(), ..pb::ChatParams::default() },
 			..TurnOptions::default()
 		};
 		assert_ne!(start.options, options_record(&poison), "fixture must distinguish mutable state");
-		let input = restore_input(&start.input);
-		let options = restore_options(&start.options);
-		let mut session = client
-			.turn(TurnId::new(start.turn_id.clone()), input, &options)
+		let (env, _transport) = EnvClient::in_process(0);
+		let snapshot = AgentSnapshot::new(poison, Default::default(), Arc::new(Registry::new()));
+		let mut agent = Agent::new(client, env, AgentState::new(snapshot), journal, caps());
+		let events = agent.events().subscribe_lossless();
+		let summary = agent
+			.submit(Vec::<thread::Item>::new(), TurnId::new(FALLBACK_TURN))
 			.await
-			.expect("resubmit exact durable RPC turn");
-		assert!(matches!(
-			next_rpc(&mut session).await.event,
-			Some(pb::turn_event::Event::Accepted(pb::Accepted { replay: true }))
-		));
-		let outcome = rpc_outcome(&mut session).await;
+			.expect("Agent::submit resumes exact durable RPC turn");
 		let expected = pb::Outcome::decode(
 			fs::read(root.join("rpc-outcome.bin"))
 				.expect("read first host outcome")
 				.as_slice(),
 		)
 		.expect("decode first host outcome");
-		assert_eq!(outcome, expected, "RPC replay outcome changed bytes");
-		journal
-			.append_gateway_outcome(4, start.turn_id.as_str(), outcome.clone())
-			.expect("journal replayed RPC outcome once");
-		patch_sequences(&mut journal, &start, &outcome);
+		assert_eq!(summary.outcome, expected, "RPC replay outcome changed bytes");
+		let mut replay_accepted = false;
+		while let Ok(event) = events.try_recv() {
+			if matches!(
+				event.as_ref(),
+				AgentEvent::Turn {
+					turn_id,
+					event: pb::TurnEvent {
+						event: Some(pb::turn_event::Event::Accepted(pb::Accepted {
+							replay: true
+						}))
+					}
+				} if turn_id.as_str() == ROOT_TURN
+			) {
+				replay_accepted = true;
+			}
+		}
+		assert!(replay_accepted, "Agent::submit did not observe Accepted replay=true");
 	}
 }
 
 fn receipt_child(root: &Path, crash: bool) {
 	let journal_path = root.join("journal.jsonl");
 	if crash {
-		let mut journal = Journal::create(&journal_path, &header(root, "receipt"))
-			.expect("create receipt journal");
+		let mut journal =
+			Journal::create(&journal_path, &header(root, "receipt")).expect("create receipt journal");
 		let hash = PromptHash::from([7; 32]);
 		let prompt = journal
 			.append_optimistic(1, message(thread::Role::System, "fixed prompt"), Some(hash))
@@ -577,32 +616,33 @@ fn receipt_child(root: &Path, crash: bool) {
 				message(thread::Role::User, "fixed input"),
 			],
 		};
-		let options = TurnOptions { context_id: Some("receipt-context".into()), ..Default::default() };
+		let options =
+			TurnOptions { context_id: Some("receipt-context".into()), ..Default::default() };
 		let open = OpenRecord {
-			turn_id: "receipt-turn".into(),
-			input: TurnInputRecord::Full { thread: full.clone() },
+			turn_id: RECEIPT_TURN.into(),
+			input:   TurnInputRecord::Full { thread: full.clone() },
 			options: options_record(&options),
 		};
 		let outcome = end_outcome(&TurnInput::Full(full), "receipt answer");
 		journal
 			.start_turn(3, TurnStart {
-				turn_id: "receipt-turn".into(),
-				item_events: vec![input],
-				prompt_hash: hash.into_bytes(),
+				turn_id:            RECEIPT_TURN.into(),
+				item_events:        vec![input],
+				prompt_hash:        hash.into_bytes(),
 				prompt_head_events: vec![prompt],
-				toolset_hash: Registry::new().live_hash(),
-				enabled_tools: Vec::new(),
-				sequence_targets: vec![prompt, input],
-				input: open.input.clone(),
-				options: open.options.clone(),
+				toolset_hash:       Registry::new().live_hash(),
+				enabled_tools:      Vec::new(),
+				sequence_targets:   vec![prompt, input],
+				input:              open.input.clone(),
+				options:            open.options.clone(),
 			})
 			.expect("durable turn start");
 		store_gateway(&root.join("gateway.json"), &GatewayState {
-			turns: vec![GatewayTurn { open, outcome: outcome.clone() }],
+			turns:    vec![GatewayTurn { open, outcome: outcome.clone() }],
 			accepted: vec![false],
 		});
 		journal
-			.append_gateway_outcome(4, "receipt-turn", outcome)
+			.append_gateway_outcome(4, RECEIPT_TURN, outcome)
 			.expect("durable terminal receipt");
 		write_marker(&root.join("receipt"));
 		loop {
@@ -663,8 +703,14 @@ async fn batch_child(root: &Path, create: bool) {
 	snapshot.enabled_tools = Arc::from([Str::from(TOOL_NAME)]);
 	let client = DiskTurnClient::new(root.join("gateway.json"));
 	let mut agent = Agent::new(client, env, AgentState::new(snapshot), journal, caps());
-	let items = if create { vec![message(thread::Role::User, "run the durable batch")] } else { Vec::new() };
-	let result = agent.submit(items, TurnId::new(if create { BATCH_TURN } else { "unused-resume-root" })).await;
+	let items = if create {
+		vec![message(thread::Role::User, "run the durable batch")]
+	} else {
+		Vec::new()
+	};
+	let result = agent
+		.submit(items, TurnId::new(if create { BATCH_TURN } else { FALLBACK_TURN }))
+		.await;
 	if create {
 		let _ = result.expect("batch remains live until parent kills this host");
 		panic!("hanging tool batch unexpectedly completed");
@@ -750,20 +796,50 @@ async fn wait_for_lines(path: &Path, count: usize) {
 fn assert_single_receipt(path: &Path, turn_id: &str) {
 	let journal = Journal::open(path).expect("open completed replay journal");
 	let log = journal.load().expect("load completed replay journal");
-	let receipts = event_count(&log, |kind| matches!(kind, Kind::TurnReceipt(receipt) if receipt.turn_id == turn_id));
+	let receipts = event_count(
+		&log,
+		|kind| matches!(kind, Kind::TurnReceipt(receipt) if receipt.turn_id == turn_id),
+	);
 	assert_eq!(receipts, 1, "terminal receipt duplicated");
 	let receipt = journal.receipt(turn_id).expect("root turn receipt");
 	assert_eq!(receipt.outcome.output.len(), 1);
-	let projected = project_journal(&log, &Registry::new(), &caps()).expect("project replay journal");
-	assert_eq!(projected.items.iter().filter(|item| item.seq == receipt.outcome.output[0].seq).count(), 1);
+	let projected =
+		project_journal(&log, &Registry::new(), &caps()).expect("project replay journal");
+	assert_eq!(projected.items.len(), 3, "replay duplicated or omitted canonical items");
+	assert_eq!(
+		projected
+			.items
+			.iter()
+			.map(|item| item.seq)
+			.collect::<Vec<_>>(),
+		vec![1, 2, 3],
+		"replay input/output sequences drifted"
+	);
+	for (item, role, text) in [
+		(&projected.items[0], thread::Role::System, "durable RPC prompt"),
+		(&projected.items[1], thread::Role::User, "survive this RPC host crash"),
+		(&projected.items[2], thread::Role::Assistant, "the durable RPC outcome"),
+	] {
+		let Some(thread::item::Kind::Message(message)) = item.kind.as_ref() else {
+			panic!("replay projected a non-message canonical item");
+		};
+		assert_eq!(message.role, role as i32);
+		assert_eq!(message.parts.len(), 1);
+		assert!(matches!(
+			message.parts[0].kind.as_ref(),
+			Some(thread::part::Kind::Text(actual)) if actual == text
+		));
+	}
 }
 
 fn assert_recovered_sequences(path: &Path) {
 	let journal = Journal::open(path).expect("open sequence-recovered journal");
 	let log = journal.load().expect("load sequence-recovered journal");
-	let amendments = event_count(&log, |kind| matches!(kind, Kind::Amend { patch: AmendPatch::Seq { .. }, .. }));
+	let amendments =
+		event_count(&log, |kind| matches!(kind, Kind::Amend { patch: AmendPatch::Seq { .. }, .. }));
 	assert_eq!(amendments, 2, "sequence recovery duplicated or omitted amendments");
-	let projected = project_journal(&log, &Registry::new(), &caps()).expect("project recovered journal");
+	let projected =
+		project_journal(&log, &Registry::new(), &caps()).expect("project recovered journal");
 	let seqs: Vec<_> = projected.items.iter().map(|item| item.seq).collect();
 	assert_eq!(seqs, vec![1, 2, 3], "recovered sequence assignment drifted");
 }
@@ -781,7 +857,11 @@ fn assert_effects(path: &Path) {
 fn assert_batch_recovery(journal_path: &Path, gateway_path: &Path) {
 	let state = load_gateway(gateway_path);
 	assert_eq!(state.turns.len(), 2, "recovery performed an extra gateway turn");
-	assert_eq!(state.accepted, vec![false, false], "receipt recovery replayed the terminal gateway turn");
+	assert_eq!(
+		state.accepted,
+		vec![false, false],
+		"receipt recovery replayed the terminal gateway turn"
+	);
 	assert_ne!(state.turns[0].open.turn_id, state.turns[1].open.turn_id);
 	let journal = Journal::open(journal_path).expect("open recovered batch journal");
 	let log = journal.load().expect("load recovered batch journal");
@@ -795,11 +875,17 @@ fn assert_batch_recovery(journal_path: &Path, gateway_path: &Path) {
 		if let Some(thread::item::Kind::ToolResult(result)) = &item.kind {
 			result_ids.push(result.call_id.as_str());
 			assert!(result.is_error, "synthesized interrupted result must be an error");
+			assert_crash_abort(result);
 		}
 	}
 	result_ids.sort();
 	assert_eq!(result_ids, vec!["durable-a", "durable-b"]);
-	let mut nonzero: Vec<_> = projected.items.iter().map(|item| item.seq).filter(|seq| *seq != 0).collect();
+	let mut nonzero: Vec<_> = projected
+		.items
+		.iter()
+		.map(|item| item.seq)
+		.filter(|seq| *seq != 0)
+		.collect();
 	let expected: Vec<_> = (1..=u64::try_from(nonzero.len()).expect("item count")).collect();
 	assert_eq!(nonzero, expected, "recovery introduced duplicate or drifting sequences");
 	nonzero.clear();
@@ -810,11 +896,56 @@ fn assert_interrupted_follow_up(input: &TurnInput) {
 	for item in input_items(input) {
 		if let Some(thread::item::Kind::ToolResult(result)) = &item.kind {
 			assert!(result.is_error, "unfinished call did not synthesize an interrupted error");
+			assert_crash_abort(result);
 			ids.push(result.call_id.as_str());
 		}
 	}
 	ids.sort();
-	assert_eq!(ids, vec!["durable-a", "durable-b"], "recovery duplicated, omitted, or invented tool results");
+	assert_eq!(
+		ids,
+		vec!["durable-a", "durable-b"],
+		"recovery duplicated, omitted, or invented tool results"
+	);
+}
+
+fn assert_crash_abort(result: &thread::ToolResult) {
+	let details = result
+		.details
+		.as_ref()
+		.expect("recovery result has structured verdict");
+	let verdict: Verdict<Value, Value> =
+		serde_json::from_value(proto_json(details).expect("recovery verdict is canonical JSON"))
+			.expect("decode recovery verdict");
+	assert!(matches!(
+		verdict,
+		Verdict::Aborted(Abort::EffectsUnknown { reason })
+			if reason.as_str() == "agent restarted after invocation authorization"
+	));
+}
+
+fn proto_json(value: &pb::Value) -> Option<Value> {
+	Some(match value.kind.as_ref()? {
+		pb::value::Kind::Null(_) => Value::Null,
+		pb::value::Kind::Bool(value) => (*value).into(),
+		pb::value::Kind::Int(value) => (*value).into(),
+		pb::value::Kind::Uint(value) => (*value).into(),
+		pb::value::Kind::Double(value) => serde_json::Number::from_f64(*value)?.into(),
+		pb::value::Kind::String(value) => value.clone().into(),
+		pb::value::Kind::List(values) => Value::Array(
+			values
+				.values
+				.iter()
+				.map(proto_json)
+				.collect::<Option<Vec<_>>>()?,
+		),
+		pb::value::Kind::Map(values) => Value::Object(
+			values
+				.fields
+				.iter()
+				.map(|(key, value)| Some((key.clone(), proto_json(value)?)))
+				.collect::<Option<serde_json::Map<_, _>>>()?,
+		),
+	})
 }
 
 fn event_count(log: &transcript::Log, predicate: impl Fn(&Kind) -> bool) -> usize {
@@ -826,9 +957,8 @@ fn event_count(log: &transcript::Log, predicate: impl Fn(&Kind) -> bool) -> usiz
 fn input_record(input: &TurnInput) -> TurnInputRecord {
 	match input {
 		TurnInput::Full(thread) => TurnInputRecord::Full { thread: thread.clone() },
-		TurnInput::Delta(context, delta) => TurnInputRecord::Delta {
-			context: context.clone(),
-			delta: delta.clone(),
+		TurnInput::Delta(context, delta) => {
+			TurnInputRecord::Delta { context: context.clone(), delta: delta.clone() }
 		},
 	}
 }
@@ -836,47 +966,9 @@ fn input_record(input: &TurnInput) -> TurnInputRecord {
 fn options_record(options: &TurnOptions) -> TurnOptionsRecord {
 	TurnOptionsRecord {
 		context_id: options.context_id.clone(),
-		params: options.params.clone(),
-		executor: options.executor.clone(),
-		props: options.props.clone(),
-	}
-}
-
-fn restore_input(record: &TurnInputRecord) -> TurnInput {
-	match record {
-		TurnInputRecord::Full { thread } => TurnInput::Full(thread.clone()),
-		TurnInputRecord::Delta { context, delta } => TurnInput::Delta(context.clone(), delta.clone()),
-	}
-}
-
-fn restore_options(record: &TurnOptionsRecord) -> TurnOptions {
-	TurnOptions {
-		context_id: record.context_id.clone(),
-		params: record.params.clone(),
-		executor: record.executor.clone(),
-		props: record.props.clone(),
-	}
-}
-
-fn patch_sequences(journal: &mut Journal, start: &TurnStart, outcome: &pb::Outcome) {
-	let Some(revision) = outcome.revision.as_ref() else {
-		return;
-	};
-	let first = revision.head
-		.checked_sub(u64::try_from(outcome.output.len()).expect("output length"))
-		.and_then(|head| head.checked_add(1))
-		.and_then(|output| {
-			output.checked_sub(u64::try_from(start.sequence_targets.len()).expect("input length"))
-		})
-		.expect("valid receipt sequence range");
-	for (offset, target) in start.sequence_targets.iter().enumerate() {
-		journal
-			.amend_seq(
-				5,
-				*target,
-				first + u64::try_from(offset).expect("sequence offset"),
-			)
-			.expect("patch replay input sequence");
+		params:     options.params.clone(),
+		executor:   options.executor.clone(),
+		props:      options.props.clone(),
 	}
 }
 
@@ -902,13 +994,13 @@ fn end_outcome(input: &TurnInput, text: &str) -> pb::Outcome {
 	let head = input_head(input);
 	pb::Outcome {
 		output: vec![thread::Item {
-			seq: head + 1,
+			seq:           head + 1,
 			created_at_ms: 9,
-			kind: Some(thread::item::Kind::Message(thread::Message {
-				role: thread::Role::Assistant as i32,
+			kind:          Some(thread::item::Kind::Message(thread::Message {
+				role:  thread::Role::Assistant as i32,
 				parts: vec![thread::Part { kind: Some(thread::part::Kind::Text(text.to_owned())) }],
 			})),
-			props: None,
+			props:         None,
 		}],
 		stop: pb::StopReason::StopEndTurn as i32,
 		revision: Some(revision(head + 1)),
@@ -971,7 +1063,7 @@ fn tool_call(seq: u64, id: &str) -> thread::Item {
 fn message(role: thread::Role, text: &str) -> thread::Item {
 	thread::Item {
 		kind: Some(thread::item::Kind::Message(thread::Message {
-			role: role as i32,
+			role:  role as i32,
 			parts: vec![thread::Part { kind: Some(thread::part::Kind::Text(text.to_owned())) }],
 		})),
 		..thread::Item::default()
@@ -991,7 +1083,10 @@ fn event(event: pb::turn_event::Event) -> pb::TurnEvent {
 }
 
 fn revision(head: u64) -> thread::Revision {
-	thread::Revision { head, token: Bytes::from(vec![u8::try_from(head % 251).expect("token byte"); 32]) }
+	thread::Revision {
+		head,
+		token: Bytes::from(vec![u8::try_from(head % 251).expect("token byte"); 32]),
+	}
 }
 
 fn caps() -> PromptCaps {

@@ -1,4 +1,7 @@
-use std::{fs, io, path::{Path, PathBuf}};
+use std::{
+	fs, io,
+	path::{Path, PathBuf},
+};
 
 use tempfile::TempDir;
 use url::Url;
@@ -6,9 +9,9 @@ use url::Url;
 /// Isolated project and daemon-state roots removed recursively on drop.
 #[derive(Debug)]
 pub struct Scratch {
-	root: TempDir,
+	root:    TempDir,
 	project: PathBuf,
-	state: PathBuf,
+	state:   PathBuf,
 }
 
 impl Scratch {
@@ -42,9 +45,14 @@ impl Scratch {
 
 	/// Returns the canonical file URI for the workspace root.
 	pub fn project_uri(&self) -> io::Result<String> {
-		Url::from_directory_path(self.project()).map(String::from).map_err(|()| {
-			io::Error::new(io::ErrorKind::InvalidInput, "scratch project is not an absolute file path")
-		})
+		Url::from_directory_path(self.project())
+			.map(String::from)
+			.map_err(|()| {
+				io::Error::new(
+					io::ErrorKind::InvalidInput,
+					"scratch project is not an absolute file path",
+				)
+			})
 	}
 
 	/// Returns an endpoint path under the private state directory.

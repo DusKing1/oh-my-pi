@@ -1,6 +1,10 @@
 #![cfg(unix)]
 
-use std::{io, path::{Path, PathBuf}, time::Duration};
+use std::{
+	io,
+	path::{Path, PathBuf},
+	time::Duration,
+};
 
 use anyhow::{Context as _, Result};
 use omp_app::envd::docs::DocumentHost;
@@ -9,15 +13,17 @@ use tokio::{net::UnixStream, task::JoinHandle};
 
 use super::{DEFAULT_TIMEOUT, within};
 
-/// Real document authority running on a private Unix socket in a cancellable task.
+/// Real document authority running on a private Unix socket in a cancellable
+/// task.
 #[derive(Debug)]
 pub struct DocServerTask {
 	socket: PathBuf,
-	task: JoinHandle<daemon::Result>,
+	task:   JoinHandle<daemon::Result>,
 }
 
 impl DocServerTask {
-	/// Starts a real docserver rooted at `project`, optionally with real LSP bindings.
+	/// Starts a real docserver rooted at `project`, optionally with real LSP
+	/// bindings.
 	pub async fn spawn(
 		project: impl Into<PathBuf>,
 		socket: impl Into<PathBuf>,
@@ -36,7 +42,9 @@ impl DocServerTask {
 		within("docserver socket readiness", DEFAULT_TIMEOUT, async {
 			loop {
 				if server.task.is_finished() {
-					let result = (&mut server.task).await.context("joining docserver startup task")?;
+					let result = (&mut server.task)
+						.await
+						.context("joining docserver startup task")?;
 					result.context("docserver stopped during startup")?;
 					return Err(anyhow::anyhow!("docserver stopped without a startup error"));
 				}
@@ -45,15 +53,17 @@ impl DocServerTask {
 						drop(stream);
 						return Ok(());
 					},
-					Err(error) if error.kind() == io::ErrorKind::NotFound
-						|| error.kind() == io::ErrorKind::ConnectionRefused =>
+					Err(error)
+						if error.kind() == io::ErrorKind::NotFound
+							|| error.kind() == io::ErrorKind::ConnectionRefused =>
 					{
 						tokio::time::sleep(Duration::from_millis(10)).await;
 					},
 					Err(error) => return Err(error).context("connecting to docserver socket"),
 				}
 			}
-		}).await??;
+		})
+		.await??;
 		Ok(server)
 	}
 
@@ -65,12 +75,11 @@ impl DocServerTask {
 
 	/// Opens a typed, hello-complete framed client connection.
 	pub async fn connect(&self) -> Result<DocumentHost> {
-		let stream = within(
-			"docserver connection",
-			DEFAULT_TIMEOUT,
-			UnixStream::connect(&self.socket),
-		).await??;
-		within("document hello", DEFAULT_TIMEOUT, DocumentHost::connect(stream)).await?
+		let stream =
+			within("docserver connection", DEFAULT_TIMEOUT, UnixStream::connect(&self.socket))
+				.await??;
+		within("document hello", DEFAULT_TIMEOUT, DocumentHost::connect(stream))
+			.await?
 			.context("document hello failed")
 	}
 

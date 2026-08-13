@@ -1,3 +1,5 @@
+//! Executable P3 proof for detached-process settlement and artifact delivery.
+
 #![cfg(unix)]
 
 use std::{
@@ -15,8 +17,8 @@ use omp_agent::{
 use omp_app::envd::{server::EnvServer, worker::ToolWorkerConfig};
 use omp_core::Str;
 use omp_e2e::support::{
-	Gate, ScriptedStep, ScriptedTurn, ScriptedTurnClient, omp_binary, outcome_event,
-	tool_call_item, user_item,
+	Gate, ScriptedStep, ScriptedTurn, ScriptedTurnClient, omp_binary, outcome_event, tool_call_item,
+	user_item,
 };
 use omp_env::{BlobDownloadEvent, EnvClient, ProcessAttachmentEvent};
 use omp_proto::{
@@ -40,13 +42,15 @@ use tempfile::TempDir;
 
 const LIMIT: Duration = Duration::from_secs(15);
 const SETTLEMENT_MIME: &str = "application/vnd.omp.process-settlement+json";
+const PROMPT_CAPS: PromptCaps =
+	PromptCaps { maximum_parts: 8, maximum_text_bytes: 4096, media: false };
 
 struct RealEnv {
 	client: EnvClient,
 	server: Arc<EnvServer>,
-	root: TempDir,
+	root:   TempDir,
 	_state: TempDir,
-	tasks: Vec<tokio::task::JoinHandle<()>>,
+	tasks:  Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl RealEnv {
@@ -123,37 +127,28 @@ async fn connect_env(
 	let host = Arc::clone(server);
 	let task = tokio::spawn(async move { host.serve_in_process(transport).await });
 	client
-		.hello(ClientHello {
-			client: name.to_owned(),
-			schema_rev: SCHEMA_REV,
-			..Default::default()
-		})
+		.hello(ClientHello { client: name.to_owned(), schema_rev: SCHEMA_REV, ..Default::default() })
 		.await
 		.expect("environment hello");
 	(client, task)
 }
 
 fn journal(path: &Path, root: &Path) -> Journal {
-	Journal::create(
-		path,
-		&Header {
-			v: 4,
-			id: SessionId(Str::new_static("p3-detached-jobs")),
-			created: 1,
-			cwd: root.to_owned(),
-		},
-	)
+	Journal::create(path, &Header {
+		v:       4,
+		id:      SessionId(Str::new_static("p3-detached-jobs")),
+		created: 1,
+		cwd:     root.to_owned(),
+	})
 	.expect("create agent journal")
 }
 
 fn state(root: &Path, registry: Arc<Registry>) -> AgentState {
 	let mut turn = TurnOptions::default();
 	turn.context_id = Some(Str::new_static("p3-context"));
-	AgentState::new(AgentSnapshot::new(
-		turn,
-		WorkspaceInput::new(root, Arc::from([])),
-		registry,
-	))
+	let mut snapshot = AgentSnapshot::new(turn, WorkspaceInput::new(root, Arc::from([])), registry);
+	snapshot.enabled_tools = Arc::from([Str::new_static("shell")]);
+	AgentState::new(snapshot)
 }
 
 fn revision(head: u64) -> Option<Revision> {
@@ -184,7 +179,7 @@ fn shell_call(name: &str, command: String) -> thread::Item {
 		"shell-detached",
 		&ToolIdentity {
 			name: Str::new_static("shell"),
-			rev: omp_tool::Rev { family: Str::default(), n: 1 },
+			rev:  omp_tool::Rev { family: Str::default(), n: 1 },
 		},
 		Bytes::from(
 			serde_json::to_vec(&serde_json::json!({
@@ -197,7 +192,8 @@ fn shell_call(name: &str, command: String) -> thread::Item {
 	)
 }
 
-fn tool_use_outcome(call: thread::Item, head: u64) -> inference::Outcome {
+fn tool_use_outcome(mut call: thread::Item, head: u64) -> inference::Outcome {
+	call.seq = head;
 	inference::Outcome {
 		output: vec![call],
 		stop: StopReason::StopToolUse as i32,
@@ -219,14 +215,11 @@ async fn wait_board_empty(board: &omp_agent::JobBoard) {
 }
 
 async fn release_fifo(path: PathBuf) {
-	tokio::time::timeout(
-		LIMIT,
-		tokio::task::spawn_blocking(move || std::fs::write(path, b"go\n")),
-	)
-	.await
-	.expect("FIFO writer timeout")
-	.expect("FIFO writer task")
-	.expect("release detached process");
+	tokio::time::timeout(LIMIT, tokio::task::spawn_blocking(move || std::fs::write(path, b"go\n")))
+		.await
+		.expect("FIFO writer timeout")
+		.expect("FIFO writer task")
+		.expect("release detached process");
 }
 
 async fn one_job_event(
@@ -257,7 +250,7 @@ fn delta(input: &TurnInput) -> &inference::ThreadDelta {
 	}
 }
 
-fn tool_result(items: &[thread::Item], call_id: &str) -> &thread::ToolResult {
+fn tool_result<'a>(items: &'a [thread::Item], call_id: &str) -> &'a thread::ToolResult {
 	let mut matching = items.iter().filter_map(|item| match item.kind.as_ref() {
 		Some(thread::item::Kind::ToolResult(result)) if result.call_id == call_id => Some(result),
 		_ => None,
@@ -268,7 +261,10 @@ fn tool_result(items: &[thread::Item], call_id: &str) -> &thread::ToolResult {
 }
 
 fn detached_ref(result: &thread::ToolResult) -> JobRef {
-	let details = result.details.as_ref().expect("detached result retains exact structured truth");
+	let details = result
+		.details
+		.as_ref()
+		.expect("detached result retains exact structured truth");
 	let json = proto_json(details);
 	match serde_json::from_value::<ToolOutcome<JsonValue, JsonValue>>(json)
 		.expect("detached result details decode")
@@ -301,9 +297,13 @@ fn proto_json(value: &inference::Value) -> JsonValue {
 	}
 }
 
-fn settlement_item(items: &[thread::Item], job_id: &str) -> &thread::Item {
-	let mut matching = items.iter().filter(|item| settlement_parts(item, job_id).is_some());
-	let item = matching.next().expect("ThreadDelta carries detached settlement");
+fn settlement_item<'a>(items: &'a [thread::Item], job_id: &str) -> &'a thread::Item {
+	let mut matching = items
+		.iter()
+		.filter(|item| settlement_parts(item, job_id).is_some());
+	let item = matching
+		.next()
+		.expect("ThreadDelta carries detached settlement");
 	assert!(matching.next().is_none(), "ThreadDelta duplicated detached settlement");
 	item
 }
@@ -318,65 +318,66 @@ fn settlement_parts<'a>(
 	if message.role != thread::Role::System as i32 {
 		return None;
 	}
-	let text = message.parts.iter().find_map(|part| match part.kind.as_ref() {
-		Some(thread::part::Kind::Text(text)) if text.contains(job_id) => Some(text.as_str()),
-		_ => None,
-	})?;
-	let blob = message.parts.iter().find_map(|part| match part.kind.as_ref() {
-		Some(thread::part::Kind::Blob(blob)) => Some(blob),
-		_ => None,
-	})?;
+	let text = message
+		.parts
+		.iter()
+		.find_map(|part| match part.kind.as_ref() {
+			Some(thread::part::Kind::Text(text)) if text.contains(job_id) => Some(text.as_str()),
+			_ => None,
+		})?;
+	let blob = message
+		.parts
+		.iter()
+		.find_map(|part| match part.kind.as_ref() {
+			Some(thread::part::Kind::Blob(blob)) => Some(blob),
+			_ => None,
+		})?;
 	Some((text, blob))
 }
 
 #[derive(Debug, Deserialize)]
 struct SettlementArtifact {
-	job_id: String,
-	owner: ArtifactOwner,
+	job_id:            String,
+	owner:             ArtifactOwner,
 	expected_artifact: ArtifactExpectation,
-	output: Vec<ArtifactOutput>,
-	state: ArtifactState,
+	output:            Vec<ArtifactOutput>,
+	state:             ArtifactState,
 }
 
 #[derive(Debug, Deserialize)]
 struct ArtifactOwner {
-	name: String,
+	name:       String,
 	generation: u64,
 }
 
 #[derive(Debug, Deserialize)]
 struct ArtifactExpectation {
 	description: String,
-	media_type: Option<String>,
-	lifetime: String,
+	media_type:  Option<String>,
+	lifetime:    String,
 }
 
 #[derive(Debug, Deserialize)]
 struct ArtifactOutput {
 	sequence: u64,
-	channel: i32,
-	data: Vec<u8>,
+	channel:  i32,
+	data:     Vec<u8>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ArtifactState {
-	state: i32,
+	state:  i32,
 	status: Option<ArtifactStatus>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ArtifactStatus {
-	outcome: i32,
+	outcome:   i32,
 	exit_code: Option<i32>,
-	aborted: bool,
+	aborted:   bool,
 }
 
-async fn assert_artifact(
-	env: &RealEnv,
-	item: &thread::Item,
-	job: &JobRef,
-	expected_output: &[u8],
-) {
+async fn assert_artifact(env: &RealEnv, item: &thread::Item, job: &JobRef, expected_output: &[u8]) {
 	let (text, blob) = settlement_parts(item, job.id.as_str()).expect("canonical settlement parts");
 	assert!(text.contains("settled"));
 	assert_eq!(blob.mime, SETTLEMENT_MIME);
@@ -390,10 +391,7 @@ async fn assert_artifact(
 	assert_eq!(artifact.owner.name, name.as_str());
 	assert_eq!(artifact.owner.generation, *generation);
 	assert_eq!(artifact.expected_artifact.description, job.artifact.description.as_str());
-	assert_eq!(
-		artifact.expected_artifact.media_type.as_deref(),
-		job.artifact.media_type.as_deref(),
-	);
+	assert_eq!(artifact.expected_artifact.media_type.as_deref(), job.artifact.media_type.as_deref(),);
 	assert_eq!(artifact.expected_artifact.lifetime, "session");
 	assert_eq!(artifact.state.state, ProcessState::Exited as i32);
 	let status = artifact.state.status.expect("terminal process status");
@@ -401,11 +399,18 @@ async fn assert_artifact(
 	assert!(!status.aborted);
 	assert_ne!(status.outcome, 0);
 	assert!(
-		artifact.output.windows(2).all(|pair| pair[0].sequence < pair[1].sequence),
+		artifact
+			.output
+			.windows(2)
+			.all(|pair| pair[0].sequence < pair[1].sequence),
 		"process output sequences must be strictly ordered",
 	);
 	assert!(artifact.output.iter().all(|frame| frame.channel != 0));
-	let ordered: Vec<u8> = artifact.output.into_iter().flat_map(|frame| frame.data).collect();
+	let ordered: Vec<u8> = artifact
+		.output
+		.into_iter()
+		.flat_map(|frame| frame.data)
+		.collect();
 	assert_eq!(ordered, expected_output, "artifact bytes differ from ordered process output");
 }
 
@@ -428,7 +433,11 @@ fn job_event_counts(journal: &Journal, job_id: &str) -> (usize, usize) {
 
 async fn wait_terminal(client: &EnvClient, name: &str, generation: u64) {
 	let mut attachment = client
-		.attach_output(AttachOutput { name: name.to_owned(), after_sequence: 0, props: None })
+		.attach_output(AttachOutput {
+			name:           name.to_owned(),
+			after_sequence: 0,
+			props:          None,
+		})
 		.await
 		.expect("attach to named process");
 	loop {
@@ -472,21 +481,19 @@ async fn detached_shell_settles_once_after_reconnect_with_exact_artifact() {
 		"printf 'output-1\\noutput-2\\n'; read _ < '{}'; printf 'output-3\\n'",
 		fifo.display(),
 	);
-	let initial_client = scripted([
-		tool_use_outcome(shell_call(process_name, command), 3),
-		end_outcome(4),
-	]);
+	let initial_client =
+		scripted([tool_use_outcome(shell_call(process_name, command), 3), end_outcome(4)]);
 	let initial_capture = initial_client.clone();
 	let mut agent = Agent::new(
 		initial_client,
 		env.client.clone(),
 		state(env.root.path(), env.registry()),
 		journal(&journal_path, env.root.path()),
-		PromptCaps::default(),
+		PROMPT_CAPS,
 	);
 	let events = agent.events().subscribe_lossless();
 	agent
-		.submit([user_item("start detached shell")], TurnId::new("p3-start"))
+		.submit([user_item("start detached shell")], TurnId::new(ulid::Ulid::generate().to_string()))
 		.await
 		.expect("detached tool turn");
 	let captures = initial_capture.captures();
@@ -495,24 +502,29 @@ async fn detached_shell_settles_once_after_reconnect_with_exact_artifact() {
 	assert!(!result.is_error);
 	let job = detached_ref(result);
 	assert_eq!(job.id, format!("{process_name}#1").as_str());
-	assert_eq!(
-		job.owner,
-		JobOwner::NamedProcess { name: Str::from(process_name), generation: 1 },
-	);
+	assert_eq!(job.owner, JobOwner::NamedProcess {
+		name:       Str::from(process_name),
+		generation: 1,
+	},);
 	assert_eq!(job.artifact.description, "named process settlement");
 	assert_eq!(job.artifact.media_type.as_deref(), Some(SETTLEMENT_MIME));
 	assert_eq!(job.artifact.lifetime, ArtifactLifetime::Session);
-	let text = result.parts.iter().find_map(|part| match part.kind.as_ref() {
-		Some(thread::part::Kind::Text(text)) => Some(text.as_str()),
-		_ => None,
-	});
+	let text = result
+		.parts
+		.iter()
+		.find_map(|part| match part.kind.as_ref() {
+			Some(thread::part::Kind::Text(text)) => Some(text.as_str()),
+			_ => None,
+		});
 	assert_eq!(
 		text,
-		Some(format!(
-			"job started; artifact will land at job://{} ({})",
-			job.id, job.artifact.description
-		)
-		.as_str()),
+		Some(
+			format!(
+				"job started; artifact will land at job://{} ({})",
+				job.id, job.artifact.description
+			)
+			.as_str()
+		),
 	);
 	let _registered = one_job_event(&events, job.id.as_str(), true).await;
 	assert_eq!(job_event_counts(agent.journal(), job.id.as_str()), (1, 0));
@@ -535,7 +547,7 @@ async fn detached_shell_settles_once_after_reconnect_with_exact_artifact() {
 		reconnected,
 		state(env.root.path(), env.registry()),
 		reopened_journal,
-		PromptCaps::default(),
+		PROMPT_CAPS,
 	);
 	let settled_events = reopened.events().subscribe_lossless();
 	let board = Arc::clone(reopened.jobs());
@@ -548,7 +560,7 @@ async fn detached_shell_settles_once_after_reconnect_with_exact_artifact() {
 		}
 	});
 	reopened
-		.submit([user_item("observe settlement")], TurnId::new("p3-settlement"))
+		.submit([user_item("observe settlement")], TurnId::new(ulid::Ulid::generate().to_string()))
 		.await
 		.expect("turn after detached settlement");
 	release.await.expect("settlement release task");
@@ -568,8 +580,9 @@ async fn detached_shell_settles_once_after_reconnect_with_exact_artifact() {
 	assert_eq!(job_event_counts(reopened.journal(), job.id.as_str()), (1, 1));
 	assert!(reopened.jobs().is_empty());
 
-	// Register a job only after the real named process has already exited. Reopening
-	// must reconstruct its watcher from durable truth and consume retained output.
+	// Register a job only after the real named process has already exited.
+	// Reopening must reconstruct its watcher from durable truth and consume
+	// retained output.
 	let early_name = "p3-already-exited";
 	let started = env
 		.client
@@ -593,15 +606,15 @@ async fn detached_shell_settles_once_after_reconnect_with_exact_artifact() {
 		.expect("start early-exit named process");
 	wait_terminal(&env.client, early_name, started.generation).await;
 	let early_job = JobRef {
-		id: Str::from(format!("{early_name}#{}", started.generation)),
-		owner: JobOwner::NamedProcess {
-			name: Str::from(early_name),
+		id:       Str::from(format!("{early_name}#{}", started.generation)),
+		owner:    JobOwner::NamedProcess {
+			name:       Str::from(early_name),
 			generation: started.generation,
 		},
 		artifact: ExpectedArtifact {
 			description: Str::new_static("expected PNG render"),
-			media_type: Some(Str::new_static("image/png")),
-			lifetime: ArtifactLifetime::Session,
+			media_type:  Some(Str::new_static("image/png")),
+			lifetime:    ArtifactLifetime::Session,
 		},
 	};
 	drop(reopened);
@@ -624,7 +637,7 @@ async fn detached_shell_settles_once_after_reconnect_with_exact_artifact() {
 		env.reconnect("p3-final-reopen").await,
 		state(env.root.path(), env.registry()),
 		Journal::open(&journal_path).expect("reopen already-exited job"),
-		PromptCaps::default(),
+		PROMPT_CAPS,
 	);
 	let final_events = final_agent.events().subscribe_lossless();
 	let final_board = Arc::clone(final_agent.jobs());
@@ -636,7 +649,10 @@ async fn detached_shell_settles_once_after_reconnect_with_exact_artifact() {
 		}
 	});
 	final_agent
-		.submit([user_item("observe retained early exit")], TurnId::new("p3-early-exit"))
+		.submit(
+			[user_item("observe retained early exit")],
+			TurnId::new(ulid::Ulid::generate().to_string()),
+		)
 		.await
 		.expect("turn after already-exited attachment");
 	early_release.await.expect("early-exit release task");

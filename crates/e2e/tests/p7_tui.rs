@@ -1,9 +1,16 @@
+//! Executable P7 proof for the real chat TUI, interruption, and terminal
+//! restoration.
+
+#![feature(impl_trait_in_assoc_type)]
 #![cfg(unix)]
 
 use std::{
 	collections::VecDeque,
 	io::{BufRead as _, BufReader, Read as _, Write as _},
-	os::{fd::{AsFd as _, AsRawFd as _}, unix::net::UnixStream},
+	os::{
+		fd::{AsFd as _, AsRawFd as _},
+		unix::net::UnixStream,
+	},
 	path::Path,
 	process::{Child, Command, Stdio},
 	sync::{
@@ -17,11 +24,10 @@ use std::{
 
 use bytes::Bytes;
 use flume::{Receiver, Sender};
-use futures::future::BoxFuture;
 use nix::{
 	fcntl::{FcntlArg, OFlag, fcntl},
 	pty::{Winsize, openpty},
-	sys::termios::{Termios, tcgetattr},
+	sys::termios::{Termios, cfgetispeed, cfgetospeed, tcgetattr},
 	unistd::ttyname,
 };
 use omp_app::{
@@ -35,7 +41,7 @@ use omp_llm_catalog::{
 };
 use omp_llm_inference::{
 	Answer, Error as InferenceError, Registry,
-	call::{Call, OpaqueJson},
+	call::{Call, ContentPart, OpaqueJson, OperationCall},
 	event::{BlockKind, ChatEvent, Completion, FinishReason, ToolCall},
 	id::ToolCallId,
 	layer::{LayerCall, stack::RouteProviderService},
@@ -61,13 +67,11 @@ impl ProofTool {
 	fn new(name: &'static str, family: &'static str) -> Self {
 		Self {
 			spec: ToolSpec {
-				name: name.into(),
-				rev: Rev { family: family.into(), n: 1 },
+				name:        name.into(),
+				rev:         Rev { family: family.into(), n: 1 },
 				description: "P7 gateway-side executor declaration".into(),
-				schema: Bytes::from_static(
-					br#"{"type":"object","additionalProperties":true}"#,
-				),
-				constraint: Constraint::None,
+				schema:      Bytes::from_static(br#"{"type":"object","additionalProperties":true}"#),
+				constraint:  Constraint::None,
 			},
 		}
 	}
@@ -97,33 +101,44 @@ impl Tool for ProofTool {
 
 #[derive(Clone)]
 struct GatedRoute {
-	fake:  FakeProvider,
-	gates: Arc<Mutex<VecDeque<Receiver<()>>>>,
+	fake:     FakeProvider,
+	gates:    Arc<Mutex<VecDeque<Receiver<()>>>>,
+	captures: Arc<Mutex<Vec<Call>>>,
 }
 
 impl Service<LayerCall<Call>> for GatedRoute {
 	type Error = InferenceError;
-	type Future = BoxFuture<'static, Result<Answer, InferenceError>>;
 	type Response = Answer;
+
+	type Future = impl Future<Output = Result<Answer, InferenceError>> + Send;
 
 	fn poll_ready(&mut self, context: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
 		<FakeProvider as Service<Call>>::poll_ready(&mut self.fake, context)
 	}
 
 	fn call(&mut self, request: LayerCall<Call>) -> Self::Future {
-		let gate = self.gates.lock().pop_front().expect("every scripted provider call has a gate");
+		let gate = self
+			.gates
+			.lock()
+			.pop_front()
+			.expect("every scripted provider call has a gate");
+		self.captures.lock().push(request.payload.clone());
 		let response = <FakeProvider as Service<Call>>::call(&mut self.fake, request.payload);
-		Box::pin(async move {
-			gate.recv_async().await.expect("scripted provider gate remains open");
+		async move {
+			gate
+				.recv_async()
+				.await
+				.expect("scripted provider gate remains open");
 			response.await
-		})
+		}
 	}
 }
 
 struct ScriptedGateway {
-	_handle: DaemonHandle,
-	model:   String,
-	permits: Vec<Sender<()>>,
+	_handle:  DaemonHandle,
+	model:    String,
+	permits:  Vec<Sender<()>>,
+	captures: Arc<Mutex<Vec<Call>>>,
 }
 
 impl ScriptedGateway {
@@ -136,7 +151,9 @@ impl ScriptedGateway {
 			senders.push(sender);
 			receivers.push_back(receiver);
 		}
-		let (registry, sessions, fake, model) = scripted_registry(scratch, receivers);
+		let captures = Arc::new(Mutex::new(Vec::with_capacity(scripts.len())));
+		let (registry, sessions, fake, model) =
+			scripted_registry(scratch, receivers, Arc::clone(&captures));
 		fake.extend(scripts);
 
 		let mut tools = omp_tool::Registry::new();
@@ -148,7 +165,9 @@ impl ScriptedGateway {
 			("glob", ""),
 			("p7_unknown", ""),
 		] {
-			tools.register(ProofTool::new(name, family)).expect("proof tool registers");
+			tools
+				.register(ProofTool::new(name, family))
+				.expect("proof tool registers");
 		}
 		let (responses, _ignored) = flume::bounded(32);
 		let handle = tokio::time::timeout(
@@ -165,28 +184,46 @@ impl ScriptedGateway {
 		.await
 		.expect("gateway startup timed out")
 		.expect("scripted gateway starts");
-		Self { _handle: handle, model, permits: senders }
+		Self { _handle: handle, model, permits: senders, captures }
 	}
 
 	fn release(&self, call: usize) {
-		self.permits[call].send(()).expect("scripted call gate remains open");
+		self.permits[call]
+			.send(())
+			.expect("scripted call gate remains open");
+	}
+
+	fn captured_text(&self, call: usize, expected: &str) -> bool {
+		let captures = self.captures.lock();
+		let Some(call) = captures.get(call) else {
+			return false;
+		};
+		let OperationCall::Chat(request) = &call.operation else {
+			return false;
+		};
+		request.messages.iter().any(|message| {
+			message
+				.content
+				.iter()
+				.any(|part| matches!(part, ContentPart::Text { text, .. } if text.contains(expected)))
+		})
 	}
 }
 
 fn scripted_registry(
 	scratch: &Path,
 	gates: VecDeque<Receiver<()>>,
+	captures: Arc<Mutex<Vec<Call>>>,
 ) -> (Registry, ConversationSessionPlanner, FakeProvider, String) {
-	let mut compiled: CompiledCatalog = serde_json::from_str(include_str!(
-		"../../llm-catalog/data/catalog.normalized.json"
-	))
-	.expect("normalized catalog");
+	let mut compiled: CompiledCatalog =
+		serde_json::from_str(include_str!("../../llm-catalog/data/catalog.normalized.json"))
+			.expect("normalized catalog");
 	for provider in &mut compiled.providers {
 		provider.management = ManagementCapabilities {
-			operations: OperationBits::empty(),
+			operations:        OperationBits::empty(),
 			multiple_accounts: false,
-			refresh: false,
-			principal_quota: false,
+			refresh:           false,
+			principal_quota:   false,
 		};
 	}
 	let artifacts = Catalog::encode(compiled, SnapshotProvenance { source_digest: [0; 32] })
@@ -195,14 +232,21 @@ fn scripted_registry(
 	let model = catalog
 		.models()
 		.iter()
-		.find(|candidate| candidate.capabilities.operations.contains_kind(OperationKind::Chat))
+		.find(|candidate| {
+			candidate
+				.capabilities
+				.operations
+				.contains_kind(OperationKind::Chat)
+		})
 		.expect("chat model");
+	let model_key = model.key.as_str().to_owned();
 	let route_id = model.routes.first().expect("chat route").clone();
 	let route = catalog.route(&route_id).expect("selected route");
 	let fake = FakeProvider::new(route.provider.clone(), route_id.clone());
 	let route_service = RouteProviderService::new(GatedRoute {
 		fake: fake.clone(),
 		gates: Arc::new(Mutex::new(gates)),
+		captures,
 	});
 	let mut builder = Registry::builder(catalog.clone());
 	for candidate in catalog.routes() {
@@ -213,8 +257,8 @@ fn scripted_registry(
 		} else {
 			builder
 				.register_unavailable(RouteUnavailable {
-					route: candidate.id.clone(),
-					reason: ReasonId(Str::from("p7-scripted-route-only")),
+					route:     candidate.id.clone(),
+					reason:    ReasonId(Str::from("p7-scripted-route-only")),
 					operation: None,
 				})
 				.expect("unavailable route registers")
@@ -222,20 +266,15 @@ fn scripted_registry(
 	}
 	let sessions = ConversationSessionPlanner::open(scratch.join("sessions.db"), catalog)
 		.expect("conversation store opens");
-	(builder.build().expect("base registry"), sessions, fake, model.key.as_str().to_owned())
+	(builder.build().expect("base registry"), sessions, fake, model_key)
 }
-
 
 fn tool_script(calls: &[(&str, &str, Value)]) -> FakeScript {
 	let mut events = Vec::with_capacity(calls.len() * 3 + 1);
 	for (index, (id, name, arguments)) in calls.iter().enumerate() {
 		let index = u32::try_from(index).expect("small scripted batch");
 		let id = ToolCallId::from(*id);
-		events.push(Ok(ChatEvent::ToolCallStarted {
-			index,
-			id: id.clone(),
-			name: Str::from(*name),
-		}));
+		events.push(Ok(ChatEvent::ToolCallStarted { index, id: id.clone(), name: Str::from(*name) }));
 		events.push(Ok(ChatEvent::ToolArgumentsDelta {
 			index,
 			bytes: Bytes::from(serde_json::to_vec(arguments).expect("tool args encode")),
@@ -272,6 +311,10 @@ fn completed(reason: FinishReason, blocks: usize) -> ChatEvent {
 
 fn scripts(shell_release: &Path) -> Vec<FakeScript> {
 	let release = shell_quote(shell_release);
+	let fixture_root = shell_release.parent().expect("shell fixture has parent");
+	let batch_one_marker = shell_quote(&fixture_root.join("p7-b1-side-effect"));
+	let batch_two_marker = shell_quote(&fixture_root.join("p7-b2-side-effect"));
+	let batch_three_marker = shell_quote(&fixture_root.join("p7-b3-side-effect"));
 	vec![
 		tool_script(&[("read-1", "read", json!({ "path": "scratch.txt" }))]),
 		tool_script(&[(
@@ -284,7 +327,7 @@ fn scripts(shell_release: &Path) -> Vec<FakeScript> {
 			"shell",
 			json!({
 				"command": format!(
-					"printf 'live-tail\\n'; while [ ! -f {release} ]; do sleep 0.05; done; printf 'live-error\\n' >&2; exit 7"
+					"printf '\\154\\151\\166\\145\\055\\164\\141\\151\\154\\n'; while [ ! -f {release} ]; do sleep 0.05; done; printf 'live-error\\n' >&2; exit $((3 + 4))"
 				)
 			}),
 		)]),
@@ -298,17 +341,32 @@ fn scripts(shell_release: &Path) -> Vec<FakeScript> {
 			(
 				"batch-1",
 				"shell",
-				json!({ "command": "printf 'batch-one-started\\n'; sleep 30" }),
+				json!({ "command": format!("touch {batch_one_marker}; printf '\\142\\141\\164\\143\\150\\055\\157\\156\\145\\055\\163\\164\\141\\162\\164\\145\\144\\n'; sleep 30") }),
 			),
-			("batch-2", "shell", json!({ "command": "printf 'batch-two-ran\\n'" })),
-			("batch-3", "shell", json!({ "command": "printf 'batch-three-ran\\n'" })),
+			(
+				"batch-2",
+				"shell",
+				json!({ "command": format!("touch {batch_two_marker}; printf '\\142\\141\\164\\143\\150\\055\\164\\167\\157\\055\\162\\141\\156\\n'") }),
+			),
+			(
+				"batch-3",
+				"shell",
+				json!({ "command": format!("touch {batch_three_marker}; printf '\\142\\141\\164\\143\\150\\055\\164\\150\\162\\145\\145\\055\\162\\141\\156\\n'") }),
+			),
 		]),
 		text_script("The steering item reached the next turn."),
 	]
 }
 
 fn shell_quote(path: &Path) -> String {
-	format!("'{}'", path.display().to_string().replace('’', "'\\''").replace('\'', "'\\''"))
+	format!(
+		"'{}'",
+		path
+			.display()
+			.to_string()
+			.replace('’', "'\\''")
+			.replace('\'', "'\\''")
+	)
 }
 
 #[derive(Clone, Debug)]
@@ -331,29 +389,62 @@ struct DebugClient {
 }
 
 impl DebugClient {
-	fn connect(path: &Path, deadline: Instant) -> Self {
-		let mut last = None;
+	fn connect(path: &Path, deadline: Instant, process: &mut PtyChild) -> Self {
 		loop {
 			match UnixStream::connect(path) {
 				Ok(stream) => {
-					stream.set_read_timeout(Some(IO_TIMEOUT)).expect("debug read timeout");
-					stream.set_write_timeout(Some(IO_TIMEOUT)).expect("debug write timeout");
+					stream
+						.set_read_timeout(Some(IO_TIMEOUT))
+						.expect("debug read timeout");
+					stream
+						.set_write_timeout(Some(IO_TIMEOUT))
+						.expect("debug write timeout");
 					let writer = stream.try_clone().expect("clone debug socket");
 					return Self { reader: BufReader::new(stream), writer };
 				},
-				Err(error) => last = Some(error),
+				Err(error) => {
+					if let Some(status) = process
+						.child
+						.try_wait()
+						.expect("poll chat during debug startup")
+					{
+						let mut stdout = String::new();
+						let mut stderr = String::new();
+						if let Some(mut pipe) = process.child.stdout.take() {
+							pipe.read_to_string(&mut stdout).expect("read early stdout");
+						}
+						if let Some(mut pipe) = process.child.stderr.take() {
+							pipe.read_to_string(&mut stderr).expect("read early stderr");
+						}
+						panic!(
+							"chat exited before debug socket: {status}\nconnect: {error}\nstdout: \
+							 {stdout}\nstderr: {stderr}\nraw PTY:\n{}",
+							visible(&process.raw()),
+						);
+					}
+					assert!(
+						Instant::now() < deadline,
+						"debug socket did not become ready: {error}\nraw PTY:\n{}",
+						visible(&process.raw()),
+					);
+				},
 			}
-			assert!(Instant::now() < deadline, "debug socket did not become ready: {last:?}");
 			thread::sleep(Duration::from_millis(20));
 		}
 	}
 
 	fn request(&mut self, request: Value) -> Result<Value, String> {
 		serde_json::to_writer(&mut self.writer, &request).map_err(|error| error.to_string())?;
-		self.writer.write_all(b"\n").map_err(|error| error.to_string())?;
+		self
+			.writer
+			.write_all(b"\n")
+			.map_err(|error| error.to_string())?;
 		self.writer.flush().map_err(|error| error.to_string())?;
 		let mut line = String::new();
-		self.reader.read_line(&mut line).map_err(|error| error.to_string())?;
+		self
+			.reader
+			.read_line(&mut line)
+			.map_err(|error| error.to_string())?;
 		if line.is_empty() {
 			return Err("debug socket closed".to_owned());
 		}
@@ -369,14 +460,19 @@ impl DebugClient {
 	}
 
 	fn keys(&mut self, keys: &str) {
-		self.request(json!({ "op": "keys", "keys": keys }))
+		self
+			.request(json!({ "op": "keys", "keys": keys }))
 			.unwrap_or_else(|error| panic!("key injection failed: {error}"));
 	}
 
 	fn snapshot(&mut self) -> Result<Snapshot, String> {
 		let text = lines(&self.op("text")?);
 		let frame = lines(&self.op("frame")?);
-		let tree = self.op("tree")?.get("tree").cloned().ok_or("tree response missing tree")?;
+		let tree = self
+			.op("tree")?
+			.get("tree")
+			.cloned()
+			.ok_or("tree response missing tree")?;
 		let values = self
 			.op("values")?
 			.get("values")
@@ -461,14 +557,10 @@ impl PtyChild {
 	}
 
 	fn resize(&self, rows: u16, cols: u16) {
-		let window = libc::winsize {
-			ws_row: rows,
-			ws_col: cols,
-			ws_xpixel: 0,
-			ws_ypixel: 0,
-		};
+		let window = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
 		// SAFETY: master is a live PTY and window is a valid winsize value.
-		let result = unsafe { libc::ioctl(self.master.as_fd().as_raw_fd(), libc::TIOCSWINSZ, &window) };
+		let result =
+			unsafe { libc::ioctl(self.master.as_fd().as_raw_fd(), libc::TIOCSWINSZ, &window) };
 		assert_eq!(result, 0, "TIOCSWINSZ failed: {}", std::io::Error::last_os_error());
 	}
 
@@ -476,7 +568,10 @@ impl PtyChild {
 		self.raw.lock().clone()
 	}
 
-	fn wait(mut self, timeout: Duration) -> (std::process::ExitStatus, Vec<u8>, String, String, Termios) {
+	fn wait(
+		mut self,
+		timeout: Duration,
+	) -> (std::process::ExitStatus, Vec<u8>, String, String, Termios) {
 		let deadline = Instant::now() + timeout;
 		let status = loop {
 			match self.child.try_wait().expect("poll omp chat") {
@@ -524,7 +619,8 @@ fn wait_snapshot(
 		if Instant::now() >= deadline {
 			let snapshot = last.map_or_else(|| "<none>".to_owned(), |value| format!("{value:#?}"));
 			panic!(
-				"checkpoint {label:?} timed out\nlast error: {error:?}\nlast snapshot:\n{snapshot}\nraw PTY:\n{}",
+				"checkpoint {label:?} timed out\nlast error: {error:?}\nlast \
+				 snapshot:\n{snapshot}\nraw PTY:\n{}",
 				visible(&raw.lock()),
 			);
 		}
@@ -535,14 +631,29 @@ fn wait_snapshot(
 fn assert_surface(snapshot: &Snapshot, label: &str) {
 	let tree = snapshot.tree.to_string();
 	let values = snapshot.values.as_object();
-	assert!(tree.contains("TranscriptView") && tree.contains("transcript"), "{label}: transcript missing: {tree}");
-	assert!(tree.contains("Editor") && tree.contains("input"), "{label}: editor missing: {tree}");
-	assert!(values.is_some_and(|map| map.contains_key("input")), "{label}: input value missing: {}", snapshot.values);
+	assert!(tree.contains(r#""id":"transcript""#), "{label}: transcript missing: {tree}");
+	assert!(tree.contains(r#""id":"input""#), "{label}: input missing: {tree}");
+	assert!(
+		values.is_some_and(|map| map.contains_key("input")),
+		"{label}: input value missing: {}",
+		snapshot.values
+	);
+}
+
+fn tree_node_by_id<'tree>(value: &'tree Value, id: &str) -> Option<&'tree Value> {
+	if value.get("id").and_then(Value::as_str) == Some(id) {
+		return Some(value);
+	}
+	match value {
+		Value::Array(values) => values.iter().find_map(|value| tree_node_by_id(value, id)),
+		Value::Object(fields) => fields.values().find_map(|value| tree_node_by_id(value, id)),
+		_ => None,
+	}
 }
 
 fn visible(bytes: &[u8]) -> String {
 	let mut out = String::new();
-	for &byte in bytes.iter().rev().take(96 * 1024).collect::<Vec<_>>().iter().rev() {
+	for &byte in &bytes[bytes.len().saturating_sub(96 * 1024)..] {
 		match byte {
 			b'\n' => out.push('\n'),
 			b'\r' => out.push_str("\\r"),
@@ -556,33 +667,84 @@ fn visible(bytes: &[u8]) -> String {
 
 fn assert_restored(raw: &[u8], before: &Termios, after: &Termios, diagnostics: &str) {
 	for sequence in ["\x1b[?1049h", "\x1b[?1047h", "\x1b[?47h"] {
-		assert!(!raw.windows(sequence.len()).any(|window| window == sequence.as_bytes()), "alternate-buffer entry {sequence:?} observed\n{diagnostics}");
+		assert!(
+			!raw
+				.windows(sequence.len())
+				.any(|window| window == sequence.as_bytes()),
+			"alternate-buffer entry {sequence:?} observed\n{diagnostics}"
+		);
 	}
 	for mode in ["\x1b[?1000h", "\x1b[?1002h", "\x1b[?1003h", "\x1b[?1006h"] {
-		assert!(!raw.windows(mode.len()).any(|window| window == mode.as_bytes()), "mouse tracking enable {mode:?} observed\n{diagnostics}");
+		assert!(
+			!raw
+				.windows(mode.len())
+				.any(|window| window == mode.as_bytes()),
+			"mouse tracking enable {mode:?} observed\n{diagnostics}"
+		);
 	}
 	let hide = raw.windows(6).rposition(|window| window == b"\x1b[?25l");
 	let show = raw.windows(6).rposition(|window| window == b"\x1b[?25h");
-	assert!(show.is_some() && hide.is_none_or(|hidden| show > Some(hidden)), "cursor was not restored; hide={hide:?} show={show:?}\n{diagnostics}");
+	assert!(
+		show.is_some() && hide.is_none_or(|hidden| show > Some(hidden)),
+		"cursor was not restored; hide={hide:?} show={show:?}\n{diagnostics}"
+	);
 	assert_eq!(after.input_flags, before.input_flags, "input flags not restored\n{diagnostics}");
 	assert_eq!(after.output_flags, before.output_flags, "output flags not restored\n{diagnostics}");
-	assert_eq!(after.control_flags, before.control_flags, "control flags not restored\n{diagnostics}");
+	assert_eq!(
+		after.control_flags, before.control_flags,
+		"control flags not restored\n{diagnostics}"
+	);
 	assert_eq!(after.local_flags, before.local_flags, "local flags not restored\n{diagnostics}");
+	assert_eq!(
+		after.control_chars, before.control_chars,
+		"control characters not restored\n{diagnostics}"
+	);
+	assert_eq!(
+		cfgetispeed(after),
+		cfgetispeed(before),
+		"input baud rate not restored\n{diagnostics}"
+	);
+	assert_eq!(
+		cfgetospeed(after),
+		cfgetospeed(before),
+		"output baud rate not restored\n{diagnostics}"
+	);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	let scratch = tempfile::tempdir().expect("scratch root");
+	std::fs::set_permissions(
+		scratch.path(),
+		<std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+	)
+	.expect("secure scratch root");
 	let project = scratch.path().join("project");
 	std::fs::create_dir(&project).expect("project directory");
 	std::fs::write(project.join("scratch.txt"), "old\n").expect("write read/edit fixture");
+	let state_dir = project.join(".omp");
+	std::fs::create_dir(&state_dir).expect("project state directory");
+	std::fs::set_permissions(
+		&state_dir,
+		<std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+	)
+	.expect("secure project state directory");
+	let docserver = omp_e2e::support::DocServerTask::spawn(
+		project.clone(),
+		scratch.path().join("docserver.sock"),
+		Vec::new(),
+	)
+	.await
+	.expect("start real document authority");
+	std::os::unix::fs::symlink(docserver.socket(), state_dir.join("docserver.sock"))
+		.expect("link external document socket into project state");
 	let shell_release = scratch.path().join("release-shell");
 	let gateway_socket = scratch.path().join("gateway.sock");
 	let debug_socket = scratch.path().join("tui-debug.sock");
 	let gateway = ScriptedGateway::start(scratch.path(), &gateway_socket, &shell_release).await;
 	gateway.release(0);
 
-	let binary = omp_e2e::support::omp_binary();
+	let binary = omp_e2e::support::omp_binary().expect("locate omp binary");
 	let args = vec![
 		"chat".to_owned(),
 		"--model".to_owned(),
@@ -592,9 +754,10 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 		"--gateway".to_owned(),
 		gateway_socket.display().to_string(),
 	];
-	let process = PtyChild::spawn(&binary, &args, &project, &debug_socket);
+	let mut process = PtyChild::spawn(&binary, &args, &project, &debug_socket);
 	let raw_capture = process.raw.clone();
-	let mut debug = DebugClient::connect(&debug_socket, Instant::now() + READY_TIMEOUT);
+	let mut debug =
+		DebugClient::connect(&debug_socket, Instant::now() + READY_TIMEOUT, &mut process);
 	let ready = wait_snapshot(&mut debug, &raw_capture, "chat shell ready", |snapshot| {
 		let tree = snapshot.tree.to_string();
 		tree.contains("transcript") && tree.contains("input") && tree.contains("status")
@@ -604,7 +767,10 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	debug.keys("'exercise deterministic tools' enter");
 	let read = wait_snapshot(&mut debug, &raw_capture, "read card final", |snapshot| {
 		let all = snapshot.combined();
-		all.contains("read scratch.txt") && snapshot.tree.to_string().contains("ToolCard")
+		all.contains("read scratch.txt")
+			&& all.contains("old")
+			&& tree_node_by_id(&snapshot.tree, "read-1")
+				.is_some_and(|node| node.to_string().contains("TextLeaf"))
 	});
 	assert_surface(&read, "read");
 	assert!(read.tree.to_string().contains("read-1"), "read card id absent: {}", read.tree);
@@ -613,24 +779,29 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	let preview = wait_snapshot(&mut debug, &raw_capture, "edit preview", |snapshot| {
 		snapshot.tree.to_string().contains("DiffView")
 			&& snapshot.combined().contains("edit scratch.txt")
-			&& std::fs::read_to_string(project.join("scratch.txt")).as_deref() == Ok("old\n")
+			&& std::fs::read_to_string(project.join("scratch.txt")).is_ok_and(|text| text == "old\n")
 	});
 	assert_surface(&preview, "edit preview");
 	let final_edit = wait_snapshot(&mut debug, &raw_capture, "edit final", |snapshot| {
 		snapshot.tree.to_string().contains("DiffView")
 			&& snapshot.combined().contains("edit scratch.txt")
-			&& std::fs::read_to_string(project.join("scratch.txt")).as_deref() == Ok("new\n")
+			&& std::fs::read_to_string(project.join("scratch.txt")).is_ok_and(|text| text == "new\n")
 	});
 	assert_surface(&final_edit, "edit final");
 
 	gateway.release(2);
 	let shell_live = wait_snapshot(&mut debug, &raw_capture, "shell live tail", |snapshot| {
 		snapshot.combined().contains("live-tail")
-			&& snapshot.tree.to_string().contains("TextLeaf")
-			&& snapshot.tree.to_string().contains("shell-1")
+			&& tree_node_by_id(&snapshot.tree, "shell-1")
+				.is_some_and(|node| node.to_string().contains("TextLeaf"))
 	});
 	assert_surface(&shell_live, "shell live");
-	assert!(shell_live.frame.contains("read scratch.txt") && shell_live.frame.contains("edit scratch.txt"), "prior transcript vanished during shell stream: {}", shell_live.frame);
+	assert!(
+		shell_live.frame.contains("read scratch.txt")
+			&& shell_live.frame.contains("edit scratch.txt"),
+		"prior transcript vanished during shell stream: {}",
+		shell_live.frame
+	);
 	std::fs::write(&shell_release, b"release").expect("release shell fixture");
 	let shell_final = wait_snapshot(&mut debug, &raw_capture, "shell exit badge", |snapshot| {
 		snapshot.combined().contains("exit 7") && snapshot.tree.to_string().contains("shell-1")
@@ -641,24 +812,35 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	let unknown = wait_snapshot(&mut debug, &raw_capture, "unknown generic card", |snapshot| {
 		snapshot.combined().contains("p7_unknown")
 			&& snapshot.combined().contains("mystery.fixture")
-			&& snapshot.tree.to_string().contains("unknown-1")
+			&& tree_node_by_id(&snapshot.tree, "unknown-1")
+				.is_some_and(|node| node.get("kind").and_then(Value::as_str) == Some("ToolCard"))
 	});
 	assert_surface(&unknown, "unknown");
 	gateway.release(4);
 	let summary = wait_snapshot(&mut debug, &raw_capture, "first turn complete", |snapshot| {
-		snapshot.frame.contains("deterministic tool sequence is complete")
+		snapshot
+			.frame
+			.contains("deterministic tool sequence is complete")
 	});
 	assert_surface(&summary, "summary");
 
 	gateway.release(5);
+	let batch_one_marker = scratch.path().join("p7-b1-side-effect");
+	let batch_two_marker = scratch.path().join("p7-b2-side-effect");
+	let batch_three_marker = scratch.path().join("p7-b3-side-effect");
 	debug.keys("'interrupt the batch' enter");
 	let batch_live = wait_snapshot(&mut debug, &raw_capture, "batch running", |snapshot| {
 		snapshot.combined().contains("batch-one-started")
+			&& batch_one_marker.is_file()
+			&& tree_node_by_id(&snapshot.tree, "batch-1")
+				.is_some_and(|node| node.to_string().contains("TextLeaf"))
 	});
 	assert_surface(&batch_live, "batch live");
 
 	process.resize(32, 92);
-	debug.op("resize").unwrap_or_else(|error| panic!("resize injection failed: {error}"));
+	debug
+		.op("resize")
+		.unwrap_or_else(|error| panic!("resize injection failed: {error}"));
 	let resized = wait_snapshot(&mut debug, &raw_capture, "streaming resize", |snapshot| {
 		snapshot.frame.contains("batch-one-started")
 			&& snapshot.frame.contains("read scratch.txt")
@@ -668,20 +850,34 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	let info = debug.op("info").expect("resize info");
 	assert_eq!(info.get("rows").and_then(Value::as_u64), Some(32), "resize rows: {info}");
 	assert_eq!(info.get("cols").and_then(Value::as_u64), Some(92), "resize cols: {info}");
-	assert_eq!(info.get("alt_screen").and_then(Value::as_bool), Some(false), "chat entered alt screen: {info}");
+	assert_eq!(
+		info.get("alt_screen").and_then(Value::as_bool),
+		Some(false),
+		"chat entered alt screen: {info}"
+	);
 
 	debug.keys("esc");
-	let interrupted = wait_snapshot(&mut debug, &raw_capture, "batch interrupted and skipped", |snapshot| {
-		let frame = snapshot.frame.to_ascii_lowercase();
-		frame.contains("interrupt") && frame.matches("skipped").count() >= 2
-	});
+	let interrupted =
+		wait_snapshot(&mut debug, &raw_capture, "batch interrupted and skipped", |snapshot| {
+			let frame = snapshot.frame.to_ascii_lowercase();
+			frame.contains("interrupt") && frame.matches("skipped").count() >= 2
+		});
 	assert_surface(&interrupted, "interrupt");
-	assert!(!interrupted.frame.contains("batch-two-ran") && !interrupted.frame.contains("batch-three-ran"), "skipped tools executed:\n{}", interrupted.frame);
+	assert!(
+		!interrupted.frame.contains("batch-two-ran")
+			&& !interrupted.frame.contains("batch-three-ran"),
+		"skipped tools executed:\n{}",
+		interrupted.frame
+	);
+	assert!(!batch_two_marker.exists(), "batch-2 side-effect marker exists");
+	assert!(!batch_three_marker.exists(), "batch-3 side-effect marker exists");
 
 	gateway.release(6);
 	let steering = wait_snapshot(&mut debug, &raw_capture, "steering next turn", |snapshot| {
 		let frame = snapshot.frame.to_ascii_lowercase();
-		frame.contains("steering item") && frame.contains("next turn")
+		frame.contains("steering item")
+			&& frame.contains("next turn")
+			&& gateway.captured_text(6, "User interrupted via Esc.")
 	});
 	assert_surface(&steering, "steering");
 
@@ -696,4 +892,59 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	);
 	assert!(status.success(), "omp chat did not exit cleanly\n{diagnostics}");
 	assert_restored(&raw, &before, &after, &diagnostics);
+	let journals: Vec<_> = std::fs::read_dir(state_dir.join("sessions"))
+		.expect("read session directory")
+		.map(|entry| entry.expect("read session entry").path())
+		.filter(|path| {
+			path
+				.extension()
+				.is_some_and(|extension| extension == "jsonl")
+		})
+		.collect();
+	assert_eq!(journals.len(), 1, "expected one durable chat journal: {journals:?}");
+	let resume_id = journals[0]
+		.file_stem()
+		.and_then(std::ffi::OsStr::to_str)
+		.expect("session journal has UTF-8 ULID stem");
+	let resume_debug_socket = scratch.path().join("resume-tui-debug.sock");
+	let mut resume_args = args.clone();
+	resume_args.extend(["--resume".to_owned(), resume_id.to_owned()]);
+	let mut resumed = PtyChild::spawn(&binary, &resume_args, &project, &resume_debug_socket);
+	let resumed_raw = resumed.raw.clone();
+	let mut resume_debug =
+		DebugClient::connect(&resume_debug_socket, Instant::now() + READY_TIMEOUT, &mut resumed);
+	let rehydrated =
+		wait_snapshot(&mut resume_debug, &resumed_raw, "resumed transcript rehydrated", |snapshot| {
+			let frame = &snapshot.frame;
+			let tree = snapshot.tree.to_string();
+			frame.contains("exercise deterministic tools")
+				&& frame.contains("read scratch.txt")
+				&& frame.contains("edit scratch.txt")
+				&& frame.contains("shell")
+				&& frame.contains("exit 7")
+				&& frame.contains("p7_unknown")
+				&& frame.contains("mystery.fixture")
+				&& frame.contains("deterministic tool sequence is complete")
+				&& ["read-1", "edit-1", "shell-1", "unknown-1"]
+					.iter()
+					.all(|id| tree.contains(id))
+		});
+	assert_surface(&rehydrated, "resumed transcript");
+	resume_debug.keys("'/quit' enter");
+	drop(resume_debug);
+	let resumed_before = resumed.before.clone();
+	let (resumed_status, resumed_bytes, resumed_stdout, resumed_stderr, resumed_after) =
+		resumed.wait(READY_TIMEOUT);
+	let resumed_diagnostics = format!(
+		"status={resumed_status}\nstdout={resumed_stdout}\nstderr={resumed_stderr}\nrehydrated \
+		 frame={}\nraw={}",
+		rehydrated.frame,
+		visible(&resumed_bytes),
+	);
+	assert!(
+		resumed_status.success(),
+		"resumed omp chat did not exit cleanly\n{resumed_diagnostics}"
+	);
+	assert_restored(&resumed_bytes, &resumed_before, &resumed_after, &resumed_diagnostics);
+	docserver.shutdown().await.expect("stop document authority");
 }

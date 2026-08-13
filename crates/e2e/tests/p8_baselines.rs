@@ -1,3 +1,5 @@
+//! Executable P8 checks for the non-gating performance baseline recorder.
+
 #[path = "../src/bin/baseline.rs"]
 mod baseline;
 
@@ -17,7 +19,9 @@ fn ratio_math_and_zero_duration_are_guarded() {
 
 #[tokio::test]
 async fn artifact_schema_is_stable_and_frame_metric_is_record_only() {
-	let metrics = measure(128, 256, 2).await.expect("bounded baseline measurement");
+	let metrics = measure(128, 256, 2)
+		.await
+		.expect("bounded baseline measurement");
 	assert_eq!(metrics.schema_version, 1);
 	assert_eq!(metrics.frame.token_count, 128);
 	assert_eq!(metrics.frame.sample_count, 128);
@@ -35,23 +39,24 @@ async fn artifact_schema_is_stable_and_frame_metric_is_record_only() {
 	let root = value.as_object().expect("metrics object");
 	assert_eq!(root.keys().collect::<Vec<_>>(), ["schema_version", "frame", "loop"]);
 	assert_eq!(
-		root["frame"].as_object().unwrap().keys().collect::<Vec<_>>(),
+		root["frame"]
+			.as_object()
+			.unwrap()
+			.keys()
+			.collect::<Vec<_>>(),
 		["token_count", "sample_count", "p95_frame_ns"]
 	);
-	assert_eq!(
-		root["loop"].as_object().unwrap().keys().collect::<Vec<_>>(),
-		[
-			"tokens_per_sample",
-			"sample_count",
-			"raw_duration_ns",
-			"full_loop_duration_ns",
-			"raw_tokens_per_second",
-			"full_tokens_per_second",
-			"slowdown_ratio",
-			"regression_limit",
-			"gross_regression",
-		]
-	);
+	assert_eq!(root["loop"].as_object().unwrap().keys().collect::<Vec<_>>(), [
+		"tokens_per_sample",
+		"sample_count",
+		"raw_duration_ns",
+		"full_loop_duration_ns",
+		"raw_tokens_per_second",
+		"full_tokens_per_second",
+		"slowdown_ratio",
+		"regression_limit",
+		"gross_regression",
+	]);
 	let decoded: BaselineMetrics = serde_json::from_str(&encoded).expect("stable schema decodes");
 	assert_eq!(decoded.schema_version, metrics.schema_version);
 	assert_eq!(decoded.frame, metrics.frame);

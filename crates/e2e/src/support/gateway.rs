@@ -1,12 +1,23 @@
 #![cfg(unix)]
 
-use std::{path::{Path, PathBuf}, sync::Arc, task::{Context, Poll}, time::Duration};
+use std::{
+	path::{Path, PathBuf},
+	sync::Arc,
+	task::{Context, Poll},
+	time::Duration,
+};
 
 use anyhow::{Context as _, Result};
 use omp_agent::RpcTurnClient;
-use omp_app::{daemon::{DaemonConfig, DaemonError, DaemonHandle}, endpoint::LocalEndpoint};
+use omp_app::{
+	daemon::{DaemonConfig, DaemonError, DaemonHandle},
+	endpoint::LocalEndpoint,
+};
 use omp_core::Str;
-use omp_llm_catalog::{CompiledCatalog, ManagementCapabilities, OperationBits, OperationKind, snapshot::{Catalog, SnapshotProvenance}};
+use omp_llm_catalog::{
+	CompiledCatalog, ManagementCapabilities, OperationBits, OperationKind,
+	snapshot::{Catalog, SnapshotProvenance},
+};
 use omp_llm_inference::{
 	Answer, Error as InferenceError, Registry,
 	call::Call,
@@ -40,23 +51,25 @@ impl Service<LayerCall<Call>> for FakeRoute {
 	}
 }
 
-/// Production inference RPC/context/session authority backed by a deterministic provider.
+/// Production inference RPC/context/session authority backed by a deterministic
+/// provider.
 pub struct ScriptedGateway {
-	socket: PathBuf,
-	data_dir: PathBuf,
-	session_db: PathBuf,
-	model: Str,
-	registry: Registry,
-	tools: Arc<ToolRegistry>,
-	provider: FakeProvider,
+	socket:         PathBuf,
+	data_dir:       PathBuf,
+	session_db:     PathBuf,
+	model:          Str,
+	registry:       Registry,
+	tools:          Arc<ToolRegistry>,
+	provider:       FakeProvider,
 	live_responses: flume::Sender<WorkflowResponse>,
-	responses: flume::Receiver<WorkflowResponse>,
-	shutdown: Option<flume::Sender<()>>,
-	actor: Option<JoinHandle<Result<(), DaemonError>>>,
+	responses:      flume::Receiver<WorkflowResponse>,
+	shutdown:       Option<flume::Sender<()>>,
+	actor:          Option<JoinHandle<Result<(), DaemonError>>>,
 }
 
 impl ScriptedGateway {
-	/// Starts the real daemon RPC adapter and persistent session store over a fake provider route.
+	/// Starts the real daemon RPC adapter and persistent session store over a
+	/// fake provider route.
 	pub async fn spawn(
 		scratch: &Scratch,
 		scripts: impl IntoIterator<Item = FakeScript>,
@@ -76,7 +89,8 @@ impl ScriptedGateway {
 			sessions,
 			Arc::clone(&tools),
 			live_responses.clone(),
-		).await?;
+		)
+		.await?;
 		Ok(Self {
 			socket,
 			data_dir,
@@ -98,7 +112,8 @@ impl ScriptedGateway {
 		self.model.as_str()
 	}
 
-	/// Returns the owner-local gateway endpoint accepted by `omp chat --gateway`.
+	/// Returns the owner-local gateway endpoint accepted by `omp chat
+	/// --gateway`.
 	#[must_use]
 	pub fn endpoint(&self) -> &Path {
 		&self.socket
@@ -106,12 +121,14 @@ impl ScriptedGateway {
 
 	/// Connects a real turn-protocol client to the gateway.
 	pub async fn client(&self) -> Result<RpcTurnClient> {
-		let channel = within("gateway connection", DEFAULT_TIMEOUT, omp_rpc::uds::connect(&self.socket))
-			.await??;
+		let channel =
+			within("gateway connection", DEFAULT_TIMEOUT, omp_rpc::uds::connect(&self.socket))
+				.await??;
 		Ok(RpcTurnClient::new(channel))
 	}
 
-	/// Appends deterministic provider interactions without replacing the real gateway authority.
+	/// Appends deterministic provider interactions without replacing the real
+	/// gateway authority.
 	pub fn push(&self, script: FakeScript) {
 		self.provider.push(script);
 	}
@@ -128,7 +145,8 @@ impl ScriptedGateway {
 		Ok(response)
 	}
 
-	/// Restarts the real RPC/context authority over the same SQLite conversation store.
+	/// Restarts the real RPC/context authority over the same SQLite conversation
+	/// store.
 	pub async fn restart(&mut self) -> Result<()> {
 		self.stop_actor().await?;
 		let catalog = Arc::new(self.registry.catalog().clone());
@@ -141,7 +159,8 @@ impl ScriptedGateway {
 			sessions,
 			Arc::clone(&self.tools),
 			self.live_responses.clone(),
-		).await?;
+		)
+		.await?;
 		self.shutdown = Some(shutdown);
 		self.actor = Some(actor);
 		Ok(())
@@ -157,7 +176,8 @@ impl ScriptedGateway {
 			let _ = shutdown.send_async(()).await;
 		}
 		if let Some(actor) = self.actor.take() {
-			within("gateway shutdown", DEFAULT_TIMEOUT, actor).await??
+			within("gateway shutdown", DEFAULT_TIMEOUT, actor)
+				.await??
 				.context("gateway stopped with an error")?;
 		}
 		Ok(())
@@ -181,12 +201,15 @@ async fn start_daemon(
 	live_responses: flume::Sender<WorkflowResponse>,
 ) -> Result<(flume::Sender<()>, JoinHandle<Result<(), DaemonError>>)> {
 	let daemon = DaemonHandle::start_for_test(
-		DaemonConfig::local(LocalEndpoint::from(socket.to_owned())).with_data_dir(data_dir.to_owned()),
+		DaemonConfig::local(LocalEndpoint::from(socket.to_owned()))
+			.with_data_dir(data_dir.to_owned()),
 		registry,
 		sessions,
 		tools,
 		live_responses,
-	).await.context("starting scripted production gateway")?;
+	)
+	.await
+	.context("starting scripted production gateway")?;
 	let (shutdown, request) = flume::bounded(1);
 	let actor = tokio::spawn(async move {
 		let _ = request.recv_async().await;
@@ -198,24 +221,35 @@ async fn start_daemon(
 fn scripted_registry(
 	scripts: impl IntoIterator<Item = FakeScript>,
 ) -> Result<(Registry, FakeProvider, Str, Arc<Catalog>)> {
-	let mut compiled: CompiledCatalog = serde_json::from_str(include_str!(
-		"../../../llm-catalog/data/catalog.normalized.json"
-	)).context("decoding normalized test catalog")?;
+	let mut compiled: CompiledCatalog =
+		serde_json::from_str(include_str!("../../../llm-catalog/data/catalog.normalized.json"))
+			.context("decoding normalized test catalog")?;
 	for provider in &mut compiled.providers {
 		provider.management = ManagementCapabilities {
-			operations: OperationBits::empty(),
+			operations:        OperationBits::empty(),
 			multiple_accounts: false,
-			refresh: false,
-			principal_quota: false,
+			refresh:           false,
+			principal_quota:   false,
 		};
 	}
 	let artifacts = Catalog::encode(compiled, SnapshotProvenance { source_digest: [0; 32] })
 		.context("encoding deterministic test catalog")?;
 	let catalog = Arc::new(Catalog::decode(&artifacts.postcard).context("decoding test catalog")?);
-	let model = catalog.models().iter().find(|model| {
-		model.capabilities.operations.contains_kind(OperationKind::Chat)
-	}).context("catalog has no chat model")?;
-	let route_id = model.routes.first().context("chat model has no route")?.clone();
+	let model = catalog
+		.models()
+		.iter()
+		.find(|model| {
+			model
+				.capabilities
+				.operations
+				.contains_kind(OperationKind::Chat)
+		})
+		.context("catalog has no chat model")?;
+	let route_id = model
+		.routes
+		.first()
+		.context("chat model has no route")?
+		.clone();
 	let route = catalog.route(&route_id).context("chat route is absent")?;
 	let provider = FakeProvider::new(route.provider.clone(), route_id.clone());
 	provider.extend(scripts);
@@ -226,8 +260,8 @@ fn scripted_registry(
 			builder.register_route(candidate.id.clone(), service.clone())?
 		} else {
 			builder.register_unavailable(RouteUnavailable {
-				route: candidate.id.clone(),
-				reason: ReasonId(Str::from("e2e-route-unavailable")),
+				route:     candidate.id.clone(),
+				reason:    ReasonId(Str::from("e2e-route-unavailable")),
 				operation: None,
 			})?
 		};
@@ -235,4 +269,3 @@ fn scripted_registry(
 	let model = Str::from(model.key.as_str());
 	Ok((builder.build()?, provider, model, catalog))
 }
-

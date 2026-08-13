@@ -20,9 +20,7 @@ pub use builders::{
 #[cfg(unix)]
 pub use docserver::DocServerTask;
 #[cfg(unix)]
-pub use envd::{
-	EnvHarness, FramedEnvConnection, ProcessEnvHarness, connect_env, read_blob,
-};
+pub use envd::{EnvHarness, FramedEnvConnection, ProcessEnvHarness, connect_env, read_blob};
 #[cfg(unix)]
 pub use gateway::ScriptedGateway;
 pub use process::{OwnedProcess, omp_binary};

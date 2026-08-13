@@ -1,3 +1,6 @@
+//! Executable P2 proof for resource-owned cancellation across Rust, exec, and
+//! Python.
+
 #![cfg(unix)]
 
 use std::{
@@ -20,18 +23,14 @@ use nix::{
 	sys::signal,
 	unistd::{Pid, getpgid},
 };
-use omp_app::envd::{
-	server::EnvServer,
-	worker::ToolWorkerConfig,
-};
+use omp_app::envd::{server::EnvServer, worker::ToolWorkerConfig};
 use omp_core::Str;
 use omp_e2e::support::omp_binary;
 use omp_env::{EnvClient, ExecEvent, Invocation, InvocationEvent};
 use omp_proto::{
 	SCHEMA_REV,
 	env::v1::{
-		ClientHello, ExecOutcome, ExecRequest, ExecStatusMsg, InvokeTool, OpenSessionRequest,
-		Script,
+		ClientHello, ExecOutcome, ExecRequest, ExecStatusMsg, InvokeTool, OpenSessionRequest, Script,
 	},
 };
 use omp_tool::{
@@ -161,11 +160,11 @@ impl CancellableSleeper {
 	fn new(started: PathBuf, marker: PathBuf, dropped: Arc<AtomicBool>) -> Self {
 		Self {
 			spec: ToolSpec {
-				name: Str::new_static("matrix_sleeper"),
-				rev: Rev { family: Str::new_static("e2e"), n: 1 },
+				name:        Str::new_static("matrix_sleeper"),
+				rev:         Rev { family: Str::new_static("e2e"), n: 1 },
 				description: Str::new_static("sleeps before attempting a marker mutation"),
-				schema: Bytes::from_static(br#"{"type":"object"}"#),
-				constraint: Constraint::None,
+				schema:      Bytes::from_static(br#"{"type":"object"}"#),
+				constraint:  Constraint::None,
 			},
 			started,
 			marker,
@@ -233,11 +232,7 @@ async fn rust_drop_cancellation_is_exact_and_cannot_mutate_after_interrupt() {
 	let dropped = Arc::new(AtomicBool::new(false));
 	let mut registry = Registry::new();
 	registry
-		.register(CancellableSleeper::new(
-			started.clone(),
-			marker.clone(),
-			Arc::clone(&dropped),
-		))
+		.register(CancellableSleeper::new(started.clone(), marker.clone(), Arc::clone(&dropped)))
 		.expect("register cancellable sleeper");
 	let worker = ToolWorkerConfig::new(omp_binary().expect("resolve worker-capable omp binary"));
 	let env = within(STARTUP_DEADLINE, LocalEnv::start(registry, worker)).await;
@@ -328,16 +323,14 @@ async fn dropping_exec_run_kills_the_whole_pgid_but_preserves_its_session() {
 	let parent_marker = env.root.path().join("term-ignoring-parent.pid");
 	let grandchild_marker = env.root.path().join("term-ignoring-grandchild.pid");
 	let script = format!(
-		"mkdir retained-cwd; cd retained-cwd; sh -c 'trap \"\" TERM; echo $$ > \"{}\"; (trap \"\" TERM; sleep 3600) & echo $! > \"{}\"; wait'",
+		"mkdir retained-cwd; cd retained-cwd; sh -c 'trap \"\" TERM; echo $$ > \"{}\"; (trap \"\" \
+		 TERM; sleep 3600) & echo $! > \"{}\"; wait'",
 		parent_marker.display(),
 		grandchild_marker.display(),
 	);
-	let mut run = within(
-		EVENT_DEADLINE,
-		env.client.exec(exec_request(&opened.session, script)),
-	)
-	.await
-	.expect("start TERM-ignoring process tree");
+	let mut run = within(EVENT_DEADLINE, env.client.exec(exec_request(&opened.session, script)))
+		.await
+		.expect("start TERM-ignoring process tree");
 	match next_exec_event(&mut run).await {
 		ExecEvent::Started(_) => {},
 		other => panic!("first exec event was not Started: {other:?}"),
@@ -360,12 +353,10 @@ async fn dropping_exec_run_kills_the_whole_pgid_but_preserves_its_session() {
 	// request so the resource-owned terminal shape remains observable. Dropping
 	// the first guard above is what proved tree teardown; this companion run
 	// proves that teardown is classified, not merely inferred from dead PIDs.
-	let mut status_probe = within(
-		EVENT_DEADLINE,
-		env.client.exec(exec_request(&opened.session, "sleep 3600")),
-	)
-	.await
-	.expect("start cancellation status probe in the surviving session");
+	let mut status_probe =
+		within(EVENT_DEADLINE, env.client.exec(exec_request(&opened.session, "sleep 3600")))
+			.await
+			.expect("start cancellation status probe in the surviving session");
 	match next_exec_event(&mut status_probe).await {
 		ExecEvent::Started(_) => {},
 		other => panic!("status probe first event was not Started: {other:?}"),
@@ -377,19 +368,18 @@ async fn dropping_exec_run_kills_the_whole_pgid_but_preserves_its_session() {
 	assert!(cancelled.signal.is_empty());
 	assert!(cancelled.aborted);
 
-	let mut pwd = within(
-		EVENT_DEADLINE,
-		env.client.exec(exec_request(&opened.session, "pwd")),
-	)
-	.await
-	.expect("same session accepts a command after cancellation");
+	let mut pwd = within(EVENT_DEADLINE, env.client.exec(exec_request(&opened.session, "pwd")))
+		.await
+		.expect("same session accepts a command after cancellation");
 	let (output, status) = collect_exec(&mut pwd).await;
 	assert_eq!(status.outcome, ExecOutcome::Exited as i32);
 	assert_eq!(status.exit_code, Some(0));
 	assert!(!status.aborted);
 	let expected = retained.as_os_str().as_bytes();
 	assert!(
-		output.windows(expected.len()).any(|window| window == expected),
+		output
+			.windows(expected.len())
+			.any(|window| window == expected),
 		"persistent session lost its cwd",
 	);
 }
@@ -434,12 +424,9 @@ async fn python_native_sleep_requires_sigkill_then_respawns_and_serves() {
 
 	// This is deliberately weaker than cancellation. The worker cannot read the
 	// protocol frame while ctypes holds its thread, and SIGINT is ignored.
-	within(
-		EVENT_DEADLINE,
-		blocked.interrupt(Str::new_static("courtesy interpreter interrupt")),
-	)
-	.await
-	.expect("send courtesy worker interrupt");
+	within(EVENT_DEADLINE, blocked.interrupt(Str::new_static("courtesy interpreter interrupt")))
+		.await
+		.expect("send courtesy worker interrupt");
 	tokio::time::sleep(hard_kill_grace + Duration::from_millis(75)).await;
 	assert!(process_alive(blocked_pid), "courtesy interrupt killed the native worker");
 	assert!(
@@ -477,12 +464,9 @@ async fn python_native_sleep_requires_sigkill_then_respawns_and_serves() {
 	.await
 	.expect("open Python call after supervisor respawn");
 	expect_accepted(&mut next).await;
-	within(
-		EVENT_DEADLINE,
-		next.commit_args(Bytes::from_static(br#"{"message":"after respawn"}"#)),
-	)
-	.await
-	.expect("commit post-respawn Python call");
+	within(EVENT_DEADLINE, next.commit_args(Bytes::from_static(br#"{"message":"after respawn"}"#)))
+		.await
+		.expect("commit post-respawn Python call");
 	let success = next_verdict(&mut next).await;
 	assert!(!success.is_error);
 	assert!(!success.useless);

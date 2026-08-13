@@ -1,8 +1,11 @@
-//! Executable P8 performance recorder for retained TUI frames and the agent loop.
+//! Executable P8 performance recorder for retained TUI frames and the agent
+//! loop.
 
+#[cfg(not(test))]
+use std::path::PathBuf;
 use std::{
 	future::{self, Future},
-	path::{Path, PathBuf},
+	path::Path,
 	pin::Pin,
 	sync::Arc,
 	task::{Context as TaskContext, Poll},
@@ -13,8 +16,8 @@ use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use omp_agent::{
-	Agent, AgentSnapshot, AgentState, Error as TurnError, InvokeFrame, Journal, TurnClient,
-	TurnId, TurnInput, TurnOptions, TurnSession,
+	Agent, AgentSnapshot, AgentState, Error as TurnError, InvokeFrame, Journal, TurnClient, TurnId,
+	TurnInput, TurnOptions, TurnSession,
 };
 use omp_core::Str;
 use omp_env::{EnvClient, InProcessEnvTransport};
@@ -29,8 +32,11 @@ use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
 const SCHEMA_VERSION: u32 = 1;
+#[cfg(not(test))]
 const DEFAULT_FRAME_TOKENS: usize = 2_048;
+#[cfg(not(test))]
 const DEFAULT_LOOP_TOKENS: usize = 8_192;
+#[cfg(not(test))]
 const DEFAULT_SAMPLES: usize = 5;
 const GROSS_REGRESSION_LIMIT: f64 = 5.0;
 const TOKEN: &str = "·";
@@ -89,9 +95,9 @@ impl ScriptedTurnClient {
 			signature: Bytes::new(),
 		})));
 		events.push(turn_event(pb::turn_event::Event::Outcome(pb::Outcome {
-			stop:     pb::StopReason::StopEndTurn.into(),
+			stop: pb::StopReason::StopEndTurn.into(),
 			provider: "scripted".to_owned(),
-			model:    "baseline".to_owned(),
+			model: "baseline".to_owned(),
 			..Default::default()
 		})));
 		Self { events: events.into() }
@@ -157,31 +163,27 @@ struct LoopFixture {
 impl LoopFixture {
 	fn new(client: ScriptedTurnClient, ordinal: usize) -> Result<Self> {
 		let scratch = tempfile::tempdir().context("create loop baseline scratch directory")?;
-		let journal = Journal::create(
-			&scratch.path().join("session.jsonl"),
-			&Header {
-				v:       4,
-				id:      SessionId(Str::from(format!("p8-baseline-{ordinal}"))),
-				created: 1,
-				cwd:     scratch.path().to_owned(),
-			},
-		)
+		let journal = Journal::create(&scratch.path().join("session.jsonl"), &Header {
+			v:       4,
+			id:      SessionId(Str::from(format!("p8-baseline-{ordinal}"))),
+			created: 1,
+			cwd:     scratch.path().to_owned(),
+		})
 		.context("create loop baseline journal")?;
 		let (env, env_transport) = EnvClient::in_process(8);
-		let agent = Agent::new(
-			client,
-			env,
-			AgentState::new(AgentSnapshot::default()),
-			journal,
-			PromptCaps { maximum_parts: 64, maximum_text_bytes: 1_048_576, media: false },
-		);
+		let agent =
+			Agent::new(client, env, AgentState::new(AgentSnapshot::default()), journal, PromptCaps {
+				maximum_parts:      64,
+				maximum_text_bytes: 1_048_576,
+				media:              false,
+			});
 		Ok(Self { agent, _env_transport: env_transport, _scratch: scratch })
 	}
 
-	async fn warm(&mut self, ordinal: usize) -> Result<()> {
+	async fn warm(&mut self) -> Result<()> {
 		self
 			.agent
-			.submit([user_item("warmup")], TurnId::new(format!("warmup-{ordinal}")))
+			.submit([user_item("warmup")], TurnId::new(ulid::Ulid::generate().to_string()))
 			.await
 			.context("warm full agent loop")?;
 		Ok(())
@@ -203,11 +205,11 @@ pub(crate) async fn measure(
 	let mut fixtures = Vec::with_capacity(samples);
 	for ordinal in 0..samples {
 		let mut fixture = LoopFixture::new(scripted.clone(), ordinal)?;
-		fixture.warm(ordinal).await?;
+		fixture.warm().await?;
 		fixtures.push(fixture);
 	}
 	let measured_inputs: Vec<_> = (0..samples)
-		.map(|ordinal| ([user_item("measure")], TurnId::new(format!("measure-{ordinal}"))))
+		.map(|_| ([user_item("measure")], TurnId::new(ulid::Ulid::generate().to_string())))
 		.collect();
 	let mut full_duration = Duration::ZERO;
 	for (fixture, (items, turn_id)) in fixtures.iter_mut().zip(measured_inputs) {
@@ -230,15 +232,15 @@ pub(crate) async fn measure(
 		schema_version: SCHEMA_VERSION,
 		frame,
 		r#loop: LoopMetrics {
-			tokens_per_sample: loop_tokens,
-			sample_count: samples,
-			raw_duration_ns: raw_duration.as_nanos(),
-			full_loop_duration_ns: full_duration.as_nanos(),
-			raw_tokens_per_second: raw_rate,
+			tokens_per_sample:      loop_tokens,
+			sample_count:           samples,
+			raw_duration_ns:        raw_duration.as_nanos(),
+			full_loop_duration_ns:  full_duration.as_nanos(),
+			raw_tokens_per_second:  raw_rate,
 			full_tokens_per_second: full_rate,
-			slowdown_ratio: slowdown,
-			regression_limit: GROSS_REGRESSION_LIMIT,
-			gross_regression: slowdown > GROSS_REGRESSION_LIMIT,
+			slowdown_ratio:         slowdown,
+			regression_limit:       GROSS_REGRESSION_LIMIT,
+			gross_regression:       slowdown > GROSS_REGRESSION_LIMIT,
 		},
 	})
 }
@@ -247,7 +249,8 @@ fn measure_frames(tokens: usize) -> Result<FrameMetrics> {
 	let root = TextLeaf::new().with(Prop::Id, "stream").text("");
 	let mut ui = Ui::from_root(root, 80, UiContext::default());
 	let mut renderer = Renderer::new(Vec::<u8>::with_capacity(tokens.saturating_mul(16)));
-	ui.present(&mut renderer, 24, 0).context("paint warmup frame")?;
+	ui.present(&mut renderer, 24, 0)
+		.context("paint warmup frame")?;
 
 	let mut text = String::with_capacity(tokens.saturating_mul(TOKEN.len()));
 	let mut elapsed = Vec::with_capacity(tokens);
@@ -257,13 +260,18 @@ fn measure_frames(tokens: usize) -> Result<FrameMetrics> {
 		if !ui.set_text("stream", text.as_str()) {
 			bail!("token-storm text component stopped accepting updates");
 		}
-		ui.present(&mut renderer, 24, 0).context("paint token-storm frame")?;
+		ui.present(&mut renderer, 24, 0)
+			.context("paint token-storm frame")?;
 		elapsed.push(started.elapsed().as_nanos());
 	}
 	elapsed.sort_unstable();
-	let rank = elapsed.len().saturating_mul(95).div_ceil(100).saturating_sub(1);
+	let rank = elapsed
+		.len()
+		.saturating_mul(95)
+		.div_ceil(100)
+		.saturating_sub(1);
 	Ok(FrameMetrics {
-		token_count: tokens,
+		token_count:  tokens,
 		sample_count: elapsed.len(),
 		p95_frame_ns: elapsed[rank],
 	})
@@ -271,9 +279,9 @@ fn measure_frames(tokens: usize) -> Result<FrameMetrics> {
 
 async fn measure_raw(client: &ScriptedTurnClient, samples: usize) -> Result<Duration> {
 	let inputs: Vec<_> = (0..samples)
-		.map(|ordinal| {
+		.map(|_| {
 			(
-				TurnId::new(format!("raw-{ordinal}")),
+				TurnId::new(ulid::Ulid::generate().to_string()),
 				TurnInput::Full(thread::Thread { items: vec![user_item("measure")] }),
 			)
 		})
@@ -317,9 +325,7 @@ fn user_item(text: &str) -> Item {
 	Item {
 		kind: Some(thread::item::Kind::Message(thread::Message {
 			role: thread::Role::User.into(),
-			parts: vec![thread::Part {
-				kind: Some(thread::part::Kind::Text(text.to_owned())),
-			}],
+			parts: vec![thread::Part { kind: Some(thread::part::Kind::Text(text.to_owned())) }],
 			..Default::default()
 		})),
 		..Default::default()
@@ -343,6 +349,7 @@ pub(crate) fn write_metrics(path: &Path, metrics: &BaselineMetrics) -> Result<()
 	Ok(())
 }
 
+#[cfg(not(test))]
 fn artifact_argument() -> Result<PathBuf> {
 	let mut args = std::env::args_os().skip(1);
 	let Some(flag) = args.next() else {
@@ -358,6 +365,7 @@ fn artifact_argument() -> Result<PathBuf> {
 	Ok(path.into())
 }
 
+#[cfg(not(test))]
 #[tokio::main]
 async fn main() -> Result<()> {
 	let artifact = artifact_argument()?;

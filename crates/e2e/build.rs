@@ -10,7 +10,8 @@ fn main() {
 		println!("cargo::rerun-if-changed={}", shim.display());
 		assert!(
 			shim.is_file(),
-			"omp-e2e's aarch64 macOS link requires omp-py's ld64.lld shim at {}; restore crates/py/scripts/ld64.lld",
+			"omp-e2e's aarch64 macOS link requires omp-py's ld64.lld shim at {}; restore \
+			 crates/py/scripts/ld64.lld",
 			shim.display()
 		);
 		println!("cargo::rustc-link-arg=--ld-path={}", shim.display());

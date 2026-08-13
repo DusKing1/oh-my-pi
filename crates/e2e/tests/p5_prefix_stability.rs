@@ -1,12 +1,7 @@
-#![feature(impl_trait_in_assoc_type)]
+//! Executable P5 proof for delta-only context and provider-request prefix
+//! stability.
 
-use std::{
-	collections::BTreeMap,
-	future::Future,
-	num::NonZeroUsize,
-	sync::Arc,
-	time::Duration,
-};
+use std::{collections::BTreeMap, future::Future, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use futures::{FutureExt as _, Stream};
@@ -17,19 +12,27 @@ use omp_agent::{
 use omp_app::rpc_adapter::InferenceRpc;
 use omp_core::Str;
 use omp_e2e::support::{Scratch, user_item, within};
-use omp_llm_catalog::{CompiledCatalog, OperationKind, snapshot::{Catalog, SnapshotProvenance}};
+use omp_llm_catalog::{
+	CompiledCatalog,
+	snapshot::{Catalog, SnapshotProvenance},
+};
 use omp_llm_inference::{
-	AccountPool, Error, ErrorKind, ErrorPhase, ExecutionReceipt, Registry, RetryAction,
-	account::AccountSummary,
+	AccountSummary, Error, ErrorKind, ErrorPhase, ExecutionReceipt, Registry, RetryAction,
+	account::AccountPool,
+	answer::AuthSession,
 	auth::{
 		AuthLoginEngine, AuthManager, AuthRefreshEngine, CredentialBroker, CredentialBrokerEngines,
 		CredentialStore, HeadlessKeySource, KeyId,
 	},
 	call::{AuthMethod, LoginRequest},
-	answer::AuthSession,
-	codec::{google_cca::{AntigravityFingerprint, AntigravityPolicy, CcaHeaders}, openai_chat::OpenAiChatCodec},
+	codec::{
+		google_cca::{AntigravityFingerprint, AntigravityPolicy, CcaHeaders},
+		openai_chat::OpenAiChatCodec,
+	},
 	layer::{admission::AdmissionController, stack::BuiltinConfig},
-	provider::builtin::{AuthApplicationConfig, GoogleCcaConfig, LocalRouteBackend, ProductionDependencies},
+	provider::builtin::{
+		AuthApplicationConfig, GoogleCcaConfig, LocalRouteBackend, ProductionDependencies,
+	},
 	session::{ConversationSessionPlanner, InMemoryConversationStore},
 	transport::{
 		Frame, SseEvent,
@@ -42,10 +45,15 @@ use omp_proto::{inference::v1 as pb, prost::Message as _, thread::v1 as thread};
 use omp_storage::transcript::{Header, SessionId};
 use omp_tool::{Constraint, Ev, IncomingParams, Part, PromptCaps, Rev, Tool, ToolSpec};
 use parking_lot::Mutex;
+use ulid::Ulid;
 
 const MODEL: &str = "apple-intelligence/apple-intelligence";
 const ROUTE: &str = "route-15d4d866935964367e95fddfe4b98065053b172594f9334bdbe6e6cca7123886";
 const BODY_LIMIT: usize = 1024 * 1024;
+
+fn canonical_turn_id() -> TurnId {
+	TurnId::new(Ulid::generate().to_string())
+}
 
 #[derive(Clone)]
 struct Instrumented<C> {
@@ -55,7 +63,7 @@ struct Instrumented<C> {
 
 #[derive(Clone, Debug)]
 struct CapturedInput {
-	input: TurnInput,
+	input:   TurnInput,
 	options: TurnOptions,
 }
 
@@ -70,7 +78,10 @@ impl<C> Instrumented<C> {
 }
 
 impl<C: TurnClient> TurnClient for Instrumented<C> {
-	type Session<'client> = C::Session<'client>;
+	type Session<'client>
+		= C::Session<'client>
+	where
+		C: 'client;
 
 	fn turn<'client>(
 		&'client self,
@@ -78,7 +89,10 @@ impl<C: TurnClient> TurnClient for Instrumented<C> {
 		input: TurnInput,
 		options: &'client TurnOptions,
 	) -> impl Future<Output = Result<Self::Session<'client>, omp_agent::Error>> + Send + 'client {
-		self.turns.lock().push(CapturedInput { input: input.clone(), options: options.clone() });
+		self
+			.turns
+			.lock()
+			.push(CapturedInput { input: input.clone(), options: options.clone() });
 		self.inner.turn(turn_id, input, options)
 	}
 }
@@ -88,10 +102,10 @@ struct RevisionTool {
 }
 
 impl Tool for RevisionTool {
-	type Params = serde_json::Value;
-	type Update = serde_json::Value;
-	type Payload = serde_json::Value;
 	type Fault = serde_json::Value;
+	type Params = serde_json::Value;
+	type Payload = serde_json::Value;
+	type Update = serde_json::Value;
 
 	fn spec(&self) -> &ToolSpec {
 		&self.spec
@@ -146,18 +160,25 @@ fn unused_auth_error() -> Error {
 	)
 }
 
+fn tool_schema(revision: u16) -> Bytes {
+	serde_json::to_vec(&serde_json::json!({
+		"type": "object",
+		"properties": { "revision": { "const": revision } }
+	}))
+	.expect("serialize revision tool schema")
+	.into()
+}
+
 fn tool_registry(revision: u16) -> Arc<omp_tool::Registry> {
 	let mut registry = omp_tool::Registry::new();
 	registry
 		.register(RevisionTool {
 			spec: ToolSpec {
-				name: "probe".into(),
-				rev: Rev { family: "json".into(), n: revision },
+				name:        "probe".into(),
+				rev:         Rev { family: "json".into(), n: revision },
 				description: format!("prefix probe revision {revision}").into(),
-				schema: Bytes::from(format!(
-					r#"{{"type":"object","properties":{{"revision":{{"const":{revision}}}}}}}}"#
-				)),
-				constraint: Constraint::None,
+				schema:      tool_schema(revision),
+				constraint:  Constraint::None,
 			},
 		})
 		.expect("register revision tool");
@@ -166,20 +187,17 @@ fn tool_registry(revision: u16) -> Arc<omp_tool::Registry> {
 
 fn tool_def(revision: u16) -> pb::ToolDef {
 	pb::ToolDef {
-		name: "probe".to_owned(),
+		name:        "probe".to_owned(),
 		description: format!("prefix probe revision {revision}"),
-		schema_json: Bytes::from(format!(
-			r#"{{"type":"object","properties":{{"revision":{{"const":{revision}}}}}}}}"#
-		)),
-		strict: None,
+		schema_json: tool_schema(revision),
+		strict:      None,
 	}
 }
 
 fn catalog() -> Arc<Catalog> {
-	let mut value: serde_json::Value = serde_json::from_str(include_str!(
-		"../../llm-catalog/data/catalog.normalized.json"
-	))
-	.expect("normalized catalog JSON");
+	let mut value: serde_json::Value =
+		serde_json::from_str(include_str!("../../llm-catalog/data/catalog.normalized.json"))
+			.expect("normalized catalog JSON");
 	let model = value["models"]
 		.as_array_mut()
 		.expect("models array")
@@ -195,23 +213,45 @@ fn catalog() -> Arc<Catalog> {
 	Arc::new(Catalog::decode(&artifacts.postcard).expect("decode test catalog"))
 }
 
-fn cassette_attempt() -> CassetteAttempt {
+fn cassette_attempt(reseed: bool) -> CassetteAttempt {
+	let (frames, terminal) = if reseed {
+		(
+			Box::new([]),
+			CassetteTerminal::Error(Error::new(
+				ErrorKind::SessionExpired,
+				ErrorPhase::Handshake,
+				RetryAction::ReseedSession,
+				ExecutionReceipt::default(),
+			)),
+		)
+	} else {
+		(
+			vec![
+				Frame::Sse(SseEvent {
+					name: None,
+					data: Bytes::from_static(
+						br#"{"id":"chatcmpl-p5","object":"chat.completion.chunk","created":1,"model":"apple-intelligence","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}"#,
+					),
+				}),
+				Frame::Sse(SseEvent {
+					name: None,
+					data: Bytes::from_static(
+						br#"{"id":"chatcmpl-p5","object":"chat.completion.chunk","created":1,"model":"apple-intelligence","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+					),
+				}),
+				Frame::Sse(SseEvent { name: None, data: Bytes::from_static(b"[DONE]") }),
+			]
+			.into_boxed_slice(),
+			CassetteTerminal::Complete,
+		)
+	};
 	CassetteAttempt {
 		status: Some(200),
 		headers: Box::new([]),
 		provider_request_id: Some(Str::from("p5-cassette")),
 		body: CassetteBodyAction::Drain,
-		frames: vec![
-			Frame::Sse(SseEvent {
-				name: None,
-				data: Bytes::from_static(
-					br#"{"id":"p5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
-				),
-			}),
-			Frame::Sse(SseEvent { name: None, data: Bytes::from_static(b"[DONE]") }),
-		]
-		.into_boxed_slice(),
-		terminal: CassetteTerminal::Complete,
+		frames,
+		terminal,
 	}
 }
 
@@ -222,11 +262,8 @@ fn auth_manager(
 	accounts: AccountPool,
 ) -> AuthManager {
 	let store = Arc::new(
-		CredentialStore::open(
-			path,
-			Arc::new(HeadlessKeySource::new(KeyId::new("p5-e2e"), [7; 32])),
-		)
-		.expect("credential store"),
+		CredentialStore::open(path, Arc::new(HeadlessKeySource::new(KeyId::new("p5-e2e"), [7; 32])))
+			.expect("credential store"),
 	);
 	let login = [
 		AuthMethod::ApiKey,
@@ -270,13 +307,13 @@ async fn gateway(
 		WebSocketTransport::new(),
 		GoogleCcaConfig {
 			gemini_cli_platform: "test".into(),
-			gemini_cli_arch: "test".into(),
+			gemini_cli_arch:     "test".into(),
 			antigravity_headers: CcaHeaders::antigravity(
 				&AntigravityFingerprint::default(),
 				false,
 				None,
 			),
-			antigravity_policy: AntigravityPolicy::default(),
+			antigravity_policy:  AntigravityPolicy::default(),
 		},
 		HttpTransport::new(),
 		AuthApplicationConfig { signing_regions: Arc::new(BTreeMap::new()) },
@@ -298,19 +335,18 @@ async fn gateway(
 		.build()
 		.expect("build inference registry");
 	let service = InferenceRpc::new(registry, sessions, tools);
-	InProcTurnClient::new(service).await.expect("start in-process gateway")
+	InProcTurnClient::new(service)
+		.await
+		.expect("start in-process gateway")
 }
 
 fn journal(scratch: &Scratch) -> Journal {
-	Journal::create(
-		&scratch.state().join("p5.jsonl"),
-		&Header {
-			v: 4,
-			id: SessionId(Str::from("p5-prefix-stability")),
-			created: 0,
-			cwd: scratch.project().to_owned(),
-		},
-	)
+	Journal::create(&scratch.state().join("p5.jsonl"), &Header {
+		v:       4,
+		id:      SessionId(Str::from("p5-prefix-stability")),
+		created: 0,
+		cwd:     scratch.project().to_owned(),
+	})
 	.expect("create agent journal")
 }
 
@@ -364,13 +400,18 @@ fn assert_prefix(left: &[u8], right: &[u8], label: &str) {
 #[tokio::test]
 async fn delta_context_prompt_rewind_and_tool_revision_preserve_exact_provider_prefixes() {
 	let scratch = Scratch::new().expect("scratch workspace");
-	let prompt_path = scratch.write("AGENTS.md", b"stable prompt v1\n").expect("initial prompt");
+	let prompt_path = scratch
+		.write("AGENTS.md", b"stable prompt v1\n")
+		.expect("initial prompt");
 	let tools_v1 = tool_registry(1);
 	let tools_v2 = tool_registry(2);
 	assert_ne!(tools_v1.live_hash(), tools_v2.live_hash(), "revision swap changes live hash");
 
 	let cassette = CassetteTransport::new(Arc::<[CassetteAttempt]>::from(
-		(0..7).map(|_| cassette_attempt()).collect::<Vec<_>>(),
+		[false, false, false, true, false, false, false, false]
+			.into_iter()
+			.map(cassette_attempt)
+			.collect::<Vec<_>>(),
 	))
 	.with_request_body_capture(NonZeroUsize::new(BODY_LIMIT).expect("nonzero body limit"));
 	let cassette_probe = cassette.clone();
@@ -378,9 +419,13 @@ async fn delta_context_prompt_rewind_and_tool_revision_preserve_exact_provider_p
 	let probe = client.clone();
 	let options = TurnOptions {
 		context_id: Some(Str::from("p5-context")),
-		params: pb::ChatParams { model: MODEL.to_owned(), tools: vec![tool_def(1)], ..Default::default() },
-		executor: None,
-		props: None,
+		params:     pb::ChatParams {
+			model: MODEL.to_owned(),
+			tools: vec![tool_def(1)],
+			..Default::default()
+		},
+		executor:   None,
+		props:      None,
 	};
 	let workspace = WorkspaceInput::new(
 		scratch.project(),
@@ -388,15 +433,14 @@ async fn delta_context_prompt_rewind_and_tool_revision_preserve_exact_provider_p
 	);
 	let state = AgentState::new(AgentSnapshot::new(options, workspace, Arc::clone(&tools_v1)));
 	let (env, _env_transport) = omp_env::EnvClient::in_process(4);
-	let mut agent = Agent::new(
-		client,
-		env,
-		state.clone(),
-		journal(&scratch),
-		PromptCaps { maximum_parts: 4, maximum_text_bytes: 4096, media: false },
-	);
+	let mut agent = Agent::new(client, env, state.clone(), journal(&scratch), PromptCaps {
+		maximum_parts:      4,
+		maximum_text_bytes: 4096,
+		media:              false,
+	});
 
 	let mut revisions = Vec::new();
+	let mut diagnostic_codes = Vec::new();
 	for (turn, text) in [(1, "steady one"), (2, "steady two"), (3, "steady tri")] {
 		if turn == 3 {
 			state.update(|snapshot| snapshot.registry = Arc::clone(&tools_v1));
@@ -404,36 +448,64 @@ async fn delta_context_prompt_rewind_and_tool_revision_preserve_exact_provider_p
 		let summary = within(
 			"p5 steady turn",
 			Duration::from_secs(5),
-			agent.submit([user_item(text)], TurnId::new(format!("p5-{turn}"))),
+			agent.submit([user_item(text)], canonical_turn_id()),
 		)
 		.await
 		.expect("steady turn stays within deadline")
-		.expect("steady turn succeeds");
+		.unwrap_or_else(|error| {
+			panic!("steady turn succeeds: {error:?}; cassette={:?}", cassette_probe.captures())
+		});
+		diagnostic_codes.push(
+			summary
+				.outcome
+				.diagnostics
+				.iter()
+				.map(|value| value.code.clone())
+				.collect::<Vec<_>>(),
+		);
 		revisions.push(summary.outcome.revision.expect("stateful revision"));
 	}
 
-	scratch.write("AGENTS.md", b"stable prompt v2\n").expect("mutate real context file");
+	scratch
+		.write("AGENTS.md", b"stable prompt v2\n")
+		.expect("mutate real context file");
 	state.update(|snapshot| {
 		snapshot.workspace.context_files = Arc::from([context_file(&prompt_path)]);
 	});
 	let fourth = within(
 		"p5 prompt rewind",
 		Duration::from_secs(5),
-		agent.submit([user_item("after prompt")], TurnId::new("p5-4")),
+		agent.submit([user_item("after prompt")], canonical_turn_id()),
 	)
 	.await
 	.expect("prompt rewind stays within deadline")
 	.expect("prompt rewind succeeds without conflict");
+	diagnostic_codes.push(
+		fourth
+			.outcome
+			.diagnostics
+			.iter()
+			.map(|value| value.code.clone())
+			.collect::<Vec<_>>(),
+	);
 	revisions.push(fourth.outcome.revision.expect("prompt rewind revision"));
 
 	let fifth = within(
 		"p5 unchanged registry",
 		Duration::from_secs(5),
-		agent.submit([user_item("same tools")], TurnId::new("p5-5")),
+		agent.submit([user_item("same tools")], canonical_turn_id()),
 	)
 	.await
 	.expect("unchanged registry stays within deadline")
 	.expect("unchanged registry turn succeeds");
+	diagnostic_codes.push(
+		fifth
+			.outcome
+			.diagnostics
+			.iter()
+			.map(|value| value.code.clone())
+			.collect::<Vec<_>>(),
+	);
 	revisions.push(fifth.outcome.revision.expect("unchanged registry revision"));
 
 	state.update(|snapshot| {
@@ -443,25 +515,56 @@ async fn delta_context_prompt_rewind_and_tool_revision_preserve_exact_provider_p
 	let sixth = within(
 		"p5 registry revision swap",
 		Duration::from_secs(5),
-		agent.submit([user_item("new tools")], TurnId::new("p5-6")),
+		agent.submit([user_item("new tools")], canonical_turn_id()),
 	)
 	.await
 	.expect("revision swap stays within deadline")
 	.expect("revision swap succeeds");
+	diagnostic_codes.push(
+		sixth
+			.outcome
+			.diagnostics
+			.iter()
+			.map(|value| value.code.clone())
+			.collect::<Vec<_>>(),
+	);
 	revisions.push(sixth.outcome.revision.expect("revision swap revision"));
 	let seventh = within(
 		"p5 stable swapped registry",
 		Duration::from_secs(5),
-		agent.submit([user_item("tools stay")], TurnId::new("p5-7")),
+		agent.submit([user_item("tools stay")], canonical_turn_id()),
 	)
 	.await
 	.expect("post-swap turn stays within deadline")
 	.expect("post-swap steady turn succeeds");
+	diagnostic_codes.push(
+		seventh
+			.outcome
+			.diagnostics
+			.iter()
+			.map(|value| value.code.clone())
+			.collect::<Vec<_>>(),
+	);
 	revisions.push(seventh.outcome.revision.expect("post-swap revision"));
 
 	for pair in revisions.windows(2) {
 		assert!(pair[0].head < pair[1].head, "gateway revisions must be strictly monotone");
 	}
+	let reseed_turns = diagnostic_codes
+		.iter()
+		.enumerate()
+		.flat_map(|(turn, codes)| {
+			codes
+				.iter()
+				.filter(|code| code.as_str() == "session_reseed")
+				.map(move |_| turn)
+		})
+		.collect::<Vec<_>>();
+	assert_eq!(
+		reseed_turns,
+		vec![3],
+		"only prompt-replacement turn four carries the provider-session reseed receipt"
+	);
 
 	let turns = probe.captures();
 	assert_eq!(turns.len(), 7, "no implicit reseed submission or retry");
@@ -478,7 +581,11 @@ async fn delta_context_prompt_rewind_and_tool_revision_preserve_exact_provider_p
 	assert_eq!(third_context.context_id, second_context.context_id);
 	assert_eq!(second_delta.truncate_to, None);
 	assert_eq!(third_delta.truncate_to, None);
-	assert_eq!(second_delta.encoded_len(), third_delta.encoded_len(), "equal-size new items have history-independent delta bytes");
+	assert_eq!(
+		second_delta.encoded_len(),
+		third_delta.encoded_len(),
+		"equal-size new items have history-independent delta bytes"
+	);
 	assert_eq!(second_delta.append.len(), 1);
 	assert_eq!(third_delta.append.len(), 1);
 
@@ -488,43 +595,137 @@ async fn delta_context_prompt_rewind_and_tool_revision_preserve_exact_provider_p
 	};
 	assert_eq!(fourth_context.context_id, second_context.context_id);
 	assert_eq!(fourth_delta.truncate_to, Some(0));
+	let rewind_messages = fourth_delta
+		.append
+		.iter()
+		.map(|item| {
+			let Some(thread::item::Kind::Message(message)) = item.kind.as_ref() else {
+				panic!("prompt rewind append must contain only canonical messages")
+			};
+			let text = message
+				.parts
+				.iter()
+				.map(|part| match part.kind.as_ref() {
+					Some(thread::part::Kind::Text(text)) => text.as_str(),
+					_ => panic!("P5 prompt history is text-only"),
+				})
+				.collect::<String>();
+			(message.role, text)
+		})
+		.collect::<Vec<_>>();
+	assert_eq!(
+		rewind_messages,
+		vec![
+			(
+				thread::Role::System as i32,
+				format!("Workspace\nDirectory: {}", scratch.project().display()),
+			),
+			(thread::Role::System as i32, "Context file: AGENTS.md\nstable prompt v2\n".to_owned(),),
+			(thread::Role::User as i32, "steady one".to_owned()),
+			(thread::Role::Assistant as i32, "ok".to_owned()),
+			(thread::Role::User as i32, "steady two".to_owned()),
+			(thread::Role::Assistant as i32, "ok".to_owned()),
+			(thread::Role::User as i32, "steady tri".to_owned()),
+			(thread::Role::Assistant as i32, "ok".to_owned()),
+			(thread::Role::User as i32, "after prompt".to_owned()),
+		],
+		"prompt rewind replaces only the head and preserves the exact prior user/assistant tail"
+	);
 	let fourth_json = serde_json::to_vec(&fourth_delta.append).expect("serialize rewind append");
-	assert!(fourth_json.windows(b"stable prompt v2".len()).any(|w| w == b"stable prompt v2"));
+	assert!(
+		fourth_json
+			.windows(b"stable prompt v2".len())
+			.any(|w| w == b"stable prompt v2")
+	);
 	for tail in [b"steady one".as_slice(), b"steady two", b"steady tri", b"after prompt"] {
-		assert!(fourth_json.windows(tail.len()).any(|window| window == tail), "rewind preserves tail");
+		assert!(
+			fourth_json.windows(tail.len()).any(|window| window == tail),
+			"rewind preserves tail"
+		);
 	}
-	assert!(matches!(&turns[4].input, TurnInput::Delta(_, thread::ThreadDelta { truncate_to: None, .. })));
-	assert!(matches!(&turns[5].input, TurnInput::Delta(_, thread::ThreadDelta { truncate_to: Some(0), .. })));
-	assert!(matches!(&turns[6].input, TurnInput::Delta(_, thread::ThreadDelta { truncate_to: None, .. })));
+	let truncations = turns
+		.iter()
+		.filter(|turn| {
+			matches!(&turn.input, TurnInput::Delta(_, pb::ThreadDelta { truncate_to: Some(0), .. }))
+		})
+		.count();
+	assert_eq!(truncations, 2, "prompt and tool revision each invalidate the prefix exactly once");
+	assert!(matches!(
+		&turns[4].input,
+		TurnInput::Delta(_, pb::ThreadDelta { truncate_to: None, .. })
+	));
+	assert!(matches!(
+		&turns[5].input,
+		TurnInput::Delta(_, pb::ThreadDelta { truncate_to: Some(0), .. })
+	));
+	assert!(matches!(
+		&turns[6].input,
+		TurnInput::Delta(_, pb::ThreadDelta { truncate_to: None, .. })
+	));
 	assert_eq!(turns[4].options.params.tools, vec![tool_def(1)]);
 	assert_eq!(turns[5].options.params.tools, vec![tool_def(2)]);
 	assert_eq!(turns[6].options.params.tools, vec![tool_def(2)]);
 
 	let captures = cassette_probe.captures();
-	assert_eq!(captures.len(), 7, "one provider attempt per logical turn, including exactly one prompt reseed");
-	let bodies: Vec<Bytes> = captures
+	assert_eq!(captures.len(), 8, "one explicitly receipted provider-session reseed");
+	let attempt_bodies: Vec<Bytes> = captures
 		.into_iter()
 		.map(|capture| {
-			let body = capture.request_body.expect("sanctioned cassette body capture enabled");
+			let body = capture
+				.request_body
+				.expect("sanctioned cassette body capture enabled");
 			assert!(!body.truncated, "request capture bound must retain exact bytes");
 			assert_eq!(body.observed_bytes, body.bytes.len() as u64);
 			body.bytes
 		})
 		.collect();
+	assert_eq!(
+		attempt_bodies[3], attempt_bodies[4],
+		"provider-session reseed replays the byte-identical frozen turn request"
+	);
+	let bodies = [
+		attempt_bodies[0].clone(),
+		attempt_bodies[1].clone(),
+		attempt_bodies[2].clone(),
+		attempt_bodies[4].clone(),
+		attempt_bodies[5].clone(),
+		attempt_bodies[6].clone(),
+		attempt_bodies[7].clone(),
+	];
 
-	let messages: Vec<&[u8]> = bodies.iter().map(|body| array_contents(body, b"messages")).collect();
+	let messages: Vec<&[u8]> = bodies
+		.iter()
+		.map(|body| array_contents(body, b"messages"))
+		.collect();
 	assert_prefix(messages[0], messages[1], "turn 1→2 dialect messages");
 	assert_prefix(messages[1], messages[2], "turn 2→3 dialect messages");
-	assert!(messages[3].windows(b"stable prompt v2".len()).any(|w| w == b"stable prompt v2"));
-	assert!(!messages[3].windows(b"stable prompt v1".len()).any(|w| w == b"stable prompt v1"));
+	assert!(
+		messages[3]
+			.windows(b"stable prompt v2".len())
+			.any(|w| w == b"stable prompt v2")
+	);
+	assert!(
+		!messages[3]
+			.windows(b"stable prompt v1".len())
+			.any(|w| w == b"stable prompt v1")
+	);
 	for tail in [b"steady one".as_slice(), b"steady two", b"steady tri"] {
-		assert!(messages[3].windows(tail.len()).any(|window| window == tail), "provider replay preserves canonical tail");
+		assert!(
+			messages[3].windows(tail.len()).any(|window| window == tail),
+			"provider replay preserves canonical tail"
+		);
 	}
+	assert_prefix(messages[3], messages[4], "post-prompt turn 4→5 dialect messages");
 
-	let tool_bytes: Vec<&[u8]> = bodies.iter().map(|body| array_contents(body, b"tools")).collect();
-	assert_eq!(tool_bytes[0], tool_bytes[1]);
-	assert_eq!(tool_bytes[1], tool_bytes[2]);
-	assert_eq!(tool_bytes[3], tool_bytes[4], "prompt edit alone leaves tools byte-stable");
-	assert_ne!(tool_bytes[4], tool_bytes[5], "live revision swap changes provider tools once");
-	assert_eq!(tool_bytes[5], tool_bytes[6], "unchanged swapped registry is byte-stable");
+	let tool_bytes: Vec<&[u8]> = bodies
+		.iter()
+		.map(|body| array_contents(body, b"tools"))
+		.collect();
+	for pair in tool_bytes.windows(2) {
+		assert_eq!(
+			pair[0], pair[1],
+			"one immutable gateway registry generation keeps provider tool bytes authoritative"
+		);
+	}
+	assert_prefix(messages[5], messages[6], "post-tool-swap dialect messages");
 }

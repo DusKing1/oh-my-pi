@@ -5,7 +5,8 @@ use tokio::process::{Child, Command};
 
 use super::within;
 
-/// Resolves the worker-capable application binary Cargo builds with `omp-e2e` tests.
+/// Resolves the worker-capable application binary Cargo builds with `omp-e2e`
+/// tests.
 pub fn omp_binary() -> io::Result<PathBuf> {
 	if let Some(path) = std::env::var_os("CARGO_BIN_EXE_omp_e2e_host") {
 		let path = PathBuf::from(path);
@@ -14,14 +15,24 @@ pub fn omp_binary() -> io::Result<PathBuf> {
 		}
 	}
 	let current = std::env::current_exe()?;
-	if current.file_stem().is_some_and(|name| name == "omp_e2e_host") {
+	if current
+		.file_stem()
+		.is_some_and(|name| name == "omp_e2e_host")
+	{
 		return Ok(current);
 	}
 	let profile = current
 		.parent()
-		.and_then(|parent| (parent.file_name().is_some_and(|name| name == "deps")).then(|| parent.parent()))
+		.and_then(|parent| {
+			(parent.file_name().is_some_and(|name| name == "deps")).then(|| parent.parent())
+		})
 		.flatten()
-		.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "test executable is not under Cargo's deps directory"))?;
+		.ok_or_else(|| {
+			io::Error::new(
+				io::ErrorKind::NotFound,
+				"test executable is not under Cargo's deps directory",
+			)
+		})?;
 	let binary = profile.join(format!("omp_e2e_host{}", std::env::consts::EXE_SUFFIX));
 	if binary.is_file() {
 		Ok(binary)
@@ -36,8 +47,8 @@ pub fn omp_binary() -> io::Result<PathBuf> {
 /// Child process placed in its own process group and killed as a tree on drop.
 #[derive(Debug)]
 pub struct OwnedProcess {
-	child: Child,
-	group: Option<i32>,
+	child:  Child,
+	group:  Option<i32>,
 	exited: bool,
 }
 
@@ -74,15 +85,23 @@ impl OwnedProcess {
 		Ok(status)
 	}
 
-	/// Requests TERM, then escalates to KILL after `grace`, always targeting the tree.
+	/// Requests TERM, then escalates to KILL after `grace`, always targeting the
+	/// tree.
 	pub async fn terminate(mut self, grace: Duration) -> Result<()> {
 		if self.exited {
 			return Ok(());
 		}
 		self.signal_group_terminate();
-		if tokio::time::timeout(grace, self.child.wait()).await.is_err() {
+		if tokio::time::timeout(grace, self.child.wait())
+			.await
+			.is_err()
+		{
 			self.signal_group_kill();
-			self.child.wait().await.context("waiting for killed child")?;
+			self
+				.child
+				.wait()
+				.await
+				.context("waiting for killed child")?;
 		}
 		self.exited = true;
 		Ok(())
@@ -132,12 +151,14 @@ pub fn process_group_alive(group: i32) -> bool {
 	}
 }
 
-/// Waits until a Unix process group disappears, with deterministic polling and a hard bound.
+/// Waits until a Unix process group disappears, with deterministic polling and
+/// a hard bound.
 #[cfg(unix)]
 pub async fn wait_process_group_dead(group: i32, limit: Duration) -> Result<()> {
 	within("process-group death", limit, async move {
 		while process_group_alive(group) {
 			tokio::time::sleep(Duration::from_millis(10)).await;
 		}
-	}).await
+	})
+	.await
 }

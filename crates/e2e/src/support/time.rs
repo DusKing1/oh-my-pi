@@ -1,4 +1,11 @@
-use std::{future::Future, sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
+use std::{
+	future::Future,
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
+	time::Duration,
+};
 
 use anyhow::{Context as _, Result};
 use tokio::sync::{Barrier as TokioBarrier, Notify};
@@ -6,23 +13,29 @@ use tokio::sync::{Barrier as TokioBarrier, Notify};
 /// Default upper bound for one local authority transition.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Awaits `future` for at most `limit`, retaining a diagnostic label on timeout.
-pub async fn within<T>(label: &'static str, limit: Duration, future: impl Future<Output = T>) -> Result<T> {
+/// Awaits `future` for at most `limit`, retaining a diagnostic label on
+/// timeout.
+pub async fn within<T>(
+	label: &'static str,
+	limit: Duration,
+	future: impl Future<Output = T>,
+) -> Result<T> {
 	tokio::time::timeout(limit, future)
 		.await
 		.with_context(|| format!("timed out waiting for {label} after {limit:?}"))
 }
 
-/// One deterministic test rendezvous with separately observable arrival and release.
+/// One deterministic test rendezvous with separately observable arrival and
+/// release.
 #[derive(Clone, Debug, Default)]
 pub struct Gate(Arc<GateInner>);
 
 #[derive(Debug, Default)]
 struct GateInner {
-	arrived: AtomicBool,
+	arrived:  AtomicBool,
 	released: AtomicBool,
-	arrival: Notify,
-	release: Notify,
+	arrival:  Notify,
+	release:  Notify,
 }
 
 impl Gate {
@@ -42,7 +55,8 @@ impl Gate {
 				}
 				notified.await;
 			}
-		}).await
+		})
+		.await
 	}
 
 	/// Releases every waiter parked at this gate.

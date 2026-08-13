@@ -1,3 +1,5 @@
+//! Executable P1 proof for document races, stale rebases, and pinned reads.
+
 #![cfg(unix)]
 
 use std::{
@@ -11,19 +13,15 @@ use std::{
 
 use anyhow::{Context as _, Result, anyhow, ensure};
 use bytes::Bytes;
-use omp_agent::{
-	Agent, AgentEvent, AgentSnapshot, AgentState, EventSubscription, Journal, TurnId,
-};
+use omp_agent::{Agent, AgentEvent, AgentSnapshot, AgentState, EventSubscription, Journal, TurnId};
 use omp_app::envd::docs::{DocumentHost, DocumentLease};
 use omp_core::Str;
 use omp_e2e::support::{
-	DEFAULT_TIMEOUT, DocServerTask, EnvHarness, Gate, Scratch, ScriptedStep, ScriptedTurn,
-	ScriptedTurnClient, accepted_event, outcome_event, tool_call_item, turn_event, user_item, within,
+	DocServerTask, EnvHarness, Gate, Scratch, ScriptedStep, ScriptedTurn, ScriptedTurnClient,
+	accepted_event, outcome_event, tool_call_item, turn_event, user_item, within,
 };
 use omp_env::EnvClient;
-use omp_proto::{
-	document::v1 as document, inference::v1 as inference, thread::v1 as thread,
-};
+use omp_proto::{document::v1 as document, inference::v1 as inference, thread::v1 as thread};
 use omp_storage::transcript::{Header, SessionId};
 use omp_tool::{PromptCaps, Registry, Rev, ToolIdentity, Verdict};
 use omp_tools::edit::{self, FormatPolicy};
@@ -58,17 +56,18 @@ struct CommitRecord {
 async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> Result<()> {
 	within("complete P1 race proof", Duration::from_secs(90), async {
 		let scratch = Scratch::new().context("create scratch project")?;
+		fs::set_permissions(scratch.state(), fs::Permissions::from_mode(0o700))
+			.context("secure scratch daemon state")?;
 		let race_initial = b"fn main() {\n    let value = 1;\n}\n";
 		scratch.write("f.rs", race_initial)?;
 
 		let lsp_log = scratch.state().join("lsp.jsonl");
 		let lsp_config = install_lsp_fixture(&scratch, &lsp_log)?;
-		let docserver = DocServerTask::spawn(
-			scratch.project(),
-			scratch.socket("docserver.sock"),
-			vec![lsp_config],
-		)
-		.await?;
+		let docserver =
+			DocServerTask::spawn(scratch.project(), scratch.socket("docserver.sock"), vec![
+				lsp_config,
+			])
+			.await?;
 		let direct_a = docserver.connect().await?;
 		let uri = file_uri(&scratch, "f.rs")?;
 		let env = EnvHarness::spawn_attached(&scratch, docserver.socket()).await?;
@@ -76,6 +75,13 @@ async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> R
 		let env_b_connection = env.connect_client("p1-agent-b").await?;
 		let env_a = env_a_connection.client_clone();
 		let env_b = env_b_connection.client_clone();
+		let lsp_observer = within(
+			"open persistent LSP observer",
+			TEST_TIMEOUT,
+			direct_a.open(Str::new(&uri), None, &CancellationToken::new()),
+		)
+		.await??
+		.context("open persistent LSP observer")?;
 
 		let identity = ToolIdentity {
 			name: Str::new_static("edit"),
@@ -95,57 +101,43 @@ async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> R
 			tool_turn(&identity, "a-stale-rev2", a2_args, Some(stale_gate.clone())),
 			end_turn(),
 		]);
-		let b_client = ScriptedTurnClient::new([
-			tool_turn(&identity, "b-rev3", b_args, None),
-			end_turn(),
-		]);
-		let (mut agent_a, events_a) = agent(
-			a_client.clone(),
-			env_a,
-			Arc::clone(&registry),
-			&scratch,
-			"agent-a",
-		)?;
-		let (mut agent_b, events_b) = agent(
-			b_client.clone(),
-			env_b,
-			Arc::clone(&registry),
-			&scratch,
-			"agent-b",
-		)?;
+		let b_client =
+			ScriptedTurnClient::new([tool_turn(&identity, "b-rev3", b_args, None), end_turn()]);
+		let (mut agent_a, events_a) =
+			agent(a_client.clone(), env_a, Arc::clone(&registry), &scratch, "agent-a")?;
+		let (mut agent_b, events_b) =
+			agent(b_client.clone(), env_b, Arc::clone(&registry), &scratch, "agent-b")?;
 
+		let a1_turn = TurnId::new(ulid::Ulid::generate().to_string());
 		agent_a
-			.submit([user_item("A: publish revision two")], TurnId::new("p1-a-1"))
+			.submit([user_item("A: publish revision two")], a1_turn)
 			.await?;
 		let a1 = next_edit_payload(&events_a, "a-rev2").await?;
-		let a1_bytes = b"fn main() {\n    let value = 2;\n}\n";
+		let a1_bytes = b"fn main() {\n    let VALUE = 2;\n}\n";
 		ensure!(scratch.read("f.rs")? == a1_bytes, "A revision two was not durable");
-		wait_lsp_kind(&lsp_log, &uri, "close", 1).await?;
 
+		let a2_turn = TurnId::new(ulid::Ulid::generate().to_string());
 		let a_task = tokio::spawn(async move {
 			let result = agent_a
-				.submit(
-					[user_item("A: edit again from my revision-two view")],
-					TurnId::new("p1-a-2"),
-				)
+				.submit([user_item("A: edit again from my revision-two view")], a2_turn)
 				.await;
 			(result, agent_a)
 		});
 		stale_gate.wait_arrived(TEST_TIMEOUT).await?;
-		wait_lsp_kind(&lsp_log, &uri, "open", 2).await?;
 
+		let b1_turn = TurnId::new(ulid::Ulid::generate().to_string());
 		agent_b
-			.submit([user_item("B: publish revision three")], TurnId::new("p1-b-1"))
+			.submit([user_item("B: publish revision three")], b1_turn)
 			.await?;
 		let b = next_edit_payload(&events_b, "b-rev3").await?;
-		let b_bytes = b"fn main() { // agent B\n    let value = 2;\n}\n";
+		let b_bytes = b"fn main() { // agent B\n    let VALUE = 2;\n}\n";
 		ensure!(scratch.read("f.rs")? == b_bytes, "B revision three was not durable");
 
 		stale_gate.release();
 		let (a_result, agent_a_done) = within("stale A completion", TEST_TIMEOUT, a_task).await??;
 		a_result?;
 		let a2 = next_edit_payload(&events_a, "a-stale-rev2").await?;
-		let race_final = b"fn main() { // agent B\n    let value = 3;\n}\n";
+		let race_final = b"fn main() { // agent B\n    let VALUE = 3;\n}\n";
 		ensure!(scratch.read("f.rs")? == race_final, "stale A overwrote B or lost its own edit");
 
 		ensure!(a2.rebased, "A's revision-two proposal was not daemon-rebased");
@@ -157,22 +149,33 @@ async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> R
 		let a2_old = revision_sequence(&a2.old_revision)?;
 		let a2_new = revision_sequence(&a2.new_revision)?;
 		ensure!(a1_old < a1_new && a1_new < b_new && b_new < a2_new, "race revisions regressed");
-		ensure!(b_old == a1_new && a2_old == a1_new, "A did not cite rev2 while B advanced from rev2");
-		ensure!(a_client.remaining() == 0 && b_client.remaining() == 0, "agent loop left scripted turns unconsumed");
-
-		let race_records = lsp_records(&lsp_log)?;
-		let published_race: BTreeSet<_> = [a1_bytes.as_slice(), b_bytes.as_slice(), race_final.as_slice()]
-			.into_iter()
-			.map(|bytes| String::from_utf8(bytes.to_vec()).expect("UTF-8 race fixture"))
-			.collect();
-		assert_lsp_publication(&race_records, &uri, &published_race, race_final)?;
 		ensure!(
-			race_records.iter().filter(|record| record.kind == "format" && record.uri == uri).count() >= 3,
-			"configured LSP formatter did not run for every race edit"
+			b_old == a1_new && a2_old == a1_new,
+			"A did not cite rev2 while B advanced from rev2"
+		);
+		ensure!(
+			a_client.remaining() == 0 && b_client.remaining() == 0,
+			"agent loop left scripted turns unconsumed"
 		);
 
+		let race_records = lsp_records(&lsp_log)?;
+		let published_race: BTreeSet<_> =
+			[a1_bytes.as_slice(), b_bytes.as_slice(), race_final.as_slice()]
+				.into_iter()
+				.map(|bytes| String::from_utf8(bytes.to_vec()).expect("UTF-8 race fixture"))
+				.collect();
+		assert_lsp_publication(&race_records, &uri, &published_race, race_final)?;
+		ensure!(
+			race_records.iter().any(|record| {
+				record.kind == "format" && record.uri == uri && record.text.as_bytes() == race_final
+			}),
+			"the stale A candidate was not formatted to the later published head: {race_records:?}"
+		);
 		storm(&scratch, &docserver, &lsp_log).await?;
 
+		direct_a
+			.close(lsp_observer, &CancellationToken::new())
+			.await?;
 		drop(agent_a_done);
 		drop(agent_b);
 		drop(env_b_connection);
@@ -192,24 +195,19 @@ fn agent(
 	scratch: &Scratch,
 	name: &str,
 ) -> Result<(Agent<ScriptedTurnClient>, EventSubscription)> {
-	let journal = Journal::create(
-		&scratch.state().join(format!("{name}.jsonl")),
-		&Header {
-			v: 4,
-			id: SessionId(Str::from(name)),
-			created: 1,
-			cwd: scratch.project().to_owned(),
-		},
-	)?;
+	let journal = Journal::create(&scratch.state().join(format!("{name}.jsonl")), &Header {
+		v:       4,
+		id:      SessionId(Str::from(name)),
+		created: 1,
+		cwd:     scratch.project().to_owned(),
+	})?;
 	let mut snapshot = AgentSnapshot::new(Default::default(), Default::default(), registry);
 	snapshot.enabled_tools = Arc::from([Str::new_static("edit")]);
-	let agent = Agent::new(
-		client,
-		env,
-		AgentState::new(snapshot),
-		journal,
-		PromptCaps { maximum_parts: 16, maximum_text_bytes: 128 * 1024, media: false },
-	);
+	let agent = Agent::new(client, env, AgentState::new(snapshot), journal, PromptCaps {
+		maximum_parts:      16,
+		maximum_text_bytes: 128 * 1024,
+		media:              false,
+	});
 	let events = agent.events().subscribe_lossless();
 	Ok((agent, events))
 }
@@ -225,17 +223,17 @@ fn tool_turn(
 	gate: Option<Gate>,
 ) -> ScriptedTurn {
 	let start = turn_event(inference::turn_event::Event::PartStart(inference::PartStart {
-		index: 0,
-		kind: inference::part_start::Kind::ToolCall as i32,
+		index:        0,
+		kind:         inference::part_start::Kind::ToolCall as i32,
 		tool_call_id: call_id.to_owned(),
-		tool_name: identity.name.to_string(),
+		tool_name:    identity.name.to_string(),
 	}));
 	let delta = turn_event(inference::turn_event::Event::PartDelta(inference::PartDelta {
 		index: 0,
 		chunk: args.clone(),
 	}));
 	let end = turn_event(inference::turn_event::Event::PartEnd(inference::PartEnd {
-		index: 0,
+		index:     0,
 		signature: Bytes::new(),
 	}));
 	let outcome = outcome_event(inference::Outcome {
@@ -278,10 +276,13 @@ async fn next_edit_payload(events: &EventSubscription, call_id: &str) -> Result<
 			let Some(thread::item::Kind::ToolResult(result)) = item.kind.as_ref() else {
 				return Err(anyhow!("ToolFinished did not carry ToolResult"));
 			};
-			ensure!(!result.is_error, "{call_id} returned a typed failure instead of committing");
-			let details = result.details.as_ref().ok_or_else(|| anyhow!("missing edit verdict"))?;
-			let verdict: Verdict<edit::Payload, edit::Fault> =
-				serde_json::from_value(proto_json(details).ok_or_else(|| anyhow!("invalid edit verdict"))?)?;
+			let details = result
+				.details
+				.as_ref()
+				.ok_or_else(|| anyhow!("missing edit verdict"))?;
+			let verdict: Verdict<edit::Payload, edit::Fault> = serde_json::from_value(
+				proto_json(details).ok_or_else(|| anyhow!("invalid edit verdict"))?,
+			)?;
 			match verdict {
 				Verdict::Ok(payload) => return Ok(payload),
 				other => return Err(anyhow!("edit did not commit: {other:?}")),
@@ -300,7 +301,11 @@ fn proto_json(value: &inference::Value) -> Option<serde_json::Value> {
 		inference::value::Kind::Double(value) => serde_json::Number::from_f64(*value)?.into(),
 		inference::value::Kind::String(value) => value.clone().into(),
 		inference::value::Kind::List(values) => serde_json::Value::Array(
-			values.values.iter().map(proto_json).collect::<Option<Vec<_>>>()?,
+			values
+				.values
+				.iter()
+				.map(proto_json)
+				.collect::<Option<Vec<_>>>()?,
 		),
 		inference::value::Kind::Map(values) => serde_json::Value::Object(
 			values
@@ -328,6 +333,7 @@ async fn storm(scratch: &Scratch, docserver: &DocServerTask, lsp_log: &Path) -> 
 		.collect::<String>()
 		.into_bytes();
 	scratch.write("storm.rs", &initial)?;
+
 	let uri = file_uri(scratch, "storm.rs")?;
 	let host_a = docserver.connect().await?;
 	let host_b = docserver.connect().await?;
@@ -345,23 +351,34 @@ async fn storm(scratch: &Scratch, docserver: &DocServerTask, lsp_log: &Path) -> 
 		.as_ref()
 		.ok_or_else(|| anyhow!("storm base omitted revision"))?
 		.sequence;
-	ensure!(leases.iter().all(|lease| lease.head().revision.as_ref().is_some_and(|revision| revision.sequence == base_sequence)), "storm writers were not pinned to one base");
+	ensure!(
+		leases.iter().all(|lease| lease
+			.head()
+			.revision
+			.as_ref()
+			.is_some_and(|revision| revision.sequence == base_sequence)),
+		"storm writers were not pinned to one base"
+	);
 
 	let mut pinned = Vec::with_capacity(PINNED_READERS);
 	for _ in 0..PINNED_READERS {
 		pinned.push(open(&readers, &uri, &cancel).await?);
 	}
-	let barrier = Arc::new(tokio::sync::Barrier::new(STORM_COUNT + PINNED_READERS + 1));
+	let barrier = Arc::new(tokio::sync::Barrier::new(STORM_COUNT + 1));
+	let reader_gate = Gate::default();
 	let mut reader_tasks = Vec::new();
 	for lease in pinned {
 		let host = readers.clone();
 		let expected = initial.clone();
-		let barrier = Arc::clone(&barrier);
+		let reader_gate = reader_gate.clone();
 		reader_tasks.push(tokio::spawn(async move {
-			barrier.wait().await;
+			reader_gate.arrive_and_wait(TEST_TIMEOUT).await?;
 			for _ in 0..PINNED_READS {
 				let bytes = read_whole(&host, &lease).await?;
-				ensure!(bytes.as_ref() == expected.as_slice(), "pinned reader observed a torn or newer head");
+				ensure!(
+					bytes.as_ref() == expected.as_slice(),
+					"pinned reader observed a torn or newer head"
+				);
 				tokio::task::yield_now().await;
 			}
 			Ok::<_, anyhow::Error>(lease)
@@ -370,7 +387,11 @@ async fn storm(scratch: &Scratch, docserver: &DocServerTask, lsp_log: &Path) -> 
 
 	let mut commits = Vec::with_capacity(STORM_COUNT);
 	for (index, lease) in leases.into_iter().enumerate() {
-		let host = if index % 2 == 0 { host_a.clone() } else { host_b.clone() };
+		let host = if index % 2 == 0 {
+			host_a.clone()
+		} else {
+			host_b.clone()
+		};
 		let barrier = Arc::clone(&barrier);
 		let start = index * 8;
 		let end = start + 7;
@@ -384,30 +405,53 @@ async fn storm(scratch: &Scratch, docserver: &DocServerTask, lsp_log: &Path) -> 
 					Bytes::copy_from_slice(&(10_000_u128 + index as u128).to_be_bytes()),
 					document::TextMutation {
 						base_revision: None,
-						change: Some(document::text_mutation::Change::Edits(document::ByteEdits {
-							edits: vec![document::ByteEdit {
-								start: start as u64,
-								end: end as u64,
-								replacement: replacement.clone(),
-							}],
-						})),
-						stale_policy: document::StalePolicy::RebaseNonOverlapping as i32,
-						format_policy: document::FormatPolicy::Disabled as i32,
+						change:        Some(document::text_mutation::Change::Edits(
+							document::ByteEdits {
+								edits: vec![document::ByteEdit {
+									start:       start as u64,
+									end:         end as u64,
+									replacement: replacement.clone(),
+								}],
+							},
+						)),
+						stale_policy:  document::StalePolicy::RebaseNonOverlapping as i32,
+						format_policy: if index == 0 {
+							document::FormatPolicy::Configured as i32
+						} else {
+							document::FormatPolicy::Disabled as i32
+						},
 					},
 					&CancellationToken::new(),
 				)
 				.await?;
 			match response.outcome {
 				Some(document::commit_transaction_response::Outcome::Committed(committed)) => {
-					let operation = committed.operations.into_iter().next().ok_or_else(|| anyhow!("committed storm op omitted result"))?;
-					let sequence = operation.head.and_then(|head| head.revision).ok_or_else(|| anyhow!("committed storm op omitted revision"))?.sequence;
-					Ok::<_, anyhow::Error>(Some(CommitRecord { sequence, start, end, bytes: replacement }))
+					let operation = committed
+						.operations
+						.into_iter()
+						.next()
+						.ok_or_else(|| anyhow!("committed storm op omitted result"))?;
+					let sequence = operation
+						.head
+						.and_then(|head| head.revision)
+						.ok_or_else(|| anyhow!("committed storm op omitted revision"))?
+						.sequence;
+					Ok::<_, anyhow::Error>(Some(CommitRecord {
+						sequence,
+						start,
+						end,
+						bytes: replacement,
+					}))
 				},
 				Some(document::commit_transaction_response::Outcome::Rejected(rejected)) => {
-					ensure!(matches!(
-						document::TransactionRejectReason::try_from(rejected.reason),
-						Ok(document::TransactionRejectReason::StaleBase | document::TransactionRejectReason::OverlappingChange)
-					), "storm rejection was not a typed conflict: {rejected:?}");
+					ensure!(
+						matches!(
+							document::TransactionRejectReason::try_from(rejected.reason),
+							Ok(document::TransactionRejectReason::StaleBase
+								| document::TransactionRejectReason::OverlappingChange)
+						),
+						"storm rejection was not a typed conflict: {rejected:?}"
+					);
 					Ok(None)
 				},
 				Some(document::commit_transaction_response::Outcome::PartiallyCommitted(partial)) => {
@@ -418,6 +462,19 @@ async fn storm(scratch: &Scratch, docserver: &DocServerTask, lsp_log: &Path) -> 
 		}));
 	}
 	barrier.wait().await;
+	wait_lsp_kind(lsp_log, &uri, "format", 1).await?;
+	reader_gate.wait_arrived(TEST_TIMEOUT).await?;
+	reader_gate.release();
+	for task in reader_tasks {
+		let lease = within("pinned reader", TEST_TIMEOUT, task).await???;
+		readers.close(lease, &CancellationToken::new()).await?;
+	}
+	ensure!(
+		!lsp_records(lsp_log)?
+			.iter()
+			.any(|record| record.kind == "format_done" && record.uri == uri),
+		"formatter completed before pinned readers exercised the in-flight commit"
+	);
 
 	let mut committed = Vec::new();
 	for task in commits {
@@ -425,31 +482,52 @@ async fn storm(scratch: &Scratch, docserver: &DocServerTask, lsp_log: &Path) -> 
 			committed.push(record);
 		}
 	}
-	for task in reader_tasks {
-		let lease = within("pinned reader", TEST_TIMEOUT, task).await???;
-		readers.close(lease, &CancellationToken::new()).await?;
-	}
 	ensure!(!committed.is_empty(), "storm did not commit any operation");
 	committed.sort_by_key(|record| record.sequence);
-	ensure!(committed.windows(2).all(|pair| pair[0].sequence < pair[1].sequence), "storm revisions were not strictly monotone");
+	ensure!(
+		committed
+			.windows(2)
+			.all(|pair| pair[0].sequence < pair[1].sequence),
+		"storm revisions were not strictly monotone"
+	);
 	let mut folded = initial.clone();
 	let mut published = BTreeSet::new();
 	for record in &committed {
-		ensure!(record.end - record.start == record.bytes.len(), "storm replacement changed line width");
+		ensure!(
+			record.end - record.start == record.bytes.len(),
+			"storm replacement changed line width"
+		);
 		folded.splice(record.start..record.end, record.bytes.iter().copied());
 		published.insert(String::from_utf8(folded.clone())?);
 	}
 	let final_bytes = scratch.read("storm.rs")?;
-	ensure!(final_bytes == folded, "final storm bytes differ from the revision-ordered fold of commits");
+	ensure!(
+		final_bytes == folded,
+		"final storm bytes differ from the revision-ordered fold of commits"
+	);
 	let final_lease = open(&host_a, &uri, &CancellationToken::new()).await?;
-	let final_head = final_lease.head().revision.as_ref().ok_or_else(|| anyhow!("final storm head omitted revision"))?.sequence;
-	ensure!(final_head == committed.last().expect("nonempty commits").sequence, "final head regressed behind last commit");
-	ensure!(read_whole(&host_a, &final_lease).await?.as_ref() == folded.as_slice(), "final pinned read disagreed with disk");
+	let final_head = final_lease
+		.head()
+		.revision
+		.as_ref()
+		.ok_or_else(|| anyhow!("final storm head omitted revision"))?
+		.sequence;
+	ensure!(
+		final_head == committed.last().expect("nonempty commits").sequence,
+		"final head regressed behind last commit"
+	);
+	ensure!(
+		read_whole(&host_a, &final_lease).await?.as_ref() == folded.as_slice(),
+		"final pinned read disagreed with disk"
+	);
 	host_a.close(final_lease, &CancellationToken::new()).await?;
 
 	let records = lsp_records(lsp_log)?;
 	assert_lsp_publication(&records, &uri, &published, &folded)?;
-	let changed = records.iter().filter(|record| record.kind == "change" && record.uri == uri).count();
+	let changed = records
+		.iter()
+		.filter(|record| record.kind == "change" && record.uri == uri)
+		.count();
 	ensure!(changed >= committed.len(), "LSP missed published storm heads");
 	Ok(())
 }
@@ -481,7 +559,9 @@ async fn read_whole(host: &DocumentHost, lease: &DocumentLease) -> Result<Bytes>
 }
 
 fn file_uri(scratch: &Scratch, relative: &str) -> Result<String> {
-	url::Url::from_file_path(scratch.project().join(relative))
+	let path =
+		fs::canonicalize(scratch.project().join(relative)).context("canonicalize fixture path")?;
+	url::Url::from_file_path(path)
 		.map(String::from)
 		.map_err(|()| anyhow!("fixture path is not an absolute file URI"))
 }
@@ -496,7 +576,7 @@ fn install_lsp_fixture(scratch: &Scratch, log: &Path) -> Result<PathBuf> {
 		serde_json::to_vec(&serde_json::json!({
 			"name": "p1-fixture",
 			"priority": 100,
-			"selector": { "languages": ["rust"], "schemes": ["file"], "path_patterns": ["**/*.rs"] },
+			"selector": { "schemes": ["file"], "path_patterns": ["**/*.rs"] },
 			"executable": executable,
 			"env": { "OMP_LSP_LOG": log },
 			"transport": { "initialize_timeout_ms": 5000, "shutdown_timeout_ms": 1000 }
@@ -520,7 +600,11 @@ fn lsp_records(path: &Path) -> Result<Vec<LspRecord>> {
 async fn wait_lsp_kind(path: &Path, uri: &str, kind: &str, minimum: usize) -> Result<()> {
 	within("LSP lifecycle attribution", TEST_TIMEOUT, async {
 		loop {
-			if lsp_records(path)?.iter().filter(|record| record.kind == kind && record.uri == uri).count() >= minimum {
+			if lsp_records(path)?
+				.iter()
+				.filter(|record| record.kind == kind && record.uri == uri)
+				.count() >= minimum
+			{
 				return Ok::<_, anyhow::Error>(());
 			}
 			tokio::time::sleep(Duration::from_millis(10)).await;
@@ -541,21 +625,29 @@ fn assert_lsp_publication(
 		.collect();
 	ensure!(!changes.is_empty(), "LSP received no didChange for {uri}");
 	ensure!(
-		changes.iter().all(|record| published.contains(&record.text)),
+		changes
+			.iter()
+			.all(|record| published.contains(&record.text)),
 		"LSP didChange was attributed to bytes that never became a published head"
 	);
 	ensure!(
-		changes
-			.windows(2)
-			.all(|pair| pair[0].version.zip(pair[1].version).is_some_and(|(left, right)| left < right)),
+		changes.windows(2).all(|pair| pair[0]
+			.version
+			.zip(pair[1].version)
+			.is_some_and(|(left, right)| left < right)),
 		"LSP versions regressed or were omitted"
 	);
-	ensure!(changes.last().is_some_and(|record| record.text.as_bytes() == final_bytes), "LSP final text desynchronized from published head");
+	ensure!(
+		changes
+			.last()
+			.is_some_and(|record| record.text.as_bytes() == final_bytes),
+		"LSP final text desynchronized from published head"
+	);
 	Ok(())
 }
 
 const LSP_FIXTURE: &[u8] = br#"#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, time
 
 log_path = os.environ["OMP_LSP_LOG"]
 documents = {}
@@ -568,6 +660,17 @@ def send(identifier, result):
     payload = json.dumps({"jsonrpc":"2.0","id":identifier,"result":result}, separators=(",", ":")).encode()
     sys.stdout.buffer.write(b"Content-Length: " + str(len(payload)).encode() + b"\r\n\r\n" + payload)
     sys.stdout.buffer.flush()
+
+def formatted_text(uri):
+    return documents.get(uri, "").replace("value", "VALUE")
+
+def format_edits(uri):
+    text = documents.get(uri, "")
+    for line_index, line in enumerate(text.splitlines()):
+        start = line.find("value")
+        if start >= 0:
+            return [{"range":{"start":{"line":line_index,"character":start},"end":{"line":line_index,"character":start + 5}},"newText":"VALUE"}]
+    return []
 
 def read_message():
     length = None
@@ -592,7 +695,7 @@ while True:
     method = message.get("method")
     params = message.get("params") or {}
     if method == "initialize":
-        send(message["id"], {"capabilities":{"positionEncoding":"utf-8","textDocumentSync":{"openClose":True,"change":1},"documentFormattingProvider":True}})
+        send(message["id"], {"capabilities":{"positionEncoding":"utf-8","textDocumentSync":{"openClose":True,"change":1,"willSave":True,"willSaveWaitUntil":True},"documentFormattingProvider":True}})
     elif method == "textDocument/didOpen":
         document = params["textDocument"]
         documents[document["uri"]] = document["text"]
@@ -603,10 +706,21 @@ while True:
         if changes:
             documents[document["uri"]] = changes[-1]["text"]
         record("change", document["uri"], document.get("version"), documents.get(document["uri"], ""))
+    elif method == "textDocument/willSave":
+        uri = params["textDocument"]["uri"]
+        record("will_save", uri, None, documents.get(uri, ""))
+    elif method == "textDocument/willSaveWaitUntil":
+        uri = params["textDocument"]["uri"]
+        record("format", uri, None, formatted_text(uri))
+        time.sleep(0.25)
+        record("format_done", uri, None, formatted_text(uri))
+        send(message["id"], format_edits(uri))
     elif method == "textDocument/formatting":
         uri = params["textDocument"]["uri"]
-        record("format", uri, None, documents.get(uri, ""))
-        send(message["id"], [])
+        record("format", uri, None, formatted_text(uri))
+        time.sleep(0.25)
+        record("format_done", uri, None, formatted_text(uri))
+        send(message["id"], format_edits(uri))
     elif method == "textDocument/didClose":
         document = params["textDocument"]
         record("close", document["uri"])
