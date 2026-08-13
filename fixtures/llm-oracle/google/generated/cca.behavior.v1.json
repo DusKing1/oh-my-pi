@@ -6,7 +6,7 @@
     "claude_thinking_beta": "interleaved-thinking-2025-05-14",
     "user_agent_templates": {
       "gemini_cli": "GeminiCLI/0.46.0/{model} ({platform}; {arch}; terminal)",
-      "antigravity": "antigravity/hub/2.1.4 {os}/{arch}"
+      "antigravity": "antigravity/hub/{version} (aidev_client; os_type={os}; arch={arch}; cl={cl})"
     },
     "gemini_cli_default_base": "https://cloudcode-pa.googleapis.com",
     "antigravity_bases": [
@@ -77,7 +77,7 @@
           "reasoning": true,
           "quota_project": "project-REDACTED",
           "headers": {
-            "User-Agent": "antigravity/hub/2.1.4 {os}/{arch}",
+            "User-Agent": "antigravity/hub/{version} (aidev_client; os_type={os}; arch={arch}; cl={cl})",
             "anthropic-beta": "interleaved-thinking-2025-05-14",
             "X-Goog-User-Project": "project-REDACTED"
           }

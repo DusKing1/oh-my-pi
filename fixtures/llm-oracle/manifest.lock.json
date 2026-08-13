@@ -2,12 +2,12 @@
   "schema_version": 1,
   "corpus": "llm-oracle",
   "hash_algorithm": "sha256",
-  "corpus_sha256": "fd74df5ab8c892bd21e200bfb38e505c8151fa9f1fe53e4d2d506b9930c6b134",
-  "category_count": 13,
-  "manifest_count": 13,
-  "artifact_count": 259,
-  "indexed_file_count": 272,
-  "secret_free_count": 272,
+  "corpus_sha256": "6f4c0861760054fa01f4da6bbcd0bd8dbfac9bff9448c0cf5b3718ab2271a5ac",
+  "category_count": 14,
+  "manifest_count": 14,
+  "artifact_count": 264,
+  "indexed_file_count": 278,
+  "secret_free_count": 278,
   "categories": [
     {
       "id": "agent-protocols",
@@ -60,14 +60,20 @@
     {
       "id": "openai",
       "manifest_path": "openai/manifest.json",
-      "artifact_count": 40,
-      "indexed_file_count": 41
+      "artifact_count": 43,
+      "indexed_file_count": 44
     },
     {
       "id": "operations",
       "manifest_path": "operations/manifest.json",
       "artifact_count": 17,
       "indexed_file_count": 18
+    },
+    {
+      "id": "quirk-census",
+      "manifest_path": "quirk-census/manifest.json",
+      "artifact_count": 2,
+      "indexed_file_count": 3
     },
     {
       "id": "recovery",
@@ -1087,7 +1093,7 @@
       "path": "catalog-policy/manifest.json",
       "provenance_category": "catalog-policy",
       "secret_free": true,
-      "sha256": "9c8461a386acd03fd8db05f362a255ded9d3177953494867904df6c9e511a8b0"
+      "sha256": "3be6794b87b3e36dc7100b3833fa66c65a5864594a13c031a66b07ffa8b188bf"
     },
     {
       "id": "catalog.policy.openai-version-aliases.v1",
@@ -1119,7 +1125,7 @@
       "path": "catalog-policy/thinking-profiles.json",
       "provenance_category": "catalog-policy",
       "secret_free": true,
-      "sha256": "f9343a0d1454f8729e172719207d6325e7f1c5bd4ab3e084612e41e6348c5853"
+      "sha256": "4fe929d1a139eae0fc3dca672838ffdeb44e3b8ac48ab53d4fc52b09a493f564"
     },
     {
       "id": "catalog.census.v1",
@@ -1127,7 +1133,7 @@
       "path": "catalog/census.json",
       "provenance_category": "catalog",
       "secret_free": true,
-      "sha256": "066a0def0df1dff67a27e4b93321856bebdb626520b909e00d9016be64ed8f27"
+      "sha256": "7484b6349d60661028796c1108574841003fd7c0c2a0dd6787023a1d6cdff66b"
     },
     {
       "id": "oracle.category.catalog.manifest.v1",
@@ -1135,7 +1141,7 @@
       "path": "catalog/manifest.json",
       "provenance_category": "catalog",
       "secret_free": true,
-      "sha256": "6436e7c9e19ce8981335040ab7f05596002b4cc1620419e80d3acb10ba13a9e6"
+      "sha256": "f2ee805673517bdba7473a5611d5e10b38ebdedff4b2295bfbe15de90500f910"
     },
     {
       "id": "catalog.models.compressed.v1",
@@ -1143,7 +1149,7 @@
       "path": "catalog/models.json.zst",
       "provenance_category": "catalog",
       "secret_free": true,
-      "sha256": "7995339f8a7b17d3ad9dc0728801003f9046c10307f6df84defb25b92c5b269c"
+      "sha256": "499bc740d00a4551d4ddf30f2c4b0ece30991af007754b269cb8cc21bc73964b"
     },
     {
       "id": "catalog.models.normalized.v1",
@@ -1151,7 +1157,7 @@
       "path": "catalog/models.normalized.json",
       "provenance_category": "catalog",
       "secret_free": true,
-      "sha256": "2b91f09c66241029a4305aeeebf893ee4c31eb32d9ca3cb0d4f44ba06a79c3b3"
+      "sha256": "d2d69608f4bb67df61bf38f98c92b9124686a5889339fc34c233612633d1fe08"
     },
     {
       "id": "catalog.models.raw.v1",
@@ -1159,7 +1165,7 @@
       "path": "catalog/models.raw.json",
       "provenance_category": "catalog",
       "secret_free": true,
-      "sha256": "0ae9cdbb875e95c15bbfdea64bb331ee26dcbe10d75d45cbc3464909820dc042"
+      "sha256": "310e4e09256a1a4a9562cafbdf5c9da3c8854311361e2bc5ec68b9820549a3f6"
     },
     {
       "id": "catalog.oauth.source.v1",
@@ -1175,7 +1181,7 @@
       "path": "catalog/providers.toml",
       "provenance_category": "catalog",
       "secret_free": true,
-      "sha256": "0f122ebd5f97b17f91ca374b85d1947d765c02d6c74cee6632b14f79e83b13ff"
+      "sha256": "2c17a695cc3de57cba229a7be217d99e479583bab7f75241e262bfd27bd8dd05"
     },
     {
       "id": "google.generated.cca.behavior.v1",
@@ -1183,7 +1189,7 @@
       "path": "google/generated/cca.behavior.v1.json",
       "provenance_category": "google",
       "secret_free": true,
-      "sha256": "9ac6831eb202e2459a9e70fe78d97e36243b1ccddee9acbbc53d3b53e4c7e2e8"
+      "sha256": "7ce71cbf4fd8ae1b0b5ed1418d2dee71be437d65d5f1988fb5f2c1235854229e"
     },
     {
       "id": "google.generated.request.behavior.v1",
@@ -1223,7 +1229,7 @@
       "path": "google/manifest.json",
       "provenance_category": "google",
       "secret_free": true,
-      "sha256": "0883c35dcb9929c4d9f785b2f3a1ba17d6ce4409250933465845406dead7ed0c"
+      "sha256": "3be9d2cb5b983c4e9dd86fb0ffa23d05b03427d10ac4a56d7ab0f2fd69217741"
     },
     {
       "id": "google.recorded.google-cca.expect.antigravity-leak.v1",
@@ -1255,7 +1261,7 @@
       "path": "google/recorded/google_cca/request.antigravity.json",
       "provenance_category": "google",
       "secret_free": true,
-      "sha256": "2841e0ca3328ea55efe385c1f3930a8f71c77bebe675f7f2dbf231cee4fc0f38"
+      "sha256": "d4b34f71c6c644f3e1e64ba2bed446b4bd75a627c9325b00c93c280c0432250b"
     },
     {
       "id": "google.recorded.google-cca.request.parallel-function-responses.v1",
@@ -1522,6 +1528,30 @@
       "sha256": "0e244101094ba2d99e117ce1876b11bfdd076706257b1421e66908fda0867123"
     },
     {
+      "id": "openai.chat.response.account.models.v1",
+      "kind": "artifact",
+      "path": "openai/chat/response.account_models.json",
+      "provenance_category": "openai",
+      "secret_free": true,
+      "sha256": "fa13905361b9a8de4d51852c900095917a4415be2e08bc8a4437f9061c69964d"
+    },
+    {
+      "id": "openai.chat.response.models.v1",
+      "kind": "artifact",
+      "path": "openai/chat/response.models.json",
+      "provenance_category": "openai",
+      "secret_free": true,
+      "sha256": "25900e0a2315b4097da8336407c226c7c677849975ef4ba7fe86e402347b70bf"
+    },
+    {
+      "id": "openai.chat.response.ollama.tags.v1",
+      "kind": "artifact",
+      "path": "openai/chat/response.ollama_tags.json",
+      "provenance_category": "openai",
+      "secret_free": true,
+      "sha256": "b36da0db9f50f5b7ad923a9a42c474dd3c928bb3f0172c2faa35a47837eef221"
+    },
+    {
       "id": "openai.chat.stream.chunk.boundaries.v1",
       "kind": "artifact",
       "path": "openai/chat/stream.chunk_boundaries.json",
@@ -1647,7 +1677,7 @@
       "path": "openai/manifest.json",
       "provenance_category": "openai",
       "secret_free": true,
-      "sha256": "0fd27b39e540e09e99fb2f37c091eb915689786ac96fe17b6684dd1369dfe58b"
+      "sha256": "61a977f4f113799d630aeafab0d107ecc9888b44b2a250a6b086b63dcbb74b41"
     },
     {
       "id": "openai.responses.expect.encrypted.tool.usage.v1",
@@ -1904,6 +1934,30 @@
       "provenance_category": "operations",
       "secret_free": true,
       "sha256": "4eb0d7188658b096041300ca7d43242e855e058efe87ffb1bc3f70bcd21fc5a1"
+    },
+    {
+      "id": "quirk.census.cases.v1",
+      "kind": "artifact",
+      "path": "quirk-census/cases.jsonl",
+      "provenance_category": "quirk-census",
+      "secret_free": true,
+      "sha256": "93ef283d6619321537281dc60154a83954856fd194003474d3a72bbad62db9c0"
+    },
+    {
+      "id": "oracle.category.quirk-census.manifest.v1",
+      "kind": "category-manifest",
+      "path": "quirk-census/manifest.json",
+      "provenance_category": "quirk-census",
+      "secret_free": true,
+      "sha256": "c581a0b34e8edf8defa717eb8b27d24cc9cf6bc1006148686bcf74bfe1bbac12"
+    },
+    {
+      "id": "quirk.census.observations.v1",
+      "kind": "artifact",
+      "path": "quirk-census/observations.jsonl",
+      "provenance_category": "quirk-census",
+      "secret_free": true,
+      "sha256": "522b425feb3ed579591be39977177be99e78f5a9b2de52d4a538de2f8d74e554"
     },
     {
       "id": "recovery.dialect-thinking-corpus.v1",

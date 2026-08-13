@@ -265,7 +265,7 @@
       }
     },
     {
-      "model_count": 40,
+      "model_count": 41,
       "models": [
         "aiand/deepseek-ai/deepseek-v4-flash",
         "aimlapi/deepseek-v4-flash",
@@ -294,6 +294,7 @@
         "ollama-cloud/deepseek-v4-flash",
         "ollama-cloud/deepseek-v4-flash:0731",
         "ollama-cloud/deepseek-v4-flash:preview",
+        "ollama-cloud/deepseek-v4-pro:preview",
         "opencode-zen/deepseek-v4-flash",
         "opencode-zen/deepseek-v4-flash-free",
         "openrouter/deepseek/deepseek-v4-flash",
@@ -1234,7 +1235,7 @@
       }
     },
     {
-      "model_count": 159,
+      "model_count": 160,
       "models": [
         "anthropic/claude-3-7-sonnet-20250219",
         "anthropic/claude-haiku-4-5",
@@ -1297,6 +1298,7 @@
         "vercel-ai-gateway/alibaba/qwen3.7-flash",
         "vercel-ai-gateway/alibaba/qwen3.7-max",
         "vercel-ai-gateway/alibaba/qwen3.7-plus",
+        "vercel-ai-gateway/alibaba/qwen3.8-2.4t-a95b",
         "vercel-ai-gateway/alibaba/qwen3.8-max",
         "vercel-ai-gateway/amazon/nova-2-lite",
         "vercel-ai-gateway/anthropic/claude-3.7-sonnet",
@@ -2270,7 +2272,7 @@
       }
     },
     {
-      "model_count": 106,
+      "model_count": 110,
       "models": [
         "aimlapi/gemini-2.5-pro",
         "aimlapi/gemini-3-flash-preview",
@@ -2295,6 +2297,7 @@
         "kilo/google/gemini-3.5-flash",
         "kilo/google/gemini-3.5-flash-lite",
         "kilo/google/gemini-3.6-flash",
+        "kilo/google/gemini-3.7-flash",
         "kilo/qwen/qwen3-235b-a22b-thinking-2507",
         "kilo/qwen/qwen3-30b-a3b-thinking-2507",
         "kilo/qwen/qwen3-max",
@@ -2313,6 +2316,7 @@
         "nanogpt/google/gemini-3.5-flash",
         "nanogpt/google/gemini-3.5-flash-lite",
         "nanogpt/google/gemini-3.6-flash",
+        "nanogpt/google/gemini-3.7-flash",
         "nanogpt/qwen/qwen3-next-80b-a3b-thinking",
         "novita/qwen/qwen3-235b-a22b-thinking-2507",
         "novita/qwen/qwen3-omni-30b-a3b-thinking",
@@ -2340,6 +2344,8 @@
         "openrouter/google/gemini-3.5-flash:batch",
         "openrouter/google/gemini-3.6-flash",
         "openrouter/google/gemini-3.6-flash:batch",
+        "openrouter/google/gemini-3.7-flash",
+        "openrouter/google/gemini-3.7-flash:batch",
         "openrouter/liquid/lfm-2.5-1.2b-thinking:free",
         "openrouter/moonshotai/kimi-k2-thinking",
         "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
@@ -2392,7 +2398,7 @@
       }
     },
     {
-      "model_count": 495,
+      "model_count": 496,
       "models": [
         "agnes-plan/agnes-2.0-flash",
         "agnes/agnes-2.0-flash",
@@ -2692,6 +2698,7 @@
         "openrouter/nvidia/nemotron-3-ultra-550b-a55b",
         "openrouter/nvidia/nemotron-3-ultra-550b-a55b:batch",
         "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        "openrouter/nvidia/nemotron-3.5-lightning",
         "openrouter/nvidia/nemotron-nano-12b-v2-vl:free",
         "openrouter/nvidia/nemotron-nano-9b-v2",
         "openrouter/nvidia/nemotron-nano-9b-v2:free",
@@ -2902,10 +2909,11 @@
       }
     },
     {
-      "model_count": 21,
+      "model_count": 23,
       "models": [
         "google-antigravity/gemini-3.1-flash-lite",
         "google-antigravity/gemini-3.6-flash",
+        "google-antigravity/gemini-3.7-flash",
         "google-gemini-cli/gemini-3-flash-preview",
         "google-gemini-cli/gemini-3.1-flash-lite-preview",
         "google-vertex/gemini-3-flash-preview",
@@ -2924,7 +2932,8 @@
         "opencode-zen/gemini-3-flash",
         "opencode-zen/gemini-3.5-flash",
         "opencode-zen/gemini-3.5-flash-lite",
-        "opencode-zen/gemini-3.6-flash"
+        "opencode-zen/gemini-3.6-flash",
+        "opencode-zen/gemini-3.7-flash"
       ],
       "profile_id": "thinking-43",
       "shape": {

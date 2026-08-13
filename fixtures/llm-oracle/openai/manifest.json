@@ -85,6 +85,27 @@
       "source": "archive/llm-legacy/llm-openai/tests/fixtures/openai_chat/request.plain_text.json"
     },
     {
+      "id": "openai.chat.response.account.models.v1",
+      "path": "chat/response.account_models.json",
+      "secret_free": true,
+      "sha256": "fa13905361b9a8de4d51852c900095917a4415be2e08bc8a4437f9061c69964d",
+      "source": "/work/pi/packages/ai/src/registry + provider model discovery (recorded)"
+    },
+    {
+      "id": "openai.chat.response.models.v1",
+      "path": "chat/response.models.json",
+      "secret_free": true,
+      "sha256": "25900e0a2315b4097da8336407c226c7c677849975ef4ba7fe86e402347b70bf",
+      "source": "/work/pi/packages/ai/src/registry + provider model discovery (recorded)"
+    },
+    {
+      "id": "openai.chat.response.ollama.tags.v1",
+      "path": "chat/response.ollama_tags.json",
+      "secret_free": true,
+      "sha256": "b36da0db9f50f5b7ad923a9a42c474dd3c928bb3f0172c2faa35a47837eef221",
+      "source": "/work/pi/packages/ai/src/registry + provider model discovery (recorded)"
+    },
+    {
       "id": "openai.chat.stream.chunk.boundaries.v1",
       "path": "chat/stream.chunk_boundaries.json",
       "secret_free": true,

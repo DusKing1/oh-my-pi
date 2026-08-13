@@ -6,7 +6,7 @@
       "id": "google.generated.cca.behavior.v1",
       "path": "generated/cca.behavior.v1.json",
       "source": "archive/llm-legacy/llm-google/src/cca.rs::CcaCodec,wrap_request,wrap_antigravity_request,shape_antigravity_request,CcaEndpointPlan,should_fallback",
-      "sha256": "9ac6831eb202e2459a9e70fe78d97e36243b1ccddee9acbbc53d3b53e4c7e2e8",
+      "sha256": "7ce71cbf4fd8ae1b0b5ed1418d2dee71be437d65d5f1988fb5f2c1235854229e",
       "secret_free": true
     },
     {
@@ -68,10 +68,11 @@
       "id": "google.recorded.google-cca.request.antigravity.v1",
       "path": "recorded/google_cca/request.antigravity.json",
       "source": "archive/llm-legacy/llm-google/tests/fixtures/google_cca/request.antigravity.json",
-      "sha256": "2841e0ca3328ea55efe385c1f3930a8f71c77bebe675f7f2dbf231cee4fc0f38",
+      "sha256": "d4b34f71c6c644f3e1e64ba2bed446b4bd75a627c9325b00c93c280c0432250b",
       "secret_free": true,
       "redactions": [
-        "credential project identifier replaced with project-REDACTED"
+        "credential project identifier replaced with project-REDACTED",
+        "identity prompt injection removed with the Antigravity system-identity port"
       ]
     },
     {

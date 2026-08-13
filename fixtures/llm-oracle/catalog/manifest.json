@@ -8,7 +8,7 @@
         "kind": "verbatim-source-snapshot"
       },
       "secret_free": true,
-      "sha256": "7995339f8a7b17d3ad9dc0728801003f9046c10307f6df84defb25b92c5b269c",
+      "sha256": "499bc740d00a4551d4ddf30f2c4b0ece30991af007754b269cb8cc21bc73964b",
       "source": "archive/llm-legacy/llm-catalog/models.json.zst"
     },
     {
@@ -19,7 +19,7 @@
         "kind": "verbatim-zstd-decompression"
       },
       "secret_free": true,
-      "sha256": "0ae9cdbb875e95c15bbfdea64bb331ee26dcbe10d75d45cbc3464909820dc042",
+      "sha256": "310e4e09256a1a4a9562cafbdf5c9da3c8854311361e2bc5ec68b9820549a3f6",
       "source": "archive/llm-legacy/llm-catalog/models.json.zst"
     },
     {
@@ -35,7 +35,7 @@
         ]
       },
       "secret_free": true,
-      "sha256": "2b91f09c66241029a4305aeeebf893ee4c31eb32d9ca3cb0d4f44ba06a79c3b3",
+      "sha256": "d2d69608f4bb67df61bf38f98c92b9124686a5889339fc34c233612633d1fe08",
       "source": "archive/llm-legacy/llm-catalog/src/models.rs::load_catalog_zstd"
     },
     {
@@ -45,7 +45,7 @@
         "kind": "verbatim-source-snapshot"
       },
       "secret_free": true,
-      "sha256": "3f7cc9c14c6b42abea75757081b9f1e4e743ea41761b62feb56d7e31be114967",
+      "sha256": "2c17a695cc3de57cba229a7be217d99e479583bab7f75241e262bfd27bd8dd05",
       "source": "archive/llm-legacy/llm-catalog/providers.toml"
     },
     {
@@ -85,7 +85,7 @@
         ]
       },
       "secret_free": true,
-      "sha256": "066a0def0df1dff67a27e4b93321856bebdb626520b909e00d9016be64ed8f27",
+      "sha256": "7484b6349d60661028796c1108574841003fd7c0c2a0dd6787023a1d6cdff66b",
       "source": "archive/llm-legacy/llm-catalog/src/models.rs::load_catalog_zstd"
     }
   ],

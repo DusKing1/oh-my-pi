@@ -110,7 +110,7 @@
       "id": "catalog.policy.thinking-profiles.v1",
       "path": "thinking-profiles.json",
       "secret_free": true,
-      "sha256": "f9343a0d1454f8729e172719207d6325e7f1c5bd4ab3e084612e41e6348c5853",
+      "sha256": "4fe929d1a139eae0fc3dca672838ffdeb44e3b8ac48ab53d4fc52b09a493f564",
       "source": "archive/llm-legacy/llm-catalog/models.json.zst::load_catalog_zstd/ModelBehavior.thinking"
     }
   ],

@@ -78564,6 +78564,105 @@
       }
     },
     {
+      "pricing_tiers": [],
+      "props": {},
+      "id": "google-antigravity/gemini-3.7-flash",
+      "provider": "google-antigravity",
+      "model": "gemini-3.7-flash",
+      "name": "Gemini 3.7 Flash",
+      "family": "gemini",
+      "facets": [
+        "chat"
+      ],
+      "modalities": {
+        "inputs": [
+          "text",
+          "image"
+        ],
+        "outputs": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "limits": {
+        "context_window": 1048576,
+        "max_output_tokens": 65536
+      },
+      "pricing": [
+        {
+          "unit": "mtok_input",
+          "nanos_usd": 750000000
+        },
+        {
+          "unit": "mtok_output",
+          "nanos_usd": 3750000000
+        },
+        {
+          "unit": "mtok_cache_read",
+          "nanos_usd": 75000000
+        },
+        {
+          "unit": "mtok_cache_write",
+          "nanos_usd": 0
+        }
+      ],
+      "availability": "unspecified",
+      "source": "bundled",
+      "blocked_until_ms": 0,
+      "deprecated": false,
+      "updated_at_ms": 0,
+      "effort_routing": {
+        "high": "gemini-3.7-flash-high",
+        "low": "gemini-3.7-flash-low",
+        "medium": "gemini-3.7-flash-medium",
+        "minimal": "gemini-3.7-flash-low"
+      },
+      "wire": {
+        "transport": "google-cca",
+        "base_url": "https://daily-cloudcode-pa.googleapis.com"
+      },
+      "behavior": {
+        "thinking": {
+          "effortRouting": {
+            "high": "gemini-3.7-flash-high",
+            "low": "gemini-3.7-flash-low",
+            "medium": "gemini-3.7-flash-medium",
+            "minimal": "gemini-3.7-flash-low"
+          },
+          "efforts": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "mode": "google-level",
+          "requiresEffort": true
+        },
+        "supports_tools": null,
+        "supports_computer_use": null,
+        "supports_computer_use_config": null,
+        "cursor_max_mode": null,
+        "omit_max_output_tokens": null,
+        "apply_patch_tool_type": null,
+        "context_promotion_target": null,
+        "request_model_id": "gemini-3.7-flash-low",
+        "remote_compaction": null,
+        "premium_multiplier": null,
+        "reasoning_mode": null,
+        "use_responses_lite": null,
+        "prefer_websockets": null,
+        "priority": null,
+        "headers": {},
+        "compat": {}
+      }
+    },
+    {
       "id": "google-antigravity/gpt-oss-120b",
       "provider": "google-antigravity",
       "model": "gpt-oss-120b",
@@ -97489,19 +97588,19 @@
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 1500000000
+          "nanos_usd": 750000000
         },
         {
           "unit": "mtok_output",
-          "nanos_usd": 7500000000
+          "nanos_usd": 3750000000
         },
         {
           "unit": "mtok_cache_read",
-          "nanos_usd": 150000000
+          "nanos_usd": 75000000
         },
         {
           "unit": "mtok_cache_write",
-          "nanos_usd": 83333000
+          "nanos_usd": 41667000
         }
       ],
       "pricing_tiers": [],
@@ -97518,13 +97617,101 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high"
           ],
+          "mode": "effort",
+          "requiresEffort": true
+        },
+        "supports_tools": null,
+        "supports_computer_use": null,
+        "supports_computer_use_config": null,
+        "cursor_max_mode": null,
+        "omit_max_output_tokens": null,
+        "apply_patch_tool_type": null,
+        "context_promotion_target": null,
+        "request_model_id": null,
+        "remote_compaction": null,
+        "premium_multiplier": null,
+        "reasoning_mode": null,
+        "use_responses_lite": null,
+        "prefer_websockets": null,
+        "priority": null,
+        "headers": {},
+        "compat": {}
+      }
+    },
+    {
+      "pricing_tiers": [],
+      "props": {},
+      "id": "kilo/google/gemini-3.7-flash",
+      "provider": "kilo",
+      "model": "google/gemini-3.7-flash",
+      "name": "Gemini 3.7 Flash",
+      "family": "gemini",
+      "facets": [
+        "chat"
+      ],
+      "modalities": {
+        "inputs": [
+          "text",
+          "image"
+        ],
+        "outputs": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "limits": {
+        "context_window": 1048576,
+        "max_output_tokens": 65536
+      },
+      "pricing": [
+        {
+          "unit": "mtok_input",
+          "nanos_usd": 750000000
+        },
+        {
+          "unit": "mtok_output",
+          "nanos_usd": 3750000000
+        },
+        {
+          "unit": "mtok_cache_read",
+          "nanos_usd": 75000000
+        },
+        {
+          "unit": "mtok_cache_write",
+          "nanos_usd": 41667000
+        }
+      ],
+      "availability": "unspecified",
+      "source": "bundled",
+      "blocked_until_ms": 0,
+      "deprecated": false,
+      "updated_at_ms": 0,
+      "effort_routing": {},
+      "wire": {
+        "transport": "open-ai-chat",
+        "base_url": "https://api.kilo.ai/api/gateway"
+      },
+      "behavior": {
+        "thinking": {
+          "efforts": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "mode": "effort",
           "requiresEffort": true
         },
         "supports_tools": null,
@@ -126336,15 +126523,15 @@
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 550000000
+          "nanos_usd": 500000000
         },
         {
           "unit": "mtok_output",
-          "nanos_usd": 2200000000
+          "nanos_usd": 2000000000
         },
         {
           "unit": "mtok_cache_read",
-          "nanos_usd": 110000000
+          "nanos_usd": 100000000
         },
         {
           "unit": "mtok_cache_write",
@@ -126365,14 +126552,14 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high",
             "xhigh"
-          ]
+          ],
+          "mode": "effort"
         },
         "supports_tools": null,
         "supports_computer_use": null,
@@ -126586,15 +126773,15 @@
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 600000000
+          "nanos_usd": 400000000
         },
         {
           "unit": "mtok_output",
-          "nanos_usd": 2200000000
+          "nanos_usd": 1750000000
         },
         {
           "unit": "mtok_cache_read",
-          "nanos_usd": 110000000
+          "nanos_usd": 80000000
         },
         {
           "unit": "mtok_cache_write",
@@ -126615,14 +126802,14 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high",
             "xhigh"
-          ]
+          ],
+          "mode": "effort"
         },
         "supports_tools": null,
         "supports_computer_use": null,
@@ -126674,7 +126861,7 @@
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 70000000
+          "nanos_usd": 60000000
         },
         {
           "unit": "mtok_output",
@@ -126703,14 +126890,14 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high",
             "xhigh"
-          ]
+          ],
+          "mode": "effort"
         },
         "supports_tools": null,
         "supports_computer_use": null,
@@ -126762,11 +126949,11 @@
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 1000000000
+          "nanos_usd": 950000000
         },
         {
           "unit": "mtok_output",
-          "nanos_usd": 3200000000
+          "nanos_usd": 2550000000
         },
         {
           "unit": "mtok_cache_read",
@@ -126791,14 +126978,14 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high",
             "xhigh"
-          ]
+          ],
+          "mode": "effort"
         },
         "supports_tools": null,
         "supports_computer_use": null,
@@ -126938,7 +127125,7 @@
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 1380000000
+          "nanos_usd": 1400000000
         },
         {
           "unit": "mtok_output",
@@ -126967,14 +127154,14 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high",
             "xhigh"
-          ]
+          ],
+          "mode": "effort"
         },
         "supports_tools": null,
         "supports_computer_use": null,
@@ -127020,8 +127207,8 @@
         "max"
       ],
       "limits": {
-        "context_window": 262144,
-        "max_output_tokens": 262144
+        "context_window": 1048576,
+        "max_output_tokens": 131072
       },
       "pricing": [
         {
@@ -127055,14 +127242,14 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high",
             "max"
-          ]
+          ],
+          "mode": "effort"
         },
         "supports_tools": null,
         "supports_computer_use": null,
@@ -127551,21 +127738,21 @@
         "max"
       ],
       "limits": {
-        "context_window": 1048576,
-        "max_output_tokens": 131072
+        "context_window": 262144,
+        "max_output_tokens": 262144
       },
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 79996000
+          "nanos_usd": 72000000
         },
         {
           "unit": "mtok_output",
-          "nanos_usd": 252000000
+          "nanos_usd": 144000000
         },
         {
           "unit": "mtok_cache_read",
-          "nanos_usd": 25200000
+          "nanos_usd": 16000000
         },
         {
           "unit": "mtok_cache_write",
@@ -127586,12 +127773,12 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "low",
             "high",
             "max"
-          ]
+          ],
+          "mode": "effort"
         },
         "supports_tools": null,
         "supports_computer_use": null,
@@ -127608,9 +127795,7 @@
         "prefer_websockets": null,
         "priority": null,
         "headers": {},
-        "compat": {
-          "wire/requires_reasoning_content_for_all_assistant_turns": true
-        }
+        "compat": {}
       }
     },
     {
@@ -127646,19 +127831,19 @@
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 1500000000
+          "nanos_usd": 375000000
         },
         {
           "unit": "mtok_output",
-          "nanos_usd": 7500000000
+          "nanos_usd": 1875000000
         },
         {
           "unit": "mtok_cache_read",
-          "nanos_usd": 150000000
+          "nanos_usd": 37500000
         },
         {
           "unit": "mtok_cache_write",
-          "nanos_usd": 83333000
+          "nanos_usd": 20833000
         }
       ],
       "pricing_tiers": [],
@@ -127675,14 +127860,14 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high",
             "xhigh"
-          ]
+          ],
+          "mode": "effort"
         },
         "supports_tools": null,
         "supports_computer_use": null,
@@ -127818,21 +128003,21 @@
         "x_high"
       ],
       "limits": {
-        "context_window": 1048576,
-        "max_output_tokens": 1048576
+        "context_window": 974842,
+        "max_output_tokens": 974842
       },
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 2800000000
+          "nanos_usd": 2400000000
         },
         {
           "unit": "mtok_output",
-          "nanos_usd": 14000000000
+          "nanos_usd": 12000000000
         },
         {
           "unit": "mtok_cache_read",
-          "nanos_usd": 290000000
+          "nanos_usd": 240000000
         },
         {
           "unit": "mtok_cache_write",
@@ -127853,14 +128038,14 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high",
             "xhigh"
-          ]
+          ],
+          "mode": "effort"
         },
         "supports_tools": null,
         "supports_computer_use": null,
@@ -170989,7 +171174,7 @@
         },
         {
           "unit": "mtok_cache_write",
-          "nanos_usd": 0
+          "nanos_usd": 83333000
         }
       ],
       "pricing_tiers": [],
@@ -171006,13 +171191,13 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high"
           ],
+          "mode": "effort",
           "requiresEffort": true
         },
         "supports_tools": null,
@@ -171165,7 +171350,7 @@
         },
         {
           "unit": "mtok_cache_write",
-          "nanos_usd": 0
+          "nanos_usd": 41667000
         }
       ],
       "pricing_tiers": [],
@@ -171182,13 +171367,101 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high"
           ],
+          "mode": "effort",
+          "requiresEffort": true
+        },
+        "supports_tools": null,
+        "supports_computer_use": null,
+        "supports_computer_use_config": null,
+        "cursor_max_mode": null,
+        "omit_max_output_tokens": null,
+        "apply_patch_tool_type": null,
+        "context_promotion_target": null,
+        "request_model_id": null,
+        "remote_compaction": null,
+        "premium_multiplier": null,
+        "reasoning_mode": null,
+        "use_responses_lite": null,
+        "prefer_websockets": null,
+        "priority": null,
+        "headers": {},
+        "compat": {}
+      }
+    },
+    {
+      "pricing_tiers": [],
+      "props": {},
+      "id": "nanogpt/google/gemini-3.7-flash",
+      "provider": "nanogpt",
+      "model": "google/gemini-3.7-flash",
+      "name": "Gemini 3.7 Flash",
+      "family": "gemini",
+      "facets": [
+        "chat"
+      ],
+      "modalities": {
+        "inputs": [
+          "text",
+          "image"
+        ],
+        "outputs": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "limits": {
+        "context_window": 1048576,
+        "max_output_tokens": 65536
+      },
+      "pricing": [
+        {
+          "unit": "mtok_input",
+          "nanos_usd": 375000000
+        },
+        {
+          "unit": "mtok_output",
+          "nanos_usd": 1875000000
+        },
+        {
+          "unit": "mtok_cache_read",
+          "nanos_usd": 37500000
+        },
+        {
+          "unit": "mtok_cache_write",
+          "nanos_usd": 20833000
+        }
+      ],
+      "availability": "unspecified",
+      "source": "bundled",
+      "blocked_until_ms": 0,
+      "deprecated": false,
+      "updated_at_ms": 0,
+      "effort_routing": {},
+      "wire": {
+        "transport": "open-ai-chat",
+        "base_url": "https://nano-gpt.com/api/v1"
+      },
+      "behavior": {
+        "thinking": {
+          "efforts": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "mode": "effort",
           "requiresEffort": true
         },
         "supports_tools": null,
@@ -221700,15 +221973,15 @@
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 760000000
+          "nanos_usd": 1400000000
         },
         {
           "unit": "mtok_output",
-          "nanos_usd": 2420000000
+          "nanos_usd": 4400000000
         },
         {
           "unit": "mtok_cache_read",
-          "nanos_usd": 140000000
+          "nanos_usd": 260000000
         },
         {
           "unit": "mtok_cache_write",
@@ -222599,6 +222872,90 @@
         "compat": {
           "wire/requires_reasoning_content_for_all_assistant_turns": true
         }
+      }
+    },
+    {
+      "pricing_tiers": [],
+      "props": {},
+      "id": "ollama-cloud/deepseek-v4-pro:preview",
+      "provider": "ollama-cloud",
+      "model": "deepseek-v4-pro:preview",
+      "name": "deepseek-v4-pro:preview",
+      "family": "deepseek",
+      "facets": [
+        "chat"
+      ],
+      "modalities": {
+        "inputs": [
+          "text"
+        ],
+        "outputs": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "efforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "limits": {
+        "context_window": 524288,
+        "max_output_tokens": 65536
+      },
+      "pricing": [
+        {
+          "unit": "mtok_input",
+          "nanos_usd": 0
+        },
+        {
+          "unit": "mtok_output",
+          "nanos_usd": 0
+        },
+        {
+          "unit": "mtok_cache_read",
+          "nanos_usd": 0
+        },
+        {
+          "unit": "mtok_cache_write",
+          "nanos_usd": 0
+        }
+      ],
+      "availability": "unspecified",
+      "source": "bundled",
+      "blocked_until_ms": 0,
+      "deprecated": false,
+      "updated_at_ms": 0,
+      "effort_routing": {},
+      "wire": {
+        "transport": "ollama-chat",
+        "base_url": "https://ollama.com"
+      },
+      "behavior": {
+        "thinking": {
+          "efforts": [
+            "low",
+            "high",
+            "max"
+          ],
+          "mode": "effort"
+        },
+        "supports_tools": null,
+        "supports_computer_use": false,
+        "supports_computer_use_config": null,
+        "cursor_max_mode": null,
+        "omit_max_output_tokens": true,
+        "apply_patch_tool_type": null,
+        "context_promotion_target": null,
+        "request_model_id": null,
+        "remote_compaction": null,
+        "premium_multiplier": null,
+        "reasoning_mode": null,
+        "use_responses_lite": null,
+        "prefer_websockets": null,
+        "priority": null,
+        "headers": {},
+        "compat": {}
       }
     },
     {
@@ -235911,6 +236268,94 @@
             "medium",
             "high"
           ],
+          "requiresEffort": true
+        },
+        "supports_tools": null,
+        "supports_computer_use": null,
+        "supports_computer_use_config": null,
+        "cursor_max_mode": null,
+        "omit_max_output_tokens": null,
+        "apply_patch_tool_type": null,
+        "context_promotion_target": null,
+        "request_model_id": null,
+        "remote_compaction": null,
+        "premium_multiplier": null,
+        "reasoning_mode": null,
+        "use_responses_lite": null,
+        "prefer_websockets": null,
+        "priority": null,
+        "headers": {},
+        "compat": {}
+      }
+    },
+    {
+      "pricing_tiers": [],
+      "props": {},
+      "id": "opencode-zen/gemini-3.7-flash",
+      "provider": "opencode-zen",
+      "model": "gemini-3.7-flash",
+      "name": "Gemini 3.7 Flash",
+      "family": "gemini",
+      "facets": [
+        "chat"
+      ],
+      "modalities": {
+        "inputs": [
+          "text",
+          "image"
+        ],
+        "outputs": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "limits": {
+        "context_window": 1048576,
+        "max_output_tokens": 65536
+      },
+      "pricing": [
+        {
+          "unit": "mtok_input",
+          "nanos_usd": 1500000000
+        },
+        {
+          "unit": "mtok_output",
+          "nanos_usd": 7500000000
+        },
+        {
+          "unit": "mtok_cache_read",
+          "nanos_usd": 150000000
+        },
+        {
+          "unit": "mtok_cache_write",
+          "nanos_usd": 0
+        }
+      ],
+      "availability": "unspecified",
+      "source": "bundled",
+      "blocked_until_ms": 0,
+      "deprecated": false,
+      "updated_at_ms": 0,
+      "effort_routing": {},
+      "wire": {
+        "transport": "google-gen-ai",
+        "base_url": "https://opencode.ai/zen/v1"
+      },
+      "behavior": {
+        "thinking": {
+          "efforts": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "mode": "google-level",
           "requiresEffort": true
         },
         "supports_tools": null,
@@ -249486,19 +249931,19 @@
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 1500000000
+          "nanos_usd": 750000000
         },
         {
           "unit": "mtok_output",
-          "nanos_usd": 7500000000
+          "nanos_usd": 3750000000
         },
         {
           "unit": "mtok_cache_read",
-          "nanos_usd": 150000000
+          "nanos_usd": 75000000
         },
         {
           "unit": "mtok_cache_write",
-          "nanos_usd": 83333333
+          "nanos_usd": 41666667
         }
       ],
       "pricing_tiers": [],
@@ -249515,13 +249960,13 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high"
           ],
+          "mode": "effort",
           "requiresEffort": true
         },
         "supports_tools": null,
@@ -249574,19 +250019,19 @@
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 750000000
+          "nanos_usd": 375000000
         },
         {
           "unit": "mtok_output",
-          "nanos_usd": 3750000000
+          "nanos_usd": 1875000000
         },
         {
           "unit": "mtok_cache_read",
-          "nanos_usd": 75000000
+          "nanos_usd": 37500000
         },
         {
           "unit": "mtok_cache_write",
-          "nanos_usd": 83333333
+          "nanos_usd": 41666667
         }
       ],
       "pricing_tiers": [],
@@ -249603,13 +250048,189 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high"
           ],
+          "mode": "effort",
+          "requiresEffort": true
+        },
+        "supports_tools": null,
+        "supports_computer_use": false,
+        "supports_computer_use_config": false,
+        "cursor_max_mode": null,
+        "omit_max_output_tokens": null,
+        "apply_patch_tool_type": null,
+        "context_promotion_target": null,
+        "request_model_id": null,
+        "remote_compaction": null,
+        "premium_multiplier": null,
+        "reasoning_mode": null,
+        "use_responses_lite": null,
+        "prefer_websockets": null,
+        "priority": null,
+        "headers": {},
+        "compat": {}
+      }
+    },
+    {
+      "pricing_tiers": [],
+      "props": {},
+      "id": "openrouter/google/gemini-3.7-flash",
+      "provider": "openrouter",
+      "model": "google/gemini-3.7-flash",
+      "name": "Gemini 3.7 Flash",
+      "family": "gemini",
+      "facets": [
+        "chat"
+      ],
+      "modalities": {
+        "inputs": [
+          "text",
+          "image"
+        ],
+        "outputs": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "limits": {
+        "context_window": 1048576,
+        "max_output_tokens": 65536
+      },
+      "pricing": [
+        {
+          "unit": "mtok_input",
+          "nanos_usd": 375000000
+        },
+        {
+          "unit": "mtok_output",
+          "nanos_usd": 1875000000
+        },
+        {
+          "unit": "mtok_cache_read",
+          "nanos_usd": 37500000
+        },
+        {
+          "unit": "mtok_cache_write",
+          "nanos_usd": 20833333
+        }
+      ],
+      "availability": "unspecified",
+      "source": "bundled",
+      "blocked_until_ms": 0,
+      "deprecated": false,
+      "updated_at_ms": 0,
+      "effort_routing": {},
+      "wire": {
+        "transport": "open-ai-chat",
+        "base_url": "https://openrouter.ai/api/v1"
+      },
+      "behavior": {
+        "thinking": {
+          "efforts": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "mode": "effort",
+          "requiresEffort": true
+        },
+        "supports_tools": null,
+        "supports_computer_use": false,
+        "supports_computer_use_config": false,
+        "cursor_max_mode": null,
+        "omit_max_output_tokens": null,
+        "apply_patch_tool_type": null,
+        "context_promotion_target": null,
+        "request_model_id": null,
+        "remote_compaction": null,
+        "premium_multiplier": null,
+        "reasoning_mode": null,
+        "use_responses_lite": null,
+        "prefer_websockets": null,
+        "priority": null,
+        "headers": {},
+        "compat": {}
+      }
+    },
+    {
+      "pricing_tiers": [],
+      "props": {},
+      "id": "openrouter/google/gemini-3.7-flash:batch",
+      "provider": "openrouter",
+      "model": "google/gemini-3.7-flash:batch",
+      "name": "Gemini 3.7 Flash (batch)",
+      "family": "gemini",
+      "facets": [
+        "chat"
+      ],
+      "modalities": {
+        "inputs": [
+          "text",
+          "image"
+        ],
+        "outputs": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "limits": {
+        "context_window": 1048576,
+        "max_output_tokens": 65536
+      },
+      "pricing": [
+        {
+          "unit": "mtok_input",
+          "nanos_usd": 187500000
+        },
+        {
+          "unit": "mtok_output",
+          "nanos_usd": 937500000
+        },
+        {
+          "unit": "mtok_cache_read",
+          "nanos_usd": 18750000
+        },
+        {
+          "unit": "mtok_cache_write",
+          "nanos_usd": 20833333
+        }
+      ],
+      "availability": "unspecified",
+      "source": "bundled",
+      "blocked_until_ms": 0,
+      "deprecated": false,
+      "updated_at_ms": 0,
+      "effort_routing": {},
+      "wire": {
+        "transport": "open-ai-chat",
+        "base_url": "https://openrouter.ai/api/v1"
+      },
+      "behavior": {
+        "thinking": {
+          "efforts": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "mode": "effort",
           "requiresEffort": true
         },
         "supports_tools": null,
@@ -255573,15 +256194,15 @@
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 950000000
+          "nanos_usd": 560500000
         },
         {
           "unit": "mtok_output",
-          "nanos_usd": 4000000000
+          "nanos_usd": 2360000000
         },
         {
           "unit": "mtok_cache_read",
-          "nanos_usd": 160000000
+          "nanos_usd": 94400000
         },
         {
           "unit": "mtok_cache_write",
@@ -255602,13 +256223,13 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high"
-          ]
+          ],
+          "mode": "effort"
         },
         "supports_tools": null,
         "supports_computer_use": false,
@@ -257315,6 +257936,92 @@
             "medium",
             "high"
           ]
+        },
+        "supports_tools": null,
+        "supports_computer_use": false,
+        "supports_computer_use_config": false,
+        "cursor_max_mode": null,
+        "omit_max_output_tokens": null,
+        "apply_patch_tool_type": null,
+        "context_promotion_target": null,
+        "request_model_id": null,
+        "remote_compaction": null,
+        "premium_multiplier": null,
+        "reasoning_mode": null,
+        "use_responses_lite": null,
+        "prefer_websockets": null,
+        "priority": null,
+        "headers": {},
+        "compat": {}
+      }
+    },
+    {
+      "pricing_tiers": [],
+      "props": {},
+      "id": "openrouter/nvidia/nemotron-3.5-lightning",
+      "provider": "openrouter",
+      "model": "nvidia/nemotron-3.5-lightning",
+      "name": "Nvidia Nemotron 3.5 Lightning",
+      "family": "",
+      "facets": [
+        "chat"
+      ],
+      "modalities": {
+        "inputs": [
+          "text"
+        ],
+        "outputs": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "limits": {
+        "context_window": 1000000,
+        "max_output_tokens": 262144
+      },
+      "pricing": [
+        {
+          "unit": "mtok_input",
+          "nanos_usd": 100000000
+        },
+        {
+          "unit": "mtok_output",
+          "nanos_usd": 250000000
+        },
+        {
+          "unit": "mtok_cache_read",
+          "nanos_usd": 50000000
+        },
+        {
+          "unit": "mtok_cache_write",
+          "nanos_usd": 0
+        }
+      ],
+      "availability": "unspecified",
+      "source": "bundled",
+      "blocked_until_ms": 0,
+      "deprecated": false,
+      "updated_at_ms": 0,
+      "effort_routing": {},
+      "wire": {
+        "transport": "open-ai-chat",
+        "base_url": "https://openrouter.ai/api/v1"
+      },
+      "behavior": {
+        "thinking": {
+          "efforts": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "mode": "effort"
         },
         "supports_tools": null,
         "supports_computer_use": false,
@@ -276546,20 +277253,20 @@
       ],
       "limits": {
         "context_window": 1048576,
-        "max_output_tokens": 262144
+        "max_output_tokens": 131072
       },
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 760000000
+          "nanos_usd": 392000000
         },
         {
           "unit": "mtok_output",
-          "nanos_usd": 2420000000
+          "nanos_usd": 1232000000
         },
         {
           "unit": "mtok_cache_read",
-          "nanos_usd": 140000000
+          "nanos_usd": 72800000
         },
         {
           "unit": "mtok_cache_write",
@@ -276580,14 +277287,14 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high",
             "xhigh"
-          ]
+          ],
+          "mode": "effort"
         },
         "supports_tools": null,
         "supports_computer_use": false,
@@ -277142,20 +277849,20 @@
       ],
       "limits": {
         "context_window": 1048576,
-        "max_output_tokens": 131072
+        "max_output_tokens": 262144
       },
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 79996000
+          "nanos_usd": 72000000
         },
         {
           "unit": "mtok_output",
-          "nanos_usd": 252000000
+          "nanos_usd": 144000000
         },
         {
           "unit": "mtok_cache_read",
-          "nanos_usd": 25200000
+          "nanos_usd": 16000000
         },
         {
           "unit": "mtok_cache_write",
@@ -277176,12 +277883,12 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "low",
             "high",
             "max"
-          ]
+          ],
+          "mode": "effort"
         },
         "supports_tools": null,
         "supports_computer_use": false,
@@ -277233,19 +277940,19 @@
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 1500000000
+          "nanos_usd": 375000000
         },
         {
           "unit": "mtok_output",
-          "nanos_usd": 7500000000
+          "nanos_usd": 1875000000
         },
         {
           "unit": "mtok_cache_read",
-          "nanos_usd": 150000000
+          "nanos_usd": 37500000
         },
         {
           "unit": "mtok_cache_write",
-          "nanos_usd": 83333333
+          "nanos_usd": 20833333
         }
       ],
       "pricing_tiers": [],
@@ -277262,13 +277969,13 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high"
-          ]
+          ],
+          "mode": "effort"
         },
         "supports_tools": null,
         "supports_computer_use": false,
@@ -277402,20 +278109,20 @@
       ],
       "limits": {
         "context_window": 1048576,
-        "max_output_tokens": 1048576
+        "max_output_tokens": 974842
       },
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 2800000000
+          "nanos_usd": 2400000000
         },
         {
           "unit": "mtok_output",
-          "nanos_usd": 14000000000
+          "nanos_usd": 12000000000
         },
         {
           "unit": "mtok_cache_read",
-          "nanos_usd": 290000000
+          "nanos_usd": 240000000
         },
         {
           "unit": "mtok_cache_write",
@@ -277436,13 +278143,13 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "effort",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high"
-          ]
+          ],
+          "mode": "effort"
         },
         "supports_tools": null,
         "supports_computer_use": false,
@@ -298823,6 +299530,94 @@
       }
     },
     {
+      "pricing_tiers": [],
+      "props": {},
+      "id": "vercel-ai-gateway/alibaba/qwen3.8-2.4t-a95b",
+      "provider": "vercel-ai-gateway",
+      "model": "alibaba/qwen3.8-2.4t-a95b",
+      "name": "Qwen3.8 2.4T A95B",
+      "family": "qwen",
+      "facets": [
+        "chat"
+      ],
+      "modalities": {
+        "inputs": [
+          "text"
+        ],
+        "outputs": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "x_high"
+      ],
+      "limits": {
+        "context_window": 262144,
+        "max_output_tokens": 131072
+      },
+      "pricing": [
+        {
+          "unit": "mtok_input",
+          "nanos_usd": 2000000000
+        },
+        {
+          "unit": "mtok_output",
+          "nanos_usd": 6000000000
+        },
+        {
+          "unit": "mtok_cache_read",
+          "nanos_usd": 250000000
+        },
+        {
+          "unit": "mtok_cache_write",
+          "nanos_usd": 0
+        }
+      ],
+      "availability": "unspecified",
+      "source": "bundled",
+      "blocked_until_ms": 0,
+      "deprecated": false,
+      "updated_at_ms": 0,
+      "effort_routing": {},
+      "wire": {
+        "transport": "anthropic-messages",
+        "base_url": "https://ai-gateway.vercel.sh"
+      },
+      "behavior": {
+        "thinking": {
+          "efforts": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "mode": "budget"
+        },
+        "supports_tools": null,
+        "supports_computer_use": false,
+        "supports_computer_use_config": null,
+        "cursor_max_mode": null,
+        "omit_max_output_tokens": null,
+        "apply_patch_tool_type": null,
+        "context_promotion_target": null,
+        "request_model_id": null,
+        "remote_compaction": null,
+        "premium_multiplier": null,
+        "reasoning_mode": null,
+        "use_responses_lite": null,
+        "prefer_websockets": null,
+        "priority": null,
+        "headers": {},
+        "compat": {}
+      }
+    },
+    {
       "id": "vercel-ai-gateway/alibaba/qwen3.8-max",
       "provider": "vercel-ai-gateway",
       "model": "alibaba/qwen3.8-max",
@@ -303710,7 +304505,7 @@
         "x_high"
       ],
       "limits": {
-        "context_window": 256000,
+        "context_window": 262144,
         "max_output_tokens": 131072
       },
       "pricing": [
@@ -303745,14 +304540,14 @@
       },
       "behavior": {
         "thinking": {
-          "mode": "budget",
           "efforts": [
             "minimal",
             "low",
             "medium",
             "high",
             "xhigh"
-          ]
+          ],
+          "mode": "budget"
         },
         "supports_tools": null,
         "supports_computer_use": false,
@@ -341639,7 +342434,7 @@
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 70000000
+          "nanos_usd": 60000000
         },
         {
           "unit": "mtok_output",
@@ -342167,15 +342962,15 @@
       "pricing": [
         {
           "unit": "mtok_input",
-          "nanos_usd": 760000000
+          "nanos_usd": 1400000000
         },
         {
           "unit": "mtok_output",
-          "nanos_usd": 2420000000
+          "nanos_usd": 4400000000
         },
         {
           "unit": "mtok_cache_read",
-          "nanos_usd": 140000000
+          "nanos_usd": 260000000
         },
         {
           "unit": "mtok_cache_write",
