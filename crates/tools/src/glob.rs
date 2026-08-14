@@ -3,13 +3,13 @@
 use std::{collections::HashSet, fmt};
 
 use async_stream::stream;
-use bytes::Bytes;
 use futures::{FutureExt, Stream, pin_mut, select_biased};
 use omp_core::Str;
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, BlobRef, CommitError, Constraint, Ev, IncomingParams,
 	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -17,17 +17,6 @@ use crate::{
 	read::ReadBlobs,
 	render::{TextProjection, paths::format_grouped_paths, truncate::spill_truncated_text},
 };
-
-const SCHEMA: &[u8] = r#"{
-  "type":"object",
-  "additionalProperties":false,
-  "properties":{
-    "path":{"type":"string","description":"glob, file, or directory to search — a single path or a semicolon-delimited list (\"src/**/*.ts; test/**/*.ts\"). Omitted -> searches the workspace root (\".\")"},
-    "hidden":{"type":"boolean","description":"include hidden files"},
-    "gitignore":{"type":"boolean","description":"respect gitignore"},
-    "limit":{"type":"number","description":"max results"}
-  }
-}"#.as_bytes();
 
 /// Default number of paths returned by `glob@1`.
 pub const DEFAULT_LIMIT: u64 = 200;
@@ -40,21 +29,24 @@ fn default_true() -> bool {
 	true
 }
 
-/// Model arguments for `glob@1`.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+// Model arguments for `glob@1`.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Params {
-	/// Glob, file, directory, or semicolon-delimited targets; omitted means `.`.
-	#[serde(default)]
+	/// glob, file, or directory to search — a single path or a
+	/// semicolon-delimited list ("src/**/*.ts; test/**/*.ts"). Omitted ->
+	/// searches the workspace root (".")
+	#[schemars(with = "Option<String>")]
 	pub path:      Option<Str>,
-	/// Whether dot-prefixed paths are traversed.
+	/// include hidden files
 	#[serde(default = "default_true")]
+	#[schemars(!default, with = "Option<bool>")]
 	pub hidden:    bool,
-	/// Whether ignore files are honored.
+	/// respect gitignore
 	#[serde(default = "default_true")]
+	#[schemars(!default, with = "Option<bool>")]
 	pub gitignore: bool,
-	/// Requested maximum number of results before the hard cap of 200.
-	#[serde(default)]
+	/// max results
 	pub limit:     Option<f64>,
 }
 
@@ -239,7 +231,7 @@ pub fn tool<W: WorkspaceSearch, B: ReadBlobs>(workspace: W, blobs: B) -> Glob<W,
 				 `gitignore: false` for ignored dotfiles.\n</instruction>\n\n<output>\nMatches are \
 				 newest-first and grouped by directory; directories end in `/`.\n</output>",
 			),
-			schema:      Bytes::from_static(SCHEMA),
+			schema:      omp_tool::schema::<Params>(),
 			constraint:  Constraint::Schema { priority: 100 },
 		},
 	}

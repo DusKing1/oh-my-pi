@@ -14,13 +14,13 @@ use bytes::Bytes;
 use futures::StreamExt as _;
 use omp_core::Str;
 use omp_tool::{BlobRef, Ev, IncomingParams, Outcome, Part, PromptCaps, Tool};
-use serde_json::json;
 use omp_tools::read::{
 	self, DirectoryEntry, DirectorySource, Fault, ReadBlobs, ReadLease, ReadSources, SnapshotRecord,
 	SourceKind, SourceStat,
 	web::types::{HttpClient, HttpRequest, HttpResponse, WebError},
 };
 use parking_lot::Mutex;
+use serde_json::json;
 
 #[derive(Clone)]
 struct FileSource {
@@ -254,7 +254,7 @@ fn fixture_path(relative: &str) -> PathBuf {
 }
 
 #[test]
-fn schema_is_exactly_the_pi_read_schema() {
+fn generated_schema_is_semantically_the_pi_read_schema() {
 	let tool = read::tool(Sources::default(), Blobs::default());
 	let actual: serde_json::Value =
 		serde_json::from_slice(&tool.spec().schema).expect("schema JSON");
@@ -271,6 +271,10 @@ fn schema_is_exactly_the_pi_read_schema() {
 				}
 			}
 		})
+	);
+	assert!(
+		serde_json::from_value::<read::Params>(json!({"path": "src/lib.rs", "extra": true})).is_err(),
+		"read params must reject unknown fields"
 	);
 }
 

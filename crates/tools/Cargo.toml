@@ -36,6 +36,7 @@ pdf-inspector = { workspace = true }
 pyo3 = { workspace = true }
 quick-xml = { workspace = true }
 rusqlite = { workspace = true, features = ["serialize"] }
+schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 smallvec = { workspace = true }

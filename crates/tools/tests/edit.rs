@@ -170,6 +170,31 @@ fn text(parts: &[Part]) -> &str {
 	}
 }
 
+#[test]
+fn generated_schema_is_semantically_the_pi_edit_schema() {
+	let edit = tool(Fake::with_files(&[]), FormatPolicy::Configured);
+	let actual: serde_json::Value =
+		serde_json::from_slice(&edit.spec().schema).expect("edit schema JSON");
+	assert_eq!(
+		actual,
+		serde_json::json!({
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["input"],
+			"properties": {
+				"input": {"type": "string"}
+			}
+		})
+	);
+	assert!(
+		serde_json::from_value::<omp_tools::edit::Params>(
+			serde_json::json!({"input": "[a.txt#A1B2]", "extra": true})
+		)
+		.is_err(),
+		"edit params must reject unknown fields"
+	);
+}
+
 #[tokio::test]
 async fn put_and_cut_render_exact_post_edit_headers_and_previews() {
 	let fake = Fake::with_files(&[("a.txt", b"one\ntwo\nthree\n"), ("b.txt", b"alpha\nbeta\n")]);

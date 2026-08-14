@@ -105,7 +105,7 @@ fn invoke(documents: FakeDocuments, raw: &str) -> Invocation {
 }
 
 #[test]
-fn pi_schema_definition_and_revision_are_exact() {
+fn generated_schema_definition_and_revision_are_exact() {
 	let documents = FakeDocuments::success(
 		LiteralPathProbe::Missing,
 		committed(WriteDisposition::Created, 0, false, Some("0000")),
@@ -124,6 +124,13 @@ fn pi_schema_definition_and_revision_are_exact() {
 				"content": {"type": "string", "description": "file content"}
 			}
 		})
+	);
+	assert!(
+		serde_json::from_value::<write::Params>(
+			json!({"path": "out.txt", "content": "text", "extra": true})
+		)
+		.is_err(),
+		"write params must reject unknown fields"
 	);
 	assert_eq!(
 		tool.spec().description.as_str(),

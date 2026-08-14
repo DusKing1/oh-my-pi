@@ -198,6 +198,56 @@ fn payload(events: &[ErasedEv]) -> Payload {
 }
 
 #[test]
+fn constructed_tool_spec_preserves_the_shell_schema_contract() {
+	let tool = shell::shell(FakeExec::default());
+	let actual: serde_json::Value = serde_json::from_slice(&tool.spec().schema).unwrap();
+	assert_eq!(
+		actual,
+		serde_json::json!({
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"command": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Shell script to execute."
+				},
+				"timeout_ms": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Host-enforced execution timeout in milliseconds."
+				},
+				"detach": {
+					"type": "boolean",
+					"default": false,
+					"description": "Run as a persistent named process."
+				},
+				"name": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Required stable process name when detach is true."
+				}
+			},
+			"required": ["command"],
+			"allOf": [{
+				"if": {
+					"properties": { "detach": { "const": true } },
+					"required": ["detach"]
+				},
+				"then": { "required": ["name"] }
+			}]
+		})
+	);
+	assert!(
+		serde_json::from_value::<shell::Params>(serde_json::json!({
+			"command": "echo ok",
+			"extra": true
+		}))
+		.is_err()
+	);
+}
+
+#[test]
 fn execution_waits_for_the_explicit_commit_gate() {
 	let exec = FakeExec::default();
 	let registry = registry(exec.clone(), 1024);

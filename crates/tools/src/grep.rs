@@ -7,7 +7,6 @@ use std::{
 };
 
 use async_stream::stream;
-use bytes::Bytes;
 use futures::{FutureExt, Stream, pin_mut, select_biased};
 use omp_core::Str;
 use omp_hashline::format_hashline_header;
@@ -15,6 +14,7 @@ use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, BlobRef, CommitError, Constraint, Ev, IncomingParams,
 	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -40,36 +40,26 @@ const NATIVE_GREP_MAX_FILE_BYTES: u32 = 4 * 1024 * 1024;
 const SEARCH_GREP_TIMEOUT_MS: u32 = 30_000;
 const DEFAULT_MAX_COLUMN: u32 = 512;
 
-const SCHEMA: &[u8] = r#"{
-  "type":"object",
-  "additionalProperties":false,
-  "required":["pattern"],
-  "properties":{
-    "pattern":{"type":"string","description":"regex pattern"},
-    "path":{"type":"string","description":"file, directory, glob, internal URL, or \"<file>:<lines>\" selector to search; pass several as a semicolon-delimited list (\"src; tests\"). Omitted -> searches the workspace root (\".\")"},
-    "case":{"type":"boolean","description":"case-sensitive search"},
-    "gitignore":{"type":"boolean","description":"respect gitignore"},
-    "skip":{"type":["number","null"],"description":"files to skip before collecting results — use to paginate when the prior call hit the file limit"}
-  }
-}"#.as_bytes();
-
-/// Model arguments for `grep@1`.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+// Model arguments for `grep@1`.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Params {
-	/// Regular expression to search for.
+	/// regex pattern
+	#[schemars(with = "String")]
 	pub pattern:   Str,
-	/// Optional semicolon-delimited search targets.
-	#[serde(default)]
+	/// file, directory, glob, internal URL, or "<file>:<lines>" selector to
+	/// search; pass several as a semicolon-delimited list ("src; tests").
+	/// Omitted -> searches the workspace root (".")
+	#[schemars(with = "Option<String>")]
 	pub path:      Option<Str>,
-	/// Whether matching is case-sensitive; defaults to true.
-	#[serde(default, rename = "case")]
+	/// case-sensitive search
+	#[serde(rename = "case")]
 	pub case:      Option<bool>,
-	/// Whether ignore files are respected; defaults to true.
-	#[serde(default)]
+	/// respect gitignore
 	pub gitignore: Option<bool>,
-	/// Number of matching files to skip; null and omission mean zero.
-	#[serde(default)]
+	/// files to skip before collecting results — use to paginate when the prior
+	/// call hit the file limit
+	#[schemars(with = "Option<Option<f64>>")]
 	pub skip:      Option<f64>,
 }
 
@@ -354,7 +344,7 @@ pub fn tool<W: WorkspaceSearch, B: ReadBlobs>(workspace: W, blobs: B) -> Grep<W,
 				 `\\\\n` enables cross-line patterns.\n</instruction>\n\n<critical>\n- MUST use \
 				 instead of shell `grep`/`rg`.\n</critical>",
 			),
-			schema:      Bytes::from_static(SCHEMA),
+			schema:      omp_tool::schema::<Params>(),
 			constraint:  Constraint::Schema { priority: 100 },
 		},
 	}

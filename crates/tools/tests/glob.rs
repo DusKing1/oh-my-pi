@@ -124,6 +124,11 @@ fn pi_schema_and_defaults_are_exact() {
 	let actual: serde_json::Value =
 		serde_json::from_slice(&tool.spec().schema).expect("glob schema is JSON");
 	assert_eq!(
+		tool.spec().schema.as_ref(),
+		omp_tool::schema::<glob::Params>().as_ref(),
+		"tool schema must be generated directly from Params",
+	);
+	assert_eq!(
 		actual,
 		json!({
 			"type": "object",

@@ -145,6 +145,11 @@ fn schema_is_exactly_the_pi_grep_schema() {
 	let actual: serde_json::Value =
 		serde_json::from_slice(&tool.spec().schema).expect("grep schema is JSON");
 	assert_eq!(
+		tool.spec().schema.as_ref(),
+		omp_tool::schema::<grep::Params>().as_ref(),
+		"tool schema must be generated directly from Params",
+	);
+	assert_eq!(
 		actual,
 		json!({
 			"type": "object",

@@ -265,7 +265,8 @@ pub fn archive_format_from_path(path: impl AsRef<Path>) -> Option<ArchiveFormat>
 	ArchiveFormat::from_path(path)
 }
 
-/// Sniffs a ZIP, gzip, or ustar signature from in-memory bytes.
+/// Sniffs ZIP records, gzip headers, or checksum-valid TAR headers from
+/// in-memory bytes.
 pub fn sniff_archive_format(bytes: &[u8]) -> Option<ArchiveFormat> {
 	ArchiveFormat::sniff(bytes)
 }

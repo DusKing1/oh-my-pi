@@ -10,6 +10,7 @@ use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, BlobRef, CommitError, Constraint, Ev, IncomingParams, Outcome,
 	ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::render::{
@@ -29,7 +30,6 @@ pub mod selector;
 pub mod sqlite;
 pub mod web;
 
-const SCHEMA: &[u8] = br#"{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string","description":"Local path, internal URI (e.g. skill://), or URL. Inline selectors are supported."}}}"#;
 const DESCRIPTION: &str = r#"Read files, directories, archives, SQLite, images, documents, and web URLs via `path`.
 
 <instruction>
@@ -62,10 +62,13 @@ const MAX_SUMMARY_LINES: usize = 20_000;
 pub const SNAPSHOT_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// Arguments accepted by `read@1`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(description = "")]
 #[serde(deny_unknown_fields)]
 pub struct Params {
-	/// Local path, internal URI, or URL, optionally ending in a selector.
+	/// Local path, internal URI (e.g. skill://), or URL. Inline selectors are
+	/// supported.
+	#[schemars(with = "String")]
 	pub path: Str,
 }
 
@@ -285,7 +288,7 @@ pub fn tool<S: ReadSources, B: ReadBlobs>(sources: S, blobs: B) -> ReadTool<S, B
 			name:        Str::new_static("read"),
 			rev:         Rev { family: Str::new_static(""), n: 1 },
 			description: Str::new_static(DESCRIPTION),
-			schema:      Bytes::from_static(SCHEMA),
+			schema:      omp_tool::schema::<Params>(),
 			constraint:  Constraint::Schema { priority: 10 },
 		},
 	}

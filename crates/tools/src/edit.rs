@@ -20,17 +20,20 @@ use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, ArgPath, CommitError, Constraint, Ev, IncomingParams,
 	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::render::TextProjection;
 
-const SCHEMA: &[u8] = br#"{"type":"object","additionalProperties":false,"required":["input"],"properties":{"input":{"type":"string"}}}"#;
 const DESCRIPTION: &str = include_str!("edit_prompt.txt");
 
 /// Streaming arguments for `edit@hl.1`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(description = "")]
+#[serde(deny_unknown_fields)]
 pub struct Params {
 	/// Complete hashline input, including every `[PATH#TAG]` section header.
+	#[schemars(description = "", with = "String")]
 	pub input: Str,
 }
 
@@ -335,7 +338,7 @@ pub fn tool<D: EditDocuments>(documents: D, format_policy: FormatPolicy) -> Edit
 			name:        "edit".into(),
 			rev:         Rev { family: "hl".into(), n: 1 },
 			description: DESCRIPTION.into(),
-			schema:      Bytes::from_static(SCHEMA),
+			schema:      omp_tool::schema::<Params>(),
 			constraint:  Constraint::Schema { priority: 100 },
 		},
 	}

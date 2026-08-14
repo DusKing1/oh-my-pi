@@ -23,6 +23,7 @@ use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, BlobRef, CommitError, Constraint, Ev, IncomingParams,
 	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::OnceCell;
@@ -35,19 +36,6 @@ pub mod idle_timeout;
 pub mod kernel;
 /// Session-owned kernel lifecycle primitives.
 pub mod lifecycle;
-
-const EVAL_SCHEMA: &[u8] = br#"{
-  "type":"object",
-  "additionalProperties":false,
-  "required":["language","code"],
-  "properties":{
-    "language":{"type":"string","enum":["py"],"description":"runtime: \"py\" for the IPython kernel"},
-    "code":{"type":"string","description":"code to run in this eval call, verbatim. Use top-level await freely."},
-    "title":{"type":"string","description":"short label shown in transcript (e.g. \"imports\", \"load config\")"},
-    "timeout":{"type":"number","description":"timeout for this eval call in seconds; 0 disables the cell timeout"},
-    "reset":{"type":"boolean","description":"wipe this language's kernel before running. Other languages are untouched."}
-  }
-}"#;
 
 const EVAL_DESCRIPTION: &str = r#"Run one step of code in a persistent kernel. State persists across calls and subagents.
 
@@ -92,29 +80,47 @@ Prior top-level names survive into the next cell — reuse; NEVER re-import/re-d
 
 const MAX_DISPLAY_TEXT_BYTES: usize = 8_000;
 
+fn omit_schema_format(schema: &mut schemars::Schema) {
+	schema.remove("format");
+}
+
 /// Runtime accepted by this build of `eval@1`.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
 	/// OMP's embedded CPython runtime.
 	Py,
 }
 
-/// Complete arguments for one Python cell.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+// Complete arguments for one Python cell.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Params {
 	/// Runtime selector. Only `"py"` is accepted.
+	#[schemars(description = "runtime: \"py\" for the IPython kernel")]
 	pub language: Language,
 	/// Exact cell source.
+	#[schemars(
+		with = "String",
+		description = "code to run in this eval call, verbatim. Use top-level await freely."
+	)]
 	pub code:     Str,
 	/// Optional short transcript label.
-	#[serde(default)]
+	#[schemars(
+		with = "Option<String>",
+		description = "short label shown in transcript (e.g. \"imports\", \"load config\")"
+	)]
 	pub title:    Option<Str>,
 	/// Runtime-work timeout in seconds. Zero disables it.
-	#[serde(default)]
+	#[schemars(
+		transform = omit_schema_format,
+		description = "timeout for this eval call in seconds; 0 disables the cell timeout"
+	)]
 	pub timeout:  Option<f64>,
 	/// Whether to replace the session namespace before executing this cell.
-	#[serde(default)]
+	#[schemars(
+		description = "wipe this language's kernel before running. Other languages are untouched."
+	)]
 	pub reset:    Option<bool>,
 }
 
@@ -416,7 +422,7 @@ pub fn eval_controlled<E: EvalExec>(exec: E) -> (EvalTool<E>, EvalSessionControl
 			name:        Str::from("eval"),
 			rev:         Rev { family: Str::default(), n: 1 },
 			description: Str::from(EVAL_DESCRIPTION),
-			schema:      Bytes::from_static(EVAL_SCHEMA),
+			schema:      omp_tool::schema::<Params>(),
 			constraint:  Constraint::Schema { priority: 100 },
 		},
 	};
@@ -775,18 +781,7 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn wire_schema_is_python_only_and_has_exact_optional_cells_fields() {
-		let schema: Value = serde_json::from_slice(EVAL_SCHEMA).expect("schema is JSON");
-		assert_eq!(schema["required"], serde_json::json!(["language", "code"]));
-		assert_eq!(schema["additionalProperties"], Value::Bool(false));
-		assert_eq!(schema["properties"]["language"]["enum"], serde_json::json!(["py"]));
-		assert_eq!(schema["properties"]["title"]["type"], "string");
-		assert_eq!(schema["properties"]["timeout"]["type"], "number");
-		assert_eq!(schema["properties"]["reset"]["type"], "boolean");
-	}
-
-	#[test]
-	fn params_reject_javascript_and_accept_omitted_optionals() {
+	fn params_accept_omitted_optionals_and_reject_invalid_fields() {
 		let python: Params = serde_json::from_value(serde_json::json!({
 			"language": "py",
 			"code": "value = 1"
@@ -800,6 +795,14 @@ mod tests {
 			serde_json::from_value::<Params>(serde_json::json!({
 				"language": "js",
 				"code": "1 + 1"
+			}))
+			.is_err()
+		);
+		assert!(
+			serde_json::from_value::<Params>(serde_json::json!({
+				"language": "py",
+				"code": "1 + 1",
+				"extra": true
 			}))
 			.is_err()
 		);

@@ -11,6 +11,7 @@ use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, CommitError, Constraint, Ev, IncomingParams, InterruptWaitError,
 	Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{read::selector::LiteralPathProbe, render::TextProjection};
@@ -18,7 +19,6 @@ use crate::{read::selector::LiteralPathProbe, render::TextProjection};
 /// Archive and SQLite write seams.
 pub mod backends;
 
-const SCHEMA: &[u8] = br#"{"type":"object","additionalProperties":false,"required":["path","content"],"properties":{"path":{"type":"string","description":"file path"},"content":{"type":"string","description":"file content"}}}"#;
 const DESCRIPTION: &str =
 	"Creates or overwrites file at specified path.\n\n<conditions>\n- Creating new files \
 	 explicitly required by task\n- Replacing entire file contents when editing would be more \
@@ -33,12 +33,15 @@ const STRIPPED_NOTICE: &str =
 	"Note: auto-stripped hashline display prefixes from content before writing.";
 
 /// Model arguments for `write@1`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(description = "")]
 #[serde(deny_unknown_fields)]
 pub struct Params {
-	/// File path.
+	/// file path
+	#[schemars(with = "String")]
 	pub path:    Str,
-	/// Complete replacement file content.
+	/// file content
+	#[schemars(with = "String")]
 	pub content: Str,
 }
 
@@ -254,7 +257,7 @@ pub fn tool<D: WriteDocuments>(documents: D) -> WriteTool<D> {
 			name:        "write".into(),
 			rev:         Rev { family: Str::new(""), n: 1 },
 			description: DESCRIPTION.into(),
-			schema:      Bytes::from_static(SCHEMA),
+			schema:      omp_tool::schema::<Params>(),
 			constraint:  Constraint::Schema { priority: 100 },
 		},
 	}

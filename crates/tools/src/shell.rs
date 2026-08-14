@@ -10,39 +10,51 @@ use omp_tool::{
 	ExpectedArtifact, IncomingParams, InterruptWaitError, JobOwner, JobRef, Outcome, ParamError,
 	Part, PromptCaps, Rev, Tool, ToolSpec,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 
 use crate::render::TextProjection;
 
 const TRANSCRIPT_LIMIT: usize = 64 * 1024;
-const SHELL_SCHEMA: &[u8] = br#"{
-  "$schema":"https://json-schema.org/draft/2020-12/schema",
-  "type":"object",
-  "additionalProperties":false,
-  "properties":{
-    "command":{"type":"string","minLength":1,"description":"Shell script to execute."},
-    "timeout_ms":{"type":"integer","minimum":1,"description":"Host-enforced execution timeout in milliseconds."},
-    "detach":{"type":"boolean","default":false,"description":"Run as a persistent named process."},
-    "name":{"type":"string","minLength":1,"description":"Required stable process name when detach is true."}
-  },
-  "required":["command"],
-  "allOf":[{"if":{"properties":{"detach":{"const":true}},"required":["detach"]},"then":{"required":["name"]}}]
-}"#;
 
-/// Complete arguments for `shell@1`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+fn omit_schema_format(schema: &mut schemars::Schema) {
+	schema.remove("format");
+}
+
+// Complete arguments for `shell@1`.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend(
+	"allOf" = [{
+		"if": {
+			"properties": { "detach": { "const": true } },
+			"required": ["detach"]
+		},
+		"then": { "required": ["name"] }
+	}]
+))]
 pub struct Params {
 	/// Shell script to execute.
+	#[schemars(with = "String", length(min = 1), description = "Shell script to execute.")]
 	pub command:    Str,
 	/// Optional host-enforced timeout in milliseconds.
-	#[serde(default)]
+	#[schemars(
+		range(min = 1),
+		transform = omit_schema_format,
+		description = "Host-enforced execution timeout in milliseconds."
+	)]
 	pub timeout_ms: Option<u64>,
 	/// Whether to transfer the script to the named-process owner.
 	#[serde(default)]
+	#[schemars(description = "Run as a persistent named process.")]
 	pub detach:     bool,
 	/// Stable named-process name. Required when `detach` is true.
-	#[serde(default)]
+	#[schemars(
+		with = "Option<String>",
+		length(min = 1),
+		description = "Required stable process name when detach is true."
+	)]
 	pub name:       Option<Str>,
 }
 
@@ -250,7 +262,7 @@ pub fn shell<E: ShellExec>(exec: E) -> ShellTool<E> {
 			description: Str::from(
 				"Execute a shell script in a persistent session, or start a named detached process.",
 			),
-			schema:      Bytes::from_static(SHELL_SCHEMA),
+			schema:      omp_tool::schema::<Params>(),
 			constraint:  Constraint::Schema { priority: 100 },
 		},
 		transcript_limit: TRANSCRIPT_LIMIT,

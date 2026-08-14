@@ -307,10 +307,11 @@ mod tests {
 			// the digit run rather than requiring the whole segment to be numeric.
 			("https://unix.stackexchange.com/x/questions/890suffix", "890", "unix"),
 		] {
-			let target = parse_target(&Url::parse(url).unwrap()).unwrap();
+			let parsed = Url::parse(url).unwrap();
+			let target = parse_target(&parsed).unwrap();
 			assert_eq!(target.question_id, id);
 			assert_eq!(target.site, site);
-			assert!(matches(&Url::parse(url).unwrap()));
+			assert!(matches(&parsed));
 		}
 
 		for url in [

@@ -135,7 +135,7 @@ fn text(parts: &[Part]) -> String {
 }
 
 #[test]
-fn python_only_schema_is_exact() {
+fn constructed_tool_spec_has_exact_python_only_schema() {
 	let actual: serde_json::Value = serde_json::from_slice(&tool().spec().schema).unwrap();
 	assert_eq!(
 		actual,
