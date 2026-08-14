@@ -8,9 +8,8 @@ use omp_proto::inference::v1::{InvokeInput, invoke_input};
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, ArtifactLifetime, BlobRef, CommitError, Constraint, Ev,
 	ExpectedArtifact, IncomingParams, InterruptWaitError, JobOwner, JobRef, Outcome, ParamError,
-	Part, PromptCaps, Rev, Tool, ToolSpec,
+	Part, PromptCaps, Rev, Tool, ToolParam, ToolSpec,
 };
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 
@@ -18,44 +17,31 @@ use crate::render::TextProjection;
 
 const TRANSCRIPT_LIMIT: usize = 64 * 1024;
 
-fn omit_schema_format(schema: &mut schemars::Schema) {
-	schema.remove("format");
-}
-
 /// Complete arguments for `shell@1`.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToolParam)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend(
-	"allOf" = [{
+#[param(extend({
+	"allOf": [{
 		"if": {
 			"properties": { "detach": { "const": true } },
 			"required": ["detach"]
 		},
 		"then": { "required": ["name"] }
 	}]
-))]
+}))]
 pub struct Params {
 	/// Shell script to execute.
-	#[schemars(with = "String", length(min = 1), description = "Shell script to execute.")]
+	#[param(min_length = 1)]
 	pub command:    Str,
-	/// Optional host-enforced timeout in milliseconds.
-	#[schemars(
-		with = "omp_tool::OptionalSchema<u64>",
-		range(min = 1),
-		transform = omit_schema_format,
-		description = "Host-enforced execution timeout in milliseconds."
-	)]
+	/// Host-enforced execution timeout in milliseconds.
+	#[param(minimum = 1)]
 	pub timeout_ms: Option<u64>,
-	/// Whether to transfer the script to the named-process owner.
+	/// Run as a persistent named process.
 	#[serde(default)]
-	#[schemars(description = "Run as a persistent named process.")]
+	#[param(default = false)]
 	pub detach:     bool,
-	/// Stable named-process name. Required when `detach` is true.
-	#[schemars(
-		with = "omp_tool::OptionalSchema<String>",
-		length(min = 1),
-		description = "Required stable process name when detach is true."
-	)]
+	/// Required stable process name when detach is true.
+	#[param(min_length = 1)]
 	pub name:       Option<Str>,
 }
 
@@ -274,7 +260,7 @@ impl<E: ShellExec> ShellTool<E> {
 	/// Overrides the durable transcript byte cap while retaining all live
 	/// updates.
 	#[must_use]
-	pub fn with_transcript_limit(mut self, byte_limit: usize) -> Self {
+	pub const fn with_transcript_limit(mut self, byte_limit: usize) -> Self {
 		self.transcript_limit = byte_limit;
 		self
 	}
@@ -321,14 +307,8 @@ impl<E: ShellExec> Tool for ShellTool<E> {
 					let interrupt = params.next_interrupt().fuse();
 					pin_mut!(work, interrupt);
 					match futures::future::select(interrupt, work).await {
-						Either::Left((interrupt, remaining)) => {
-							drop(remaining);
-							Either::Left(interrupt)
-						},
-						Either::Right((result, remaining)) => {
-							drop(remaining);
-							Either::Right(result)
-						},
+						Either::Left((interrupt, _)) => Either::Left(interrupt),
+						Either::Right((result, _)) => Either::Right(result),
 					}
 				};
 				match detached {
@@ -390,14 +370,8 @@ impl<E: ShellExec> Tool for ShellTool<E> {
 						let interrupt = params.next_interrupt().fuse();
 						pin_mut!(next, interrupt);
 						match futures::future::select(interrupt, next).await {
-							Either::Left((interrupt, remaining)) => {
-								drop(remaining);
-								Either::Right(interrupt)
-							},
-							Either::Right((event, remaining)) => {
-								drop(remaining);
-								Either::Left(event)
-							},
+							Either::Left((interrupt, _)) => Either::Right(interrupt),
+							Either::Right((event, _)) => Either::Left(event),
 						}
 					};
 					match selected {
@@ -468,7 +442,7 @@ impl<E: ShellExec> Tool for ShellTool<E> {
 	}
 
 	fn prompt(&self, view: Result<&Payload, &Fault>, caps: &PromptCaps) -> Vec<Part> {
-		let Some(mut projection) = TextProjection::new(caps) else {
+		let Some(mut projection) = TextProjection::new(*caps) else {
 			return Vec::new();
 		};
 		match view {
@@ -524,7 +498,7 @@ impl<E: ShellExec> Tool for ShellTool<E> {
 
 fn param_event<U, P>(error: ParamError) -> Ev<U, P, Fault> {
 	match error {
-		ParamError::Args(issue) => Ev::Args(issue),
+		ParamError::Args(issue) => Ev::Args(*issue),
 		ParamError::Interrupted(interrupt) => {
 			Ev::Aborted(Abort::Interrupted { reason: interrupt.reason })
 		},

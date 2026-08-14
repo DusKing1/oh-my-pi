@@ -390,34 +390,34 @@ impl SnapshotStore {
 		path: &str,
 		tag: &str,
 		revision: Option<&RevisionToken>,
-	) -> Result<Arc<Snapshot>, SnapshotLookupError> {
+	) -> Result<Arc<Snapshot>, Box<SnapshotLookupError>> {
 		if let Some(revision) = revision {
 			let Some(snapshot) = self.by_revision(path, revision) else {
-				return Err(SnapshotLookupError::RevisionMissing {
+				return Err(Box::new(SnapshotLookupError::RevisionMissing {
 					path:     path.into(),
 					tag:      tag.into(),
 					revision: revision.clone(),
-				});
+				}));
 			};
 			if snapshot.tag != tag {
-				return Err(SnapshotLookupError::RevisionTagMismatch {
+				return Err(Box::new(SnapshotLookupError::RevisionTagMismatch {
 					path:          path.into(),
 					requested_tag: tag.into(),
 					retained_tag:  snapshot.tag.clone(),
 					revision:      revision.clone(),
-				});
+				}));
 			}
 			return Ok(snapshot);
 		}
 		let mut candidates = self.tag_candidates(path, tag);
 		match candidates.len() {
-			0 => Err(SnapshotLookupError::Missing { path: path.into(), tag: tag.into() }),
+			0 => Err(Box::new(SnapshotLookupError::Missing { path: path.into(), tag: tag.into() })),
 			1 => Ok(candidates.pop().expect("length checked")),
-			count => Err(SnapshotLookupError::Ambiguous {
+			count => Err(Box::new(SnapshotLookupError::Ambiguous {
 				path:       path.into(),
 				tag:        tag.into(),
 				candidates: count,
-			}),
+			})),
 		}
 	}
 
@@ -595,7 +595,7 @@ mod tests {
 
 		assert!(matches!(
 			store.resolve(PATH, "1D84", None),
-			Err(SnapshotLookupError::Ambiguous { candidates: 2, .. })
+			Err(error) if matches!(*error, SnapshotLookupError::Ambiguous { candidates: 2, .. })
 		));
 		let first = store.resolve(PATH, "1D84", Some(&token("a"))).unwrap();
 		let second = store.resolve(PATH, "1D84", Some(&token("b"))).unwrap();

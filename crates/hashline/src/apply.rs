@@ -65,6 +65,8 @@ pub struct ApplyResult {
 	pub block_resolutions:  Vec<crate::types::BlockResolution>,
 }
 
+type BoundaryRepair = (Vec<Edit>, Vec<ApplyWarning>);
+
 #[derive(Clone, Copy)]
 enum BoundarySide {
 	Leading,
@@ -1024,7 +1026,7 @@ fn repair_boundary_variants(
 	source: &str,
 	path: Option<&str>,
 	baseline_parses: bool,
-) -> Result<Option<(Vec<Edit>, Vec<ApplyWarning>)>, ApplyError> {
+) -> Result<Option<BoundaryRepair>, ApplyError> {
 	let Some(path) = path else { return Ok(None) };
 	let mut groups = Vec::new();
 	let mut ambiguous_group = None;

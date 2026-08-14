@@ -1,4 +1,6 @@
-//! Anonymous PyPI JSON API renderer.
+//! Anonymous `PyPI` JSON API renderer.
+
+use std::fmt::Write as _;
 
 use futures::join;
 use serde::Deserialize;
@@ -12,12 +14,12 @@ struct Target {
 	package: String,
 }
 
-/// Returns whether `url` is a supported PyPI project or project-version page.
+/// Returns whether `url` is a supported `PyPI` project or project-version page.
 pub(super) fn matches(url: &Url) -> bool {
 	parse_target(url).is_some()
 }
 
-/// Renders a PyPI project or project version through the public JSON APIs.
+/// Renders a `PyPI` project or project version through the public JSON APIs.
 pub(super) async fn render<C: HttpClient + Sync>(
 	client: &C,
 	url: &Url,
@@ -55,48 +57,51 @@ pub(super) async fn render<C: HttpClient + Sync>(
 		markdown.push_str("\n\n");
 	}
 
-	markdown.push_str(&format!("**Latest:** {}", package.info.version));
+	write!(&mut markdown, "**Latest:** {}", package.info.version)
+		.expect("writing to String cannot fail");
 	if let Some(license) = nonempty(package.info.license.as_deref()) {
-		markdown.push_str(&format!(" · **License:** {license}"));
+		write!(&mut markdown, " · **License:** {license}").expect("writing to String cannot fail");
 	}
 	markdown.push('\n');
 
 	if let Some(downloads) = weekly_downloads {
-		markdown.push_str(&format!("**Weekly Downloads:** {}\n", format_compact_number(downloads)));
+		writeln!(&mut markdown, "**Weekly Downloads:** {}", format_compact_number(downloads))
+			.expect("writing to String cannot fail");
 	}
 	markdown.push('\n');
 
 	if let Some(author) = nonempty(package.info.author.as_deref()) {
-		markdown.push_str(&format!("**Author:** {author}"));
+		write!(&mut markdown, "**Author:** {author}").expect("writing to String cannot fail");
 		if let Some(email) = nonempty(package.info.author_email.as_deref()) {
-			markdown.push_str(&format!(" <{email}>"));
+			write!(&mut markdown, " <{email}>").expect("writing to String cannot fail");
 		}
 		markdown.push('\n');
 	}
 	if let Some(python) = nonempty(package.info.requires_python.as_deref()) {
-		markdown.push_str(&format!("**Python:** {python}\n"));
+		writeln!(&mut markdown, "**Python:** {python}").expect("writing to String cannot fail");
 	}
 	if let Some(homepage) = nonempty(package.info.home_page.as_deref()) {
-		markdown.push_str(&format!("**Homepage:** {homepage}\n"));
+		writeln!(&mut markdown, "**Homepage:** {homepage}").expect("writing to String cannot fail");
 	}
 
 	if let Some(project_urls) = package.info.project_urls.filter(|urls| !urls.is_empty()) {
 		markdown.push_str("\n**Project URLs:**\n");
 		for (label, value) in project_urls {
 			if let Some(project_url) = value.as_str() {
-				markdown.push_str(&format!("- {label}: {project_url}\n"));
+				writeln!(&mut markdown, "- {label}: {project_url}")
+					.expect("writing to String cannot fail");
 			}
 		}
 	}
 
 	if let Some(keywords) = nonempty(package.info.keywords.as_deref()) {
-		markdown.push_str(&format!("\n**Keywords:** {keywords}\n"));
+		writeln!(&mut markdown, "\n**Keywords:** {keywords}").expect("writing to String cannot fail");
 	}
 
 	if !package.requires_dist.is_empty() {
 		markdown.push_str("\n## Dependencies\n\n");
 		for dependency in package.requires_dist {
-			markdown.push_str(&format!("- {dependency}\n"));
+			writeln!(&mut markdown, "- {dependency}").expect("writing to String cannot fail");
 		}
 	}
 

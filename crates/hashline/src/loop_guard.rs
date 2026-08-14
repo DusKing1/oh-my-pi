@@ -96,7 +96,7 @@ impl NoopLoopGuard {
 			.map_or(1, |entry| entry.count.saturating_add(1));
 		self
 			.entries
-			.insert(canonical_path.clone(), NoopEntry { payload, count });
+			.insert(canonical_path, NoopEntry { payload, count });
 		let severity = if count >= NOOP_HARD_LIMIT {
 			NoopSeverity::Hard
 		} else {

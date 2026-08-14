@@ -1,4 +1,4 @@
-//! Anonymous YouTube metadata and transcript renderer.
+//! Anonymous `YouTube` metadata and transcript renderer.
 
 use omp_core::Str;
 use serde_json::Value;
@@ -53,15 +53,14 @@ pub(super) async fn render<C: HttpClient + Sync>(
 	if let Ok(response) = client
 		.get(request(video_url.clone(), MAX_BYTES, "text/html,application/xhtml+xml"))
 		.await
+		&& response.is_success()
 	{
-		if response.is_success() {
-			let page = response.text();
-			if let Some(player) = player_response_value(&page) {
-				metadata_from_player(&player, &mut metadata);
-				caption_tracks = caption_tracks_from_player(&player);
-			}
-			metadata_from_page(&page, &mut metadata);
+		let page = response.text();
+		if let Some(player) = player_response_value(&page) {
+			metadata_from_player(&player, &mut metadata);
+			caption_tracks = caption_tracks_from_player(&player);
 		}
+		metadata_from_page(&page, &mut metadata);
 	}
 
 	let mut notes = SmallVec::<Str, 4>::new();
@@ -172,17 +171,20 @@ fn metadata_from_player(player: &Value, metadata: &mut Metadata) {
 	let details = &player["videoDetails"];
 	let microformat = &player["microformat"]["playerMicroformatRenderer"];
 	if let Some(value) = string_at(details, "title").or_else(|| string_at(microformat, "title")) {
-		metadata.title = value.to_owned();
+		metadata.title.clear();
+		metadata.title.push_str(value);
 	}
 	if let Some(value) =
 		string_at(details, "author").or_else(|| string_at(microformat, "ownerChannelName"))
 	{
-		metadata.channel = value.to_owned();
+		metadata.channel.clear();
+		metadata.channel.push_str(value);
 	}
 	if let Some(value) =
 		string_at(details, "shortDescription").or_else(|| string_at(microformat, "description"))
 	{
-		metadata.description = value.to_owned();
+		metadata.description.clear();
+		metadata.description.push_str(value);
 	}
 	metadata.duration = unsigned_at(details, "lengthSeconds")
 		.or_else(|| unsigned_at(microformat, "lengthSeconds"))
@@ -469,7 +471,7 @@ fn clean_vtt_to_text(vtt: &str) -> String {
 	lines.join(" ")
 }
 
-fn looks_like_timestamp(value: &str) -> bool {
+const fn looks_like_timestamp(value: &str) -> bool {
 	let bytes = value.as_bytes();
 	bytes.len() >= 5
 		&& bytes[0].is_ascii_digit()
@@ -511,20 +513,40 @@ fn normalize_whitespace(value: &str) -> String {
 }
 
 fn render_markdown(video_id: &str, metadata: &Metadata, transcript: Option<&Transcript>) -> String {
-	let mut output = format!("# {}\n\n", metadata.title);
+	let mut output = String::with_capacity(
+		metadata.title.len()
+			+ metadata.channel.len()
+			+ metadata.upload_date.len()
+			+ metadata.description.len().min(1000)
+			+ transcript.map_or(0, |transcript| transcript.text.len())
+			+ 200,
+	);
+	output.push_str("# ");
+	output.push_str(&metadata.title);
+	output.push_str("\n\n");
 	if !metadata.channel.is_empty() {
-		output.push_str(&format!("**Channel:** {}\n", metadata.channel));
+		output.push_str("**Channel:** ");
+		output.push_str(&metadata.channel);
+		output.push('\n');
 	}
 	if !metadata.upload_date.is_empty() {
-		output.push_str(&format!("**Uploaded:** {}\n", metadata.upload_date));
+		output.push_str("**Uploaded:** ");
+		output.push_str(&metadata.upload_date);
+		output.push('\n');
 	}
 	if metadata.duration > 0 {
-		output.push_str(&format!("**Duration:** {}\n", format_media_duration(metadata.duration)));
+		output.push_str("**Duration:** ");
+		output.push_str(&format_media_duration(metadata.duration));
+		output.push('\n');
 	}
 	if metadata.view_count > 0 {
-		output.push_str(&format!("**Views:** {}\n", format_compact_number(metadata.view_count)));
+		output.push_str("**Views:** ");
+		output.push_str(&format_compact_number(metadata.view_count));
+		output.push('\n');
 	}
-	output.push_str(&format!("**Video ID:** {video_id}\n\n"));
+	output.push_str("**Video ID:** ");
+	output.push_str(video_id);
+	output.push_str("\n\n");
 
 	if !metadata.description.is_empty() {
 		output.push_str("---\n\n## Description\n\n");
@@ -536,7 +558,11 @@ fn render_markdown(video_id: &str, metadata: &Metadata, transcript: Option<&Tran
 			TranscriptKind::Manual => "manual",
 			TranscriptKind::Automatic => "auto-generated",
 		};
-		output.push_str(&format!("---\n\n## Transcript ({source})\n\n{}\n", transcript.text));
+		output.push_str("---\n\n## Transcript (");
+		output.push_str(source);
+		output.push_str(")\n\n");
+		output.push_str(&transcript.text);
+		output.push('\n');
 	} else {
 		output.push_str("---\n\n*No transcript available for this video.*\n");
 	}

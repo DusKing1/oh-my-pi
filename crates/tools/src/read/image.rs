@@ -153,9 +153,11 @@ pub fn is_supported_extension(path: &Path) -> bool {
 		})
 }
 
-/// Classifies PNG, JPEG, GIF, and WebP bytes and extracts dimensions available
-/// in their headers. This intentionally recognizes truncated images after a
-/// valid magic signature, matching pi's classification behavior.
+/// Classifies PNG, JPEG, GIF, and WebP bytes.
+///
+/// Extracts dimensions available in their headers. This intentionally
+/// recognizes truncated images after a valid magic signature, matching pi's
+/// classification behavior.
 pub fn sniff_metadata(header: &[u8]) -> Option<ImageMetadata> {
 	parse_png(header)
 		.or_else(|| parse_jpeg(header))
@@ -163,13 +165,14 @@ pub fn sniff_metadata(header: &[u8]) -> Option<ImageMetadata> {
 		.or_else(|| parse_webp(header))
 }
 
-/// Normalizes an in-memory image for a model. The hard input-size limit is
-/// enforced before format sniffing; smaller inputs return `None` when their
-/// bytes are not one of the four supported image encodings.
-/// Inputs within the dimension bounds and at most one quarter of the output
-/// budget are retained verbatim. Other inputs are resized/recompressed using
-/// pi's dimension, quality, and scale ladders. GIF/WebP animation is retained
-/// on the verbatim path; re-encoding produces the decoded first frame.
+/// Normalizes an in-memory image for a model.
+///
+/// The hard input-size limit is enforced before format sniffing; smaller inputs
+/// return `None` when their bytes are not one of the four supported image
+/// encodings. Inputs within the dimension bounds and at most one quarter of the
+/// output budget are retained verbatim. Other inputs are resized/recompressed
+/// using pi's dimension, quality, and scale ladders. GIF/WebP animation is
+/// retained on the verbatim path; re-encoding produces the decoded first frame.
 pub fn process_image(input: Bytes) -> Result<Option<ProcessedImage>, ImageFault> {
 	if input.len() > MAX_IMAGE_INPUT_BYTES {
 		return Err(ImageFault::TooLarge {
@@ -399,10 +402,8 @@ fn encode_smallest(
 	if let Ok(data) = encode_jpeg(image, jpeg_quality) {
 		candidates.push((data, ImageKind::Jpeg));
 	}
-	if !exclude_webp {
-		if let Ok(data) = encode_webp(image) {
-			candidates.push((data, ImageKind::WebP));
-		}
+	if !exclude_webp && let Ok(data) = encode_webp(image) {
+		candidates.push((data, ImageKind::WebP));
 	}
 	candidates.into_iter().min_by_key(|(data, _)| data.len())
 }
@@ -485,8 +486,7 @@ fn dimension_note(
 
 fn webp_is_excluded() -> bool {
 	std::env::var("OMP_NO_WEBP")
-		.ok()
-		.is_some_and(|value| value.eq_ignore_ascii_case("1") || value.eq_ignore_ascii_case("true"))
+		.is_ok_and(|value| value.eq_ignore_ascii_case("1") || value.eq_ignore_ascii_case("true"))
 }
 
 fn parse_png(header: &[u8]) -> Option<ImageMetadata> {

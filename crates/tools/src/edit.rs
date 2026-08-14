@@ -18,9 +18,8 @@ use omp_hashline::{
 };
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, ArgPath, CommitError, Constraint, Ev, IncomingParams,
-	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
+	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolParam, ToolSpec,
 };
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::render::TextProjection;
@@ -28,12 +27,11 @@ use crate::render::TextProjection;
 const DESCRIPTION: &str = include_str!("edit_prompt.txt");
 
 /// Streaming arguments for `edit@hl.1`.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[schemars(description = "")]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToolParam)]
 #[serde(deny_unknown_fields)]
 pub struct Params {
 	/// Complete hashline input, including every `[PATH#TAG]` section header.
-	#[schemars(description = "", with = "String")]
+	#[param(description = "")]
 	pub input: Str,
 }
 
@@ -466,13 +464,10 @@ impl<D: EditDocuments> Tool for EditTool<D> {
 						Ok(edits) => edits,
 						Err(fault) => { yield done_fault(fault); return; },
 					};
-					match recover_exact(work.prepared.authored_bytes(), work.prepared.base_bytes(), &recovery_edits) {
-						Ok(recovered) => recovered.content().clone(),
-						Err(_) => {
-							yield done_fault(Fault::stale(stale_message(work, true)));
-							return;
-						},
-					}
+					if let Ok(recovered) = recover_exact(work.prepared.authored_bytes(), work.prepared.base_bytes(), &recovery_edits) { recovered.content().clone() } else {
+								  yield done_fault(Fault::stale(stale_message(work, true)));
+								  return;
+							  }
 				};
 
 				let action = match &work.parsed.file_op {
@@ -551,7 +546,6 @@ impl<D: EditDocuments> Tool for EditTool<D> {
 						None
 					},
 				};
-				drop(commit);
 				result
 			};
 			let Some(result) = result else { return; };
@@ -571,7 +565,7 @@ impl<D: EditDocuments> Tool for EditTool<D> {
 	}
 
 	fn prompt(&self, view: Result<&Payload, &Fault>, caps: &PromptCaps) -> Vec<Part> {
-		let Some(mut out) = TextProjection::new(caps) else {
+		let Some(mut out) = TextProjection::new(*caps) else {
 			return Vec::new();
 		};
 		match view {
@@ -754,13 +748,13 @@ fn op_details(edits: &[omp_hashline::Edit]) -> Vec<AppliedOp> {
 		.collect()
 }
 
-fn done_fault(fault: Fault) -> Ev<EditUpdate, Payload, Fault> {
+const fn done_fault(fault: Fault) -> Ev<EditUpdate, Payload, Fault> {
 	Ev::Done(Outcome::Done { result: Err(fault), useless: false })
 }
 
 fn param_event(error: ParamError) -> Ev<EditUpdate, Payload, Fault> {
 	match error {
-		ParamError::Args(issue) => Ev::Args(issue),
+		ParamError::Args(issue) => Ev::Args(*issue),
 		ParamError::Interrupted(value) => Ev::Aborted(Abort::Interrupted { reason: value.reason }),
 		ParamError::Protocol(reason) => Ev::Aborted(Abort::Skipped { reason }),
 	}

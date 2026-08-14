@@ -48,17 +48,16 @@ impl BuilderNode {
 	}
 
 	fn child_mut(&mut self, name: &str) -> &mut Self {
-		let index = match self.dir_index.get(name) {
-			Some(index) => *index,
-			None => {
-				let index = self.subdirs.len();
-				let name = Str::from(name);
-				self.dir_index.insert(name.clone(), index);
-				self
-					.subdirs
-					.push(BuilderDirectory { name, node: Self::default() });
-				index
-			},
+		let index = if let Some(index) = self.dir_index.get(name) {
+			*index
+		} else {
+			let index = self.subdirs.len();
+			let name = Str::from(name);
+			self.dir_index.insert(name.clone(), index);
+			self
+				.subdirs
+				.push(BuilderDirectory { name, node: Self::default() });
+			index
 		};
 		&mut self.subdirs[index].node
 	}

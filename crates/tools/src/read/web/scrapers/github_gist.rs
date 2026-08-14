@@ -1,5 +1,7 @@
 //! Anonymous GitHub Gist API renderer.
 
+use std::fmt::Write;
+
 use omp_core::Str;
 use serde::{Deserialize, Deserializer, de};
 use serde_json::{Map, Value};
@@ -36,7 +38,7 @@ struct GistFile {
 struct GistFiles(Vec<GistFile>);
 
 impl GistFiles {
-	fn len(&self) -> usize {
+	const fn len(&self) -> usize {
 		self.0.len()
 	}
 
@@ -127,12 +129,14 @@ pub(super) async fn render<C: HttpClient + Sync>(
 		markdown.push_str(description);
 		markdown.push_str("\n\n");
 	}
-	markdown.push_str(&format!(
+	write!(
+		markdown,
 		"**Created:** {} · **Updated:** {}\n**Files:** {}\n\n",
 		gist.created_at,
 		gist.updated_at,
 		gist.files.len()
-	));
+	)
+	.expect("writing to a String cannot fail");
 
 	// serde_json's insertion-ordered map preserves the file ordering supplied by
 	// GitHub, matching JavaScript's Object.values(gist.files).
@@ -153,10 +157,7 @@ pub(super) async fn render<C: HttpClient + Sync>(
 }
 
 fn gist_id(url: &Url) -> Option<&str> {
-	let candidate = url
-		.path_segments()?
-		.filter(|part| !part.is_empty())
-		.next_back()?;
+	let candidate = url.path_segments()?.rfind(|part| !part.is_empty())?;
 	(!candidate.is_empty() && candidate.bytes().all(|byte| byte.is_ascii_hexdigit()))
 		.then_some(candidate)
 }

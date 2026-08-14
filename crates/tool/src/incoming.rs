@@ -80,7 +80,7 @@ impl InvocationFeed {
 pub enum ParamError {
 	/// A pulled value was absent, malformed, mistyped, or abandoned.
 	#[error("argument pull failed")]
-	Args(ArgIssue),
+	Args(Box<ArgIssue>),
 	/// An interrupt was observed through [`IncomingParams::interruptable`].
 	#[error("argument pull interrupted")]
 	Interrupted(Interrupt),
@@ -122,6 +122,7 @@ pub enum InterruptWaitError {
 /// an explicit [`InvocationEvent::ArgsCommitted`].
 pub struct IncomingParams<'c> {
 	events:     Receiver<InvocationEvent>,
+	owner:      Option<Str>,
 	feed:       Option<IncomingFeed>,
 	doc:        Option<IncomingDoc>,
 	assembled:  String,
@@ -134,10 +135,20 @@ pub struct IncomingParams<'c> {
 impl IncomingParams<'static> {
 	/// Creates the producer and consumer sides of one invocation.
 	pub fn channel() -> (InvocationFeed, Self) {
+		Self::channel_for_owner(None)
+	}
+
+	/// Creates an invocation scoped to one authenticated kernel owner.
+	pub fn owned_channel(owner: Str) -> (InvocationFeed, Self) {
+		Self::channel_for_owner(Some(owner))
+	}
+
+	fn channel_for_owner(owner: Option<Str>) -> (InvocationFeed, Self) {
 		let (tx, events) = flume::unbounded();
 		let (feed, doc) = IncomingDoc::channel();
 		(InvocationFeed { tx }, Self {
 			events,
+			owner,
 			feed: Some(feed),
 			doc: Some(doc),
 			assembled: String::new(),
@@ -155,6 +166,7 @@ impl<'c> IncomingParams<'c> {
 		let (feed, doc) = IncomingDoc::channel();
 		Self {
 			events,
+			owner: None,
 			feed: Some(feed),
 			doc: Some(doc),
 			assembled: String::new(),
@@ -163,6 +175,11 @@ impl<'c> IncomingParams<'c> {
 			protocol: None,
 			_scope: PhantomData,
 		}
+	}
+
+	/// Authenticated owner of the persistent resources used by this invocation.
+	pub fn owner(&self) -> Option<&Str> {
+		self.owner.as_ref()
 	}
 
 	/// Runs the invocation's sole JSON cursor session while continuing to feed
@@ -194,7 +211,7 @@ impl<'c> IncomingParams<'c> {
 	}
 
 	/// Returns a view whose pulls and commitment wait observe interrupts.
-	pub fn interruptable(&mut self) -> InterruptibleParams<'_, 'c> {
+	pub const fn interruptable(&mut self) -> InterruptibleParams<'_, 'c> {
 		InterruptibleParams { inner: self }
 	}
 
@@ -213,17 +230,14 @@ impl<'c> IncomingParams<'c> {
 			return Ok(interrupt);
 		}
 		loop {
-			match self.events.recv_async().await {
-				Ok(event) => {
-					if let Some(interrupt) = self.apply(event).map_err(InterruptWaitError::Protocol)? {
-						self.interrupts.pop_back();
-						return Ok(interrupt);
-					}
-				},
-				Err(_) => {
-					self.disconnect();
-					return Err(InterruptWaitError::Closed);
-				},
+			if let Ok(event) = self.events.recv_async().await {
+				if let Some(interrupt) = self.apply(event).map_err(InterruptWaitError::Protocol)? {
+					self.interrupts.pop_back();
+					return Ok(interrupt);
+				}
+			} else {
+				self.disconnect();
+				return Err(InterruptWaitError::Closed);
 			}
 		}
 	}
@@ -276,22 +290,19 @@ impl<'c> IncomingParams<'c> {
 			return Err(CommitError::Interrupted(interrupt));
 		}
 		loop {
-			match self.events.recv_async().await {
-				Ok(event) => {
-					if let Some(interrupt) = self.apply(event).map_err(CommitError::Protocol)?
-						&& observe
-					{
-						self.interrupts.pop_back();
-						return Err(CommitError::Interrupted(interrupt));
-					}
-					if let Some(raw) = self.committed.clone() {
-						return Ok(raw);
-					}
-				},
-				Err(_) => {
-					self.disconnect();
-					return Err(CommitError::Aborted);
-				},
+			if let Ok(event) = self.events.recv_async().await {
+				if let Some(interrupt) = self.apply(event).map_err(CommitError::Protocol)?
+					&& observe
+				{
+					self.interrupts.pop_back();
+					return Err(CommitError::Interrupted(interrupt));
+				}
+				if let Some(raw) = self.committed.clone() {
+					return Ok(raw);
+				}
+			} else {
+				self.disconnect();
+				return Err(CommitError::Aborted);
 			}
 		}
 	}
@@ -348,10 +359,10 @@ impl<'c> IncomingParams<'c> {
 	}
 
 	fn disconnect(&mut self) {
-		if self.committed.is_none() {
-			if let Some(feed) = self.feed.take() {
-				feed.abort();
-			}
+		if self.committed.is_none()
+			&& let Some(feed) = self.feed.take()
+		{
+			feed.abort();
 		}
 	}
 }
@@ -386,21 +397,21 @@ impl InterruptibleParams<'_, '_> {
 
 fn param_error(error: IncomingError) -> ParamError {
 	match error {
-		IncomingError::Pull(issue) => ParamError::Args(arg_issue(issue)),
-		IncomingError::Aborted => ParamError::Args(ArgIssue {
+		IncomingError::Pull(issue) => ParamError::Args(Box::new(arg_issue(issue))),
+		IncomingError::Aborted => ParamError::Args(Box::new(ArgIssue {
 			path:     Vec::new(),
-			expected: Str::from("complete pulled value"),
+			expected: "complete JSON arguments".into(),
 			kind:     ArgIssueKind::Aborted,
 			example:  None,
 			found:    None,
-		}),
-		IncomingError::Parse(_) => ParamError::Args(ArgIssue {
+		})),
+		IncomingError::Parse(_) => ParamError::Args(Box::new(ArgIssue {
 			path:     Vec::new(),
-			expected: Str::from("declared whole argument shape"),
+			expected: "valid JSON arguments".into(),
 			kind:     ArgIssueKind::Malformed,
 			example:  None,
 			found:    None,
-		}),
+		})),
 	}
 }
 

@@ -196,9 +196,8 @@ fn parse_entry(xml: &[u8]) -> Option<Entry> {
 	let mut author = String::new();
 
 	loop {
-		let event = match reader.read_event() {
-			Ok(event) => event,
-			Err(_) => return in_entry.then(|| finish_entry(entry, capture, &author)),
+		let Ok(event) = reader.read_event() else {
+			return in_entry.then(|| finish_entry(entry, capture, &author));
 		};
 		match event {
 			Event::Start(element) => {
@@ -320,7 +319,7 @@ fn decode_reference(name: &str) -> String {
 }
 
 fn resolve_named_entity(name: &str) -> Option<&'static str> {
-	resolve_xml_entity(name).or_else(|| match name {
+	resolve_xml_entity(name).or(match name {
 		"AElig" => Some("Æ"),
 		"Aacute" => Some("Á"),
 		"Acirc" => Some("Â"),

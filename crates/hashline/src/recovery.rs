@@ -225,7 +225,7 @@ impl RecoveryResult {
 pub enum RecoveryError {
 	/// Snapshot selection failed or its short tag was ambiguous.
 	#[error(transparent)]
-	Snapshot(#[from] SnapshotLookupError),
+	Snapshot(#[from] Box<SnapshotLookupError>),
 	/// A half-open byte range has its end before its start.
 	#[error("byte range {start}..{end} is reversed; use a start no greater than the end")]
 	ReversedRange {
@@ -811,7 +811,7 @@ mod tests {
 		let authored = [edit(13, 27, b"MODEL\n")];
 		assert!(matches!(
 			recover_from_store(&mut store, "p", "1D84", None, &current, &authored),
-			Err(RecoveryError::Snapshot(SnapshotLookupError::Ambiguous { .. }))
+			Err(RecoveryError::Snapshot(error)) if matches!(*error, SnapshotLookupError::Ambiguous { .. })
 		));
 		let result =
 			recover_from_store(&mut store, "p", "1D84", Some(&ra), &current, &authored).unwrap();

@@ -7,7 +7,11 @@
 mod incoming;
 mod registry;
 
-use std::{borrow::Cow, fmt, future::Future, marker::PhantomData};
+use std::{
+	collections::{BTreeMap, HashMap},
+	fmt,
+	future::Future,
+};
 
 use bytes::Bytes;
 use futures::Stream;
@@ -16,66 +20,133 @@ pub use incoming::{
 	InvocationEvent, InvocationFeed, InvocationSendError, ParamError,
 };
 use omp_core::Str;
+pub use omp_macros::ToolParam;
 pub use registry::{
 	ConstraintDisposition, ErasedEv, ErasedOutcome, ErasedStream, LoweredTool, LoweringCaps,
 	ProjectedCall, ProjectedVerdict, Registry, RegistryError, ToolRoute,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
+
+/// Model-facing JSON Schema for one tool-parameter type.
+///
+/// This is the workspace's schemars replacement for the tool-argument
+/// boundary. Schemas describe deserialization, matching how tool parameters
+/// are consumed: doc comments become property descriptions, `Option` fields
+/// follow JSON Schema's absent-property convention (no `null`), and numbers
+/// carry no `format` annotations. Derive it with
+/// [`ToolParam`](macro@ToolParam).
+pub trait ToolParam {
+	/// True when a field of this type may be omitted from the arguments
+	/// object entirely, keeping it out of `required`.
+	const OPTIONAL: bool = false;
+
+	/// Returns this type's inline JSON Schema value.
+	fn schema() -> Value;
+}
+
+macro_rules! leaf {
+	($schema:tt for $($ty:ty),+) => {
+		$(impl ToolParam for $ty {
+			fn schema() -> Value {
+				json!($schema)
+			}
+		})+
+	};
+}
+
+leaf!({ "type": "string" } for Str, String);
+leaf!({ "type": "boolean" } for bool);
+leaf!({ "type": "number" } for f32, f64);
+leaf!({ "type": "integer" } for i8, i16, i32, i64, i128, isize);
+leaf!({ "type": "integer", "minimum": 0 } for u8, u16, u32, u64, u128, usize);
+
+impl<T: ToolParam> ToolParam for Option<T> {
+	const OPTIONAL: bool = true;
+
+	fn schema() -> Value {
+		T::schema()
+	}
+}
+
+impl<T: ToolParam> ToolParam for Vec<T> {
+	fn schema() -> Value {
+		json!({ "type": "array", "items": T::schema() })
+	}
+}
+
+impl<V: ToolParam> ToolParam for BTreeMap<Str, V> {
+	fn schema() -> Value {
+		json!({ "type": "object", "additionalProperties": V::schema() })
+	}
+}
+
+impl<V: ToolParam> ToolParam for BTreeMap<String, V> {
+	fn schema() -> Value {
+		json!({ "type": "object", "additionalProperties": V::schema() })
+	}
+}
+
+impl<V: ToolParam> ToolParam for HashMap<String, V> {
+	fn schema() -> Value {
+		json!({ "type": "object", "additionalProperties": V::schema() })
+	}
+}
+
+/// Any JSON value; schemas to the permissive `true`.
+impl ToolParam for Value {
+	fn schema() -> Value {
+		Value::Bool(true)
+	}
+}
 
 /// Generates the compact, deterministic JSON Schema exposed to models for `T`.
 ///
-/// Subschemas are inlined and generator metadata is omitted. Schemas describe
-/// deserialization, matching how tool parameters are consumed.
-pub fn schema<T: schemars::JsonSchema>() -> Bytes {
-	let generator = schemars::generate::SchemaSettings::draft2020_12()
-		.with(|settings| {
-			settings.inline_subschemas = true;
-			settings.meta_schema = None;
-		})
-		.for_deserialize()
-		.into_generator();
-	let mut root = generator.into_root_schema_for::<T>();
-	root.remove("$schema");
-	root.remove("title");
-	root.remove("description");
+/// The root `description` is stripped: the tool's prose description travels
+/// separately on [`ToolSpec`].
+pub fn schema<T: ToolParam>() -> Bytes {
+	let mut root = T::schema();
+	if let Some(object) = root.as_object_mut() {
+		object.remove("description");
+	}
 	Bytes::from(
-		serde_json::to_vec(root.as_value())
-			.expect("schemars-generated JSON Schema must serialize to compact JSON"),
+		serde_json::to_vec(&root).expect("model-facing JSON Schema serializes to compact JSON"),
 	)
 }
 
-/// Marks a generated field schema as optional without accepting JSON `null`.
-///
-/// Tool argument structs use this with `#[schemars(with = "...")]` when their
-/// Rust field is `Option<T>` but the model-facing schema follows JSON Schema's
-/// absent-property convention rather than a nullable value.
-pub struct OptionalSchema<T>(PhantomData<T>);
+/// Runtime support for the [`ToolParam`](macro@ToolParam) derive. Not public
+/// API.
+#[doc(hidden)]
+pub mod __private {
+	pub use serde_json;
+	use serde_json::{Map, Value};
 
-impl<T: schemars::JsonSchema> schemars::JsonSchema for OptionalSchema<T> {
-	fn inline_schema() -> bool {
-		T::inline_schema()
+	/// Fills leaf-schema entries into `target` without overriding entries the
+	/// derive already placed (notably `description`).
+	pub fn merge_defaults(target: &mut Map<String, Value>, leaf: Value) {
+		if let Value::Object(leaf) = leaf {
+			for (key, value) in leaf {
+				target.entry(key).or_insert(value);
+			}
+		}
 	}
 
-	fn schema_name() -> Cow<'static, str> {
-		T::schema_name()
+	/// Merges an `extend({ ... })` JSON object over `target`, overriding on
+	/// collision.
+	pub fn merge_override(target: &mut Map<String, Value>, extension: Value) {
+		if let Value::Object(extension) = extension {
+			for (key, value) in extension {
+				target.insert(key, value);
+			}
+		}
 	}
 
-	fn schema_id() -> Cow<'static, str> {
-		T::schema_id()
-	}
-
-	fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-		T::json_schema(generator)
-	}
-
-	fn _schemars_private_non_optional_json_schema(
-		generator: &mut schemars::SchemaGenerator,
-	) -> schemars::Schema {
-		T::_schemars_private_non_optional_json_schema(generator)
-	}
-
-	fn _schemars_private_is_option() -> bool {
-		true
+	/// Widens a scalar `type` to `[type, "null"]` for nullable properties.
+	pub fn nullable(target: &mut Map<String, Value>) {
+		if let Some(kind) = target.get_mut("type") {
+			let scalar = kind.take();
+			*kind = Value::Array(vec![scalar, Value::String("null".into())]);
+		}
 	}
 }
 /// Namespaced thread-item property carrying a committed tool revision.
@@ -495,8 +566,8 @@ pub async fn verdict_details<P, F, S>(
 	spill: &S,
 ) -> Result<VerdictDetails, VerdictDetailsError<S::Error>>
 where
-	P: Serialize,
-	F: Serialize,
+	P: Serialize + Sync,
+	F: Serialize + Sync,
 	S: VerdictSpill,
 {
 	let json = Bytes::from(serde_json::to_vec(verdict)?);

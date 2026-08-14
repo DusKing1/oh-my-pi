@@ -11,10 +11,7 @@ const TEXT_LAYER_NOTE: &str = "This PDF is scanned or image-based and has no usa
 /// Convert PDF bytes, preserving page order, metadata, and any text-layer
 /// qualification reported by `pdf-inspector`.
 pub(super) fn convert(bytes: &[u8]) -> Result<Conversion, MarkitError> {
-	let mut markdown = MarkdownOptions::default();
-	// pi's PDF projection identifies every extracted page. `pdf-inspector`
-	// emits these as `<!-- Page N -->` before that page's content.
-	markdown.include_page_numbers = true;
+	let markdown = MarkdownOptions { include_page_numbers: true, ..MarkdownOptions::default() };
 	let options = PdfOptions::new().markdown(markdown);
 	let result = process_pdf_mem_with_options(bytes, options)
 		.map_err(|error| MarkitError::conversion("pdf", error.to_string()))?;

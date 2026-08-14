@@ -1,5 +1,7 @@
 //! Crates.io crate metadata renderer.
 
+use std::fmt::Write as _;
+
 use omp_core::{Str, USER_AGENT};
 use serde::Deserialize;
 use url::Url;
@@ -33,11 +35,12 @@ struct CrateMetadata {
 
 #[derive(Deserialize)]
 struct Version {
-	num:          String,
-	downloads:    u64,
-	created_at:   String,
-	license:      Option<String>,
-	rust_version: Option<String>,
+	num:        String,
+	downloads:  u64,
+	created_at: String,
+	license:    Option<String>,
+	#[serde(rename = "rust_version")]
+	msrv:       Option<String>,
 }
 
 /// Returns whether the URL names a crate page on crates.io.
@@ -74,7 +77,8 @@ pub(super) async fn render<C: HttpClient + Sync>(
 		.as_deref()
 		.and_then(|versions| versions.first());
 	let metadata = &data.metadata;
-	let mut markdown = format!("# {}\n\n", metadata.name);
+	let mut markdown = String::new();
+	write!(markdown, "# {}\n\n", metadata.name).expect("writing markdown to a string");
 	if let Some(description) = metadata
 		.description
 		.as_deref()
@@ -84,32 +88,34 @@ pub(super) async fn render<C: HttpClient + Sync>(
 		markdown.push_str("\n\n");
 	}
 
-	markdown.push_str(&format!("**Latest:** {}", metadata.max_version));
+	write!(markdown, "**Latest:** {}", metadata.max_version).expect("writing markdown to a string");
 	if let Some(license) = latest
 		.and_then(|version| version.license.as_deref())
 		.filter(|value| !value.is_empty())
 	{
-		markdown.push_str(&format!(" · **License:** {license}"));
+		write!(markdown, " · **License:** {license}").expect("writing markdown to a string");
 	}
 	if let Some(msrv) = latest
-		.and_then(|version| version.rust_version.as_deref())
+		.and_then(|version| version.msrv.as_deref())
 		.filter(|value| !value.is_empty())
 	{
-		markdown.push_str(&format!(" · **MSRV:** {msrv}"));
+		write!(markdown, " · **MSRV:** {msrv}").expect("writing markdown to a string");
 	}
 	markdown.push('\n');
-	markdown.push_str(&format!(
+	write!(
+		markdown,
 		"**Downloads:** {} total · {} recent\n\n",
 		format_compact_number(metadata.downloads),
 		format_compact_number(metadata.recent_downloads)
-	));
+	)
+	.expect("writing markdown to a string");
 
 	if let Some(repository) = metadata
 		.repository
 		.as_deref()
 		.filter(|value| !value.is_empty())
 	{
-		markdown.push_str(&format!("**Repository:** {repository}\n"));
+		write!(markdown, "**Repository:** {repository}\n").expect("writing markdown to a string");
 	}
 	if let Some(homepage) = metadata
 		.homepage
@@ -117,28 +123,30 @@ pub(super) async fn render<C: HttpClient + Sync>(
 		.filter(|value| !value.is_empty())
 		.filter(|homepage| Some(*homepage) != metadata.repository.as_deref())
 	{
-		markdown.push_str(&format!("**Homepage:** {homepage}\n"));
+		write!(markdown, "**Homepage:** {homepage}\n").expect("writing markdown to a string");
 	}
 	if let Some(documentation) = metadata
 		.documentation
 		.as_deref()
 		.filter(|value| !value.is_empty())
 	{
-		markdown.push_str(&format!("**Docs:** {documentation}\n"));
+		write!(markdown, "**Docs:** {documentation}\n").expect("writing markdown to a string");
 	}
 	if let Some(keywords) = metadata
 		.keywords
 		.as_ref()
 		.filter(|values| !values.is_empty())
 	{
-		markdown.push_str(&format!("**Keywords:** {}\n", keywords.join(", ")));
+		write!(markdown, "**Keywords:** {}\n", keywords.join(", "))
+			.expect("writing markdown to a string");
 	}
 	if let Some(categories) = metadata
 		.categories
 		.as_ref()
 		.filter(|values| !values.is_empty())
 	{
-		markdown.push_str(&format!("**Categories:** {}\n", categories.join(", ")));
+		write!(markdown, "**Categories:** {}\n", categories.join(", "))
+			.expect("writing markdown to a string");
 	}
 
 	if let Some(versions) = data
@@ -148,12 +156,14 @@ pub(super) async fn render<C: HttpClient + Sync>(
 	{
 		markdown.push_str("\n## Recent Versions\n\n");
 		for version in versions.iter().take(5) {
-			markdown.push_str(&format!(
+			write!(
+				markdown,
 				"- **{}** ({}) - {} downloads\n",
 				version.num,
 				iso_date(&version.created_at),
 				format_compact_number(version.downloads)
-			));
+			)
+			.expect("writing markdown to a string");
 		}
 	}
 

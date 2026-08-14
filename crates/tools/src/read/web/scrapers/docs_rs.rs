@@ -1,4 +1,4 @@
-use std::io::Read as _;
+use std::{fmt::Write as _, io::Read as _};
 
 use flate2::read::GzDecoder;
 use omp_core::Str;
@@ -87,15 +87,14 @@ fn parse_target(url: &Url) -> Option<Target> {
 
 	if module_path.last().is_some_and(|last| last == "index.html") {
 		module_path.pop();
-	} else if let Some(last) = module_path.last() {
-		if let Some((kind, rest)) = last.split_once('.') {
-			if let Some(name) = rest.strip_suffix(".html") {
-				if !name.is_empty() && ITEM_KINDS.contains(&kind) {
-					item_name = Some(Str::from(name));
-					module_path.pop();
-				}
-			}
-		}
+	} else if let Some(last) = module_path.last()
+		&& let Some((kind, rest)) = last.split_once('.')
+		&& let Some(name) = rest.strip_suffix(".html")
+		&& !name.is_empty()
+		&& ITEM_KINDS.contains(&kind)
+	{
+		item_name = Some(Str::from(name));
+		module_path.pop();
 	}
 
 	Some(Target {
@@ -183,14 +182,13 @@ fn find_item_in_module<'a>(
 		let Some(use_) = item.pointer("/inner/use") else {
 			continue;
 		};
-		if use_.get("name").and_then(Value::as_str) == Some(name) {
-			if let Some(target) = use_
+		if use_.get("name").and_then(Value::as_str) == Some(name)
+			&& let Some(target) = use_
 				.get("id")
 				.and_then(id_string)
 				.and_then(|id| index.get(&id))
-			{
-				return Some(target);
-			}
+		{
+			return Some(target);
 		}
 	}
 	None
@@ -321,8 +319,7 @@ fn render_type(ty: Option<&Value>, depth: usize) -> String {
 				.map(|bound| {
 					bound
 						.pointer("/trait_bound/trait")
-						.map(|trait_| render_type(Some(trait_), depth + 1))
-						.unwrap_or_else(|| "?".to_owned())
+						.map_or_else(|| "?".to_owned(), |trait_| render_type(Some(trait_), depth + 1))
 				})
 				.collect::<Vec<_>>()
 				.join(" + ")
@@ -342,7 +339,7 @@ fn render_type(ty: Option<&Value>, depth: usize) -> String {
 				.join(" + ")
 		);
 		if let Some(lifetime) = dyn_trait.get("lifetime").and_then(Value::as_str) {
-			result.push_str(&format!(" + '{lifetime}"));
+			write!(result, " + '{lifetime}").expect("writing to String cannot fail");
 		}
 		return result;
 	}
@@ -359,9 +356,9 @@ fn render_generics(generics: Option<&Value>) -> String {
 		.into_iter()
 		.flatten()
 		.filter(|param| {
-			!param
+			param
 				.get("kind")
-				.is_some_and(|kind| kind.get("lifetime").is_some())
+				.is_none_or(|kind| kind.get("lifetime").is_none())
 		})
 		.filter_map(|param| param.get("name").and_then(Value::as_str))
 		.collect::<Vec<_>>();
@@ -565,10 +562,10 @@ fn render_single_item(item: &Value, index: &Map<String, Value>, crate_doc: &Valu
 			.filter(|note| !note.is_empty())
 			.map(|note| format!(": {note}"))
 			.unwrap_or_default();
-		output.push_str(&format!("> **Deprecated**{note}\n\n"));
+		writeln!(output, "> **Deprecated**{note}\n").expect("writing to String cannot fail");
 	}
 	if let Some(declaration) = render_item_decl(item) {
-		output.push_str(&format!("```rust\n{declaration}\n```\n\n"));
+		writeln!(output, "```rust\n{declaration}\n```\n").expect("writing to String cannot fail");
 	}
 	if let Some(documentation) = docs(item).filter(|documentation| !documentation.is_empty()) {
 		output.push_str(documentation);
@@ -577,16 +574,14 @@ fn render_single_item(item: &Value, index: &Map<String, Value>, crate_doc: &Valu
 
 	if matches!(kind, "struct" | "enum" | "trait" | "union") {
 		let data = item.pointer(&format!("/inner/{kind}"));
-		let impls = data
+		let impls: &[Value] = data
 			.and_then(|value| value.get("impls"))
 			.and_then(Value::as_array)
-			.map(Vec::as_slice)
-			.unwrap_or(&[]);
-		let trait_items = data
+			.map_or(&[], Vec::as_slice);
+		let trait_items: &[Value] = data
 			.and_then(|value| value.get("items"))
 			.and_then(Value::as_array)
-			.map(Vec::as_slice)
-			.unwrap_or(&[]);
+			.map_or(&[], Vec::as_slice);
 		let mut required = Vec::new();
 		let mut provided = Vec::new();
 		for id in trait_items {
@@ -625,25 +620,30 @@ fn render_single_item(item: &Value, index: &Map<String, Value>, crate_doc: &Valu
 			}
 		}
 		if !required.is_empty() {
-			output.push_str(&format!("## Required Methods\n\n{}\n\n", required.join("\n")));
+			writeln!(output, "## Required Methods\n\n{}\n", required.join("\n"))
+				.expect("writing to String cannot fail");
 		}
 		if !provided.is_empty() {
-			output.push_str(&format!("## Provided Methods\n\n{}\n\n", provided.join("\n")));
+			writeln!(output, "## Provided Methods\n\n{}\n", provided.join("\n"))
+				.expect("writing to String cannot fail");
 		}
 		let methods = inherent_method_lines(impls, index);
 		if !methods.is_empty() {
-			output.push_str(&format!("## Methods\n\n{}\n\n", methods.join("\n")));
+			writeln!(output, "## Methods\n\n{}\n", methods.join("\n"))
+				.expect("writing to String cannot fail");
 		}
 		let traits = explicit_trait_names(impls, index);
 		if !traits.is_empty() {
-			output.push_str(&format!(
-				"## Trait Implementations\n\n{}\n\n",
+			writeln!(
+				output,
+				"## Trait Implementations\n\n{}\n",
 				traits
 					.iter()
 					.map(|name| format!("- {name}"))
 					.collect::<Vec<_>>()
 					.join("\n")
-			));
+			)
+			.expect("writing to String cannot fail");
 		}
 	}
 
@@ -669,7 +669,8 @@ fn render_single_item(item: &Value, index: &Map<String, Value>, crate_doc: &Valu
 			));
 		}
 		if !variants.is_empty() {
-			output.push_str(&format!("## Variants\n\n{}\n\n", variants.join("\n")));
+			writeln!(output, "## Variants\n\n{}\n", variants.join("\n"))
+				.expect("writing to String cannot fail");
 		}
 	}
 	append_version(&mut output, crate_doc);
@@ -701,8 +702,9 @@ fn render_module(
 		return output;
 	};
 
-	let mut groups: std::collections::BTreeMap<&str, Vec<(String, String, Option<String>)>> =
-		std::collections::BTreeMap::new();
+	type ModuleItems = Vec<(String, String, Option<String>)>;
+	type ModuleGroups<'a> = std::collections::BTreeMap<&'a str, ModuleItems>;
+	let mut groups: ModuleGroups<'_> = std::collections::BTreeMap::new();
 	for id in items {
 		let Some(mut item) = id_string(id).and_then(|id| index.get(&id)) else {
 			continue;
@@ -755,20 +757,20 @@ fn render_module(
 		let Some(items) = groups.get(kind).filter(|items| !items.is_empty()) else {
 			continue;
 		};
-		output.push_str(&format!("## {label}\n\n"));
+		writeln!(output, "## {label}\n").expect("writing to String cannot fail");
 		for (name, documentation, declaration) in items {
 			let suffix = if documentation.is_empty() {
 				String::new()
 			} else {
 				format!(" — {documentation}")
 			};
-			if kind == "function" {
-				if let Some(declaration) = declaration {
-					output.push_str(&format!("- `{declaration}`{suffix}\n"));
-					continue;
-				}
+			if kind == "function"
+				&& let Some(declaration) = declaration
+			{
+				writeln!(output, "- `{declaration}`{suffix}").expect("writing to String cannot fail");
+				continue;
 			}
-			output.push_str(&format!("- **{name}**{suffix}\n"));
+			writeln!(output, "- **{name}**{suffix}").expect("writing to String cannot fail");
 		}
 		output.push('\n');
 	}
@@ -782,7 +784,7 @@ fn append_version(output: &mut String, crate_doc: &Value) {
 		.and_then(Value::as_str)
 		.filter(|version| !version.is_empty())
 	{
-		output.push_str(&format!("---\n*{version}*\n"));
+		writeln!(output, "---\n*{version}*").expect("writing to String cannot fail");
 	}
 }
 

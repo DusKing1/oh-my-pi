@@ -1,6 +1,6 @@
 //! Pure HTTP content classification and rendering for `read` and `grep`.
 
-use std::{io::Cursor, path::Path};
+use std::{fmt::Write as _, io::Cursor, path::Path};
 
 use bytes::Bytes;
 use encoding_rs::{Encoding, UTF_8};
@@ -343,8 +343,7 @@ async fn render_html<C: HttpClient + Sync>(
 		}
 	}
 
-	if let Some(candidate) = markdown_suffix_url(&final_parsed)
-		&& let Ok(response) = fetch_page(client, &candidate, &[]).await
+	if let Ok(response) = fetch_page(client, &markdown_suffix_url(&final_parsed), &[]).await
 		&& response.is_success()
 	{
 		let content = decode_response(&response);
@@ -544,7 +543,7 @@ fn render_archive(bytes: Bytes, extension: &str) -> Result<String, archive::Arch
 		archive::format_archive_entry_lines(&entries).join("\n")
 	};
 	if truncated != 0 {
-		rendered.push_str(&format!("\n… {truncated} more"));
+		write!(rendered, "\n… {truncated} more").expect("writing to a String cannot fail");
 	}
 	Ok(rendered)
 }
@@ -804,7 +803,7 @@ fn low_quality(content: &str) -> bool {
 	line_count > 10 && short_line_count * 10 > line_count * 7
 }
 
-fn markdown_suffix_url(url: &Url) -> Option<Url> {
+fn markdown_suffix_url(url: &Url) -> Url {
 	let mut candidate = url.clone();
 	candidate.set_query(None);
 	candidate.set_fragment(None);
@@ -815,7 +814,7 @@ fn markdown_suffix_url(url: &Url) -> Option<Url> {
 		format!("{path}.md")
 	};
 	candidate.set_path(&new_path);
-	Some(candidate)
+	candidate
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -857,25 +856,29 @@ fn parse_alternate_links(html: &str, page_url: &Url) -> Vec<Alternate> {
 		let media_type = html_attribute(tag, "type")
 			.unwrap_or_default()
 			.to_ascii_lowercase();
-		let kind =
-			if media_type.contains("markdown") || href.ends_with(".md") || href.contains("markdown") {
-				AlternateKind::Markdown
-			} else if media_type.contains("rss")
-				|| media_type.contains("atom")
-				|| media_type.contains("feed")
+		let kind = if media_type.contains("markdown")
+			|| href
+				.get(href.len().saturating_sub(".md".len())..)
+				.is_some_and(|extension| extension.eq_ignore_ascii_case(".md"))
+			|| href.contains("markdown")
+		{
+			AlternateKind::Markdown
+		} else if media_type.contains("rss")
+			|| media_type.contains("atom")
+			|| media_type.contains("feed")
+		{
+			if href.contains("RecentChanges")
+				|| href.contains("Special:")
+				|| href.contains("/feed/")
+				|| href.contains("action=feed")
+				|| (!href.contains(page_url.path()) && !href.contains("comments"))
 			{
-				if href.contains("RecentChanges")
-					|| href.contains("Special:")
-					|| href.contains("/feed/")
-					|| href.contains("action=feed")
-					|| (!href.contains(page_url.path()) && !href.contains("comments"))
-				{
-					continue;
-				}
-				AlternateKind::Feed
-			} else {
 				continue;
-			};
+			}
+			AlternateKind::Feed
+		} else {
+			continue;
+		};
 		if let Ok(url) = page_url.join(&href) {
 			alternates.push(Alternate { url, kind });
 		}
@@ -977,12 +980,12 @@ fn llms_candidates(url: &Url) -> Vec<Url> {
 	}
 	paths
 		.into_iter()
-		.filter_map(|path| {
+		.map(|path| {
 			let mut candidate = url.clone();
 			candidate.set_path(&path);
 			candidate.set_query(None);
 			candidate.set_fragment(None);
-			Some(candidate)
+			candidate
 		})
 		.collect()
 }
@@ -1050,16 +1053,18 @@ fn render_feed(content: &str) -> String {
 			.unwrap_or_else(|| "Feed".to_owned())
 	);
 	for item in items {
-		output.push_str(&format!(
-			"## {}\n",
+		writeln!(
+			output,
+			"## {}",
 			if item.title.is_empty() {
 				"Untitled"
 			} else {
 				&item.title
 			}
-		));
+		)
+		.expect("writing to a String cannot fail");
 		if !item.date.is_empty() {
-			output.push_str(&format!("*{}*\n\n", item.date));
+			writeln!(output, "*{}*\n", item.date).expect("writing to a String cannot fail");
 		}
 		if !item.description.is_empty() {
 			let description = item.description.chars().take(500).collect::<String>();
@@ -1070,7 +1075,7 @@ fn render_feed(content: &str) -> String {
 			output.push_str("\n\n");
 		}
 		if !item.link.is_empty() {
-			output.push_str(&format!("[Read more]({})\n\n", item.link));
+			writeln!(output, "[Read more]({})\n", item.link).expect("writing to a String cannot fail");
 		}
 		output.push_str("---\n\n");
 	}

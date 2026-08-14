@@ -75,7 +75,7 @@ fn render_model_result(
 	card_response: Option<&HttpResponse>,
 	abbreviated: bool,
 ) -> RenderResult {
-	let mut markdown = format!("# {}\n\n", model.model_id);
+	let mut markdown = format!("# {}\n\n", model.id);
 	if let Some(task) = model.pipeline_tag.filter(|value| !value.is_empty()) {
 		push_field(&mut markdown, "Task", &task);
 	}
@@ -239,12 +239,12 @@ async fn render_model_or_user<C: HttpClient + Sync>(
 	id: &str,
 ) -> Result<Option<RenderResult>, WebError> {
 	let model_url = format!("https://huggingface.co/api/models/{id}");
-	if let Ok(Some(response)) = get(client, model_url).await {
-		if let Some(model) = decode::<Model>(&response) {
-			let card_url = format!("https://huggingface.co/{id}/raw/main/README.md");
-			let card_response = get(client, card_url).await.ok().flatten();
-			return Ok(Some(render_model_result(model, card_response.as_ref(), true)));
-		}
+	if let Ok(Some(response)) = get(client, model_url).await
+		&& let Some(model) = decode::<Model>(&response)
+	{
+		let card_url = format!("https://huggingface.co/{id}/raw/main/README.md");
+		let card_response = get(client, card_url).await.ok().flatten();
+		return Ok(Some(render_model_result(model, card_response.as_ref(), true)));
 	}
 
 	let user_url = format!("https://huggingface.co/api/users/{id}");
@@ -261,7 +261,7 @@ async fn render_model_or_user<C: HttpClient + Sync>(
 		.filter(|value| !value.is_empty())
 		.unwrap_or(id);
 	let mut markdown = format!("# {display_user}\n\n");
-	if let Some(name) = user.fullname.filter(|value| !value.is_empty()) {
+	if let Some(name) = user.name.filter(|value| !value.is_empty()) {
 		push_field(&mut markdown, "Name", &name);
 	}
 	if let Some(models) = user.num_models {
@@ -351,7 +351,7 @@ fn format_number(value: u64) -> String {
 fn decimal_suffix(value: u64, divisor: u64, suffix: &str) -> String {
 	let unit = divisor / 10;
 	let tenths = value.saturating_add(unit / 2) / unit;
-	if tenths % 10 == 0 {
+	if tenths.is_multiple_of(10) {
 		format!("{}{suffix}", tenths / 10)
 	} else {
 		format!("{}.{}{suffix}", tenths / 10, tenths % 10)
@@ -391,7 +391,7 @@ fn parse(url: &Url) -> Option<Target> {
 #[derive(Deserialize)]
 struct Model {
 	#[serde(rename = "modelId")]
-	model_id:     String,
+	id:           String,
 	pipeline_tag: Option<String>,
 	library_name: Option<String>,
 	#[serde(default)]
@@ -460,7 +460,8 @@ struct SpaceCard {
 
 #[derive(Deserialize)]
 struct User {
-	fullname:     Option<String>,
+	#[serde(rename = "fullname")]
+	name:         Option<String>,
 	user:         Option<String>,
 	#[serde(default)]
 	orgs:         Vec<Organization>,
@@ -599,7 +600,7 @@ mod tests {
 	fn optional_strings_follow_pi_javascript_truthiness() {
 		let empty_string = render_model_result(
 			Model {
-				model_id:     "model".to_owned(),
+				id:           "model".to_owned(),
 				pipeline_tag: Some(String::new()),
 				library_name: Some(String::new()),
 				tags:         Vec::new(),
@@ -621,7 +622,7 @@ mod tests {
 
 		let empty_array = render_model_result(
 			Model {
-				model_id:     "model".to_owned(),
+				id:           "model".to_owned(),
 				pipeline_tag: None,
 				library_name: None,
 				tags:         Vec::new(),

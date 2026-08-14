@@ -186,21 +186,21 @@ trait ArchiveMemberWriter {
 
 impl<W: Write> ArchiveMemberWriter for ZipWriter<W> {
 	fn add_file(&mut self, path: &str, data: &[u8]) -> omp_ar::Result<()> {
-		ZipWriter::add_file(self, path, data)
+		Self::add_file(self, path, data)
 	}
 
 	fn add_directory(&mut self, path: &str) -> omp_ar::Result<()> {
-		ZipWriter::add_directory(self, path)
+		Self::add_directory(self, path)
 	}
 }
 
 impl<W: Write> ArchiveMemberWriter for TarWriter<W> {
 	fn add_file(&mut self, path: &str, data: &[u8]) -> omp_ar::Result<()> {
-		TarWriter::add_file(self, path, data)
+		Self::add_file(self, path, data)
 	}
 
 	fn add_directory(&mut self, path: &str) -> omp_ar::Result<()> {
-		TarWriter::add_directory(self, path)
+		Self::add_directory(self, path)
 	}
 }
 
@@ -461,12 +461,11 @@ fn coerce_key(key: &str, declared_type: &str, integer_label: &str) -> Result<Sql
 	if upper.contains("INT") {
 		return coerce_integer_key(key, integer_label);
 	}
-	if upper.contains("REAL") || upper.contains("FLOA") || upper.contains("DOUB") {
-		if let Ok(value) = key.parse::<f64>()
-			&& value.is_finite()
-		{
-			return Ok(SqlValue::Real(value));
-		}
+	if (upper.contains("REAL") || upper.contains("FLOA") || upper.contains("DOUB"))
+		&& let Ok(value) = key.parse::<f64>()
+		&& value.is_finite()
+	{
+		return Ok(SqlValue::Real(value));
 	}
 	Ok(SqlValue::Text(key.to_owned()))
 }

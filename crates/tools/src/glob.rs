@@ -7,9 +7,8 @@ use futures::{FutureExt, Stream, pin_mut, select_biased};
 use omp_core::Str;
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, BlobRef, CommitError, Constraint, Ev, IncomingParams,
-	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
+	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolParam, ToolSpec,
 };
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -25,38 +24,25 @@ pub const MAX_LIMIT: u64 = 200;
 /// Maximum time allotted to the workspace traversal.
 pub const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
 	true
 }
 
-fn omit_schema_format(schema: &mut schemars::Schema) {
-	schema.remove("format");
-}
-
 /// Model arguments for `glob@1`.
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToolParam)]
 #[serde(deny_unknown_fields)]
 pub struct Params {
 	/// glob, file, or directory to search — a single path or a
 	/// semicolon-delimited list ("src/**/*.ts; test/**/*.ts"). Omitted ->
 	/// searches the workspace root (".")
-	#[schemars(
-		with = "omp_tool::OptionalSchema<String>",
-		description = "glob, file, or directory to search — a single path or a semicolon-delimited \
-		               list (\"src/**/*.ts; test/**/*.ts\"). Omitted -> searches the workspace root \
-		               (\".\")"
-	)]
 	pub path:      Option<Str>,
 	/// include hidden files
 	#[serde(default = "default_true")]
-	#[schemars(!default, with = "omp_tool::OptionalSchema<bool>")]
 	pub hidden:    bool,
 	/// respect gitignore
 	#[serde(default = "default_true")]
-	#[schemars(!default, with = "omp_tool::OptionalSchema<bool>")]
 	pub gitignore: bool,
 	/// max results
-	#[schemars(with = "omp_tool::OptionalSchema<f64>", transform = omit_schema_format)]
 	pub limit:     Option<f64>,
 }
 
@@ -323,7 +309,7 @@ impl<W: WorkspaceSearch, B: ReadBlobs> Tool for Glob<W, B> {
 	}
 
 	fn prompt(&self, view: Result<&Self::Payload, &Self::Fault>, caps: &PromptCaps) -> Vec<Part> {
-		let Some(mut projection) = TextProjection::new(caps) else {
+		let Some(mut projection) = TextProjection::new(*caps) else {
 			return Vec::new();
 		};
 		let text = match view {
@@ -476,7 +462,7 @@ fn render_payload(payload: &Payload) -> String {
 }
 
 fn timeout_notice(payload: &Payload) -> String {
-	let seconds = if payload.timeout_ms % 1_000 == 0 {
+	let seconds = if payload.timeout_ms.is_multiple_of(1_000) {
 		(payload.timeout_ms / 1_000).to_string()
 	} else {
 		format!("{:.1}", payload.timeout_ms as f64 / 1_000.0)
@@ -497,8 +483,8 @@ fn timeout_notice(payload: &Payload) -> String {
 	}
 }
 
-fn done(result: Result<Payload, Fault>) -> Ev<Update, Payload, Fault> {
-	let useless = matches!(&result, Ok(payload) if payload.matches.is_empty());
+const fn done(result: Result<Payload, Fault>) -> Ev<Update, Payload, Fault> {
+	let useless = matches!(&result, Ok(payload) if payload.matches.is_empty() && !payload.timed_out);
 	Ev::Done(Outcome::Done { result, useless })
 }
 
@@ -507,7 +493,7 @@ fn param_event(error: ParamError) -> Ev<Update, Payload, Fault> {
 		ParamError::Args(issue) if issue.kind == ArgIssueKind::Aborted => {
 			Ev::Aborted(Abort::InputDropped)
 		},
-		ParamError::Args(issue) => Ev::Args(issue),
+		ParamError::Args(issue) => Ev::Args(*issue),
 		ParamError::Interrupted(interrupt) => {
 			Ev::Aborted(Abort::Interrupted { reason: interrupt.reason })
 		},

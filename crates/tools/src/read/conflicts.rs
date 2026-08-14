@@ -42,7 +42,7 @@ pub struct ConflictEntry {
 
 impl ConflictEntry {
 	/// Attaches a renderer-visible identifier to a captured block.
-	pub fn new(id: usize, block: ConflictBlock) -> Self {
+	pub const fn new(id: usize, block: ConflictBlock) -> Self {
 		Self { id, block }
 	}
 }
@@ -223,14 +223,12 @@ pub fn format_conflict_summary(
 	let mut lines = Vec::new();
 	let total = entries.len();
 	let word = if total == 1 { "conflict" } else { "conflicts" };
-	lines.push(format!(
-		"⚠ {total} unresolved {word} in {}",
-		if display_path.is_empty() {
-			"<file>"
-		} else {
-			display_path
-		}
-	));
+	let display_path = if display_path.is_empty() {
+		"<file>"
+	} else {
+		display_path
+	};
+	lines.push(format!("⚠ {total} unresolved {word} in {display_path}"));
 	if scan_truncated {
 		lines.push(
 			"- note: file scan hit the byte cap; additional conflicts may exist beyond the scanned \
@@ -250,21 +248,7 @@ pub fn format_conflict_summary(
 			pick_label(entries, |block| block.base_lines.as_ref().and(block.base_label.as_deref()));
 		lines.push(format!("- base = {}", label.unwrap_or("(no label)")));
 	}
-	lines.push(
-		"NOTICE: Bulk-resolve with `write({ path: \"conflict://*\", content })`, or address a \
-		 single block with `write({ path: \"conflict://<N>\", content })`. Inspect a block by \
-		 reading `conflict://<N>` (add `/ours` / `/theirs` / `/base` for a single side)."
-			.to_owned(),
-	);
-	lines.push(
-		"`content` shorthand: `@ours` / `@theirs` / `@base` / `@both` lines expand to the recorded \
-		 sections; `@both` = ours-then-theirs (additive conflicts only — never for competing edits \
-		 of the same lines). Per-id bulk: content of `<id>: @side` lines (e.g. \"1: @ours\\n2: \
-		 @theirs\") resolves each listed id in one call. Non-token lines pass through verbatim. \
-		 Writes replace ONLY the marker block — never repeat the surrounding lines. Keep one side \
-		 or combine faithfully; never invent content beyond the recorded sides."
-			.to_owned(),
-	);
+	lines.push(conflict_resolution_guidance(display_path));
 	lines.push(String::new());
 	let id_width = entries.last().map_or(1, |entry| entry.id.to_string().len());
 	lines.extend(
@@ -304,12 +288,12 @@ pub fn format_conflict_warning(
 	let total = options.total_in_file.unwrap_or(entries.len());
 	let partial = total > entries.len();
 	let word = if total == 1 { "conflict" } else { "conflicts" };
+	let guidance_path = options.display_path.unwrap_or("path");
 	let mut out = vec![String::new()];
 	if partial {
-		let hint_path = options.display_path.unwrap_or("<file>");
 		out.push(format!(
-			"⚠ {} of {total} unresolved {word} visible in this window (read `{hint_path}:conflicts` \
-			 for the full list).",
+			"⚠ {} of {total} unresolved {word} visible in this window (read \
+			 `{guidance_path}:conflicts` for the full list).",
 			entries.len()
 		));
 	} else {
@@ -334,36 +318,7 @@ pub fn format_conflict_warning(
 			pick_label(entries, |block| block.base_lines.as_ref().and(block.base_label.as_deref()));
 		out.push(format!("- base = {}", label.unwrap_or("(no label)")));
 	}
-	out.push(
-		"NOTICE: Inspect a block by reading `conflict://<N>` (add `/ours` / `/theirs` / `/base` to \
-		 render a single side). Resolve with `write({ path: \"conflict://<N>\", content })`, or \
-		 bulk-resolve every registered conflict with `write({ path: \"conflict://*\", content })`. \
-		 Writes replace ONLY the marker block (markers + all sides) — never repeat the lines \
-		 before/after it; they stay in place."
-			.to_owned(),
-	);
-	out.push(
-		"`content` shorthand: a line that is exactly `@ours` / `@theirs` / `@base` / `@both` \
-		 expands to that recorded section. `@both` is ours-then-theirs with no separator — only for \
-		 additive conflicts where each side adds something different; NEVER for competing edits of \
-		 the same lines (pick a side or write the combined text). Lines that are not a token pass \
-		 through verbatim, so \"// keep both\\n@ours\\n@theirs\" literally writes the comment, then \
-		 ours, then theirs."
-			.to_owned(),
-	);
-	out.push(
-		"Per-id bulk: `write({ path: \"conflict://*\", content: \"1: @ours\\n2: @theirs\\n…\" })` \
-		 resolves each listed id with that side in ONE call — the cheapest way through many \
-		 pick-one conflicts; unlisted ids stay registered."
-			.to_owned(),
-	);
-	out.push(
-		"Resolve each block faithfully: keep one side (`@ours`/`@theirs`), or combine them when \
-		 both intents apply — never invent content beyond the recorded sides, and never stack both \
-		 sides of competing edits. Resolve several conflicts in a single turn by issuing multiple \
-		 `write` calls at once; ids stay valid as earlier blocks are resolved."
-			.to_owned(),
-	);
+	out.push(conflict_resolution_guidance(guidance_path));
 
 	for entry in entries {
 		let block = &entry.block;
@@ -404,6 +359,16 @@ pub fn format_conflict_warning(
 		}
 	}
 	out.join("\n")
+}
+
+fn conflict_resolution_guidance(display_path: &str) -> String {
+	format!(
+		"NOTICE: Read `{display_path}:conflicts` for the conflict index, then read the affected \
+		 source ranges to obtain their `[{display_path}#TAG]` header and numbered marker lines. \
+		 Resolve each complete marker block with the hashline `edit` tool, using `PUT N.=M:` from \
+		 `<<<<<<<` through `>>>>>>>`; preserve the intended side(s), and re-read \
+		 `{display_path}:conflicts` to verify."
+	)
 }
 
 /// Returns the exact warning header for a known unresolved-conflict count.

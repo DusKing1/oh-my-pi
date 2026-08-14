@@ -301,7 +301,7 @@ pub fn parse_archive_path_candidates(path: &str) -> Vec<ArchivePathCandidate> {
 			break;
 		}
 	}
-	candidates.sort_by(|left, right| right.archive_path.len().cmp(&left.archive_path.len()));
+	candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.archive_path.len()));
 	candidates
 }
 
@@ -430,12 +430,11 @@ impl<R: Read + Seek> ArchiveReader<R> {
 		path: &str,
 	) -> Result<Result<ArchiveTextMember, ArchiveBinaryMember>, ArchiveError> {
 		let member = self.read_member(path)?;
-		match decode_utf8_text(&member.bytes) {
-			Some(text) => Ok(Ok(ArchiveTextMember { node: member.node, text })),
-			None => {
-				let notice = binary_member_notice(&member.node.path, member.node.size);
-				Ok(Err(ArchiveBinaryMember { node: member.node, notice }))
-			},
+		if let Some(text) = decode_utf8_text(&member.bytes) {
+			Ok(Ok(ArchiveTextMember { node: member.node, text }))
+		} else {
+			let notice = binary_member_notice(&member.node.path, member.node.size);
+			Ok(Err(ArchiveBinaryMember { node: member.node, notice }))
 		}
 	}
 
@@ -563,7 +562,7 @@ pub fn binary_member_notice(path: &str, size: u64) -> String {
 	format!("[Cannot read binary archive entry '{path}' ({})]", format_bytes(size))
 }
 
-fn archive_limits() -> Limits {
+const fn archive_limits() -> Limits {
 	Limits::DEFAULT
 		.with_max_archive_size(MAX_TAR_ARCHIVE_BYTES)
 		.with_max_member_size(MAX_ARCHIVE_MEMBER_BYTES)
@@ -643,7 +642,7 @@ const fn is_windows_drive(component: &str) -> bool {
 	bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
-fn root_node() -> ArchiveNode {
+const fn root_node() -> ArchiveNode {
 	ArchiveNode {
 		path:         String::new(),
 		is_directory: true,

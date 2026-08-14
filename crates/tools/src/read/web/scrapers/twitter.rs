@@ -1,5 +1,7 @@
 //! Anonymous Twitter/X renderer backed by public Nitter instances.
 
+use std::fmt::Write as _;
+
 use omp_core::Str;
 use quick_xml::{
 	Reader, XmlVersion,
@@ -35,9 +37,8 @@ pub(super) async fn render<C: HttpClient + Sync>(
 
 	for instance in NITTER_INSTANCES {
 		let nitter_url = format!("https://{instance}{}", url.path());
-		let response = match client.get(HttpRequest::new(nitter_url)).await {
-			Ok(response) => response,
-			Err(_) => continue,
+		let Ok(response) = client.get(HttpRequest::new(nitter_url)).await else {
+			continue;
 		};
 		if !response.is_success() {
 			continue;
@@ -275,26 +276,28 @@ fn finish_frame(stack: &mut Vec<Frame>, page: &mut TweetPage) {
 	let text = frame.text.trim();
 
 	if let Some(index) = frame.username_index {
-		page.usernames[index] = text.to_owned();
+		set_text(&mut page.usernames[index], text);
 		frame
 			.first_descendant_username
 			.get_or_insert_with(|| text.to_owned());
 	}
 	if let Some(index) = frame.fullname_index {
-		page.fullnames[index] = text.to_owned();
+		set_text(&mut page.fullnames[index], text);
 	}
 	if frame.capture_date && !text.is_empty() {
-		page.date = Some(text.to_owned());
+		set_text(page.date.get_or_insert_default(), text);
 	}
 	if frame.capture_stats && !text.is_empty() {
-		page.stats = Some(text.to_owned());
+		set_text(page.stats.get_or_insert_default(), text);
 	}
 
 	for index in &frame.direct_contents {
-		page.contents[*index].parent_user = frame.first_descendant_username.clone();
+		page.contents[*index]
+			.parent_user
+			.clone_from(&frame.first_descendant_username);
 	}
 	if let Some(index) = frame.content_index {
-		page.contents[index].text = text.to_owned();
+		set_text(&mut page.contents[index].text, text);
 	}
 
 	if let Some(parent) = stack.last_mut()
@@ -302,6 +305,11 @@ fn finish_frame(stack: &mut Vec<Frame>, page: &mut TweetPage) {
 	{
 		parent.first_descendant_username = frame.first_descendant_username;
 	}
+}
+
+fn set_text(destination: &mut String, source: &str) {
+	destination.clear();
+	destination.push_str(source);
 }
 
 fn has_frame_class(frame: &Frame, class: &str) -> bool {
@@ -324,7 +332,7 @@ fn render_tweet(page: &TweetPage) -> String {
 		.unwrap_or("@?");
 	let mut markdown = format!("# Tweet by {fullname} ({username})\n\n");
 	if let Some(date) = page.date.as_deref() {
-		markdown.push_str(&format!("*{date}*\n\n"));
+		writeln!(markdown, "*{date}*\n").expect("writing to a String cannot fail");
 	}
 	markdown.push_str(content);
 	markdown.push_str("\n\n");
@@ -342,7 +350,8 @@ fn render_tweet(page: &TweetPage) -> String {
 				.as_deref()
 				.filter(|user| !user.is_empty())
 				.unwrap_or("@?");
-			markdown.push_str(&format!("**{reply_user}**: {}\n\n", reply.text));
+			writeln!(markdown, "**{reply_user}**: {}\n", reply.text)
+				.expect("writing to a String cannot fail");
 		}
 	}
 	markdown
@@ -615,9 +624,11 @@ mod tests {
 			r#"<div class="timeline-item"><div class="tweet-body"><a class="fullname">Root</a><a class="username">@root</a><div class="tweet-content">Root</div></div></div>"#,
 		);
 		for index in 1..=11 {
-			html.push_str(&format!(
+			write!(
+				html,
 				r#"<div class="timeline-item"><div class="tweet-body"><a class="username">@u{index}</a><div class="tweet-content">Reply {index}</div></div></div>"#
-			));
+			)
+			.expect("writing to a String cannot fail");
 		}
 
 		let output = rendered(&html);

@@ -181,7 +181,7 @@ fn append_joined<'a>(output: &mut String, values: impl IntoIterator<Item = &'a s
 struct Dependencies(Vec<(String, String)>);
 
 impl Dependencies {
-	fn is_empty(&self) -> bool {
+	const fn is_empty(&self) -> bool {
 		self.0.is_empty()
 	}
 }

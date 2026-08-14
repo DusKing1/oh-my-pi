@@ -1,5 +1,7 @@
 //! Anonymous GitHub API and raw-content renderer.
 
+use std::fmt::Write;
+
 use omp_core::{Str, base64};
 use serde::Deserialize;
 use smallvec::SmallVec;
@@ -200,7 +202,8 @@ async fn render_tree<C: HttpClient + Sync>(
 			} else {
 				String::new()
 			};
-			markdown.push_str(&format!("{prefix}{}{size}\n", item.name));
+			write!(markdown, "{prefix}{}{size}\n", item.name)
+				.expect("writing to a String cannot fail");
 		}
 		markdown.push_str("```\n\n");
 
@@ -243,15 +246,17 @@ async fn render_repo<C: HttpClient + Sync>(
 		markdown.push_str(description);
 		markdown.push_str("\n\n");
 	}
-	markdown.push_str(&format!(
+	write!(
+		markdown,
 		"Stars: {} · Forks: {} · Issues: {}\n",
 		repo.stargazers_count, repo.forks_count, repo.open_issues_count
-	));
+	)
+	.expect("writing to a String cannot fail");
 	if let Some(language) = repo.language.as_deref().filter(|value| !value.is_empty()) {
-		markdown.push_str(&format!("Language: {language}\n"));
+		write!(markdown, "Language: {language}\n").expect("writing to a String cannot fail");
 	}
 	if let Some(license) = repo.license.as_ref() {
-		markdown.push_str(&format!("License: {}\n", license.name));
+		write!(markdown, "License: {}\n", license.name).expect("writing to a String cannot fail");
 	}
 	markdown.push_str("\n---\n\n");
 
@@ -265,21 +270,21 @@ async fn render_repo<C: HttpClient + Sync>(
 			} else {
 				"      "
 			};
-			markdown.push_str(&format!("{prefix}{}\n", item.path));
+			write!(markdown, "{prefix}{}\n", item.path).expect("writing to a String cannot fail");
 		}
 		if tree.tree.len() > 100 {
-			markdown.push_str(&format!("[…{} files elided…]\n", tree.tree.len() - 100));
+			write!(markdown, "[…{} files elided…]\n", tree.tree.len() - 100)
+				.expect("writing to a String cannot fail");
 		}
 		markdown.push_str("```\n\n");
 	}
 
-	if let Some(readme) = api_json::<_, Readme>(client, &repo_endpoint(target, "/readme")).await? {
-		if readme.encoding == "base64" {
-			if let Some(decoded) = decode_base64(&readme.content) {
-				markdown.push_str("## README\n\n");
-				markdown.push_str(&String::from_utf8_lossy(&decoded));
-			}
-		}
+	if let Some(readme) = api_json::<_, Readme>(client, &repo_endpoint(target, "/readme")).await?
+		&& readme.encoding == "base64"
+		&& let Some(decoded) = decode_base64(&readme.content)
+	{
+		markdown.push_str("## README\n\n");
+		markdown.push_str(&String::from_utf8_lossy(&decoded));
 	}
 
 	Ok(Some(markdown_result(markdown, "github-repo", "Fetched via GitHub API")))
@@ -303,7 +308,8 @@ async fn render_issue<C: HttpClient + Sync>(
 		issue.title, issue.number, issue.state, issue.user.login, issue.created_at, issue.updated_at
 	);
 	if !issue.labels.is_empty() {
-		markdown.push_str(&format!(
+		write!(
+			markdown,
 			"Labels: {}\n",
 			issue
 				.labels
@@ -311,7 +317,8 @@ async fn render_issue<C: HttpClient + Sync>(
 				.map(|label| label.name.as_str())
 				.collect::<Vec<_>>()
 				.join(", ")
-		));
+		)
+		.expect("writing to a String cannot fail");
 	}
 	markdown.push_str("\n---\n\n");
 	markdown.push_str(
@@ -331,12 +338,14 @@ async fn render_issue<C: HttpClient + Sync>(
 			} else {
 				comments.len().to_string()
 			};
-			markdown.push_str(&format!("## Comments ({count})\n\n"));
+			write!(markdown, "## Comments ({count})\n\n").expect("writing to a String cannot fail");
 			for comment in comments {
-				markdown.push_str(&format!(
+				write!(
+					markdown,
 					"### @{} · {}\n\n{}\n\n---\n\n",
 					comment.user.login, comment.created_at, comment.body
-				));
+				)
+				.expect("writing to a String cannot fail");
 			}
 		}
 	}
@@ -397,10 +406,12 @@ async fn render_issues<C: HttpClient + Sync>(
 					.join(", ")
 			)
 		};
-		markdown.push_str(&format!(
+		write!(
+			markdown,
 			"- **#{}** {}{labels}\n  by @{} · {} comments · {}\n\n",
 			issue.number, issue.title, issue.user.login, issue.comments, issue.created_at
-		));
+		)
+		.expect("writing to a String cannot fail");
 	}
 	Ok(Some(markdown_result(markdown, "github-issues", "Fetched via GitHub API")))
 }
@@ -443,17 +454,19 @@ async fn render_commit<C: HttpClient + Sync>(
 		.and_then(|author| author.date.as_deref())
 		.filter(|date| !date.is_empty())
 	{
-		markdown.push_str(&format!(" · {date}"));
+		write!(markdown, " · {date}").expect("writing to a String cannot fail");
 	}
 	markdown.push('\n');
 	if let Some(stats) = commit.stats.as_ref() {
 		let files = commit.files.len();
-		markdown.push_str(&format!(
+		write!(
+			markdown,
 			"{files} file{} changed · +{} −{}\n",
 			if files == 1 { "" } else { "s" },
 			stats.additions.unwrap_or(0),
 			stats.deletions.unwrap_or(0)
-		));
+		)
+		.expect("writing to a String cannot fail");
 	}
 	if !commit.parents.is_empty() {
 		markdown.push_str("Parents: ");
@@ -474,7 +487,8 @@ async fn render_commit<C: HttpClient + Sync>(
 		markdown.push('\n');
 	}
 	if !commit.files.is_empty() {
-		markdown.push_str(&format!("\n---\n\n## Files ({})\n\n", commit.files.len()));
+		write!(markdown, "\n---\n\n## Files ({})\n\n", commit.files.len())
+			.expect("writing to a String cannot fail");
 		for file in commit.files {
 			let name = file
 				.previous_filename
@@ -484,12 +498,14 @@ async fn render_commit<C: HttpClient + Sync>(
 					|| file.filename.clone(),
 					|previous| format!("{previous} → {}", file.filename),
 				);
-			markdown.push_str(&format!(
+			write!(
+				markdown,
 				"### {name}\n\n{} · +{} −{}\n\n",
 				file.status, file.additions, file.deletions
-			));
+			)
+			.expect("writing to a String cannot fail");
 			if let Some(patch) = file.patch.as_deref().filter(|patch| !patch.is_empty()) {
-				markdown.push_str(&format!("```diff\n{patch}\n```\n\n"));
+				write!(markdown, "```diff\n{patch}\n```\n\n").expect("writing to a String cannot fail");
 			} else {
 				markdown.push_str("*No textual diff (binary or too large).*\n\n");
 			}

@@ -1,6 +1,9 @@
 //! Hacker News item and listing renderer backed by the Firebase API.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+	fmt::Write,
+	time::{SystemTime, UNIX_EPOCH},
+};
 
 use futures::future::join_all;
 use omp_core::Str;
@@ -83,12 +86,11 @@ pub(super) async fn render<C: HttpClient + Sync>(
 		_ => return Ok(None),
 	};
 
-	let response = match client
+	let Ok(response) = client
 		.get(HttpRequest::new(format!("{API_BASE}/{endpoint}")))
 		.await
-	{
-		Ok(response) => response,
-		Err(_) => return Ok(Some(error_result(fetch_error))),
+	else {
+		return Ok(Some(error_result(fetch_error)));
 	};
 	if !response.is_success() {
 		return Ok(Some(error_result(fetch_error)));
@@ -180,11 +182,8 @@ async fn render_listing<C: HttpClient + Sync>(client: &C, ids: &[u64], title: &s
 	let stories = fetch_items(client, ids, LISTING_LIMIT).await;
 	let mut output = format!("# {title}\n\n");
 	for (index, story) in stories.iter().enumerate() {
-		output.push_str(&format!(
-			"{}. **{}**\n",
-			index + 1,
-			story.title.as_deref().unwrap_or("undefined")
-		));
+		let _ =
+			writeln!(output, "{}. **{}**", index + 1, story.title.as_deref().unwrap_or("undefined"));
 		if let Some(url) = story.url.as_deref().filter(|url| !url.is_empty()) {
 			output.push_str("   ");
 			output.push_str(url);

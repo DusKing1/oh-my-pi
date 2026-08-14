@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use html_to_markdown_rs::{ConversionOptions, TierStrategy};
+use html_to_markdown_rs::{ConversionOptions, PreprocessingOptions, TierStrategy};
 use omp_core::Str;
 use quick_xml::{Reader, XmlVersion, events::Event};
 
@@ -35,7 +35,7 @@ impl Node {
 			.map(String::as_str)
 	}
 
-	fn elements(&self) -> impl Iterator<Item = &Node> {
+	fn elements(&self) -> impl Iterator<Item = &Self> {
 		self.children.iter().filter_map(|child| match child {
 			Content::Element(node) => Some(node),
 			Content::Text(_) => None,
@@ -105,16 +105,17 @@ pub(super) fn convert(bytes: &[u8]) -> Result<(Str, Option<Str>), MarkitError> {
 }
 
 fn epub_html_options() -> ConversionOptions {
-	let mut options = ConversionOptions::default();
-	options.bullets = "-".to_owned();
-	options.autolinks = false;
-	options.compact_tables = true;
-	options.escape_asterisks = true;
-	options.escape_underscores = true;
-	options.extract_metadata = false;
-	options.preprocessing.enabled = false;
-	options.tier_strategy = TierStrategy::Tier2;
-	options
+	ConversionOptions {
+		bullets: "-".into(),
+		autolinks: false,
+		compact_tables: true,
+		escape_asterisks: true,
+		escape_underscores: true,
+		extract_metadata: false,
+		preprocessing: PreprocessingOptions { enabled: false, ..Default::default() },
+		tier_strategy: TierStrategy::Tier2,
+		..Default::default()
+	}
 }
 
 fn parse_container(xml: &str) -> Result<String, MarkitError> {
@@ -282,13 +283,14 @@ fn find_cell_start(html: &str, tag: &str) -> Option<usize> {
 fn join_cell_paragraphs(inner: &str) -> String {
 	let leading = inner.len() - inner.trim_start_matches(char::is_whitespace).len();
 	let after_leading = &inner[leading..];
-	let mut body = inner;
-	if after_leading
+	let mut body = if after_leading
 		.get(..3)
 		.is_some_and(|tag| tag.eq_ignore_ascii_case("<p>"))
 	{
-		body = &after_leading[3..];
-	}
+		&after_leading[3..]
+	} else {
+		inner
+	};
 	let trimmed_end = body.trim_end_matches(char::is_whitespace);
 	if trimmed_end
 		.get(trimmed_end.len().saturating_sub(4)..)

@@ -34,14 +34,14 @@ impl Node {
 			.map(String::as_str)
 	}
 
-	fn child(&self, name: &str) -> Option<&Node> {
+	fn child(&self, name: &str) -> Option<&Self> {
 		self.children.iter().find_map(|child| match child {
 			Content::Element(node) if local(&node.name) == name => Some(node),
 			_ => None,
 		})
 	}
 
-	fn elements(&self) -> impl Iterator<Item = &Node> {
+	fn elements(&self) -> impl Iterator<Item = &Self> {
 		self.children.iter().filter_map(|child| match child {
 			Content::Element(node) => Some(node),
 			Content::Text(_) => None,
@@ -422,14 +422,14 @@ fn render_paragraph(node: &Node, context: &mut Context, in_table: bool) -> Optio
 	if let Some((id, level)) = numbering {
 		let ordered = context
 			.numbering
-			.get(&(id.clone(), level))
+			.get(&(id, level))
 			.copied()
 			.unwrap_or(NumberLevel { ordered: true })
 			.ordered;
 		let marker = if ordered {
 			let counter = context.counters.entry((ordered, level)).or_insert(0);
 			*counter += 1;
-			format!("{}.", counter)
+			format!("{counter}.")
 		} else {
 			"-".to_owned()
 		};
@@ -613,7 +613,7 @@ fn render_table(table: &Node, context: &mut Context) -> String {
 		rows.push(cells);
 		active_merges = next_merges;
 	}
-	let width = rows.first().map(Vec::len).unwrap_or(0);
+	let width = rows.first().map_or(0, Vec::len);
 	if width == 0 {
 		return String::new();
 	}

@@ -2,19 +2,19 @@ use omp_core::Str;
 use omp_tool::{Part, PromptCaps};
 
 /// Grouped path and directory-tree rendering.
-pub(crate) mod paths;
+pub mod paths;
 /// Shared line, byte, and column truncation.
-pub(crate) mod truncate;
+pub mod truncate;
 
 /// Accumulates whole UTF-8 fragments without splitting a caller-owned unit.
-pub(crate) struct TextProjection {
+pub struct TextProjection {
 	text:      String,
 	max_bytes: usize,
 	truncated: bool,
 }
 
 impl TextProjection {
-	pub(crate) fn new(caps: &PromptCaps) -> Option<Self> {
+	pub(crate) fn new(caps: PromptCaps) -> Option<Self> {
 		(caps.maximum_parts != 0 && caps.maximum_text_bytes != 0).then(|| Self {
 			text:      String::new(),
 			max_bytes: usize::try_from(caps.maximum_text_bytes).unwrap_or(usize::MAX),

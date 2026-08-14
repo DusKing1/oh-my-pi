@@ -166,7 +166,7 @@ trait ErasedTool: Send + Sync {
 		&self,
 		verdict: &[u8],
 		recorded_useless: bool,
-		caps: &PromptCaps,
+		caps: PromptCaps,
 	) -> Result<ProjectedVerdict, RegistryError>;
 	fn invoke_input(
 		&self,
@@ -203,7 +203,7 @@ impl ErasedTool for Worker {
 		&self,
 		_verdict: &[u8],
 		_recorded_useless: bool,
-		_caps: &PromptCaps,
+		_caps: PromptCaps,
 	) -> Result<ProjectedVerdict, RegistryError> {
 		Err(external_error(&self.spec, "project_verdict"))
 	}
@@ -321,18 +321,18 @@ impl<T: Tool> ErasedTool for Registered<T> {
 		&self,
 		verdict: &[u8],
 		recorded_useless: bool,
-		caps: &PromptCaps,
+		caps: PromptCaps,
 	) -> Result<ProjectedVerdict, RegistryError> {
 		let verdict: Verdict<T::Payload, T::Fault> = serde_json::from_slice(verdict)
 			.map_err(|_| RegistryError::VerdictShape(self.tool.spec().name.clone()))?;
 		Ok(match &verdict {
 			Verdict::Ok(payload) => ProjectedVerdict {
-				parts:    self.tool.prompt(Ok(payload), caps),
+				parts:    self.tool.prompt(Ok(payload), &caps),
 				is_error: false,
 				useless:  recorded_useless,
 			},
 			Verdict::Fault(fault) => ProjectedVerdict {
-				parts:    self.tool.prompt(Err(fault), caps),
+				parts:    self.tool.prompt(Err(fault), &caps),
 				is_error: true,
 				useless:  recorded_useless,
 			},
@@ -519,7 +519,7 @@ impl Registry {
 			.get(&identity.name)
 			.and_then(|versions| versions.get(&identity.rev))
 			.ok_or_else(|| RegistryError::UnknownTool(identity.name.clone()))?;
-		entry.project_verdict(verdict, recorded_useless, caps)
+		entry.project_verdict(verdict, recorded_useless, *caps)
 	}
 
 	/// Projects one exact serialized update through its registered typed tool.
@@ -715,7 +715,7 @@ fn external_error(spec: &crate::ToolSpec, operation: &'static str) -> RegistryEr
 	RegistryError::UnsupportedExternal { name: spec.name.clone(), rev: spec.rev.clone(), operation }
 }
 
-fn grammar_syntax(syntax: GrammarSyntax) -> ToolGrammarSyntax {
+const fn grammar_syntax(syntax: GrammarSyntax) -> ToolGrammarSyntax {
 	match syntax {
 		GrammarSyntax::Lark => ToolGrammarSyntax::Lark,
 		GrammarSyntax::Regex => ToolGrammarSyntax::Regex,
@@ -723,7 +723,7 @@ fn grammar_syntax(syntax: GrammarSyntax) -> ToolGrammarSyntax {
 	}
 }
 
-fn grammar_bit(syntax: GrammarSyntax) -> GrammarBits {
+const fn grammar_bit(syntax: GrammarSyntax) -> GrammarBits {
 	match syntax {
 		GrammarSyntax::Lark => GrammarBits::LARK,
 		GrammarSyntax::Regex => GrammarBits::REGEX,
@@ -731,7 +731,7 @@ fn grammar_bit(syntax: GrammarSyntax) -> GrammarBits {
 	}
 }
 
-fn grammar_name(syntax: GrammarSyntax) -> &'static str {
+const fn grammar_name(syntax: GrammarSyntax) -> &'static str {
 	match syntax {
 		GrammarSyntax::Lark => "lark",
 		GrammarSyntax::Regex => "regex",
@@ -741,7 +741,7 @@ fn grammar_name(syntax: GrammarSyntax) -> &'static str {
 
 fn dropped(name: &Str, feature: &str, reason: &'static str) -> Adjustment {
 	Adjustment::Dropped {
-		feature: FeatureId(Str::from(format!("tool.{}.{}", name, feature))),
+		feature: FeatureId(Str::from(format!("tool.{name}.{feature}"))),
 		reason:  ReasonId(Str::from(reason)),
 	}
 }

@@ -273,7 +273,7 @@ fn valid_eocd(eocd: &EndOfCentralDirectory, comment: &[u8]) -> bool {
 		&& (eocd.entries.get() != 0 || eocd.directory_size.get() == 0)
 }
 
-pub(crate) fn has_eocd(bytes: &[u8]) -> bool {
+pub fn has_eocd(bytes: &[u8]) -> bool {
 	find_eocd(bytes).is_ok()
 }
 

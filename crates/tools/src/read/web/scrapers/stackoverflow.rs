@@ -1,5 +1,7 @@
 //! Stack Exchange question renderer backed by the public Stack Exchange API.
 
+use std::fmt::Write as _;
+
 use omp_core::Str;
 use serde::Deserialize;
 use url::Url;
@@ -86,17 +88,20 @@ async fn render_inner<C: HttpClient + Sync>(
 	};
 
 	let mut markdown = format!("# {}\n\n", question.title);
-	markdown
-		.push_str(&format!("**Score:** {} · **Answers:** {}", question.score, question.answer_count));
+	write!(markdown, "**Score:** {} · **Answers:** {}", question.score, question.answer_count)
+		.expect("writing to String cannot fail");
 	if question.is_answered {
 		markdown.push_str(" (Answered)");
 	}
-	markdown.push_str(&format!("\n**Tags:** {}\n", question.tags.join(", ")));
-	markdown.push_str(&format!(
-		"**Asked by:** {} · {}\n\n",
+	writeln!(markdown, "\n**Tags:** {}", question.tags.join(", "))
+		.expect("writing to String cannot fail");
+	writeln!(
+		markdown,
+		"**Asked by:** {} · {}\n",
 		question.owner.display_name,
 		format_unix_date(question.creation_date.saturating_mul(1_000))
-	));
+	)
+	.expect("writing to String cannot fail");
 	markdown.push_str("---\n\n## Question\n\n");
 	markdown.push_str(&clean_html(&question.body)?);
 	markdown.push_str("\n\n");
@@ -105,24 +110,26 @@ async fn render_inner<C: HttpClient + Sync>(
 		"{API_ROOT}/questions/{}/answers?order=desc&sort=votes&site={}&filter=withbody",
 		target.question_id, target.site
 	);
-	if let Some(answer_data) = get_json::<_, ApiItems<Answer>>(client, answers_url).await {
-		if !answer_data.items.is_empty() {
-			markdown.push_str("---\n\n## Answers\n\n");
-			// The API's vote order is authoritative. Acceptance is metadata,
-			// not a reason to move an answer ahead of a more highly-voted one.
-			for answer in answer_data.items.into_iter().take(ANSWER_LIMIT) {
-				let accepted = if answer.is_accepted {
-					" (Accepted)"
-				} else {
-					""
-				};
-				markdown.push_str(&format!(
-					"### Score: {}{} · by {}\n\n",
-					answer.score, accepted, answer.owner.display_name
-				));
-				markdown.push_str(&clean_html(&answer.body)?);
-				markdown.push_str("\n\n---\n\n");
-			}
+	if let Some(answer_data) = get_json::<_, ApiItems<Answer>>(client, answers_url).await
+		&& !answer_data.items.is_empty()
+	{
+		markdown.push_str("---\n\n## Answers\n\n");
+		// The API's vote order is authoritative. Acceptance is metadata,
+		// not a reason to move an answer ahead of a more highly-voted one.
+		for answer in answer_data.items.into_iter().take(ANSWER_LIMIT) {
+			let accepted = if answer.is_accepted {
+				" (Accepted)"
+			} else {
+				""
+			};
+			writeln!(
+				markdown,
+				"### Score: {}{} · by {}\n",
+				answer.score, accepted, answer.owner.display_name
+			)
+			.expect("writing to String cannot fail");
+			markdown.push_str(&clean_html(&answer.body)?);
+			markdown.push_str("\n\n---\n\n");
 		}
 	}
 
@@ -283,14 +290,14 @@ mod tests {
 		}
 	}
 
-	fn response(status: u16, body: impl Into<Bytes>) -> Result<HttpResponse, WebError> {
-		Ok(HttpResponse {
+	fn response(status: u16, body: impl Into<Bytes>) -> HttpResponse {
+		HttpResponse {
 			final_url: "https://api.stackexchange.com/2.3/test".into(),
 			status,
 			content_type: Some("application/json".into()),
 			headers: SmallVec::new(),
 			body: body.into(),
-		})
+		}
 	}
 
 	#[test]
@@ -328,7 +335,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn renders_question_and_first_five_answers_in_api_vote_order() {
-		let client = FakeClient::new([response(200, QUESTION), response(200, ANSWERS)]);
+		let client = FakeClient::new([Ok(response(200, QUESTION)), Ok(response(200, ANSWERS))]);
 		let url = Url::parse("https://unix.stackexchange.com/questions/123/example").unwrap();
 		let result = render(&client, &url).await.unwrap().unwrap();
 
@@ -381,8 +388,10 @@ mod tests {
 			}]
 		})
 		.to_string();
-		let client =
-			FakeClient::new([response(200, Bytes::from(question)), response(200, r#"{"items":[]}"#)]);
+		let client = FakeClient::new([
+			Ok(response(200, Bytes::from(question))),
+			Ok(response(200, r#"{"items":[]}"#)),
+		]);
 		let url = Url::parse("https://stackoverflow.com/questions/1/large").unwrap();
 		let result = render(&client, &url).await.unwrap().unwrap();
 
@@ -398,9 +407,9 @@ mod tests {
 		let url = Url::parse("https://stackoverflow.com/questions/123/example").unwrap();
 
 		for failed_question in [
-			response(503, "unavailable"),
-			response(200, "{not json"),
-			response(200, r#"{"items":[]}"#),
+			Ok(response(503, "unavailable")),
+			Ok(response(200, "{not json")),
+			Ok(response(200, r#"{"items":[]}"#)),
 			Err(WebError::request("offline")),
 		] {
 			let client = FakeClient::new([failed_question]);
@@ -408,7 +417,7 @@ mod tests {
 		}
 
 		let client =
-			FakeClient::new([response(200, QUESTION), Err(WebError::request("answers offline"))]);
+			FakeClient::new([Ok(response(200, QUESTION)), Err(WebError::request("answers offline"))]);
 		let result = render(&client, &url).await.unwrap().unwrap();
 		assert_eq!(
 			result.content.as_str(),

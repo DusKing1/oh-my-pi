@@ -72,7 +72,7 @@ impl FakeTool {
 		}
 	}
 
-	fn lifting_from(mut self, n: u16) -> Self {
+	const fn lifting_from(mut self, n: u16) -> Self {
 		self.lift_from = Some(n);
 		self
 	}
@@ -179,7 +179,7 @@ impl Tool for PullingTool {
 			let ParamError::Args(issue) = error else {
 				panic!("typed pull must report an argument issue")
 			};
-			yield Ev::Args(issue);
+			yield Ev::Args(*issue);
 			yield Ev::Update(Str::from("post-terminal update"));
 			yield Ev::Done(Outcome::Done {
 				result: Ok(FakePayload {
@@ -441,7 +441,7 @@ fn advertisement_contains_only_the_live_schema_and_preserves_supported_grammar()
 	assert_eq!(grammar.definition, r"live=(true|false)");
 	assert_eq!(tool.disposition, Some(ConstraintDisposition::Required));
 	assert_eq!(tool.priority, Some(7));
-	assert!(tool.adjustments.is_empty());
+	assert_eq!(tool.adjustments, [] as [omp_llm_inference::Adjustment; 0]);
 }
 
 #[test]
@@ -637,7 +637,7 @@ fn prompt_projection_is_exact_and_deterministic_for_the_same_input() {
 		.unwrap();
 	assert_eq!(first, second);
 	assert_eq!(first, vec![
-		Part::Text { text: Str::from("renderer|ok:engine:{value:9}|3/256/true") },
+		Part::Text { text: Str::from(format!("renderer|ok:engine:{}|3/256/true", "{value:9}")) },
 		Part::Json { json: Bytes::from_static(br#""ok:engine:{value:9}""#) },
 	]);
 }

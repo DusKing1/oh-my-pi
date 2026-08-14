@@ -35,7 +35,7 @@ pub enum Scraper {
 	GitHub,
 	/// GitLab repositories and content.
 	GitLab,
-	/// YouTube videos and channels.
+	/// `YouTube` videos and channels.
 	YouTube,
 	/// Twitter and X posts.
 	Twitter,

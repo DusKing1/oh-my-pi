@@ -1,5 +1,7 @@
 //! Anonymous GitLab API renderer.
 
+use std::fmt::Write as _;
+
 use omp_core::Str;
 use serde::Deserialize;
 use smallvec::SmallVec;
@@ -54,33 +56,39 @@ pub(super) async fn render<C: HttpClient + Sync>(
 				out.push_str(&description);
 				out.push_str("\n\n");
 			}
-			out.push_str(&format!(
-				"**Stars:** {} · **Forks:** {} · **Issues:** {}\n",
+			writeln!(
+				out,
+				"**Stars:** {} · **Forks:** {} · **Issues:** {}",
 				format_number(repo.star_count),
 				format_number(repo.forks_count),
 				format_number(repo.open_issues_count)
-			));
-			out.push_str(&format!(
-				"**Visibility:** {} · **Default Branch:** {}\n",
+			)
+			.expect("writing to String cannot fail");
+			writeln!(
+				out,
+				"**Visibility:** {} · **Default Branch:** {}",
 				repo.visibility,
 				repo.default_branch.as_deref().unwrap_or("null")
-			));
+			)
+			.expect("writing to String cannot fail");
 			if let Some(topics) = repo.topics.filter(|topics| !topics.is_empty()) {
-				out.push_str(&format!("**Topics:** {}\n", topics.join(", ")));
+				writeln!(out, "**Topics:** {}", topics.join(", "))
+					.expect("writing to String cannot fail");
 			}
-			out.push_str(&format!(
+			write!(
+				out,
 				"**Created:** {} · **Last Activity:** {}\n\n",
 				format_iso_date(&repo.created_at),
 				format_iso_date(&repo.last_activity_at)
-			));
-			if let Some(readme_url) = repo.readme_url.filter(|url| !url.is_empty()) {
-				if let Some(readme) = get_text(client, readme_url).await {
-					if !readme.trim().is_empty() {
-						out.push_str("---\n\n## README\n\n");
-						out.push_str(&readme);
-						out.push('\n');
-					}
-				}
+			)
+			.expect("writing to String cannot fail");
+			if let Some(readme_url) = repo.readme_url.filter(|url| !url.is_empty())
+				&& let Some(readme) = get_text(client, readme_url).await
+				&& !readme.trim().is_empty()
+			{
+				out.push_str("---\n\n## README\n\n");
+				out.push_str(&readme);
+				out.push('\n');
 			}
 			(out, None, "gitlab-repo", "Fetched repository via GitLab API")
 		},
@@ -130,16 +138,18 @@ pub(super) async fn render<C: HttpClient + Sync>(
 					let dirs: Vec<_> = items.iter().filter(|i| i.kind == "tree").collect();
 					let files: Vec<_> = items.iter().filter(|i| i.kind == "blob").collect();
 					if !dirs.is_empty() {
-						out.push_str(&format!("## Directories ({})\n\n", dirs.len()));
+						write!(out, "## Directories ({})\n\n", dirs.len())
+							.expect("writing to String cannot fail");
 						for item in dirs {
-							out.push_str(&format!("- 📁 {}/\n", item.name));
+							writeln!(out, "- 📁 {}/", item.name).expect("writing to String cannot fail");
 						}
 						out.push('\n');
 					}
 					if !files.is_empty() {
-						out.push_str(&format!("## Files ({})\n\n", files.len()));
+						write!(out, "## Files ({})\n\n", files.len())
+							.expect("writing to String cannot fail");
 						for item in files {
-							out.push_str(&format!("- 📄 {}\n", item.name));
+							writeln!(out, "- 📄 {}", item.name).expect("writing to String cannot fail");
 						}
 					}
 					(out, None, "gitlab-tree", "Fetched directory tree via GitLab API")
@@ -150,21 +160,27 @@ pub(super) async fn render<C: HttpClient + Sync>(
 						return Ok(None);
 					};
 					let mut out = format!("# Issue #{id}: {}\n\n", issue.title);
-					out.push_str(&format!(
-						"**State:** {} · **Author:** {} (@{})\n",
+					writeln!(
+						out,
+						"**State:** {} · **Author:** {} (@{})",
 						issue.state.to_uppercase(),
 						issue.author.name,
 						issue.author.username
-					));
-					out.push_str(&format!(
-						"**Created:** {} · **Updated:** {}\n",
+					)
+					.expect("writing to String cannot fail");
+					writeln!(
+						out,
+						"**Created:** {} · **Updated:** {}",
 						format_iso_date(&issue.created_at),
 						format_iso_date(&issue.updated_at)
-					));
-					out.push_str(&format!(
-						"**Upvotes:** {} · **Downvotes:** {} · **Comments:** {}\n",
+					)
+					.expect("writing to String cannot fail");
+					writeln!(
+						out,
+						"**Upvotes:** {} · **Downvotes:** {} · **Comments:** {}",
 						issue.upvotes, issue.downvotes, issue.user_notes_count
-					));
+					)
+					.expect("writing to String cannot fail");
 					append_metadata(&mut out, &issue.labels, &issue.assignees);
 					out.push_str("\n---\n\n## Description\n\n");
 					if let Some(description) = issue
@@ -187,22 +203,29 @@ pub(super) async fn render<C: HttpClient + Sync>(
 					if mr.draft {
 						out.push_str("**[DRAFT]** ");
 					}
-					out.push_str(&format!(
-						"**State:** {} · **Author:** {} (@{})\n",
+					writeln!(
+						out,
+						"**State:** {} · **Author:** {} (@{})",
 						mr.state.to_uppercase(),
 						mr.author.name,
 						mr.author.username
-					));
-					out.push_str(&format!("**Branch:** {} → {}\n", mr.source_branch, mr.target_branch));
-					out.push_str(&format!(
-						"**Created:** {} · **Updated:** {}\n",
+					)
+					.expect("writing to String cannot fail");
+					writeln!(out, "**Branch:** {} → {}", mr.source_branch, mr.target_branch)
+						.expect("writing to String cannot fail");
+					writeln!(
+						out,
+						"**Created:** {} · **Updated:** {}",
 						format_iso_date(&mr.created_at),
 						format_iso_date(&mr.updated_at)
-					));
-					out.push_str(&format!(
-						"**Merge Status:** {} · **Upvotes:** {} · **Downvotes:** {} · **Comments:** {}\n",
+					)
+					.expect("writing to String cannot fail");
+					writeln!(
+						out,
+						"**Merge Status:** {} · **Upvotes:** {} · **Downvotes:** {} · **Comments:** {}",
 						mr.merge_status, mr.upvotes, mr.downvotes, mr.user_notes_count
-					));
+					)
+					.expect("writing to String cannot fail");
 					append_metadata(&mut out, &mr.labels, &mr.assignees);
 					out.push_str("\n---\n\n## Description\n\n");
 					if let Some(description) = mr
@@ -319,17 +342,19 @@ fn parse_js_id(value: &str) -> Option<i64> {
 
 fn append_metadata(out: &mut String, labels: &[String], assignees: &[Person]) {
 	if !labels.is_empty() {
-		out.push_str(&format!("**Labels:** {}\n", labels.join(", ")));
+		writeln!(out, "**Labels:** {}", labels.join(", ")).expect("writing to String cannot fail");
 	}
 	if !assignees.is_empty() {
-		out.push_str(&format!(
-			"**Assignees:** {}\n",
+		writeln!(
+			out,
+			"**Assignees:** {}",
 			assignees
 				.iter()
-				.map(|a| a.name.as_str())
+				.map(|assignee| assignee.name.as_str())
 				.collect::<Vec<_>>()
 				.join(", ")
-		));
+		)
+		.expect("writing to String cannot fail");
 	}
 }
 
@@ -446,14 +471,14 @@ mod tests {
 		}
 	}
 
-	fn response(status: u16, body: &'static str) -> Result<HttpResponse, WebError> {
-		Ok(HttpResponse {
+	fn response(status: u16, body: &'static str) -> HttpResponse {
+		HttpResponse {
 			final_url: Str::from("https://gitlab.com/fixture"),
 			status,
 			content_type: Some(Str::from("application/json")),
 			headers: SmallVec::new(),
 			body: Bytes::from_static(body.as_bytes()),
-		})
+		}
 	}
 
 	#[test]
@@ -506,7 +531,8 @@ mod tests {
 			"created_at":"2024-01-02T03:04:05Z","last_activity_at":"2025-06-07T08:09:10Z",
 			"topics":["rust","agents"],"readme_url":"https://gitlab.com/group/project/-/raw/main/README.md"
 		}"#;
-		let client = FakeClient::new([response(200, project), response(200, "# Welcome\n\nHello")]);
+		let client =
+			FakeClient::new([Ok(response(200, project)), Ok(response(200, "# Welcome\n\nHello"))]);
 		let url = Url::parse("https://gitlab.com/group/project").unwrap();
 		let result = render(&client, &url).await.unwrap().unwrap();
 
@@ -539,7 +565,7 @@ mod tests {
 			"last_activity_at":"2024-01-03","readme_url":"https://gitlab.com/readme"
 		}"#;
 		let client = FakeClient::new([
-			response(200, project),
+			Ok(response(200, project)),
 			Err(WebError::request("README transport failure")),
 		]);
 		let result = render(&client, &Url::parse("https://gitlab.com/g/p").unwrap())
@@ -555,8 +581,10 @@ mod tests {
 
 	#[tokio::test]
 	async fn file_route_encodes_project_ref_and_path_and_returns_raw_text() {
-		let client =
-			FakeClient::new([response(200, r#"{"id":42}"#), response(200, "fn main() {}\n\n\n")]);
+		let client = FakeClient::new([
+			Ok(response(200, r#"{"id":42}"#)),
+			Ok(response(200, "fn main() {}\n\n\n")),
+		]);
 		let url = Url::parse(
 			"https://gitlab.com/group%2Fsub/project%20name/-/blob/feature%2Fdocs/src/a%20b.rs",
 		)
@@ -586,7 +614,7 @@ mod tests {
 			{"name":"tests","type":"tree","path":"tests","mode":"040000"},
 			{"name":"README.md","type":"blob","path":"README.md","mode":"100644"}
 		]"#;
-		let client = FakeClient::new([response(200, r#"{"id":7}"#), response(200, tree)]);
+		let client = FakeClient::new([Ok(response(200, r#"{"id":7}"#)), Ok(response(200, tree))]);
 		let url =
 			Url::parse("https://gitlab.com/g/p/-/tree/release%2Fnext/docs%20and%20guides").unwrap();
 		let result = render(&client, &url).await.unwrap().unwrap();
@@ -607,7 +635,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn root_tree_uses_empty_path_and_renders_root_heading() {
-		let client = FakeClient::new([response(200, r#"{"id":9}"#), response(200, "[]")]);
+		let client = FakeClient::new([Ok(response(200, r#"{"id":9}"#)), Ok(response(200, "[]"))]);
 		let result =
 			render(&client, &Url::parse("https://gitlab.com/group/project/-/tree/main").unwrap())
 				.await
@@ -633,9 +661,11 @@ mod tests {
 
 	#[tokio::test]
 	async fn malformed_api_responses_fall_back_without_rendering() {
-		for response in
-			[response(404, "not found"), response(200, "not json"), Err(WebError::request("offline"))]
-		{
+		for response in [
+			Ok(response(404, "not found")),
+			Ok(response(200, "not json")),
+			Err(WebError::request("offline")),
+		] {
 			let client = FakeClient::new([response]);
 			let result = render(&client, &Url::parse("https://gitlab.com/group/project").unwrap())
 				.await
@@ -646,7 +676,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn missing_project_id_falls_back_before_content_api_call() {
-		let client = FakeClient::new([response(200, r#"{"id":0}"#)]);
+		let client = FakeClient::new([Ok(response(200, r#"{"id":0}"#))]);
 		let result = render(
 			&client,
 			&Url::parse("https://gitlab.com/group/project/-/blob/main/file.rs").unwrap(),

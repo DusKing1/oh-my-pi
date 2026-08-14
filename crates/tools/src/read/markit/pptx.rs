@@ -1,4 +1,4 @@
-//! PowerPoint Open XML to deterministic Markdown conversion.
+//! `PowerPoint` Open XML to deterministic Markdown conversion.
 
 use std::collections::HashMap;
 

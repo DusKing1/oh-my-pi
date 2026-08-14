@@ -1,6 +1,9 @@
 //! Pi-compatible whole-file writes over the session document host.
 
-use std::{fmt, future::Future};
+use std::{
+	fmt::{self, Write as _},
+	future::Future,
+};
 
 use async_stream::stream;
 use bytes::Bytes;
@@ -9,9 +12,8 @@ use omp_core::Str;
 use omp_hashline::format_hashline_header;
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, CommitError, Constraint, Ev, IncomingParams, InterruptWaitError,
-	Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
+	Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolParam, ToolSpec,
 };
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{read::selector::LiteralPathProbe, render::TextProjection};
@@ -33,15 +35,12 @@ const STRIPPED_NOTICE: &str =
 	"Note: auto-stripped hashline display prefixes from content before writing.";
 
 /// Model arguments for `write@1`.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[schemars(description = "")]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToolParam)]
 #[serde(deny_unknown_fields)]
 pub struct Params {
 	/// file path
-	#[schemars(with = "String")]
 	pub path:    Str,
 	/// file content
-	#[schemars(with = "String")]
 	pub content: Str,
 }
 
@@ -436,7 +435,7 @@ impl<D: WriteDocuments> Tool for WriteTool<D> {
 	}
 
 	fn prompt(&self, view: Result<&Payload, &Fault>, caps: &PromptCaps) -> Vec<Part> {
-		let Some(mut output) = TextProjection::new(caps) else {
+		let Some(mut output) = TextProjection::new(*caps) else {
 			return Vec::new();
 		};
 		match view {
@@ -707,25 +706,31 @@ fn render_payload(payload: &Payload) -> String {
 		output.push('\n');
 	}
 	match &payload.operation {
-		WriteOperation::Plain | WriteOperation::ArchiveMember => output.push_str(&format!(
+		WriteOperation::Plain | WriteOperation::ArchiveMember => write!(
+			output,
 			"Successfully wrote {} bytes to {}",
 			payload.reported_len, payload.display_path
-		)),
+		)
+		.expect("writing to String cannot fail"),
 		WriteOperation::SqliteInsert { table } => {
-			output.push_str(&format!("Inserted row into {table}"));
+			write!(output, "Inserted row into {table}").expect("writing to String cannot fail");
 		},
 		WriteOperation::SqliteUpdate { table, key, changed } => {
 			if *changed {
-				output.push_str(&format!("Updated row '{key}' in {table}"));
+				write!(output, "Updated row '{key}' in {table}")
+					.expect("writing to String cannot fail");
 			} else {
-				output.push_str(&format!("No row updated in {table} for key '{key}'"));
+				write!(output, "No row updated in {table} for key '{key}'")
+					.expect("writing to String cannot fail");
 			}
 		},
 		WriteOperation::SqliteDelete { table, key, changed } => {
 			if *changed {
-				output.push_str(&format!("Deleted row '{key}' from {table}"));
+				write!(output, "Deleted row '{key}' from {table}")
+					.expect("writing to String cannot fail");
 			} else {
-				output.push_str(&format!("No row deleted from {table} for key '{key}'"));
+				write!(output, "No row deleted from {table} for key '{key}'")
+					.expect("writing to String cannot fail");
 			}
 		},
 	}
@@ -740,7 +745,7 @@ fn render_payload(payload: &Payload) -> String {
 	output
 }
 
-fn done(result: Result<Payload, Fault>) -> Ev<Update, Payload, Fault> {
+const fn done(result: Result<Payload, Fault>) -> Ev<Update, Payload, Fault> {
 	Ev::Done(Outcome::Done { result, useless: false })
 }
 
@@ -749,7 +754,7 @@ fn param_event(error: ParamError) -> Ev<Update, Payload, Fault> {
 		ParamError::Args(issue) if issue.kind == ArgIssueKind::Aborted => {
 			Ev::Aborted(Abort::InputDropped)
 		},
-		ParamError::Args(issue) => Ev::Args(issue),
+		ParamError::Args(issue) => Ev::Args(*issue),
 		ParamError::Interrupted(interrupt) => {
 			Ev::Aborted(Abort::Interrupted { reason: interrupt.reason })
 		},

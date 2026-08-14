@@ -1,7 +1,9 @@
 //! Render compact summaries for V8 and macOS sampling profiles.
 
 use std::{
+	cmp::Reverse,
 	collections::{HashMap, HashSet},
+	fmt::Write as _,
 	path::Path,
 };
 
@@ -58,7 +60,7 @@ struct ProfileNode {
 	label:     String,
 	value:     f64,
 	recursion: usize,
-	children:  Vec<ProfileNode>,
+	children:  Vec<Self>,
 }
 
 fn merge_into(a: &mut ProfileNode, b: ProfileNode) {
@@ -107,7 +109,7 @@ fn format_pct(value: f64, total: f64) -> String {
 fn decorated_label(node: &ProfileNode) -> String {
 	let mut label = truncate_chars(&node.label, MAX_LABEL_CHARS);
 	if node.recursion > 0 {
-		label.push_str(&format!(" [recursive ×{}]", node.recursion + 1));
+		write!(label, " [recursive ×{}]", node.recursion + 1).expect("writing to String");
 	}
 	label
 }
@@ -230,12 +232,11 @@ fn id_array(value: Option<&Value>) -> Option<Vec<i64>> {
 
 fn parse_cpu_profile(text: &str) -> Option<CpuProfile> {
 	let mut data: Value = serde_json::from_str(text).ok()?;
-	if data.get("nodes").is_none() {
-		if let Some(profile) = data.get_mut("profile") {
-			if profile.is_object() {
-				data = profile.take();
-			}
-		}
+	if data.get("nodes").is_none()
+		&& let Some(profile) = data.get_mut("profile")
+		&& profile.is_object()
+	{
+		data = profile.take();
 	}
 	let object = data.as_object()?;
 	let raw_nodes = object.get("nodes")?.as_array()?;
@@ -283,10 +284,10 @@ fn parse_cpu_profile(text: &str) -> Option<CpuProfile> {
 
 fn short_url(url: &str) -> String {
 	let value = url.strip_prefix("file://").unwrap_or(url);
-	if let Some(ix) = value.rfind("node_modules/") {
-		if ix > 0 {
-			return value[ix..].to_owned();
-		}
+	if let Some(ix) = value.rfind("node_modules/")
+		&& ix > 0
+	{
+		return value[ix..].to_owned();
 	}
 	let parts: Vec<&str> = value.split('/').collect();
 	if parts.len() > 4 {
@@ -315,15 +316,15 @@ fn frame_label(frame: &CpuFrame) -> String {
 
 fn cpu_self_micros(profile: &CpuProfile) -> HashMap<i64, f64> {
 	let mut result = HashMap::new();
-	if let (Some(samples), Some(deltas)) = (&profile.samples, &profile.time_deltas) {
-		if !samples.is_empty() {
-			for (&id, &delta) in samples.iter().zip(deltas) {
-				if delta.is_finite() && delta > 0.0 {
-					*result.entry(id).or_insert(0.0) += delta;
-				}
+	if let (Some(samples), Some(deltas)) = (&profile.samples, &profile.time_deltas)
+		&& !samples.is_empty()
+	{
+		for (&id, &delta) in samples.iter().zip(deltas) {
+			if delta.is_finite() && delta > 0.0 {
+				*result.entry(id).or_insert(0.0) += delta;
 			}
-			return result;
 		}
+		return result;
 	}
 	let total_hits: f64 = profile.nodes.iter().map(|node| node.hit_count).sum();
 	if total_hits == 0.0 {
@@ -420,10 +421,8 @@ pub fn render_cpu_profile(text: &str) -> Option<String> {
 	let mut out = Vec::new();
 	let mut header = format!("V8 CPU profile: {:.2} s wall clock", duration / 1e6);
 	if sample_count > 0 {
-		header.push_str(&format!(
-			", {sample_count} samples (avg interval {:.0} µs)",
-			avg_interval.round()
-		));
+		write!(header, ", {sample_count} samples (avg interval {:.0} µs)", avg_interval.round())
+			.expect("writing to String");
 	}
 	out.push(header);
 	out.push(format!(
@@ -490,7 +489,7 @@ struct SampleFrame {
 	count:    u64,
 	symbol:   String,
 	module:   Option<String>,
-	children: Vec<SampleFrame>,
+	children: Vec<Self>,
 }
 
 struct SampleThread {
@@ -530,10 +529,10 @@ fn parse_analysis(line: &str) -> Option<(String, u64, u64)> {
 
 fn parse_frame_text(text: &str) -> (String, Option<String>) {
 	let mut value = text;
-	if let Some(ix) = value.rfind("  [") {
-		if value.ends_with(']') {
-			value = &value[..ix];
-		}
+	if let Some(ix) = value.rfind("  [")
+		&& value.ends_with(']')
+	{
+		value = &value[..ix];
 	}
 	if let Some(ix) = value.rfind(" + ") {
 		let suffix = &value[ix + 3..];
@@ -546,10 +545,10 @@ fn parse_frame_text(text: &str) -> (String, Option<String>) {
 			value = &value[..ix];
 		}
 	}
-	if let Some(ix) = value.rfind("  (in ") {
-		if value.ends_with(')') {
-			return (value[..ix].trim().to_owned(), Some(value[ix + 6..value.len() - 1].to_owned()));
-		}
+	if let Some(ix) = value.rfind("  (in ")
+		&& value.ends_with(')')
+	{
+		return (value[..ix].trim().to_owned(), Some(value[ix + 6..value.len() - 1].to_owned()));
 	}
 	(value.trim().to_owned(), None)
 }
@@ -725,15 +724,15 @@ const LEGACY_ESCAPES: &[(&str, &str)] = &[
 ];
 
 fn demangle_symbol(raw: &str) -> String {
-	if let Some(value) = raw.strip_prefix("_R") {
-		if let Some(result) = demangle_v0(value) {
-			return result;
-		}
+	if let Some(value) = raw.strip_prefix("_R")
+		&& let Some(result) = demangle_v0(value)
+	{
+		return result;
 	}
-	if let Some(value) = raw.strip_prefix("_ZN").or_else(|| raw.strip_prefix("__ZN")) {
-		if let Some(result) = demangle_legacy(value) {
-			return result;
-		}
+	if let Some(value) = raw.strip_prefix("_ZN").or_else(|| raw.strip_prefix("__ZN"))
+		&& let Some(result) = demangle_legacy(value)
+	{
+		return result;
 	}
 	raw.to_owned()
 }
@@ -753,16 +752,15 @@ fn demangle_v0(value: &str) -> Option<String> {
 			if bytes.get(k) == Some(&b'_') {
 				k += 1;
 			}
-			if let Some(ident) = value.get(k..k.saturating_add(len)) {
-				if ident.len() == len
-					&& ident
-						.bytes()
-						.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'_' | b'.' | b'$'))
-				{
-					parts.push(ident.to_owned());
-					i = k + len;
-					continue;
-				}
+			if let Some(ident) = value.get(k..k.saturating_add(len))
+				&& ident.len() == len
+				&& ident
+					.bytes()
+					.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'_' | b'.' | b'$'))
+			{
+				parts.push(ident.to_owned());
+				i = k + len;
+				continue;
 			}
 			i = j;
 		} else if matches!(bytes[i], b's' | b'B') {
@@ -863,7 +861,7 @@ fn dominant_wait(thread: &SampleThread) -> Option<String> {
 }
 
 fn sample_value(value: f64) -> String {
-	format!("{:.0}", value)
+	format!("{value:.0}")
 }
 
 /// Renders a macOS `/usr/bin/sample` call-tree summary, or `None` when the
@@ -914,9 +912,9 @@ pub fn render_sample_profile(text: &str) -> Option<String> {
 		max_samples,
 	);
 	if let Some(footprint) = &profile.header.footprint {
-		stats.push_str(&format!(" | Footprint: {footprint}"));
+		write!(stats, " | Footprint: {footprint}").expect("writing to String");
 		if let Some(peak) = &profile.header.footprint_peak {
-			stats.push_str(&format!(" (peak {peak})"));
+			write!(stats, " (peak {peak})").expect("writing to String");
 		}
 	}
 	out.push(stats);
@@ -962,7 +960,7 @@ pub fn render_sample_profile(text: &str) -> Option<String> {
 			}
 		}
 		if kept == 0 {
-			out.push(format!("  (no call path above {:.0} on-CPU samples)", min_value));
+			out.push(format!("  (no call path above {min_value:.0} on-CPU samples)"));
 		}
 	}
 	if !idle.is_empty() {
@@ -976,7 +974,7 @@ pub fn render_sample_profile(text: &str) -> Option<String> {
 			);
 			let state = dominant_wait(thread).map_or_else(
 				|| format!("{:.0}/{} samples on-CPU", cpu, thread.total),
-				|wait| format!("blocked in {wait} ({:.0} on-CPU)", cpu),
+				|wait| format!("blocked in {wait} ({cpu:.0} on-CPU)"),
 			);
 			out.push(format!("- {title}: {state}"));
 		}
@@ -1013,7 +1011,7 @@ pub fn render_sample_profile(text: &str) -> Option<String> {
 			aggregate(root, &mut cache, &mut totals);
 		}
 	}
-	totals.sort_by(|a, b| b.1.cmp(&a.1));
+	totals.sort_by_key(|(_, samples, _)| Reverse(*samples));
 	if !totals.is_empty() {
 		out.push(String::new());
 		out.push("## Top functions by self samples (process-wide, blocked time excluded)".to_owned());

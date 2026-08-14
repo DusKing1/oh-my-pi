@@ -167,7 +167,10 @@ impl Drop for TimeoutPause {
 }
 
 fn normalize_window(window: Option<Duration>) -> Option<Duration> {
-	window.map(|window| window.max(Duration::from_millis(1)))
+	match window {
+		Some(window) => Some(window.max(Duration::from_millis(1))),
+		None => None,
+	}
 }
 
 #[cfg(test)]

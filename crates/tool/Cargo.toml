@@ -21,9 +21,9 @@ futures = { workspace = true }
 omp-core = { workspace = true }
 omp-llm-catalog = { workspace = true }
 omp-llm-inference = { workspace = true }
+omp-macros = { workspace = true }
 omp-slopjson = { workspace = true }
 omp-proto = { workspace = true }
 serde = { workspace = true }
-schemars = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

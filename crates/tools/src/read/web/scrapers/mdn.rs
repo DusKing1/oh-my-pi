@@ -31,12 +31,11 @@ pub(super) async fn render<C: HttpClient + Sync>(
 		.strip_suffix('/')
 		.unwrap_or_else(|| url.as_str());
 	let json_url = format!("{base}/index.json");
-	let response = match client
+	let Ok(response) = client
 		.get(HttpRequest::new(json_url).with_header("Accept", "application/json"))
 		.await
-	{
-		Ok(response) => response,
-		Err(_) => return Ok(None),
+	else {
+		return Ok(None);
 	};
 	if !response.is_success() {
 		return Ok(None);
@@ -164,7 +163,7 @@ struct Document {
 	title:   String,
 	#[serde(default)]
 	summary: String,
-	#[allow(dead_code)]
+	#[allow(dead_code, reason = "MDN includes this required response field but rendering omits it")]
 	#[serde(default)]
 	mdn_url: String,
 	#[serde(default)]

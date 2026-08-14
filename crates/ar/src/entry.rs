@@ -34,20 +34,20 @@ impl CompressionMethod {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TarSparseExtent {
+pub struct TarSparseExtent {
 	pub(crate) offset: u64,
 	pub(crate) length: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TarSparse {
+pub enum TarSparse {
 	None,
 	OldGnu(SmallVec<TarSparseExtent, 4>),
 	Unsupported,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Storage {
+pub enum Storage {
 	Synthetic,
 	Zip {
 		compressed_size:     u64,

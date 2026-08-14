@@ -12,9 +12,8 @@ use omp_core::Str;
 use omp_hashline::format_hashline_header;
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, BlobRef, CommitError, Constraint, Ev, IncomingParams,
-	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
+	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolParam, ToolSpec,
 };
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -40,27 +39,23 @@ const NATIVE_GREP_MAX_FILE_BYTES: u32 = 4 * 1024 * 1024;
 const SEARCH_GREP_TIMEOUT_MS: u32 = 30_000;
 
 /// Model arguments for `grep@1`.
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToolParam)]
 #[serde(deny_unknown_fields)]
 pub struct Params {
 	/// regex pattern
-	#[schemars(with = "String")]
 	pub pattern:   Str,
 	/// file, directory, glob, internal URL, or "<file>:<lines>" selector to
 	/// search; pass several as a semicolon-delimited list ("src; tests").
 	/// Omitted -> searches the workspace root (".")
-	#[schemars(with = "omp_tool::OptionalSchema<String>")]
 	pub path:      Option<Str>,
 	/// case-sensitive search
 	#[serde(rename = "case")]
-	#[schemars(with = "omp_tool::OptionalSchema<bool>")]
 	pub case:      Option<bool>,
 	/// respect gitignore
-	#[schemars(with = "omp_tool::OptionalSchema<bool>")]
 	pub gitignore: Option<bool>,
-	/// files to skip before collecting results — use to paginate when the prior
-	/// call hit the file limit
-	#[schemars(with = "Option<Option<f64>>")]
+	/// files to skip before collecting results — use to paginate when the
+	/// prior call hit the file limit
+	#[param(nullable)]
 	pub skip:      Option<f64>,
 }
 
@@ -231,7 +226,7 @@ pub struct Payload {
 pub enum Update {}
 
 /// Durable typed `grep@1` failure.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Fault {
 	/// The expression was empty or whitespace-only.
@@ -432,7 +427,7 @@ impl<W: WorkspaceSearch, B: ReadBlobs> Tool for Grep<W, B> {
 	}
 
 	fn prompt(&self, view: Result<&Self::Payload, &Self::Fault>, caps: &PromptCaps) -> Vec<Part> {
-		let Some(mut projection) = TextProjection::new(caps) else {
+		let Some(mut projection) = TextProjection::new(*caps) else {
 			return Vec::new();
 		};
 		let text = match view {
@@ -587,18 +582,17 @@ fn make_payload(result: SearchResult, roots: &[SearchRoot], requested_skip: u64)
 		if !seen.insert((matched.source_key.clone(), matched.line_number)) {
 			continue;
 		}
-		let group_index = match group_by_path.get(&matched.path).copied() {
-			Some(index) => index,
-			None => {
-				let index = groups.len();
-				group_by_path.insert(matched.path.clone(), index);
-				groups.push(FileGroup {
-					path:         matched.path.clone(),
-					snapshot_tag: matched.snapshot_tag.clone(),
-					matches:      Vec::new(),
-				});
-				index
-			},
+		let group_index = if let Some(index) = group_by_path.get(&matched.path).copied() {
+			index
+		} else {
+			let index = groups.len();
+			group_by_path.insert(matched.path.clone(), index);
+			groups.push(FileGroup {
+				path:         matched.path.clone(),
+				snapshot_tag: matched.snapshot_tag.clone(),
+				matches:      Vec::new(),
+			});
+			index
 		};
 		let group = &mut groups[group_index];
 		if group.matches.len() >= per_file_cap {
@@ -856,7 +850,7 @@ fn param_event(error: ParamError) -> Ev<Update, Payload, Fault> {
 		ParamError::Args(issue) if issue.kind == ArgIssueKind::Aborted => {
 			Ev::Aborted(Abort::InputDropped)
 		},
-		ParamError::Args(issue) => Ev::Args(issue),
+		ParamError::Args(issue) => Ev::Args(*issue),
 		ParamError::Interrupted(interrupt) => {
 			Ev::Aborted(Abort::Interrupted { reason: interrupt.reason })
 		},

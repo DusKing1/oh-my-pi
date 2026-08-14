@@ -25,14 +25,16 @@ use pyo3::{
 	ffi::c_str,
 	prelude::*,
 	pyclass, pymethods,
+	sync::PyOnceLock,
 	types::{PyAnyMethods, PyDict, PyDictMethods, PyModule},
 };
 use serde_json::Value;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::{runtime::Handle, sync::Mutex as AsyncMutex};
 
 use super::{
 	CellOutcome, CellStatus, CellValue, EvalExec, EvalRun, Fault, OutputChannel, PythonException,
 	RunCompletion, RunEvent, RunRequest, Session, Update,
+	idle_timeout::{TimeoutHandle, TimeoutPause},
 };
 
 const BOOTSTRAP: &std::ffi::CStr = c_str!(
@@ -83,7 +85,7 @@ def _omp_run(code, ns, want_value):
         return None
     return ns["__omp_async_runner"].run(_omp_run_async(code, ns, want_value))
 
-def _omp_run_cell(source, ns, timeout_seconds):
+def _omp_run_cell(source, ns, timeout_seconds, timeout_control):
     started = _omp_time.perf_counter()
     deadline = None if timeout_seconds is None else started + timeout_seconds
     pause_depth = 0
@@ -95,6 +97,7 @@ def _omp_run_cell(source, ns, timeout_seconds):
         with timeout_lock:
             pause_depth += 1
             deadline = None
+            timeout_control.pause()
 
     def timeout_resume():
         nonlocal deadline, pause_depth
@@ -104,6 +107,7 @@ def _omp_run_cell(source, ns, timeout_seconds):
             pause_depth -= 1
             if pause_depth == 0:
                 deadline = None if timeout_seconds is None else _omp_time.perf_counter() + timeout_seconds
+            timeout_control.resume()
 
     def timeout_trace(frame, event, arg):
         with timeout_lock:
@@ -146,6 +150,7 @@ def _omp_run_cell(source, ns, timeout_seconds):
         error_traceback = _omp_traceback.format_exception(type(exc), exc, exc.__traceback__)
     finally:
         _omp_sys.settrace(previous_trace)
+        timeout_control.clear()
         ns.pop("__omp_timeout_pause__", None)
         ns.pop("__omp_timeout_resume__", None)
 
@@ -203,6 +208,8 @@ struct Command {
 	request:   RunRequest,
 	events:    Sender<Result<RunEvent, Fault>>,
 	cancelled: Arc<AtomicBool>,
+	timed_out: Arc<AtomicBool>,
+	runtime:   Option<Handle>,
 	epoch:     u64,
 }
 unsafe extern "C" {
@@ -211,24 +218,30 @@ unsafe extern "C" {
 
 impl WorkerState {
 	fn interrupt_if_active(&self, target: &Arc<AtomicBool>) -> Result<(), Fault> {
-		let active = self.active.lock();
-		let Some(active) = active.as_ref() else {
-			return Ok(());
+		let cell_id = {
+			let active = self.active.lock();
+			let Some(active) = active
+				.as_ref()
+				.filter(|active| Arc::ptr_eq(&active.cancelled, target))
+			else {
+				return Ok(());
+			};
+			active.cell_id.clone()
 		};
-		if !Arc::ptr_eq(&active.cancelled, target) {
-			return Ok(());
-		}
-		self.installer.cancel_cell(&active.cell_id);
+		self.installer.cancel_cell(&cell_id);
 		self.interrupt_thread()
 	}
 
 	fn cancel_active(&self) -> Result<(), Fault> {
-		let active = self.active.lock();
-		let Some(active) = active.as_ref() else {
-			return Ok(());
+		let (cell_id, cancelled) = {
+			let active = self.active.lock();
+			let Some(active) = active.as_ref() else {
+				return Ok(());
+			};
+			(active.cell_id.clone(), Arc::clone(&active.cancelled))
 		};
-		active.cancelled.store(true, Ordering::Release);
-		self.installer.cancel_cell(&active.cell_id);
+		cancelled.store(true, Ordering::Release);
+		self.installer.cancel_cell(&cell_id);
 		self.interrupt_thread()
 	}
 
@@ -267,7 +280,7 @@ impl Drop for Worker {
 
 const STDOUT_ROUTER_ATTR: &str = "__omp_stdout_router__";
 const STDERR_ROUTER_ATTR: &str = "__omp_stderr_router__";
-static OUTPUT_ROUTER_INIT: Mutex<()> = Mutex::new(());
+static OUTPUT_ROUTER_OBJECTS: PyOnceLock<(Py<OutputRouter>, Py<OutputRouter>)> = PyOnceLock::new();
 static OUTPUT_ROUTERS: LazyLock<OutputRouters> = LazyLock::new(|| OutputRouters {
 	stdout: Arc::new(OutputRouterState::new(OutputChannel::Stdout)),
 	stderr: Arc::new(OutputRouterState::new(OutputChannel::Stderr)),
@@ -280,7 +293,7 @@ struct CaptureSink {
 }
 
 impl CaptureSink {
-	fn new(events: Sender<Result<RunEvent, Fault>>, sequence: Arc<AtomicU64>) -> Self {
+	const fn new(events: Sender<Result<RunEvent, Fault>>, sequence: Arc<AtomicU64>) -> Self {
 		Self { events, sequence, buffer: Mutex::new(Vec::new()) }
 	}
 
@@ -328,6 +341,8 @@ impl OutputRouterState {
 	}
 
 	fn write(&self, text: &str) -> usize {
+		// SAFETY: this callback runs on a Python-attached thread; CPython exposes
+		// its current thread identifier without additional preconditions.
 		let thread_id = unsafe { PyThread_get_thread_ident() };
 		let sink = self.active.lock().get(&thread_id).cloned();
 		sink.map_or_else(|| text.chars().count(), |sink| sink.write(self.channel, text))
@@ -345,7 +360,8 @@ impl OutputRouter {
 		self.state.write(text)
 	}
 
-	fn flush(&self) {}
+	#[staticmethod]
+	const fn flush() {}
 }
 
 #[derive(Clone)]
@@ -387,12 +403,39 @@ impl Drop for OutputBinding {
 }
 
 #[pyclass]
+struct TimeoutControl {
+	handle: TimeoutHandle,
+	pauses: Mutex<Vec<TimeoutPause>>,
+}
+
+impl TimeoutControl {
+	const fn new(handle: TimeoutHandle) -> Self {
+		Self { handle, pauses: Mutex::new(Vec::new()) }
+	}
+}
+
+#[pymethods]
+impl TimeoutControl {
+	fn pause(&self) {
+		self.pauses.lock().push(self.handle.pause());
+	}
+
+	fn resume(&self) {
+		self.pauses.lock().pop();
+	}
+
+	fn clear(&self) {
+		self.pauses.lock().clear();
+	}
+}
+
+#[pyclass]
 struct DisplayCollector {
 	entries: Mutex<Vec<(Py<PyAny>, bool)>>,
 }
 
 impl DisplayCollector {
-	fn new() -> Self {
+	const fn new() -> Self {
 		Self { entries: Mutex::new(Vec::new()) }
 	}
 
@@ -466,6 +509,11 @@ pub struct EmbeddedRun {
 pub trait NamespaceInstaller: Send + Sync + 'static {
 	/// Adds helpers to `globals`; existing user state is always absent here.
 	fn install(&self, py: Python<'_>, globals: &Bound<'_, PyDict>) -> PyResult<()>;
+	/// Releases namespace-scoped bridge registrations before the dictionary is
+	/// dropped.
+	fn uninstall(&self, _py: Python<'_>, _globals: &Bound<'_, PyDict>) -> PyResult<()> {
+		Ok(())
+	}
 
 	/// Activates per-cell bridge credentials.
 	fn begin_cell(
@@ -473,9 +521,9 @@ pub trait NamespaceInstaller: Send + Sync + 'static {
 		_py: Python<'_>,
 		_globals: &Bound<'_, PyDict>,
 		_cell_id: &Bytes,
-		_timeout: Option<Duration>,
-	) -> PyResult<()> {
-		Ok(())
+		timeout: Option<Duration>,
+	) -> PyResult<TimeoutHandle> {
+		Ok(TimeoutHandle::new(timeout))
 	}
 
 	/// Revokes per-cell bridge credentials and timeout accounting.
@@ -568,12 +616,16 @@ impl EmbeddedPython {
 impl EvalExec for EmbeddedPython {
 	type Run = EmbeddedRun;
 
-	async fn open_session(&self) -> Result<Session, Fault> {
+	fn open_session(&self) -> impl Future<Output = Result<Session, Fault>> + Send + '_ {
 		let number = self.inner.next_session.fetch_add(1, Ordering::Relaxed);
 		let id = Bytes::from(format!("py-{number}"));
-		let worker = self.spawn_worker(&number.to_string())?;
-		self.inner.workers.lock().insert(id.clone(), worker);
-		Ok(Session { id })
+		match self.spawn_worker(&number.to_string()) {
+			Ok(worker) => {
+				self.inner.workers.lock().insert(id.clone(), worker);
+				std::future::ready(Ok(Session { id }))
+			},
+			Err(error) => std::future::ready(Err(error)),
+		}
 	}
 
 	async fn run<'a>(
@@ -599,9 +651,18 @@ impl EvalExec for EmbeddedPython {
 			Bytes::from(format!("{}:cell-{number}", String::from_utf8_lossy(session.id.as_ref())));
 		let (events, receiver) = flume::unbounded();
 		let cancelled = Arc::new(AtomicBool::new(false));
+		let command = Command {
+			cell_id,
+			request,
+			events,
+			cancelled: Arc::clone(&cancelled),
+			timed_out: Arc::new(AtomicBool::new(false)),
+			runtime: Handle::try_current().ok(),
+			epoch,
+		};
 		worker
 			.commands
-			.send_async(Command { cell_id, request, events, cancelled: Arc::clone(&cancelled), epoch })
+			.send_async(command)
 			.await
 			.map_err(|_| Fault::SessionLost {
 				message: Str::from("Python worker stopped before accepting the cell"),
@@ -618,9 +679,9 @@ impl EvalRun for EmbeddedRun {
 		}
 	}
 
-	async fn cancel(&self) -> Result<(), Fault> {
+	fn cancel(&self) -> impl Future<Output = Result<(), Fault>> + Send + '_ {
 		self.cancelled.store(true, Ordering::Release);
-		self.state.interrupt_if_active(&self.cancelled)
+		std::future::ready(self.state.interrupt_if_active(&self.cancelled))
 	}
 }
 impl Drop for EmbeddedRun {
@@ -640,12 +701,14 @@ impl Drop for WorkerAlive<'_> {
 
 fn worker_main(
 	engine: &Engine,
-	state: &WorkerState,
+	state: &Arc<WorkerState>,
 	commands: Receiver<Command>,
 	installer: &dyn NamespaceInstaller,
 ) {
 	let _alive = WorkerAlive(&state.alive);
 	engine.attach(|py| {
+		// SAFETY: the engine attaches this closure to CPython before accessing
+		// the interpreter-local thread identifier.
 		let thread_id = unsafe { PyThread_get_thread_ident() };
 		state
 			.thread_id
@@ -670,31 +733,8 @@ fn worker_main(
 			let _ = command
 				.events
 				.send(Ok(RunEvent::Started { cell_id: command.cell_id.clone() }));
-			if command.epoch != state.epoch.load(Ordering::Acquire) {
-				let _ = command
-					.events
-					.send(Ok(RunEvent::Completed(cancelled_completion())));
-				continue;
-			}
-			if command.request.reset {
-				match new_namespace(py, &namespace_factory, installer) {
-					Ok(fresh) => {
-						close_namespace(py, &namespace);
-						namespace = fresh;
-					},
-					Err(error) => {
-						let _ = command.events.send(Err(Fault::Resource {
-							operation: Str::from("reset"),
-							message:   Str::from(format_python_error(py, error)),
-						}));
-						continue;
-					},
-				}
-			}
-			if command.cancelled.load(Ordering::Acquire) {
-				let _ = command
-					.events
-					.send(Ok(RunEvent::Completed(cancelled_completion())));
+			if command_is_stale(state, &command) {
+				send_cancelled(&command);
 				continue;
 			}
 			{
@@ -704,39 +744,55 @@ fn worker_main(
 					cancelled: Arc::clone(&command.cancelled),
 				});
 			}
-			if command.cancelled.load(Ordering::Acquire) {
-				state.active.lock().take();
-				let _ = command
-					.events
-					.send(Ok(RunEvent::Completed(cancelled_completion())));
+			if command_is_stale(state, &command) {
+				clear_active(state, &command.cancelled);
+				send_cancelled(&command);
 				continue;
 			}
-			let result = execute_cell(
-				py,
-				&runner,
-				&namespace,
-				&command.cell_id,
-				&command.request,
-				command.events.clone(),
-				installer,
-			);
-			{
-				let mut active = state.active.lock();
-				if active
-					.as_ref()
-					.is_some_and(|current| Arc::ptr_eq(&current.cancelled, &command.cancelled))
-				{
-					active.take();
+			if command.request.reset {
+				match new_namespace(py, &namespace_factory, installer) {
+					Ok(fresh) => {
+						close_namespace(py, &namespace, installer);
+						namespace = fresh;
+					},
+					Err(error) => {
+						clear_active(state, &command.cancelled);
+						let _ = command.events.send(Err(Fault::Resource {
+							operation: Str::from("reset"),
+							message:   Str::from(format_python_error(py, error)),
+						}));
+						continue;
+					},
 				}
 			}
+			if command_is_stale(state, &command) {
+				clear_active(state, &command.cancelled);
+				send_cancelled(&command);
+				continue;
+			}
+			let result = execute_cell(py, &runner, &namespace, &command, state, installer);
+			clear_active(state, &command.cancelled);
 			match result {
-				Ok(completion) => {
-					let _ = command.events.send(Ok(RunEvent::Completed(completion)));
-				},
-				Err(_) if command.cancelled.load(Ordering::Acquire) => {
+				Ok(completion) if command.timed_out.load(Ordering::Acquire) => {
 					let _ = command
 						.events
-						.send(Ok(RunEvent::Completed(cancelled_completion())));
+						.send(Ok(RunEvent::Completed(Box::new(timed_out_completion(completion)))));
+				},
+				Ok(completion) => {
+					let _ = command
+						.events
+						.send(Ok(RunEvent::Completed(Box::new(completion))));
+				},
+				Err(_) if command.timed_out.load(Ordering::Acquire) => {
+					let _ =
+						command
+							.events
+							.send(Ok(RunEvent::Completed(Box::new(timed_out_completion(
+								cancelled_completion(),
+							)))));
+				},
+				Err(_) if command.cancelled.load(Ordering::Acquire) => {
+					send_cancelled(&command);
 				},
 				Err(error) => {
 					state.alive.store(false, Ordering::Release);
@@ -748,11 +804,31 @@ fn worker_main(
 				},
 			}
 		}
-		close_namespace(py, &namespace);
+		close_namespace(py, &namespace, installer);
 		state.thread_id.store(0, Ordering::Release);
 	});
 }
-fn cancelled_completion() -> RunCompletion {
+fn command_is_stale(state: &WorkerState, command: &Command) -> bool {
+	command.cancelled.load(Ordering::Acquire) || command.epoch != state.epoch.load(Ordering::Acquire)
+}
+
+fn clear_active(state: &WorkerState, cancelled: &Arc<AtomicBool>) {
+	let mut active = state.active.lock();
+	if active
+		.as_ref()
+		.is_some_and(|current| Arc::ptr_eq(&current.cancelled, cancelled))
+	{
+		active.take();
+	}
+}
+
+fn send_cancelled(command: &Command) {
+	let _ = command
+		.events
+		.send(Ok(RunEvent::Completed(Box::new(cancelled_completion()))));
+}
+
+const fn cancelled_completion() -> RunCompletion {
 	RunCompletion {
 		status:          CellStatus {
 			outcome:     CellOutcome::Cancelled,
@@ -768,6 +844,20 @@ fn cancelled_completion() -> RunCompletion {
 		total_bytes:     0,
 	}
 }
+fn timed_out_completion(mut completion: RunCompletion) -> RunCompletion {
+	completion.status = CellStatus {
+		outcome:     CellOutcome::Timeout,
+		exit_code:   Some(1),
+		duration_ms: completion.status.duration_ms,
+		exception:   Some(PythonException {
+			name:      Str::new_static("TimeoutError"),
+			message:   Str::new_static("OMP eval cell timed out"),
+			traceback: Vec::new(),
+		}),
+	};
+	completion.result = None;
+	completion
+}
 
 fn prepare_python(py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
 	ensure_output_routers(py)?;
@@ -777,30 +867,15 @@ fn prepare_python(py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
 
 fn ensure_output_routers(py: Python<'_>) -> PyResult<OutputRouters> {
 	let outputs = (*OUTPUT_ROUTERS).clone();
-	let _initializing = OUTPUT_ROUTER_INIT.lock();
+	let (stdout, stderr) = OUTPUT_ROUTER_OBJECTS.get_or_try_init(py, || {
+		Ok::<_, PyErr>((
+			Py::new(py, OutputRouter { state: Arc::clone(&outputs.stdout) })?,
+			Py::new(py, OutputRouter { state: Arc::clone(&outputs.stderr) })?,
+		))
+	})?;
 	let sys = PyModule::import(py, "sys")?;
-	let current = sys
-		.getattr(STDOUT_ROUTER_ATTR)
-		.ok()
-		.and_then(|value| value.extract::<Py<OutputRouter>>().ok())
-		.zip(
-			sys.getattr(STDERR_ROUTER_ATTR)
-				.ok()
-				.and_then(|value| value.extract::<Py<OutputRouter>>().ok()),
-		)
-		.filter(|(stdout, stderr)| {
-			Arc::ptr_eq(&stdout.borrow(py).state, &outputs.stdout)
-				&& Arc::ptr_eq(&stderr.borrow(py).state, &outputs.stderr)
-		});
-	let (stdout, stderr) = if let Some(current) = current {
-		current
-	} else {
-		let stdout = Py::new(py, OutputRouter { state: Arc::clone(&outputs.stdout) })?;
-		let stderr = Py::new(py, OutputRouter { state: Arc::clone(&outputs.stderr) })?;
-		sys.setattr(STDOUT_ROUTER_ATTR, stdout.bind(py))?;
-		sys.setattr(STDERR_ROUTER_ATTR, stderr.bind(py))?;
-		(stdout, stderr)
-	};
+	sys.setattr(STDOUT_ROUTER_ATTR, stdout.bind(py))?;
+	sys.setattr(STDERR_ROUTER_ATTR, stderr.bind(py))?;
 	sys.setattr("stdout", stdout.bind(py))?;
 	sys.setattr("stderr", stderr.bind(py))?;
 	Ok(outputs)
@@ -818,8 +893,10 @@ fn new_namespace(
 	Ok(globals.clone().unbind())
 }
 
-fn close_namespace(py: Python<'_>, namespace: &Py<PyDict>) {
-	if let Ok(Some(runner)) = namespace.bind(py).get_item("__omp_async_runner") {
+fn close_namespace(py: Python<'_>, namespace: &Py<PyDict>, installer: &dyn NamespaceInstaller) {
+	let globals = namespace.bind(py);
+	let _ = installer.uninstall(py, globals);
+	if let Ok(Some(runner)) = globals.get_item("__omp_async_runner") {
 		let _ = runner.call_method0("close");
 	}
 }
@@ -828,11 +905,12 @@ fn execute_cell(
 	py: Python<'_>,
 	runner: &Py<PyAny>,
 	namespace: &Py<PyDict>,
-	cell_id: &Bytes,
-	request: &RunRequest,
-	events: Sender<Result<RunEvent, Fault>>,
+	command: &Command,
+	state: &Arc<WorkerState>,
 	installer: &dyn NamespaceInstaller,
 ) -> PyResult<RunCompletion> {
+	let request = &command.request;
+	let cell_id = &command.cell_id;
 	let timeout = request.timeout.map(|duration| duration.as_secs_f64());
 	let display = namespace
 		.bind(py)
@@ -843,12 +921,31 @@ fn execute_cell(
 		.extract::<Py<DisplayCollector>>()?;
 	display.borrow(py).clear();
 	let outputs = ensure_output_routers(py)?;
+	// SAFETY: `execute_cell` runs within `Engine::attach`, so CPython has
+	// registered the current thread.
 	let thread_id = unsafe { PyThread_get_thread_ident() };
-	let capture = outputs.bind(thread_id, events);
-	installer.begin_cell(py, namespace.bind(py), cell_id, request.timeout)?;
-	let execution = runner
-		.bind(py)
-		.call1((request.code.as_str(), namespace.bind(py), timeout));
+	let capture = outputs.bind(thread_id, command.events.clone());
+	let watchdog = installer.begin_cell(py, namespace.bind(py), cell_id, request.timeout)?;
+	let watchdog_task = command.runtime.as_ref().map(|runtime| {
+		let watchdog = watchdog.clone();
+		let state = Arc::clone(state);
+		let cancelled = Arc::clone(&command.cancelled);
+		let timed_out = Arc::clone(&command.timed_out);
+		runtime.spawn(async move {
+			watchdog.expired().await;
+			timed_out.store(true, Ordering::Release);
+			let _ = state.interrupt_if_active(&cancelled);
+		})
+	});
+	let timeout_control = Py::new(py, TimeoutControl::new(watchdog.clone()))?;
+	let execution =
+		runner
+			.bind(py)
+			.call1((request.code.as_str(), namespace.bind(py), timeout, timeout_control));
+	watchdog.dispose();
+	if let Some(task) = watchdog_task {
+		task.abort();
+	}
 	let ended = installer.end_cell(py, namespace.bind(py), cell_id);
 	let value = match (execution, ended) {
 		(Err(error), _) => return Err(error),
@@ -951,12 +1048,7 @@ fn python_to_json(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Option<V
 }
 
 fn count_lines(bytes: &[u8]) -> usize {
-	if bytes.is_empty() {
-		0
-	} else {
-		bytes.iter().filter(|byte| **byte == b'\n').count()
-			+ usize::from(bytes.last() != Some(&b'\n'))
-	}
+	bytes.split_inclusive(|byte| *byte == b'\n').count()
 }
 
 fn fail_worker(commands: &Receiver<Command>, message: Str) {
@@ -1012,7 +1104,7 @@ mod tests {
 			match run.next_event().await.expect("event") {
 				Some(RunEvent::Started { .. }) => {},
 				Some(RunEvent::Output(update)) => updates.push(update),
-				Some(RunEvent::Completed(done)) => return (updates, done),
+				Some(RunEvent::Completed(done)) => return (updates, *done),
 				None => panic!("worker ended before completion"),
 			}
 		}
@@ -1021,7 +1113,7 @@ mod tests {
 		loop {
 			match run.next_event().await.expect("event") {
 				Some(RunEvent::Started { .. } | RunEvent::Output(_)) => {},
-				Some(RunEvent::Completed(done)) => return done,
+				Some(RunEvent::Completed(done)) => return *done,
 				None => panic!("worker ended before completion"),
 			}
 		}
@@ -1224,6 +1316,24 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn watchdog_interrupts_blocking_python_calls_promptly() {
+		let runtime = runtime();
+		let session = runtime.open_session().await.expect("session opens");
+		let mut run = runtime
+			.run(&session, RunRequest {
+				code:    Str::new_static("import time\ntime.sleep(5)"),
+				timeout: Some(Duration::from_millis(25)),
+				reset:   false,
+			})
+			.await
+			.expect("blocking cell starts");
+		let done = tokio::time::timeout(Duration::from_millis(500), completion(&mut run))
+			.await
+			.expect("watchdog must interrupt a blocking Python call");
+		assert_eq!(done.status.outcome, CellOutcome::Timeout);
+	}
+
+	#[tokio::test]
 	async fn top_level_await_returns_the_final_expression() {
 		let runtime = runtime();
 		let session = runtime.open_session().await.expect("session opens");
@@ -1310,12 +1420,12 @@ mod tests {
 			_py: Python<'_>,
 			_globals: &Bound<'_, PyDict>,
 			_cell_id: &Bytes,
-			_timeout: Option<Duration>,
-		) -> PyResult<()> {
+			timeout: Option<Duration>,
+		) -> PyResult<TimeoutHandle> {
 			if self.0.swap(false, Ordering::AcqRel) {
 				Err(pyo3::exceptions::PyRuntimeError::new_err("poisoned worker"))
 			} else {
-				Ok(())
+				Ok(TimeoutHandle::new(timeout))
 			}
 		}
 	}

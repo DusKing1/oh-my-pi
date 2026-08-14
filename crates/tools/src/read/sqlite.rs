@@ -2,10 +2,16 @@
 
 use std::{
 	collections::HashMap,
+	fmt::Write,
 	path::{Path, PathBuf},
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
 	time::Duration,
 };
 
+use parking_lot::Mutex;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params, types::ValueRef};
 
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
@@ -36,6 +42,44 @@ pub struct Error(String);
 impl From<rusqlite::Error> for Error {
 	fn from(value: rusqlite::Error) -> Self {
 		Self(value.to_string())
+	}
+}
+
+/// Cross-thread cancellation for one SQLite inspection.
+///
+/// The progress callback closes the race where cancellation arrives just
+/// before a query begins, while SQLite's interrupt handle stops work already
+/// running inside the virtual machine.
+#[derive(Default)]
+pub struct QueryInterrupt {
+	interrupted: AtomicBool,
+	handle:      Mutex<Option<rusqlite::InterruptHandle>>,
+}
+
+impl QueryInterrupt {
+	/// Requests cancellation of the current or next SQLite operation.
+	pub fn interrupt(&self) {
+		self.interrupted.store(true, Ordering::Release);
+		if let Some(handle) = self.handle.lock().as_ref() {
+			handle.interrupt();
+		}
+	}
+
+	fn install(self: &Arc<Self>, connection: &Connection) -> Result<(), Error> {
+		let progress = self.clone();
+		connection
+			.progress_handler(1_000, Some(move || progress.interrupted.load(Ordering::Acquire)))?;
+		let handle = connection.get_interrupt_handle();
+		let mut published = self.handle.lock();
+		if self.interrupted.load(Ordering::Acquire) {
+			handle.interrupt();
+		}
+		*published = Some(handle);
+		Ok(())
+	}
+
+	fn is_interrupted(&self) -> bool {
+		self.interrupted.load(Ordering::Acquire)
 	}
 }
 
@@ -204,7 +248,7 @@ pub fn parse_path_candidates(file_path: &str) -> Vec<PathCandidate> {
 		while let Some(relative) = lower[start..].find(extension) {
 			let end = start + relative + extension.len();
 			let boundary = lower.as_bytes().get(end).copied();
-			if matches!(boundary, None | Some(b':') | Some(b'?')) {
+			if matches!(boundary, None | Some(b':' | b'?')) {
 				let remainder = &normalized[end..];
 				let (sub_path, query_string) = match remainder.find('?') {
 					Some(index) => (&remainder[..index], &remainder[index + 1..]),
@@ -652,12 +696,11 @@ fn lookup_value(key: &str, declared_type: &str) -> Result<rusqlite::types::Value
 	if kind.contains("INT") {
 		return Ok(coerce_integer(key, &format!("Primary key '{key}'"))?.into());
 	}
-	if kind.contains("REAL") || kind.contains("FLOA") || kind.contains("DOUB") {
-		if let Ok(value) = key.parse::<f64>() {
-			if value.is_finite() {
-				return Ok(value.into());
-			}
-		}
+	if (kind.contains("REAL") || kind.contains("FLOA") || kind.contains("DOUB"))
+		&& let Ok(value) = key.parse::<f64>()
+		&& value.is_finite()
+	{
+		return Ok(value.into());
 	}
 	Ok(key.to_owned().into())
 }
@@ -1072,12 +1115,14 @@ pub fn render_selector(connection: &Connection, selector: &Selector) -> Result<S
 			let sample = query_rows(connection, table, *sample_limit, 0, None, None)?;
 			let mut output = render_schema(&table_schema(connection, table)?, &sample);
 			if sample.rows.len() < sample.total_count {
-				output.push_str(&format!(
+				write!(
+					output,
 					"\n[{} more rows; append :{table}?limit=20&offset={} to the database path to \
 					 continue]",
 					sample.total_count - sample.rows.len(),
 					sample.rows.len()
-				));
+				)
+				.expect("writing to a String cannot fail");
 			}
 			Ok(output)
 		},
@@ -1109,10 +1154,12 @@ pub fn render_selector(connection: &Connection, selector: &Selector) -> Result<S
 			};
 			let mut output = render_table(&page, 0, page.rows.len().max(1), "query");
 			if result.truncated {
-				output.push_str(&format!(
+				write!(
+					output,
 					"\n[Output capped at {MAX_RAW_QUERY_ROWS} rows; add a LIMIT/OFFSET clause to the \
 					 query to page through more]"
-				));
+				)
+				.expect("writing to a String cannot fail");
 			}
 			Ok(output)
 		},
@@ -1123,6 +1170,25 @@ pub fn render_selector(connection: &Connection, selector: &Selector) -> Result<S
 pub fn read_path(path: &Path, sub_path: &str, query_string: &str) -> Result<String, Error> {
 	let selector = parse_selector(sub_path, query_string)?;
 	let connection = open_read_only(path)?;
+	render_selector(&connection, &selector)
+}
+
+/// Opens, executes, and renders a SQLite target with cross-thread interruption.
+pub fn read_interruptible(
+	path: &Path,
+	authored_target: &str,
+	interrupt: Arc<QueryInterrupt>,
+) -> Result<String, Error> {
+	let candidate = parse_path_candidates(authored_target)
+		.into_iter()
+		.next()
+		.ok_or_else(|| Error(format!("SQLite path target '{authored_target}' is invalid")))?;
+	let selector = parse_selector(&candidate.sub_path, &candidate.query_string)?;
+	let connection = open_read_only(path)?;
+	interrupt.install(&connection)?;
+	if interrupt.is_interrupted() {
+		return Err(Error("interrupted".into()));
+	}
 	render_selector(&connection, &selector)
 }
 

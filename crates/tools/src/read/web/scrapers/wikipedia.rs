@@ -57,31 +57,30 @@ pub(super) async fn render<C: HttpClient + Sync>(
 	let content_url = format!("{api_root}/mobile-html/{encoded_title}");
 	let mut markdown = String::new();
 
-	if let Ok(summary_response) = client.get(HttpRequest::new(summary_url)).await {
-		if summary_response.is_success() {
-			if let Ok(summary) = serde_json::from_slice::<Summary>(&summary_response.body) {
-				markdown.push_str("# ");
-				markdown.push_str(&summary.title);
-				markdown.push_str("\n\n");
-				if let Some(description) = summary
-					.description
-					.as_deref()
-					.filter(|value| !value.is_empty())
-				{
-					markdown.push('*');
-					markdown.push_str(description);
-					markdown.push_str("*\n\n");
-				}
-				markdown.push_str(&summary.extract);
-				markdown.push_str("\n\n---\n\n");
-			}
+	if let Ok(summary_response) = client.get(HttpRequest::new(summary_url)).await
+		&& summary_response.is_success()
+		&& let Ok(summary) = serde_json::from_slice::<Summary>(&summary_response.body)
+	{
+		markdown.push_str("# ");
+		markdown.push_str(&summary.title);
+		markdown.push_str("\n\n");
+		if let Some(description) = summary
+			.description
+			.as_deref()
+			.filter(|value| !value.is_empty())
+		{
+			markdown.push('*');
+			markdown.push_str(description);
+			markdown.push_str("*\n\n");
 		}
+		markdown.push_str(&summary.extract);
+		markdown.push_str("\n\n---\n\n");
 	}
 
-	if let Ok(content_response) = client.get(HttpRequest::new(content_url)).await {
-		if content_response.is_success() {
-			append_sections(&content_response.text(), &mut markdown);
-		}
+	if let Ok(content_response) = client.get(HttpRequest::new(content_url)).await
+		&& content_response.is_success()
+	{
+		append_sections(&content_response.text(), &mut markdown);
 	}
 
 	if markdown.is_empty() {
@@ -263,11 +262,11 @@ fn close_tag(tag: &str, active: &mut Vec<usize>, sections: &mut [Section]) {
 		for &index in active.iter() {
 			finish_paragraph(&mut sections[index]);
 		}
-	} else if tag.eq_ignore_ascii_case("section") {
-		if let Some(index) = active.pop() {
-			finish_paragraph(&mut sections[index]);
-			sections[index].heading_open = false;
-		}
+	} else if tag.eq_ignore_ascii_case("section")
+		&& let Some(index) = active.pop()
+	{
+		finish_paragraph(&mut sections[index]);
+		sections[index].heading_open = false;
 	}
 }
 
@@ -278,10 +277,10 @@ fn append_text(text: &str, active: &[usize], sections: &mut [Section]) {
 	let decoded = decode_entities(text);
 	for &index in active {
 		let section = &mut sections[index];
-		if section.heading_open {
-			if let Some(heading) = &mut section.heading {
-				heading.text.push_str(&decoded);
-			}
+		if section.heading_open
+			&& let Some(heading) = &mut section.heading
+		{
+			heading.text.push_str(&decoded);
 		}
 		if let Some(paragraph) = &mut section.paragraph {
 			paragraph.push_str(&decoded);
@@ -397,10 +396,10 @@ mod tests {
 	use std::{
 		collections::VecDeque,
 		future::{Future, ready},
-		sync::Mutex,
 	};
 
 	use bytes::Bytes;
+	use parking_lot::Mutex;
 	use smallvec::SmallVec;
 
 	use super::*;
@@ -424,7 +423,6 @@ mod tests {
 			self
 				.requests
 				.lock()
-				.expect("request fixture mutex is not poisoned")
 				.iter()
 				.map(|request| request.url.to_string())
 				.collect()
@@ -436,16 +434,11 @@ mod tests {
 			&self,
 			request: HttpRequest,
 		) -> impl Future<Output = Result<HttpResponse, WebError>> + Send + '_ {
-			self
-				.requests
-				.lock()
-				.expect("request fixture mutex is not poisoned")
-				.push(request);
+			self.requests.lock().push(request);
 			ready(
 				self
 					.responses
 					.lock()
-					.expect("response fixture mutex is not poisoned")
 					.pop_front()
 					.unwrap_or_else(|| Err(WebError::request("no canned response remains"))),
 			)
@@ -592,6 +585,6 @@ mod tests {
 				.expect("non-match is not an error"),
 			None
 		);
-		assert!(client.requested_urls().is_empty());
+		assert_eq!(client.requested_urls(), [] as [std::string::String; 0]);
 	}
 }

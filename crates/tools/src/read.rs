@@ -1,6 +1,6 @@
 //! Pi-compatible reads of local and special resources.
 
-use std::{future::Future, path::Path};
+use std::{future::Future, path::Path, sync::Arc};
 
 use async_stream::stream;
 use bytes::Bytes;
@@ -8,9 +8,8 @@ use futures::{FutureExt as _, Stream, pin_mut, select_biased};
 use omp_core::Str;
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, BlobRef, CommitError, Constraint, Ev, IncomingParams, Outcome,
-	ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
+	ParamError, Part, PromptCaps, Rev, Tool, ToolParam, ToolSpec,
 };
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::render::{
@@ -31,7 +30,7 @@ pub mod sqlite;
 pub use sqlite::looks_like_sqlite;
 pub mod web;
 
-const DESCRIPTION: &str = r#"Read files, directories, archives, SQLite, images, documents, and web URLs via `path`.
+const DESCRIPTION: &str = r"Read files, directories, archives, SQLite, images, documents, and web URLs via `path`.
 
 <instruction>
 - SHOULD parallelize independent reads.
@@ -55,7 +54,7 @@ const DESCRIPTION: &str = r#"Read files, directories, archives, SQLite, images, 
 
 <critical>
 Summary footer names elided ranges? Re-issue ONLY those ranges. NEVER guess `..`/`…` content.
-</critical>"#;
+</critical>";
 const MAX_SUMMARY_BYTES: u64 = 2 * 1024 * 1024;
 const MIN_SUMMARY_LINES: usize = 100;
 const MAX_SUMMARY_LINES: usize = 20_000;
@@ -63,13 +62,11 @@ const MAX_SUMMARY_LINES: usize = 20_000;
 pub const SNAPSHOT_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// Arguments accepted by `read@1`.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[schemars(description = "")]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToolParam)]
 #[serde(deny_unknown_fields)]
 pub struct Params {
 	/// Local path, internal URI (e.g. skill://), or URL. Inline selectors are
 	/// supported.
-	#[schemars(with = "String")]
 	pub path: Str,
 }
 
@@ -277,7 +274,7 @@ impl Fault {
 	}
 
 	/// Returns the exact model-facing diagnostic.
-	pub fn message(&self) -> &Str {
+	pub const fn message(&self) -> &Str {
 		match self {
 			Self::Invalid { message }
 			| Self::Source { message }
@@ -293,6 +290,22 @@ pub struct ReadTool<S, B> {
 	sources: S,
 	blobs:   B,
 	spec:    ToolSpec,
+}
+
+struct InterruptSqliteOnDrop(Option<Arc<sqlite::QueryInterrupt>>);
+
+impl InterruptSqliteOnDrop {
+	fn disarm(&mut self) {
+		self.0 = None;
+	}
+}
+
+impl Drop for InterruptSqliteOnDrop {
+	fn drop(&mut self) {
+		if let Some(interrupt) = self.0.take() {
+			interrupt.interrupt();
+		}
+	}
 }
 
 /// Constructs the Pi-compatible `read@1` tool.
@@ -333,14 +346,11 @@ impl<S: ReadSources, B: ReadBlobs> Tool for ReadTool<S, B> {
 			let raw = match pulled {
 				Ok(value) => value,
 				Err(ParamError::Args(issue)) if issue.kind == ArgIssueKind::Aborted => { yield Ev::Aborted(Abort::InputDropped); return; },
-				Err(ParamError::Args(issue)) => { yield Ev::Args(issue); return; },
+				Err(ParamError::Args(issue)) => { yield Ev::Args(*issue); return; },
 				Err(ParamError::Interrupted(interrupt)) => { yield Ev::Aborted(Abort::Interrupted { reason: interrupt.reason }); return; },
 				Err(ParamError::Protocol(reason)) => { yield Ev::Args(protocol_issue(reason)); return; },
 			};
-			let params: Params = match serde_json::from_str(&raw) {
-				Ok(value) => value,
-				Err(_) => { yield Ev::Args(args_issue()); return; },
-			};
+			let params: Params = if let Ok(value) = serde_json::from_str(&raw) { value } else { yield Ev::Args(args_issue()); return; };
 			match incoming.committed().await {
 				Ok(_) => {},
 				Err(CommitError::Aborted) => { yield Ev::Aborted(Abort::InputDropped); return; },
@@ -351,12 +361,12 @@ impl<S: ReadSources, B: ReadBlobs> Tool for ReadTool<S, B> {
 			let cancel = incoming.next_interrupt().fuse();
 			pin_mut!(work, cancel);
 			let result = select_biased! {
-				value = work => value,
 				interrupt = cancel => {
-					let reason = interrupt.map(|value| value.reason).unwrap_or_else(|_| Str::new_static("invocation owner dropped"));
+					let reason = interrupt.map_or_else(|_| Str::new_static("invocation owner dropped"), |value| value.reason);
 					yield Ev::Aborted(Abort::Interrupted { reason });
 					return;
 				},
+				value = work => value,
 			};
 			yield done(result);
 		}
@@ -366,7 +376,7 @@ impl<S: ReadSources, B: ReadBlobs> Tool for ReadTool<S, B> {
 		let payload = match view {
 			Ok(payload) => payload,
 			Err(fault) => {
-				let Some(mut projection) = TextProjection::new(caps) else {
+				let Some(mut projection) = TextProjection::new(*caps) else {
 					return Vec::new();
 				};
 				projection.push(fault.message());
@@ -481,21 +491,40 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 
 		if !literal_wins {
 			for candidate in archive::parse_archive_path_candidates(split.path) {
-				if self
-					.sources
-					.stat(Str::from(candidate.archive_path.as_str()))
-					.await
-					.is_ok()
-				{
+				let archive_path = candidate.archive_path.as_str();
+				let (stat, suffix_from) = match self.sources.stat(Str::from(archive_path)).await {
+					Ok(stat) => (Some(stat), None),
+					Err(_) => {
+						(self.sources.resolve_suffix(Str::from(archive_path)).await?, Some(archive_path))
+					},
+				};
+				if let Some(stat) = stat {
 					return self
-						.read_archive(authored, &candidate.archive_path, &candidate.sub_path, &parsed)
+						.read_archive(archive_path, &candidate.sub_path, &parsed, &stat, suffix_from)
 						.await;
 				}
 			}
 			for candidate in sqlite::parse_path_candidates(authored) {
 				let database = candidate.sqlite_path.to_string_lossy();
-				if let Ok(stat) = self.sources.stat(Str::from(database.as_ref())).await {
-					return self.read_sqlite(authored, &stat).await;
+				let (stat, suffix_from) = match self.sources.stat(Str::from(database.as_ref())).await {
+					Ok(stat) => (Some(stat), None),
+					Err(_) => (
+						self
+							.sources
+							.resolve_suffix(Str::from(database.as_ref()))
+							.await?,
+						Some(database.as_ref()),
+					),
+				};
+				let Some(stat) = stat else {
+					continue;
+				};
+				let prefix = self
+					.sources
+					.read_prefix(stat.canonical_path.clone(), 16)
+					.await?;
+				if sqlite::looks_like_sqlite(&prefix) {
+					return self.read_sqlite(authored, &stat, suffix_from).await;
 				}
 			}
 			if let Some(stat) = literal
@@ -507,15 +536,14 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 					.read_prefix(stat.canonical_path.clone(), 16)
 					.await?;
 				if sqlite::is_sqlite_target(&stat.display_path, &prefix) {
-					return self.read_sqlite(authored, stat).await;
+					return self.read_sqlite(authored, stat, None).await;
 				}
 			}
 			if let Some(pdf) = pdf_image_member(split.path) {
 				return Err(Fault::Unsupported {
 					message: Str::from(format!(
-						"PDF page-image members are not supported by the pdf-inspector backend; read {} \
-						 for the extracted text",
-						pdf
+						"PDF page-image members are not supported by the pdf-inspector backend; read \
+						 {pdf} for the extracted text"
 					)),
 				});
 			}
@@ -524,27 +552,24 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 		let mut recovered_from = None;
 		let mut stat = if literal_wins {
 			literal.expect("literal path was checked above")
+		} else if let Ok(stat) = self.sources.stat(Str::from(split.path)).await {
+			stat
 		} else {
-			match self.sources.stat(Str::from(split.path)).await {
-				Ok(stat) => stat,
-				Err(_) => {
-					let stat = self
-						.sources
-						.resolve_suffix(Str::from(split.path))
-						.await?
-						.ok_or_else(|| Fault::source(format!("Path '{}' not found", split.path)))?;
-					recovered_from = Some(split.path);
-					stat
-				},
-			}
+			let stat = self
+				.sources
+				.resolve_suffix(Str::from(split.path))
+				.await?
+				.ok_or_else(|| Fault::source(format!("Path '{}' not found", split.path)))?;
+			recovered_from = Some(split.path);
+			stat
 		};
 		let suffix_from = recovered_from;
 
-		if stat.kind == SourceKind::Directory {
-			return self.read_directory(&stat, &parsed, suffix_from).await;
-		}
 		if stat.kind == SourceKind::Symlink {
 			stat = self.sources.stat(stat.canonical_path.clone()).await?;
+		}
+		if stat.kind == SourceKind::Directory {
+			return self.read_directory(&stat, &parsed, suffix_from).await;
 		}
 		if matches!(parsed, selector::ParsedSelector::Conflicts) {
 			let bytes = self.sources.read_bytes(stat.canonical_path.clone()).await?;
@@ -567,16 +592,8 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 			if let Ok(text) = std::str::from_utf8(&bytes)
 				&& let Some(summary) = profile::render_profile(path, text)
 			{
-				let lease = self.sources.open(stat.canonical_path.clone()).await?;
-				let snapshot = Bytes::copy_from_slice(summary.as_bytes());
 				return self
-					.text_parts(
-						&stat,
-						&summary,
-						&parsed,
-						Some((lease.canonical_path(), lease.revision(), &snapshot)),
-						suffix_from,
-					)
+					.text_parts(&stat, &summary, &parsed, None, suffix_from)
 					.await;
 			}
 		}
@@ -598,17 +615,17 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 				.extension()
 				.is_some_and(|ext| ext.eq_ignore_ascii_case("ipynb"))
 		{
-			let bytes = self.sources.read_bytes(stat.canonical_path.clone()).await?;
-			let rendered = notebook::render(&bytes, &stat.display_path)
-				.map_err(|error| Fault::Source { message: Str::from(error.message().to_owned()) })?;
 			let lease = self.sources.open(stat.canonical_path.clone()).await?;
-			let snapshot = Bytes::copy_from_slice(rendered.text.as_bytes());
+			let source_bytes = lease.read_all().await?;
+			let rendered = notebook::render(&source_bytes, &stat.display_path)
+				.map_err(|error| Fault::Source { message: Str::from(error.message().to_owned()) })?;
+			let rendered_bytes = Bytes::copy_from_slice(rendered.text.as_bytes());
 			return self
 				.text_parts(
 					&stat,
 					&rendered.text,
 					&parsed,
-					Some((lease.canonical_path(), lease.revision(), &snapshot)),
+					Some((lease.canonical_path(), lease.revision(), &rendered_bytes)),
 					suffix_from,
 				)
 				.await;
@@ -621,16 +638,8 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 					if let Some(note) = converted.note {
 						text = format!("{note}\n{text}");
 					}
-					let lease = self.sources.open(stat.canonical_path.clone()).await?;
-					let snapshot = Bytes::copy_from_slice(text.as_bytes());
 					return self
-						.text_parts(
-							&stat,
-							&text,
-							&parsed,
-							Some((lease.canonical_path(), lease.revision(), &snapshot)),
-							suffix_from,
-						)
+						.text_parts(&stat, &text, &parsed, None, suffix_from)
 						.await;
 				},
 				Ok(None) => {},
@@ -777,21 +786,25 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 
 	async fn read_archive(
 		&self,
-		_authored: &str,
 		archive_path: &str,
 		member: &str,
 		parsed: &selector::ParsedSelector,
+		stat: &SourceStat,
+		suffix_from: Option<&str>,
 	) -> Result<Vec<PayloadPart>, Fault> {
-		let stat = self.sources.stat(Str::from(archive_path)).await?;
 		let bytes = self.sources.read_bytes(stat.canonical_path.clone()).await?;
 		let archive_format = archive::archive_format_from_path(archive_path)
 			.or_else(|| archive::sniff_archive_format(&bytes))
-			.ok_or_else(|| Fault::source(format!("Unsupported archive format: {}", archive_path)))?;
+			.ok_or_else(|| Fault::source(format!("Unsupported archive format: {archive_path}")))?;
 		let result = archive::read_archive_bytes(bytes, archive_format, member, parsed.clone())
 			.map_err(|error| Fault::Source { message: Str::from(error.to_string()) })?;
 		match result.content {
 			archive::ArchiveContent::Directory(listing) => {
-				Ok(vec![PayloadPart::Text { text: Str::from(listing.render()) }])
+				let text = format::prepend_suffix_resolution_notice(
+					&listing.render(),
+					suffix_from.map(|from| format::SuffixResolution { from, to: &stat.display_path }),
+				);
+				Ok(vec![PayloadPart::Text { text: Str::from(text) }])
 			},
 			archive::ArchiveContent::Text(member_text) => {
 				let display_path = if member_text.node.path.is_empty() {
@@ -799,13 +812,28 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 				} else {
 					Str::from(format!("{}:{}", stat.display_path, member_text.node.path))
 				};
-				let member_stat = SourceStat { display_path, ..stat };
-				self
+				let member_stat = SourceStat { display_path, ..stat.clone() };
+				let mut parts = self
 					.text_parts(&member_stat, &member_text.text, &result.selector, None, None)
-					.await
+					.await?;
+				if let Some(from) = suffix_from
+					&& let Some(PayloadPart::Text { text }) = parts
+						.iter_mut()
+						.find(|part| matches!(part, PayloadPart::Text { .. }))
+				{
+					*text = Str::from(format::prepend_suffix_resolution_notice(
+						text,
+						Some(format::SuffixResolution { from, to: &stat.display_path }),
+					));
+				}
+				Ok(parts)
 			},
 			archive::ArchiveContent::Binary(member_binary) => {
-				Ok(vec![PayloadPart::Text { text: Str::from(member_binary.notice) }])
+				let text = format::prepend_suffix_resolution_notice(
+					&member_binary.notice,
+					suffix_from.map(|from| format::SuffixResolution { from, to: &stat.display_path }),
+				);
+				Ok(vec![PayloadPart::Text { text: Str::from(text) }])
 			},
 		}
 	}
@@ -814,16 +842,32 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 		&self,
 		authored: &str,
 		stat: &SourceStat,
+		suffix_from: Option<&str>,
 	) -> Result<Vec<PayloadPart>, Fault> {
-		let rendered = sqlite::read(Path::new(stat.canonical_path.as_str()), authored)
+		let path = Path::new(stat.canonical_path.as_str()).to_owned();
+		let authored = authored.to_owned();
+		let interrupt = Arc::new(sqlite::QueryInterrupt::default());
+		let task_interrupt = interrupt.clone();
+		let operation = tokio::task::spawn_blocking(move || {
+			sqlite::read_interruptible(&path, &authored, task_interrupt)
+		});
+		let mut interrupt_on_drop = InterruptSqliteOnDrop(Some(interrupt));
+		let result = operation.await;
+		interrupt_on_drop.disarm();
+		let rendered = result
+			.map_err(|error| Fault::source(format!("SQLite read task failed: {error}")))?
 			.map_err(|error| Fault::Source { message: Str::from(error.to_string()) })?;
-		Ok(vec![PayloadPart::Text { text: Str::from(rendered) }])
+		let text = format::prepend_suffix_resolution_notice(
+			&rendered,
+			suffix_from.map(|from| format::SuffixResolution { from, to: &stat.display_path }),
+		);
+		Ok(vec![PayloadPart::Text { text: Str::from(text) }])
 	}
 
 	async fn read_image(&self, stat: &SourceStat) -> Result<Option<Vec<PayloadPart>>, Fault> {
 		let bytes = self.sources.read_bytes(stat.canonical_path.clone()).await?;
-		let Some(loaded) = image::process_image(bytes)
-			.map_err(|error| Fault::Source { message: Str::from(error.message().to_owned()) })?
+		let Some(loaded) =
+			image::process_image(bytes).map_err(|error| Fault::Source { message: error.message() })?
 		else {
 			return Ok(None);
 		};
@@ -846,21 +890,34 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 		bytes: &Bytes,
 		suffix_from: Option<&str>,
 	) -> Result<Vec<PayloadPart>, Fault> {
-		let tag = self.sources.record_snapshot(SnapshotRecord {
-			path:     path.clone(),
-			revision: revision.clone(),
-			bytes:    bytes.clone(),
-			seen:     summary.seen,
-		})?;
-		if let Some(tag) = tag {
-			let header = format::format_read_hashline_header(&stat.display_path, &tag);
-			summary.text = format!("{}\n{}", header, summary.text);
-		}
+		let placeholder = format::format_read_hashline_header(&stat.display_path, "0000");
+		summary.text = format!("{}\n{}", placeholder, summary.text);
+		summary.source_lines.insert(0, format::SourceLines::new());
 		if let Some(from) = suffix_from {
 			summary.text = format::prepend_suffix_resolution_notice(
 				&summary.text,
 				Some(format::SuffixResolution { from, to: &stat.display_path }),
 			);
+			summary.source_lines.insert(0, format::SourceLines::new());
+		}
+		let seen = retained_source_lines(&summary.text, &summary.source_lines);
+		let tag = self.sources.record_snapshot(SnapshotRecord {
+			path:     path.clone(),
+			revision: revision.clone(),
+			bytes:    bytes.clone(),
+			seen:     seen_ranges(&seen),
+		})?;
+		if let Some(tag) = tag {
+			debug_assert_eq!(tag.len(), 4, "snapshot tags must remain four characters");
+			summary.text = summary.text.replacen(
+				&format!("[{}#0000]", stat.display_path),
+				&format!("[{}#{tag}]", stat.display_path),
+				1,
+			);
+		} else if let Some(header_at) = summary.text.find(placeholder.as_str()) {
+			let end = header_at + placeholder.len();
+			let remove_end = end + usize::from(summary.text.as_bytes().get(end) == Some(&b'\n'));
+			summary.text.replace_range(header_at..remove_end, "");
 		}
 		self.truncate_text(summary.text).await
 	}
@@ -873,38 +930,37 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 		pinned: Option<(&Str, &Str, &Bytes)>,
 		suffix_from: Option<&str>,
 	) -> Result<Vec<PayloadPart>, Fault> {
-		let mut options = format::TextFormatOptions::new("file");
-		options.block_context =
-			format::BlockContextSource { path: Some(&stat.display_path), language: None };
-		let preformatted = format::format_text(text, parsed, options);
+		let placeholder_tag = pinned.filter(|_| !parsed.is_raw()).map(|_| "0000");
+		let mut formatted = format_read_projection(stat, text, parsed, placeholder_tag, suffix_from);
+		append_visible_conflict_warning(&mut formatted, text, &stat.display_path, parsed);
+		let (candidate_text, candidate_sources) = formatted.projection();
+		let candidate_seen = retained_source_lines(candidate_text, candidate_sources);
 		let tag = if let Some((path, revision, bytes)) = pinned {
 			self.sources.record_snapshot(SnapshotRecord {
 				path:     path.clone(),
 				revision: revision.clone(),
 				bytes:    bytes.clone(),
-				seen:     seen_ranges(&preformatted.seen_lines),
+				seen:     seen_ranges(&candidate_seen),
 			})?
 		} else {
 			None
 		};
-		let mut formatted = if !parsed.is_raw() {
-			if let Some(tag) = tag.as_deref() {
-				options.snapshot = Some(format::SnapshotHeader { anchor: &stat.display_path, tag });
-				format::format_text(text, parsed, options)
-			} else {
-				preformatted
-			}
-		} else {
-			preformatted
-		};
-		if let Some(from) = suffix_from {
-			formatted.prepend_suffix_resolution_notice(from, &stat.display_path);
+
+		if placeholder_tag.is_some() && tag.is_none() {
+			formatted = format_read_projection(stat, text, parsed, None, suffix_from);
+			append_visible_conflict_warning(&mut formatted, text, &stat.display_path, parsed);
 		}
-		if !parsed.is_raw() {
-			let warning = conflicts::render_conflict_warning(text);
-			formatted.append_conflict_warning(&warning.text);
+		let (mut projection, _) = formatted.into_projection();
+		if let Some(tag) = tag
+			&& placeholder_tag.is_some()
+		{
+			debug_assert_eq!(tag.len(), 4, "snapshot tags must remain four characters");
+			projection = projection.replacen(
+				&format!("[{}#0000]", stat.display_path),
+				&format!("[{}#{tag}]", stat.display_path),
+				1,
+			);
 		}
-		let projection = formatted.full_text.unwrap_or(formatted.text);
 		self.truncate_text(projection).await
 	}
 
@@ -915,7 +971,7 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 	) -> Result<Vec<PayloadPart>, Fault> {
 		let formatted =
 			format::format_text(text, parsed, format::TextFormatOptions::new("URL output"));
-		let projection = formatted.full_text.unwrap_or(formatted.text);
+		let (projection, _) = formatted.into_projection();
 		self.truncate_text(projection).await
 	}
 
@@ -935,6 +991,110 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 		append_blob_truncation_notice(&mut visible, &truncated, &blob.hash);
 		Ok(vec![PayloadPart::Text { text: Str::from(visible) }])
 	}
+}
+fn format_read_projection<'a>(
+	stat: &'a SourceStat,
+	text: &str,
+	parsed: &selector::ParsedSelector,
+	tag: Option<&'a str>,
+	suffix_from: Option<&str>,
+) -> format::FormattedText {
+	let mut options = format::TextFormatOptions::new("file");
+	options.block_context =
+		format::BlockContextSource { path: Some(&stat.display_path), language: None };
+	options.snapshot = tag.map(|tag| format::SnapshotHeader { anchor: &stat.display_path, tag });
+	let mut formatted = format::format_text(text, parsed, options);
+	if let Some(from) = suffix_from {
+		formatted.prepend_suffix_resolution_notice(from, &stat.display_path);
+	}
+	formatted
+}
+
+fn retained_source_lines(text: &str, source_lines: &[format::SourceLines]) -> Vec<usize> {
+	let truncation = truncate_head(text, TruncationOptions::default());
+	debug_assert_eq!(
+		source_lines.len(),
+		truncation.total_lines,
+		"rendered source map must cover every projected line"
+	);
+	let mut retained = source_lines
+		.iter()
+		.take(truncation.shown_lines())
+		.flat_map(|lines| lines.iter().copied())
+		.collect::<Vec<_>>();
+	retained.sort_unstable();
+	retained.dedup();
+	retained
+}
+
+fn append_visible_conflict_warning(
+	formatted: &mut format::FormattedText,
+	source: &str,
+	display_path: &str,
+	parsed: &selector::ParsedSelector,
+) {
+	if parsed.is_raw() {
+		return;
+	}
+	let (projection, source_map) = formatted.projection();
+	let retained = retained_source_lines(projection, source_map);
+	if retained.is_empty() {
+		return;
+	}
+	let source_lines = source.split('\n').collect::<Vec<_>>();
+	let mut visible_blocks = Vec::new();
+	let mut run_start = retained[0];
+	let mut run_end = run_start;
+	for &line in &retained[1..] {
+		if line == run_end.saturating_add(1) {
+			run_end = line;
+			continue;
+		}
+		if run_start <= source_lines.len() {
+			visible_blocks.extend(conflicts::scan_conflict_lines(
+				source_lines[run_start - 1..run_end.min(source_lines.len())]
+					.iter()
+					.copied(),
+				run_start,
+			));
+		}
+		run_start = line;
+		run_end = line;
+	}
+	if run_start <= source_lines.len() {
+		visible_blocks.extend(conflicts::scan_conflict_lines(
+			source_lines[run_start - 1..run_end.min(source_lines.len())]
+				.iter()
+				.copied(),
+			run_start,
+		));
+	}
+	if visible_blocks.is_empty() {
+		return;
+	}
+	let all_blocks = conflicts::scan_conflicts(source);
+	let total = all_blocks.len();
+	let visible = visible_blocks
+		.into_iter()
+		.map(|block| {
+			let id = all_blocks
+				.iter()
+				.position(|candidate| {
+					candidate.start_line == block.start_line && candidate.end_line == block.end_line
+				})
+				.map_or(1, |index| index + 1);
+			conflicts::ConflictEntry::new(id, block)
+		})
+		.collect::<Vec<_>>();
+	if visible.is_empty() {
+		return;
+	}
+	let warning = conflicts::format_conflict_warning(&visible, conflicts::ConflictWarningOptions {
+		total_in_file:  Some(total),
+		display_path:   (visible.len() < total).then_some(display_path),
+		scan_truncated: false,
+	});
+	formatted.append_conflict_warning(&warning);
 }
 
 fn pdf_image_member(input: &str) -> Option<&str> {
@@ -969,8 +1129,8 @@ fn binary_notice(stat: &SourceStat) -> String {
 }
 
 struct StructuralRender {
-	text: String,
-	seen: Vec<SeenRange>,
+	text:         String,
+	source_lines: Vec<format::SourceLines>,
 }
 
 fn structural_summary(path: &str, text: &str) -> Option<StructuralRender> {
@@ -1001,7 +1161,7 @@ fn structural_summary(path: &str, text: &str) -> Option<StructuralRender> {
 	}
 
 	let mut rows = Vec::new();
-	let mut seen = Vec::new();
+	let mut source_lines: Vec<format::SourceLines> = Vec::new();
 	let mut elided = Vec::new();
 	let mut elided_lines = 0;
 	let mut index = 0;
@@ -1014,8 +1174,7 @@ fn structural_summary(path: &str, text: &str) -> Option<StructuralRender> {
 			&& format::can_merge_brace_pair(head, tail)
 		{
 			rows.push(format::format_merged_brace_line(*start, *end, head, tail).model);
-			seen.push(SeenRange { start_line: *start as u64, end_line: *start as u64 });
-			seen.push(SeenRange { start_line: *end as u64, end_line: *end as u64 });
+			source_lines.push(smallvec::smallvec![*start, *end]);
 			elided.push(format::ElidedRange { start: *start, end: *end });
 			elided_lines += end.saturating_sub(*start).saturating_sub(1);
 			index += 3;
@@ -1023,11 +1182,12 @@ fn structural_summary(path: &str, text: &str) -> Option<StructuralRender> {
 		}
 		match &units[index] {
 			Unit::Line { number, text } => {
-				rows.push(format!("{}:{}", number, text));
-				seen.push(SeenRange { start_line: *number as u64, end_line: *number as u64 });
+				rows.push(format!("{number}:{text}"));
+				source_lines.push(smallvec::smallvec![*number]);
 			},
 			Unit::Elided { start, end } => {
 				rows.push("…".to_owned());
+				source_lines.push(format::SourceLines::new());
 				elided.push(format::ElidedRange { start: *start, end: *end });
 				elided_lines += end - start + 1;
 			},
@@ -1039,8 +1199,9 @@ fn structural_summary(path: &str, text: &str) -> Option<StructuralRender> {
 	if !footer.is_empty() {
 		output.push_str("\n\n");
 		output.push_str(&footer);
+		source_lines.extend([format::SourceLines::new(), format::SourceLines::new()]);
 	}
-	Some(StructuralRender { text: output, seen })
+	Some(StructuralRender { text: output, source_lines })
 }
 
 fn seen_ranges(lines: &[usize]) -> Vec<SeenRange> {
@@ -1051,15 +1212,12 @@ fn seen_ranges(lines: &[usize]) -> Vec<SeenRange> {
 	};
 	let mut end = start;
 	for line in iter {
-		if line == end.saturating_add(1) {
-			end = line;
-		} else {
+		if line != end.saturating_add(1) {
 			ranges.push(SeenRange { start_line: start as u64, end_line: end as u64 });
 			start = line;
-			end = line;
 		}
+		end = line;
 	}
-	ranges.push(SeenRange { start_line: start as u64, end_line: end as u64 });
 	ranges
 }
 
@@ -1076,11 +1234,11 @@ fn push_payload_part(parts: &mut Vec<PayloadPart>, part: PayloadPart) {
 	}
 }
 
-fn done(result: Result<Payload, Fault>) -> Ev<Update, Payload, Fault> {
+const fn done(result: Result<Payload, Fault>) -> Ev<Update, Payload, Fault> {
 	Ev::Done(Outcome::Done { result, useless: false })
 }
 
-fn args_issue() -> ArgIssue {
+const fn args_issue() -> ArgIssue {
 	ArgIssue {
 		path:     Vec::new(),
 		expected: Str::new_static("read@1 arguments"),
@@ -1090,7 +1248,7 @@ fn args_issue() -> ArgIssue {
 	}
 }
 
-fn protocol_issue(reason: Str) -> ArgIssue {
+const fn protocol_issue(reason: Str) -> ArgIssue {
 	ArgIssue {
 		path:     Vec::new(),
 		expected: Str::new_static("linear invocation frames"),

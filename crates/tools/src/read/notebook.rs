@@ -179,7 +179,7 @@ fn invalid_cell(index: usize, display_path: &str) -> NotebookError {
 	NotebookError::new(format!("Invalid notebook cell {index} in {display_path}"))
 }
 
-fn decimal_digits(mut value: usize) -> usize {
+const fn decimal_digits(mut value: usize) -> usize {
 	let mut digits = 1;
 	while value >= 10 {
 		value /= 10;

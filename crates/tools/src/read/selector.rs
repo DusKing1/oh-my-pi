@@ -55,10 +55,7 @@ impl ParsedSelector {
 				let Some(first) = ranges.first().copied() else {
 					return (None, None);
 				};
-				let limit = match first.end_line {
-					Some(end) => Some(end - first.start_line + 1),
-					None => None,
-				};
+				let limit = first.end_line.map(|end| end - first.start_line + 1);
 				(Some(first.start_line), limit)
 			},
 			_ => (None, None),
@@ -392,10 +389,10 @@ pub fn probe_literal_path(raw_path: &str, cwd: &Path) -> LiteralPathProbe {
 }
 
 /// Split a selector only when the exact literal path is definitively missing.
-pub fn split_path_and_selector_preferring_literal<'a>(
-	raw_path: &'a str,
+pub fn split_path_and_selector_preferring_literal(
+	raw_path: &str,
 	mut probe: impl FnMut(&str) -> LiteralPathProbe,
-) -> SplitPath<'a> {
+) -> SplitPath<'_> {
 	let strict = split_path_and_selector(raw_path);
 	if strict.selector.is_none() || probe(raw_path) == LiteralPathProbe::Missing {
 		strict
@@ -420,7 +417,7 @@ pub fn expand_tilde(path: &str, home: Option<&Path>) -> PathBuf {
 	let tail = path
 		.strip_prefix("~/")
 		.or_else(|| path.strip_prefix("~\\"))
-		.unwrap_or(&path[1..]);
+		.unwrap_or_else(|| &path[1..]);
 	home.push(tail);
 	home
 }
@@ -551,10 +548,7 @@ pub fn split_internal_uri_selector(raw_path: &str) -> SplitPath<'_> {
 	}
 	let mut path = raw_path;
 	let mut first_selector_start = None;
-	loop {
-		let Some(colon) = path.rfind(':').filter(|colon| *colon >= scheme_end) else {
-			break;
-		};
+	while let Some(colon) = path.rfind(':').filter(|colon| *colon >= scheme_end) {
 		if !internal_selector_chunk(&path[colon + 1..]) {
 			break;
 		}

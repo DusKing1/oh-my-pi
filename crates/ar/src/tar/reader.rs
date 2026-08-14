@@ -452,7 +452,7 @@ fn is_gnu_header(header: &UstarHeader) -> bool {
 }
 
 /// Returns whether `bytes` begin with one checksum-valid nonzero TAR header.
-pub(crate) fn is_header(bytes: &[u8]) -> bool {
+pub fn is_header(bytes: &[u8]) -> bool {
 	let Ok(block) = <&[u8; BLOCK_SIZE]>::try_from(bytes.get(..BLOCK_SIZE).unwrap_or_default())
 	else {
 		return false;
@@ -598,7 +598,7 @@ fn push_sparse_extent(
 	}
 	let offset = parse_number(&raw.offset)?;
 	let length = parse_number(&raw.num_bytes)?;
-	if length != 0 && *stored_total % BLOCK_SIZE as u64 != 0 {
+	if length != 0 && !(*stored_total).is_multiple_of(BLOCK_SIZE as u64) {
 		return Err(Error::InvalidArchive("GNU sparse stored extents are not block-aligned"));
 	}
 	if offset < *logical_end {
@@ -1017,7 +1017,7 @@ fn parse_pax<R: Read + Seek>(
 				state.sparse_name =
 					Some(read_pax_text(&mut input, &mut consumed, value_len, limits.path_size)?);
 			},
-			Some(b"GNU.sparse.realsize") | Some(b"GNU.sparse.size") => {
+			Some(b"GNU.sparse.realsize" | b"GNU.sparse.size") => {
 				state.sparse_real_size = Some(read_pax_decimal(&mut input, &mut consumed, value_len)?);
 			},
 			_ => skip_exact(&mut input, value_len, &mut consumed)?,

@@ -8,15 +8,15 @@ use xutf::{Encoding as _, Utf8, Utf16};
 use crate::read::{Fault as ReadFault, ReadBlobs};
 
 /// Default maximum number of rendered output lines.
-pub(crate) const DEFAULT_MAX_LINES: usize = 3000;
+pub const DEFAULT_MAX_LINES: usize = 3000;
 /// Default maximum rendered output size in UTF-8 bytes.
-pub(crate) const DEFAULT_MAX_BYTES: usize = 50 * 1024;
+pub const DEFAULT_MAX_BYTES: usize = 50 * 1024;
 /// Default maximum number of UTF-16 code units in one rendered line.
-pub(crate) const DEFAULT_MAX_COLUMN: u32 = 512;
+pub const DEFAULT_MAX_COLUMN: u32 = 512;
 
 /// Limit that caused a head truncation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TruncatedBy {
+pub enum TruncatedBy {
 	/// The line limit was reached first.
 	Lines,
 	/// The byte limit was reached first.
@@ -25,7 +25,7 @@ pub(crate) enum TruncatedBy {
 
 /// Limits applied by [`truncate_head`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct TruncationOptions {
+pub struct TruncationOptions {
 	/// Maximum number of complete lines to retain.
 	pub max_lines: usize,
 	/// Maximum number of UTF-8 bytes to retain.
@@ -40,7 +40,7 @@ impl Default for TruncationOptions {
 
 /// A borrowed head-truncation result with counts for notices and blob spills.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct TruncationResult<'a> {
+pub struct TruncationResult<'a> {
 	/// Complete retained lines from the start of the input.
 	pub content:                  &'a str,
 	/// Whether any input was omitted.
@@ -72,7 +72,7 @@ impl TruncationResult<'_> {
 ///
 /// When content was omitted, `blob` names the durable copy of the original
 /// text and the line counts retain the exact footer truth.
-pub(crate) struct SpilledText {
+pub struct SpilledText {
 	pub content:     Str,
 	pub blob:        Option<BlobRef>,
 	pub shown_lines: u64,
@@ -81,7 +81,7 @@ pub(crate) struct SpilledText {
 
 /// Applies the standard text bounds and durably stores the complete text before
 /// returning a bounded projection.
-pub(crate) async fn spill_truncated_text<B: ReadBlobs>(
+pub async fn spill_truncated_text<B: ReadBlobs>(
 	full_text: String,
 	blobs: &B,
 ) -> Result<SpilledText, ReadFault> {
@@ -109,7 +109,7 @@ pub(crate) async fn spill_truncated_text<B: ReadBlobs>(
 
 /// A borrowed result from [`truncate_head_bytes`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ByteTruncationResult<'a> {
+pub struct ByteTruncationResult<'a> {
 	/// Longest valid UTF-8 prefix within the byte limit.
 	pub text:  &'a str,
 	/// UTF-8 byte length of `text`.
@@ -119,7 +119,7 @@ pub(crate) struct ByteTruncationResult<'a> {
 /// A possibly-owned result from [`truncate_line`].
 #[expect(dead_code, reason = "pi parity primitive retained for streaming adapters")]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LineTruncationResult<'a> {
+pub struct LineTruncationResult<'a> {
 	/// Original line, or its retained prefix followed by an ellipsis.
 	pub text:          Cow<'a, str>,
 	/// Whether the line exceeded the column limit.
@@ -129,7 +129,7 @@ pub(crate) struct LineTruncationResult<'a> {
 /// Retains the longest valid UTF-8 prefix no larger than `max_bytes`.
 ///
 /// The returned text borrows the input and never ends inside a UTF-8 scalar.
-pub(crate) fn truncate_head_bytes(text: &str, max_bytes: usize) -> ByteTruncationResult<'_> {
+pub fn truncate_head_bytes(text: &str, max_bytes: usize) -> ByteTruncationResult<'_> {
 	if text.len() <= max_bytes {
 		return ByteTruncationResult { text, bytes: text.len() };
 	}
@@ -153,7 +153,7 @@ pub(crate) fn truncate_head_bytes(text: &str, max_bytes: usize) -> ByteTruncatio
 ///
 /// A truncated line ends with `…`; an unmodified line remains borrowed.
 #[expect(dead_code, reason = "pi parity primitive retained for streaming adapters")]
-pub(crate) fn truncate_line(line: &str, max_chars: usize) -> LineTruncationResult<'_> {
+pub fn truncate_line(line: &str, max_chars: usize) -> LineTruncationResult<'_> {
 	// Every UTF-16 code unit occupies at least one UTF-8 byte, so this is the
 	// overwhelmingly common no-truncation path without scanning the string.
 	if line.len() <= max_chars {
@@ -204,7 +204,7 @@ pub(crate) fn truncate_line(line: &str, max_chars: usize) -> LineTruncationResul
 ///
 /// No partial line is returned. If the first line exceeds the byte budget,
 /// `content` is empty and `first_line_exceeds_limit` is set.
-pub(crate) fn truncate_head(content: &str, options: TruncationOptions) -> TruncationResult<'_> {
+pub fn truncate_head(content: &str, options: TruncationOptions) -> TruncationResult<'_> {
 	let total_bytes = content.len();
 	let total_lines = content.bytes().filter(|byte| *byte == b'\n').count() + 1;
 
@@ -287,7 +287,7 @@ pub(crate) fn truncate_head(content: &str, options: TruncationOptions) -> Trunca
 }
 
 /// Appends pi's read continuation notice when `truncation` omitted content.
-pub(crate) fn append_head_truncation_notice(
+pub fn append_head_truncation_notice(
 	output: &mut String,
 	truncation: &TruncationResult<'_>,
 	start_line: usize,
@@ -309,7 +309,7 @@ pub(crate) fn append_head_truncation_notice(
 }
 
 /// Appends the exact footer used after spilling the complete output to a blob.
-pub(crate) fn append_blob_truncation_notice(
+pub fn append_blob_truncation_notice(
 	output: &mut String,
 	truncation: &TruncationResult<'_>,
 	blob_id: &str,

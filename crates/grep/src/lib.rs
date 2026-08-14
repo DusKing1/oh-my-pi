@@ -257,7 +257,7 @@ struct MatchCollector {
 }
 
 impl MatchCollector {
-	fn new(max_count: Option<u64>, max_columns: Option<usize>, collect_matches: bool) -> Self {
+	const fn new(max_count: Option<u64>, max_columns: Option<usize>, collect_matches: bool) -> Self {
 		Self {
 			matches: Vec::new(),
 			match_count: 0,
@@ -1252,7 +1252,7 @@ mod tests {
 	fn nul_marks_binary_content() {
 		let result = search(b"needle\0needle\n", &options("needle")).unwrap();
 		assert_eq!(result.total_matches, 0);
-		assert!(result.matches.is_empty());
+		assert_eq!(result.matches, [] as [GrepMatch; 0]);
 	}
 
 	#[test]

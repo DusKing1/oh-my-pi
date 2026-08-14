@@ -1,15 +1,17 @@
 //! Python-only, persistent-session evaluation tool.
 //!
-//! The executor owns the model-facing `eval@1` contract and a narrow resource
-//! boundary. [`kernel::EmbeddedPython`] is the production in-process resource:
-//! it gives every opened session a dedicated worker and persistent Python
-//! namespace while sharing OMP's single embedded CPython runtime.
+//! The tool is a protocol boundary. [`kernel::EmbeddedPython`] is the
+//! production in-process resource: it gives every opened session a dedicated
+//! worker and persistent Python namespace while sharing OMP's single embedded
+//! CPython runtime.
 
 use std::{
+	collections::HashMap,
+	fmt::Write as _,
 	future::Future,
 	sync::{
 		Arc,
-		atomic::{AtomicBool, Ordering},
+		atomic::{AtomicU64, Ordering},
 	},
 	time::Duration,
 };
@@ -21,9 +23,9 @@ use omp_core::{CowBytes, Str};
 use omp_proto::inference::v1::{InvokeInput, invoke_input};
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, BlobRef, CommitError, Constraint, Ev, IncomingParams,
-	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
+	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolParam, ToolSpec,
 };
-use schemars::JsonSchema;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::OnceCell;
@@ -78,60 +80,28 @@ Prior top-level names survive into the next cell — reuse; NEVER re-import/re-d
 
 const MAX_DISPLAY_TEXT_BYTES: usize = 8_000;
 
-fn omit_schema_format(schema: &mut schemars::Schema) {
-	schema.remove("format");
-}
-
 /// Runtime accepted by this build of `eval@1`.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToolParam)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
-	/// OMP's embedded CPython runtime.
-	Py,
-}
-
-#[derive(JsonSchema)]
-#[serde(rename_all = "lowercase")]
-#[expect(
-	dead_code,
-	reason = "schemars instantiates this type only while generating the wire schema"
-)]
-enum LanguageSchema {
+	/// OMP's embedded `CPython` runtime.
 	Py,
 }
 
 /// Complete arguments for one Python cell.
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToolParam)]
 #[serde(deny_unknown_fields)]
 pub struct Params {
-	/// Runtime selector. Only `"py"` is accepted.
-	#[schemars(description = "runtime: \"py\" for the IPython kernel")]
-	#[schemars(with = "LanguageSchema")]
+	/// runtime: "py" for the IPython kernel
 	pub language: Language,
-	/// Exact cell source.
-	#[schemars(
-		with = "String",
-		description = "code to run in this eval call, verbatim. Use top-level await freely."
-	)]
+	/// code to run in this eval call, verbatim. Use top-level await freely.
 	pub code:     Str,
-	/// Optional short transcript label.
-	#[schemars(
-		with = "omp_tool::OptionalSchema<String>",
-		description = "short label shown in transcript (e.g. \"imports\", \"load config\")"
-	)]
+	/// short label shown in transcript (e.g. "imports", "load config")
 	pub title:    Option<Str>,
-	/// Runtime-work timeout in seconds. Zero disables it.
-	#[schemars(
-		with = "omp_tool::OptionalSchema<f64>",
-		transform = omit_schema_format,
-		description = "timeout for this eval call in seconds; 0 disables the cell timeout"
-	)]
+	/// timeout for this eval call in seconds; 0 disables the cell timeout
 	pub timeout:  Option<f64>,
-	/// Whether to replace the session namespace before executing this cell.
-	#[schemars(
-		with = "omp_tool::OptionalSchema<bool>",
-		description = "wipe this language's kernel before running. Other languages are untouched."
-	)]
+	/// wipe this language's kernel before running. Other languages are
+	/// untouched.
 	pub reset:    Option<bool>,
 }
 
@@ -170,7 +140,7 @@ pub struct OutputFrame {
 }
 
 /// Rich output captured from a Python cell.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DisplayOutput {
 	/// JSON-compatible display value.
@@ -198,7 +168,7 @@ pub enum DisplayOutput {
 }
 
 /// REPL value of the final expression in a cell.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct CellValue {
 	/// Stable plain-text representation.
 	pub text: Str,
@@ -245,7 +215,7 @@ pub struct CellStatus {
 }
 
 /// Complete terminal result supplied by an eval resource.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct RunCompletion {
 	/// Terminal cell status.
 	pub status:          CellStatus,
@@ -264,7 +234,7 @@ pub struct RunCompletion {
 }
 
 /// Durable result of one eval call.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct Payload {
 	/// Stable identity of the persistent Python session.
 	pub session_id:      Bytes,
@@ -335,7 +305,7 @@ pub struct RunRequest {
 }
 
 /// Ordered event from an active cell.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunEvent {
 	/// Resource assigned a cell identity.
 	Started {
@@ -345,7 +315,7 @@ pub enum RunEvent {
 	/// Cell-bounded stdout or stderr.
 	Output(Update),
 	/// Terminal result.
-	Completed(RunCompletion),
+	Completed(Box<RunCompletion>),
 }
 
 /// Request-scoped active Python cell.
@@ -389,31 +359,36 @@ fn format_display_json(outputs: &[DisplayOutput]) -> String {
 			}
 			let elided = text.len() - end;
 			text.truncate(end);
-			text.push_str(&format!("\n[…{elided}ch elided…]"));
+			let _ = writeln!(text, "[…{elided}ch elided…]");
 		}
 		rendered.push(format!("display[{index}]:\n{text}"));
 	}
 	rendered.join("\n\n")
 }
 
-/// Python-only `eval@1` implementation retaining one lazy session.
+/// Python-only `eval@1` implementation retaining one lazy session per owner.
 pub struct EvalTool<E: EvalExec> {
-	exec:    E,
-	session: OnceCell<Session>,
-	control: EvalSessionControl,
-	spec:    ToolSpec,
+	exec:     E,
+	sessions: Mutex<HashMap<Str, Arc<OwnerSession>>>,
+	control:  EvalSessionControl,
+	spec:     ToolSpec,
 }
 
-/// External, session-owner-only reset trigger used when chat identity changes.
+struct OwnerSession {
+	session:          OnceCell<Session>,
+	reset_generation: AtomicU64,
+}
+
+/// External reset trigger used when chat identity changes.
 #[derive(Clone, Default)]
 pub struct EvalSessionControl {
-	reset: Arc<AtomicBool>,
+	reset_generation: Arc<AtomicU64>,
 }
 
 impl EvalSessionControl {
-	/// Makes the next committed cell reset its persistent namespace before use.
+	/// Makes every owner's next committed cell start with a fresh namespace.
 	pub fn request_reset(&self) {
-		self.reset.store(true, Ordering::Release);
+		self.reset_generation.fetch_add(1, Ordering::AcqRel);
 	}
 }
 
@@ -427,7 +402,7 @@ pub fn eval_controlled<E: EvalExec>(exec: E) -> (EvalTool<E>, EvalSessionControl
 	let control = EvalSessionControl::default();
 	let tool = EvalTool {
 		exec,
-		session: OnceCell::new(),
+		sessions: Mutex::new(HashMap::new()),
 		control: control.clone(),
 		spec: ToolSpec {
 			name:        Str::from("eval"),
@@ -454,6 +429,10 @@ impl<E: EvalExec> Tool for EvalTool<E> {
 		&'c self,
 		mut params: IncomingParams<'c>,
 	) -> impl Stream<Item = Ev<Self::Update, Self::Payload, Self::Fault>> + Send + 'c {
+		let owner = params
+			.owner()
+			.cloned()
+			.unwrap_or_else(|| Str::new_static("__direct_eval_owner__"));
 		stream! {
 			let args = match params.whole::<Params>().await {
 				Ok(args) => args,
@@ -476,14 +455,25 @@ impl<E: EvalExec> Tool for EvalTool<E> {
 				return;
 			}
 
-			let session = match self.session.get_or_try_init(|| self.exec.open_session()).await {
+			let reset_generation = self.control.reset_generation.load(Ordering::Acquire);
+			let owned = self
+				.sessions
+				.lock()
+				.entry(owner)
+				.or_insert_with(|| Arc::new(OwnerSession {
+					session: OnceCell::new(),
+					reset_generation: AtomicU64::new(reset_generation),
+				}))
+				.clone();
+			let session = match owned.session.get_or_try_init(|| self.exec.open_session()).await {
 				Ok(session) => session.clone(),
 				Err(fault) => {
 					yield Ev::Done(Outcome::Done { result: Err(fault), useless: false });
 					return;
 				},
 			};
-			let reset = args.reset.unwrap_or(false) || self.control.reset.swap(false, Ordering::AcqRel);
+			let reset = args.reset.unwrap_or(false)
+				|| owned.reset_generation.swap(reset_generation, Ordering::AcqRel) != reset_generation;
 			let mut run = match self.exec.run(&session, RunRequest {
 				code: args.code.clone(),
 				timeout,
@@ -508,14 +498,8 @@ impl<E: EvalExec> Tool for EvalTool<E> {
 						let interrupt = params.next_interrupt().fuse();
 						pin_mut!(next, interrupt);
 						match futures::future::select(interrupt, next).await {
-							Either::Left((interrupt, remaining)) => {
-								drop(remaining);
-								Either::Left(interrupt)
-							},
-							Either::Right((event, remaining)) => {
-								drop(remaining);
-								Either::Right(event)
-							},
+							Either::Left((interrupt, _)) => Either::Left(interrupt),
+							Either::Right((event, _)) => Either::Right(event),
 						}
 					};
 					match selected {
@@ -547,6 +531,7 @@ impl<E: EvalExec> Tool for EvalTool<E> {
 						yield Ev::Update(update);
 					},
 					Ok(Some(RunEvent::Completed(done))) => {
+						let done = *done;
 						yield Ev::Done(Outcome::Done {
 							result: Ok(Payload {
 								session_id: session.id,
@@ -587,7 +572,7 @@ impl<E: EvalExec> Tool for EvalTool<E> {
 		let payload = match view {
 			Ok(payload) => payload,
 			Err(fault) => {
-				let Some(mut projection) = TextProjection::new(caps) else {
+				let Some(mut projection) = TextProjection::new(*caps) else {
 					return Vec::new();
 				};
 				let message = match fault {
@@ -674,10 +659,12 @@ impl<E: EvalExec> Tool for EvalTool<E> {
 				};
 			},
 			CellOutcome::Timeout if stdout_empty && visible_display_empty => {
-				text = "Command timed out".to_owned();
+				text.clear();
+				text.push_str("Command timed out");
 			},
 			CellOutcome::Cancelled if stdout_empty && visible_display_empty => {
-				text = "Command aborted".to_owned();
+				text.clear();
+				text.push_str("Command aborted");
 			},
 			CellOutcome::Complete | CellOutcome::Timeout | CellOutcome::Cancelled => {},
 		}
@@ -689,19 +676,21 @@ impl<E: EvalExec> Tool for EvalTool<E> {
 				text.lines().count()
 			};
 			if let Some(blob) = &payload.spilled_output {
-				text.push_str(&format!(
+				let _ = write!(
+					text,
 					"\n\n[truncated: {shown_lines} of {} lines shown; full output in blob {}]",
 					payload.total_lines, blob.hash
-				));
+				);
 			} else {
-				text.push_str(&format!(
+				let _ = write!(
+					text,
 					"\n\n[truncated: {shown_lines} of {} lines shown]",
 					payload.total_lines
-				));
+				);
 			}
 		}
 
-		let Some(mut projection) = TextProjection::new(caps) else {
+		let Some(mut projection) = TextProjection::new(*caps) else {
 			return Vec::new();
 		};
 		projection.push(&text);
@@ -741,7 +730,7 @@ impl<E: EvalExec> Tool for EvalTool<E> {
 
 fn param_event<U, P>(error: ParamError) -> Ev<U, P, Fault> {
 	match error {
-		ParamError::Args(issue) => Ev::Args(issue),
+		ParamError::Args(issue) => Ev::Args(*issue),
 		ParamError::Interrupted(interrupt) => {
 			Ev::Aborted(Abort::Interrupted { reason: interrupt.reason })
 		},
