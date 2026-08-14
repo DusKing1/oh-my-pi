@@ -6,7 +6,7 @@
 
 use std::{
 	collections::HashMap,
-	ffi::c_long,
+	ffi::{c_long, c_ulong},
 	sync::{
 		Arc, LazyLock,
 		atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
@@ -39,7 +39,6 @@ const BOOTSTRAP: &std::ffi::CStr = c_str!(
 	r#"
 import ast as _omp_ast
 import asyncio as _omp_asyncio
-import contextlib as _omp_contextlib
 import inspect as _omp_inspect
 import json as _omp_json
 import sys as _omp_sys
@@ -84,7 +83,7 @@ def _omp_run(code, ns, want_value):
         return None
     return ns["__omp_async_runner"].run(_omp_run_async(code, ns, want_value))
 
-def _omp_run_cell(source, ns, timeout_seconds, stdout, stderr):
+def _omp_run_cell(source, ns, timeout_seconds):
     started = _omp_time.perf_counter()
     deadline = None if timeout_seconds is None else started + timeout_seconds
     pause_depth = 0
@@ -125,17 +124,16 @@ def _omp_run_cell(source, ns, timeout_seconds, stdout, stderr):
     try:
         if deadline is not None:
             _omp_sys.settrace(timeout_trace)
-        with _omp_contextlib.redirect_stdout(stdout), _omp_contextlib.redirect_stderr(stderr):
-            body, expr = _omp_compile(source)
-            _omp_run(body, ns, False)
-            if expr is not None:
-                value = _omp_run(expr, ns, True)
-                if value is not None:
-                    result_text = repr(value)
-                    try:
-                        result_json = _omp_json.dumps(value, allow_nan=False, separators=(",", ":"))
-                    except (TypeError, ValueError, OverflowError):
-                        result_json = None
+        body, expr = _omp_compile(source)
+        _omp_run(body, ns, False)
+        if expr is not None:
+            value = _omp_run(expr, ns, True)
+            if value is not None:
+                result_text = repr(value)
+                try:
+                    result_json = _omp_json.dumps(value, allow_nan=False, separators=(",", ":"))
+                except (TypeError, ValueError, OverflowError):
+                    result_json = None
     except BaseException as exc:
         if isinstance(exc, KeyboardInterrupt):
             outcome = "cancelled"
@@ -163,11 +161,6 @@ def _omp_run_cell(source, ns, timeout_seconds, stdout, stderr):
 "#
 );
 
-/// CPython's `sys.stdout` and `sys.stderr` are process-interpreter globals.
-/// Every embedded eval resource shares this gate, including distinct project
-/// registries backed by the process-wide [`Engine`].
-static EXECUTION_GATE: LazyLock<Arc<Mutex<()>>> = LazyLock::new(|| Arc::new(Mutex::new(())));
-
 /// Cloneable embedded Python resource shared by one or more eval tool values.
 ///
 /// The caller owns OMP's process-wide [`Engine`] and must initialize it exactly
@@ -178,12 +171,11 @@ pub struct EmbeddedPython {
 }
 
 struct Inner {
-	engine:         Arc<Engine>,
-	next_session:   AtomicU64,
-	next_cell:      AtomicU64,
-	installer:      Arc<dyn NamespaceInstaller>,
-	workers:        Mutex<HashMap<Bytes, Arc<Worker>>>,
-	execution_gate: Arc<Mutex<()>>,
+	engine:       Arc<Engine>,
+	next_session: AtomicU64,
+	next_cell:    AtomicU64,
+	installer:    Arc<dyn NamespaceInstaller>,
+	workers:      Mutex<HashMap<Bytes, Arc<Worker>>>,
 }
 
 struct Worker {
@@ -193,12 +185,11 @@ struct Worker {
 }
 
 struct WorkerState {
-	thread_id:      AtomicI64,
-	epoch:          AtomicU64,
-	alive:          AtomicBool,
-	active:         Mutex<Option<ActiveCell>>,
-	installer:      Arc<dyn NamespaceInstaller>,
-	execution_gate: Arc<Mutex<()>>,
+	thread_id: AtomicI64,
+	epoch:     AtomicU64,
+	alive:     AtomicBool,
+	active:    Mutex<Option<ActiveCell>>,
+	installer: Arc<dyn NamespaceInstaller>,
 }
 
 struct ActiveCell {
@@ -213,6 +204,10 @@ struct Command {
 	cancelled: Arc<AtomicBool>,
 	epoch:     u64,
 }
+unsafe extern "C" {
+	fn PyThread_get_thread_ident() -> c_ulong;
+}
+
 impl WorkerState {
 	fn interrupt_if_active(&self, target: &Arc<AtomicBool>) -> Result<(), Fault> {
 		let active = self.active.lock();
@@ -266,21 +261,37 @@ impl Drop for Worker {
 	}
 }
 
-#[pyclass]
-struct CaptureWriter {
-	channel:  OutputChannel,
+const STDOUT_ROUTER_ATTR: &str = "__omp_stdout_router__";
+const STDERR_ROUTER_ATTR: &str = "__omp_stderr_router__";
+static OUTPUT_ROUTER_INIT: Mutex<()> = Mutex::new(());
+static OUTPUT_ROUTERS: LazyLock<OutputRouters> = LazyLock::new(|| OutputRouters {
+	stdout: Arc::new(OutputRouterState::new(OutputChannel::Stdout)),
+	stderr: Arc::new(OutputRouterState::new(OutputChannel::Stderr)),
+});
+
+struct CaptureSink {
 	events:   Sender<Result<RunEvent, Fault>>,
 	sequence: Arc<AtomicU64>,
 	buffer:   Mutex<Vec<u8>>,
 }
 
-impl CaptureWriter {
-	fn new(
-		channel: OutputChannel,
-		events: Sender<Result<RunEvent, Fault>>,
-		sequence: Arc<AtomicU64>,
-	) -> Self {
-		Self { channel, events, sequence, buffer: Mutex::new(Vec::new()) }
+impl CaptureSink {
+	fn new(events: Sender<Result<RunEvent, Fault>>, sequence: Arc<AtomicU64>) -> Self {
+		Self { events, sequence, buffer: Mutex::new(Vec::new()) }
+	}
+
+	fn write(&self, channel: OutputChannel, text: &str) -> usize {
+		if text.is_empty() {
+			return 0;
+		}
+		self.buffer.lock().extend_from_slice(text.as_bytes());
+		let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
+		let _ = self.events.send(Ok(RunEvent::Output(Update {
+			channel,
+			data: CowBytes::owned(Bytes::copy_from_slice(text.as_bytes())),
+			sequence,
+		})));
+		text.chars().count()
 	}
 
 	fn snapshot(&self) -> Vec<u8> {
@@ -288,23 +299,87 @@ impl CaptureWriter {
 	}
 }
 
-#[pymethods]
-impl CaptureWriter {
-	fn write(&self, text: &str) -> usize {
-		if text.is_empty() {
-			return 0;
+struct OutputRouterState {
+	channel: OutputChannel,
+	active:  Mutex<HashMap<c_ulong, Arc<CaptureSink>>>,
+}
+
+impl OutputRouterState {
+	fn new(channel: OutputChannel) -> Self {
+		Self { channel, active: Mutex::new(HashMap::new()) }
+	}
+
+	fn bind(&self, thread_id: c_ulong, sink: Arc<CaptureSink>) {
+		self.active.lock().insert(thread_id, sink);
+	}
+
+	fn unbind(&self, thread_id: c_ulong, sink: &Arc<CaptureSink>) {
+		let mut active = self.active.lock();
+		if active
+			.get(&thread_id)
+			.is_some_and(|current| Arc::ptr_eq(current, sink))
+		{
+			active.remove(&thread_id);
 		}
-		self.buffer.lock().extend_from_slice(text.as_bytes());
-		let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
-		let _ = self.events.send(Ok(RunEvent::Output(Update {
-			channel: self.channel,
-			data: CowBytes::owned(Bytes::copy_from_slice(text.as_bytes())),
-			sequence,
-		})));
-		text.chars().count()
+	}
+
+	fn write(&self, text: &str) -> usize {
+		let thread_id = unsafe { PyThread_get_thread_ident() };
+		let sink = self.active.lock().get(&thread_id).cloned();
+		sink.map_or_else(|| text.chars().count(), |sink| sink.write(self.channel, text))
+	}
+}
+
+#[pyclass(frozen)]
+struct OutputRouter {
+	state: Arc<OutputRouterState>,
+}
+
+#[pymethods]
+impl OutputRouter {
+	fn write(&self, text: &str) -> usize {
+		self.state.write(text)
 	}
 
 	fn flush(&self) {}
+}
+
+#[derive(Clone)]
+struct OutputRouters {
+	stdout: Arc<OutputRouterState>,
+	stderr: Arc<OutputRouterState>,
+}
+
+impl OutputRouters {
+	fn bind(&self, thread_id: c_ulong, events: Sender<Result<RunEvent, Fault>>) -> OutputBinding {
+		let sequence = Arc::new(AtomicU64::new(0));
+		let stdout = Arc::new(CaptureSink::new(events.clone(), Arc::clone(&sequence)));
+		let stderr = Arc::new(CaptureSink::new(events, sequence));
+		self.stdout.bind(thread_id, Arc::clone(&stdout));
+		self.stderr.bind(thread_id, Arc::clone(&stderr));
+		OutputBinding {
+			thread_id,
+			stdout_router: Arc::clone(&self.stdout),
+			stderr_router: Arc::clone(&self.stderr),
+			stdout,
+			stderr,
+		}
+	}
+}
+
+struct OutputBinding {
+	thread_id:     c_ulong,
+	stdout_router: Arc<OutputRouterState>,
+	stderr_router: Arc<OutputRouterState>,
+	stdout:        Arc<CaptureSink>,
+	stderr:        Arc<CaptureSink>,
+}
+
+impl Drop for OutputBinding {
+	fn drop(&mut self) {
+		self.stdout_router.unbind(self.thread_id, &self.stdout);
+		self.stderr_router.unbind(self.thread_id, &self.stderr);
+	}
 }
 
 #[pyclass]
@@ -442,7 +517,6 @@ impl EmbeddedPython {
 				next_session: AtomicU64::new(1),
 				next_cell: AtomicU64::new(1),
 				workers: Mutex::new(HashMap::new()),
-				execution_gate: Arc::clone(&EXECUTION_GATE),
 			}),
 		}
 	}
@@ -465,14 +539,12 @@ impl EmbeddedPython {
 	fn spawn_worker(&self, label: &str) -> Result<Arc<Worker>, Fault> {
 		let (commands, receiver) = flume::unbounded();
 		let installer = Arc::clone(&self.inner.installer);
-		let execution_gate = Arc::clone(&self.inner.execution_gate);
 		let state = Arc::new(WorkerState {
 			thread_id: AtomicI64::new(0),
-			epoch: AtomicU64::new(0),
-			alive: AtomicBool::new(true),
-			active: Mutex::new(None),
+			epoch:     AtomicU64::new(0),
+			alive:     AtomicBool::new(true),
+			active:    Mutex::new(None),
 			installer: Arc::clone(&installer),
-			execution_gate,
 		});
 		let worker =
 			Arc::new(Worker { commands, state: Arc::clone(&state), enqueue: AsyncMutex::new(()) });
@@ -569,17 +641,10 @@ fn worker_main(
 ) {
 	let _alive = WorkerAlive(&state.alive);
 	engine.attach(|py| {
-		let thread_id = match PyModule::import(py, "threading")
-			.and_then(|threading| threading.call_method0("get_ident"))
-			.and_then(|ident| ident.extract::<i64>())
-		{
-			Ok(thread_id) => thread_id,
-			Err(error) => {
-				fail_worker(&commands, Str::from(format_python_error(py, error)));
-				return;
-			},
-		};
-		state.thread_id.store(thread_id, Ordering::Release);
+		let thread_id = unsafe { PyThread_get_thread_ident() };
+		state
+			.thread_id
+			.store(i64::try_from(thread_id).unwrap_or(i64::MAX), Ordering::Release);
 		let setup = match prepare_python(py) {
 			Ok(setup) => setup,
 			Err(error) => {
@@ -596,7 +661,7 @@ fn worker_main(
 			},
 		};
 
-		while let Ok(command) = commands.recv() {
+		while let Ok(command) = py.detach(|| commands.recv()) {
 			let _ = command
 				.events
 				.send(Ok(RunEvent::Started { cell_id: command.cell_id.clone() }));
@@ -606,10 +671,6 @@ fn worker_main(
 					.send(Ok(RunEvent::Completed(cancelled_completion())));
 				continue;
 			}
-			// `sys.stdout`/`sys.stderr` redirection is interpreter-global. OMP's
-			// embedded runtime is shared, so serialize cells across namespaces to
-			// preserve strict per-session output boundaries.
-			let _execution = state.execution_gate.lock();
 			if command.request.reset {
 				match new_namespace(py, &namespace_factory, installer) {
 					Ok(fresh) => {
@@ -677,7 +738,6 @@ fn worker_main(
 				},
 			}
 		}
-		let _execution = state.execution_gate.lock();
 		close_namespace(py, &namespace);
 		state.thread_id.store(0, Ordering::Release);
 	});
@@ -700,8 +760,40 @@ fn cancelled_completion() -> RunCompletion {
 }
 
 fn prepare_python(py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+	ensure_output_routers(py)?;
 	let module = PyModule::from_code(py, BOOTSTRAP, c_str!("<omp-eval>"), c_str!("_omp_eval"))?;
 	Ok((module.getattr("_omp_run_cell")?.unbind(), module.getattr("_omp_new_namespace")?.unbind()))
+}
+
+fn ensure_output_routers(py: Python<'_>) -> PyResult<OutputRouters> {
+	let outputs = (*OUTPUT_ROUTERS).clone();
+	let _initializing = OUTPUT_ROUTER_INIT.lock();
+	let sys = PyModule::import(py, "sys")?;
+	let current = sys
+		.getattr(STDOUT_ROUTER_ATTR)
+		.ok()
+		.and_then(|value| value.extract::<Py<OutputRouter>>().ok())
+		.zip(
+			sys.getattr(STDERR_ROUTER_ATTR)
+				.ok()
+				.and_then(|value| value.extract::<Py<OutputRouter>>().ok()),
+		)
+		.filter(|(stdout, stderr)| {
+			Arc::ptr_eq(&stdout.borrow(py).state, &outputs.stdout)
+				&& Arc::ptr_eq(&stderr.borrow(py).state, &outputs.stderr)
+		});
+	let (stdout, stderr) = if let Some(current) = current {
+		current
+	} else {
+		let stdout = Py::new(py, OutputRouter { state: Arc::clone(&outputs.stdout) })?;
+		let stderr = Py::new(py, OutputRouter { state: Arc::clone(&outputs.stderr) })?;
+		sys.setattr(STDOUT_ROUTER_ATTR, stdout.bind(py))?;
+		sys.setattr(STDERR_ROUTER_ATTR, stderr.bind(py))?;
+		(stdout, stderr)
+	};
+	sys.setattr("stdout", stdout.bind(py))?;
+	sys.setattr("stderr", stderr.bind(py))?;
+	Ok(outputs)
 }
 
 fn new_namespace(
@@ -740,17 +832,13 @@ fn execute_cell(
 		})?
 		.extract::<Py<DisplayCollector>>()?;
 	display.borrow(py).clear();
-	let sequence = Arc::new(AtomicU64::new(0));
-	let stdout = Py::new(
-		py,
-		CaptureWriter::new(OutputChannel::Stdout, events.clone(), Arc::clone(&sequence)),
-	)?;
-	let stderr = Py::new(py, CaptureWriter::new(OutputChannel::Stderr, events, sequence))?;
+	let outputs = ensure_output_routers(py)?;
+	let thread_id = unsafe { PyThread_get_thread_ident() };
+	let capture = outputs.bind(thread_id, events);
 	installer.begin_cell(py, namespace.bind(py), cell_id, request.timeout)?;
-	let execution =
-		runner
-			.bind(py)
-			.call1((request.code.as_str(), namespace.bind(py), timeout, &stdout, &stderr));
+	let execution = runner
+		.bind(py)
+		.call1((request.code.as_str(), namespace.bind(py), timeout));
 	let ended = installer.end_cell(py, namespace.bind(py), cell_id);
 	let value = match (execution, ended) {
 		(Err(error), _) => return Err(error),
@@ -795,8 +883,8 @@ fn execute_cell(
 		.ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("duration_ms"))?
 		.extract::<u64>()?;
 
-	let stdout_bytes = stdout.borrow(py).snapshot();
-	let stderr_bytes = stderr.borrow(py).snapshot();
+	let stdout_bytes = capture.stdout.snapshot();
+	let stderr_bytes = capture.stderr.snapshot();
 	let total_bytes = stdout_bytes.len() + stderr_bytes.len();
 	let total_lines = count_lines(&stdout_bytes) + count_lines(&stderr_bytes);
 	let display_outputs = display.borrow(py).drain(py)?;
@@ -970,6 +1058,46 @@ mod tests {
 		assert_eq!(stdout, b"out\n");
 		assert_eq!(stderr, b"err\n");
 		assert_eq!(done.result.expect("result").json, Some(serde_json::json!({"ok": true})));
+	}
+
+	#[tokio::test]
+	async fn independent_sessions_execute_concurrently_without_output_cross_talk() {
+		const BARRIER_MODULE: &str = "_omp_eval_parallel_barrier";
+		ENGINE
+			.attach(|py| -> PyResult<()> {
+				let sys = PyModule::import(py, "sys")?;
+				let modules = sys.getattr("modules")?;
+				let threading = PyModule::import(py, "threading")?;
+				let barrier = threading.getattr("Barrier")?.call1((2,))?;
+				modules.set_item(BARRIER_MODULE, barrier)
+			})
+			.expect("shared barrier installs");
+
+		let runtime = runtime();
+		let left = runtime.open_session().await.expect("left session opens");
+		let right = runtime.open_session().await.expect("right session opens");
+		let left_code =
+			format!("import sys\nsys.modules[{BARRIER_MODULE:?}].wait(timeout=1)\nprint('left')");
+		let right_code =
+			format!("import sys\nsys.modules[{BARRIER_MODULE:?}].wait(timeout=1)\nprint('right')");
+		let (left_result, right_result) = tokio::join!(
+			run_to_completion(&runtime, &left, &left_code, false),
+			run_to_completion(&runtime, &right, &right_code, false),
+		);
+		let (left_updates, left_done) = left_result;
+		let (right_updates, right_done) = right_result;
+		assert_eq!(left_done.status.outcome, CellOutcome::Complete);
+		assert_eq!(right_done.status.outcome, CellOutcome::Complete);
+
+		let stdout = |updates: Vec<Update>| {
+			updates
+				.into_iter()
+				.filter(|update| update.channel == OutputChannel::Stdout)
+				.flat_map(|update| update.data.to_vec())
+				.collect::<Vec<_>>()
+		};
+		assert_eq!(stdout(left_updates), b"left\n");
+		assert_eq!(stdout(right_updates), b"right\n");
 	}
 
 	#[tokio::test]
