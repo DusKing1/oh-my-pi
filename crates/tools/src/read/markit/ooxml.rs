@@ -9,8 +9,8 @@ use std::{
 use omp_ar::{Archive as ArArchive, Format, Limits};
 use quick_xml::{
 	Reader, XmlVersion,
-	escape::unescape,
-	events::{BytesStart, BytesText},
+	escape::{resolve_predefined_entity, unescape},
+	events::{BytesRef, BytesStart, BytesText},
 };
 
 const MAX_ARCHIVE_MEMBER_BYTES: u64 = 64 * 1024 * 1024;
@@ -150,6 +150,21 @@ pub(super) fn decode_text(text: &BytesText<'_>) -> Result<String, String> {
 	unescape(&decoded)
 		.map(|text| text.into_owned())
 		.map_err(|error| format!("invalid XML: {error}"))
+}
+
+pub(super) fn decode_reference(reference: &BytesRef<'_>) -> Result<String, String> {
+	if let Some(character) = reference
+		.resolve_char_ref()
+		.map_err(|error| format!("invalid XML: {error}"))?
+	{
+		return Ok(character.to_string());
+	}
+	let name = reference
+		.decode()
+		.map_err(|error| format!("invalid XML: {error}"))?;
+	resolve_predefined_entity(&name)
+		.map(str::to_owned)
+		.ok_or_else(|| format!("invalid XML: unknown entity '&{name};'"))
 }
 
 pub(super) fn local_name(name: &[u8]) -> &[u8] {

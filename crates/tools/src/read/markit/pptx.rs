@@ -7,7 +7,7 @@ use quick_xml::{Reader, events::Event};
 
 use super::{
 	MarkitError,
-	ooxml::{Archive, attribute, decode_text, local_name, xml_reader},
+	ooxml::{Archive, attribute, decode_reference, decode_text, local_name, xml_reader},
 };
 
 const FORMAT: &str = "pptx";
@@ -509,6 +509,7 @@ fn read_element_text(reader: &mut Reader<&[u8]>) -> Result<String, String> {
 	loop {
 		match reader.read_event_into(&mut buffer).map_err(xml_error)? {
 			Event::Text(part) => text.push_str(&decode_text(&part)?),
+			Event::GeneralRef(part) => text.push_str(&decode_reference(&part)?),
 			Event::CData(part) => text.push_str(&part.decode().map_err(xml_error)?),
 			Event::End(_) => break,
 			Event::Eof => return Err("unexpected end of XML inside text element".to_owned()),

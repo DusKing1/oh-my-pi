@@ -364,8 +364,8 @@ async fn copied_read_elision_is_ignored_but_reported_as_a_warning() {
 	let fake = Fake::with_files(&[("a.txt", b"one\ntwo\n")]);
 	let tag = compute_snapshot_tag(b"one\ntwo\n");
 	let input = format!(
-		"[a.txt#{tag}]\nPUT 1.=1:\n+ONE\n[…8ln elided; re-read needed ranges with |, e.g. \
-		 a.txt:10-17]"
+		"[a.txt#{tag}]\n[…8ln elided; re-read needed ranges with |, e.g. a.txt:10-17]\nPUT \
+		 1.=1:\n+ONE"
 	);
 	let (_, parts) = invoke(fake, &input).await;
 	let output = text(&parts);

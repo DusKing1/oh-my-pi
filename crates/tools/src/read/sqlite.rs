@@ -42,31 +42,49 @@ impl From<rusqlite::Error> for Error {
 /// A possible split of a path at a recognized SQLite extension.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PathCandidate {
+	/// Authored path to the database file.
 	pub sqlite_path:  PathBuf,
+	/// Sub-path identifying the table or row.
 	pub sub_path:     String,
+	/// Query string containing query parameters.
 	pub query_string: String,
 }
 
 /// Parsed read operation encoded after a SQLite database path.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Selector {
+	/// List tables in the database.
 	List,
+	/// Show table schema and sample rows.
 	Schema {
+		/// Target table name.
 		table:        String,
+		/// Number of sample rows to include.
 		sample_limit: usize,
 	},
+	/// Look up a single row by primary key or ROWID.
 	Row {
+		/// Target table name.
 		table: String,
+		/// Row key value.
 		key:   String,
 	},
+	/// Query a table with optional filter, sort, and pagination.
 	Query {
+		/// Target table name.
 		table:        String,
+		/// Max rows to return.
 		limit:        usize,
+		/// Row offset.
 		offset:       usize,
+		/// Optional ORDER BY clause.
 		order:        Option<String>,
+		/// Optional WHERE clause.
 		where_clause: Option<String>,
 	},
+	/// Execute a raw SELECT query.
 	Raw {
+		/// Raw SQL query text.
 		sql: String,
 	},
 }
@@ -74,32 +92,49 @@ pub enum Selector {
 /// Validated strategy for looking up a single row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RowLookup {
-	PrimaryKey { column: String, declared_type: String },
+	/// Look up row by explicit primary key column.
+	PrimaryKey {
+		/// Column name.
+		column:        String,
+		/// Declared SQLite type.
+		declared_type: String,
+	},
+	/// Look up row by SQLite internal ROWID.
 	RowId,
 }
 
 /// A bounded table row count.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TableRowCount {
+	/// Exact row count.
 	Exact(usize),
+	/// Estimated row count.
 	Estimate(usize),
+	/// Lower bound row count.
 	AtLeast(usize),
 }
 
 /// One table shown by a database-root read.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TableSummary {
+	/// Table name.
 	pub name:  String,
+	/// Row count summary.
 	pub count: TableRowCount,
 }
 
 /// A SQLite value retained independently of a connection or statement.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
+	/// NULL value.
 	Null,
+	/// Integer (64-bit).
 	Integer(i64),
+	/// Real / floating point.
 	Real(f64),
+	/// Text / string.
 	Text(String),
+	/// Binary blob.
 	Blob(Vec<u8>),
 }
 
@@ -109,27 +144,36 @@ pub type Row = Vec<(String, Value)>;
 /// A rectangular query page.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueryPage {
+	/// Column names in order.
 	pub columns:     Vec<String>,
+	/// Returned row values.
 	pub rows:        Vec<Row>,
+	/// Total row count in table or query.
 	pub total_count: usize,
 }
 
 /// Result of a capped raw query.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RawQueryResult {
+	/// Column names in order.
 	pub columns:   Vec<String>,
+	/// Returned row values.
 	pub rows:      Vec<Row>,
+	/// Whether the result was truncated at the row cap.
 	pub truncated: bool,
 }
 /// Schema information validated against an open database.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedTable {
+	/// Table name.
 	pub name:        String,
+	/// Column names in schema order.
 	pub columns:     Vec<String>,
+	/// Primary key column name and declared type if unique.
 	pub primary_key: Option<(String, String)>,
+	/// Whether the table supports ROWID lookups.
 	pub has_rowid:   bool,
 }
-
 /// Returns whether the bytes begin with SQLite's file magic.
 pub fn looks_like_sqlite(bytes: &[u8]) -> bool {
 	bytes.starts_with(SQLITE_MAGIC)

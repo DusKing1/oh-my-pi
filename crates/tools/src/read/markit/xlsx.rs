@@ -7,7 +7,10 @@ use quick_xml::events::Event;
 
 use super::{
 	MarkitError,
-	ooxml::{Archive, attribute, decode_text, local_name, render_markdown_table, xml_reader},
+	ooxml::{
+		Archive, attribute, decode_reference, decode_text, local_name, render_markdown_table,
+		xml_reader,
+	},
 };
 
 const FORMAT: &str = "xlsx";
@@ -158,6 +161,11 @@ fn parse_shared_strings(xml: &[u8]) -> Result<Vec<String>, String> {
 					item.push_str(&decode_text(&text)?);
 				}
 			},
+			Event::GeneralRef(reference) if in_text => {
+				if let Some(item) = item.as_mut() {
+					item.push_str(&decode_reference(&reference)?);
+				}
+			},
 			Event::CData(text) if in_text => {
 				if let Some(item) = item.as_mut() {
 					item.push_str(&text.decode().map_err(xml_error)?);
@@ -231,6 +239,16 @@ fn parse_worksheet(xml: &[u8], shared: &[String]) -> Result<Vec<Vec<String>>, St
 			},
 			Event::Text(text) if cell_text != CellText::None => {
 				let text = decode_text(&text)?;
+				if let Some(cell) = cell.as_mut() {
+					match cell_text {
+						CellText::Value => cell.value.push_str(&text),
+						CellText::Inline => cell.inline.push_str(&text),
+						CellText::None => {},
+					}
+				}
+			},
+			Event::GeneralRef(reference) if cell_text != CellText::None => {
+				let text = decode_reference(&reference)?;
 				if let Some(cell) = cell.as_mut() {
 					match cell_text {
 						CellText::Value => cell.value.push_str(&text),

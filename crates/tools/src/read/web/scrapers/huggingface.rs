@@ -1,6 +1,5 @@
 //! Anonymous Hugging Face repository renderer.
 
-use futures::join;
 use omp_core::Str;
 use serde::Deserialize;
 use url::Url;
@@ -58,7 +57,8 @@ async fn render_model<C: HttpClient + Sync>(
 ) -> Result<Option<RenderResult>, WebError> {
 	let api_url = format!("https://huggingface.co/api/models/{id}");
 	let card_url = format!("https://huggingface.co/{id}/raw/main/README.md");
-	let (api_response, card_response) = join!(get(client, api_url), get(client, card_url));
+	let (api_response, card_response) =
+		tokio::join!(biased; get(client, api_url), get(client, card_url));
 	let Some(api_response) = api_response? else {
 		return Ok(None);
 	};
@@ -130,7 +130,8 @@ async fn render_dataset<C: HttpClient + Sync>(
 ) -> Result<Option<RenderResult>, WebError> {
 	let api_url = format!("https://huggingface.co/api/datasets/{id}");
 	let card_url = format!("https://huggingface.co/datasets/{id}/raw/main/README.md");
-	let (api_response, card_response) = join!(get(client, api_url), get(client, card_url));
+	let (api_response, card_response) =
+		tokio::join!(biased; get(client, api_url), get(client, card_url));
 	let Some(api_response) = api_response? else {
 		return Ok(None);
 	};
@@ -187,7 +188,8 @@ async fn render_space<C: HttpClient + Sync>(
 ) -> Result<Option<RenderResult>, WebError> {
 	let api_url = format!("https://huggingface.co/api/spaces/{id}");
 	let card_url = format!("https://huggingface.co/spaces/{id}/raw/main/README.md");
-	let (api_response, card_response) = join!(get(client, api_url), get(client, card_url));
+	let (api_response, card_response) =
+		tokio::join!(biased; get(client, api_url), get(client, card_url));
 	let Some(api_response) = api_response? else {
 		return Ok(None);
 	};
@@ -524,14 +526,12 @@ mod tests {
 		}
 
 		fn requested_urls(&self) -> Vec<String> {
-			let mut urls = self
+			self
 				.requests
 				.lock()
 				.iter()
 				.map(|request| request.url.to_string())
-				.collect::<Vec<_>>();
-			urls.sort();
-			urls
+				.collect()
 		}
 	}
 

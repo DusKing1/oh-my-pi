@@ -7,7 +7,7 @@ use quick_xml::{Reader, XmlVersion, events::Event};
 
 use super::{
 	MarkitError,
-	ooxml::{Archive, decode_xml_bytes},
+	ooxml::{Archive, decode_reference, decode_xml_bytes},
 };
 
 const FORMAT: &str = "docx";
@@ -149,6 +149,15 @@ fn parse_xml(xml: &str) -> Result<Node, MarkitError> {
 					.expect("root exists")
 					.children
 					.push(Content::Text(text.into_owned()));
+			},
+			Ok(Event::GeneralRef(event)) => {
+				let text =
+					decode_reference(&event).map_err(|error| MarkitError::conversion(FORMAT, error))?;
+				stack
+					.last_mut()
+					.expect("root exists")
+					.children
+					.push(Content::Text(text));
 			},
 			Ok(Event::CData(event)) => {
 				let text = event

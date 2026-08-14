@@ -132,6 +132,15 @@ fn parse_nitter(html: &str) -> Option<TweetPage> {
 					}
 				}
 			},
+			Ok(Event::GeneralRef(reference)) => {
+				if let Ok(entity) = reference.decode() {
+					let decoded = decode_entity(&entity)
+						.map_or_else(|| format!("&{entity};"), |character| character.to_string());
+					for frame in &mut stack {
+						frame.text.push_str(&decoded);
+					}
+				}
+			},
 			Ok(Event::CData(text)) => {
 				if let Ok(decoded) = text.decode() {
 					for frame in &mut stack {
