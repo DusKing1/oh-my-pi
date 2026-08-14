@@ -180,8 +180,9 @@ impl Compositor {
 			let bw = f32::from(band.frame.size().width) * advance;
 			let bh = f32::from(band.rows) * line_height;
 			let starts = self.starts();
-			let mut shadow =
-				RectInst::fill([bx, f32::mul_add(line_height, 0.1, by)], [bw, bh], [0.0, 0.0, 0.0, 0.35]);
+			let mut shadow = RectInst::fill([bx, f32::mul_add(line_height, 0.1, by)], [bw, bh], [
+				0.0, 0.0, 0.0, 0.35,
+			]);
 			shadow.params = [line_height * 0.3, line_height * 0.45, 0.0, 0.0];
 			self.instances.rects.push(shadow);
 			self.finish_batch(Some(clip), starts);
@@ -239,14 +240,19 @@ impl Compositor {
 					f32::mul_add(f32::from(cx), advance, view.origin[0]),
 					f32::mul_add(f32::from(row), line_height, view.origin[1]),
 				)),
-				(None, Some((cx, py))) => Some((f32::mul_add(f32::from(cx), advance, view.origin[0]), py)),
+				(None, Some((cx, py))) => {
+					Some((f32::mul_add(f32::from(cx), advance, view.origin[0]), py))
+				},
 				(None, None) => None,
 			};
 			if let Some((cx, py)) = caret {
 				let width = (advance * 0.14).max(2.0);
 				let pad = line_height * 0.08;
-				let mut rect =
-					RectInst::fill([cx, py + pad], [width, f32::mul_add(pad, -2.0, line_height)], theme.cursor);
+				let mut rect = RectInst::fill(
+					[cx, py + pad],
+					[width, f32::mul_add(pad, -2.0, line_height)],
+					theme.cursor,
+				);
 				rect.params[0] = width * 0.5;
 				self.instances.rects.push(rect);
 			}
@@ -760,7 +766,11 @@ impl Compositor {
 			for (seg_start, seg_end) in segments {
 				self.instances.rects.push(RectInst::fill(
 					[
-						f32::mul_add(f32::from(pass.col_offset + seg_start), metrics.advance, view.origin[0]),
+						f32::mul_add(
+							f32::from(pass.col_offset + seg_start),
+							metrics.advance,
+							view.origin[0],
+						),
 						(pass.row_offset + f32::from(y)).mul_add(metrics.line_height, view.origin[1]),
 					],
 					[f32::from(seg_end - seg_start) * metrics.advance, metrics.line_height],
@@ -823,7 +833,9 @@ impl Compositor {
 		if spec.dim {
 			fg = [fg[0] * 0.65, fg[1] * 0.65, fg[2] * 0.65, fg[3]];
 		}
-		let baseline = (metrics.line_height + metrics.ascent - metrics.descent).mul_add(0.5, py).round();
+		let baseline = (metrics.line_height + metrics.ascent - metrics.descent)
+			.mul_add(0.5, py)
+			.round();
 		let pen_x = f32::mul_add(f32::from(col_offset + x), metrics.advance, ox);
 		let CellContent::Grapheme { text, width } = cell.content() else {
 			return;
@@ -948,10 +960,14 @@ fn decor_fill_sample(
 		return start;
 	}
 	let point = [
-		(f32::from(run.width) * metrics.advance).mul_add(0.5, f32::from(run.x - bounds.x) * metrics.advance),
-		metrics.line_height.mul_add(0.5, f32::from(run.y - bounds.y) * metrics.line_height),
+		(f32::from(run.width) * metrics.advance)
+			.mul_add(0.5, f32::from(run.x - bounds.x) * metrics.advance),
+		metrics
+			.line_height
+			.mul_add(0.5, f32::from(run.y - bounds.y) * metrics.line_height),
 	];
-	let amount = ((point[1].mul_add(grad[1], point[0] * grad[0]) - grad[2]) * grad[3]).clamp(0.0, 1.0);
+	let amount =
+		((point[1].mul_add(grad[1], point[0] * grad[0]) - grad[2]) * grad[3]).clamp(0.0, 1.0);
 	[
 		(end[0] - start[0]).mul_add(amount, start[0]),
 		(end[1] - start[1]).mul_add(amount, start[1]),

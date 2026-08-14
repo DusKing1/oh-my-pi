@@ -299,14 +299,14 @@ impl Fonts {
 		if let Some(metrics) = self.metrics.get(&key) {
 			return *metrics;
 		}
-		let metrics = self.faces[self.primary as usize]
-			.font()
-			.map_or(LineMetrics {
+		let metrics = self.faces[self.primary as usize].font().map_or(
+			LineMetrics {
 				advance:     px * 0.6,
 				ascent:      px * 0.8,
 				descent:     px * 0.2,
 				line_height: (px * 1.2).ceil(),
-			}, |font| {
+			},
+			|font| {
 				let sm = font.metrics(&[]).scale(px);
 				let advance = font
 					.charmap()
@@ -324,7 +324,8 @@ impl Fonts {
 					// seams connect; editor-style leading would break them.
 					line_height: (sm.ascent + sm.descent).ceil(),
 				}
-			});
+			},
+		);
 		self.metrics.insert(key, metrics);
 		metrics
 	}

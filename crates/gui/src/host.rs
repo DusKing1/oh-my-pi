@@ -829,7 +829,8 @@ impl<S: Scene> WindowHost<S> {
 		let now = Instant::now();
 		let consecutive = self.last_select_press.is_some_and(|(last, position)| {
 			now.saturating_duration_since(last) <= MULTI_CLICK_DELAY
-				&& (pointer[1] - position[1]).mul_add(pointer[1] - position[1], (pointer[0] - position[0]).powi(2))
+				&& (pointer[1] - position[1])
+					.mul_add(pointer[1] - position[1], (pointer[0] - position[0]).powi(2))
 					<= MULTI_CLICK_DISTANCE.powi(2)
 		});
 		self.last_select_press = Some((now, pointer));
@@ -1039,12 +1040,16 @@ impl<S: Scene> WindowHost<S> {
 		for divider in &tab.dividers {
 			let rect = divider.rect;
 			hairlines.push(match divider.axis {
-				Axis::X => {
-					RectInst::fill([(rect.w - hairline).mul_add(0.5, rect.x), rect.y], [hairline, rect.h], ink)
-				},
-				Axis::Y => {
-					RectInst::fill([rect.x, (rect.h - hairline).mul_add(0.5, rect.y)], [rect.w, hairline], ink)
-				},
+				Axis::X => RectInst::fill(
+					[(rect.w - hairline).mul_add(0.5, rect.x), rect.y],
+					[hairline, rect.h],
+					ink,
+				),
+				Axis::Y => RectInst::fill(
+					[rect.x, (rect.h - hairline).mul_add(0.5, rect.y)],
+					[rect.w, hairline],
+					ink,
+				),
 			});
 		}
 		compositor.rects(&hairlines);
