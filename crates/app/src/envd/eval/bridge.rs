@@ -566,7 +566,7 @@ pub(crate) struct BridgeNamespaceInstaller {
 	runtime:          Handle,
 	session:          Str,
 	next_run:         AtomicU64,
-	namespace_aborts: Mutex<BTreeMap<i64, Arc<CellAbort>>>,
+	namespace_aborts: Mutex<BTreeMap<usize, Arc<CellAbort>>>,
 	cells:            Mutex<BTreeMap<Bytes, Arc<CellAbort>>>,
 }
 
@@ -617,13 +617,13 @@ impl NamespaceInstaller for BridgeNamespaceInstaller {
 		self
 			.namespace_aborts
 			.lock()
-			.insert(python_thread_id(py)?, abort);
+			.insert(globals.as_ptr() as usize, abort);
 		Ok(())
 	}
 
 	fn begin_cell(
 		&self,
-		py: Python<'_>,
+		_py: Python<'_>,
 		globals: &Bound<'_, PyDict>,
 		cell_id: &Bytes,
 		_timeout: Option<std::time::Duration>,
@@ -632,7 +632,7 @@ impl NamespaceInstaller for BridgeNamespaceInstaller {
 		let abort = self
 			.namespace_aborts
 			.lock()
-			.get(&python_thread_id(py)?)
+			.get(&(globals.as_ptr() as usize))
 			.cloned()
 			.ok_or_else(|| {
 				PyRuntimeError::new_err("eval namespace has no bridge cancellation scope")
@@ -665,12 +665,6 @@ impl NamespaceInstaller for BridgeNamespaceInstaller {
 			abort.cancel(cell_id);
 		}
 	}
-}
-
-fn python_thread_id(py: Python<'_>) -> PyResult<i64> {
-	PyModule::import(py, "threading")?
-		.call_method0("get_ident")?
-		.extract()
 }
 
 fn registry_error(error: impl fmt::Display) -> BridgeHostError {
@@ -717,9 +711,8 @@ impl PythonBridgeCallable {
 		let args = serde_json::from_str(&encoded).map_err(|error| {
 			PyRuntimeError::new_err(format!("bridge arguments are not JSON: {error}"))
 		})?;
-		let value = self
-			.runtime
-			.block_on(self.client.call(name, args))
+		let value = py
+			.detach(|| self.runtime.block_on(self.client.call(name, args)))
 			.map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
 		let encoded = serde_json::to_string(&value)
 			.map_err(|error| PyRuntimeError::new_err(format!("bridge result is not JSON: {error}")))?;

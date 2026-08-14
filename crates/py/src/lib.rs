@@ -217,8 +217,8 @@ fn check(status: ffi::PyStatus) {
 /// site-packages directory as the only module search path.
 fn init_python(site_packages: &CString) {
 	// SAFETY: standard PyConfig embedding sequence — init, populate, hand to
-	// Py_InitializeFromConfig, clear. `config` outlives every borrow of it,
-	// and the decoded wide string is freed after CPython copies it.
+	// Py_InitializeFromConfig, clear, then detach the initialization thread.
+	// `config` outlives every borrow of it, and CPython copies both wide strings.
 	unsafe {
 		let mut config = MaybeUninit::<ffi::PyConfig>::uninit();
 		ffi::PyConfig_InitIsolatedConfig(config.as_mut_ptr());
@@ -248,5 +248,7 @@ fn init_python(site_packages: &CString) {
 		let status = ffi::Py_InitializeFromConfig(config);
 		ffi::PyConfig_Clear(config);
 		check(status);
+		let initial = ffi::PyEval_SaveThread();
+		assert!(!initial.is_null(), "CPython initialization did not create a thread state");
 	}
 }
