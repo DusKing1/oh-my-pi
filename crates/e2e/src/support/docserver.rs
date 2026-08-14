@@ -36,16 +36,12 @@ impl DocServerTask {
 		}
 		let task_socket = socket.clone();
 		let task = tokio::spawn(async move {
-			daemon::serve(
-				project,
-				Transport::Socket(task_socket),
-				ServeOptions {
-					lsp_config_paths: lsp_configs,
-					shutdown: None,
-					server_build: Default::default(),
-					connections: None,
-				},
-			)
+			daemon::serve(project, Transport::Socket(task_socket), ServeOptions {
+				lsp_config_paths: lsp_configs,
+				shutdown:         None,
+				server_build:     Default::default(),
+				connections:      None,
+			})
 			.await
 		});
 		let mut server = Self { socket, task };

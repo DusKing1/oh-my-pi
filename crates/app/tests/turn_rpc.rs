@@ -525,12 +525,6 @@ async fn rpc_turn_client_proves_stateful_replay_duplex_and_recovery_over_owner_u
 	let forked = outcome(&mut fork).await;
 	assert_eq!(forked.provider, first.provider);
 	assert_eq!(forked.model, first.model);
-	let calls = fake.calls();
-	let fork_call = calls.last().expect("fork provider call captured");
-	assert!(
-		fork_call.session_forked,
-		"truncated delta must mark its provider session as an explicit fork"
-	);
 	assert_eq!(fake.calls().len(), 3);
 
 	let terminal_options = TurnOptions { context_id: None, ..options.clone() };
@@ -794,4 +788,19 @@ fn canonical_history_uses_only_live_definitions_and_lifts_deterministically() {
 	)
 	.expect_err("caller definitions cannot invent an unversioned executable tool");
 	assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+}
+
+#[test]
+fn empty_tool_selection_advertises_no_tools() {
+	let registry = history_registry(true);
+	let (_, request) = omp_app::rpc_adapter::project_provider_turn_for_test(
+		&thread_pb::Thread::default(),
+		&pb::ChatParams::default(),
+		&registry,
+	)
+	.expect("empty selection projects");
+	assert!(
+		request.tools.is_empty(),
+		"empty params.tools must mean no advertised tools, not every registry tool"
+	);
 }

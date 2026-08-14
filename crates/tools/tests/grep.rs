@@ -17,7 +17,8 @@ use serde_json::json;
 
 #[derive(Clone)]
 struct FakeWorkspace {
-	result: Result<grep::SearchResult, grep::Fault>,
+	result:   Result<grep::SearchResult, grep::Fault>,
+	recorded: Arc<Mutex<Vec<grep::SnapshotRecord>>>,
 }
 
 impl grep::WorkspaceSearch for FakeWorkspace {
@@ -27,6 +28,11 @@ impl grep::WorkspaceSearch for FakeWorkspace {
 	) -> impl Future<Output = Result<grep::SearchResult, grep::Fault>> + Send + '_ {
 		let result = self.result.clone();
 		async move { result }
+	}
+
+	fn record_snapshots(&self, records: Vec<grep::SnapshotRecord>) -> Result<(), grep::Fault> {
+		self.recorded.lock().extend(records);
+		Ok(())
 	}
 
 	fn glob(
@@ -64,12 +70,12 @@ struct Invocation {
 	useless: bool,
 }
 
-const fn fake(result: grep::SearchResult) -> FakeWorkspace {
-	FakeWorkspace { result: Ok(result) }
+fn fake(result: grep::SearchResult) -> FakeWorkspace {
+	FakeWorkspace { result: Ok(result), recorded: Arc::default() }
 }
 
-const fn failed(fault: grep::Fault) -> FakeWorkspace {
-	FakeWorkspace { result: Err(fault) }
+fn failed(fault: grep::Fault) -> FakeWorkspace {
+	FakeWorkspace { result: Err(fault), recorded: Arc::default() }
 }
 
 fn matched(path: &str, line_number: u32, line: &str, tag: Option<&str>) -> grep::SearchMatch {
@@ -172,6 +178,18 @@ fn schema_is_exactly_the_pi_grep_schema() {
 			}
 		})
 	);
+	for legacy in [
+		json!({"pattern": "needle", "patterns": ["needle"]}),
+		json!({"pattern": "needle", "include": "*.rs"}),
+		json!({"pattern": "needle", "exclude": "target/**"}),
+		json!({"pattern": "needle", "mode": "files"}),
+		json!({"pattern": "needle", "limit": 20}),
+	] {
+		assert!(
+			serde_json::from_value::<grep::Params>(legacy).is_err(),
+			"grep params must reject legacy fields"
+		);
+	}
 }
 
 #[test]
@@ -263,6 +281,47 @@ fn line_selector_filters_matches_before_projection() {
 		invoke_prompt(&workspace, r#"{"pattern":"needle","path":"src/range.rs:3-4"}"#);
 	assert_eq!(text, "[src/range.rs#F00D]\n*3:needle in range");
 	assert!(!useless);
+}
+
+#[test]
+fn range_overfetch_and_output_truncation_authorize_only_emitted_rows() {
+	let mut matches = (1..500)
+		.map(|line_number| matched("src/range.rs", line_number, "needle before range", Some("F00D")))
+		.collect::<Vec<_>>();
+	matches.extend((500..=600).map(|line_number| {
+		matched("src/range.rs", line_number, &format!("needle {}", "x".repeat(505)), Some("F00D"))
+	}));
+	let workspace = fake(grep::SearchResult {
+		matches,
+		snapshots: vec![grep::SearchSnapshot {
+			source_key: Str::from("src/range.rs"),
+			revision:   Bytes::from_static(b"range-revision"),
+			bytes:      Bytes::from(vec![b'x'; 80 * 1024]),
+		}],
+		multi_scope: false,
+		..grep::SearchResult::default()
+	});
+	let blobs = RecordingBlobs::default();
+	let invocation =
+		invoke_with_blobs(&workspace, r#"{"pattern":"needle","path":"src/range.rs:500-600"}"#, blobs);
+	let text = prompt(&workspace, &invocation.verdict);
+	let visible = text
+		.lines()
+		.filter_map(|line| line.strip_prefix('*'))
+		.filter_map(|line| line.split_once(':'))
+		.filter_map(|(number, _)| number.parse::<usize>().ok())
+		.collect::<Vec<_>>();
+	let recorded = workspace.recorded.lock();
+	let [record] = recorded.as_slice() else {
+		panic!("one visible file snapshot must be recorded: {recorded:?}");
+	};
+
+	assert!(text.starts_with("[src/range.rs#F00D]\n*500:needle "));
+	assert!(text.contains("[truncated:"));
+	assert!(!visible.is_empty());
+	assert!(visible.iter().all(|line| (500..=600).contains(line)));
+	assert!(!visible.contains(&600), "the shared byte cap must omit tail matches");
+	assert_eq!(record.seen_lines, visible);
 }
 
 #[test]

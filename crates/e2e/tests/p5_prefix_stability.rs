@@ -131,6 +131,10 @@ impl AuthLoginEngine for UnusedLogin {
 		self.0
 	}
 
+	fn supports(&self, _provider: &omp_llm_catalog::ProviderId) -> bool {
+		true
+	}
+
 	fn begin(
 		&self,
 		_request: LoginRequest,
@@ -304,6 +308,7 @@ async fn gateway(
 		AdmissionController::new(8, 8),
 		Duration::from_secs(2),
 		Arc::new(BTreeMap::new()),
+		Arc::new(omp_llm_inference::auth::CredentialShaperRegistry::new()),
 	)
 	.with_local_routes([(
 		ROUTE.into(),
@@ -531,11 +536,7 @@ async fn delta_context_prompt_rewind_preserves_exact_provider_prefixes() {
 			.map(|value| value.code.clone())
 			.collect::<Vec<_>>(),
 	);
-	revisions.push(
-		outcome
-			.revision
-			.expect("final stable registry revision"),
-	);
+	revisions.push(outcome.revision.expect("final stable registry revision"));
 
 	for pair in revisions.windows(2) {
 		assert!(pair[0].head < pair[1].head, "gateway revisions must be strictly monotone");

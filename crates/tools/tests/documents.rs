@@ -266,6 +266,17 @@ async fn raw_document_reads_bypass_numbering_but_not_document_conversion() {
 }
 
 #[tokio::test]
+async fn read_tool_routes_new_document_extensions_through_markit() {
+	let output = read_document_tool_text(
+		"fixture.rtf:raw",
+		"fixture.rtf",
+		br"{\rtf1\ansi Local RTF document\par}".to_vec(),
+	)
+	.await;
+	assert_eq!(output, "Local RTF document\n");
+}
+
+#[tokio::test]
 async fn converted_document_truncation_spills_the_complete_numbered_markdown() {
 	let mut document = String::from(
 		r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>"#,
@@ -439,21 +450,7 @@ async fn epub_missing_container_member_has_exact_error_and_binary_projection() {
 	);
 }
 
-fn minimal_text_pdf(text: &str) -> Vec<u8> {
-	let escaped = text
-		.replace('\\', "\\\\")
-		.replace('(', "\\(")
-		.replace(')', "\\)");
-	let stream = format!("BT /F1 18 Tf 72 720 Td ({escaped}) Tj ET");
-	let objects = [
-		"<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
-		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> \
-		 >> /Contents 4 0 R >>"
-			.to_owned(),
-		format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()),
-		"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
-	];
+fn pdf(objects: &[String], trailer_entries: &str) -> Vec<u8> {
 	let mut pdf = b"%PDF-1.4\n".to_vec();
 	let mut offsets = Vec::new();
 	for (index, object) in objects.iter().enumerate() {
@@ -468,21 +465,163 @@ fn minimal_text_pdf(text: &str) -> Vec<u8> {
 	}
 	write!(
 		&mut pdf,
-		"trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+		"trailer\n<< /Size {} /Root 1 0 R {trailer_entries} >>\nstartxref\n{xref}\n%%EOF\n",
 		objects.len() + 1
 	)
 	.expect("writes PDF trailer");
 	pdf
 }
 
+fn text_pdf_objects(text: &str) -> Vec<String> {
+	let escaped = text
+		.replace('\\', "\\\\")
+		.replace('(', "\\(")
+		.replace(')', "\\)");
+	let stream = format!("BT /F1 18 Tf 72 720 Td ({escaped}) Tj ET");
+	vec![
+		"<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> \
+		 >> /Contents 4 0 R >>"
+			.to_owned(),
+		format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()),
+		"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+	]
+}
+
+fn minimal_text_pdf(text: &str) -> Vec<u8> {
+	pdf(&text_pdf_objects(text), "")
+}
+
+fn image_only_pdf() -> Vec<u8> {
+	let image = "x";
+	let stream = "q 612 0 0 792 0 0 cm /Im1 Do Q";
+	pdf(
+		&[
+			"<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+			"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Im1 5 0 \
+			 R >> >> /Contents 4 0 R >>"
+				.to_owned(),
+			format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()),
+			format!(
+				"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray \
+				 /BitsPerComponent 8 /Length {} >>\nstream\n{image}\nendstream",
+				image.len()
+			),
+		],
+		"",
+	)
+}
+
+fn encrypted_pdf() -> Vec<u8> {
+	let mut objects = text_pdf_objects("Encrypted text");
+	let owner = "41".repeat(32);
+	let user = "42".repeat(32);
+	objects.push(format!("<< /Filter /Standard /V 1 /R 2 /O <{owner}> /U <{user}> /P -4 >>"));
+	let id = "0123456789abcdef0123456789abcdef";
+	pdf(&objects, &format!("/Encrypt 6 0 R /ID [<{id}> <{id}>]"))
+}
+
 #[test]
-fn pdf_text_layer_is_converted_in_memory() {
-	let bytes = minimal_text_pdf("Hello PDF");
+fn pdf_text_layer_is_converted_in_memory_with_page_markers_and_final_newline() {
+	let text = "Hello PDF with enough natural-language text to make the extracted text layer \
+	            useful without recommending OCR.";
+	let bytes = minimal_text_pdf(text);
 	let conversion = markit::convert(Path::new("hello.pdf"), &bytes)
 		.expect("PDF conversion succeeds")
 		.expect("PDF is supported");
-	assert!(conversion.text.contains("Hello PDF"), "{}", conversion.text);
+	assert!(conversion.text.contains(text), "{}", conversion.text);
+	assert!(conversion.text.contains("<!-- Page 1 -->"), "{}", conversion.text);
+	assert!(conversion.text.ends_with('\n'), "{}", conversion.text);
 	assert_eq!(conversion.note, None);
+}
+
+#[test]
+fn pdf_image_only_document_returns_an_ocr_qualification_without_fake_text() {
+	let conversion = markit::convert(Path::new("scan.pdf"), &image_only_pdf())
+		.expect("image-only PDF classification succeeds")
+		.expect("PDF is supported");
+	assert_eq!(conversion.text.as_str(), "");
+	assert_eq!(
+		conversion.note.as_deref(),
+		Some(
+			"This PDF is scanned or image-based and has no usable text layer. OCR is required to \
+			 extract its text."
+		)
+	);
+}
+
+#[test]
+fn pdf_page_markers_alone_do_not_count_as_extracted_text() {
+	let error = markit::convert(Path::new("empty-layer.pdf"), &minimal_text_pdf(""))
+		.expect_err("an empty text operator has no extractable text");
+	assert_eq!(
+		error.to_string(),
+		"pdf conversion failed: PDF has no extractable text (TextBased, 1 pages): OCR is required"
+	);
+}
+
+#[test]
+fn pdf_reports_pages_that_may_need_ocr_without_discarding_usable_text() {
+	let text = "Brief text layer";
+	let conversion = markit::convert(Path::new("sparse.pdf"), &minimal_text_pdf(text))
+		.expect("sparse text remains a qualified conversion")
+		.expect("PDF is supported");
+	assert!(conversion.text.contains(text), "{}", conversion.text);
+	assert_eq!(
+		conversion.note.as_deref(),
+		Some("1 of 1 PDF pages may need OCR; extracted text may be incomplete.")
+	);
+}
+
+#[test]
+fn pdf_reports_partial_ocr_and_broken_font_encoding_qualifications() {
+	let garbled = "alpha$bravo$charlie$delta$echo$foxtrot$golf$hotel$india$juliet$kilo$lima$mike$\
+	               november$oscar$papa$quebec$romeo$sierra$tango$uniform$victor";
+	let conversion = markit::convert(Path::new("garbled.pdf"), &minimal_text_pdf(garbled))
+		.expect("garbled text remains a qualified conversion")
+		.expect("PDF is supported");
+	assert!(conversion.text.contains(garbled), "{}", conversion.text);
+	assert_eq!(
+		conversion.note.as_deref(),
+		Some(
+			"1 of 1 PDF pages may need OCR, and broken font encodings were detected; extracted text \
+			 may be incomplete or garbled."
+		)
+	);
+}
+
+#[test]
+fn pdf_metadata_title_is_kept_separate_from_markdown() {
+	let mut objects = text_pdf_objects(
+		"Metadata-bearing PDF with enough body text to avoid a sparse text-layer qualification.",
+	);
+	objects.push("<< /Title (Quarterly PDF) >>".to_owned());
+	let conversion = markit::convert(Path::new("titled.pdf"), &pdf(&objects, "/Info 6 0 R"))
+		.expect("metadata-bearing PDF conversion succeeds")
+		.expect("PDF is supported");
+	assert_eq!(conversion.title.as_deref(), Some("Quarterly PDF"));
+	assert!(!conversion.text.contains("Quarterly PDF"));
+}
+
+#[test]
+fn pdf_non_pdf_bytes_and_encryption_remain_truthful_typed_errors() {
+	let malformed = markit::convert(Path::new("wrong.pdf"), b"<html>not a PDF</html>")
+		.expect_err("non-PDF bytes fail validation");
+	assert_eq!(malformed.to_string(), "pdf conversion failed: Not a PDF: file appears to be HTML");
+
+	let encrypted = markit::convert(Path::new("protected.pdf"), &encrypted_pdf())
+		.expect_err("password-protected PDF cannot be extracted");
+	assert_eq!(encrypted.to_string(), "pdf conversion failed: PDF is encrypted");
+}
+
+#[test]
+fn pdf_structural_corruption_returns_a_pdf_conversion_error() {
+	let error = markit::convert(Path::new("truncated.pdf"), b"%PDF-1.4\n")
+		.expect_err("a truncated PDF cannot be converted");
+	assert_eq!(error.format(), "pdf");
+	assert!(!error.message().is_empty());
 }
 
 #[test]

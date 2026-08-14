@@ -25,6 +25,7 @@ use omp_e2e::support::{
 	accepted_event, outcome_event, tool_call_item, turn_event, user_item, within,
 };
 use omp_env::{EnvClient, InvocationEvent};
+use omp_hashline::compute_snapshot_tag;
 use omp_proto::{
 	document::v1 as document, env::v1::InvokeTool, inference::v1 as inference, thread::v1 as thread,
 };
@@ -38,6 +39,7 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(20);
 const STORM_COUNT: usize = 100;
 const PINNED_READERS: usize = 4;
 const PINNED_READS: usize = 25;
+const REVISION_TWO: &[u8] = b"fn main() {\n    let VALUE = 2;\n}\n";
 
 #[derive(Debug, Deserialize)]
 struct LspRecord {
@@ -56,6 +58,7 @@ struct CommitRecord {
 	start:    usize,
 	end:      usize,
 	bytes:    Bytes,
+	rebased:  bool,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -82,6 +85,7 @@ async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> R
 		let env_a = env_a_connection.client_clone();
 		let env_b = env_b_connection.client_clone();
 		let initial_tag = read_snapshot_tag(&env_a, "f.rs").await?;
+		let revision_two_tag = compute_snapshot_tag(REVISION_TWO);
 		let lsp_observer = within(
 			"open persistent LSP observer",
 			TEST_TIMEOUT,
@@ -98,13 +102,13 @@ async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> R
 		let registry = Arc::new(registry);
 
 		let a1_args = edit_args("f.rs", initial_tag.as_str(), "PUT 2.=2:\n+    let value = 2;")?;
-		let a2_args = edit_args("f.rs", initial_tag.as_str(), "PUT 2.=2:\n+    let value = 3;")?;
-		let b_args = edit_args("f.rs", initial_tag.as_str(), "PUT 1.=1:\n+fn main() { // agent B")?;
-		let stale_gate = Gate::default();
+		let a2_args = edit_args("f.rs", revision_two_tag.as_str(), "PUT 2.=2:\n+    let value = 3;")?;
+		let b_args =
+			edit_args("f.rs", revision_two_tag.as_str(), "PUT 1.=1:\n+fn main() { // agent B")?;
 		let a_client = ScriptedTurnClient::new([
 			tool_turn(&identity, "a-rev2", a1_args, None),
 			end_turn(),
-			tool_turn(&identity, "a-stale-rev2", a2_args, Some(stale_gate.clone())),
+			tool_turn(&identity, "a-stale-rev2", a2_args, None),
 			end_turn(),
 		]);
 		let b_client =
@@ -119,17 +123,8 @@ async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> R
 			.submit([user_item("A: publish revision two")], a1_turn)
 			.await?;
 		let a1 = next_edit_payload(&events_a, "a-rev2").await?;
-		let a1_bytes = b"fn main() {\n    let VALUE = 2;\n}\n";
+		let a1_bytes = REVISION_TWO;
 		ensure!(scratch.read("f.rs")? == a1_bytes, "A revision two was not durable");
-
-		let a2_turn = TurnId::new(ulid::Ulid::generate().to_string());
-		let a_task = tokio::spawn(async move {
-			let result = agent_a
-				.submit([user_item("A: edit again from my revision-two view")], a2_turn)
-				.await;
-			(result, agent_a)
-		});
-		stale_gate.wait_arrived(TEST_TIMEOUT).await?;
 
 		let b1_turn = TurnId::new(ulid::Ulid::generate().to_string());
 		agent_b
@@ -139,15 +134,19 @@ async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> R
 		let b_bytes = b"fn main() { // agent B\n    let VALUE = 2;\n}\n";
 		ensure!(scratch.read("f.rs")? == b_bytes, "B revision three was not durable");
 
-		stale_gate.release();
-		let (a_result, agent_a_done) = within("stale A completion", TEST_TIMEOUT, a_task).await??;
-		a_result?;
+		let a2_turn = TurnId::new(ulid::Ulid::generate().to_string());
+		agent_a
+			.submit([user_item("A: edit again from my revision-two view")], a2_turn)
+			.await?;
 		let a2 = next_edit_payload(&events_a, "a-stale-rev2").await?;
 		let race_final = b"fn main() { // agent B\n    let VALUE = 3;\n}\n";
 		ensure!(scratch.read("f.rs")? == race_final, "stale A overwrote B or lost its own edit");
 
-		ensure!(a2.rebased, "A's revision-two proposal was not daemon-rebased");
-		ensure!(!a1.rebased && !b.rebased, "fresh edits were incorrectly reported as rebased");
+		ensure!(
+			!a1.rebased && !b.rebased && !a2.rebased,
+			"tools prepared against the live revision were incorrectly reported as commit-time \
+			 rebases"
+		);
 		let a1_old = revision_sequence(&a1.old_revision)?;
 		let a1_new = revision_sequence(committed_revision(&a1)?)?;
 		let b_old = revision_sequence(&b.old_revision)?;
@@ -156,8 +155,8 @@ async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> R
 		let a2_new = revision_sequence(committed_revision(&a2)?)?;
 		ensure!(a1_old < a1_new && a1_new < b_new && b_new < a2_new, "race revisions regressed");
 		ensure!(
-			b_old == a1_new && a2_old == a1_new,
-			"A did not cite rev2 while B advanced from rev2"
+			b_old == a1_new && a2_old == b_new,
+			"stale authored edit was not prepared against B's live revision"
 		);
 		ensure!(
 			a_client.remaining() == 0 && b_client.remaining() == 0,
@@ -165,11 +164,10 @@ async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> R
 		);
 
 		let race_records = lsp_records(&lsp_log)?;
-		let published_race: BTreeSet<_> =
-			[a1_bytes.as_slice(), b_bytes.as_slice(), race_final.as_slice()]
-				.into_iter()
-				.map(|bytes| String::from_utf8(bytes.to_vec()).expect("UTF-8 race fixture"))
-				.collect();
+		let published_race: BTreeSet<_> = [a1_bytes, b_bytes.as_slice(), race_final.as_slice()]
+			.into_iter()
+			.map(|bytes| String::from_utf8(bytes.to_vec()).expect("UTF-8 race fixture"))
+			.collect();
 		assert_lsp_publication(&race_records, &uri, &published_race, race_final)?;
 		let public_lsp_uri = url::Url::parse(&uri)?;
 		ensure!(
@@ -192,7 +190,7 @@ async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> R
 		direct_a
 			.close(lsp_observer, &CancellationToken::new())
 			.await?;
-		drop(agent_a_done);
+		drop(agent_a);
 		drop(agent_b);
 		drop(env_b_connection);
 		drop(env_a_connection);
@@ -545,6 +543,7 @@ async fn storm(scratch: &Scratch, docserver: &DocServerTask, lsp_log: &Path) -> 
 						.into_iter()
 						.next()
 						.ok_or_else(|| anyhow!("committed storm op omitted result"))?;
+					let rebased = operation.rebased;
 					let sequence = operation
 						.head
 						.and_then(|head| head.revision)
@@ -555,6 +554,7 @@ async fn storm(scratch: &Scratch, docserver: &DocServerTask, lsp_log: &Path) -> 
 						start,
 						end,
 						bytes: replacement,
+						rebased,
 					}))
 				},
 				Some(document::commit_transaction_response::Outcome::Rejected(rejected)) => {
@@ -605,7 +605,11 @@ async fn storm(scratch: &Scratch, docserver: &DocServerTask, lsp_log: &Path) -> 
 			committed.push(record);
 		}
 	}
-	ensure!(!committed.is_empty(), "storm did not commit any operation");
+	ensure!(committed.len() >= 2, "storm committed fewer than two operations");
+	ensure!(
+		committed.iter().any(|record| record.rebased),
+		"storm committed no stale operation through daemon rebase"
+	);
 	committed.sort_by_key(|record| record.sequence);
 	ensure!(
 		committed

@@ -172,6 +172,11 @@ fn generated_schema_is_semantically_the_pi_edit_schema() {
 	let actual: serde_json::Value =
 		serde_json::from_slice(&edit.spec().schema).expect("edit schema JSON");
 	assert_eq!(
+		edit.spec().schema.as_ref(),
+		omp_tool::schema::<omp_tools::edit::Params>().as_ref(),
+		"tool schema must be generated directly from Params",
+	);
+	assert_eq!(
 		actual,
 		serde_json::json!({
 			"type": "object",
@@ -182,13 +187,37 @@ fn generated_schema_is_semantically_the_pi_edit_schema() {
 			}
 		})
 	);
+	for legacy in [
+		serde_json::json!({"path": "a.txt", "patch": "PUT 1.=1:\n+x"}),
+		serde_json::json!({"input": "[a.txt#A1B2]", "path": "a.txt"}),
+	] {
+		assert!(
+			serde_json::from_value::<omp_tools::edit::Params>(legacy).is_err(),
+			"edit params must reject legacy fields"
+		);
+	}
+}
+
+#[tokio::test]
+async fn committed_unknown_fields_are_rejected_before_edit_effects() {
+	let fake = Fake::with_files(&[("a.txt", b"one\n")]);
+	let edit = tool(fake.clone(), FormatPolicy::Configured);
+	let tag = compute_snapshot_tag(b"one\n");
+	let raw = serde_json::json!({
+		"input": format!("[a.txt#{tag}]\nPUT 1.=1:\n+two"),
+		"path": "legacy.txt"
+	})
+	.to_string();
+	let (feed, incoming) = IncomingParams::channel();
+	feed.arg_text(raw.clone().into()).unwrap();
+	feed.args_committed(raw.into()).unwrap();
+	let events = edit.call(incoming).collect::<Vec<_>>().await;
+
 	assert!(
-		serde_json::from_value::<omp_tools::edit::Params>(
-			serde_json::json!({"input": "[a.txt#A1B2]", "extra": true})
-		)
-		.is_err(),
-		"edit params must reject unknown fields"
+		events.iter().any(|event| matches!(event, Ev::Args(_))),
+		"unknown sibling did not produce an argument issue: {events:?}"
 	);
+	assert_eq!(fake.state.lock().commits, [] as [omp_tools::edit::EditProposal; 0]);
 }
 
 #[tokio::test]
@@ -217,6 +246,30 @@ async fn put_and_cut_render_exact_post_edit_headers_and_previews() {
 	assert!(
 		matches!(&commits[1].action, EditAction::Write { content } if content.as_ref() == b_after)
 	);
+}
+
+#[tokio::test]
+async fn named_cut_register_moves_text_across_sections_in_one_batch() {
+	let fake =
+		Fake::with_files(&[("source.txt", b"carry\nstay\n"), ("destination.txt", b"before\n")]);
+	let source_tag = compute_snapshot_tag(b"carry\nstay\n");
+	let destination_tag = compute_snapshot_tag(b"before\n");
+	let input = format!(
+		"[source.txt#{source_tag}]\nCUT 1.=1 @carry\n[destination.txt#{destination_tag}]\nPUT >1 \
+		 @carry"
+	);
+	let _ = invoke(fake.clone(), &input).await;
+
+	let state = fake.state.lock();
+	assert_eq!(state.commits.len(), 2);
+	assert!(matches!(
+		&state.commits[0].action,
+		EditAction::Write { content } if content.as_ref() == b"stay\n"
+	));
+	assert!(matches!(
+		&state.commits[1].action,
+		EditAction::Write { content } if content.as_ref() == b"before\ncarry\n"
+	));
 }
 
 #[tokio::test]

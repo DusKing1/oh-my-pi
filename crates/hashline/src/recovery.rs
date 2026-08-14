@@ -588,6 +588,17 @@ fn validate_and_map_lines(
 				}
 			}
 		}
+		let base_run_count = (0..=base.len() - width)
+			.filter(|candidate| {
+				(0..width).all(|offset| base[start + offset].bytes == base[*candidate + offset].bytes)
+			})
+			.count();
+		if base_run_count == 1 && candidates.len() == 1 {
+			if candidates[0] != expected {
+				return Err(RecoveryError::ContextMismatch { line: start + 1 });
+			}
+			continue;
+		}
 		let before = start.checked_sub(1);
 		let after = (end + 1 < base.len()).then_some(end + 1);
 		if before.is_none() && after.is_none() {
@@ -754,6 +765,18 @@ mod tests {
 		assert_eq!(result.recovered_edits()[0].original_lines(), LineRange { start: 3, end: 3 });
 		assert_eq!(result.recovered_edits()[0].current_lines(), LineRange { start: 4, end: 4 });
 		assert_eq!(result.line_mappings(), &[LineMapping { original: 3, current: 4 }]);
+	}
+
+	#[test]
+	fn remaps_unique_anchor_when_an_adjacent_line_changed() {
+		let base = Bytes::from_static(b"fn main() {\n    let value = 1;\n}\n");
+		let current = Bytes::from_static(b"fn main() {\n    let VALUE = 2;\n}\n");
+		let result =
+			recover_exact(&base, &current, &[edit(0, 12, b"fn main() { // concurrent\n")]).unwrap();
+		assert_eq!(
+			result.content(),
+			&Bytes::from_static(b"fn main() { // concurrent\n    let VALUE = 2;\n}\n")
+		);
 	}
 
 	#[test]

@@ -157,6 +157,11 @@ fn text(parts: &[Part]) -> String {
 fn constructed_tool_spec_has_exact_python_only_schema() {
 	let actual: serde_json::Value = serde_json::from_slice(&tool().spec().schema).unwrap();
 	assert_eq!(
+		tool().spec().schema.as_ref(),
+		omp_tool::schema::<eval::Params>().as_ref(),
+		"tool schema must be generated directly from Params",
+	);
+	assert_eq!(
 		actual,
 		json!({
 			"type": "object",

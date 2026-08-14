@@ -295,7 +295,7 @@ impl Executor {
 	}
 
 	fn handle_raw(&mut self, text: Str, line_num: usize) -> Result<(), ParseError> {
-		if self.pending.is_none() && is_read_metadata_line(&text) {
+		if is_read_metadata_line(&text) {
 			self.warn_once(
 				DiagnosticCode::ReadMetadataIgnored,
 				line_num,
@@ -312,7 +312,7 @@ impl Executor {
 					.pending
 					.as_ref()
 					.map_or(self.hunk_index, |pending| pending.authored_index),
-				format!("line {line_num}: {message}"),
+				message,
 			);
 		}
 		if self.file_op.is_some() {
@@ -1148,26 +1148,10 @@ mod tests {
 	}
 
 	#[test]
-	fn recovers_dangling_range_separator_as_single_line_range() {
-		for patch in ["PUT 2.=:\n+X", "PUT 2-:\n+X"] {
-			let parsed = parse_patch(patch).unwrap();
-			assert!(matches!(parsed.edits[0], Edit::Insert { mode: InsertMode::Replacement, .. }));
-			let deleted: Vec<usize> = parsed
-				.edits
-				.iter()
-				.filter_map(|edit| match edit {
-					Edit::Delete { anchor, .. } => Some(anchor.line),
-					_ => None,
-				})
-				.collect();
-			assert_eq!(deleted, [2], "{patch}");
+	fn rejects_dangling_range_separators() {
+		for patch in ["PUT 2.=:\n+X", "PUT 2-:\n+X", "CUT 2.=", "PUT 2.= junk:\n+X"] {
+			assert!(parse_patch(patch).is_err(), "{patch}");
 		}
-		let cut = parse_patch("CUT 2.=").unwrap();
-		assert!(cut.edits.iter().any(
-			|edit| matches!(edit, Edit::Cut { range, .. } if range.start.line == 2 && range.end.line == 2)
-		));
-		// A dangling separator followed by junk stays on the strict rejection path.
-		assert!(parse_patch("PUT 2.= junk:\n+X").is_err());
 	}
 
 	#[test]

@@ -29,6 +29,10 @@ impl grep::WorkspaceSearch for FakeWorkspace {
 		}))
 	}
 
+	fn record_snapshots(&self, _records: Vec<grep::SnapshotRecord>) -> Result<(), grep::Fault> {
+		Err(grep::Fault::Workspace { message: Str::from("unused fake snapshot boundary") })
+	}
+
 	fn glob(
 		&self,
 		request: glob::WalkRequest,
@@ -154,6 +158,10 @@ fn pi_schema_and_defaults_are_exact() {
 				}
 			}
 		})
+	);
+	assert!(
+		serde_json::from_value::<glob::Params>(json!({"patterns": ["**/*.rs"]})).is_err(),
+		"glob params must reject the legacy patterns field"
 	);
 
 	let invocation = invoke(workspace, "{}");

@@ -29,6 +29,7 @@ use tokio_util::sync::CancellationToken;
 use super::{DEFAULT_TIMEOUT, OwnedProcess, Scratch, omp_binary, within};
 
 const FRAME_LIMIT: usize = 64 * 1024 * 1024;
+const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Real local environment authority with framed UDS transport and owned
 /// worker/process resources.
@@ -57,9 +58,11 @@ impl EnvHarness {
 		let task_socket = socket.clone();
 		let task_shutdown = shutdown.clone();
 		let server_task = tokio::spawn(async move {
-			task_server.serve_uds(&task_socket, task_shutdown, None).await
+			task_server
+				.serve_uds(&task_socket, task_shutdown, None)
+				.await
 		});
-		wait_socket(&socket).await?;
+		wait_socket(&socket, DEFAULT_TIMEOUT).await?;
 		let (client, client_task) = connect_env(&socket).await?;
 		within(
 			"environment hello",
@@ -100,7 +103,7 @@ impl EnvHarness {
 			.arg("--state-dir")
 			.arg(scratch.state());
 		let process = OwnedProcess::spawn(command).context("starting attached environment daemon")?;
-		wait_socket(&socket).await?;
+		wait_socket(&socket, PROCESS_START_TIMEOUT).await?;
 		let (client, client_task) = connect_env(&socket).await?;
 		hello_env(&client, "omp-e2e-attached").await?;
 		Ok(ProcessEnvHarness {
@@ -313,8 +316,8 @@ pub async fn read_blob(
 	.await?
 }
 
-async fn wait_socket(path: &Path) -> Result<()> {
-	within("environment socket readiness", DEFAULT_TIMEOUT, async {
+async fn wait_socket(path: &Path, limit: Duration) -> Result<()> {
+	within("environment socket readiness", limit, async {
 		loop {
 			match UnixStream::connect(path).await {
 				Ok(stream) => {

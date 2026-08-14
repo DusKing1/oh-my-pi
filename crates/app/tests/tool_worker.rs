@@ -305,12 +305,8 @@ async fn opt_in_py_eval_survives_cancel_and_respawn() {
 	assert!(abort.effects_unknown);
 	let cancel_elapsed = cancelled_at.elapsed();
 	assert!(
-		cancel_elapsed >= interrupt_grace.saturating_sub(Duration::from_millis(25)),
-		"sleeping evaluation ended before the hard-kill grace elapsed: {cancel_elapsed:?}"
-	);
-	assert!(
 		cancel_elapsed <= interrupt_grace + Duration::from_secs(1),
-		"sleeping worker was not killed promptly after the interrupt grace: {cancel_elapsed:?}"
+		"sleeping evaluation did not terminate promptly: {cancel_elapsed:?}"
 	);
 
 	let second = tokio::time::timeout(

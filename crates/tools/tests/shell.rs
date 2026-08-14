@@ -190,6 +190,11 @@ fn constructed_tool_spec_preserves_the_shell_schema_contract() {
 	let tool = shell::shell(FakeExec::default());
 	let actual: serde_json::Value = serde_json::from_slice(&tool.spec().schema).unwrap();
 	assert_eq!(
+		tool.spec().schema.as_ref(),
+		omp_tool::schema::<shell::Params>().as_ref(),
+		"tool schema must be generated directly from Params",
+	);
+	assert_eq!(
 		actual,
 		serde_json::json!({
 			"type": "object",
@@ -413,7 +418,7 @@ fn shell_updates_map_exactly_to_live_invoke_input_chunks() {
 	}
 }
 #[test]
-fn interrupt_cancels_only_the_run_and_the_next_call_reuses_the_session() {
+fn interrupt_before_execution_is_skipped_without_poisoning_later_calls() {
 	let exec = FakeExec::default();
 	let registry = registry(exec.clone(), 1024);
 	let (feed, params) = IncomingParams::channel();
@@ -425,19 +430,132 @@ fn interrupt_cancels_only_the_run_and_the_next_call_reuses_the_session() {
 		.unwrap();
 	let stream = registry.invoke("shell", params).unwrap();
 	let events = block_on(stream.map(|event| event.unwrap()).collect::<Vec<_>>());
-	assert_eq!(payload(&events).status.outcome, ExecOutcome::Cancelled);
-	assert_eq!(exec.state.lock().cancels, 1);
+	let ErasedEv::Done(ErasedOutcome::Done { verdict, .. }) = events.last().unwrap() else {
+		panic!("interrupted call must produce a verdict")
+	};
+	let verdict: Verdict<Payload, Fault> = serde_json::from_slice(verdict).unwrap();
+	assert!(matches!(
+		verdict,
+		Verdict::Aborted(Abort::Skipped { ref reason }) if reason == "stop now"
+	));
+	{
+		let state = exec.state.lock();
+		assert_eq!(state.opens, 0);
+		assert_eq!(state.runs.len(), 0);
+		assert_eq!(state.cancels, 0);
+	}
 
 	let later = call(&registry, r#"{"command":"show-state"}"#);
 	assert_eq!(payload(&later).status.outcome, ExecOutcome::Exited);
 	let state = exec.state.lock();
 	assert_eq!(state.opens, 1);
-	assert!(
-		state
-			.runs
-			.iter()
-			.all(|run| run.0 == Bytes::from_static(b"session-41"))
-	);
+	assert_eq!(state.runs.len(), 1);
+	assert_eq!(state.runs[0].0, Bytes::from_static(b"session-41"));
+}
+
+#[tokio::test]
+async fn queued_foreground_interrupt_skips_before_starting_host_execution() {
+	let exec = FakeExec::default();
+	let registry = Arc::new(registry(exec.clone(), 1024));
+	let (active_feed, active_params) = IncomingParams::channel();
+	active_feed
+		.args_committed(Str::from(r#"{"command":"wait"}"#))
+		.unwrap();
+	let active_registry = Arc::clone(&registry);
+	let active = tokio::spawn(async move {
+		let stream = active_registry.invoke("shell", active_params).unwrap();
+		stream.map(|event| event.unwrap()).collect::<Vec<_>>().await
+	});
+	while exec.state.lock().runs.is_empty() {
+		tokio::task::yield_now().await;
+	}
+
+	let (queued_feed, queued_params) = IncomingParams::channel();
+	queued_feed
+		.args_committed(Str::from(r#"{"command":"show-state"}"#))
+		.unwrap();
+	let queued_registry = Arc::clone(&registry);
+	let queued = tokio::spawn(async move {
+		let stream = queued_registry.invoke("shell", queued_params).unwrap();
+		stream.map(|event| event.unwrap()).collect::<Vec<_>>().await
+	});
+	tokio::task::yield_now().await;
+	assert_eq!(exec.state.lock().runs.len(), 1);
+	queued_feed
+		.interrupt(Interrupt { class: Str::from("immediate"), reason: Str::from("stop queued") })
+		.unwrap();
+	let queued_events = tokio::time::timeout(std::time::Duration::from_secs(1), queued)
+		.await
+		.expect("queued interrupt timeout")
+		.expect("queued invocation");
+	let ErasedEv::Done(ErasedOutcome::Done { verdict, .. }) = queued_events.last().unwrap() else {
+		panic!("queued interrupt must produce a verdict")
+	};
+	let verdict: Verdict<Payload, Fault> = serde_json::from_slice(verdict).unwrap();
+	assert!(matches!(
+		verdict,
+		Verdict::Aborted(Abort::Skipped { ref reason }) if reason == "stop queued"
+	));
+	assert_eq!(exec.state.lock().runs.len(), 1);
+
+	active_feed
+		.interrupt(Interrupt { class: Str::from("immediate"), reason: Str::from("stop active") })
+		.unwrap();
+	let active_events = tokio::time::timeout(std::time::Duration::from_secs(1), active)
+		.await
+		.expect("active interrupt timeout")
+		.expect("active invocation");
+	assert_eq!(payload(&active_events).status.outcome, ExecOutcome::Cancelled);
+	assert_eq!(exec.state.lock().cancels, 1);
+}
+
+#[tokio::test]
+async fn foreground_queue_keeps_invocation_order_when_streams_poll_in_reverse() {
+	let exec = FakeExec::default();
+	let registry = registry(exec.clone(), 1024);
+	let (first_feed, first_params) = IncomingParams::channel();
+	first_feed
+		.args_committed(Str::from(r#"{"command":"wait"}"#))
+		.unwrap();
+	let (second_feed, second_params) = IncomingParams::channel();
+	second_feed
+		.args_committed(Str::from(r#"{"command":"show-state"}"#))
+		.unwrap();
+
+	let first = registry.invoke("shell", first_params).unwrap();
+	let second = registry.invoke("shell", second_params).unwrap();
+	let second_call = second.map(|event| event.unwrap()).collect::<Vec<_>>();
+	let first_call = first.map(|event| event.unwrap()).collect::<Vec<_>>();
+	let control = async {
+		while exec.state.lock().runs.is_empty() {
+			tokio::task::yield_now().await;
+		}
+		{
+			let state = exec.state.lock();
+			assert_eq!(state.runs.len(), 1);
+			assert_eq!(state.runs[0].1.command, "wait");
+		}
+		second_feed
+			.interrupt(Interrupt { class: Str::from("immediate"), reason: Str::from("stop queued") })
+			.unwrap();
+		first_feed
+			.interrupt(Interrupt { class: Str::from("immediate"), reason: Str::from("stop active") })
+			.unwrap();
+	};
+	let (second_events, first_events, ()) = tokio::join!(second_call, first_call, control);
+
+	let ErasedEv::Done(ErasedOutcome::Done { verdict, .. }) = second_events.last().unwrap() else {
+		panic!("queued interrupt must produce a verdict")
+	};
+	let verdict: Verdict<Payload, Fault> = serde_json::from_slice(verdict).unwrap();
+	assert!(matches!(
+		verdict,
+		Verdict::Aborted(Abort::Skipped { ref reason }) if reason == "stop queued"
+	));
+	assert_eq!(payload(&first_events).status.outcome, ExecOutcome::Cancelled);
+	let state = exec.state.lock();
+	assert_eq!(state.runs.len(), 1);
+	assert_eq!(state.cancels, 1);
 }
 
 #[test]

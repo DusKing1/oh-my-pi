@@ -477,6 +477,50 @@ async fn invoke_builtin(
 	}
 }
 
+fn ok_builtin_payload(verdict: omp_proto::env::v1::Verdict, operation: &str) -> Value {
+	assert!(
+		!verdict.is_error,
+		"{operation} returned an error: {}",
+		String::from_utf8_lossy(&verdict.json)
+	);
+	let verdict: Verdict<Value, Value> =
+		serde_json::from_slice(&verdict.json).expect("typed built-in verdict");
+	let Verdict::Ok(payload) = verdict else {
+		panic!("{operation} did not return an ok payload");
+	};
+	payload
+}
+
+async fn read_builtin_text(client: &EnvClient, invocation_id: &str, path: &str) -> String {
+	let verdict = invoke_builtin(client, invocation_id, "read", "1", json!({"path": path})).await;
+	let payload = ok_builtin_payload(verdict, "read");
+	payload["parts"][0]["text"]
+		.as_str()
+		.expect("read text part")
+		.to_owned()
+}
+
+fn hashline_tag<'o>(output: &'o str, path: &str) -> &'o str {
+	let prefix = format!("[{path}#");
+	output
+		.strip_prefix(&prefix)
+		.and_then(|rest| rest.split_once(']'))
+		.map(|(tag, _)| tag)
+		.expect("read minted a hashline tag")
+}
+
+fn eval_output(
+	payload: &omp_tools::eval::Payload,
+	channel: omp_tools::eval::OutputChannel,
+) -> Vec<u8> {
+	payload
+		.frames
+		.iter()
+		.filter(|frame| frame.channel == channel)
+		.flat_map(|frame| frame.data.as_ref().iter().copied())
+		.collect()
+}
+
 #[tokio::test]
 async fn write_name_is_reserved_before_production_registry_assembly() {
 	let root = tempfile::tempdir().expect("workspace scratch directory");
@@ -624,6 +668,74 @@ async fn production_registry_advertises_and_dispatches_all_native_adapters() {
 			"properties": {"input": {"type": "string"}}
 		})
 	);
+	assert_eq!(
+		schema("eval"),
+		json!({
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["language", "code"],
+			"properties": {
+				"language": {
+					"type": "string",
+					"enum": ["py"],
+					"description": "runtime: \"py\" for the IPython kernel"
+				},
+				"code": {
+					"type": "string",
+					"description": "code to run in this eval call, verbatim. Use top-level await freely."
+				},
+				"title": {
+					"type": "string",
+					"description": "short label shown in transcript (e.g. \"imports\", \"load config\")"
+				},
+				"timeout": {
+					"type": "number",
+					"description": "timeout for this eval call in seconds; 0 disables the cell timeout"
+				},
+				"reset": {
+					"type": "boolean",
+					"description": "wipe this language's kernel before running. Other languages are untouched."
+				}
+			}
+		})
+	);
+	assert_eq!(
+		schema("shell"),
+		json!({
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["command"],
+			"properties": {
+				"command": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Shell script to execute."
+				},
+				"timeout_ms": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Host-enforced execution timeout in milliseconds."
+				},
+				"detach": {
+					"type": "boolean",
+					"default": false,
+					"description": "Run as a persistent named process."
+				},
+				"name": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Required stable process name when detach is true."
+				}
+			},
+			"allOf": [{
+				"if": {
+					"properties": {"detach": {"const": true}},
+					"required": ["detach"]
+				},
+				"then": {"required": ["name"]}
+			}]
+		})
+	);
 	let edit_description = definition("edit")
 		.definition
 		.description
@@ -665,7 +777,11 @@ async fn production_registry_advertises_and_dispatches_all_native_adapters() {
 	let read =
 		invoke_builtin(harness.client(), "builtin-read", "read", "1", json!({"path":"note.txt"}))
 			.await;
-	assert!(!read.is_error, "read adapter returned an error");
+	assert!(
+		!read.is_error,
+		"read adapter returned an error: {}",
+		String::from_utf8_lossy(&read.json)
+	);
 	let read_verdict: Verdict<Value, Value> =
 		serde_json::from_slice(&read.json).expect("typed read verdict");
 	let Verdict::Ok(read_payload) = read_verdict else {
@@ -781,6 +897,203 @@ async fn production_registry_advertises_and_dispatches_all_native_adapters() {
 }
 
 #[tokio::test]
+async fn special_writes_round_trip_through_production_read_backends() {
+	let harness = Harness::start(Registry::new()).await;
+	std::fs::write(
+		harness.root.path().join("bundle.zip"),
+		include_bytes!("../../tools/tests/fixtures/special-sources/archives/bundle.zip"),
+	)
+	.expect("copy archive fixture");
+	let archive = invoke_builtin(
+		harness.client(),
+		"write-archive-member",
+		"write",
+		"1",
+		json!({
+			"path": "bundle.zip:dir/member.txt",
+			"content": "changed through write\n"
+		}),
+	)
+	.await;
+	assert_eq!(
+		ok_builtin_payload(archive, "archive write")["operation"],
+		json!({"kind":"archive_member"})
+	);
+	assert_eq!(
+		read_builtin_text(
+			harness.client(),
+			"read-written-archive-member",
+			"bundle.zip:dir/member.txt:raw"
+		)
+		.await,
+		"changed through write\n"
+	);
+
+	std::fs::write(
+		harness.root.path().join("catalog.sqlite"),
+		include_bytes!("../../tools/tests/fixtures/special-sources/database/catalog.sqlite"),
+	)
+	.expect("copy SQLite fixture");
+	let insert = invoke_builtin(
+		harness.client(),
+		"write-sqlite-insert",
+		"write",
+		"1",
+		json!({
+			"path": "catalog.sqlite:people",
+			"content": r#"{"id":4,"name":"Linus","score":40}"#
+		}),
+	)
+	.await;
+	assert_eq!(
+		ok_builtin_payload(insert, "SQLite insert")["operation"],
+		json!({"kind":"sqlite_insert","table":"people"})
+	);
+	assert_eq!(
+		read_builtin_text(harness.client(), "read-sqlite-insert", "catalog.sqlite:people:4").await,
+		"id: 4\nname: Linus\nscore: 40"
+	);
+
+	let update = invoke_builtin(
+		harness.client(),
+		"write-sqlite-update",
+		"write",
+		"1",
+		json!({
+			"path": "catalog.sqlite:people:4",
+			"content": r#"{"name":"Linus Torvalds","score":41}"#
+		}),
+	)
+	.await;
+	assert_eq!(
+		ok_builtin_payload(update, "SQLite update")["operation"],
+		json!({"kind":"sqlite_update","table":"people","key":"4","changed":true})
+	);
+	assert_eq!(
+		read_builtin_text(harness.client(), "read-sqlite-update", "catalog.sqlite:people:4").await,
+		"id: 4\nname: Linus Torvalds\nscore: 41"
+	);
+
+	let delete = invoke_builtin(
+		harness.client(),
+		"write-sqlite-delete",
+		"write",
+		"1",
+		json!({"path":"catalog.sqlite:people:4","content":""}),
+	)
+	.await;
+	assert_eq!(
+		ok_builtin_payload(delete, "SQLite delete")["operation"],
+		json!({"kind":"sqlite_delete","table":"people","key":"4","changed":true})
+	);
+	let after_delete =
+		read_builtin_text(harness.client(), "read-sqlite-delete", "catalog.sqlite:people").await;
+	assert_eq!(
+		after_delete,
+		concat!(
+			"CREATE TABLE people(id INTEGER PRIMARY KEY, name TEXT, score INTEGER)\n\n",
+			"Sample rows:\n",
+			"| id  | name  | score |\n",
+			"| --- | ----- | ----- |\n",
+			"| 1   | Ada   | 10    |\n",
+			"| 2   | Grace | 20    |\n",
+			"| 3   | Linus | 30    |"
+		)
+	);
+}
+
+#[tokio::test]
+async fn edit_rejects_a_stale_tag_after_an_external_file_change() {
+	let harness = Harness::start(Registry::new()).await;
+	let path = harness.root.path().join("stale.txt");
+	std::fs::write(&path, "before\n").expect("seed stale edit fixture");
+	let first = read_builtin_text(harness.client(), "read-stale-base", "stale.txt").await;
+	let tag = hashline_tag(&first, "stale.txt").to_owned();
+
+	std::fs::write(&path, "changed outside\n").expect("modify fixture outside document host");
+	let current = read_builtin_text(harness.client(), "read-stale-current", "stale.txt").await;
+	assert!(current.contains("1:changed outside"));
+	let edit = invoke_builtin(
+		harness.client(),
+		"edit-stale-base",
+		"edit",
+		"hl.1",
+		json!({
+			"input": format!("[stale.txt#{tag}]\nPUT 1.=1:\n+after")
+		}),
+	)
+	.await;
+	assert!(edit.is_error, "stale edit unexpectedly committed");
+	let verdict: Verdict<Value, Value> =
+		serde_json::from_slice(&edit.json).expect("typed stale edit verdict");
+	let Verdict::Fault(fault) = verdict else {
+		panic!("stale edit did not return a typed fault");
+	};
+	assert_eq!(fault["reason"]["kind"], "stale_unrecoverable");
+	let message = fault["reason"]["message"]
+		.as_str()
+		.expect("stale mismatch message");
+	assert!(message.contains(&tag), "stale message omitted authored tag: {message}");
+	assert_eq!(std::fs::read_to_string(path).expect("unchanged stale fixture"), "changed outside\n");
+}
+
+#[tokio::test]
+async fn edit_named_register_spans_sections_and_persists_after_commit() {
+	let harness = Harness::start(Registry::new()).await;
+	for (path, content) in
+		[("source.txt", "carry\nstay\n"), ("destination.txt", "before\n"), ("later.txt", "again\n")]
+	{
+		std::fs::write(harness.root.path().join(path), content).expect("seed clipboard fixture");
+	}
+	let source = read_builtin_text(harness.client(), "read-clipboard-source", "source.txt").await;
+	let destination =
+		read_builtin_text(harness.client(), "read-clipboard-destination", "destination.txt").await;
+	let later = read_builtin_text(harness.client(), "read-clipboard-later", "later.txt").await;
+	let source_tag = hashline_tag(&source, "source.txt");
+	let destination_tag = hashline_tag(&destination, "destination.txt");
+	let later_tag = hashline_tag(&later, "later.txt");
+
+	let batch = invoke_builtin(
+		harness.client(),
+		"edit-clipboard-batch",
+		"edit",
+		"hl.1",
+		json!({
+			"input": format!(
+				"[source.txt#{source_tag}]\nCUT 1.=1 @carry\n[destination.txt#{destination_tag}]\nPUT >1 @carry"
+			)
+		}),
+	)
+	.await;
+	let _ = ok_builtin_payload(batch, "edit clipboard batch");
+	assert_eq!(
+		std::fs::read_to_string(harness.root.path().join("source.txt")).expect("read cut source"),
+		"stay\n"
+	);
+	assert_eq!(
+		std::fs::read_to_string(harness.root.path().join("destination.txt"))
+			.expect("read paste destination"),
+		"before\ncarry\n"
+	);
+
+	let persisted = invoke_builtin(
+		harness.client(),
+		"edit-clipboard-persisted",
+		"edit",
+		"hl.1",
+		json!({
+			"input": format!("[later.txt#{later_tag}]\nPUT >1 @carry")
+		}),
+	)
+	.await;
+	let _ = ok_builtin_payload(persisted, "edit persisted clipboard");
+	assert_eq!(
+		std::fs::read_to_string(harness.root.path().join("later.txt")).expect("read persisted paste"),
+		"again\ncarry\n"
+	);
+}
+
+#[tokio::test]
 async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_and_recovery() {
 	let harness = Harness::start(Registry::new()).await;
 	std::fs::write(harness.root.path().join("bridge-note.txt"), "bridge\n")
@@ -817,9 +1130,7 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 	let Verdict::Ok(seed) = seed else {
 		panic!("embedded Python seed cell returned a fault");
 	};
-	assert_eq!(seed.frames.len(), 1);
-	assert_eq!(seed.frames[0].channel, omp_tools::eval::OutputChannel::Stdout);
-	assert_eq!(seed.frames[0].data.as_ref(), b"seeded\n");
+	assert_eq!(eval_output(&seed, omp_tools::eval::OutputChannel::Stdout), b"seeded\n");
 	assert_eq!(seed.status.outcome, omp_tools::eval::CellOutcome::Complete);
 
 	let (unrelated, unrelated_task) = harness.connect("eval-unrelated-owner").await;
@@ -849,14 +1160,62 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 		Some(json!([false, false, false, null, true])),
 		"Python process globals leaked between authenticated owners"
 	);
-	unrelated_task.abort();
+	let left_ready = harness.root.path().join("eval-left-ready");
+	let right_ready = harness.root.path().join("eval-right-ready");
+	let left_ready_literal =
+		serde_json::to_string(&left_ready.to_string_lossy()).expect("encode left ready path");
+	let right_ready_literal =
+		serde_json::to_string(&right_ready.to_string_lossy()).expect("encode right ready path");
+	let left_code = format!(
+		"import time\nfrom pathlib import \
+		 Path\nPath({left_ready_literal}).write_text('ready')\nwhile not \
+		 Path({right_ready_literal}).exists():\n    time.sleep(0.01)\nshared_name = \
+		 'left'\nshared_name"
+	);
+	let right_code = format!(
+		"import time\nfrom pathlib import \
+		 Path\nPath({right_ready_literal}).write_text('ready')\nwhile not \
+		 Path({left_ready_literal}).exists():\n    time.sleep(0.01)\nshared_name = \
+		 'right'\npeer_state = 73\nshared_name"
+	);
+	let (left, right) = tokio::time::timeout(Duration::from_secs(5), async {
+		tokio::join!(
+			invoke_builtin(
+				harness.client(),
+				"eval-parallel-left",
+				"eval",
+				"1",
+				json!({"language":"py","code":left_code})
+			),
+			invoke_builtin(
+				&unrelated,
+				"eval-parallel-right",
+				"eval",
+				"1",
+				json!({"language":"py","code":right_code})
+			)
+		)
+	})
+	.await
+	.expect("independent Python kernels serialized behind one another");
+	assert!(!left.is_error, "left independent Python kernel failed");
+	assert!(!right.is_error, "right independent Python kernel failed");
+	let left: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
+		serde_json::from_slice(&left.json).expect("typed left parallel eval verdict");
+	let right: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
+		serde_json::from_slice(&right.json).expect("typed right parallel eval verdict");
+	let (Verdict::Ok(left), Verdict::Ok(right)) = (left, right) else {
+		panic!("independent Python kernels returned a resource fault");
+	};
+	assert_eq!(left.result.and_then(|result| result.json), Some(json!("left")));
+	assert_eq!(right.result.and_then(|result| result.json), Some(json!("right")));
 
 	let bridged_glob = invoke_builtin(
 		harness.client(),
 		"eval-tool-bridge",
 		"eval",
 		"1",
-		json!({"language":"py","code":"tool.glob({'path': 'bridge-note.txt'})"}),
+		json!({"language":"py","code":"parallel([lambda: tool.glob({'path': 'bridge-note.txt'}), lambda: tool.glob({'path': 'bridge-note.txt'})])[0]"}),
 	)
 	.await;
 	assert!(!bridged_glob.is_error, "eval tool bridge call failed");
@@ -893,9 +1252,8 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 	let Verdict::Ok(denied_completion) = denied_completion else {
 		panic!("completion denial returned a resource fault");
 	};
-	assert_eq!(denied_completion.frames.len(), 1);
 	assert_eq!(
-		denied_completion.frames[0].data.as_ref(),
+		eval_output(&denied_completion, omp_tools::eval::OutputChannel::Stdout),
 		b"bridge capability denied: __completion__\n"
 	);
 
@@ -914,8 +1272,7 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 		panic!("embedded Python continuation cell returned a fault");
 	};
 	assert_eq!(continued.session_id, seed.session_id);
-	assert_eq!(continued.frames.len(), 1);
-	assert_eq!(continued.frames[0].data.as_ref(), b"cell=42\n");
+	assert_eq!(eval_output(&continued, omp_tools::eval::OutputChannel::Stdout), b"cell=42\n");
 	assert_eq!(
 		continued.result,
 		Some(omp_tools::eval::CellValue { text: Str::from("42"), json: Some(json!(42)) })
@@ -951,16 +1308,65 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 		Some(json!([false, false, false, false, null, true])),
 		"reset did not replace process-global Python state"
 	);
-
-	let timeout_started = std::time::Instant::now();
-	let timed_out = invoke_builtin(
-		harness.client(),
-		"eval-timeout",
+	let peer_after_reset = invoke_builtin(
+		&unrelated,
+		"eval-peer-after-reset",
 		"eval",
 		"1",
-		json!({"language":"py","code":"import time\ntime.sleep(5)","timeout":0.025}),
+		json!({"language":"py","code":"peer_state"}),
 	)
 	.await;
+	assert!(!peer_after_reset.is_error, "peer kernel failed after another kernel reset");
+	let peer_after_reset: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
+		serde_json::from_slice(&peer_after_reset.json).expect("typed peer post-reset verdict");
+	let Verdict::Ok(peer_after_reset) = peer_after_reset else {
+		panic!("peer kernel returned a fault after another kernel reset");
+	};
+	assert_eq!(
+		peer_after_reset.result.and_then(|result| result.json),
+		Some(json!(73)),
+		"reset replaced an unrelated Python kernel"
+	);
+	unrelated_task.abort();
+
+	let timeout_marker = harness.root.path().join("eval-timeout-started");
+	let timeout_marker_literal =
+		serde_json::to_string(&timeout_marker.to_string_lossy()).expect("encode timeout marker path");
+	let timeout_code = format!(
+		"import time\nfrom pathlib import \
+		 Path\nPath({timeout_marker_literal}).write_text('started')\ntime.sleep(5)"
+	);
+	let timed_out = async {
+		let started = std::time::Instant::now();
+		let verdict = invoke_builtin(
+			harness.client(),
+			"eval-timeout",
+			"eval",
+			"1",
+			json!({"language":"py","code":timeout_code,"timeout":0.025}),
+		)
+		.await;
+		(verdict, started.elapsed())
+	};
+	let queued_after_timeout = async {
+		while !timeout_marker.exists() {
+			tokio::time::sleep(Duration::from_millis(1)).await;
+		}
+		invoke_builtin(
+			harness.client(),
+			"eval-after-timeout",
+			"eval",
+			"1",
+			json!({"language":"py","code":"6 * 7"}),
+		)
+		.await
+	};
+	let ((timed_out, timeout_elapsed), recovered) =
+		tokio::time::timeout(Duration::from_secs(5), async {
+			tokio::join!(timed_out, queued_after_timeout)
+		})
+		.await
+		.expect("queued cell deadlocked behind timed-out Python kernel");
 	assert!(!timed_out.is_error, "timed-out Python cell did not return typed cell truth");
 	let timed_out: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
 		serde_json::from_slice(&timed_out.json).expect("typed eval timeout verdict");
@@ -969,9 +1375,8 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 	};
 	assert_eq!(timed_out.status.outcome, omp_tools::eval::CellOutcome::Timeout);
 	assert!(
-		timeout_started.elapsed() < Duration::from_millis(500),
-		"hard eval timeout exceeded 500ms: {:?}",
-		timeout_started.elapsed()
+		timeout_elapsed < Duration::from_millis(500),
+		"hard eval timeout exceeded 500ms: {timeout_elapsed:?}",
 	);
 	assert_eq!(
 		timed_out
@@ -982,14 +1387,6 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 		Some("TimeoutError")
 	);
 
-	let recovered = invoke_builtin(
-		harness.client(),
-		"eval-after-timeout",
-		"eval",
-		"1",
-		json!({"language":"py","code":"6 * 7"}),
-	)
-	.await;
 	assert!(!recovered.is_error, "Python kernel did not recover after timeout");
 	let recovered: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
 		serde_json::from_slice(&recovered.json).expect("typed post-timeout eval verdict");
@@ -997,7 +1394,7 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 		panic!("post-timeout Python cell returned a fault");
 	};
 	assert_eq!(recovered.session_id, seed.session_id);
-	assert!(recovered.reset, "respawn after timeout was not reported as a reset");
+	assert!(recovered.reset, "queued respawn after timeout was not reported as a reset");
 	assert_eq!(
 		recovered.result,
 		Some(omp_tools::eval::CellValue { text: Str::from("42"), json: Some(json!(42)) })
@@ -1145,13 +1542,9 @@ async fn uds_clients_cannot_invoke_session_local_eval_but_retain_ordinary_tools(
 	})
 	.await
 	.expect("UDS environment socket did not become ready");
-	let (remote, bridge_task, claim) = EnvServer::connect_owner_uds(&socket)
+	let (remote, bridge_task) = EnvServer::connect_owner_uds(&socket)
 		.await
 		.expect("connect owner UDS client");
-	assert!(
-		matches!(claim, omp_app::envd::server::SocketClaim::Held { .. }),
-		"an undisturbed owner socket must be held"
-	);
 	remote
 		.hello(ClientHello {
 			client: "envd-contract-uds".into(),
@@ -2163,6 +2556,96 @@ async fn timeout_cancel_and_workspace_cancel_have_distinct_truth() {
 }
 
 #[tokio::test]
+async fn queued_session_cancel_never_enters_execution() {
+	let root = tempfile::tempdir().expect("workspace");
+	let exec = ExecHost::new();
+	let opened = exec
+		.open_session(OpenSessionRequest { cwd_uri: cwd_uri(root.path()), ..Default::default() })
+		.await
+		.expect("session");
+	let (_, active) = exec
+		.exec(exec_request(&opened.session, "trap '' TERM; sleep 30"), None)
+		.await
+		.expect("active run");
+	assert!(matches!(
+		tokio::time::timeout(Duration::from_secs(5), active.next_event())
+			.await
+			.expect("active start timeout"),
+		Some(HostExecEvent::Started { .. })
+	));
+
+	let (_, queued) = exec
+		.exec(exec_request(&opened.session, "touch queued-marker"), None)
+		.await
+		.expect("queued run");
+	queued.cancel();
+	active.cancel();
+	tokio::time::timeout(Duration::from_secs(5), async {
+		while !matches!(active.next_event().await, Some(HostExecEvent::Exit(_))) {}
+	})
+	.await
+	.expect("active cancellation timeout");
+
+	let event = tokio::time::timeout(Duration::from_secs(5), queued.next_event())
+		.await
+		.expect("queued cancellation timeout")
+		.expect("queued terminal event");
+	let HostExecEvent::Exit(exit) = event else {
+		panic!("queued command entered execution before cancellation: {event:?}")
+	};
+	assert_eq!(exit.status.expect("queued cancel status").outcome, ExecOutcome::Cancelled as i32);
+	assert!(!root.path().join("queued-marker").exists());
+}
+
+#[tokio::test]
+async fn active_cancel_allows_queued_cancel_to_propagate_before_execution() {
+	let root = tempfile::tempdir().expect("workspace");
+	let exec = ExecHost::new();
+	let opened = exec
+		.open_session(OpenSessionRequest { cwd_uri: cwd_uri(root.path()), ..Default::default() })
+		.await
+		.expect("session");
+	let (_, active) = exec
+		.exec(exec_request(&opened.session, "trap '' TERM; sleep 30"), None)
+		.await
+		.expect("active run");
+	assert!(matches!(
+		tokio::time::timeout(Duration::from_secs(5), active.next_event())
+			.await
+			.expect("active start timeout"),
+		Some(HostExecEvent::Started { .. })
+	));
+
+	active.cancel();
+	tokio::time::timeout(Duration::from_secs(5), async {
+		while !matches!(active.next_event().await, Some(HostExecEvent::Exit(_))) {}
+	})
+	.await
+	.expect("active cancellation timeout");
+	let (_, queued) = exec
+		.exec(exec_request(&opened.session, "touch queued-race-marker"), None)
+		.await
+		.expect("queued run");
+
+	assert!(
+		tokio::time::timeout(Duration::from_millis(50), queued.next_event())
+			.await
+			.is_err(),
+		"queued command started before its batch cancellation could propagate"
+	);
+	queued.cancel();
+	let event = tokio::time::timeout(Duration::from_secs(5), queued.next_event())
+		.await
+		.expect("queued cancellation timeout")
+		.expect("queued terminal event");
+	let HostExecEvent::Exit(exit) = event else {
+		panic!("queued command entered execution before cancellation: {event:?}")
+	};
+	assert_eq!(exit.status.expect("queued cancel status").outcome, ExecOutcome::Cancelled as i32);
+	assert!(!root.path().join("queued-race-marker").exists());
+}
+
+#[tokio::test]
 async fn real_embedded_python_worker_registers_configured_extensions_when_available() {
 	let (Some(site), Some(module)) =
 		(std::env::var_os("OMP_TEST_PY_SITE"), std::env::var_os("OMP_TEST_PY_MODULE"))
@@ -2200,7 +2683,7 @@ async fn uds_retire_unlinks_listener_and_drains_existing_clients() {
 	.await
 	.expect("UDS environment socket did not become ready");
 
-	let (retiring, retiring_bridge, _claim) = EnvServer::connect_owner_uds(&socket)
+	let (retiring, retiring_bridge) = EnvServer::connect_owner_uds(&socket)
 		.await
 		.expect("connect retiring client");
 	let retiring_hello = retiring
@@ -2211,7 +2694,7 @@ async fn uds_retire_unlinks_listener_and_drains_existing_clients() {
 		})
 		.await
 		.expect("retiring client hello");
-	let (remaining, remaining_bridge, _claim) = EnvServer::connect_owner_uds(&socket)
+	let (remaining, remaining_bridge) = EnvServer::connect_owner_uds(&socket)
 		.await
 		.expect("connect remaining client");
 	let remaining_hello = remaining

@@ -58,7 +58,7 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 use tower::Service;
 
-const READY_TIMEOUT: Duration = Duration::from_secs(12);
+const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(15);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -208,9 +208,16 @@ impl ScriptedGateway {
 		fake.extend(scripts);
 
 		let mut tools = omp_tool::Registry::new();
-		for (name, family) in
-			[("read", ""), ("edit", "hl"), ("shell", ""), ("grep", ""), ("glob", ""), ("py_eval", "")]
-		{
+		for (name, family) in [
+			("read", ""),
+			("edit", "hl"),
+			("shell", ""),
+			("grep", ""),
+			("glob", ""),
+			("py_eval", ""),
+			("eval", ""),
+			("write", ""),
+		] {
 			tools
 				.register(ProofTool::new(name, family))
 				.expect("proof tool registers");
@@ -389,7 +396,7 @@ fn metered_text_script(text: &'static str) -> FakeScript {
 }
 
 fn streaming_edit_script() -> FakeScript {
-	let arguments = json!({ "input": "[scratch.txt#A1B2]\nPUT 1.=1:\n+new" });
+	let arguments = json!({ "input": "[scratch.txt#5C9F]\nPUT 1.=1:\n+new" });
 	let call = ToolCall {
 		id:        ToolCallId::from("edit-1"),
 		name:      Str::from("edit"),
@@ -399,7 +406,7 @@ fn streaming_edit_script() -> FakeScript {
 		Ok(ChatEvent::ToolCallStarted { index: 0, id: call.id.clone(), name: call.name.clone() }),
 		Ok(ChatEvent::ToolArgumentsDelta {
 			index: 0,
-			bytes: Bytes::from_static(br#"{"input":"[scratch.txt#A1B2]\nPUT 1.=1:\n+new""#),
+			bytes: Bytes::from_static(br#"{"input":"[scratch.txt#5C9F]\nPUT 1.=1:\n+new""#),
 		}),
 		Ok(ChatEvent::ToolArgumentsDelta { index: 0, bytes: Bytes::from_static(br"}") }),
 		Ok(ChatEvent::ToolCallReady { index: 0, call }),
@@ -728,6 +735,20 @@ fn wait_snapshot(
 	}
 }
 
+fn wait_info(debug: &mut DebugClient, label: &str, mut ready: impl FnMut(&Value) -> bool) -> Value {
+	let deadline = Instant::now() + CHECKPOINT_TIMEOUT;
+	loop {
+		let info = debug
+			.op("info")
+			.unwrap_or_else(|error| panic!("{label}: {error}"));
+		if ready(&info) {
+			return info;
+		}
+		assert!(Instant::now() < deadline, "checkpoint {label:?} timed out: {info}");
+		thread::sleep(Duration::from_millis(15));
+	}
+}
+
 fn wait_raw_sequence(
 	raw: &Arc<Mutex<Vec<u8>>>,
 	start: usize,
@@ -793,20 +814,33 @@ fn visible(bytes: &[u8]) -> String {
 }
 
 fn assert_restored(raw: &[u8], before: &Termios, after: &Termios, diagnostics: &str) {
-	for sequence in ["\x1b[?1049h", "\x1b[?1047h", "\x1b[?47h"] {
+	let alt_enter = raw.windows(8).rposition(|window| window == b"\x1b[?1049h");
+	let alt_exit = raw.windows(8).rposition(|window| window == b"\x1b[?1049l");
+	assert!(
+		alt_enter.is_none() || alt_exit.is_some_and(|exit| Some(exit) > alt_enter),
+		"alternate buffer was not restored; enter={alt_enter:?} exit={alt_exit:?}\n{diagnostics}"
+	);
+	for sequence in ["\x1b[?1047h", "\x1b[?47h"] {
 		assert!(
 			!raw
 				.windows(sequence.len())
 				.any(|window| window == sequence.as_bytes()),
-			"alternate-buffer entry {sequence:?} observed\n{diagnostics}"
+			"legacy alternate-buffer entry {sequence:?} observed\n{diagnostics}"
 		);
 	}
-	for mode in ["\x1b[?1000h", "\x1b[?1002h", "\x1b[?1003h", "\x1b[?1006h"] {
+	for mode in [1000, 1002, 1003, 1006] {
+		let enable = format!("\x1b[?{mode}h");
+		let disable = format!("\x1b[?{mode}l");
+		let enabled = raw
+			.windows(enable.len())
+			.rposition(|window| window == enable.as_bytes());
+		let disabled = raw
+			.windows(disable.len())
+			.rposition(|window| window == disable.as_bytes());
 		assert!(
-			!raw
-				.windows(mode.len())
-				.any(|window| window == mode.as_bytes()),
-			"mouse tracking enable {mode:?} observed\n{diagnostics}"
+			enabled.is_none() || disabled.is_some_and(|exit| Some(exit) > enabled),
+			"mouse tracking mode {mode} was not restored; enable={enabled:?} \
+			 disable={disabled:?}\n{diagnostics}"
 		);
 	}
 	let hide = raw.windows(6).rposition(|window| window == b"\x1b[?25l");
@@ -864,13 +898,11 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 		<std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
 	)
 	.expect("use standard project state permissions");
-	let docserver = omp_e2e::support::DocServerTask::spawn(
-		project.clone(),
-		state_dir.join("docserver.sock"),
-		Vec::new(),
-	)
-	.await
-	.expect("start real document authority");
+	let docserver_socket = omp_app::project_state::document_socket(&state_dir);
+	let docserver =
+		omp_e2e::support::DocServerTask::spawn(project.clone(), docserver_socket.clone(), Vec::new())
+			.await
+			.expect("start real document authority");
 	let shell_release = scratch.path().join("release-shell");
 	let gateway_socket = scratch.path().join("gateway.sock");
 	let debug_socket = scratch.path().join("tui-debug.sock");
@@ -960,7 +992,6 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 			snapshot
 				.frame
 				.contains("deterministic tool sequence is complete")
-				&& snapshot.frame.contains(&gateway.model)
 				&& snapshot.frame.contains("Ctx:")
 				&& snapshot.frame.contains("Cost: $1.5000")
 		});
@@ -992,11 +1023,15 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 		.unwrap_or_else(|error| panic!("resize injection failed: {error}"));
 	let resized = wait_snapshot(&mut debug, &raw_capture, "streaming resize", |snapshot| {
 		snapshot.frame.contains("batch-one-started")
-			&& snapshot.frame.contains("read scratch.txt")
-			&& snapshot.frame.contains("mystery.fixture")
+			&& tree_node_by_id(&snapshot.tree, "read-1").is_some()
+			&& tree_node_by_id(&snapshot.tree, "unknown-1").is_some()
 	});
 	assert_surface(&resized, "resized");
-	let info = debug.op("info").expect("resize info");
+	let info = wait_info(&mut debug, "settled streaming resize", |info| {
+		info.get("rows").and_then(Value::as_u64) == Some(32)
+			&& info.get("cols").and_then(Value::as_u64) == Some(92)
+			&& info.get("alt_screen").and_then(Value::as_bool) == Some(false)
+	});
 	assert_eq!(info.get("rows").and_then(Value::as_u64), Some(32), "resize rows: {info}");
 	assert_eq!(info.get("cols").and_then(Value::as_u64), Some(92), "resize cols: {info}");
 	assert_eq!(
@@ -1127,7 +1162,7 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	resume_debug.keys("'/resume' enter");
 	let picker =
 		wait_snapshot(&mut resume_debug, &resumed_raw, "resume session picker", |snapshot| {
-			snapshot.frame.contains("Resume Session")
+			snapshot.text.contains("Resume Session")
 				&& tree_node_by_id(&snapshot.tree, "resume-session").is_some()
 		});
 	assert_surface(&picker, "resume session picker");

@@ -30,7 +30,7 @@ use omp_llm_inference::{
 		AccountState, AccountSummary, Answer, AnswerBody, AuthAnswer, ChatStream, DetokenizedText,
 		EmbeddingBatch, GenerationSession, ModelDiscoveryPage, NativeResponse, NativeResponseBody,
 		RealtimeEvent, RealtimeInput, RealtimeSession, ResponseMeta, SearchResults, TokenCount,
-		TokenSequence, TokenizerProvenance, UsageReport,
+		TokenSequence, TokenizerProvenance, UsageAccountMetadata, UsageReport,
 	},
 	body::{
 		AttemptBodyEvidence, BodySource, Replayability, RetryDecision, RetryDecisionReason,
@@ -234,10 +234,15 @@ fn every_operation_has_a_typed_extraction_bound_to_the_operations_manifest() {
 	);
 	assert!(
 		UsageRequest::extract(answer(AnswerBody::Usage(UsageReport {
-			provider:  ProviderId::from("offline-provider"),
-			account:   AccountId::from("fixture-account-alpha"),
-			principal: None,
-			windows:   Vec::new(),
+			provider:      ProviderId::from("offline-provider"),
+			account:       AccountId::from("fixture-account-alpha"),
+			principal:     None,
+			plan:          None,
+			account_meta:  UsageAccountMetadata::default(),
+			source_label:  None,
+			notes:         Box::default(),
+			reset_credits: None,
+			windows:       Vec::new(),
 		})))
 		.is_ok()
 	);

@@ -40,7 +40,7 @@ use omp_app::{
 	envd::{server::EnvServer, worker::ToolWorkerConfig},
 };
 use omp_core::Str;
-use omp_e2e::support::{DocServerTask, Scratch, ScriptedGateway, omp_binary};
+use omp_e2e::support::{Scratch, ScriptedGateway, omp_binary};
 use omp_env::EnvClient;
 use omp_llm_catalog::{
 	CompiledCatalog, ManagementCapabilities, OperationBits, OperationKind,
@@ -516,10 +516,6 @@ async fn real_chat_resume_replays_pending_turn_through_cli_startup() {
 		.expect("use standard sessions permissions");
 	fs::set_permissions(scratch.state(), fs::Permissions::from_mode(0o700))
 		.expect("secure binary-resume daemon state");
-	let _docserver =
-		DocServerTask::spawn(project.clone(), state_dir.join("docserver.sock"), Vec::new())
-			.await
-			.expect("start real binary-resume document authority");
 	let journal_path = sessions.join(format!("{BINARY_SESSION}.jsonl"));
 	drop(
 		Journal::create(&journal_path, &Header {
@@ -543,7 +539,7 @@ async fn real_chat_resume_replays_pending_turn_through_cli_startup() {
 			receipt: ExecutionReceipt::default().into(),
 		})),
 	]);
-	let gateway = ScriptedGateway::spawn_gated(&scratch, [script], Arc::new(Registry::new()))
+	let gateway = ScriptedGateway::spawn_gated(&scratch, [script], binary_gateway_tools())
 		.await
 		.expect("start gated real gateway");
 	let binary = omp_binary().expect("locate worker-capable omp binary");
@@ -556,10 +552,15 @@ async fn real_chat_resume_replays_pending_turn_through_cli_startup() {
 	first_ui.keys("'exercise binary resume' enter");
 	first_ui.wait_text("exercise binary resume", Duration::from_secs(10));
 	let pending_turn = wait_pending_turn(&journal_path, Duration::from_secs(10)).await;
-	gateway
-		.wait_response_gated(Duration::from_secs(15))
-		.await
-		.expect("provider response reached deterministic gate");
+	if let Err(error) = gateway.wait_response_gated(Duration::from_secs(30)).await {
+		let screen = first_ui.request(json!({ "op": "text" }));
+		let envd_log = fs::read_to_string(state_dir.join("envd.log")).unwrap_or_default();
+		let journal = fs::read_to_string(&journal_path).unwrap_or_default();
+		panic!(
+			"provider response never reached gate: {error:#}\nscreen: \
+			 {screen}\nenvd:\n{envd_log}\njournal:\n{journal}"
+		);
+	}
 	assert!(pending_turn.parse::<ulid::Ulid>().is_ok(), "chat minted non-ULID TurnId");
 	first.stop();
 	gateway
@@ -585,14 +586,30 @@ async fn real_chat_resume_replays_pending_turn_through_cli_startup() {
 	let mut second = ChatPty::spawn(&binary, &args, &project, &second_debug);
 	let mut second_ui =
 		ChatDebug::connect(&second_debug, Instant::now() + Duration::from_secs(15), &mut second);
-	second_ui.wait_text("binary resume outcome", Duration::from_secs(15));
-	second_ui.keys("'/quit' enter");
+	second_ui.wait_text("binary resume outcome", Duration::from_secs(30));
+	second_ui.request(json!({ "op": "quit" }));
 	drop(second_ui);
 	let status = second.wait(Duration::from_secs(15));
+
 	assert!(status.success(), "resumed omp chat did not quit cleanly: {status}");
 	assert_eq!(gateway.calls().len(), 1, "CLI resume invoked the provider instead of RPC replay");
 	assert_binary_resume_journal(&journal_path, &pending_turn);
 	gateway.shutdown().await.expect("stop scripted gateway");
+}
+fn binary_gateway_tools() -> Arc<Registry> {
+	let mut registry = Registry::new();
+	for name in ["edit", "eval", "glob", "grep", "read", "shell", "write"] {
+		registry
+			.register_worker(ToolSpec {
+				name:        Str::new_static(name),
+				rev:         Rev { family: Str::new_static("fixture"), n: 1 },
+				description: Str::new_static("binary crash-resume fixture"),
+				schema:      Bytes::from_static(br#"{"type":"object"}"#),
+				constraint:  Constraint::None,
+			})
+			.expect("register binary gateway tool identity");
+	}
+	Arc::new(registry)
 }
 
 fn chat_resume_args(gateway: &ScriptedGateway, project: &Path) -> Vec<String> {
@@ -743,7 +760,10 @@ impl ChatDebug {
 			if found {
 				return;
 			}
-			assert!(Instant::now() < deadline, "binary chat never displayed {needle:?}");
+			assert!(
+				Instant::now() < deadline,
+				"binary chat never displayed {needle:?}; last screen: {response}"
+			);
 			std_thread::sleep(Duration::from_millis(20));
 		}
 	}

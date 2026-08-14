@@ -16,9 +16,12 @@ use omp_llm_catalog::{
 		MaxOutputTokensEmission, MaxTokensField, ReasoningDisableMode, ThinkingFormat, WirePolicy,
 	},
 	pricing::{PriceUnit, UsageDimensions},
-	provider::{AuthSpecKind, CodexTransportPreference, OAuthRefreshBehavior},
+	provider::{
+		AuthSpecKind, CodexTransportPreference, OAuthFlowSpec, OAuthRefreshBehavior, OAuthSpec,
+		PrincipalResolution,
+	},
 	snapshot::{Catalog, SnapshotProvenance},
-	thinking::{ThinkingMode, ThinkingPolicy},
+	thinking::{ThinkingEffort, ThinkingMode, ThinkingPolicy},
 };
 use serde::Deserialize;
 use serde_json::value::RawValue;
@@ -46,6 +49,65 @@ const QWEN_COLLAPSE: &str =
 const NORMALIZED_MODELS: &str =
 	include_str!("../../../fixtures/llm-oracle/catalog/models.normalized.json");
 const CENSUS: &str = include_str!("../../../fixtures/llm-oracle/catalog/census.json");
+
+const INFERRED_CURSOR_THINKING: &[(&str, &[ThinkingEffort])] = &[
+	("cursor/claude-opus-5-thinking", &[ThinkingEffort::XHigh, ThinkingEffort::Max]),
+	("cursor/cursor-grok-4.5", &[ThinkingEffort::Low, ThinkingEffort::Medium, ThinkingEffort::High]),
+	("cursor/gemini-3.6-flash", &[
+		ThinkingEffort::Minimal,
+		ThinkingEffort::Low,
+		ThinkingEffort::Medium,
+		ThinkingEffort::High,
+	]),
+	("cursor/glm-5.2", &[ThinkingEffort::High, ThinkingEffort::Max]),
+	("cursor/gpt-5.4", &[
+		ThinkingEffort::Low,
+		ThinkingEffort::Medium,
+		ThinkingEffort::High,
+		ThinkingEffort::XHigh,
+	]),
+	("cursor/gpt-5.4-mini", &[
+		ThinkingEffort::Low,
+		ThinkingEffort::Medium,
+		ThinkingEffort::High,
+		ThinkingEffort::XHigh,
+	]),
+	("cursor/gpt-5.4-nano", &[
+		ThinkingEffort::Low,
+		ThinkingEffort::Medium,
+		ThinkingEffort::High,
+		ThinkingEffort::XHigh,
+	]),
+	("cursor/gpt-5.5", &[ThinkingEffort::Low, ThinkingEffort::Medium, ThinkingEffort::High]),
+	("cursor/gpt-5.6-luna", &[
+		ThinkingEffort::Low,
+		ThinkingEffort::Medium,
+		ThinkingEffort::High,
+		ThinkingEffort::XHigh,
+		ThinkingEffort::Max,
+	]),
+	("cursor/gpt-5.6-sol", &[
+		ThinkingEffort::Low,
+		ThinkingEffort::Medium,
+		ThinkingEffort::High,
+		ThinkingEffort::XHigh,
+		ThinkingEffort::Max,
+	]),
+	("cursor/gpt-5.6-terra", &[
+		ThinkingEffort::Low,
+		ThinkingEffort::Medium,
+		ThinkingEffort::High,
+		ThinkingEffort::XHigh,
+		ThinkingEffort::Max,
+	]),
+];
+const CURATED_THINKING_OVERRIDES: &[&str] = &["nanogpt/linkup-research"];
+
+fn inferred_cursor_efforts(model: &str) -> Option<&'static [ThinkingEffort]> {
+	INFERRED_CURSOR_THINKING
+		.iter()
+		.find_map(|(key, efforts)| (*key == model).then_some(*efforts))
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -763,6 +825,70 @@ fn effort_suffix_classification_matches_every_boundary_case() {
 fn compile_frozen_oracle() -> CompiledCatalog {
 	compile_oracle(PROVIDERS, MODELS_ZSTD, OAUTH).expect("frozen catalog oracle compiles")
 }
+fn provider_oauth<'a>(compiled: &'a CompiledCatalog, provider_id: &str) -> &'a OAuthSpec {
+	let provider = compiled
+		.providers
+		.iter()
+		.find(|provider| provider.id == provider_id)
+		.expect("provider");
+	let auth = compiled
+		.auth_specs
+		.iter()
+		.find(|auth| Some(&auth.id) == provider.auth.first())
+		.expect("preferred auth");
+	assert_eq!(auth.kind, AuthSpecKind::Oauth, "{provider_id} preferred auth");
+	let oauth_id = auth.oauth.as_ref().expect("OAuth link");
+	compiled
+		.oauth_specs
+		.iter()
+		.find(|oauth| &oauth.id == oauth_id)
+		.expect("OAuth spec")
+}
+
+#[test]
+fn interactive_oauth_contracts_preserve_provider_parameters_and_identity() {
+	let compiled = compile_frozen_oracle();
+	let kimi = provider_oauth(&compiled, "kimi-code");
+	assert_eq!(kimi.client_id, "17e5f671-d194-4dfb-9706-5516cb48c098");
+	assert!(matches!(
+		&kimi.principal_resolution,
+		Some(PrincipalResolution::StaticLabel { label }) if label == "kimi-code"
+	));
+
+	let google = provider_oauth(&compiled, "google-gemini-cli");
+	assert_eq!(
+		google
+			.token_parameters
+			.iter()
+			.find(|parameter| parameter.name == "client_secret")
+			.map(|parameter| parameter.value.as_str()),
+		Some("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")
+	);
+	let OAuthFlowSpec::Pkce { completion, authorize_parameters, .. } = &google.flow else {
+		panic!("Google login must use an authorization-code flow");
+	};
+	assert_eq!(*completion, omp_llm_catalog::provider::OAuthCompletion::PasteCallbackUrl);
+	assert!(
+		authorize_parameters
+			.iter()
+			.any(|parameter| { parameter.name == "access_type" && parameter.value == "offline" })
+	);
+	assert!(
+		!google
+			.token_parameters
+			.iter()
+			.any(|parameter| parameter.name == "access_type")
+	);
+
+	for provider in ["openai-codex", "github-copilot", "xai-oauth", "gitlab-duo"] {
+		assert!(
+			provider_oauth(&compiled, provider)
+				.principal_resolution
+				.is_some(),
+			"{provider} principal resolution"
+		);
+	}
+}
 
 const fn all_operations() -> [OperationKind; 15] {
 	[
@@ -1309,32 +1435,60 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 				.find(|policy| policy.content_id() == id.clone())
 				.expect("model thinking policy is interned")
 		});
-		assert_eq!(
-			actual_thinking.map_or(&[][..], |policy| policy.efforts.as_slice()),
-			expected
-				.efforts
-				.iter()
-				.copied()
-				.map(Into::into)
-				.collect::<Vec<_>>(),
-			"{} thinking efforts",
-			expected.id
-		);
-		assert_eq!(
-			actual
-				.thinking_routing
-				.effort_routing
-				.iter()
-				.map(|(effort, wire)| (*effort, wire.as_str()))
-				.collect::<BTreeMap<_, _>>(),
-			expected
-				.effort_routing
-				.iter()
-				.map(|(effort, wire)| ((*effort).into(), wire.as_str()))
-				.collect(),
-			"{} thinking effort routing",
-			expected.id
-		);
+		if let Some(efforts) = inferred_cursor_efforts(&expected.id) {
+			assert_eq!(
+				actual_thinking.map_or(&[][..], |policy| policy.efforts.as_slice()),
+				efforts,
+				"{} inferred thinking efforts",
+				expected.id
+			);
+			assert_eq!(
+				actual.thinking_routing.effort_routing.len(),
+				efforts.len(),
+				"{} inferred thinking route count",
+				expected.id
+			);
+			let wire = expected
+				.id
+				.strip_prefix("cursor/")
+				.expect("Cursor model key");
+			for effort in efforts {
+				let expected_wire = format!("{wire}-{}", effort.into_str());
+				assert_eq!(
+					actual.thinking_routing.effort_routing[effort].as_str(),
+					expected_wire,
+					"{} inferred {effort} route",
+					expected.id
+				);
+			}
+		} else {
+			assert_eq!(
+				actual_thinking.map_or(&[][..], |policy| policy.efforts.as_slice()),
+				expected
+					.efforts
+					.iter()
+					.copied()
+					.map(Into::into)
+					.collect::<Vec<_>>(),
+				"{} thinking efforts",
+				expected.id
+			);
+			assert_eq!(
+				actual
+					.thinking_routing
+					.effort_routing
+					.iter()
+					.map(|(effort, wire)| (*effort, wire.as_str()))
+					.collect::<BTreeMap<_, _>>(),
+				expected
+					.effort_routing
+					.iter()
+					.map(|(effort, wire)| ((*effort).into(), wire.as_str()))
+					.collect(),
+				"{} thinking effort routing",
+				expected.id
+			);
+		}
 		if expected_embed {
 			let embeddings = actual
 				.capabilities
@@ -2078,6 +2232,48 @@ fn exact_override_rows_and_qwen_collapses_remain_present_and_auditable() {
 }
 
 #[test]
+fn cursor_effort_suffixes_compile_to_routable_thinking_profiles() {
+	let compiled = compile_frozen_oracle();
+	for &(key, efforts) in INFERRED_CURSOR_THINKING {
+		let model = compiled
+			.models
+			.iter()
+			.find(|model| model.key.as_str() == key)
+			.unwrap_or_else(|| panic!("missing inferred Cursor model {key}"));
+		let policy = model
+			.thinking
+			.as_ref()
+			.and_then(|id| {
+				compiled
+					.thinking_policies
+					.iter()
+					.find(|policy| policy.content_id() == *id)
+			})
+			.unwrap_or_else(|| panic!("{key} has no inferred thinking policy"));
+
+		assert_eq!(policy.mode, ThinkingMode::Effort, "{key} mode");
+		assert_eq!(policy.efforts.as_slice(), efforts, "{key} efforts");
+		assert!(
+			policy
+				.default_level
+				.is_some_and(|default| efforts.contains(&default)),
+			"{key} default effort"
+		);
+		assert_eq!(policy.requires_effort, Some(true), "{key} required effort");
+		assert_eq!(model.thinking_routing.effort_routing.len(), efforts.len(), "{key} routes");
+		let wire = key.strip_prefix("cursor/").expect("Cursor model key");
+		for effort in efforts {
+			let expected = format!("{wire}-{}", effort.into_str());
+			assert_eq!(
+				model.thinking_routing.effort_routing[effort].as_str(),
+				expected,
+				"{key} {effort} route"
+			);
+		}
+	}
+}
+
+#[test]
 fn embedded_snapshot_and_all_indexes_match_a_fresh_deterministic_encoding() {
 	let compiled = compile_frozen_oracle();
 	let embedded = Catalog::embedded();
@@ -2218,7 +2414,29 @@ fn every_thinking_profile_is_interned_and_attached_to_its_exact_model_set() {
 			assert_eq!(model.thinking.as_ref(), Some(&expected_id), "{key} thinking policy");
 		}
 	}
-	assert_eq!(expected_ids.len(), 43);
+	for key in INFERRED_CURSOR_THINKING
+		.iter()
+		.map(|(key, _)| *key)
+		.chain(CURATED_THINKING_OVERRIDES.iter().copied())
+	{
+		let model = compiled
+			.models
+			.iter()
+			.find(|model| model.key.as_str() == key)
+			.unwrap_or_else(|| panic!("missing non-fixture thinking model {key}"));
+		let id = model
+			.thinking
+			.as_ref()
+			.unwrap_or_else(|| panic!("{key} has no inferred thinking policy"));
+		expected_ids.insert(id.clone());
+		assert!(
+			expected_by_model
+				.insert(key.to_owned(), id.clone())
+				.is_none(),
+			"{key} unexpectedly has a fixture thinking profile"
+		);
+	}
+	assert_eq!(expected_ids.len(), 49);
 	let actual_ids = compiled
 		.thinking_policies
 		.iter()

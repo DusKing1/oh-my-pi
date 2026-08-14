@@ -280,6 +280,12 @@ async fn content_type_dispatch_is_observable_in_method_and_content() {
 		),
 		("text/plain", "canned plain text", "text", "canned plain text"),
 		(
+			"application/rtf",
+			r"{\rtf1\ansi Canned RTF document\par}",
+			"markit",
+			"Canned RTF document",
+		),
+		(
 			"application/atom+xml",
 			"<feed><title>Canned feed</title><entry><title>Item</title><link href=\"https://example.test/item\"/><summary>Feed body</summary></entry></feed>",
 			"feed",
@@ -346,16 +352,23 @@ async fn raw_binary_urls_keep_image_archive_and_sqlite_specialized_dispatch() {
 	)
 	.await
 	.expect("raw image dispatch succeeds");
-	assert_eq!(image.render.content, "Read image file [image/png]");
-	assert_eq!(image.render.content_type.as_deref(), Some("image/png"));
+	assert_eq!(
+		image.render.content,
+		"Read image file [image/webp]\n[Image: original 1x1, displayed at 200x200. Multiply \
+		 coordinates by 0.01 to map to original image.]"
+	);
+	assert_eq!(image.render.content_type.as_deref(), Some("image/webp"));
 	assert_eq!(image.render.method, "image");
 	assert_eq!(image.render.notes.as_slice(), [Str::new_static("Fetched image binary")]);
 	let processed = image
 		.image
 		.expect("raw image retains processed media bytes");
-	assert_eq!(processed.media_type, "image/png");
+	assert_eq!(processed.media_type, "image/webp");
 	assert_eq!(processed.original_width, Some(1));
 	assert_eq!(processed.original_height, Some(1));
+	assert_eq!(processed.width, Some(200));
+	assert_eq!(processed.height, Some(200));
+	assert!(processed.was_resized);
 
 	let archive = web::read(
 		&CannedHttp::from_responses([response(200, "application/zip", zip_fixture())]),

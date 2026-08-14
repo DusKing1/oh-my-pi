@@ -1,16 +1,16 @@
 //! Pi-equivalent `write@1` schema, guards, transactions, and exact output
 //! contracts.
 
-use std::{future::Future, sync::Arc};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use futures::{StreamExt, executor::block_on};
 use omp_core::Str;
-use omp_tool::{Ev, IncomingParams, Outcome, Part, PromptCaps, Tool};
+use omp_tool::{Abort, Ev, IncomingParams, Interrupt, Outcome, Part, PromptCaps, Tool};
 use omp_tools::{
 	read::selector::LiteralPathProbe,
 	write::{
-		self, Fault, PlainWriteRequest, PlainWriteResult, WriteCommitError, WriteDisposition,
-		WriteDocuments, WriteOperation,
+		self, Fault, PlainWriteRequest, PlainWriteResult, SpecialWriteControl, WriteCommitError,
+		WriteDisposition, WriteDocuments, WriteOperation,
 	},
 };
 use parking_lot::Mutex;
@@ -52,6 +52,54 @@ impl WriteDocuments for FakeDocuments {
 		async move {
 			requests.lock().push(request);
 			result
+		}
+	}
+}
+#[derive(Clone, Copy)]
+enum StalledPhase {
+	BeforeEffects,
+	AfterEffects,
+}
+
+#[derive(Clone)]
+struct StalledSpecialDocuments {
+	phase:   StalledPhase,
+	started: flume::Sender<()>,
+}
+
+impl WriteDocuments for StalledSpecialDocuments {
+	fn probe_literal(
+		&self,
+		_path: Str,
+	) -> impl Future<Output = Result<LiteralPathProbe, Fault>> + Send + '_ {
+		std::future::ready(Ok(LiteralPathProbe::Unknown))
+	}
+
+	fn write_plain(
+		&self,
+		_request: PlainWriteRequest,
+	) -> impl Future<Output = Result<PlainWriteResult, WriteCommitError>> + Send + '_ {
+		std::future::ready(Err(WriteCommitError::Rejected(Fault::Document {
+			message: "plain write unexpectedly reached".into(),
+		})))
+	}
+
+	fn write_archive_member(
+		&self,
+		_display_path: Str,
+		_content: bytes::Bytes,
+		control: SpecialWriteControl,
+	) -> impl Future<Output = Result<Option<write::backends::ResultPayload>, write::backends::Fault>>
+	+ Send
+	+ '_ {
+		let phase = self.phase;
+		let started = self.started.clone();
+		async move {
+			if matches!(phase, StalledPhase::AfterEffects) {
+				assert!(control.begin_effects());
+			}
+			started.send(()).expect("test observes special write phase");
+			std::future::pending().await
 		}
 	}
 }
@@ -113,6 +161,11 @@ fn generated_schema_definition_and_revision_are_exact() {
 	let tool = write::tool(documents);
 	assert_eq!(tool.spec().name, "write");
 	assert_eq!(tool.spec().rev.to_string(), "1");
+	assert_eq!(
+		tool.spec().schema.as_ref(),
+		omp_tool::schema::<write::Params>().as_ref(),
+		"tool schema must be generated directly from Params",
+	);
 	assert_eq!(
 		serde_json::from_slice::<serde_json::Value>(&tool.spec().schema).expect("write schema JSON"),
 		json!({
@@ -328,4 +381,56 @@ fn unsupported_uri_is_rejected_before_any_document_probe() {
 	assert!(invocation.result.is_err());
 	assert!(probed.lock().is_empty());
 	assert!(requests.lock().is_empty());
+}
+
+async fn interrupt_stalled_special_write(
+	phase: StalledPhase,
+) -> Vec<Ev<write::Update, write::Payload, Fault>> {
+	let (started, observed) = flume::bounded(1);
+	let tool = write::tool(StalledSpecialDocuments { phase, started });
+	let (feed, params) = IncomingParams::channel();
+	feed
+		.args_committed(Str::new_static(
+			r#"{"path":"fixture.zip:member.txt","content":"replacement"}"#,
+		))
+		.expect("write invocation remains live");
+	let events = tool.call(params).collect::<Vec<_>>();
+	tokio::pin!(events);
+	tokio::select! {
+		result = &mut events => panic!("stalled special write completed unexpectedly: {result:?}"),
+		started = observed.recv_async() => started.expect("special write reports its phase"),
+	}
+	feed
+		.interrupt(Interrupt {
+			class:  Str::new_static("immediate"),
+			reason: Str::new_static("stop special write"),
+		})
+		.expect("write invocation accepts interruption");
+	tokio::time::timeout(Duration::from_secs(1), &mut events)
+		.await
+		.expect("special write interruption remains responsive")
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pre_effect_special_write_interruption_is_clean() {
+	let events = interrupt_stalled_special_write(StalledPhase::BeforeEffects).await;
+	assert!(
+		matches!(
+			events.as_slice(),
+			[Ev::Aborted(Abort::Interrupted { reason })] if reason == "stop special write"
+		),
+		"pre-effect interruption truth changed: {events:?}"
+	);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn post_start_special_write_interruption_is_effects_unknown() {
+	let events = interrupt_stalled_special_write(StalledPhase::AfterEffects).await;
+	assert!(
+		matches!(
+			events.as_slice(),
+			[Ev::Aborted(Abort::EffectsUnknown { reason })] if reason == "stop special write"
+		),
+		"post-start interruption truth changed: {events:?}"
+	);
 }

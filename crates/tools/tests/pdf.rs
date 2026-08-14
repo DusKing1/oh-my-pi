@@ -83,9 +83,12 @@ fn text_pdf_preserves_page_marker_text_and_metadata_separately() {
 		.expect("PDF conversion succeeds")
 		.expect("PDF is supported");
 
-	assert_eq!(conversion.text.as_str(), "<!-- Page 1 -->\n\nHello PDF\n");
+	assert_eq!(conversion.text.as_str(), "<!-- Page 1 -->\n\n## Hello PDF\n");
 	assert_eq!(conversion.title.as_deref(), Some("Fixture title"));
-	assert_eq!(conversion.note, None);
+	assert_eq!(
+		conversion.note.as_deref(),
+		Some("1 of 1 PDF pages may need OCR; extracted text may be incomplete.")
+	);
 }
 
 #[test]
@@ -97,10 +100,13 @@ fn multi_page_pdf_preserves_source_order_and_marks_every_page() {
 
 	assert_eq!(
 		conversion.text.as_str(),
-		"<!-- Page 1 -->\n\nFirst page\n\n<!-- Page 2 -->\n\nSecond page\n"
+		"<!-- Page 1 -->\n\n## First page\n\n<!-- Page 2 -->\n\n## Second page\n"
 	);
 	assert_eq!(conversion.title, None);
-	assert_eq!(conversion.note, None);
+	assert_eq!(
+		conversion.note.as_deref(),
+		Some("2 of 2 PDF pages may need OCR; extracted text may be incomplete.")
+	);
 }
 
 #[test]

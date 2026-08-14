@@ -62,13 +62,16 @@ fn all_executable_command_paths_parse_with_omp_names() {
 	] {
 		let parsed = OmpCli::try_parse_from(args).expect("OMP command parses");
 		match parsed.command {
-			Command::Serve(_)
-			| Command::Envd(_)
-			| Command::Infer(_)
-			| Command::Auth(_)
-			| Command::Catalog(_)
-			| Command::Local(_)
-			| Command::Chat(_) => {},
+			Some(
+				Command::Serve(_)
+				| Command::Envd(_)
+				| Command::Infer(_)
+				| Command::Auth(_)
+				| Command::Catalog(_)
+				| Command::Local(_)
+				| Command::Chat(_),
+			) => {},
+			None => panic!("explicit subcommands must parse to Some"),
 		}
 	}
 }

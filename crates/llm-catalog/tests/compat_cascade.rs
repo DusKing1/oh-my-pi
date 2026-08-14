@@ -320,7 +320,7 @@ fn cascade_resolves_every_catalog_model_to_oracle_plus_census_overlay() {
 	}
 	assert_eq!(checked, 4_227, "full catalog roster resolved");
 	assert_eq!(wire_overridden, 312, "archived wire override census");
-	assert_eq!(thinking_profiled, 2_294, "thinking profile census");
+	assert_eq!(thinking_profiled, 2_292, "thinking profile census");
 	assert!(overlay_applied > 500, "census overlay must reach real models: {overlay_applied}");
 }
 
@@ -355,6 +355,28 @@ fn compiled_catalog_carries_cascade_overlay_policies() {
 		thinking_policy.efforts.as_slice(),
 		&[ThinkingEffort::Low, ThinkingEffort::High],
 		"compiled cursor gpt-5.1 policy must carry the cascade efforts"
+	);
+
+	let linkup = catalog
+		.model(&ModelKey::from("nanogpt/linkup-research"))
+		.expect("collapsed Nanogpt Linkup model is compiled");
+	let thinking_policy = catalog
+		.thinking_policy(
+			linkup
+				.thinking
+				.as_ref()
+				.expect("Nanogpt Linkup references a curated thinking policy"),
+		)
+		.expect("Nanogpt Linkup thinking policy is interned");
+	assert_eq!(
+		thinking_policy.efforts.as_slice(),
+		&[ThinkingEffort::Low, ThinkingEffort::Medium, ThinkingEffort::High, ThinkingEffort::XHigh,],
+		"tier-collapsed Linkup aliases must activate the exact cascade overlay"
+	);
+	assert_eq!(
+		linkup.thinking_routing.effort_routing.len(),
+		4,
+		"every curated Linkup effort must route to its source alias"
 	);
 }
 

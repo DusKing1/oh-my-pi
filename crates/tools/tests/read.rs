@@ -257,6 +257,45 @@ async fn text(sources: Sources, raw: &str) -> String {
 	text.to_string()
 }
 
+async fn assert_truncated_text_spill(sources: Sources, raw: &str, expected: &str) {
+	let blobs = Blobs::default();
+	let parts = project(sources, blobs.clone(), raw, false).await;
+	let [Part::Text { text }] = parts.as_slice() else {
+		panic!("expected one truncated text projection: {parts:?}");
+	};
+	let marker = "\n\n[truncated: ";
+	let (visible, footer) = text
+		.rsplit_once(marker)
+		.unwrap_or_else(|| panic!("missing truthful truncation footer: {text}"));
+	let shown_lines = if visible.is_empty() {
+		0
+	} else {
+		visible.bytes().filter(|byte| *byte == b'\n').count() + 1
+	};
+	let total_lines = expected.bytes().filter(|byte| *byte == b'\n').count() + 1;
+	assert_eq!(
+		format!("[truncated: {footer}"),
+		format!(
+			"[truncated: {shown_lines} of {total_lines} lines shown; full output in blob blob-hash]"
+		)
+	);
+	assert_eq!(
+		visible,
+		expected
+			.lines()
+			.take(shown_lines)
+			.collect::<Vec<_>>()
+			.join("\n"),
+		"the visible prefix must contain only complete output lines"
+	);
+	let stored = blobs.stored.lock();
+	let [(bytes, media_type)] = stored.as_slice() else {
+		panic!("truncated text must spill exactly one blob: {stored:?}");
+	};
+	assert_eq!(bytes.as_ref(), expected.as_bytes());
+	assert_eq!(media_type.as_str(), "text/plain; charset=utf-8");
+}
+
 fn numbered_lines(count: usize) -> String {
 	(1..=count)
 		.map(|line| format!("line {line}"))
@@ -276,6 +315,11 @@ fn generated_schema_is_semantically_the_pi_read_schema() {
 	let actual: serde_json::Value =
 		serde_json::from_slice(&tool.spec().schema).expect("schema JSON");
 	assert_eq!(
+		tool.spec().schema.as_ref(),
+		omp_tool::schema::<read::Params>().as_ref(),
+		"tool schema must be generated directly from Params",
+	);
+	assert_eq!(
 		actual,
 		json!({
 			"type": "object",
@@ -289,10 +333,15 @@ fn generated_schema_is_semantically_the_pi_read_schema() {
 			}
 		})
 	);
-	assert!(
-		serde_json::from_value::<read::Params>(json!({"path": "src/lib.rs", "extra": true})).is_err(),
-		"read params must reject unknown fields"
-	);
+	for legacy in [
+		json!({"path": "src/lib.rs", "ranges": [[1, 2]]}),
+		json!({"path": "src/lib.rs", "structural": true}),
+	] {
+		assert!(
+			serde_json::from_value::<read::Params>(legacy).is_err(),
+			"read params must reject legacy fields"
+		);
+	}
 }
 
 #[test]
@@ -378,6 +427,26 @@ async fn directory_listing_is_depth_two_and_elides_nested_children() {
 			"    - child-13.txt",
 		)
 	);
+}
+
+#[tokio::test]
+async fn oversized_directory_listing_spills_the_complete_rendered_tree() {
+	let sources = Sources::default();
+	let mut entries = Vec::with_capacity(4_000);
+	let mut expected = String::from(".");
+	for index in 0..4_000 {
+		let name = format!("entry-{index:04}-abcdefghijklmnop.txt");
+		entries.push(DirectoryEntry {
+			path:        Str::from(name.clone()),
+			kind:        SourceKind::File,
+			byte_len:    1,
+			modified_ms: Some(u64::MAX),
+		});
+		write!(expected, "\n  - {name}").expect("writing expected directory listing");
+	}
+	sources.directory("large-tree", entries);
+
+	assert_truncated_text_spill(sources, r#"{"path":"large-tree"}"#, &expected).await;
 }
 
 #[tokio::test]
@@ -587,6 +656,45 @@ async fn sqlite_root_table_key_where_and_forbidden_where_are_model_text() {
 }
 
 #[tokio::test]
+async fn oversized_sqlite_output_spills_the_complete_rendered_table() {
+	let db = sqlite_fixture();
+	{
+		let mut connection = rusqlite::Connection::open(&db.0).expect("open SQLite spill fixture");
+		connection
+			.execute_batch("CREATE TABLE wide(id INTEGER PRIMARY KEY, alpha TEXT, beta TEXT);")
+			.expect("create wide SQLite table");
+		let transaction = connection
+			.transaction()
+			.expect("start SQLite spill fixture transaction");
+		let cell = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+		for id in 1..=1_000_i64 {
+			transaction
+				.execute("INSERT INTO wide(id, alpha, beta) VALUES (?1, ?2, ?3)", (id, cell, cell))
+				.expect("insert wide SQLite row");
+		}
+		transaction.commit().expect("commit SQLite spill fixture");
+	}
+	let authored = "wide.sqlite?q=SELECT%20id,alpha,beta%20FROM%20wide%20ORDER%20BY%20id";
+	let expected =
+		read::sqlite::read(&db.0, authored).expect("render complete oversized SQLite output");
+	assert!(expected.len() > 50 * 1024, "SQLite fixture must exceed the shared byte limit");
+
+	let sources = Sources::default();
+	sources.file_as(
+		"wide.sqlite",
+		db.0.to_str().unwrap(),
+		"wide.sqlite",
+		std::fs::read(&db.0).expect("read oversized SQLite fixture bytes"),
+	);
+	assert_truncated_text_spill(
+		sources,
+		r#"{"path":"wide.sqlite?q=SELECT%20id,alpha,beta%20FROM%20wide%20ORDER%20BY%20id"}"#,
+		&expected,
+	)
+	.await;
+}
+
+#[tokio::test]
 async fn suffix_resolved_sqlite_container_dispatches_with_exact_notice() {
 	let db = sqlite_fixture();
 	let sources = Sources::default();
@@ -674,6 +782,17 @@ const fn tar_fixture() -> Bytes {
 	Bytes::from_static(include_bytes!("fixtures/special-sources/archives/bundle.tar.gz"))
 }
 
+fn encoded_zip(entries: &[(&str, &str)]) -> Bytes {
+	Bytes::from(
+		omp_ar::zip::encode(
+			entries
+				.iter()
+				.map(|&(path, contents)| (path, contents.as_bytes())),
+		)
+		.expect("encode ZIP fixture"),
+	)
+}
+
 #[tokio::test]
 async fn zip_and_tar_root_member_and_member_range_use_standard_text_formatting() {
 	let sources = Sources::default();
@@ -702,6 +821,85 @@ async fn zip_and_tar_root_member_and_member_range_use_standard_text_formatting()
 	assert_eq!(
 		text(sources, r#"{"path":"bundle.tar.gz:dir/member.txt:raw:2-3"}"#).await,
 		"two\nthree"
+	);
+}
+
+#[tokio::test]
+async fn oversized_archive_listing_spills_every_complete_entry_line() {
+	let mut writer = omp_ar::zip::Writer::new(Vec::new());
+	let mut expected_lines = Vec::with_capacity(read::archive::DEFAULT_ARCHIVE_LIST_LIMIT);
+	for index in 0..read::archive::DEFAULT_ARCHIVE_LIST_LIMIT {
+		let name = format!("entry-{index:03}-{}.txt", "x".repeat(120));
+		writer
+			.add_file(&name, b"x")
+			.expect("add oversized archive listing entry");
+		expected_lines.push(format!("{name} (1B)"));
+	}
+	let archive = Bytes::from(writer.finish().expect("finish oversized archive fixture"));
+	let expected = expected_lines.join("\n");
+	assert!(expected.len() > 50 * 1024, "archive fixture must exceed the shared byte limit");
+
+	let sources = Sources::default();
+	sources.file("large-listing.zip", archive);
+	assert_truncated_text_spill(sources, r#"{"path":"large-listing.zip"}"#, &expected).await;
+}
+
+#[tokio::test]
+async fn selector_shaped_archive_members_win_over_selector_interpretation() {
+	let sources = Sources::default();
+	sources.file(
+		"selectors.zip",
+		encoded_zip(&[
+			("50", "literal numeric member\nsecond line"),
+			("raw", "literal raw member\nsecond line"),
+		]),
+	);
+
+	assert_eq!(
+		text(sources.clone(), r#"{"path":"selectors.zip:50"}"#).await,
+		"1:literal numeric member\n2:second line"
+	);
+	assert_eq!(
+		text(sources, r#"{"path":"selectors.zip:raw"}"#).await,
+		"1:literal raw member\n2:second line"
+	);
+}
+
+#[tokio::test]
+async fn absent_selector_shaped_members_fall_back_to_text_selectors() {
+	let sources = Sources::default();
+	let member = numbered_lines(60);
+	let root_sources = Sources::default();
+	root_sources
+		.file("root-fallback.zip", encoded_zip(&[("a.txt", "a"), ("b.txt", "b"), ("c.txt", "c")]));
+	assert_eq!(
+		text(root_sources.clone(), r#"{"path":"root-fallback.zip:raw"}"#).await,
+		"a.txt (1B)\nb.txt (1B)\nc.txt (1B)"
+	);
+	assert_eq!(
+		text(root_sources.clone(), r#"{"path":"root-fallback.zip:50"}"#).await,
+		"(empty archive directory)"
+	);
+	assert_eq!(
+		text(root_sources, r#"{"path":"root-fallback.zip:2-3"}"#).await,
+		"b.txt (1B)\nc.txt (1B)"
+	);
+	sources.file("fallback.zip", encoded_zip(&[("member.txt", member.as_str())]));
+
+	assert_eq!(text(sources.clone(), r#"{"path":"fallback.zip:member.txt:raw"}"#).await, member);
+	assert_eq!(
+		text(sources.clone(), r#"{"path":"fallback.zip:member.txt:50"}"#).await,
+		concat!(
+			"49:line 49\n50:line 50\n51:line 51\n52:line 52\n53:line 53\n54:line 54\n",
+			"55:line 55\n56:line 56\n57:line 57\n58:line 58\n59:line 59\n60:line 60",
+		)
+	);
+	assert_eq!(
+		text(sources, r#"{"path":"fallback.zip:member.txt:10-12"}"#).await,
+		concat!(
+			"9:line 9\n10:line 10\n11:line 11\n12:line 12\n13:line 13\n14:line 14\n",
+			"15:line 15\n\n[45 more lines in file. Use :16 to continue]",
+		)
 	);
 }
 
@@ -839,6 +1037,23 @@ async fn conflict_selector_is_a_compact_index_and_normal_read_appends_warning() 
 	let ordinary = text(sources, r#"{"path":"conflicted.txt"}"#).await;
 	assert!(ordinary.starts_with("[conflicted.txt#A1B2]\n1:before\n2:<<<<<<< HEAD"), "{ordinary}");
 	assert!(ordinary.ends_with(warning.text.as_str()), "{ordinary}");
+}
+
+#[tokio::test]
+async fn oversized_conflict_index_spills_every_complete_summary_line() {
+	let mut source = String::new();
+	for index in 1..=3_100 {
+		writeln!(source, "<<<<<<< HEAD\nours {index}\n=======\ntheirs {index}\n>>>>>>> feature")
+			.expect("writing conflict fixture");
+	}
+	let expected =
+		read::conflicts::render_conflicts_for_path(&source, "many-conflicts.txt", false).text;
+	assert!(expected.lines().count() > 3_000, "conflict fixture must exceed the shared line limit");
+
+	let sources = Sources::default();
+	sources.file("many-conflicts.txt", source);
+	assert_truncated_text_spill(sources, r#"{"path":"many-conflicts.txt:conflicts"}"#, &expected)
+		.await;
 }
 
 #[tokio::test]
