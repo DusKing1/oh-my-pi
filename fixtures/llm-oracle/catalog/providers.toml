@@ -20,6 +20,7 @@ oauth_flow = "openai-codex"
 discovery = { kind = "specialized", label = "ChatGPT Plus/Pro (Codex Subscription)", authoritative = false }
 facets = ["chat", "image_generation"]
 compat = { "max_tokens_field" = "max_output_tokens", "reasoning_wire_format" = "open_ai_responses", "stream_protocol" = "sse_events" }
+usage = true
 
 [providers."anthropic"]
 transport = "anthropic-messages"
@@ -31,6 +32,7 @@ discovery = { kind = "open-ai-models", label = "Anthropic", authoritative = fals
 facets = ["chat"]
 headers = { "anthropic-version" = "2023-06-01" }
 compat = { "multiple_system_messages" = false, "max_tokens_field" = "max_tokens", "tool_strict_mode" = "none", "reasoning_wire_format" = "anthropic", "cache_control_format" = "anthropic", "image_encoding_format" = "anthropic_source", "tool_schema_flavor" = "anthropic", "stream_protocol" = "sse_events" }
+usage = true
 
 [providers."zai"]
 transport = "anthropic-messages"
@@ -40,6 +42,7 @@ oauth_flow = "zai"
 discovery = { kind = "open-ai-models", label = "zAI", authoritative = false }
 facets = ["chat"]
 compat = { "max_tokens_field" = "max_tokens", "reasoning_wire_format" = "zai", "leaked_thinking_healer" = "thinking" }
+usage = true
 
 [providers."zai-coding-plan"]
 transport = "anthropic-messages"
@@ -56,6 +59,7 @@ oauth_flow = "kimi"
 discovery = { kind = "open-ai-models", label = "Kimi Code", authoritative = false }
 facets = ["chat"]
 headers = { "X-Msh-Platform" = "kimi_cli" }
+usage = true
 
 [providers."openrouter"]
 transport = "open-ai-chat"
@@ -75,6 +79,7 @@ discovery = { kind = "open-ai-models", label = "GitHub Copilot", authoritative =
 facets = ["chat"]
 headers = { "X-GitHub-Api-Version" = "2026-06-01" }
 compat = { "max_tokens_field" = "max_output_tokens", "reasoning_wire_format" = "none", "image_encoding_format" = "open_ai_url", "stream_protocol" = "sse_events" }
+usage = true
 
 [providers."cursor"]
 transport = "cursor"
@@ -84,6 +89,7 @@ oauth_flow = "cursor"
 discovery = { kind = "specialized", label = "Cursor", authoritative = false }
 facets = ["chat"]
 compat = { "multiple_system_messages" = false, "sampling_params" = false, "penalties" = false, "tool_strict_mode" = "none", "reasoning_wire_format" = "none", "image_encoding_format" = "none", "stop_sequences" = false, "stream_protocol" = "connect" }
+usage = true
 
 [providers."devin"]
 transport = "devin"
@@ -103,6 +109,7 @@ oauth_flow = "google-antigravity"
 discovery = { kind = "specialized", label = "Antigravity (Gemini 3, Claude, GPT-OSS)", authoritative = false }
 facets = ["chat", "image_generation"]
 compat = { "multiple_system_messages" = false, "tool_strict_mode" = "none", "reasoning_wire_format" = "google", "image_encoding_format" = "google_inline_data", "tool_schema_flavor" = "cca", "stream_protocol" = "sse_data" }
+usage = true
 
 [providers."google-gemini-cli"]
 transport = "google-cca"
@@ -112,6 +119,7 @@ oauth_flow = "google-gemini-cli"
 discovery = { kind = "specialized", label = "Google Cloud Code Assist (Gemini CLI)", authoritative = false }
 facets = ["chat"]
 compat = { "multiple_system_messages" = false, "tool_strict_mode" = "none", "reasoning_wire_format" = "google", "image_encoding_format" = "google_inline_data", "tool_schema_flavor" = "cca", "stream_protocol" = "sse_data" }
+usage = true
 
 [providers."openai-codex-device"]
 transport = "open-ai-codex"
@@ -138,6 +146,7 @@ auth = { type = "bearer", env = ["OMP_XAI_OAUTH_TOKEN", "OMP_XAI_API_KEY"] }
 oauth_flow = "xai"
 discovery = { kind = "open-ai-models", label = "xAI Grok OAuth (SuperGrok)", authoritative = false }
 facets = ["chat"]
+usage = true
 
 [providers."gitlab-duo"]
 transport = "anthropic-messages"
@@ -166,6 +175,7 @@ transport = "open-ai-chat"
 base_url = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
 auth = { type = "bearer", env = ["OMP_ALIBABA_TOKEN_PLAN_API_KEY", "OMP_BAILIAN_TOKEN_PLAN_API_KEY"] }
 discovery = { kind = "open-ai-models", label = "QwenCloud Token Plan", authoritative = true }
+usage = true
 facets = ["chat"]
 
 [providers."agnes"]
@@ -237,6 +247,7 @@ base_url = "https://api.code.umans.ai"
 auth = { type = "bearer", env = ["OMP_UMANS_AI_CODING_PLAN_API_KEY"] }
 discovery = { kind = "open-ai-models", label = "Umans AI Coding Plan", authoritative = true }
 facets = ["chat"]
+usage = true
 
 [providers."qwen-portal"]
 transport = "open-ai-chat"
@@ -259,6 +270,7 @@ base_url = "https://api.minimax.io/v1"
 auth = { type = "bearer", env = ["OMP_MINIMAX_CODE_API_KEY"] }
 oauth_flow = "minimax-code"
 facets = ["chat"]
+usage = true
 
 [providers."minimax-code-cn"]
 transport = "open-ai-chat"
@@ -266,6 +278,7 @@ base_url = "https://api.minimaxi.com/v1"
 auth = { type = "bearer", env = ["OMP_MINIMAX_CODE_CN_API_KEY"] }
 oauth_flow = "minimax-code-cn"
 facets = ["chat"]
+usage = true
 
 [providers."xiaomi"]
 transport = "open-ai-chat"
@@ -491,6 +504,7 @@ base_url = "https://api.synthetic.new/openai/v1"
 auth = { type = "bearer", env = ["OMP_SYNTHETIC_API_KEY"] }
 discovery = { kind = "open-ai-models", label = "Synthetic", authoritative = true }
 facets = ["chat"]
+usage = true
 
 [providers."nanogpt"]
 transport = "open-ai-chat"
@@ -573,6 +587,7 @@ auth = { type = "bearer", env = ["OMP_OPENCODE_API_KEY"] }
 oauth_flow = "opencode"
 discovery = { kind = "open-ai-models", label = "OpenCode Go", authoritative = true }
 facets = ["chat"]
+usage = true
 
 [providers."tavily"]
 transport = "embedded"
@@ -624,6 +639,7 @@ auth = { type = "optional-bearer", env = ["OMP_OLLAMA_API_KEY"] }
 discovery = { kind = "ollama-tags", label = "Ollama (Local OpenAI-compatible)", authoritative = false }
 facets = ["chat", "embeddings"]
 compat = { "usage_in_streaming" = false, "multiple_system_messages" = false, "tool_strict_mode" = "none", "named_tool_choice" = false, "tool_schema_flavor" = "grammar", "leaked_thinking_healer" = "thinking" }
+usage = true
 
 [providers."ollama-cloud"]
 transport = "ollama-chat"
@@ -632,6 +648,7 @@ auth = { type = "bearer", env = ["OMP_OLLAMA_CLOUD_API_KEY"] }
 discovery = { kind = "specialized", label = "Ollama Cloud", authoritative = false }
 facets = ["chat"]
 compat = { "stream_protocol" = "ndjson", "tool_strict_mode" = "none", "named_tool_choice" = false }
+usage = true
 
 [providers."lm-studio"]
 transport = "open-ai-chat"

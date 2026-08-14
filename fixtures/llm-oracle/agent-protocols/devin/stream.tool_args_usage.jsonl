@@ -1,3 +1,3 @@
-{"deltaToolCalls":[{"id":"call-1","name":"task","argumentsJson":"{\"agent\":"}],"stopReason":"UNSPECIFIED"}
-{"deltaToolCalls":[{"id":"call-1","name":"task","argumentsJson":"\"task\",\"note\":\"initial\","}],"stopReason":"UNSPECIFIED"}
-{"deltaToolCalls":[{"id":"call-1","name":"task","argumentsJson":"\"step\":12}"}],"stopReason":"TOOL_USE","usage":{"inputTokens":"11","outputTokens":"7","cachedInputTokens":"5"}}
+{"deltaToolCalls":[{"id":"call-1","name":"task","argumentsJson":"{\"agent\":"}],"stopReason":"STOP_REASON_UNSPECIFIED"}
+{"deltaToolCalls":[{"id":"call-1","name":"task","argumentsJson":"\"task\",\"note\":\"initial\","}],"stopReason":"STOP_REASON_UNSPECIFIED"}
+{"deltaToolCalls":[{"id":"call-1","name":"task","argumentsJson":"\"step\":12}"}],"stopReason":"STOP_REASON_FUNCTION_CALL","usage":{"inputTokens":"11","outputTokens":"7","cacheWriteTokens":"0","cacheReadTokens":"5"}}

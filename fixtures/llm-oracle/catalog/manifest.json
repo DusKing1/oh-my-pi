@@ -37,7 +37,7 @@
         "projector": "project_normalized.rs"
       },
       "secret_free": true,
-      "sha256": "d2d69608f4bb67df61bf38f98c92b9124686a5889339fc34c233612633d1fe08",
+      "sha256": "784b7b637defdc04f47f178498dd970a7d6beaa056150b3e5f7fffdeac8df4f2",
       "source": "52b111a4abc8d76064abc4f58afda931edee9833:crates/llm-catalog/src/models.rs"
     },
     {

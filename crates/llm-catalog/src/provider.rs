@@ -304,6 +304,8 @@ pub enum OAuthCompletion {
 pub enum OAuthExchangeKind {
 	/// Extracts account claims from the `OpenAI` Codex token response.
 	OpenAiCodexClaims,
+	/// Completes Anthropic's JSON PKCE token exchange.
+	AnthropicPkce,
 	/// Exchanges a GitHub device token for a Copilot session token.
 	GithubCopilotSessionToken,
 	/// Completes PKCE through an external application redirect.
@@ -396,7 +398,7 @@ pub enum OAuthRefreshBehavior {
 pub enum PrincipalResolution {
 	/// Reads the principal from a verified ID-token claim.
 	IdTokenClaim {
-		/// Claim name.
+		/// Top-level claim name or RFC 6901 JSON Pointer.
 		claim: Str,
 	},
 	/// Reads the principal from a typed token-response field.

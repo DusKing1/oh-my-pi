@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "source_digest": "df561b0d4f28c89c48895931ebbfc76320b2ebc1d17096aaf88a9413b3f2c70a",
+  "source_digest": "822509a4e975d76dc5f86548da3affbf95d08136b324b463a40783ad87c54b39",
   "inputs": [
     {
       "id": "catalog-policy.manifest.v1",
       "path": "fixtures/llm-oracle/catalog-policy/manifest.json",
-      "sha256": "3be6794b87b3e36dc7100b3833fa66c65a5864594a13c031a66b07ffa8b188bf",
+      "sha256": "088895be933831cfe8a433d4d4d0bc3a2f456b7f75bd8d1ff75eeb1d9eae4bf8",
       "source": "oracle:catalog-policy.manifest.v1"
     },
     {
@@ -17,7 +17,7 @@
     {
       "id": "catalog.manifest.v1",
       "path": "fixtures/llm-oracle/catalog/manifest.json",
-      "sha256": "4ba9cdc205f6ad8843d0184323dd9f95b9f21805744d794514ddc81cb2e1a79a",
+      "sha256": "013f10ddafdda39a7e43bd0e8d3672b9ce340aa173c390216197b2185d20278d",
       "source": "oracle:catalog.manifest.v1"
     },
     {
@@ -29,7 +29,7 @@
     {
       "id": "catalog.models.normalized.v1",
       "path": "fixtures/llm-oracle/catalog/models.normalized.json",
-      "sha256": "d2d69608f4bb67df61bf38f98c92b9124686a5889339fc34c233612633d1fe08",
+      "sha256": "784b7b637defdc04f47f178498dd970a7d6beaa056150b3e5f7fffdeac8df4f2",
       "source": "oracle:catalog.models.normalized.v1"
     },
     {
@@ -41,7 +41,7 @@
     {
       "id": "catalog.oauth.source.v1",
       "path": "fixtures/llm-oracle/catalog/oauth.toml",
-      "sha256": "0c804ccce680f8b2b2536381935ff51d344cf0404faabb69733930bb89553c7c",
+      "sha256": "26a310c16129a40a4494db446da74f5c5fbc2c7395be39bfbbf997d425212186",
       "source": "oracle:catalog.oauth.source.v1"
     },
     {
@@ -137,13 +137,13 @@
     {
       "id": "catalog.policy.thinking-profiles.v1",
       "path": "fixtures/llm-oracle/catalog-policy/thinking-profiles.json",
-      "sha256": "4fe929d1a139eae0fc3dca672838ffdeb44e3b8ac48ab53d4fc52b09a493f564",
+      "sha256": "8e876c33e9074e6e0fe9f738a77fe6069a653ca0d226d1d47b87ad7b03a45fd0",
       "source": "oracle:catalog.policy.thinking-profiles.v1"
     },
     {
       "id": "catalog.providers.source.v1",
       "path": "fixtures/llm-oracle/catalog/providers.toml",
-      "sha256": "2c17a695cc3de57cba229a7be217d99e479583bab7f75241e262bfd27bd8dd05",
+      "sha256": "8a90120230c49fa716c182f4bd6f4f6df6c4def3e327842d92888c6534a28945",
       "source": "oracle:catalog.providers.source.v1"
     },
     {
@@ -485,7 +485,7 @@
     {
       "id": "compat.cascade.providers.nanogpt.v1",
       "path": "crates/llm-catalog/compat/providers/nanogpt.kdl",
-      "sha256": "aee31288d364fce0ec6f93d9f571f161a5392d12254125139d46f081ecfbf08b",
+      "sha256": "c2fa4f1d0e67d9d072b5ee13fe27af9e3726cffdbc86b2d3d6c5a6f29f0889aa",
       "source": "census 2026-08: .omp/local/quirks + frozen oracle"
     },
     {

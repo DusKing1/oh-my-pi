@@ -259,16 +259,13 @@ pub struct ThinkingRouting {
 }
 
 impl ThinkingRouting {
-	/// Validates that every route and spelling refers to an advertised effort or
-	/// off.
+	/// Validates that every native spelling override refers to an advertised
+	/// effort or off.
 	pub fn validate(&self, policy: &ThinkingPolicy) -> Result<(), ThinkingSelectionError> {
 		let valid = |effort: &ThinkingEffort| {
 			*effort == ThinkingEffort::Off || policy.efforts.contains(effort)
 		};
 		if let Some(effort) = self.effort_map.keys().find(|effort| !valid(effort)) {
-			return Err(ThinkingSelectionError::UnsupportedEffort(*effort));
-		}
-		if let Some(effort) = self.effort_routing.keys().find(|effort| !valid(effort)) {
 			return Err(ThinkingSelectionError::UnsupportedEffort(*effort));
 		}
 		Ok(())

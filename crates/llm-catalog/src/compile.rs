@@ -686,6 +686,9 @@ pub struct SourceProviderRecord {
 	/// Optional discovery source.
 	#[serde(default)]
 	pub discovery:            Option<SourceDiscovery>,
+	/// Whether provider-level console quota reporting is available.
+	#[serde(default)]
+	pub usage:                bool,
 	/// Facets withheld until a transport exists.
 	#[serde(default)]
 	pub pending_facets:       Vec<SourceFacet>,
@@ -2930,6 +2933,9 @@ fn compile_providers(
 		if !matches!(&source.auth, SourceAuth::None) || source.oauth_flow.is_some() {
 			route_operations.insert_kind(OperationKind::Auth);
 		}
+		if source.usage {
+			route_operations.insert_kind(OperationKind::Usage);
+		}
 		for (index, url) in urls.into_iter().enumerate() {
 			validate_url(&url)?;
 			let suffix = if index == 0 {
@@ -2991,6 +2997,9 @@ fn compile_providers(
 		}
 		if !matches!(&source.auth, SourceAuth::None) || source.oauth_flow.is_some() {
 			management_operations.insert_kind(OperationKind::Auth);
+		}
+		if source.usage {
+			management_operations.insert_kind(OperationKind::Usage);
 		}
 		let refresh_flow = source.oauth_flow.as_ref().or(match &source.auth {
 			SourceAuth::Oauth { flow } => Some(flow),
@@ -3226,11 +3235,11 @@ fn compile_models(
 					}
 				}
 			}
-			merged_row.reasoning = merged_row.reasoning
-				|| (members.len() > 1
-					&& members.iter().any(|(_, _, classified)| {
-						classified.effort.is_some() || classified.thinking_variant
-					}));
+			let tier_reasoning = members.len() > 1
+				&& members.iter().any(|(_, _, classified)| {
+					classified.effort.is_some() || classified.thinking_variant
+				});
+			merged_row.reasoning = merged_row.reasoning || tier_reasoning;
 			let class = first.2.class.clone();
 			let display_name = first
 				.1
@@ -3283,11 +3292,14 @@ fn compile_models(
 				family:    first.2.family.as_ref().map(|family| family.as_str()),
 				revision:  first.2.revision,
 				model:     logical_id.as_str(),
-				reasoning: members.iter().any(|(_, row, _)| row.thinking.is_some()),
+				reasoning: tier_reasoning || members.iter().any(|(_, row, _)| row.thinking.is_some()),
 			})?;
 			let has_wire_overrides = !resolved.wire.is_empty();
 			let wire_overrides = axis_map_to_source_wire_policy(resolved.wire)?;
-			let thinking_profile = if resolved.thinking.is_empty() {
+			let thinking_profile = if capabilities.chat.is_none()
+				|| !merged_row.reasoning
+				|| !resolved.thinking.contains_key("efforts")
+			{
 				None
 			} else {
 				Some(axis_map_to_thinking_policy(resolved.thinking)?)
@@ -3345,8 +3357,14 @@ fn compile_models(
 			policies
 				.entry(wire_policy_id.clone())
 				.or_insert(wire_policy);
-			let (thinking, mut thinking_routing) = compile_thinking(&members, thinking_profile)?;
-			if let Some(mode) = first.1.reasoning_mode.as_deref() {
+			let (thinking, mut thinking_routing) = if capabilities.chat.is_some() {
+				compile_thinking(provider.as_str(), &members, thinking_profile)?
+			} else {
+				(None, ThinkingRouting::default())
+			};
+			if thinking.is_some()
+				&& let Some(mode) = first.1.reasoning_mode.as_deref()
+			{
 				thinking_routing.reasoning_mode =
 					Some(mode.parse::<ReasoningMode>().map_err(|_| {
 						CompileError::Invariant(Str::from(format!("unknown reasoning mode `{mode}`")))
@@ -3690,6 +3708,7 @@ where
 }
 
 fn compile_thinking(
+	provider: &str,
 	members: &[(Str, SourceModelRecord, ModelClassification)],
 	profile: Option<ThinkingPolicy>,
 ) -> Result<(Option<ThinkingPolicy>, ThinkingRouting), CompileError> {
@@ -3701,6 +3720,35 @@ fn compile_thinking(
 	classified_efforts.sort();
 	classified_efforts.dedup();
 	let tier_collapsed = classified_efforts.len() >= 2;
+	let synthesize_cursor = provider == "cursor" && tier_collapsed && source.is_none();
+	let mut profile = profile;
+	if synthesize_cursor {
+		let efforts = classified_efforts
+			.iter()
+			.copied()
+			.filter(|effort| *effort != ThinkingEffort::Off)
+			.collect::<SmallVec<_, 6>>();
+		let has_off_route = members.iter().any(|(_, _, classified)| {
+			classified.effort == Some(crate::classify::EffortTier::Off)
+				|| (classified.effort.is_none() && !classified.thinking_variant)
+		});
+		let default_level = (!has_off_route).then(|| {
+			members
+				.iter()
+				.filter_map(|(_, _, classified)| classified.effort.map(translate_effort))
+				.find(|effort| *effort != ThinkingEffort::Off)
+				.expect("collapsed effort family has a non-off route")
+		});
+		profile = Some(ThinkingPolicy {
+			mode: ThinkingMode::Effort,
+			efforts,
+			default_level,
+			effort_budgets: BTreeMap::new(),
+			supports_display: None,
+			suppress_when_off: None,
+			requires_effort: (!has_off_route).then_some(true),
+		});
+	}
 	if let Some(profile) = &profile {
 		profile.validate().map_err(|error| {
 			CompileError::Invariant(Str::from(format!("invalid thinking profile: {error}")))
@@ -3712,17 +3760,13 @@ fn compile_thinking(
 		routing.effort_routing = thinking
 			.effort_routing
 			.iter()
-			.filter(|(effort, _)| {
-				profile
-					.as_ref()
-					.is_some_and(|policy| policy.supports(**effort))
-			})
 			.map(|(effort, wire)| (*effort, WireModelId::new(wire.clone())))
 			.collect();
 		routing.reasoning_mode = thinking.reasoning_mode;
 	}
 	for (wire, row, classified) in members {
-		if let Some(effort) = classified.effort.map(translate_effort)
+		if tier_collapsed
+			&& let Some(effort) = classified.effort.map(translate_effort)
 			&& profile
 				.as_ref()
 				.is_some_and(|policy| policy.supports(effort))
@@ -3732,15 +3776,28 @@ fn compile_thinking(
 			routing.effort_routing.entry(effort).or_insert(selected);
 		}
 	}
-	if classified_efforts.is_empty()
+	if tier_collapsed
+		&& profile.is_some()
+		&& let Some((wire, row, _)) = members.iter().find(|(_, _, classified)| {
+			!classified.thinking_variant
+				&& matches!(classified.effort, None | Some(crate::classify::EffortTier::Off))
+		}) {
+		routing
+			.effort_routing
+			.entry(ThinkingEffort::Off)
+			.or_insert_with(|| {
+				WireModelId::new(row.request_model_id.clone().unwrap_or_else(|| wire.clone()))
+			});
+	}
+	if members.len() == 2
 		&& let Some(profile) = &profile
 		&& let Some((thinking_wire, thinking_row, _)) = members
 			.iter()
 			.find(|(_, _, classified)| classified.thinking_variant)
-		&& let Some((base_wire, base_row, _)) = members
-			.iter()
-			.find(|(_, _, classified)| !classified.thinking_variant && classified.effort.is_none())
-	{
+		&& let Some((base_wire, base_row, _)) = members.iter().find(|(_, _, classified)| {
+			!classified.thinking_variant
+				&& matches!(classified.effort, None | Some(crate::classify::EffortTier::Off))
+		}) {
 		let thinking_wire = WireModelId::new(
 			thinking_row
 				.request_model_id
@@ -4720,6 +4777,44 @@ pending_facets = ["image_generation"]
 		assert!(route_operations.contains(model.capabilities.operations));
 		assert!(route_operations.contains_kind(OperationKind::DiscoverModels));
 	}
+	#[test]
+	fn authored_usage_backend_grants_provider_and_route_operations() {
+		let providers = r#"
+[providers.synthetic]
+transport = "open-ai-chat"
+base_url = "https://example.test/v1"
+facets = ["chat"]
+usage = true
+"#;
+		let models = br#"{"synthetic":{"model":{"input":["text"],"output":["text"]}}}"#;
+		let compressed = zstd::stream::encode_all(&models[..], 1).expect("fixture compression");
+		let compiled = compile(parse_oracle(providers, &compressed).expect("typed source"))
+			.expect("catalog compilation");
+		let provider = compiled
+			.providers
+			.iter()
+			.find(|provider| provider.id.as_str() == "synthetic")
+			.expect("compiled provider");
+		assert!(
+			provider
+				.management
+				.operations
+				.contains_kind(OperationKind::Usage)
+		);
+		let route = compiled
+			.routes
+			.iter()
+			.find(|route| route.provider.as_str() == "synthetic")
+			.expect("compiled route");
+		assert!(
+			route
+				.capability_limits
+				.operations
+				.expect("authored route operations")
+				.contains_kind(OperationKind::Usage)
+		);
+	}
+
 	#[test]
 	fn exact_capability_overrides_are_auditable_and_unique() {
 		let mut ids = BTreeSet::new();

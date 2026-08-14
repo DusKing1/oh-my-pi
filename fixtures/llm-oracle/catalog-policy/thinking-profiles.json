@@ -1493,7 +1493,7 @@
       }
     },
     {
-      "model_count": 599,
+      "model_count": 597,
       "models": [
         "aiand/google/gemma-4-31b-it",
         "aiand/moonshotai/kimi-k2.7-code",
@@ -1548,8 +1548,6 @@
         "fireworks/kimi-k2.7-code-fast",
         "fireworks/minimax-m3",
         "fireworks/nemotron-3-ultra-nvfp4",
-        "fireworks/qwen3-embedding-8b",
-        "fireworks/qwen3-reranker-8b",
         "fireworks/qwen3.6-plus",
         "fireworks/qwen3.7-plus",
         "friendli/LGAI-EXAONE/K-EXAONE-236B-A23B",
