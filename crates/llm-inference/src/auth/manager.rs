@@ -936,10 +936,7 @@ fn auth_store_failure() -> Error {
 }
 
 fn auth_store_error(error: StoreError) -> Error {
-	if matches!(
-		error,
-		StoreError::Key(KeyError::Unavailable | KeyError::OsCredential)
-	) {
+	if matches!(error, StoreError::Key(KeyError::Unavailable | KeyError::OsCredential)) {
 		Error::new(
 			ErrorKind::CredentialStorageUnavailable,
 			ErrorPhase::Authentication,

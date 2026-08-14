@@ -1,12 +1,12 @@
 //! Terminal host for the host-agnostic immediate-mode chat scene.
 
-use std::{io, time::Duration};
+use std::{io, io::Write, time::Duration};
 
 use flume::{Receiver, Sender};
 use omp_core::Str;
 use omp_tui::{
-	AltScreenUse, CursorStyle, InputEvent, Key, Layer, Mouse, Pasted, Renderer, Size, Terminal,
-	TerminalEvent, TerminalOptions, TtyOut, UiContext, detect,
+	AltScreenUse, CursorStyle, InputEvent, Key, Layer, Mouse, PaintStats, Pasted, Renderer, Size,
+	Terminal, TerminalEvent, TerminalOptions, TtyOut, UiContext, detect,
 	paste::{self, Clipboard, ClipboardRead},
 };
 use smallvec::SmallVec;
@@ -885,21 +885,33 @@ fn clipboard_paste_text(clipboard: Clipboard) -> Option<String> {
 	}
 }
 
-fn present(
-	renderer: &mut Renderer<TtyOut>,
+fn present<W: Write>(
+	renderer: &mut Renderer<W>,
 	rendered: RenderedFrame<'_>,
 	viewport: Size,
 	layers: &[Layer<'_>],
-) -> io::Result<()> {
-	renderer
-		.present_overlaid(
-			rendered.frame,
-			rendered.damage.as_slice(),
-			viewport.height,
-			rendered.stable_rows,
-			layers,
-		)
-		.map(|_| ())
+) -> io::Result<PaintStats> {
+	if rendered.stable_rows < renderer.committed_rows() {
+		let stats =
+			renderer.rebuild(rendered.frame.clone(), viewport.height, rendered.stable_rows, "")?;
+		if !layers.is_empty() {
+			renderer.present_overlaid(
+				rendered.frame,
+				&[],
+				viewport.height,
+				rendered.stable_rows,
+				layers,
+			)?;
+		}
+		return Ok(stats);
+	}
+	renderer.present_overlaid(
+		rendered.frame,
+		rendered.damage.as_slice(),
+		viewport.height,
+		rendered.stable_rows,
+		layers,
+	)
 }
 
 fn open_overlay(
@@ -946,7 +958,7 @@ fn close_overlay(
 	*resize = None;
 	let rendered = host.chat.render(viewport);
 	let layers = rail_layers(&mut host.sidebar, viewport);
-	if *overlay_stale {
+	if *overlay_stale || rendered.stable_rows < renderer.committed_rows() {
 		*overlay_stale = false;
 		let alt_exit = terminal.stage_alt_leave().unwrap_or("");
 		renderer.rebuild(rendered.frame.clone(), viewport.height, rendered.stable_rows, alt_exit)?;
@@ -981,7 +993,10 @@ async fn deadline(at: Option<Instant>) {
 
 #[cfg(test)]
 mod tests {
-	use super::{Duration, Instant, RESIZE_SETTLE, ResizeState};
+	use omp_tui::{Renderer, Size, UiContext};
+
+	use super::{Duration, Instant, RESIZE_SETTLE, ResizeState, present};
+	use crate::Chat;
 
 	#[test]
 	fn resize_settle_window_restarts_at_each_event() {
@@ -990,5 +1005,26 @@ mod tests {
 		state.observe(started_at + Duration::from_millis(100), true);
 		assert!(!state.settled(started_at + Duration::from_millis(219)));
 		assert!(state.settled(started_at + Duration::from_millis(220)));
+	}
+
+	#[test]
+	fn stable_prefix_regression_rebuilds_visible_document() {
+		let viewport = Size::new(40, 8);
+		let mut chat = Chat::new(&UiContext::default());
+		for index in 0..12 {
+			chat.push_notice(format!("notice {index}"));
+		}
+		let mut renderer = Renderer::new(Vec::new());
+		let initial = present(&mut renderer, chat.render(viewport), viewport, &[]).unwrap();
+		assert!(initial.committed_rows > 0);
+		assert!(renderer.committed_rows() > 0);
+
+		chat.clear_history();
+		let rendered = chat.render(viewport);
+		assert_eq!(rendered.stable_rows, 0);
+		let repainted = present(&mut renderer, rendered, viewport, &[]).unwrap();
+
+		assert!(repainted.full_repaint);
+		assert_eq!(renderer.committed_rows(), 0);
 	}
 }

@@ -530,10 +530,7 @@ fn unix_millis(now: SystemTime) -> Result<u64, AlibabaTokenPlanLoginError> {
 }
 
 fn credential_store_error(error: StoreError) -> AlibabaTokenPlanLoginError {
-	if matches!(
-		error,
-		StoreError::Key(KeyError::Unavailable | KeyError::OsCredential)
-	) {
+	if matches!(error, StoreError::Key(KeyError::Unavailable | KeyError::OsCredential)) {
 		AlibabaTokenPlanLoginError::CredentialStorageUnavailable
 	} else {
 		AlibabaTokenPlanLoginError::Store

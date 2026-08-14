@@ -327,7 +327,7 @@ mod tests {
 			.is_ok()
 		);
 		assert!(
-			UsageRequest::extract(answer(AnswerBody::Usage(UsageReport {
+			UsageRequest::extract(answer(AnswerBody::Usage(Box::new(UsageReport {
 				provider:      ProviderId::from("provider"),
 				account:       AccountId::from("account"),
 				principal:     None,
@@ -337,7 +337,7 @@ mod tests {
 				notes:         Box::default(),
 				reset_credits: None,
 				windows:       Vec::new(),
-			})))
+			}))))
 			.is_ok()
 		);
 		assert!(

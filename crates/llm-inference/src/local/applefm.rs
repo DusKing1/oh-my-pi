@@ -506,10 +506,11 @@ pub struct AppleFmCodec;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AppleWireRequest {
-	prompt:        Str,
-	system_prompt: Option<Str>,
-	temperature:   Option<f64>,
-	max_tokens:    Option<u32>,
+	prompt:          Str,
+	system_prompt:   Option<Str>,
+	temperature:     Option<f64>,
+	max_tokens:      Option<u32>,
+	transcript_echo: bool,
 }
 
 impl Codec for AppleFmCodec {
@@ -572,7 +573,7 @@ impl Codec for AppleFmCodec {
 				context,
 			));
 		};
-		let (prompt, system_prompt) =
+		let (prompt, system_prompt, transcript_echo) =
 			apple_prompt(request, context.request_id, &context.route.provider, &context.route.id)?;
 		let max_tokens = request
 			.max_output_tokens
@@ -590,6 +591,7 @@ impl Codec for AppleFmCodec {
 			system_prompt,
 			temperature: request.sampling.temperature.map(f64::from),
 			max_tokens,
+			transcript_echo,
 		})
 		.map_err(|_| {
 			apple_codec_error(
@@ -847,6 +849,7 @@ async fn execute_transport(
 	let mut native =
 		AppleFm::stream_with_permit(options, permit, request.attempt.timeout.min(FRAMEWORK_TIMEOUT))
 			.map_err(|error| native_transport_error(&request, &error, false))?;
+	let mut cleaner = AppleFmResponseCleaner::new(wire.transcript_echo);
 	let first = next_native(&mut native, &request.cancel).await;
 	let first = match first {
 		NativePoll::Event(event) => event,
@@ -864,7 +867,7 @@ async fn execute_transport(
 	};
 	let mut queued = VecDeque::new();
 	let mut block_started = false;
-	let terminal = append_native(&request, first, &mut block_started, &mut queued)?;
+	let terminal = append_native(&request, first, &mut block_started, &mut cleaner, &mut queued)?;
 	let attempt = request.attempt.clone();
 	let cancel = request.cancel.clone();
 	let stream = async_stream::try_stream! {
@@ -893,6 +896,7 @@ async fn execute_transport(
 							&attempt,
 							event,
 							&mut block_started,
+							&mut cleaner,
 							&mut output,
 						)?;
 						while let Some(event) = output.pop_front() {
@@ -941,58 +945,165 @@ async fn next_native(stream: &mut AppleFmStream, cancel: &Cancellation) -> Nativ
 async fn reap_stream(stream: &mut AppleFmStream) {
 	while stream.next().await.is_some() {}
 }
+const ASSISTANT_LABEL: &str = "Assistant:";
+const USER_BOUNDARIES: [&str; 2] = ["\nUser:", "\n\nUser:"];
+// Transcript labels are a private multi-turn prompt dialect. Repair their echo
+// only for requests that used that dialect so ordinary single-turn output stays
+// byte-for-byte unchanged.
+
+#[derive(Debug)]
+struct AppleFmResponseCleaner {
+	enabled:   bool,
+	leading:   bool,
+	saw_delta: bool,
+	truncated: bool,
+	pending:   String,
+}
+
+impl AppleFmResponseCleaner {
+	fn new(enabled: bool) -> Self {
+		Self { enabled, leading: enabled, saw_delta: false, truncated: false, pending: String::new() }
+	}
+
+	fn push(&mut self, delta: Str) -> (Option<Str>, bool) {
+		if !delta.is_empty() {
+			self.saw_delta = true;
+		}
+		if self.truncated {
+			return (None, true);
+		}
+		if !self.enabled {
+			return ((!delta.is_empty()).then_some(delta), false);
+		}
+		self.pending.push_str(delta.as_str());
+		if self.leading && !self.resolve_leading_labels() {
+			return (None, false);
+		}
+		self.take_body_delta()
+	}
+
+	fn finish(&mut self, completed: Str) -> Option<Str> {
+		if self.truncated {
+			return None;
+		}
+		if !self.enabled {
+			return (!self.saw_delta && !completed.is_empty()).then_some(completed);
+		}
+		if !self.saw_delta {
+			self.pending.push_str(completed.as_str());
+		}
+		if self.leading {
+			self.resolve_leading_labels();
+			self.leading = false;
+		}
+		self.take_body_delta().0
+	}
+
+	fn resolve_leading_labels(&mut self) -> bool {
+		let mut consumed = 0;
+		loop {
+			let remaining = &self.pending[consumed..];
+			if remaining.starts_with(ASSISTANT_LABEL) {
+				consumed += ASSISTANT_LABEL.len();
+				while let Some(character) = self.pending[consumed..].chars().next() {
+					if !character.is_whitespace() {
+						break;
+					}
+					consumed += character.len_utf8();
+				}
+				continue;
+			}
+			if ASSISTANT_LABEL.starts_with(remaining) {
+				self.pending.drain(..consumed);
+				return false;
+			}
+			self.pending.drain(..consumed);
+			self.leading = false;
+			return true;
+		}
+	}
+
+	fn take_body_delta(&mut self) -> (Option<Str>, bool) {
+		if let Some(boundary) = first_user_boundary(&self.pending) {
+			let tail = self.pending.split_off(boundary);
+			let text = std::mem::replace(&mut self.pending, tail);
+			self.pending.clear();
+			self.truncated = true;
+			return ((!text.is_empty()).then(|| text.into()), true);
+		}
+		let held = boundary_prefix_len(self.pending.as_bytes());
+		let emit_len = self.pending.len() - held;
+		if emit_len == 0 {
+			return (None, false);
+		}
+		let tail = self.pending.split_off(emit_len);
+		let text = std::mem::replace(&mut self.pending, tail);
+		(Some(text.into()), false)
+	}
+}
+
+fn first_user_boundary(text: &str) -> Option<usize> {
+	USER_BOUNDARIES
+		.iter()
+		.filter_map(|boundary| text.find(boundary))
+		.min()
+}
+
+fn boundary_prefix_len(text: &[u8]) -> usize {
+	let max = USER_BOUNDARIES
+		.iter()
+		.map(|boundary| boundary.len())
+		.max()
+		.unwrap_or(0)
+		.min(text.len());
+	(1..=max)
+		.rev()
+		.find(|&length| {
+			let suffix = &text[text.len() - length..];
+			USER_BOUNDARIES
+				.iter()
+				.any(|boundary| boundary.as_bytes().starts_with(suffix))
+		})
+		.unwrap_or(0)
+}
 
 fn append_native(
 	request: &TransportRequest,
 	event: Result<AppleFmEvent>,
 	block_started: &mut bool,
+	cleaner: &mut AppleFmResponseCleaner,
 	output: &mut VecDeque<RawEvent>,
 ) -> std::result::Result<bool, Error> {
-	append_native_attempt(&request.attempt, event, block_started, output)
+	append_native_attempt(&request.attempt, event, block_started, cleaner, output)
 }
 
 fn append_native_attempt(
 	attempt: &crate::codec::TransportAttempt,
 	event: Result<AppleFmEvent>,
 	block_started: &mut bool,
+	cleaner: &mut AppleFmResponseCleaner,
 	output: &mut VecDeque<RawEvent>,
 ) -> std::result::Result<bool, Error> {
 	match event {
 		Ok(AppleFmEvent::Delta(text)) => {
-			if !*block_started {
-				output.push_back(RawEvent::Chat(ChatEvent::BlockStarted {
-					index: 0,
-					kind:  BlockKind::Text,
-				}));
-				*block_started = true;
+			let (text, truncated) = cleaner.push(text);
+			append_clean_text(block_started, output, text);
+			if truncated {
+				ensure_clean_text_block(block_started, output);
+				append_clean_completion(output, Usage::default());
 			}
-			output.push_back(RawEvent::Chat(ChatEvent::TextDelta { index: 0, text }));
-			Ok(false)
+			Ok(truncated)
 		},
 		Ok(AppleFmEvent::Finished(generation)) => {
-			if !*block_started {
-				output.push_back(RawEvent::Chat(ChatEvent::BlockStarted {
-					index: 0,
-					kind:  BlockKind::Text,
-				}));
-				if !generation.content.is_empty() {
-					output.push_back(RawEvent::Chat(ChatEvent::TextDelta {
-						index: 0,
-						text:  generation.content.clone(),
-					}));
-				}
-				*block_started = true;
-			}
-			output.push_back(RawEvent::Completion(RawCompletion {
-				reason: FinishReason::Stop,
-				blocks: 1,
-				usage:  Usage {
-					input_tokens: u64::from(generation.prompt_tokens_estimated),
-					output_tokens: u64::from(generation.completion_tokens_estimated),
-					source: UsageSource::Estimated,
-					..Usage::default()
-				},
-			}));
+			let text = cleaner.finish(generation.content);
+			append_clean_text(block_started, output, text);
+			ensure_clean_text_block(block_started, output);
+			append_clean_completion(output, Usage {
+				input_tokens: u64::from(generation.prompt_tokens_estimated),
+				output_tokens: u64::from(generation.completion_tokens_estimated),
+				source: UsageSource::Estimated,
+				..Usage::default()
+			});
 			Ok(true)
 		},
 		Err(error) => {
@@ -1001,6 +1112,29 @@ fn append_native_attempt(
 			Err(mapped)
 		},
 	}
+}
+
+fn append_clean_text(block_started: &mut bool, output: &mut VecDeque<RawEvent>, text: Option<Str>) {
+	let Some(text) = text.filter(|text| !text.is_empty()) else {
+		return;
+	};
+	ensure_clean_text_block(block_started, output);
+	output.push_back(RawEvent::Chat(ChatEvent::TextDelta { index: 0, text }));
+}
+fn ensure_clean_text_block(block_started: &mut bool, output: &mut VecDeque<RawEvent>) {
+	if !*block_started {
+		output
+			.push_back(RawEvent::Chat(ChatEvent::BlockStarted { index: 0, kind: BlockKind::Text }));
+		*block_started = true;
+	}
+}
+
+fn append_clean_completion(output: &mut VecDeque<RawEvent>, usage: Usage) {
+	output.push_back(RawEvent::Completion(RawCompletion {
+		reason: FinishReason::Stop,
+		blocks: 1,
+		usage,
+	}));
 }
 
 fn apple_discovered_model(
@@ -1043,7 +1177,7 @@ fn apple_prompt(
 	request_id: &crate::id::RequestId,
 	provider: &ProviderId,
 	route: &RouteId,
-) -> std::result::Result<(Str, Option<Str>), Error> {
+) -> std::result::Result<(Str, Option<Str>, bool), Error> {
 	if !request.tools.is_empty()
 		|| !request.hosted_tools.is_empty()
 		|| !matches!(
@@ -1148,6 +1282,7 @@ fn apple_prompt(
 			route,
 		));
 	}
+	let transcript_echo = !matches!(turns.as_slice(), [(Role::User, _)]);
 	let prompt = if let [(Role::User, only)] = turns.as_mut_slice() {
 		std::mem::take(only)
 	} else {
@@ -1168,7 +1303,7 @@ fn apple_prompt(
 		}
 		transcript
 	};
-	Ok((prompt.into(), (!instructions.is_empty()).then(|| instructions.into())))
+	Ok((prompt.into(), (!instructions.is_empty()).then(|| instructions.into()), transcript_echo))
 }
 
 fn availability_evidence_sync() -> AppleFmAvailabilityEvidence {
@@ -1390,9 +1525,9 @@ mod tests {
 
 	use super::{
 		AppleFm, AppleFmAvailabilityEvidence, AppleFmError, AppleFmErrorCode, AppleFmEvent,
-		AppleFmFeatureEvidence, AppleFmGeneration, AppleFmOptions, AppleFmSupportState,
-		append_native_attempt, apple_discovered_model, apple_prompt, native_attempt_error,
-		validate_options,
+		AppleFmFeatureEvidence, AppleFmGeneration, AppleFmOptions, AppleFmResponseCleaner,
+		AppleFmSupportState, append_native_attempt, apple_discovered_model, apple_prompt,
+		native_attempt_error, validate_options,
 	};
 	use crate::{
 		call::{
@@ -1432,7 +1567,7 @@ mod tests {
 
 	fn prompt_of(
 		messages: &[(Role, &str)],
-	) -> Result<(omp_core::Str, Option<omp_core::Str>), ErrorKind> {
+	) -> Result<(omp_core::Str, Option<omp_core::Str>, bool), ErrorKind> {
 		let attempt = attempt();
 		apple_prompt(&chat_request(messages), &attempt.request_id, &attempt.provider, &attempt.route)
 			.map_err(|error| error.kind)
@@ -1440,15 +1575,16 @@ mod tests {
 
 	#[test]
 	fn lone_user_message_stays_unlabeled_and_instructions_split_out() {
-		let (prompt, instructions) =
+		let (prompt, instructions, transcript_echo) =
 			prompt_of(&[(Role::System, "be terse"), (Role::User, "hello")]).unwrap();
 		assert_eq!(prompt.as_str(), "hello");
 		assert_eq!(instructions.as_deref(), Some("be terse"));
+		assert!(!transcript_echo);
 	}
 
 	#[test]
 	fn history_is_flattened_into_labeled_transcript() {
-		let (prompt, instructions) = prompt_of(&[
+		let (prompt, instructions, transcript_echo) = prompt_of(&[
 			(Role::System, "be terse"),
 			(Role::User, "one"),
 			(Role::Assistant, "two"),
@@ -1457,6 +1593,7 @@ mod tests {
 		.unwrap();
 		assert_eq!(prompt.as_str(), "User: one\n\nAssistant: two\n\nUser: three");
 		assert_eq!(instructions.as_deref(), Some("be terse"));
+		assert!(transcript_echo);
 	}
 
 	#[test]
@@ -1574,11 +1711,96 @@ mod tests {
 	fn transport_construction_does_not_depend_on_transient_model_availability() {
 		assert!(super::AppleFmTransport::new().is_ok());
 	}
+	fn text_output(output: &VecDeque<RawEvent>) -> String {
+		output
+			.iter()
+			.filter_map(|event| match event {
+				RawEvent::Chat(crate::event::ChatEvent::TextDelta { text, .. }) => Some(text.as_str()),
+				_ => None,
+			})
+			.collect()
+	}
+
+	#[test]
+	fn transcript_echo_is_repaired_across_streaming_deltas() {
+		let mut output = VecDeque::new();
+		let mut started = false;
+		let mut cleaner = AppleFmResponseCleaner::new(true);
+		let mut done = false;
+		for delta in ["Assist", "ant: hi\nUs", "er: fake"] {
+			done = append_native_attempt(
+				&attempt(),
+				Ok(AppleFmEvent::Delta(delta.into())),
+				&mut started,
+				&mut cleaner,
+				&mut output,
+			)
+			.unwrap();
+		}
+		assert!(done);
+		assert_eq!(text_output(&output), "hi");
+		assert!(
+			output
+				.iter()
+				.any(|event| matches!(event, RawEvent::Completion(_)))
+		);
+	}
+	#[test]
+	fn repeated_assistant_labels_and_double_newline_boundary_are_removed() {
+		let mut output = VecDeque::new();
+		let mut started = false;
+		let mut cleaner = AppleFmResponseCleaner::new(true);
+		let done = append_native_attempt(
+			&attempt(),
+			Ok(AppleFmEvent::Delta("Assistant: \tAssistant:\nhi\n\nUser: fake".into())),
+			&mut started,
+			&mut cleaner,
+			&mut output,
+		)
+		.unwrap();
+		assert!(done);
+		assert_eq!(text_output(&output), "hi");
+	}
+
+	#[test]
+	fn single_turn_streaming_text_passes_through_unchanged() {
+		let mut output = VecDeque::new();
+		let mut started = false;
+		let mut cleaner = AppleFmResponseCleaner::new(false);
+		let done = append_native_attempt(
+			&attempt(),
+			Ok(AppleFmEvent::Delta("Assistant: plain\nUser: still model output".into())),
+			&mut started,
+			&mut cleaner,
+			&mut output,
+		)
+		.unwrap();
+		assert!(!done);
+		assert_eq!(text_output(&output), "Assistant: plain\nUser: still model output");
+	}
+
+	#[test]
+	fn user_label_without_a_leading_newline_is_not_a_turn_boundary() {
+		let mut output = VecDeque::new();
+		let mut started = false;
+		let mut cleaner = AppleFmResponseCleaner::new(true);
+		let done = append_native_attempt(
+			&attempt(),
+			Ok(AppleFmEvent::Delta("Assistant: tell User: hello".into())),
+			&mut started,
+			&mut cleaner,
+			&mut output,
+		)
+		.unwrap();
+		assert!(!done);
+		assert_eq!(text_output(&output), "tell User: hello");
+	}
 
 	#[test]
 	fn native_completion_stays_raw_and_preserves_estimated_usage() {
 		let mut output = VecDeque::new();
 		let mut started = false;
+		let mut cleaner = AppleFmResponseCleaner::new(false);
 		let done = append_native_attempt(
 			&attempt(),
 			Ok(AppleFmEvent::Finished(AppleFmGeneration {
@@ -1588,6 +1810,7 @@ mod tests {
 				context_size_documented:     4096,
 			})),
 			&mut started,
+			&mut cleaner,
 			&mut output,
 		)
 		.unwrap();
@@ -1616,10 +1839,12 @@ mod tests {
 	fn native_failure_after_delta_is_committed() {
 		let mut output = VecDeque::new();
 		let mut started = false;
+		let mut cleaner = AppleFmResponseCleaner::new(false);
 		append_native_attempt(
 			&attempt(),
 			Ok(AppleFmEvent::Delta("visible".into())),
 			&mut started,
+			&mut cleaner,
 			&mut output,
 		)
 		.unwrap();
@@ -1627,6 +1852,7 @@ mod tests {
 			&attempt(),
 			Err(AppleFmError::new(AppleFmErrorCode::Runtime, "failed after output")),
 			&mut started,
+			&mut cleaner,
 			&mut output,
 		)
 		.unwrap_err();
