@@ -24,5 +24,6 @@ omp-llm-inference = { workspace = true }
 omp-slopjson = { workspace = true }
 omp-proto = { workspace = true }
 serde = { workspace = true }
+schemars = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -21,6 +21,27 @@ pub use registry::{
 	ProjectedCall, ProjectedVerdict, Registry, RegistryError, ToolRoute,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
+/// Generates the compact, deterministic JSON Schema exposed to models for `T`.
+///
+/// Subschemas are inlined and generator metadata is omitted. Schemas describe
+/// deserialization, matching how tool parameters are consumed.
+pub fn schema<T: schemars::JsonSchema>() -> Bytes {
+	let generator = schemars::generate::SchemaSettings::draft2020_12()
+		.with(|settings| {
+			settings.inline_subschemas = true;
+			settings.meta_schema = None;
+		})
+		.for_deserialize()
+		.into_generator();
+	let mut root = generator.into_root_schema_for::<T>();
+	root.remove("$schema");
+	root.remove("title");
+	Bytes::from(
+		serde_json::to_vec(root.as_value())
+			.expect("schemars-generated JSON Schema must serialize to compact JSON"),
+	)
+}
 /// Namespaced thread-item property carrying a committed tool revision.
 pub const TOOL_REV_PROP: &str = "omp/tool-rev";
 use thiserror::Error;
