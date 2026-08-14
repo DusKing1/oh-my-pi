@@ -21,7 +21,7 @@ pub struct BlobRpc {
 impl BlobRpc {
 	/// Wraps a daemon-owned blob store.
 	#[must_use]
-	pub fn new(store: Arc<BlobStore>) -> Self {
+	pub const fn new(store: Arc<BlobStore>) -> Self {
 		Self { store }
 	}
 }
@@ -75,11 +75,7 @@ impl pb::blob_server::Blob for BlobRpc {
 		let end = if request.length == 0 {
 			size
 		} else {
-			request
-				.offset
-				.checked_add(request.length)
-				.unwrap_or(u64::MAX)
-				.min(size)
+			request.offset.saturating_add(request.length).min(size)
 		};
 		let start = usize::try_from(request.offset)
 			.map_err(|_| Status::out_of_range("blob offset exceeds platform limits"))?;

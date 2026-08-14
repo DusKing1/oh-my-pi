@@ -23,8 +23,8 @@ async fn main() -> ExitCode {
 		Ok(()) => ExitCode::SUCCESS,
 		Err(error) => {
 			// Errors that reach this point are top-level execution failures;
-			// deliberately classified and redacted at their subsystem boundary.
-			eprintln!("omp: {error}");
+			// formatted via miette's diagnostic handler.
+			eprintln!("{error:?}");
 			ExitCode::FAILURE
 		},
 	}

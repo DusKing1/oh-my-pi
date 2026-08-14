@@ -1327,7 +1327,7 @@ impl<S: Scene, F: Fn(&UiContext) -> S> Shell<S, F> {
 		let wid = win.id;
 		let mods = win.mods;
 		let focused = win.focused();
-		let letter = input::letter_of(&event.physical_key);
+		let letter = input::letter_of(event.physical_key);
 		let code = match event.physical_key {
 			PhysicalKey::Code(code) => Some(code),
 			_ => None,

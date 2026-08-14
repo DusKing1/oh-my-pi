@@ -6,9 +6,11 @@ use omp_core::Str;
 use omp_tui::{Frame, Key, Layer, MouseReport, Size, paste::ClipboardRead};
 use smallvec::SmallVec;
 
-/// What one paint of a scene looks like to the host: the retained document
-/// frame (taller than the viewport when scrollback exists) plus declarative
-/// viewport-anchored layers, exactly as a terminal renderer would composite.
+/// What one paint of a scene looks like to the host.
+///
+/// It combines the retained document frame (taller than the viewport when
+/// scrollback exists) with declarative viewport-anchored layers, exactly as a
+/// terminal renderer would composite.
 pub struct SceneFrame<'a> {
 	/// The document grid; the tail `viewport.height` rows are live.
 	pub frame:       &'a Frame,

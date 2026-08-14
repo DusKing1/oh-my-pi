@@ -185,7 +185,7 @@ pub fn project_thread_history(
 	Ok(projected)
 }
 
-pub(crate) fn recovery_tool_result_item(
+pub fn recovery_tool_result_item(
 	created_at_ms: u64,
 	call_item: &thread_pb::Item,
 	abort: Abort,

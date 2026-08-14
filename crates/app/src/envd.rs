@@ -14,6 +14,7 @@ pub mod worker;
 pub mod workspace;
 use std::{io, path::Path, sync::Arc};
 
+use miette::IntoDiagnostic as _;
 use omp_core::Str;
 use omp_env::EnvClient;
 use omp_proto::env::v1::ClientHello;
@@ -28,8 +29,8 @@ use self::{
 use crate::cli::EnvdArgs;
 
 /// Starts the project environment daemon and serves until process shutdown.
-pub async fn run(args: EnvdArgs) -> crate::Result<()> {
-	Ok(server::run(args).await?)
+pub async fn run(args: EnvdArgs) -> miette::Result<()> {
+	server::run(args).await.into_diagnostic()
 }
 
 /// Client-side ownership of one project environment composition.
@@ -46,7 +47,7 @@ pub(crate) struct ProjectEnvironment {
 
 struct ProjectLifecycle {
 	shutdown: Option<CancellationToken>,
-	_tasks:   Vec<tokio::task::JoinHandle<()>>,
+	tasks:    Vec<tokio::task::JoinHandle<()>>,
 	_server:  Arc<EnvServer>,
 }
 
@@ -55,7 +56,7 @@ impl Drop for ProjectLifecycle {
 		if let Some(shutdown) = &self.shutdown {
 			shutdown.cancel();
 		}
-		for task in &self._tasks {
+		for task in &self.tasks {
 			task.abort();
 		}
 	}
@@ -94,7 +95,7 @@ impl ProjectEnvironment {
 				});
 				hello(&client).await?;
 				let lifecycle =
-					ProjectLifecycle { shutdown: None, _tasks: vec![in_process], _server: server };
+					ProjectLifecycle { shutdown: None, tasks: vec![in_process], _server: server };
 				Ok(Self { client, registry, eval_bridge, eval_control, _lifecycle: lifecycle })
 			},
 			Err(EnvdError::Io(error))
@@ -138,7 +139,7 @@ impl ProjectEnvironment {
 		});
 		let lifecycle = ProjectLifecycle {
 			shutdown: Some(shutdown),
-			_tasks:   vec![in_process, uds],
+			tasks:    vec![in_process, uds],
 			_server:  server,
 		};
 		hello(&client).await?;
@@ -146,7 +147,7 @@ impl ProjectEnvironment {
 	}
 
 	#[must_use]
-	pub(crate) fn client(&self) -> &EnvClient {
+	pub(crate) const fn client(&self) -> &EnvClient {
 		&self.client
 	}
 

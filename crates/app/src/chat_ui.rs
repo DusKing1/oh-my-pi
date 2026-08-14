@@ -92,314 +92,316 @@ pub async fn start() -> anyhow::Result<App> {
 }
 
 /// Drives one durable session inside an existing inline chat host.
-pub async fn run<C, R>(
+pub fn run<C, R>(
 	app: &mut App,
 	mut agent: Agent<C>,
 	session: ChatUiSession,
 	mut list_sessions: R,
-) -> anyhow::Result<ChatUiExit>
+) -> impl Future<Output = anyhow::Result<ChatUiExit>> + '_
 where
 	C: TurnClient + 'static,
 	R: FnMut() -> anyhow::Result<Vec<ResumeChoice>>,
 {
-	let bus = agent.events().clone();
-	let mailbox = agent.mailbox();
-	let events = bus.subscribe_ui(256);
-	let agent_state = agent.state().clone();
+	async move {
+		let bus = agent.events().clone();
+		let mailbox = agent.mailbox();
+		let events = bus.subscribe_ui(256);
+		let agent_state = agent.state().clone();
 
-	let replacing_session = app.ui().has_overlay();
+		let replacing_session = app.ui().has_overlay();
 
-	while app.ui_mut().close_top_overlay().is_some() {}
-	app.ui_mut()
-		.update_component::<TranscriptView>("transcript", |view| {
-			view.clear();
-			true
-		});
-	app.ui_mut().set_text("input", "");
-	app.ui_mut().focus_first();
+		while app.ui_mut().close_top_overlay().is_some() {}
+		app.ui_mut()
+			.update_component::<TranscriptView>("transcript", |view| {
+				view.clear();
+				true
+			});
+		app.ui_mut().set_text("input", "");
+		app.ui_mut().focus_first();
 
-	let renderers = RendererRegistry::new();
-	let mut tool_folds = HashMap::new();
-	render_history(app.ui_mut(), &session.initial_items, &renderers, &mut tool_folds);
-	if replacing_session {
-		app.rebuild_history();
-	}
+		let renderers = RendererRegistry::new();
+		let mut tool_folds = HashMap::new();
+		render_history(app.ui_mut(), &session.initial_items, &renderers, &mut tool_folds);
+		if replacing_session {
+			app.rebuild_history();
+		}
 
-	let mut session_model = agent_state.snapshot().turn.params.model.clone();
-	let mut context_window = session.context_window;
-	let mut session_cost_nanos = 0_u64;
-	let mut live_jobs = HashSet::new();
-	let mut attempt_indicator = 0;
-	let mut context_tokens = 0_u64;
-	let mut submit_pending = startup_recovery_needed(
-		agent.journal().pending_turn().is_some(),
-		agent.journal().pending_input_submission().is_some(),
-	);
-	let mut active_parts: HashMap<u32, ActivePart> = HashMap::new();
-	let mut part_serial = 0_u64;
-
-	update_status(
-		app.ui_mut(),
-		&session.session_id,
-		&session_model,
-		attempt_indicator,
-		live_jobs.len(),
-		session_cost_nanos,
-		context_tokens,
-		context_window,
-		events.dropped(),
-	);
-
-	let (tx, rx) = flume::bounded::<Item>(1);
-	let (err_tx, err_rx) = flume::unbounded::<String>();
-	let (submit_ack_tx, submit_ack_rx) = flume::bounded::<()>(1);
-	let mut agent_task = tokio::spawn(async move {
-		if startup_recovery_needed(
+		let mut session_model = agent_state.snapshot().turn.params.model.clone();
+		let mut context_window = session.context_window;
+		let mut session_cost_nanos = 0_u64;
+		let mut live_jobs = HashSet::new();
+		let mut attempt_indicator = 0;
+		let mut context_tokens = 0_u64;
+		let mut submit_pending = startup_recovery_needed(
 			agent.journal().pending_turn().is_some(),
 			agent.journal().pending_input_submission().is_some(),
-		) {
-			let resume_turn_id = TurnId::new(ulid::Ulid::generate().to_string());
-			if let Err(error) = agent.submit(Vec::new(), resume_turn_id).await {
-				let _ = err_tx.send(format!("**Startup resume error:** {error}"));
-			}
-			let _ = submit_ack_tx.send(());
-		}
-		while let Ok(item) = rx.recv_async().await {
-			let turn_id = TurnId::new(ulid::Ulid::generate().to_string());
-			if let Err(error) = agent.submit([item], turn_id).await {
-				let _ = err_tx.send(format!("**Submit error:** {error}"));
-			}
-			let _ = submit_ack_tx.send(());
-		}
-	});
-	let mut exit = ChatUiExit::Quit;
-	'ui: loop {
-		tokio::select! {
-			event = app.next() => {
-				while let Ok(()) = submit_ack_rx.try_recv() {
-					submit_pending = false;
-				}
-				let is_active = chat_active(submit_pending, bus.phase());
-				match event {
-				Ok(Some(trigger @ (AppEvent::Submitted | AppEvent::Key(Key::FollowUp)))) => {
-					let text = app.ui().values()["input"].as_str().unwrap_or("").to_owned();
-					app.ui_mut().set_text("input", "");
-					match parse_input(&text) {
-						Ok(ChatCommand::Model(requested)) => {
-							match select_model(&agent_state, Catalog::embedded(), &requested) {
-								Some(spec) => {
-									session_model = spec.key.to_string();
-									context_window = spec.limits.context_window;
-									update_status(
-										app.ui_mut(),
-										&session.session_id,
-										&session_model,
-										attempt_indicator,
-										live_jobs.len(),
-										session_cost_nanos,
-										context_tokens,
-										context_window,
-										events.dropped(),
-									);
-								},
-								None => push_error(app.ui_mut(), format!("Unknown model: {requested}")),
-							}
-						},
-						Ok(ChatCommand::Resume) => {
-							if is_active {
-								push_error(app.ui_mut(), "Wait for the active turn to finish before resuming another session.");
-							} else {
-								match list_sessions() {
-									Ok(choices) => show_resume_picker(app.ui_mut(), &choices),
-									Err(error) => {
-										push_error(app.ui_mut(), format!("Could not list sessions: {error}"));
-									},
-								}
-							}
-						},
-						Ok(ChatCommand::Quit) => {
-							enqueue_shutdown_interrupt(&mailbox, is_active);
-							break 'ui;
-						},
-						Ok(ChatCommand::Submit(item)) => {
-							if !is_active {
-								let sent = render_then_deliver(
-									item,
-									|item| render_submitted_item(app.ui_mut(), item),
-									|item| {
-										submit_pending = true;
-										tx.send(item)
-									},
-								);
-								if sent.is_err() {
-									submit_pending = false;
-									push_error(app.ui_mut(), "Agent input channel is closed.");
-								}
-							} else {
-								let class = if matches!(trigger, AppEvent::Key(Key::FollowUp)) {
-									InterruptClass::Idle
-								} else {
-									InterruptClass::Immediate
-								};
-								let _ = render_then_deliver(
-									item,
-									|item| render_submitted_item(app.ui_mut(), item),
-									|item| {
-										mailbox.try_enqueue(Interrupt {
-											class,
-											item,
-											source: InterruptSource::Producer(Str::new_static("user")),
-										})
-									},
-								);
-							}
-						},
-						Err(error) => push_error(app.ui_mut(), error.to_string()),
-					}
-				},
-				Ok(Some(AppEvent::Changed { id, value })) if id.as_str() == RESUME_SELECT_ID => {
-					exit = ChatUiExit::Resume(value);
-					break 'ui;
-				},
-				Ok(Some(AppEvent::Key(Key::Esc))) => {
-					if is_active {
-						let _ = mailbox.try_enqueue(Interrupt {
-							class: InterruptClass::Immediate,
-							item: interrupt_item("User interrupted via Esc."),
-							source: InterruptSource::Producer(Str::new_static("user")),
-						});
-					}
-				},
-				Ok(Some(_)) => {},
-				Ok(None) | Err(_) => {
-					enqueue_shutdown_interrupt(&mailbox, is_active);
-					break 'ui;
-				},
-				}
-			},
-			Ok(message) = err_rx.recv_async() => push_error(app.ui_mut(), message),
-			Ok(()) = submit_ack_rx.recv_async() => {
-				submit_pending = false;
-			},
-			Ok(agent_event) = events.recv() => {
-				match &*agent_event {
-					AgentEvent::Turn { event: turn_event, .. } => match &turn_event.event {
-						Some(Event::Outcome(outcome)) => {
-							session_model.clone_from(&outcome.model);
-							if let Some(spec) = resolve_model(Catalog::embedded(), &outcome.model) {
-								context_window = spec.limits.context_window;
-							}
-							if let Some(cost) = &outcome.cost {
-								session_cost_nanos = session_cost_nanos.saturating_add(cost.nanos_usd);
-							}
-							if let Some(snapshot) = &outcome.context_snapshot {
-								context_tokens = snapshot.prompt_tokens;
-							}
-							for active in active_parts.values() {
-								app.ui_mut().set_prop(active.id.as_str(), Prop::Partial, false);
-							}
-							active_parts.clear();
-						},
-						Some(Event::Attempt(attempt)) => attempt_indicator = attempt.number,
-						Some(Event::PartStart(start)) => {
-							let prefix = match part_start::Kind::try_from(start.kind) {
-								Ok(part_start::Kind::Text) => Some("**Assistant:** "),
-								Ok(part_start::Kind::Thinking) => Some("**Thinking:** "),
-								_ => None,
-							};
-							if let Some(prefix) = prefix {
-								part_serial = part_serial.saturating_add(1);
-								let id = fmts!("part-{part_serial}");
-								app.ui_mut().update_component::<TranscriptView>("transcript", |view| {
-									view.push(
-										Markdown::new()
-											.with(Prop::Id, id.as_str())
-											.with(Prop::Partial, true),
-									);
-									true
-								});
-								active_parts.insert(
-									start.index,
-									ActivePart { id, text: StrMut::new_inline(""), prefix },
-								);
-							}
-						},
-						Some(Event::PartDelta(delta)) => {
-							if let Some(active) = active_parts.get_mut(&delta.index)
-								&& let Ok(fragment) = std::str::from_utf8(&delta.chunk)
-							{
-								active.text.push_str(fragment);
-								let rendered = fmts!("{}{}", active.prefix, active.text.as_str());
-								app.ui_mut().set_text(active.id.as_str(), rendered);
-							}
-						},
-						Some(Event::PartEnd(end)) => {
-							if let Some(active) = active_parts.remove(&end.index) {
-								app.ui_mut().set_prop(active.id.as_str(), Prop::Partial, false);
-							}
-						},
-						_ => {},
-					},
-					AgentEvent::ToolOpened { call_id, name, rev } => {
-						let fold = ToolFold::new(call_id.clone(), name.clone(), rev.clone());
-						tool_folds.insert(call_id.clone(), fold);
-						push_tool_card(app.ui_mut(), call_id);
-					},
-					AgentEvent::ToolArgs { call_id, view, .. } => {
-						if let Some(fold) = tool_folds.get_mut(call_id.as_str()) {
-							fold.set_args_view(view.clone());
-							renderers.update(app.ui_mut(), fold);
-						}
-					},
-					AgentEvent::ToolUpdate { call_id, json } => {
-						if let Some(fold) = tool_folds.get_mut(call_id.as_str()) {
-							fold.push_update(json.clone());
-							renderers.update(app.ui_mut(), fold);
-						}
-					},
-					AgentEvent::ToolFinished { call_id, item } => {
-						if let Some(fold) = tool_folds.get_mut(call_id.as_str()) {
-							fold.item = Some(item.clone());
-							fold.state = match &item.kind {
-								Some(item::Kind::ToolResult(result)) if result.is_error => ToolState::Failure,
-								Some(item::Kind::ToolResult(_)) => ToolState::Success,
-								_ => {
-									push_error(app.ui_mut(), format!("Tool {call_id} finished without a tool result."));
-									ToolState::Failure
-								},
-							};
-							renderers.update(app.ui_mut(), fold);
-						}
-					},
-					AgentEvent::JobRegistered { job_id } => { live_jobs.insert(job_id.clone()); },
-					AgentEvent::JobSettled { job_id } => { live_jobs.remove(job_id); },
-					AgentEvent::Failed { message, .. } => push_error(app.ui_mut(), format!("Agent error: {message}")),
-					_ => {},
-				}
-				update_status(
-					app.ui_mut(),
-					&session.session_id,
-					&session_model,
-					attempt_indicator,
-					live_jobs.len(),
-					session_cost_nanos,
-					context_tokens,
-					context_window,
-					events.dropped(),
-				);
-			},
-		}
-	}
+		);
+		let mut active_parts: HashMap<u32, ActivePart> = HashMap::new();
+		let mut part_serial = 0_u64;
 
-	drop(tx);
-	if tokio::time::timeout(Duration::from_secs(3), &mut agent_task)
-		.await
-		.is_err()
-	{
-		agent_task.abort();
-		let _ = agent_task.await;
+		update_status(
+			app.ui_mut(),
+			&session.session_id,
+			&session_model,
+			attempt_indicator,
+			live_jobs.len(),
+			session_cost_nanos,
+			context_tokens,
+			context_window,
+			events.dropped(),
+		);
+
+		let (tx, rx) = flume::bounded::<Item>(1);
+		let (err_tx, err_rx) = flume::unbounded::<String>();
+		let (submit_ack_tx, submit_ack_rx) = flume::bounded::<()>(1);
+		let mut agent_task = tokio::spawn(async move {
+			if startup_recovery_needed(
+				agent.journal().pending_turn().is_some(),
+				agent.journal().pending_input_submission().is_some(),
+			) {
+				let resume_turn_id = TurnId::new(ulid::Ulid::generate().to_string());
+				if let Err(error) = agent.submit(Vec::new(), resume_turn_id).await {
+					let _ = err_tx.send(format!("**Startup resume error:** {error}"));
+				}
+				let _ = submit_ack_tx.send(());
+			}
+			while let Ok(item) = rx.recv_async().await {
+				let turn_id = TurnId::new(ulid::Ulid::generate().to_string());
+				if let Err(error) = agent.submit([item], turn_id).await {
+					let _ = err_tx.send(format!("**Submit error:** {error}"));
+				}
+				let _ = submit_ack_tx.send(());
+			}
+		});
+		let mut exit = ChatUiExit::Quit;
+		'ui: loop {
+			tokio::select! {
+				event = app.next() => {
+					while submit_ack_rx.try_recv() == Ok(()) {
+						submit_pending = false;
+					}
+					let is_active = chat_active(submit_pending, bus.phase());
+					match event {
+					Ok(Some(trigger @ (AppEvent::Submitted | AppEvent::Key(Key::FollowUp)))) => {
+						let text = app.ui().values()["input"].as_str().unwrap_or("").to_owned();
+						app.ui_mut().set_text("input", "");
+						match parse_input(&text) {
+							Ok(ChatCommand::Model(requested)) => {
+								match select_model(&agent_state, Catalog::embedded(), &requested) {
+									Some(spec) => {
+										session_model = spec.key.to_string();
+										context_window = spec.limits.context_window;
+										update_status(
+											app.ui_mut(),
+											&session.session_id,
+											&session_model,
+											attempt_indicator,
+											live_jobs.len(),
+											session_cost_nanos,
+											context_tokens,
+											context_window,
+											events.dropped(),
+										);
+									},
+									None => push_error(app.ui_mut(), format!("Unknown model: {requested}")),
+								}
+							},
+							Ok(ChatCommand::Resume) => {
+								if is_active {
+									push_error(app.ui_mut(), "Wait for the active turn to finish before resuming another session.");
+								} else {
+									match list_sessions() {
+										Ok(choices) => show_resume_picker(app.ui_mut(), &choices),
+										Err(error) => {
+											push_error(app.ui_mut(), format!("Could not list sessions: {error}"));
+										},
+									}
+								}
+							},
+							Ok(ChatCommand::Quit) => {
+								enqueue_shutdown_interrupt(&mailbox, is_active);
+								break 'ui;
+							},
+							Ok(ChatCommand::Submit(item)) => {
+								if is_active {
+									let class = if matches!(trigger, AppEvent::Key(Key::FollowUp)) {
+										InterruptClass::Idle
+									} else {
+										InterruptClass::Immediate
+									};
+									render_then_deliver(
+										*item,
+										|item| render_submitted_item(app.ui_mut(), item),
+										|item| {
+											let _ = mailbox.try_enqueue(Interrupt {
+												class,
+												item,
+												source: InterruptSource::Producer(Str::new_static("user")),
+											});
+										},
+									);
+								} else {
+									let sent = render_then_deliver(
+										*item,
+										|item| render_submitted_item(app.ui_mut(), item),
+										|item| {
+											submit_pending = true;
+											tx.send(item).is_ok()
+										},
+									);
+									if !sent {
+										submit_pending = false;
+										push_error(app.ui_mut(), "Agent input channel is closed.");
+									}
+								}
+							},
+							Err(error) => push_error(app.ui_mut(), error.to_string()),
+						}
+					},
+					Ok(Some(AppEvent::Changed { id, value })) if id.as_str() == RESUME_SELECT_ID => {
+						exit = ChatUiExit::Resume(value);
+						break 'ui;
+					},
+					Ok(Some(AppEvent::Key(Key::Esc))) => {
+						if is_active {
+							let _ = mailbox.try_enqueue(Interrupt {
+								class: InterruptClass::Immediate,
+								item: interrupt_item("User interrupted via Esc."),
+								source: InterruptSource::Producer(Str::new_static("user")),
+							});
+						}
+					},
+					Ok(Some(_)) => {},
+					Ok(None) | Err(_) => {
+						enqueue_shutdown_interrupt(&mailbox, is_active);
+						break 'ui;
+					},
+					}
+				},
+				Ok(message) = err_rx.recv_async() => push_error(app.ui_mut(), message),
+				Ok(()) = submit_ack_rx.recv_async() => {
+					submit_pending = false;
+				},
+				Ok(agent_event) = events.recv() => {
+					match &*agent_event {
+						AgentEvent::Turn { event: turn_event, .. } => match &turn_event.event {
+							Some(Event::Outcome(outcome)) => {
+								session_model.clone_from(&outcome.model);
+								if let Some(spec) = resolve_model(Catalog::embedded(), &outcome.model) {
+									context_window = spec.limits.context_window;
+								}
+								if let Some(cost) = &outcome.cost {
+									session_cost_nanos = session_cost_nanos.saturating_add(cost.nanos_usd);
+								}
+								if let Some(snapshot) = &outcome.context_snapshot {
+									context_tokens = snapshot.prompt_tokens;
+								}
+								for active in active_parts.values() {
+									app.ui_mut().set_prop(active.id.as_str(), Prop::Partial, false);
+								}
+								active_parts.clear();
+							},
+							Some(Event::Attempt(attempt)) => attempt_indicator = attempt.number,
+							Some(Event::PartStart(start)) => {
+								let prefix = match part_start::Kind::try_from(start.kind) {
+									Ok(part_start::Kind::Text) => Some("**Assistant:** "),
+									Ok(part_start::Kind::Thinking) => Some("**Thinking:** "),
+									_ => None,
+								};
+								if let Some(prefix) = prefix {
+									part_serial = part_serial.saturating_add(1);
+									let id = fmts!("part-{part_serial}");
+									app.ui_mut().update_component::<TranscriptView>("transcript", |view| {
+										view.push(
+											Markdown::new()
+												.with(Prop::Id, id.as_str())
+												.with(Prop::Partial, true),
+										);
+										true
+									});
+									active_parts.insert(
+										start.index,
+										ActivePart { id, text: StrMut::new_inline(""), prefix },
+									);
+								}
+							},
+							Some(Event::PartDelta(delta)) => {
+								if let Some(active) = active_parts.get_mut(&delta.index)
+									&& let Ok(fragment) = std::str::from_utf8(&delta.chunk)
+								{
+									active.text.push_str(fragment);
+									let rendered = fmts!("{}{}", active.prefix, active.text.as_str());
+									app.ui_mut().set_text(active.id.as_str(), rendered);
+								}
+							},
+							Some(Event::PartEnd(end)) => {
+								if let Some(active) = active_parts.remove(&end.index) {
+									app.ui_mut().set_prop(active.id.as_str(), Prop::Partial, false);
+								}
+							},
+							_ => {},
+						},
+						AgentEvent::ToolOpened { call_id, name, rev } => {
+							let fold = ToolFold::new(call_id.clone(), name.clone(), rev.clone());
+							tool_folds.insert(call_id.clone(), fold);
+							push_tool_card(app.ui_mut(), call_id);
+						},
+						AgentEvent::ToolArgs { call_id, view, .. } => {
+							if let Some(fold) = tool_folds.get_mut(call_id.as_str()) {
+								fold.set_args_view(view.clone());
+								renderers.update(app.ui_mut(), fold);
+							}
+						},
+						AgentEvent::ToolUpdate { call_id, json } => {
+							if let Some(fold) = tool_folds.get_mut(call_id.as_str()) {
+								fold.push_update(json.clone());
+								renderers.update(app.ui_mut(), fold);
+							}
+						},
+						AgentEvent::ToolFinished { call_id, item } => {
+							if let Some(fold) = tool_folds.get_mut(call_id.as_str()) {
+								fold.item = Some(item.clone());
+								fold.state = match &item.kind {
+									Some(item::Kind::ToolResult(result)) if result.is_error => ToolState::Failure,
+									Some(item::Kind::ToolResult(_)) => ToolState::Success,
+									_ => {
+										push_error(app.ui_mut(), format!("Tool {call_id} finished without a tool result."));
+										ToolState::Failure
+									},
+								};
+								renderers.update(app.ui_mut(), fold);
+							}
+						},
+						AgentEvent::JobRegistered { job_id } => { live_jobs.insert(job_id.clone()); },
+						AgentEvent::JobSettled { job_id } => { live_jobs.remove(job_id); },
+						AgentEvent::Failed { message, .. } => push_error(app.ui_mut(), format!("Agent error: {message}")),
+						_ => {},
+					}
+					update_status(
+						app.ui_mut(),
+						&session.session_id,
+						&session_model,
+						attempt_indicator,
+						live_jobs.len(),
+						session_cost_nanos,
+						context_tokens,
+						context_window,
+						events.dropped(),
+					);
+				},
+			}
+		}
+
+		drop(tx);
+		if tokio::time::timeout(Duration::from_secs(3), &mut agent_task)
+			.await
+			.is_err()
+		{
+			agent_task.abort();
+			let _ = agent_task.await;
+		}
+		Ok(exit)
 	}
-	Ok(exit)
 }
 
 fn show_resume_picker(ui: &mut Ui, choices: &[ResumeChoice]) {
@@ -578,7 +580,7 @@ fn push_error(ui: &mut Ui, message: impl std::fmt::Display) {
 	});
 }
 
-fn startup_recovery_needed(pending_turn: bool, pending_input_submission: bool) -> bool {
+const fn startup_recovery_needed(pending_turn: bool, pending_input_submission: bool) -> bool {
 	pending_turn || pending_input_submission
 }
 
@@ -608,7 +610,7 @@ fn interrupt_item(text: &str) -> Item {
 	}
 }
 
-pub(super) fn now_ms() -> u64 {
+pub fn now_ms() -> u64 {
 	SystemTime::now()
 		.duration_since(UNIX_EPOCH)
 		.unwrap_or_default()

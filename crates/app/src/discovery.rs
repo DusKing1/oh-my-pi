@@ -15,7 +15,7 @@ pub fn normalize(
 	wire_policy: WirePolicyId,
 	extended_wire_policy: Option<WirePolicyId>,
 	thinking: Option<ThinkingPolicyId>,
-) -> Result<Vec<NormalizedDiscovery>, omp_llm_catalog::discover::DiscoveryError> {
+) -> Result<Vec<NormalizedDiscovery>, Box<omp_llm_catalog::discover::DiscoveryError>> {
 	DiscoveryNormalizer::new(DiscoveryDefaults {
 		wire_policy,
 		extended_wire_policy,
@@ -24,10 +24,11 @@ pub fn normalize(
 		pricing: Pricing::default(),
 	})
 	.normalize_batch(rows)
+	.map_err(Box::new)
 }
 
 /// Returns the route restriction carried by an authenticated discovery request.
 #[must_use]
-pub fn route_scope(route: RouteId) -> RouteId {
+pub const fn route_scope(route: RouteId) -> RouteId {
 	route
 }

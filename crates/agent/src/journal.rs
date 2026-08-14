@@ -17,6 +17,10 @@ use omp_tool::{Abort, JobRef};
 use thiserror::Error;
 
 use crate::prompt::PromptHash;
+type ActivePrompt = ([u8; 32], Vec<u64>);
+type PendingItem = (u64, Item, Option<[u8; 32]>);
+type PendingItems = Vec<PendingItem>;
+
 /// Journal append or validation failure.
 #[derive(Debug, Error)]
 pub enum JournalError {
@@ -38,6 +42,9 @@ pub enum JournalError {
 	/// A settled failed turn was opened again under the same identity.
 	#[error("turn {0} was already aborted")]
 	TurnAlreadyAborted(Str),
+	/// A repeated turn abort changed whether crash replay may continue it.
+	#[error("turn abort for {0} changed recovery disposition")]
+	TurnAbortMismatch(Str),
 	/// One optimistic item was claimed by two live logical turns.
 	#[error("journal item {target} is already claimed by live turn {turn_id}")]
 	ItemAlreadyClaimed {
@@ -96,16 +103,19 @@ pub struct Journal {
 	writer:                  Writer,
 	receipts:                BTreeMap<Str, TurnReceipt>,
 	starts:                  BTreeMap<Str, (u64, TurnStart)>,
-	aborted:                 BTreeMap<Str, u64>,
+	aborted:                 BTreeMap<Str, (u64, bool)>,
 	claims:                  BTreeMap<u64, Str>,
 	last_start:              Option<TurnStart>,
 	last_receipt:            Option<TurnReceipt>,
-	active_prompt:           Option<([u8; 32], Vec<u64>)>,
-	pending:                 BTreeMap<Str, Vec<(u64, Item, Option<[u8; 32]>)>>,
+	last_receipt_event:      Option<u64>,
+	active_prompt:           Option<ActivePrompt>,
+	pending:                 BTreeMap<Str, PendingItems>,
 	pending_jobs:            BTreeMap<Str, (u64, JobRef)>,
 	settled_jobs:            BTreeMap<Str, (u64, Item)>,
 	authorized_batches:      BTreeMap<Str, (u64, Vec<Str>)>,
 	recoverable_settlements: Vec<u64>,
+	released_inputs:         Vec<u64>,
+	released_turn_id:        Option<Str>,
 	pending_inputs:          VecDeque<(Str, Vec<u64>)>,
 	item_count:              u64,
 }
@@ -123,11 +133,14 @@ impl Journal {
 			claims: BTreeMap::new(),
 			last_start: None,
 			last_receipt: None,
+			last_receipt_event: None,
 			active_prompt: None,
 			pending: BTreeMap::new(),
 			pending_jobs: BTreeMap::new(),
 			authorized_batches: BTreeMap::new(),
 			recoverable_settlements: Vec::new(),
+			released_inputs: Vec::new(),
+			released_turn_id: None,
 			pending_inputs: VecDeque::new(),
 			settled_jobs: BTreeMap::new(),
 			item_count: 0,
@@ -141,11 +154,12 @@ impl Journal {
 		let mut starts: BTreeMap<Str, (u64, TurnStart)> = BTreeMap::new();
 		let mut aborted = BTreeMap::new();
 		let mut last_start = None;
-		let mut pending: BTreeMap<Str, Vec<(u64, Item, Option<[u8; 32]>)>> = BTreeMap::new();
+		let mut pending: BTreeMap<Str, PendingItems> = BTreeMap::new();
 		let mut pending_jobs = BTreeMap::new();
 		let mut settled_jobs = BTreeMap::new();
 		let mut item_count = 0_u64;
 		let mut last_receipt = None;
+		let mut last_receipt_event = None;
 		let mut authorized_batches = BTreeMap::new();
 		let mut turn_inputs = BTreeMap::<Str, Vec<u64>>::new();
 		let mut turn_input_order = Vec::new();
@@ -187,11 +201,12 @@ impl Journal {
 					claimed_ever.extend(start.item_events.iter().copied());
 				},
 				Kind::TurnAbort(abort) => {
-					aborted.insert(abort.turn_id.clone(), index);
+					aborted.insert(abort.turn_id.clone(), (index, abort.recoverable));
 				},
 				Kind::TurnReceipt(receipt) => {
 					receipts.insert(receipt.turn_id.clone(), receipt.clone());
 					last_receipt = Some(receipt.clone());
+					last_receipt_event = Some(index);
 				},
 				Kind::JobRegistered(registered) => {
 					if !settled_jobs.contains_key(registered.job.id.as_str()) {
@@ -240,7 +255,25 @@ impl Journal {
 		}
 		pending
 			.retain(|turn_id, _| !receipts.contains_key(turn_id) && !aborted.contains_key(turn_id));
-		for turn_id in started_turns.iter().chain(receipts.keys()) {
+		let recovery_epoch = aborted
+			.values()
+			.filter_map(|(index, recoverable)| (!recoverable).then_some(*index))
+			.chain(last_receipt_event)
+			.max();
+		let mut released_inputs = Vec::new();
+		for turn_id in &turn_input_order {
+			if aborted
+				.get(turn_id.as_str())
+				.is_some_and(|(abort, recoverable)| {
+					*recoverable && recovery_epoch.is_none_or(|boundary| *abort > boundary)
+				}) && let Some(events) = turn_inputs.get(turn_id.as_str())
+			{
+				released_inputs.extend_from_slice(events);
+			}
+		}
+		let released_turn_id =
+			(!released_inputs.is_empty()).then(|| Str::from(ulid::Ulid::generate().to_string()));
+		for turn_id in starts.keys().chain(receipts.keys()).chain(aborted.keys()) {
 			turn_inputs.remove(turn_id.as_str());
 		}
 		let mut writer = Writer::open_append(path)?;
@@ -278,6 +311,7 @@ impl Journal {
 			claims,
 			last_start,
 			last_receipt,
+			last_receipt_event,
 			active_prompt,
 			pending,
 			pending_jobs,
@@ -285,6 +319,8 @@ impl Journal {
 			authorized_batches,
 			recoverable_settlements,
 			pending_inputs,
+			released_inputs,
+			released_turn_id,
 			item_count,
 		})
 	}
@@ -399,7 +435,7 @@ impl Journal {
 
 	/// Durably fixes a logical turn before its transport is opened.
 	///
-	/// Re-recording identical metadata is idempotent. Conflict and NeedFull
+	/// Re-recording identical metadata is idempotent. Conflict and `NeedFull`
 	/// recovery may supersede only the input envelope and claimed item set; the
 	/// logical turn identity and prompt identity remain fixed.
 	pub fn start_turn(&mut self, ts: u64, start: TurnStart) -> Result<u64, JournalError> {
@@ -458,6 +494,12 @@ impl Journal {
 		self
 			.recoverable_settlements
 			.retain(|target| !start.item_events.contains(target));
+		self
+			.released_inputs
+			.retain(|target| !start.item_events.contains(target));
+		if self.released_inputs.is_empty() {
+			self.released_turn_id = None;
+		}
 		if let Some(position) = self
 			.pending_inputs
 			.iter()
@@ -475,21 +517,30 @@ impl Journal {
 	///
 	/// The turn's claimed inputs remain transcript content, but crash replay
 	/// will never reopen the failed request. Repeated settlement is idempotent.
-	pub fn abort_turn(&mut self, ts: u64, turn_id: &str) -> Result<u64, JournalError> {
-		if let Some(index) = self.aborted.get(turn_id) {
+	pub fn abort_turn(
+		&mut self,
+		ts: u64,
+		turn_id: &str,
+		recoverable: bool,
+	) -> Result<u64, JournalError> {
+		if let Some((index, durable)) = self.aborted.get(turn_id) {
+			if *durable != recoverable {
+				return Err(JournalError::TurnAbortMismatch(Str::from(turn_id)));
+			}
 			return Ok(*index);
 		}
 		let turn_id = Str::from(turn_id);
 		if !self.starts.contains_key(turn_id.as_str()) {
 			return Err(JournalError::MissingTurnStart(turn_id));
 		}
-		let index = self
-			.writer
-			.append(&Event { ts, kind: Kind::TurnAbort(TurnAbort { turn_id: turn_id.clone() }) })?;
+		let index = self.writer.append(&Event {
+			ts,
+			kind: Kind::TurnAbort(TurnAbort { turn_id: turn_id.clone(), recoverable }),
+		})?;
 		self.starts.remove(turn_id.as_str());
 		self.pending.remove(turn_id.as_str());
 		self.claims.retain(|_, claimed| claimed != &turn_id);
-		self.aborted.insert(turn_id, index);
+		self.aborted.insert(turn_id, (index, recoverable));
 		Ok(index)
 	}
 
@@ -522,7 +573,7 @@ impl Journal {
 	}
 
 	/// Returns metadata from the most recently opened logical turn.
-	pub fn latest_turn_start(&self) -> Option<&TurnStart> {
+	pub const fn latest_turn_start(&self) -> Option<&TurnStart> {
 		self.last_start.as_ref()
 	}
 
@@ -607,13 +658,16 @@ impl Journal {
 			outcome,
 		};
 
-		self
+		let receipt_event = self
 			.writer
 			.append(&Event { ts, kind: Kind::TurnReceipt(receipt.clone()) })?;
 		self.pending.remove(turn_id.as_str());
 		self.starts.remove(turn_id.as_str());
 		self.claims.retain(|_, claimed| claimed != &turn_id);
 		self.last_receipt = Some(receipt.clone());
+		self.last_receipt_event = Some(receipt_event);
+		self.released_inputs.clear();
+		self.released_turn_id = None;
 		self.receipts.insert(turn_id, receipt.clone());
 		Ok((receipt, false))
 	}
@@ -711,13 +765,24 @@ impl Journal {
 		Ok(index)
 	}
 
-	/// Returns unclaimed durable settlement or recovered-result item events.
+	/// Returns unclaimed durable input events, including inputs released by an
+	/// aborted turn during crash replay.
 	#[must_use]
 	pub fn recoverable_input_events(&self) -> &[u64] {
-		self
-			.pending_inputs
-			.front()
-			.map_or(&[], |(_, events)| events.as_slice())
+		if self.released_inputs.is_empty() {
+			self
+				.pending_inputs
+				.front()
+				.map_or(&[], |(_, events)| events.as_slice())
+		} else {
+			&self.released_inputs
+		}
+	}
+
+	/// Returns input events released from trailing aborted turns.
+	#[must_use]
+	pub(crate) fn released_input_events(&self) -> &[u64] {
+		&self.released_inputs
 	}
 
 	/// Returns unclaimed durable detached-job settlement event IDs.
@@ -727,12 +792,31 @@ impl Journal {
 	}
 
 	/// Returns the earliest staged input whose turn transport never opened.
+	///
+	/// Inputs released by an aborted turn remain startup-visible under a fresh
+	/// logical turn identity when no later staged submission exists.
 	#[must_use]
 	pub fn pending_input_submission(&self) -> Option<(&Str, &[u64])> {
 		self
 			.pending_inputs
 			.front()
 			.map(|(turn_id, events)| (turn_id, events.as_slice()))
+			.or_else(|| {
+				self
+					.released_turn_id
+					.as_ref()
+					.map(|turn_id| (turn_id, self.released_inputs.as_slice()))
+			})
+	}
+
+	/// Returns whether a startup-visible submission is reclaimed from an aborted
+	/// turn.
+	#[must_use]
+	pub(crate) fn is_released_submission(&self, turn_id: &str) -> bool {
+		self
+			.released_turn_id
+			.as_ref()
+			.is_some_and(|released| released.as_str() == turn_id)
 	}
 
 	/// Iterates detached jobs still awaiting settlement without allocating.
@@ -772,7 +856,7 @@ impl Journal {
 
 	/// Returns the most recently appended terminal receipt in physical order.
 	#[must_use]
-	pub fn latest_receipt(&self) -> Option<&TurnReceipt> {
+	pub const fn latest_receipt(&self) -> Option<&TurnReceipt> {
 		self.last_receipt.as_ref()
 	}
 
@@ -780,6 +864,37 @@ impl Journal {
 	#[must_use]
 	pub fn receipt(&self, turn_id: &str) -> Option<&TurnReceipt> {
 		self.receipts.get(turn_id)
+	}
+
+	/// Returns whether a failed turn identity has a durable abort settlement.
+	#[must_use]
+	pub fn is_turn_aborted(&self, turn_id: &str) -> bool {
+		self.aborted.contains_key(turn_id)
+	}
+
+	/// Returns the number of recoverable failed-turn settlements in the current
+	/// recovery epoch.
+	///
+	/// A successful receipt or a non-recoverable abort fences older failures so
+	/// a later caller-authored submission starts with a fresh retry cap.
+	#[must_use]
+	pub fn trailing_aborts(&self) -> u32 {
+		let boundary = self
+			.aborted
+			.values()
+			.filter_map(|(index, recoverable)| (!recoverable).then_some(*index))
+			.chain(self.last_receipt_event)
+			.max();
+		u32::try_from(
+			self
+				.aborted
+				.values()
+				.filter(|(index, recoverable)| {
+					*recoverable && boundary.is_none_or(|fence| *index > fence)
+				})
+				.count(),
+		)
+		.unwrap_or(u32::MAX)
 	}
 
 	/// Returns the number of canonical item events observed by this writer.
@@ -961,7 +1076,7 @@ struct RewriteRecovery {
 fn recover_prompt_rewrites(
 	log: &Log,
 	writer: &mut Writer,
-) -> Result<(u64, Option<([u8; 32], Vec<u64>)>), JournalError> {
+) -> Result<(u64, Option<ActivePrompt>), JournalError> {
 	let mut rewrites = BTreeMap::<u64, RewriteRecovery>::new();
 	for index in 0..u64::try_from(log.len()).expect("transcript length fits in u64") {
 		let Some(transcript::Entry::Ok(event)) = log.get(index) else {
@@ -1048,7 +1163,7 @@ fn recover_prompt_rewrites(
 	Ok((recovered_items, active_prompt))
 }
 
-fn event_item(kind: &Kind) -> Option<&Item> {
+const fn event_item(kind: &Kind) -> Option<&Item> {
 	match kind {
 		Kind::Item(record) => Some(&record.item),
 		Kind::TurnInput(input) => Some(&input.item),
@@ -1470,7 +1585,7 @@ mod tests {
 		assert_eq!(replayed, receipt);
 		assert_eq!(std::fs::read(&path).expect("read replayed journal"), bytes);
 
-		let mut different = expected.clone();
+		let mut different = expected;
 		different.provider = "other".to_owned();
 		assert!(matches!(
 			journal.append_gateway_outcome(7, "turn", different),
@@ -1548,11 +1663,11 @@ mod tests {
 		std::fs::remove_file(path).expect("remove journal");
 	}
 	#[test]
-	fn aborted_turn_is_settled_across_reopen() {
+	fn aborted_turn_is_settled_and_counted_across_reopen() {
 		let path = path("turn-abort");
 		let mut journal = Journal::create(&path, &header()).expect("create journal");
 		let start = TurnStart {
-			turn_id:            Str::from("failed-turn"),
+			turn_id:            Str::from("failed-turn-1"),
 			item_events:        Vec::new(),
 			prompt_hash:        [3; 32],
 			prompt_head_events: Vec::new(),
@@ -1567,18 +1682,42 @@ mod tests {
 				props:      None,
 			},
 		};
-		journal.start_turn(2, start).expect("start turn");
-		let abort = journal.abort_turn(3, "failed-turn").expect("abort turn");
+		journal
+			.start_turn(2, start.clone())
+			.expect("start first turn");
+		journal
+			.abort_turn(3, "failed-turn-1", true)
+			.expect("abort first turn");
+		let mut second = start.clone();
+		second.turn_id = Str::from("failed-turn-2");
+		journal.start_turn(4, second).expect("start second turn");
+		let abort = journal
+			.abort_turn(5, "failed-turn-2", true)
+			.expect("abort second turn");
 		assert_eq!(
-			journal.abort_turn(4, "failed-turn").expect("repeat abort"),
+			journal
+				.abort_turn(6, "failed-turn-2", true)
+				.expect("repeat abort"),
 			abort,
 			"abort settlement must be idempotent"
 		);
 		assert!(journal.pending_turn().is_none());
+		assert_eq!(journal.trailing_aborts(), 2);
 		drop(journal);
 
-		let reopened = Journal::open(&path).expect("reopen aborted turn");
+		let mut reopened = Journal::open(&path).expect("reopen aborted turns");
 		assert!(reopened.pending_turn().is_none());
+		assert_eq!(reopened.trailing_aborts(), 2);
+		let mut success = start;
+		success.turn_id = Str::from("successful-turn");
+		reopened
+			.start_turn(7, success)
+			.expect("start successful turn");
+		reopened
+			.append_gateway_outcome(8, "successful-turn", outcome())
+			.expect("append successful receipt");
+		assert_eq!(reopened.trailing_aborts(), 0);
+		drop(reopened);
 		std::fs::remove_file(path).expect("remove journal");
 	}
 
@@ -1735,7 +1874,7 @@ mod tests {
 			.expect("settle first job");
 		assert_eq!(
 			journal
-				.settle_job(6, first.id.as_str(), settlement.clone())
+				.settle_job(6, first.id.as_str(), settlement)
 				.expect("repeat settlement"),
 			settlement_index
 		);

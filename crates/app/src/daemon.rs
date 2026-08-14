@@ -139,7 +139,7 @@ pub enum DaemonError {
 	Catalog(#[source] &'static omp_llm_catalog::snapshot::SnapshotError),
 	/// Registry construction or route service failed.
 	#[error(transparent)]
-	Inference(#[from] omp_llm_inference::Error),
+	Inference(#[from] Box<omp_llm_inference::Error>),
 	/// Encrypted credential state could not be opened.
 	#[error(transparent)]
 	CredentialStore(#[from] StoreError),
@@ -187,6 +187,12 @@ pub enum DaemonError {
 	/// Signal handling failed.
 	#[error("shutdown signal handling failed")]
 	Signal(#[source] std::io::Error),
+}
+
+impl From<omp_llm_inference::Error> for DaemonError {
+	fn from(error: omp_llm_inference::Error) -> Self {
+		Self::Inference(Box::new(error))
+	}
 }
 
 /// Opens encrypted production credential state, contacting the OS keychain only
@@ -268,13 +274,11 @@ async fn production_assembly(
 		..CredentialBrokerEngines::default()
 	})
 	.map_err(|_| {
-		DaemonError::Inference(omp_llm_inference::Error::planning(
+		DaemonError::Inference(Box::new(omp_llm_inference::Error::planning(
 			omp_llm_inference::ErrorKind::InvalidRequest,
-			omp_llm_inference::ErrorDetail::Target {
-				selector: Str::from("catalog-credential-broker-invalid"),
-			},
-			omp_llm_inference::ExecutionReceipt::default(),
-		))
+			omp_llm_inference::ErrorDetail::target(Str::from("catalog-credential-broker-invalid")),
+			Default::default(),
+		)))
 	})?;
 	let database = data_dir.join("credentials.db");
 	let accounts = AccountPool::with_store(Arc::new(AccountStateStore::open(&database)?))?;

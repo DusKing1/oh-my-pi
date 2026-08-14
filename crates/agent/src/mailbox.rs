@@ -80,8 +80,11 @@ impl MailboxSender {
 	/// Enqueues an interrupt without blocking the producer.
 	///
 	/// The mailbox is unbounded, so this fails only after its receiver closes.
-	pub fn try_enqueue(&self, interrupt: Interrupt) -> Result<(), flume::TrySendError<Interrupt>> {
-		self.tx.try_send(interrupt)
+	pub fn try_enqueue(
+		&self,
+		interrupt: Interrupt,
+	) -> Result<(), Box<flume::TrySendError<Interrupt>>> {
+		self.tx.try_send(interrupt).map_err(Box::new)
 	}
 
 	/// Returns whether the receiving mailbox has closed.

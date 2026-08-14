@@ -25,7 +25,7 @@ use crate::{
 #[derive(Debug)]
 pub enum BatchError {
 	/// The environment channel rejected an operation.
-	Environment(ClientError),
+	Environment(Box<ClientError>),
 	/// A terminal environment payload was not a supported structured outcome.
 	InvalidVerdict(serde_json::Error),
 	/// Canonical result construction failed.
@@ -45,7 +45,7 @@ impl fmt::Display for BatchError {
 impl std::error::Error for BatchError {
 	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
 		match self {
-			Self::Environment(error) => Some(error),
+			Self::Environment(error) => Some(error.as_ref()),
 			Self::InvalidVerdict(error) => Some(error),
 			Self::Projection(_) => None,
 		}
@@ -54,7 +54,7 @@ impl std::error::Error for BatchError {
 
 impl From<ClientError> for BatchError {
 	fn from(error: ClientError) -> Self {
-		Self::Environment(error)
+		Self::Environment(Box::new(error))
 	}
 }
 
@@ -144,7 +144,7 @@ impl InvocationPump {
 		self.commands.send(command).map_err(|_| Self::closed())
 	}
 
-	fn closed() -> BatchError {
+	const fn closed() -> BatchError {
 		BatchError::Projection(Str::new_static("environment invocation pump closed"))
 	}
 
@@ -165,7 +165,7 @@ enum InterruptAction {
 }
 
 async fn handle_interrupt(
-	invocation: &mut Invocation,
+	invocation: &Invocation,
 	reason: Str,
 	ack: flume::Sender<Result<(), ClientError>>,
 	command_rx: &flume::Receiver<PumpCommand>,
@@ -261,7 +261,7 @@ fn spawn_invocation_pump(
 								}) => {
 									let _ = ack.send(Ok(CommitState::DeliveryIndeterminate));
 									if handle_interrupt(
-										&mut invocation,
+										&invocation,
 										reason,
 										interrupt_ack,
 										&command_rx,
@@ -285,7 +285,7 @@ fn spawn_invocation_pump(
 							}
 						},
 						PumpCommand::Interrupt { reason, ack } => {
-							if handle_interrupt(&mut invocation, reason, ack, &command_rx).await {
+							if handle_interrupt(&invocation, reason, ack, &command_rx).await {
 								break;
 							}
 						},
@@ -374,12 +374,12 @@ impl SpeculativeCall {
 	}
 
 	/// Returns the stable model-authored call identifier.
-	pub fn call_id(&self) -> &Str {
+	pub const fn call_id(&self) -> &Str {
 		&self.call_id
 	}
 
 	/// Returns the exact live tool identity selected when speculation opened.
-	pub fn identity(&self) -> &ToolIdentity {
+	pub const fn identity(&self) -> &ToolIdentity {
 		&self.identity
 	}
 
@@ -418,24 +418,24 @@ pub struct CommittedCall {
 
 impl CommittedCall {
 	/// Returns the stable model-authored call identifier.
-	pub fn call_id(&self) -> &Str {
+	pub const fn call_id(&self) -> &Str {
 		&self.call_id
 	}
 
 	/// Returns the exact committed model argument bytes.
-	pub fn raw_args(&self) -> &Bytes {
+	pub const fn raw_args(&self) -> &Bytes {
 		&self.raw_args
 	}
 
 	/// Returns the tool identity fixed when speculation opened.
-	pub fn identity(&self) -> &ToolIdentity {
+	pub const fn identity(&self) -> &ToolIdentity {
 		&self.identity
 	}
 }
 
 /// One exact serialized tool update emitted while a batch call is live.
 #[derive(Clone, Debug)]
-pub(crate) struct BatchUpdate {
+pub struct BatchUpdate {
 	pub(crate) call_id:  Str,
 	pub(crate) identity: ToolIdentity,
 	pub(crate) json:     Bytes,
@@ -458,12 +458,12 @@ impl BatchResult {
 	}
 
 	/// Borrows the already-published immutable result event.
-	pub fn event(&self) -> &Arc<AgentEvent> {
+	pub const fn event(&self) -> &Arc<AgentEvent> {
 		&self.event
 	}
 
 	/// Returns detached job ownership when work outlives the turn.
-	pub fn job(&self) -> Option<&JobRef> {
+	pub const fn job(&self) -> Option<&JobRef> {
 		self.job.as_ref()
 	}
 
@@ -473,7 +473,7 @@ impl BatchResult {
 	}
 
 	/// Returns whether this completion transferred work to the job board.
-	pub fn is_detached(&self) -> bool {
+	pub const fn is_detached(&self) -> bool {
 		self.job.is_some()
 	}
 }
@@ -485,17 +485,17 @@ pub struct ToolBatch {
 
 impl ToolBatch {
 	/// Creates a batch in model-issued order.
-	pub fn new(calls: Vec<CommittedCall>) -> Self {
+	pub const fn new(calls: Vec<CommittedCall>) -> Self {
 		Self { calls }
 	}
 
 	/// Returns the number of calls in the batch.
-	pub fn len(&self) -> usize {
+	pub const fn len(&self) -> usize {
 		self.calls.len()
 	}
 
 	/// Returns whether the batch contains no calls.
-	pub fn is_empty(&self) -> bool {
+	pub const fn is_empty(&self) -> bool {
 		self.calls.is_empty()
 	}
 
@@ -634,7 +634,7 @@ async fn run_call(
 		drain_pump(&call, updates.as_ref()).await
 	};
 	let result = match terminal {
-		PumpTerminal::Verdict(verdict) => lower_verdict(&call, registry, caps, verdict)
+		PumpTerminal::Verdict(verdict) => lower_verdict(&call, registry, *caps, verdict)
 			.unwrap_or_else(|error| {
 				lower_abort_total(&call, Abort::EffectsUnknown {
 					reason: format!("failed to lower environment verdict: {error}").to_str(),
@@ -689,9 +689,8 @@ async fn interrupt_pump_with_grace(
 	reason: Str,
 	grace: Duration,
 ) -> PumpTerminal {
-	let receipt = match call.pump.begin_interrupt(reason) {
-		Ok(receipt) => receipt,
-		Err(_) => return force_cancel_with_grace(call, updates, grace).await,
+	let Ok(receipt) = call.pump.begin_interrupt(reason) else {
+		return force_cancel_with_grace(call, updates, grace).await;
 	};
 	finish_interrupt_with_grace(call, updates, receipt, grace).await
 }
@@ -733,7 +732,8 @@ async fn force_cancel_with_grace(
 
 async fn wait_for_interrupt(receiver: &mut watch::Receiver<Option<Str>>) -> Str {
 	loop {
-		if let Some(reason) = receiver.borrow_and_update().clone() {
+		let reason = receiver.borrow_and_update().clone();
+		if let Some(reason) = reason {
 			return reason;
 		}
 		if receiver.changed().await.is_err() {
@@ -745,7 +745,7 @@ async fn wait_for_interrupt(receiver: &mut watch::Receiver<Option<Str>>) -> Str 
 fn lower_verdict(
 	call: &CommittedCall,
 	registry: &Registry,
-	caps: &PromptCaps,
+	caps: PromptCaps,
 	wire: omp_proto::env::v1::Verdict,
 ) -> Result<BatchResult, BatchError> {
 	if let Ok(Outcome::Detached(job)) = serde_json::from_slice::<Outcome<Value, Value>>(&wire.json) {

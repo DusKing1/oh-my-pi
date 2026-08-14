@@ -68,7 +68,7 @@ struct ChatScene {
 
 enum Phase {
 	Welcome(Welcome),
-	Chat(ChatState),
+	Chat(Box<ChatState>),
 }
 
 struct ChatState {
@@ -265,7 +265,7 @@ impl Scene for ChatScene {
 		if matches!(self.phase, Phase::Welcome(_)) {
 			return match key {
 				Key::Enter => {
-					self.phase = Phase::Chat(ChatState::new(&self.ctx, self.viewport));
+					self.phase = Phase::Chat(Box::new(ChatState::new(&self.ctx, self.viewport)));
 					Effect::Consumed
 				},
 				Key::Esc | Key::Ctrl('c') => Effect::Quit,
@@ -413,8 +413,12 @@ fn shot(name: &str, out: &str) {
 
 	let metrics = fonts.cell_metrics(px);
 	let margin = 10.0 * scale;
-	let width = (f32::from(viewport.width) * metrics.advance + margin * 2.0).ceil() as u32;
-	let height = (f32::from(viewport.height) * metrics.line_height + margin * 2.0).ceil() as u32;
+	let width = margin
+		.mul_add(2.0, f32::from(viewport.width) * metrics.advance)
+		.ceil() as u32;
+	let height = margin
+		.mul_add(2.0, f32::from(viewport.height) * metrics.line_height)
+		.ceil() as u32;
 
 	let wait = match name {
 		"welcome" => Duration::from_millis(1600),

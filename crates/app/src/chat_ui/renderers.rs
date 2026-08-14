@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{fmt::Write as _, time::Instant};
 
 use bytes::Bytes;
 use omp_core::Str;
@@ -13,7 +13,7 @@ use xutf::{IntoAnsiStripped as _, TextBuf as _, Utf8};
 
 /// The retained state for a single tool call.
 #[derive(Debug)]
-pub(crate) struct ToolFold {
+pub struct ToolFold {
 	pub(crate) call_id:     Str,
 	pub(crate) name:        Str,
 	pub(crate) rev:         Rev,
@@ -49,9 +49,9 @@ impl ToolFold {
 	}
 }
 
-pub(crate) type RendererFn = fn(&mut Ui, &ToolFold) -> bool;
+pub type RendererFn = fn(&mut Ui, &ToolFold) -> bool;
 
-pub(crate) struct RendererRegistry {
+pub struct RendererRegistry {
 	renderers: &'static [(&'static str, &'static str, u16, RendererFn)],
 }
 
@@ -109,8 +109,8 @@ fn proto_to_json(v: &omp_proto::inference::v1::Value) -> Option<serde_json::Valu
 	}
 }
 
-fn get_result_json(item: &Option<Item>) -> Option<serde_json::Value> {
-	let i = item.as_ref()?;
+fn get_result_json(item: Option<&Item>) -> Option<serde_json::Value> {
+	let i = item?;
 	let item::Kind::ToolResult(res) = &i.kind.as_ref()? else {
 		return None;
 	};
@@ -119,7 +119,7 @@ fn get_result_json(item: &Option<Item>) -> Option<serde_json::Value> {
 }
 
 fn get_verdict<P: DeserializeOwned, F: DeserializeOwned>(
-	item: &Option<Item>,
+	item: Option<&Item>,
 ) -> Option<omp_tool::Verdict<P, F>> {
 	let json_val = get_result_json(item)?;
 	serde_json::from_value(json_val).ok()
@@ -132,15 +132,15 @@ fn render_verdict_fallback<P, F: serde::Serialize>(
 	match verdict {
 		omp_tool::Verdict::Fault(f) => {
 			let text = serde_json::to_string_pretty(f).unwrap_or_default();
-			c.replace_body(Col::new().child(TextLeaf::new().text(format!("Fault:\n{}", text))));
+			c.replace_body(Col::new().child(TextLeaf::new().text(format!("Fault:\n{text}"))));
 		},
 		omp_tool::Verdict::Args(a) => {
 			let text = serde_json::to_string_pretty(a).unwrap_or_default();
-			c.replace_body(Col::new().child(TextLeaf::new().text(format!("Arg Issue:\n{}", text))));
+			c.replace_body(Col::new().child(TextLeaf::new().text(format!("Arg Issue:\n{text}"))));
 		},
 		omp_tool::Verdict::Aborted(a) => {
 			let text = serde_json::to_string_pretty(a).unwrap_or_default();
-			c.replace_body(Col::new().child(TextLeaf::new().text(format!("Aborted:\n{}", text))));
+			c.replace_body(Col::new().child(TextLeaf::new().text(format!("Aborted:\n{text}"))));
 		},
 		_ => {},
 	}
@@ -176,7 +176,7 @@ fn append_edit_section(diff: &mut DiffView, section: &omp_tools::edit::SectionPa
 	}
 }
 
-pub(crate) fn render_read(ui: &mut Ui, fold: &ToolFold) -> bool {
+pub fn render_read(ui: &mut Ui, fold: &ToolFold) -> bool {
 	ui.update_component::<ToolCard>(&fold.call_id, |c| {
 		c.set_name(fold.name.clone());
 		c.set_state(fold.state);
@@ -185,34 +185,33 @@ pub(crate) fn render_read(ui: &mut Ui, fold: &ToolFold) -> bool {
 		}
 
 		if let Some(path) = fold.parsed_args.get("path").and_then(|v| v.as_str()) {
-			c.set_intent(format!("read {}", path));
+			c.set_intent(format!("read {path}"));
 		}
 
-		if fold.state != ToolState::Streaming {
-			if let Some(verdict) =
-				get_verdict::<omp_tools::read::Payload, serde_json::Value>(&fold.item)
-			{
-				match &verdict {
-					omp_tool::Verdict::Ok(payload) => {
-						let mut col = Col::new();
-						for part in &payload.parts {
-							let text = match part {
-								omp_tools::read::PayloadPart::Text { text } => text,
-								omp_tools::read::PayloadPart::Blob { alt, .. } => alt,
-							};
-							col = col.child(TextLeaf::new().text(text.as_str()));
-						}
-						c.replace_body(col);
-					},
-					_ => render_verdict_fallback(c, &verdict),
-				}
+		if fold.state != ToolState::Streaming
+			&& let Some(verdict) =
+				get_verdict::<omp_tools::read::Payload, serde_json::Value>(fold.item.as_ref())
+		{
+			match &verdict {
+				omp_tool::Verdict::Ok(payload) => {
+					let mut col = Col::new();
+					for part in &payload.parts {
+						let text = match part {
+							omp_tools::read::PayloadPart::Text { text } => text,
+							omp_tools::read::PayloadPart::Blob { alt, .. } => alt,
+						};
+						col = col.child(TextLeaf::new().text(text.as_str()));
+					}
+					c.replace_body(col);
+				},
+				_ => render_verdict_fallback(c, &verdict),
 			}
 		}
 		true
 	})
 }
 
-pub(crate) fn render_edit(ui: &mut Ui, fold: &ToolFold) -> bool {
+pub fn render_edit(ui: &mut Ui, fold: &ToolFold) -> bool {
 	ui.update_component::<ToolCard>(&fold.call_id, |c| {
 		c.set_name(fold.name.clone());
 		c.set_state(fold.state);
@@ -226,7 +225,7 @@ pub(crate) fn render_edit(ui: &mut Ui, fold: &ToolFold) -> bool {
 			.and_then(|value| value.as_str())
 			.and_then(edit_input_path)
 		{
-			c.set_intent(format!("edit {}", path));
+			c.set_intent(format!("edit {path}"));
 		}
 
 		if fold.state == ToolState::Streaming {
@@ -241,7 +240,7 @@ pub(crate) fn render_edit(ui: &mut Ui, fold: &ToolFold) -> bool {
 				c.replace_body(diff);
 			}
 		} else if let Some(verdict) =
-			get_verdict::<omp_tools::edit::Payload, serde_json::Value>(&fold.item)
+			get_verdict::<omp_tools::edit::Payload, serde_json::Value>(fold.item.as_ref())
 		{
 			match &verdict {
 				omp_tool::Verdict::Ok(payload) => {
@@ -276,7 +275,7 @@ fn append_shell_update(output: &mut Vec<u8>, update: &serde_json::Value) {
 	}
 }
 
-pub(crate) fn render_shell(ui: &mut Ui, fold: &ToolFold) -> bool {
+pub fn render_shell(ui: &mut Ui, fold: &ToolFold) -> bool {
 	ui.update_component::<ToolCard>(&fold.call_id, |c| {
 		c.set_name(fold.name.clone());
 		c.set_state(fold.state);
@@ -297,45 +296,46 @@ pub(crate) fn render_shell(ui: &mut Ui, fold: &ToolFold) -> bool {
 		let tail_text =
 			String::from_units(xutf::transcode::<Utf8, Utf8>(&tail_bytes)).into_ansi_stripped();
 
-		if fold.state != ToolState::Streaming {
-			if let Some(verdict) =
-				get_verdict::<omp_tools::shell::Payload, serde_json::Value>(&fold.item)
-			{
-				match &verdict {
-					omp_tool::Verdict::Ok(payload) => match payload.status.outcome {
-						omp_tools::shell::ExecOutcome::Exited => {
-							// Keep default/pre-set success state
-						},
-						omp_tools::shell::ExecOutcome::Failed => {
-							c.set_state(ToolState::Failure);
-							if let Some(code) = payload.status.exit_code {
-								c.set_badge(format!("exit {}", code));
-							} else {
-								c.set_badge("failed");
-							}
-						},
-						omp_tools::shell::ExecOutcome::Cancelled => {
-							c.set_state(ToolState::Failure);
-							c.set_badge("interrupted");
-						},
-						omp_tools::shell::ExecOutcome::Timeout => {
-							c.set_state(ToolState::Failure);
-							c.set_badge("timeout");
-						},
-						_ => {},
+		if fold.state != ToolState::Streaming
+			&& let Some(verdict) =
+				get_verdict::<omp_tools::shell::Payload, serde_json::Value>(fold.item.as_ref())
+		{
+			match &verdict {
+				omp_tool::Verdict::Ok(payload) => match payload.status.outcome {
+					omp_tools::shell::ExecOutcome::Exited => {
+						// Keep default/pre-set success state
 					},
-					_ => render_verdict_fallback(c, &verdict),
-				}
+					omp_tools::shell::ExecOutcome::Failed => {
+						c.set_state(ToolState::Failure);
+						if let Some(code) = payload.status.exit_code {
+							c.set_badge(format!("exit {code}"));
+						} else {
+							c.set_badge("failed");
+						}
+					},
+					omp_tools::shell::ExecOutcome::Cancelled => {
+						c.set_state(ToolState::Failure);
+						c.set_badge("interrupted");
+					},
+					omp_tools::shell::ExecOutcome::Timeout => {
+						c.set_state(ToolState::Failure);
+						c.set_badge("timeout");
+					},
+					_ => {},
+				},
+				_ => render_verdict_fallback(c, &verdict),
 			}
 		}
 
-		if !tail_text.is_empty() {
-			let lines: Vec<&str> = tail_text.lines().rev().take(5).collect();
-			let tail_preview = lines.into_iter().rev().collect::<Vec<_>>().join("\n");
+		if tail_text.is_empty() {
+			c.replace_body(Col::new());
+		} else {
+			let tail_preview = tail_text
+				.lines()
+				.skip(tail_text.lines().count().saturating_sub(5))
+				.join("\n");
 			let col = Col::new().child(TextLeaf::new().text(tail_preview));
 			c.replace_body(col);
-		} else {
-			c.replace_body(Col::new());
 		}
 		true
 	})
@@ -369,7 +369,7 @@ fn eval_payload_text(payload: &omp_tools::eval::Payload) -> String {
 					text.push('\n');
 				}
 				if json_count > 1 {
-					text.push_str(&format!("display[{json_index}]\n"));
+					writeln!(text, "display[{json_index}]",).expect("writing to a String cannot fail");
 				}
 				text.push_str(&serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string()));
 				text.push('\n');
@@ -386,7 +386,8 @@ fn eval_payload_text(payload: &omp_tools::eval::Payload) -> String {
 	}
 	if let Some(exception) = &payload.status.exception {
 		if exception.traceback.is_empty() {
-			text.push_str(&format!("{}: {}\n", exception.name, exception.message));
+			writeln!(text, "{}: {}", exception.name, exception.message)
+				.expect("writing to a String cannot fail");
 		} else {
 			for line in &exception.traceback {
 				text.push_str(line);
@@ -398,7 +399,8 @@ fn eval_payload_text(payload: &omp_tools::eval::Payload) -> String {
 	}
 	if payload.truncated {
 		if let Some(blob) = &payload.spilled_output {
-			text.push_str(&format!("… output truncated; full output in blob {}\n", blob.hash));
+			writeln!(text, "… output truncated; full output in blob {}", blob.hash)
+				.expect("writing to a String cannot fail");
 		} else {
 			text.push_str("… output truncated\n");
 		}
@@ -416,7 +418,7 @@ fn eval_preview(text: &str, maximum_lines: usize) -> String {
 	preview
 }
 
-pub(crate) fn render_eval(ui: &mut Ui, fold: &ToolFold) -> bool {
+pub fn render_eval(ui: &mut Ui, fold: &ToolFold) -> bool {
 	ui.update_component::<ToolCard>(&fold.call_id, |c| {
 		c.set_name(fold.name.clone());
 		c.set_state(fold.state);
@@ -473,10 +475,10 @@ pub(crate) fn render_eval(ui: &mut Ui, fold: &ToolFold) -> bool {
 						},
 					}
 					let text = eval_payload_text(payload);
-					if !text.is_empty() {
-						c.replace_body(Col::new().child(TextLeaf::new().text(eval_preview(&text, 10))));
-					} else {
+					if text.is_empty() {
 						c.replace_body(Col::new());
+					} else {
+						c.replace_body(Col::new().child(TextLeaf::new().text(eval_preview(&text, 10))));
 					}
 				},
 				_ => render_verdict_fallback(c, &verdict),
@@ -486,7 +488,7 @@ pub(crate) fn render_eval(ui: &mut Ui, fold: &ToolFold) -> bool {
 	})
 }
 
-pub(crate) fn render_grep(ui: &mut Ui, fold: &ToolFold) -> bool {
+pub fn render_grep(ui: &mut Ui, fold: &ToolFold) -> bool {
 	ui.update_component::<ToolCard>(&fold.call_id, |c| {
 		c.set_name(fold.name.clone());
 		c.set_state(fold.state);
@@ -495,39 +497,38 @@ pub(crate) fn render_grep(ui: &mut Ui, fold: &ToolFold) -> bool {
 		}
 
 		if let Some(pattern) = fold.parsed_args.get("pattern").and_then(|v| v.as_str()) {
-			c.set_intent(format!("grep {}", pattern));
+			c.set_intent(format!("grep {pattern}"));
 		}
 
-		if fold.state != ToolState::Streaming {
-			if let Some(verdict) =
+		if fold.state != ToolState::Streaming
+			&& let Some(verdict) =
 				get_verdict::<omp_tools::grep::Payload, serde_json::Value>(&fold.item)
-			{
-				match &verdict {
-					omp_tool::Verdict::Ok(payload) => {
-						let mut col = Col::new();
-						for f in &payload.files {
-							for m in &f.matches {
-								col = col.child(TextLeaf::new().text(format!(
-									"{}:{}",
-									f.path.as_str(),
-									m.line_number
-								)));
-							}
+		{
+			match &verdict {
+				omp_tool::Verdict::Ok(payload) => {
+					let mut col = Col::new();
+					for f in &payload.files {
+						for m in &f.matches {
+							col = col.child(TextLeaf::new().text(format!(
+								"{}:{}",
+								f.path.as_str(),
+								m.line_number
+							)));
 						}
-						if payload.file_limit_reached || payload.per_file_limit_reached {
-							col = col.child(TextLeaf::new().text("..."));
-						}
-						c.replace_body(col);
-					},
-					_ => render_verdict_fallback(c, &verdict),
-				}
+					}
+					if payload.file_limit_reached || payload.per_file_limit_reached {
+						col = col.child(TextLeaf::new().text("..."));
+					}
+					c.replace_body(col);
+				},
+				_ => render_verdict_fallback(c, &verdict),
 			}
 		}
 		true
 	})
 }
 
-pub(crate) fn render_glob(ui: &mut Ui, fold: &ToolFold) -> bool {
+pub fn render_glob(ui: &mut Ui, fold: &ToolFold) -> bool {
 	ui.update_component::<ToolCard>(&fold.call_id, |c| {
 		c.set_name(fold.name.clone());
 		c.set_state(fold.state);
@@ -536,33 +537,32 @@ pub(crate) fn render_glob(ui: &mut Ui, fold: &ToolFold) -> bool {
 		}
 
 		if let Some(path) = fold.parsed_args.get("path").and_then(|v| v.as_str()) {
-			c.set_intent(format!("glob {}", path));
+			c.set_intent(format!("glob {path}"));
 		}
 
-		if fold.state != ToolState::Streaming {
-			if let Some(verdict) =
+		if fold.state != ToolState::Streaming
+			&& let Some(verdict) =
 				get_verdict::<omp_tools::glob::Payload, serde_json::Value>(&fold.item)
-			{
-				match &verdict {
-					omp_tool::Verdict::Ok(payload) => {
-						let mut col = Col::new();
-						for m in &payload.matches {
-							col = col.child(TextLeaf::new().text(m.path.as_str()));
-						}
-						if payload.truncated {
-							col = col.child(TextLeaf::new().text("..."));
-						}
-						c.replace_body(col);
-					},
-					_ => render_verdict_fallback(c, &verdict),
-				}
+		{
+			match &verdict {
+				omp_tool::Verdict::Ok(payload) => {
+					let mut col = Col::new();
+					for m in &payload.matches {
+						col = col.child(TextLeaf::new().text(m.path.as_str()));
+					}
+					if payload.truncated {
+						col = col.child(TextLeaf::new().text("..."));
+					}
+					c.replace_body(col);
+				},
+				_ => render_verdict_fallback(c, &verdict),
 			}
 		}
 		true
 	})
 }
 
-pub(crate) fn render_write(ui: &mut Ui, fold: &ToolFold) -> bool {
+pub fn render_write(ui: &mut Ui, fold: &ToolFold) -> bool {
 	ui.update_component::<ToolCard>(&fold.call_id, |c| {
 		c.set_name(fold.name.clone());
 		c.set_state(fold.state);
@@ -572,7 +572,7 @@ pub(crate) fn render_write(ui: &mut Ui, fold: &ToolFold) -> bool {
 			.get("path")
 			.and_then(|value| value.as_str())
 		{
-			c.set_intent(format!("write {}", path));
+			c.set_intent(format!("write {path}"));
 		}
 		if let Some(content) = fold
 			.parsed_args
@@ -585,30 +585,29 @@ pub(crate) fn render_write(ui: &mut Ui, fold: &ToolFold) -> bool {
 			c.set_badge(format!("{}ms", fold.start_time.elapsed().as_millis()));
 		}
 
-		if fold.state != ToolState::Streaming {
-			if let Some(verdict) =
+		if fold.state != ToolState::Streaming
+			&& let Some(verdict) =
 				get_verdict::<omp_tools::write::Payload, serde_json::Value>(&fold.item)
-			{
-				match &verdict {
-					omp_tool::Verdict::Ok(payload) => {
-						let action = match payload.disposition {
-							omp_tools::write::WriteDisposition::Created => "created",
-							omp_tools::write::WriteDisposition::Overwrote => "overwrote",
-						};
-						c.replace_body(Col::new().child(TextLeaf::new().text(format!(
-							"{action} {} ({} bytes)",
-							payload.display_path, payload.reported_len
-						))));
-					},
-					_ => render_verdict_fallback(c, &verdict),
-				}
+		{
+			match &verdict {
+				omp_tool::Verdict::Ok(payload) => {
+					let action = match payload.disposition {
+						omp_tools::write::WriteDisposition::Created => "created",
+						omp_tools::write::WriteDisposition::Overwrote => "overwrote",
+					};
+					c.replace_body(Col::new().child(TextLeaf::new().text(format!(
+						"{action} {} ({} bytes)",
+						payload.display_path, payload.reported_len
+					))));
+				},
+				_ => render_verdict_fallback(c, &verdict),
 			}
 		}
 		true
 	})
 }
 
-pub(crate) fn render_generic(ui: &mut Ui, fold: &ToolFold) -> bool {
+pub fn render_generic(ui: &mut Ui, fold: &ToolFold) -> bool {
 	ui.update_component::<ToolCard>(&fold.call_id, |c| {
 		c.set_name(fold.name.clone());
 		c.set_state(fold.state);
@@ -627,16 +626,16 @@ pub(crate) fn render_generic(ui: &mut Ui, fold: &ToolFold) -> bool {
 			c.set_badge(format!("{}ms", fold.start_time.elapsed().as_millis()));
 		}
 
-		if fold.state != ToolState::Streaming {
-			if let Some(json_val) = get_result_json(&fold.item) {
-				let text = serde_json::to_string_pretty(&json_val).unwrap_or_default();
-				let lines: Vec<&str> = text.lines().take(10).collect();
-				let mut preview = lines.join("\n");
-				if text.lines().count() > 10 {
-					preview.push_str("\n...");
-				}
-				c.replace_body(Col::new().child(TextLeaf::new().text(preview)));
+		if fold.state != ToolState::Streaming
+			&& let Some(json_val) = get_result_json(fold.item.as_ref())
+		{
+			let text = serde_json::to_string_pretty(&json_val).unwrap_or_default();
+			let lines: Vec<&str> = text.lines().take(10).collect();
+			let mut preview = lines.join("\n");
+			if text.lines().count() > 10 {
+				preview.push_str("\n...");
 			}
+			c.replace_body(Col::new().child(TextLeaf::new().text(preview)));
 		}
 		true
 	})

@@ -184,6 +184,8 @@ const SOURCES: &[scale::Source] = &[
 	scale::Source::Outline,
 ];
 
+type ImageCache = HashMap<(u32, u32, u32), Option<([f32; 2], [f32; 2])>>;
+
 /// The font system. One instance per window; not thread-safe by design
 /// (all rasterization happens on the paint path).
 pub struct Fonts {
@@ -203,7 +205,7 @@ pub struct Fonts {
 	cx:                  scale::ScaleContext,
 	clusters:            HashMap<ClusterKey, CachedCluster>,
 	metrics:             HashMap<u32, LineMetrics>,
-	images:              HashMap<(u32, u32, u32), Option<([f32; 2], [f32; 2])>>,
+	images:              ImageCache,
 	mask_alloc:          etagere::AtlasAllocator,
 	color_alloc:         etagere::AtlasAllocator,
 	pending_mask:        Vec<AtlasRegion>,
@@ -299,8 +301,8 @@ impl Fonts {
 		if let Some(metrics) = self.metrics.get(&key) {
 			return *metrics;
 		}
-		let metrics = self.faces[self.primary as usize].font().map_or(
-			LineMetrics {
+		let metrics = self.faces[self.primary as usize].font().map_or_else(
+			|| LineMetrics {
 				advance:     px * 0.6,
 				ascent:      px * 0.8,
 				descent:     px * 0.2,

@@ -1,6 +1,7 @@
 //! Command parsing and production dispatch for the `omp` executable.
 
 use std::{
+	future::Future,
 	path::{Path, PathBuf},
 	sync::Arc,
 	time::{SystemTime, UNIX_EPOCH},
@@ -8,6 +9,7 @@ use std::{
 
 use clap::{Args, Parser, Subcommand};
 use futures::StreamExt as _;
+use miette::{Context as _, IntoDiagnostic as _, miette};
 use omp_core::Str;
 use omp_llm_catalog::{ModelKey, compile::compile_oracle};
 #[cfg(feature = "local-applefm")]
@@ -27,7 +29,6 @@ use tokio::io::AsyncWriteExt as _;
 use crate::{
 	daemon::{DaemonConfig, DaemonHandle},
 	endpoint::LocalEndpoint,
-	error::AppError,
 };
 
 /// Top-level parser for the production `omp` executable.
@@ -242,33 +243,41 @@ const fn dispatch_target(command: &Command) -> DispatchTarget {
 }
 
 /// Dispatches one parsed command to its production implementation.
-pub async fn dispatch(cli: OmpCli) -> crate::Result<()> {
-	match cli.command {
-		Command::Serve(args) => serve(args).await,
-		Command::Envd(args) => crate::envd::run(args).await,
-		Command::Chat(args) => crate::chat::run(args).await,
-		Command::Infer(args) => infer(args).await,
-		Command::Auth(args) => auth(args).await,
-		Command::Catalog(CatalogArgs { command: CatalogCommand::Import(args) }) => {
-			catalog_import(&args)
-		},
-		Command::Local(LocalArgs { command: LocalCommand::Infer(args) }) => local_infer(args).await,
+pub fn dispatch(cli: OmpCli) -> impl Future<Output = miette::Result<()>> {
+	async move {
+		match cli.command {
+			Command::Serve(args) => serve(args).await,
+			Command::Envd(args) => crate::envd::run(args).await,
+			Command::Chat(args) => Box::pin(crate::chat::run(args)).await,
+			Command::Infer(args) => infer(args).await,
+			Command::Auth(args) => auth(args).await,
+			Command::Catalog(CatalogArgs { command: CatalogCommand::Import(args) }) => {
+				catalog_import(&args)
+			},
+			Command::Local(LocalArgs { command: LocalCommand::Infer(args) }) => {
+				local_infer(args).await
+			},
+		}
 	}
 }
 
-async fn serve(args: ServeArgs) -> crate::Result<()> {
+async fn serve(args: ServeArgs) -> miette::Result<()> {
 	let config = args.data_dir.map_or_else(
 		|| DaemonConfig::local(args.endpoint.clone()),
 		|dir| DaemonConfig::local(args.endpoint.clone()).with_data_dir(dir),
 	);
-	DaemonHandle::start(config).await?.wait().await?;
+	let handle = DaemonHandle::start(config).await.into_diagnostic()?;
+	handle.wait().await.into_diagnostic()?;
 	Ok(())
 }
 
-async fn infer(args: InferArgs) -> crate::Result<()> {
+async fn infer(args: InferArgs) -> miette::Result<()> {
 	let data_dir = data_dir(None)?;
-	let store = crate::daemon::open_credential_store(data_dir.join("credentials.db"))?;
-	let registry = crate::daemon::production_registry(&data_dir, store).await?;
+	let store =
+		crate::daemon::open_credential_store(data_dir.join("credentials.db")).into_diagnostic()?;
+	let registry = crate::daemon::production_registry(&data_dir, store)
+		.await
+		.into_diagnostic()?;
 	let planner =
 		omp_llm_inference::router::Router::new(registry.clone(), std::time::Duration::from_secs(30));
 	let meta = CallMeta {
@@ -279,21 +288,26 @@ async fn infer(args: InferArgs) -> crate::Result<()> {
 		session:  None,
 	};
 	let mut client = Client::new(registry.service(), planner, meta);
-	let mut events = client.execute(chat_request(args.prompt)).await?;
+	let mut events = client
+		.execute(chat_request(args.prompt))
+		.await
+		.into_diagnostic()?;
 	let mut completed = false;
 	let mut stdout = tokio::io::stdout();
 	while let Some(event) = events.next().await {
-		match event? {
-			ChatEvent::TextDelta { text, .. } => stdout.write_all(text.as_bytes()).await?,
+		match event.into_diagnostic()? {
+			ChatEvent::TextDelta { text, .. } => {
+				stdout.write_all(text.as_bytes()).await.into_diagnostic()?;
+			},
 			ChatEvent::Completed(_) => completed = true,
 			_ => {},
 		}
 	}
 	if !completed {
-		return Err(AppError::InferenceStreamUnterminated);
+		return Err(miette!("inference stream ended without completion"));
 	}
-	stdout.write_all(b"\n").await?;
-	stdout.flush().await?;
+	stdout.write_all(b"\n").await.into_diagnostic()?;
+	stdout.flush().await.into_diagnostic()?;
 	Ok(())
 }
 
@@ -328,41 +342,45 @@ fn turn_id() -> String {
 	format!("omp-cli-{}-{now}", std::process::id())
 }
 
-async fn auth(args: AuthArgs) -> crate::Result<()> {
+async fn auth(args: AuthArgs) -> miette::Result<()> {
 	let data = data_dir(args.data_dir)?;
 	crate::auth_backend::run(data.join("credentials.db"), args.command).await
 }
 
-pub(crate) fn data_dir(explicit: Option<PathBuf>) -> crate::Result<PathBuf> {
+pub(crate) fn data_dir(explicit: Option<PathBuf>) -> miette::Result<PathBuf> {
 	if let Some(path) = explicit {
 		return Ok(path);
 	}
 	if let Some(path) = std::env::var_os("OMP_DATA_DIR") {
 		return Ok(path.into());
 	}
-	let home = std::env::var_os("HOME").ok_or(AppError::DataDirNotConfigured)?;
+	let home =
+		std::env::var_os("HOME").ok_or_else(|| miette!("HOME or OMP_DATA_DIR must be set"))?;
 	Ok(PathBuf::from(home).join(".local/share/omp"))
 }
 
-fn catalog_import(args: &CatalogImportArgs) -> crate::Result<()> {
+fn catalog_import(args: &CatalogImportArgs) -> miette::Result<()> {
 	if same_path(&args.providers, &args.destination)
 		|| same_path(&args.oauth, &args.destination)
 		|| same_path(&args.models, &args.destination)
 	{
-		return Err(AppError::SameCatalogSourceAndDestination);
+		return Err(miette!("catalog inputs and destination must be different files"));
 	}
-	let providers = std::fs::read_to_string(&args.providers)?;
-	let oauth = std::fs::read_to_string(&args.oauth)?;
-	let models = std::fs::read(&args.models)?;
-	let payload = compile_oracle(&providers, &models, &oauth)?.normalized_json()?;
+	let providers = std::fs::read_to_string(&args.providers).into_diagnostic()?;
+	let oauth = std::fs::read_to_string(&args.oauth).into_diagnostic()?;
+	let models = std::fs::read(&args.models).into_diagnostic()?;
+	let payload = compile_oracle(&providers, &models, &oauth)
+		.into_diagnostic()?
+		.normalized_json()
+		.into_diagnostic()?;
 	if let Some(parent) = args
 		.destination
 		.parent()
 		.filter(|path| !path.as_os_str().is_empty())
 	{
-		std::fs::create_dir_all(parent)?;
+		std::fs::create_dir_all(parent).into_diagnostic()?;
 	}
-	std::fs::write(&args.destination, payload)?;
+	std::fs::write(&args.destination, payload).into_diagnostic()?;
 	Ok(())
 }
 
@@ -376,28 +394,30 @@ fn same_path(left: &Path, right: &Path) -> bool {
 }
 
 #[cfg(feature = "local-applefm")]
-async fn local_infer(args: LocalInferArgs) -> crate::Result<()> {
-	let model = AppleFm::load().await?;
-	let mut events = model.stream(AppleFmOptions::new(args.prompt))?;
+async fn local_infer(args: LocalInferArgs) -> miette::Result<()> {
+	let model = AppleFm::load().await.into_diagnostic()?;
+	let mut events = model
+		.stream(AppleFmOptions::new(args.prompt))
+		.into_diagnostic()?;
 	let mut completed = false;
 	let mut stdout = tokio::io::stdout();
 	while let Some(event) = events.next().await {
-		match event? {
-			AppleFmEvent::Delta(text) => stdout.write_all(text.as_bytes()).await?,
+		match event.into_diagnostic()? {
+			AppleFmEvent::Delta(text) => stdout.write_all(text.as_bytes()).await.into_diagnostic()?,
 			AppleFmEvent::Finished(_) => completed = true,
 		}
 	}
 	if !completed {
-		return Err(AppError::LocalInferenceStreamUnterminated);
+		return Err(miette!("local inference stream ended without completion"));
 	}
-	stdout.write_all(b"\n").await?;
-	stdout.flush().await?;
+	stdout.write_all(b"\n").await.into_diagnostic()?;
+	stdout.flush().await.into_diagnostic()?;
 	Ok(())
 }
 
 #[cfg(not(feature = "local-applefm"))]
-async fn local_infer(_args: LocalInferArgs) -> crate::Result<()> {
-	Err(AppError::LocalFeatureDisabled)
+fn local_infer(_args: LocalInferArgs) -> std::future::Ready<miette::Result<()>> {
+	std::future::ready(Err(miette!("local inference requires the `local-applefm` feature")))
 }
 
 #[cfg(test)]

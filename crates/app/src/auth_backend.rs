@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use miette::{IntoDiagnostic as _, Result, miette};
 use omp_llm_catalog::ProviderId;
 use omp_llm_inference::{
 	Client,
@@ -11,31 +12,33 @@ use omp_llm_inference::{
 	receipt::ExecutionBudget,
 };
 
-use crate::{cli::AuthCommand, error::AppError};
+use crate::cli::AuthCommand;
 
 /// Opens encrypted credential state and executes one typed authentication
 /// operation.
-pub async fn run(database: PathBuf, command: AuthCommand) -> crate::Result<()> {
+pub async fn run(database: PathBuf, command: AuthCommand) -> Result<()> {
 	let data_dir = database
 		.parent()
 		.filter(|path| !path.as_os_str().is_empty())
-		.ok_or(AppError::DataDirNotConfigured)?;
-	std::fs::create_dir_all(data_dir)?;
-	let store = crate::daemon::open_credential_store(&database)?;
-	let registry = crate::daemon::production_registry(data_dir, store).await?;
+		.ok_or_else(|| miette!("HOME or OMP_DATA_DIR must be set"))?;
+	std::fs::create_dir_all(data_dir).into_diagnostic()?;
+	let store = crate::daemon::open_credential_store(&database).into_diagnostic()?;
+	let registry = crate::daemon::production_registry(data_dir, store)
+		.await
+		.into_diagnostic()?;
 	let default_provider = registry
 		.catalog()
 		.providers()
 		.first()
 		.map(|provider| provider.id.clone())
-		.ok_or(AppError::CatalogSnapshot)?;
+		.ok_or_else(|| miette!("embedded catalog is unavailable"))?;
 	let (provider, operation) = match command {
 		AuthCommand::Login { provider } => {
 			let provider = ProviderId::from(provider);
 			(provider.clone(), AuthRequest::Login(LoginRequest { provider, method: None }))
 		},
 		AuthCommand::List { provider } => {
-			let provider = provider.map(ProviderId::from).unwrap_or(default_provider);
+			let provider = provider.map_or(default_provider, ProviderId::from);
 			(provider.clone(), AuthRequest::ListAccounts { provider: Some(provider) })
 		},
 		AuthCommand::Refresh { account } => {
@@ -55,17 +58,17 @@ pub async fn run(database: PathBuf, command: AuthCommand) -> crate::Result<()> {
 	let planner =
 		omp_llm_inference::router::Router::new(registry.clone(), std::time::Duration::from_secs(30));
 	let mut client = Client::new(registry.service(), planner, meta);
-	print_auth(client.execute(operation).await?).await
+	print_auth(client.execute(operation).await.into_diagnostic()?).await
 }
 
-async fn print_auth(answer: AuthAnswer) -> crate::Result<()> {
+async fn print_auth(answer: AuthAnswer) -> Result<()> {
 	match answer {
 		AuthAnswer::Session(session) => {
 			while let Ok(event) = session.events.recv_async().await {
-				match event? {
+				match event.into_diagnostic()? {
 					AuthEvent::OpenUrl(url) => println!("open {url}"),
 					AuthEvent::ShowDeviceCode { verification_url, .. } => {
-						println!("complete device authorization at {verification_url}")
+						println!("complete device authorization at {verification_url}");
 					},
 					AuthEvent::Prompt(prompt) => println!("{}", prompt.message),
 					AuthEvent::Waiting => println!("waiting for provider authorization"),

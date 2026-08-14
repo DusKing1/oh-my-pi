@@ -41,7 +41,7 @@ impl RpcTurnClient {
 
 	/// Wraps a preconfigured generated inference client.
 	#[inline]
-	pub fn from_client(client: InferenceClient<Channel>) -> Self {
+	pub const fn from_client(client: InferenceClient<Channel>) -> Self {
 		Self { client }
 	}
 }
@@ -49,26 +49,24 @@ impl RpcTurnClient {
 impl TurnClient for RpcTurnClient {
 	type Session<'client> = RpcTurnSession;
 
-	fn turn<'client>(
+	async fn turn<'client>(
 		&'client self,
 		turn_id: TurnId,
 		input: TurnInput,
 		options: &'client TurnOptions,
-	) -> impl Future<Output = Result<Self::Session<'client>, Error>> + Send + 'client {
-		async move {
-			let open = open_frame(&turn_id, input, options)?;
-			let (sender, receiver) = flume::bounded(INVOCATION_FRAME_CAPACITY);
-			sender.send_async(open).await.map_err(|_| Error::Closed)?;
+	) -> Result<Self::Session<'client>, Error> {
+		let open = open_frame(&turn_id, input, options)?;
+		let (sender, receiver) = flume::bounded(INVOCATION_FRAME_CAPACITY);
+		sender.send_async(open).await.map_err(|_| Error::Closed)?;
 
-			let mut client = self.client.clone();
-			let stream = client.turn(invocation_stream(receiver)).await?.into_inner();
-			Ok(RpcTurnSession {
-				sender: options.executor.is_some().then_some(sender),
-				stream,
-				terminal: false,
-				_server: None,
-			})
-		}
+		let mut client = self.client.clone();
+		let stream = client.turn(invocation_stream(receiver)).await?.into_inner();
+		Ok(RpcTurnSession {
+			sender: options.executor.is_some().then_some(sender),
+			stream,
+			terminal: false,
+			_server: None,
+		})
 	}
 }
 
@@ -87,20 +85,18 @@ impl TurnSession for RpcTurnSession {
 		EventStream::new(&mut self.stream, &mut self.terminal)
 	}
 
-	fn submit(&mut self, frame: InvokeFrame) -> impl Future<Output = Result<(), Error>> + Send + '_ {
-		async move {
-			if self.terminal {
-				return Err(Error::Closed);
-			}
-			let sender = self
-				.sender
-				.as_ref()
-				.ok_or(Error::Invalid("turn did not declare an in-turn executor"))?;
-			sender
-				.send_async(TurnFrame::from(frame))
-				.await
-				.map_err(|_| Error::Closed)
+	async fn submit(&mut self, frame: InvokeFrame) -> Result<(), Error> {
+		if self.terminal {
+			return Err(Error::Closed);
 		}
+		let sender = self
+			.sender
+			.as_ref()
+			.ok_or(Error::Invalid("turn did not declare an in-turn executor"))?;
+		sender
+			.send_async(TurnFrame::from(frame))
+			.await
+			.map_err(|_| Error::Closed)
 	}
 }
 
@@ -170,16 +166,14 @@ impl Drop for ServerTask {
 impl TurnClient for InProcTurnClient {
 	type Session<'client> = RpcTurnSession;
 
-	fn turn<'client>(
+	async fn turn<'client>(
 		&'client self,
 		turn_id: TurnId,
 		input: TurnInput,
 		options: &'client TurnOptions,
-	) -> impl Future<Output = Result<Self::Session<'client>, Error>> + Send + 'client {
-		async move {
-			let mut session = self.client.turn(turn_id, input, options).await?;
-			session._server = Some(Arc::clone(&self.server));
-			Ok(session)
-		}
+	) -> Result<Self::Session<'client>, Error> {
+		let RpcTurnSession { sender, stream, terminal, .. } =
+			self.client.turn(turn_id, input, options).await?;
+		Ok(RpcTurnSession { sender, stream, terminal, _server: Some(Arc::clone(&self.server)) })
 	}
 }

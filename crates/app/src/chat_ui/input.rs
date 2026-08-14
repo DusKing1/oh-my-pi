@@ -13,11 +13,11 @@ pub enum ChatCommand {
 	/// Exit the application cleanly.
 	Quit,
 	/// A plain text message to append as a user turn.
-	Submit(Item),
+	Submit(Box<Item>),
 }
 
 /// Structured parsing failure for interactive input.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum InputError {
 	/// The `/model` command was provided without an argument.
 	EmptyModel,
@@ -29,7 +29,7 @@ impl std::fmt::Display for InputError {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			Self::EmptyModel => write!(f, "missing model name for /model command"),
-			Self::UnknownCommand(cmd) => write!(f, "unknown slash command: {}", cmd),
+			Self::UnknownCommand(cmd) => write!(f, "unknown slash command: {cmd}"),
 		}
 	}
 }
@@ -60,7 +60,7 @@ pub fn parse_input(text: &str) -> Result<ChatCommand, InputError> {
 		return Err(InputError::UnknownCommand(Str::from(cmd)));
 	}
 
-	Ok(ChatCommand::Submit(Item {
+	Ok(ChatCommand::Submit(Box::new(Item {
 		seq:           0,
 		created_at_ms: now_ms(),
 		kind:          Some(item::Kind::Message(Message {
@@ -68,7 +68,7 @@ pub fn parse_input(text: &str) -> Result<ChatCommand, InputError> {
 			parts: vec![Part { kind: Some(part::Kind::Text(text.to_owned())) }],
 		})),
 		props:         None,
-	}))
+	})))
 }
 
 #[cfg(test)]

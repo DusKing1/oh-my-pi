@@ -10,7 +10,7 @@ use std::{
 use bytes::Bytes;
 use futures::{Stream, StreamExt as _, stream};
 use omp_agent::project_thread_history;
-use omp_core::Str;
+use omp_core::{Str, encoding::hex};
 use omp_llm_catalog::{
 	GrammarBits, ModelAvailability, ModelKey, ModelSpec, OperationKind, ProviderDef, ProviderId,
 };
@@ -466,9 +466,8 @@ impl pb::inference_server::Inference for InferenceRpc {
 			.message()
 			.await?
 			.ok_or_else(|| Status::invalid_argument("Turn requires an opening frame"))?;
-		let open = match first.frame {
-			Some(pb::turn_frame::Frame::Open(open)) => open,
-			_ => return Err(Status::invalid_argument("the first Turn frame must be open")),
+		let Some(pb::turn_frame::Frame::Open(open)) = first.frame else {
+			return Err(Status::invalid_argument("the first Turn frame must be open"));
 		};
 		if open.turn_id.is_empty() {
 			return Err(Status::invalid_argument("TurnRequest.turn_id is required"));
@@ -555,9 +554,8 @@ impl pb::inference_server::Inference for InferenceRpc {
 			.message()
 			.await?
 			.ok_or_else(|| Status::invalid_argument("Realtime requires an opening frame"))?;
-		let open = match first.frame {
-			Some(pb::realtime_frame::Frame::Open(open)) => open,
-			_ => return Err(Status::invalid_argument("the first Realtime frame must be open")),
+		let Some(pb::realtime_frame::Frame::Open(open)) = first.frame else {
+			return Err(Status::invalid_argument("the first Realtime frame must be open"));
 		};
 		if open.request_id.is_empty() || open.model.is_empty() {
 			return Err(Status::invalid_argument("RealtimeOpen.request_id and model are required"));
@@ -624,13 +622,10 @@ impl pb::inference_server::Inference for InferenceRpc {
 		let output = async_stream::try_stream! {
 			loop {
 				let event = tokio::select! {
-					error = errors.recv_async(), if errors_open => match error {
-						Ok(error) => Err(error),
-						Err(_) => {
-							errors_open = false;
-							continue;
-						},
-					},
+					error = errors.recv_async(), if errors_open => if let Ok(error) = error { Err(error) } else {
+								  errors_open = false;
+								  continue;
+							  },
 					event = session.recv() => match event {
 						Ok(Ok(event)) => Ok(event),
 						Ok(Err(error)) => Err(inference_status(error)),
@@ -830,10 +825,9 @@ impl pb::inference_server::Inference for InferenceRpc {
 		if request.prompt.is_empty() {
 			return Err(Status::invalid_argument("GenerateImageRequest.prompt is required"));
 		}
-		let dimensions = request
-			.size
-			.map(|size| Setting::Prefer(Dimensions { width: size.width, height: size.height }))
-			.unwrap_or(Setting::Unset);
+		let dimensions = request.size.map_or(Setting::Unset, |size| {
+			Setting::Prefer(Dimensions { width: size.width, height: size.height })
+		});
 		let quality = match pb::generate_image_request::Quality::try_from(request.quality)
 			.unwrap_or(pb::generate_image_request::Quality::Unspecified)
 		{
@@ -953,10 +947,11 @@ impl pb::inference_server::Inference for InferenceRpc {
 			audio,
 			language: (!request.language.is_empty()).then(|| request.language.as_str().into()),
 			translate_to_english: request.translate,
-			diarization: request
-				.diarize
-				.then_some(Setting::Require(true))
-				.unwrap_or(Setting::Unset),
+			diarization: if request.diarize {
+				Setting::Require(true)
+			} else {
+				Setting::Unset
+			},
 			timestamps: granularity,
 			prompt: (!request.prompt.is_empty()).then(|| request.prompt.as_str().into()),
 			negotiation: NegotiationPolicy::default(),
@@ -969,7 +964,7 @@ impl pb::inference_server::Inference for InferenceRpc {
 			match event.map_err(inference_status)? {
 				TranscriptEvent::Started { language } => {
 					if let Some(language) = language {
-						response.language = language.as_str().to_owned();
+						response.language = language.into();
 					}
 				},
 				TranscriptEvent::TextDelta { .. } => {},
@@ -977,7 +972,7 @@ impl pb::inference_server::Inference for InferenceRpc {
 					response.segments.push(pb::transcribe_response::Segment {
 						start_ms,
 						end_ms,
-						text: text.as_str().to_owned(),
+						text: text.into(),
 						speaker: speaker.map(|speaker| speaker.index),
 						confidence: None,
 					});
@@ -986,12 +981,12 @@ impl pb::inference_server::Inference for InferenceRpc {
 					response.words.push(pb::transcribe_response::Word {
 						start_ms,
 						end_ms,
-						word: text.as_str().to_owned(),
+						word: text.into(),
 						speaker: speaker.map(|speaker| speaker.index),
 					});
 				},
 				TranscriptEvent::Completed { text, usage } => {
-					response.text = text.as_str().to_owned();
+					response.text = text.into();
 					response.usage = Some(proto_usage(usage));
 				},
 			}
@@ -1413,7 +1408,7 @@ fn inference_status(error: Error) -> Status {
 		.request_id
 		.as_ref()
 		.map_or("<unassigned>", |request| request.as_str());
-	let message = format!("{:?} during {:?} (request {request})", error.kind, error.phase,);
+	let message = format!("{:?} during {:?} (request {request})", error.kind, error.phase);
 	match error.kind {
 		ErrorKind::Cancelled => Status::cancelled(message),
 		ErrorKind::DeadlineExceeded => Status::deadline_exceeded(message),
@@ -1593,7 +1588,7 @@ fn content_part(part: &thread_pb::Part) -> Result<ContentPart, Status> {
 			"unscoped reasoning signatures cannot enter canonical inference",
 		)),
 		Some(thread_pb::part::Kind::Blob(blob)) => Ok(ContentPart::Image(media_input(blob)?)),
-		Some(thread_pb::part::Kind::Fallback(_)) | Some(thread_pb::part::Kind::ServerTool(_)) => {
+		Some(thread_pb::part::Kind::Fallback(_) | thread_pb::part::Kind::ServerTool(_)) => {
 			Err(Status::invalid_argument(
 				"legacy fallback/server-tool parts require an explicit canonical projection",
 			))
@@ -1631,11 +1626,7 @@ fn media_input(blob: &thread_pb::Blob) -> Result<MediaInput, Status> {
 	if blob.hash.is_empty() {
 		return Err(Status::invalid_argument("Blob requires inline bytes or a content hash"));
 	}
-	let id = blob
-		.hash
-		.iter()
-		.map(|byte| format!("{byte:02x}"))
-		.collect::<String>();
+	let id = hex::encode(&blob.hash).into_string();
 	Ok(MediaInput::Stored(omp_llm_inference::answer::ArtifactRef {
 		store:    Str::from("omp-rpc-blobs"),
 		id:       id.as_str().into(),
@@ -1970,7 +1961,7 @@ async fn route_live_turn_frame(
 					"tool_result.call_id does not match invocation tool_call",
 				));
 			}
-			completion_result = complete.tool_result.clone();
+			completion_result.clone_from(&complete.tool_result);
 			match invocation.kind {
 				WorkflowResponseKind::Action => {
 					let (response, is_error) = workflow_action_result(&complete)?;
@@ -2301,7 +2292,7 @@ fn turn_events(
 						Err(Status::failed_precondition("provider reused a live invocation_id"))?;
 					}
 					let deadline = action.timeout.map(|timeout| Instant::now() + timeout);
-					let vendor = action.call.is_none().then(|| action.arguments.clone()).unwrap_or_default();
+					let vendor = if action.call.is_none() { action.arguments.clone() } else { Default::default() };
 					let tool_props = action
 						.call
 						.as_ref()
@@ -2327,7 +2318,7 @@ fn turn_events(
 					);
 					yield pb::TurnEvent {
 						event: Some(pb::turn_event::Event::Invoke(pb::Invoke {
-							invocation_id: invocation_id,
+							invocation_id,
 							name: action.name.as_str().to_owned(),
 							tool_call,
 							vendor,
@@ -2766,7 +2757,7 @@ fn native_response_stream(
 	}
 }
 
-fn video_dimensions(resolution: i32, aspect_ratio: i32) -> Setting<Dimensions> {
+const fn video_dimensions(resolution: i32, aspect_ratio: i32) -> Setting<Dimensions> {
 	let height = match resolution {
 		1 => 480,
 		2 => 720,
@@ -2819,7 +2810,7 @@ async fn run_generation(
 					if !generation_terminal(status.lock().state) {
 						publish_generation(&status, &updates, |status| {
 							status.state = pb::generation_status::State::Failed as i32;
-							status.detail = "generation stream ended before a terminal event".to_owned();
+							status.detail = "generation stream ended before a terminal event".into();
 						});
 					}
 					break;
@@ -2839,7 +2830,7 @@ async fn run_generation(
 						Ok(blob) => publish_generation(&status, &updates, |status| {
 							status.artifacts.push(pb::generation_status::Artifact {
 								blob: Some(blob),
-								variant: "video".to_owned(),
+								variant: "video".into(),
 								url: String::new(),
 								url_expires_at_ms: 0,
 							});
@@ -2847,7 +2838,7 @@ async fn run_generation(
 						Err(error) => {
 							publish_generation(&status, &updates, |status| {
 								status.state = pb::generation_status::State::Failed as i32;
-								status.detail = error.message().to_owned();
+								status.detail = error.message().into();
 							});
 							break;
 						},
@@ -2938,10 +2929,10 @@ mod tests {
 			},
 		];
 		let completion = Completion {
-			reason: FinishReason::Stop,
-			blocks: 0,
-			usage: Usage { input_tokens: 321, ..Usage::default() },
-			receipt,
+			reason:  FinishReason::Stop,
+			blocks:  0,
+			usage:   Usage { input_tokens: 321, ..Usage::default() },
+			receipt: receipt.into(),
 		};
 
 		let outcome = build_turn_outcome(&TurnProjection::default(), &completion, None, 0);
@@ -2988,8 +2979,12 @@ mod tests {
 			input_bytes: 0,
 			steps:       1,
 		});
-		let completion =
-			Completion { reason: FinishReason::Stop, blocks: 0, usage: Usage::default(), receipt };
+		let completion = Completion {
+			reason:  FinishReason::Stop,
+			blocks:  0,
+			usage:   Usage::default(),
+			receipt: receipt.into(),
+		};
 
 		assert_eq!(completion.receipt.plan.route.as_ref().map(RouteId::as_str), Some("route-fork"));
 		assert_eq!(completion.receipt.recoveries.len(), 1);
@@ -3097,9 +3092,8 @@ mod tests {
 			params: Some(pb::ChatParams { model: "different".to_owned(), ..Default::default() }),
 			..Default::default()
 		};
-		let status = match turn_replay_events(replay, &mismatched) {
-			Ok(_) => panic!("mismatched replay payload must be rejected"),
-			Err(status) => status,
+		let Err(status) = turn_replay_events(replay, &mismatched) else {
+			panic!("mismatched replay payload must be rejected");
 		};
 		assert_eq!(status.code(), tonic::Code::AlreadyExists);
 	}

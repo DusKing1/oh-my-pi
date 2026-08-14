@@ -6,7 +6,6 @@ use std::{
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use bytes::Bytes;
 use futures::StreamExt;
 use omp_core::{IntoStr, Str};
 use omp_env::EnvClient;
@@ -121,21 +120,23 @@ impl<C: TurnClient> Agent<C> {
 			prompt_hash = Some(start.prompt_hash.into());
 			prompt_head_events.clone_from(&start.prompt_head_events);
 			last_toolset_hash = Some(start.toolset_hash);
-			let context_id = match &start.input {
-				TurnInputRecord::Delta { context, .. } => Some(context.context_id.clone()),
-				TurnInputRecord::Full { .. } => {
-					start.options.context_id.as_ref().map(ToString::to_string)
-				},
-			};
-			let expected = journal
-				.latest_receipt()
-				.and_then(|receipt| receipt.outcome.revision.clone())
-				.or_else(|| match &start.input {
-					TurnInputRecord::Delta { context, .. } => context.expected.clone(),
-					TurnInputRecord::Full { .. } => None,
-				});
-			if let (Some(context_id), Some(expected)) = (context_id, expected) {
-				context = Some(ContextRef { context_id, expected: Some(expected) });
+			if !journal.is_turn_aborted(start.turn_id.as_str()) {
+				let context_id = match &start.input {
+					TurnInputRecord::Delta { context, .. } => Some(context.context_id.clone()),
+					TurnInputRecord::Full { .. } => {
+						start.options.context_id.as_ref().map(ToString::to_string)
+					},
+				};
+				let expected = journal
+					.latest_receipt()
+					.and_then(|receipt| receipt.outcome.revision.clone())
+					.or_else(|| match &start.input {
+						TurnInputRecord::Delta { context, .. } => context.expected.clone(),
+						TurnInputRecord::Full { .. } => None,
+					});
+				if let (Some(context_id), Some(expected)) = (context_id, expected) {
+					context = Some(ContextRef { context_id, expected: Some(expected) });
+				}
 			}
 		} else if let Some(receipt) = journal.latest_receipt() {
 			prompt_hash = Some(receipt.prompt_hash.into());
@@ -164,12 +165,12 @@ impl<C: TurnClient> Agent<C> {
 	}
 
 	/// Returns the authoritative configuration handle.
-	pub fn state(&self) -> &AgentState {
+	pub const fn state(&self) -> &AgentState {
 		&self.state
 	}
 
 	/// Returns the ordered event feed handle.
-	pub fn events(&self) -> &EventBus {
+	pub const fn events(&self) -> &EventBus {
 		&self.events
 	}
 
@@ -179,17 +180,29 @@ impl<C: TurnClient> Agent<C> {
 	}
 
 	/// Returns detached-job settlement state.
-	pub fn jobs(&self) -> &Arc<JobBoard> {
+	pub const fn jobs(&self) -> &Arc<JobBoard> {
 		&self.jobs
 	}
 
 	/// Returns the durable journal owner.
-	pub fn journal(&self) -> &Journal {
+	pub const fn journal(&self) -> &Journal {
 		&self.journal
 	}
 
 	/// Submits caller-authored canonical items and runs every tool follow-up.
 	pub async fn submit(
+		&mut self,
+		items: impl IntoIterator<Item = Item>,
+		root_turn_id: TurnId,
+	) -> Result<AgentRunSummary, AgentError> {
+		let result = self.submit_inner(items, root_turn_id).await;
+		if result.is_err() {
+			self.transition(AgentPhase::Idle);
+		}
+		result
+	}
+
+	async fn submit_inner(
 		&mut self,
 		items: impl IntoIterator<Item = Item>,
 		root_turn_id: TurnId,
@@ -205,7 +218,14 @@ impl<C: TurnClient> Agent<C> {
 		let staged = self
 			.journal
 			.pending_input_submission()
-			.map(|(turn_id, events)| (turn_id.clone(), events.to_vec()));
+			.map(|(turn_id, events)| {
+				(
+					turn_id.clone(),
+					events.to_vec(),
+					self.journal.is_released_submission(turn_id.as_str()),
+				)
+			});
+		let continuing_recovery = resumed.is_some() || staged.is_some();
 		let mut supplied = items.into_iter();
 		let (mut pending_indexes, mut turn_id) = if let Some(start) = resumed {
 			if supplied.next().is_some() {
@@ -214,13 +234,28 @@ impl<C: TurnClient> Agent<C> {
 				));
 			}
 			(start.item_events, TurnId::new(start.turn_id))
-		} else if let Some((turn_id, events)) = staged {
+		} else if let Some((turn_id, events, released)) = staged {
 			if supplied.next().is_some() {
 				return Err(AgentError::Protocol(
 					"cannot append caller items while resuming durable staged input",
 				));
 			}
-			(events, TurnId::new(turn_id))
+			let mut pending_indexes = self.journal.released_input_events().to_vec();
+			pending_indexes.extend(events);
+			if released {
+				let attempt = u8::try_from(self.journal.trailing_aborts())
+					.unwrap_or(u8::MAX)
+					.clamp(1, EMPTY_OUTPUT_RETRY_CAP);
+				pending_indexes.push(self.journal.append_turn_input(
+					now,
+					turn_id.as_str(),
+					empty_output_retry_item(attempt),
+					self.prompt_hash,
+				)?);
+			}
+			pending_indexes.sort_unstable();
+			pending_indexes.dedup();
+			(pending_indexes, TurnId::new(turn_id))
 		} else {
 			let snapshot = self.state.snapshot();
 			let queued = self
@@ -241,7 +276,11 @@ impl<C: TurnClient> Agent<C> {
 			(pending_indexes, root_turn_id)
 		};
 		let mut committed_turns = 0_u32;
-		let mut empty_output_retries = 0_u8;
+		let mut empty_output_retries = if continuing_recovery {
+			u8::try_from(self.journal.trailing_aborts()).unwrap_or(u8::MAX)
+		} else {
+			0
+		};
 
 		loop {
 			let turn = self.run_turn(turn_id.clone(), pending_indexes).await;
@@ -255,9 +294,13 @@ impl<C: TurnClient> Agent<C> {
 					if pb::turn_error::Kind::try_from(error.kind)
 						== Ok(pb::turn_error::Kind::EmptyOutput) =>
 				{
-					self.journal.abort_turn(now_ms(), turn_id.as_str())?;
-					if empty_output_retries >= EMPTY_OUTPUT_RETRY_CAP {
-						error.detail = EMPTY_OUTPUT_RETRY_DETAIL.to_owned();
+					let recoverable = empty_output_retries < EMPTY_OUTPUT_RETRY_CAP;
+					self
+						.journal
+						.abort_turn(now_ms(), turn_id.as_str(), recoverable)?;
+					self.context = None;
+					if !recoverable {
+						error.detail = EMPTY_OUTPUT_RETRY_DETAIL.into();
 						return Err(AgentError::Turn(TurnError::Terminal(error)));
 					}
 					empty_output_retries = empty_output_retries.saturating_add(1);
@@ -324,7 +367,7 @@ impl<C: TurnClient> Agent<C> {
 					return Err(error.into());
 				}
 				let (interrupt_tx, interrupt_rx) = tokio::sync::watch::channel(None);
-				for interrupt in immediate.drain(..) {
+				for interrupt in std::mem::take(&mut immediate) {
 					interrupt_tx.send_replace(Some(interrupt_reason(&interrupt.source)));
 					boundary.push(interrupt);
 				}
@@ -369,7 +412,8 @@ impl<C: TurnClient> Agent<C> {
 				}
 				let next_turn_id = follow_up_id(&turn_id, committed_turns);
 				pending_indexes = self.append_pending(&next_turn_id, next)?;
-				pending_indexes.extend(self.stage_interrupts(&next_turn_id, boundary.drain(..))?);
+				pending_indexes
+					.extend(self.stage_interrupts(&next_turn_id, std::mem::take(&mut boundary))?);
 				if deadline_elapsed {
 					return Err(AgentError::Deadline);
 				}
@@ -523,7 +567,7 @@ impl<C: TurnClient> Agent<C> {
 		let all_live = self.journal.live_item_events()?;
 		let mut full = resume_input
 			.as_ref()
-			.map_or(self.context.is_none(), |input| matches!(input, TurnInput::Full(_)));
+			.map_or_else(|| self.context.is_none(), |input| matches!(input, TurnInput::Full(_)));
 		let mut context = match resume_input.as_ref() {
 			Some(TurnInput::Delta(context, _)) => Some(context.clone()),
 			_ => self.context.clone(),
@@ -732,7 +776,7 @@ impl<C: TurnClient> Agent<C> {
 	}
 
 	async fn drive_session(
-		&mut self,
+		&self,
 		turn_id: TurnId,
 		input: TurnInput,
 		options: &crate::TurnOptions,
@@ -772,9 +816,10 @@ impl<C: TurnClient> Agent<C> {
 				}
 			};
 			let event = event.ok_or_else(|| tonic::Status::unavailable("turn stream lost"))??;
-			self
-				.events
-				.publish(AgentEvent::Turn { turn_id: turn_id.clone(), event: event.clone() });
+			self.events.publish(AgentEvent::Turn {
+				turn_id: turn_id.clone(),
+				event:   Box::new(event.clone()),
+			});
 			match event.event {
 				Some(pb::turn_event::Event::Outcome(outcome)) => {
 					return Ok((outcome, speculative));
@@ -821,7 +866,7 @@ impl<C: TurnClient> Agent<C> {
 				},
 				Some(pb::turn_event::Event::Invoke(invoke)) => duplex.start(invoke),
 				Some(pb::turn_event::Event::InvokeCancel(cancel)) => {
-					duplex.cancel(&cancel.invocation_id)
+					duplex.cancel(&cancel.invocation_id);
 				},
 				_ => {},
 			}
@@ -930,7 +975,7 @@ fn committed_calls(
 		if committed_rev != opened.identity().rev.to_string() {
 			return Err(AgentError::Protocol("committed tool revision changed"));
 		}
-		committed.push(opened.commit(Bytes::from(call.args_json.clone())));
+		committed.push(opened.commit(call.args_json.clone()));
 	}
 	Ok(committed)
 }
@@ -1032,14 +1077,13 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-	use std::{
-		collections::VecDeque,
-		sync::{Arc, Mutex},
-	};
+	use std::{collections::VecDeque, sync::Arc};
 
+	use bytes::Bytes;
 	use futures::stream;
 	use omp_storage::transcript::{Header, SessionId};
 	use omp_tool::{Constraint, Rev, ToolSpec};
+	use parking_lot::Mutex;
 
 	use super::*;
 
@@ -1060,36 +1104,34 @@ mod tests {
 			stream::iter(std::mem::take(&mut self.events))
 		}
 
-		async fn submit(&mut self, _frame: crate::InvokeFrame) -> Result<(), TurnError> {
-			Ok(())
+		fn submit(
+			&mut self,
+			_frame: crate::InvokeFrame,
+		) -> impl Future<Output = Result<(), TurnError>> + Send + '_ {
+			std::future::ready(Ok(()))
 		}
 	}
 
 	impl TurnClient for ScriptedClient {
 		type Session<'client> = ScriptedSession;
 
-		async fn turn<'client>(
+		fn turn<'client>(
 			&'client self,
 			turn_id: TurnId,
 			input: TurnInput,
 			options: &'client crate::TurnOptions,
-		) -> Result<Self::Session<'client>, TurnError> {
-			self
-				.opened
-				.lock()
-				.expect("capture lock")
-				.push((turn_id, input, options.clone()));
+		) -> impl Future<Output = Result<Self::Session<'client>, TurnError>> + Send + 'client {
+			self.opened.lock().push((turn_id, input, options.clone()));
 			let outcome = self
 				.outcomes
 				.lock()
-				.expect("script lock")
 				.pop_front()
 				.expect("one outcome per turn");
-			Ok(ScriptedSession {
+			std::future::ready(Ok(ScriptedSession {
 				events: vec![Ok(pb::TurnEvent {
 					event: Some(pb::turn_event::Event::Outcome(outcome)),
 				})],
-			})
+			}))
 		}
 	}
 
@@ -1183,7 +1225,7 @@ mod tests {
 
 		assert_eq!(resumed_tools.as_ref(), &[Str::from("old")]);
 		assert_eq!(fresh_tools.as_ref(), &[Str::from("new")]);
-		let opened = opened.lock().expect("capture lock");
+		let opened = opened.lock();
 		assert_eq!(opened.len(), 2);
 		assert_eq!(opened[0].0.as_str(), "durable-turn");
 		assert!(matches!(&opened[0].1, TurnInput::Full(thread) if thread == &durable_input));

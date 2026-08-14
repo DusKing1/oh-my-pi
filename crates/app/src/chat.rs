@@ -77,16 +77,16 @@ pub enum ChatError {
 	},
 	/// Durable transcript state failed to open, create, or project.
 	#[error(transparent)]
-	Journal(#[from] omp_agent::JournalError),
+	Journal(#[source] Box<omp_agent::JournalError>),
 	/// A durable transcript could not be projected into canonical replay items.
 	#[error(transparent)]
-	Projection(#[from] omp_agent::ProjectionError),
+	Projection(#[source] Box<omp_agent::ProjectionError>),
 	/// The project environment authority failed to start or connect.
 	#[error(transparent)]
-	Environment(#[from] crate::envd::EnvdError),
+	Environment(#[source] Box<crate::envd::EnvdError>),
 	/// The in-process turn authority could not be constructed.
 	#[error(transparent)]
-	TurnClient(#[from] omp_agent::Error),
+	TurnClient(#[source] Box<omp_agent::Error>),
 	/// A live tool declaration could not be represented on the turn protocol.
 	#[error("tool {0} uses a grammar input unsupported by the turn protocol")]
 	GrammarTool(Str),
@@ -102,6 +102,30 @@ pub enum ChatError {
 	/// The platform cannot enforce the Phase 3 owner-local environment contract.
 	#[error("interactive chat requires Unix owner-local project authorities")]
 	UnsupportedPlatform,
+}
+
+impl From<omp_agent::JournalError> for ChatError {
+	fn from(error: omp_agent::JournalError) -> Self {
+		Self::Journal(Box::new(error))
+	}
+}
+
+impl From<omp_agent::ProjectionError> for ChatError {
+	fn from(error: omp_agent::ProjectionError) -> Self {
+		Self::Projection(Box::new(error))
+	}
+}
+
+impl From<crate::envd::EnvdError> for ChatError {
+	fn from(error: crate::envd::EnvdError) -> Self {
+		Self::Environment(Box::new(error))
+	}
+}
+
+impl From<omp_agent::Error> for ChatError {
+	fn from(error: omp_agent::Error) -> Self {
+		Self::TurnClient(Box::new(error))
+	}
 }
 
 struct Session {
@@ -132,7 +156,7 @@ pub(crate) struct ChatParentHost<C: TurnClient + Clone + 'static> {
 }
 
 impl<C: TurnClient + Clone + 'static> ChatParentHost<C> {
-	pub(crate) fn new(
+	pub(crate) const fn new(
 		client: C,
 		env: omp_env::EnvClient,
 		state: AgentState,
@@ -334,7 +358,7 @@ impl<C: TurnClient + Clone + 'static> crate::envd::eval::ParentSessionHost for C
 
 	async fn budget(&self, _args: Value) -> Result<Value, crate::envd::eval::BridgeHostError> {
 		let context = self.context.lock();
-		let budget = context.state.snapshot().turn.params.task_budget.clone();
+		let budget = context.state.snapshot().turn.params.task_budget;
 		let Some(budget) = budget else {
 			return Ok(json!({ "total": null, "spent": 0, "hard": false }));
 		};
@@ -349,39 +373,42 @@ impl<C: TurnClient + Clone + 'static> crate::envd::eval::ParentSessionHost for C
 
 /// Runs one interactive durable project-chat session.
 #[cfg(unix)]
-pub async fn run(args: ChatArgs) -> crate::Result<()> {
-	let root = canonical_project(&args.project)?;
+pub async fn run(args: ChatArgs) -> miette::Result<()> {
+	use miette::{Context as _, IntoDiagnostic as _};
+	let root = canonical_project(&args.project).into_diagnostic()?;
 	let data_dir = crate::cli::data_dir(None)?;
-	let state_dir = crate::project_state::directory(&data_dir, &root)?;
+	let state_dir = crate::project_state::directory(&data_dir, &root).into_diagnostic()?;
 	let sessions_dir = state_dir.join("sessions");
-	ensure_state_directory(&state_dir)?;
-	ensure_state_directory(&sessions_dir)?;
-
+	ensure_state_directory(&state_dir).into_diagnostic()?;
+	ensure_state_directory(&sessions_dir).into_diagnostic()?;
+	let env_socket = crate::project_state::environment_socket(&state_dir);
+	let document_socket = crate::project_state::document_socket(&state_dir);
 	let environment = crate::envd::ProjectEnvironment::connect_or_start(
 		&root,
 		&state_dir,
-		&state_dir.join("env.sock"),
-		&state_dir.join("docserver.sock"),
+		&env_socket,
+		&document_socket,
 		args.py_eval,
 	)
-	.await?;
+	.await
+	.into_diagnostic()?;
 	let env = environment.client().clone();
 	let eval_bridge = environment.eval_bridge();
 	let eval_control = environment.eval_control();
 
 	let registry = environment.registry();
-	let catalog = omp_llm_catalog::snapshot::Catalog::try_embedded()?;
-	let session = open_session(&root, &sessions_dir, args.resume.as_ref(), registry.as_ref())?;
-	let snapshot = agent_snapshot(args.model.as_str(), &root, &session.id, Arc::clone(&registry))?;
+	let catalog = omp_llm_catalog::snapshot::Catalog::try_embedded().into_diagnostic()?;
+	let session = open_session(&root, &sessions_dir, args.resume.as_ref(), registry.as_ref())
+		.into_diagnostic()?;
+	let snapshot = agent_snapshot(args.model.as_str(), &root, &session.id, Arc::clone(&registry))
+		.into_diagnostic()?;
 	let state = AgentState::new(snapshot);
 
 	if let Some(endpoint) = args.gateway {
 		let channel = omp_rpc::uds::connect(endpoint.as_path())
 			.await
-			.map_err(|source| crate::AppError::ConnectGateway {
-				endpoint: endpoint.clone(),
-				source,
-			})?;
+			.into_diagnostic()
+			.wrap_err_with(|| format!("could not connect to {endpoint}"))?;
 		run_ui(
 			RpcTurnClient::new(channel),
 			env,
@@ -391,20 +418,24 @@ pub async fn run(args: ChatArgs) -> crate::Result<()> {
 			eval_control.clone(),
 			ChatScope { catalog, root: &root, sessions_dir: &sessions_dir, registry },
 		)
-		.await?;
+		.await
+		.into_diagnostic()?;
 	} else {
-		let (_, inference) =
-			crate::daemon::production_inference(&data_dir, Arc::clone(&registry)).await?;
+		let (_, inference) = crate::daemon::production_inference(&data_dir, Arc::clone(&registry))
+			.await
+			.into_diagnostic()?;
 		let client = InProcTurnClient::new(inference)
 			.await
-			.map_err(ChatError::from)?;
+			.map_err(ChatError::from)
+			.into_diagnostic()?;
 		run_ui(client, env, state, session, eval_bridge, eval_control, ChatScope {
 			catalog,
 			root: &root,
 			sessions_dir: &sessions_dir,
 			registry,
 		})
-		.await?;
+		.await
+		.into_diagnostic()?;
 	}
 
 	// `environment` is deliberately retained until the agent and UI have been
@@ -416,8 +447,9 @@ pub async fn run(args: ChatArgs) -> crate::Result<()> {
 
 /// Reports the platform limitation before touching project state.
 #[cfg(not(unix))]
-pub async fn run(_args: ChatArgs) -> crate::Result<()> {
-	Err(ChatError::UnsupportedPlatform.into())
+pub async fn run(_args: ChatArgs) -> miette::Result<()> {
+	use miette::IntoDiagnostic as _;
+	Err(ChatError::UnsupportedPlatform).into_diagnostic()
 }
 
 async fn run_ui<C: TurnClient + Clone + 'static>(
@@ -595,7 +627,7 @@ fn resume_choices(
 		};
 		choices.push((modified, ResumeChoice { id, label, detail }));
 	}
-	choices.sort_unstable_by(|left, right| right.0.cmp(&left.0));
+	choices.sort_unstable_by_key(|(modified, _)| std::cmp::Reverse(*modified));
 	Ok(choices.into_iter().map(|(_, choice)| choice).collect())
 }
 
@@ -785,20 +817,24 @@ mod tests {
 			stream::iter(std::mem::take(&mut self.events))
 		}
 
-		async fn submit(&mut self, _frame: InvokeFrame) -> Result<(), omp_agent::Error> {
-			Ok(())
+		fn submit(
+			&mut self,
+			_frame: InvokeFrame,
+		) -> impl Future<Output = Result<(), omp_agent::Error>> + Send + '_ {
+			std::future::ready(Ok(()))
 		}
 	}
 
 	impl TurnClient for ScriptedParentClient {
 		type Session<'client> = ScriptedParentSession;
 
-		async fn turn<'client>(
+		fn turn<'client>(
 			&'client self,
 			_turn_id: TurnId,
 			input: TurnInput,
 			options: &'client TurnOptions,
-		) -> Result<Self::Session<'client>, omp_agent::Error> {
+		) -> impl Future<Output = Result<Self::Session<'client>, omp_agent::Error>> + Send + 'client
+		{
 			self.inputs.lock().push(input);
 			self.options.lock().push(options.clone());
 			let outcome = self
@@ -806,11 +842,11 @@ mod tests {
 				.lock()
 				.pop_front()
 				.expect("one scripted parent outcome");
-			Ok(ScriptedParentSession {
+			std::future::ready(Ok(ScriptedParentSession {
 				events: vec![Ok(inference_pb::TurnEvent {
 					event: Some(inference_pb::turn_event::Event::Outcome(outcome)),
 				})],
-			})
+			}))
 		}
 	}
 

@@ -17,11 +17,10 @@ pub mod daemon;
 pub mod discovery;
 pub mod endpoint;
 pub mod envd;
-pub mod error;
 pub mod project_state;
 pub mod rpc_adapter;
 
-pub use error::{AppError, Result};
+pub use miette::{IntoDiagnostic, Report, Result};
 
 /// Parses process arguments and runs the selected production operation.
 pub async fn run() -> Result<()> {

@@ -47,22 +47,22 @@ pub struct TurnOptions {
 #[derive(Clone, Debug)]
 pub enum InvokeFrame {
 	/// Streams one canonical input chunk or opaque vendor frame.
-	Input(InvokeInput),
+	Input(Box<InvokeInput>),
 	/// Completes an invocation with its canonical result and typed status.
-	Complete(InvokeComplete),
+	Complete(Box<InvokeComplete>),
 }
 
 impl From<InvokeInput> for InvokeFrame {
 	#[inline]
 	fn from(frame: InvokeInput) -> Self {
-		Self::Input(frame)
+		Self::Input(Box::new(frame))
 	}
 }
 
 impl From<InvokeComplete> for InvokeFrame {
 	#[inline]
 	fn from(frame: InvokeComplete) -> Self {
-		Self::Complete(frame)
+		Self::Complete(Box::new(frame))
 	}
 }
 
@@ -70,8 +70,8 @@ impl From<InvokeFrame> for TurnFrame {
 	#[inline]
 	fn from(frame: InvokeFrame) -> Self {
 		let frame = match frame {
-			InvokeFrame::Input(frame) => pb::turn_frame::Frame::Input(frame),
-			InvokeFrame::Complete(frame) => pb::turn_frame::Frame::Complete(frame),
+			InvokeFrame::Input(frame) => pb::turn_frame::Frame::Input(*frame),
+			InvokeFrame::Complete(frame) => pb::turn_frame::Frame::Complete(*frame),
 		};
 		Self { frame: Some(frame) }
 	}
@@ -86,11 +86,11 @@ impl From<InvokeFrame> for TurnFrame {
 pub enum Error {
 	/// The submitted revision was stale; the embedded error carries the actual
 	/// revision.
-	Conflict(TurnError),
+	Conflict(Box<TurnError>),
 	/// The referenced context is absent and must be reseeded with a full thread.
-	NeedFull(TurnError),
+	NeedFull(Box<TurnError>),
 	/// A non-recoverable terminal protocol error.
-	Terminal(TurnError),
+	Terminal(Box<TurnError>),
 	/// The tonic request or response stream failed.
 	Rpc(tonic::Status),
 	/// An RPC channel could not be established.
@@ -106,7 +106,7 @@ pub enum Error {
 impl Error {
 	/// Returns the retained terminal protocol error, when this came from one.
 	#[inline]
-	pub fn turn_error(&self) -> Option<&TurnError> {
+	pub const fn turn_error(&self) -> Option<&TurnError> {
 		match self {
 			Self::Conflict(error) | Self::NeedFull(error) | Self::Terminal(error) => Some(error),
 			Self::Rpc(_) | Self::Connect(_) | Self::Protocol(_) | Self::Invalid(_) | Self::Closed => {
@@ -118,16 +118,16 @@ impl Error {
 	/// Reports whether policy above this seam may recover by rebasing or
 	/// reseeding.
 	#[inline]
-	pub fn is_recovery(&self) -> bool {
+	pub const fn is_recovery(&self) -> bool {
 		matches!(self, Self::Conflict(_) | Self::NeedFull(_))
 	}
 
 	pub(crate) fn from_turn(error: TurnError) -> Self {
 		match pb::turn_error::Kind::try_from(error.kind).unwrap_or(pb::turn_error::Kind::Unspecified)
 		{
-			pb::turn_error::Kind::Conflict => Self::Conflict(error),
-			pb::turn_error::Kind::NeedFull => Self::NeedFull(error),
-			_ => Self::Terminal(error),
+			pb::turn_error::Kind::Conflict => Self::Conflict(Box::new(error)),
+			pb::turn_error::Kind::NeedFull => Self::NeedFull(Box::new(error)),
+			_ => Self::Terminal(Box::new(error)),
 		}
 	}
 }
@@ -210,7 +210,7 @@ pub trait TurnSession: Send {
 	fn submit(&mut self, frame: InvokeFrame) -> impl Future<Output = Result<(), Error>> + Send + '_;
 }
 
-pub(crate) fn open_frame(
+pub fn open_frame(
 	turn_id: &TurnId,
 	input: TurnInput,
 	options: &TurnOptions,
@@ -246,7 +246,7 @@ pub(crate) fn open_frame(
 	})
 }
 
-pub(crate) fn invocation_stream(
+pub fn invocation_stream(
 	receiver: flume::Receiver<TurnFrame>,
 ) -> impl Stream<Item = TurnFrame> + Send + 'static {
 	futures::stream::unfold(receiver, |receiver| async move {
@@ -255,13 +255,13 @@ pub(crate) fn invocation_stream(
 	})
 }
 
-pub(crate) struct EventStream<'session> {
+pub struct EventStream<'session> {
 	stream:   &'session mut tonic::Streaming<TurnEvent>,
 	terminal: &'session mut bool,
 }
 
 impl<'session> EventStream<'session> {
-	pub(crate) fn new(
+	pub(crate) const fn new(
 		stream: &'session mut tonic::Streaming<TurnEvent>,
 		terminal: &'session mut bool,
 	) -> Self {

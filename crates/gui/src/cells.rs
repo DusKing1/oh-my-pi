@@ -320,7 +320,7 @@ impl Compositor {
 			let py = (pass.row_offset + f32::from(y)).mul_add(metrics.line_height, view.origin[1]);
 			let mut run = BgRun::default();
 			for x in 0..pass.frame.size().width {
-				if !self.visible(pass, x, y) {
+				if !Self::visible(pass, x, y) {
 					self.flush_run(&mut run, x, pass.col_offset, py, view.origin[0], metrics);
 					continue;
 				}
@@ -350,7 +350,7 @@ impl Compositor {
 		for y in pass.first..pass.last {
 			let py = (pass.row_offset + f32::from(y)).mul_add(metrics.line_height, view.origin[1]);
 			for x in 0..pass.frame.size().width {
-				if self.visible(pass, x, y) {
+				if Self::visible(pass, x, y) {
 					self.paint_image(
 						pass.frame.cell(x, y),
 						x,
@@ -369,7 +369,7 @@ impl Compositor {
 		for y in pass.first..pass.last {
 			let py = (pass.row_offset + f32::from(y)).mul_add(metrics.line_height, view.origin[1]);
 			for x in 0..pass.frame.size().width {
-				if !self.visible(pass, x, y) || self.wide_seam(pass, x, y) {
+				if !Self::visible(pass, x, y) || Self::wide_seam(pass, x, y) {
 					continue;
 				}
 				self.paint_text(
@@ -410,13 +410,13 @@ impl Compositor {
 		}
 	}
 
-	fn visible(&self, pass: Pass<'_>, x: u16, y: u16) -> bool {
+	fn visible(pass: Pass<'_>, x: u16, y: u16) -> bool {
 		pass
 			.bands
 			.is_none_or(|bands| !covered(bands, x, pass.row_offset + f32::from(y)))
 	}
 
-	fn wide_seam(&self, pass: Pass<'_>, x: u16, y: u16) -> bool {
+	fn wide_seam(pass: Pass<'_>, x: u16, y: u16) -> bool {
 		let Some(bands) = pass.bands else {
 			return false;
 		};

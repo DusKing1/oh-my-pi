@@ -2,7 +2,6 @@
 
 use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
 
-use bytes::Bytes;
 use omp_core::{IntoStr, Str};
 use omp_env::EnvClient;
 use omp_proto::{
@@ -18,7 +17,7 @@ use crate::{
 
 /// Failure while dispatching a server-initiated invocation.
 #[derive(Debug)]
-pub(crate) enum DuplexError {
+pub enum DuplexError {
 	/// The environment invocation or canonical lowering failed.
 	Batch(BatchError),
 	/// A typed tool update could not be projected to an invocation frame.
@@ -71,7 +70,7 @@ struct Completion {
 }
 
 /// Owns concurrent in-turn invocations and suppresses cancelled completions.
-pub(crate) struct DuplexManager {
+pub struct DuplexManager {
 	env:             EnvClient,
 	registry:        Arc<Registry>,
 	events:          EventBus,
@@ -141,7 +140,7 @@ impl DuplexManager {
 				token,
 			)
 			.await
-			.map(InvokeFrame::Complete);
+			.map(InvokeFrame::from);
 			let _ = completions
 				.send_async(Completion { invocation_id, token, result })
 				.await;
@@ -225,7 +224,7 @@ async fn run_invocation(
 		return Ok(failed_completion(invocation_id, "invocation names an unknown tool"));
 	};
 	let identity = ToolIdentity { name: name.clone(), rev: rev.clone() };
-	let raw_args = Bytes::from(call.args_json.clone());
+	let raw_args = call.args_json.clone();
 	let fragment = match std::str::from_utf8(&call.args_json) {
 		Ok(fragment) => fragment.to_str(),
 		Err(_) => return Ok(failed_completion(invocation_id, "tool arguments are not UTF-8")),
@@ -301,7 +300,7 @@ async fn send_update(
 		.send_async(Completion {
 			invocation_id: invocation_id.to_owned(),
 			token,
-			result: Ok(InvokeFrame::Input(input)),
+			result: Ok(InvokeFrame::from(input)),
 		})
 		.await;
 	Ok(())

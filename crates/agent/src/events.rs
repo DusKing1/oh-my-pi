@@ -65,7 +65,7 @@ pub enum AgentEvent {
 		/// Logical turn that emitted the event.
 		turn_id: TurnId,
 		/// Canonical turn protocol event.
-		event:   TurnEvent,
+		event:   Box<TurnEvent>,
 	},
 	/// A speculative tool invocation was opened.
 	ToolOpened {

@@ -31,7 +31,7 @@ pub fn map_key(event: &winit::event::KeyEvent, mods: ModifiersState) -> Option<K
 	match &event.logical_key {
 		WinitKey::Named(named) => map_named(*named, mods),
 		WinitKey::Character(text) => {
-			let letter = letter_of(&event.physical_key);
+			let letter = letter_of(event.physical_key);
 			match (mods.control_key(), mods.alt_key()) {
 				(true, true) => return letter.map(Key::CtrlAlt),
 				(true, false) => {
@@ -112,7 +112,7 @@ fn map_named(named: NamedKey, mods: ModifiersState) -> Option<Key> {
 
 /// The QWERTY keycap character of a physical key, matching terminal chord
 /// reports: letters, digits, and the `- = [ ] , .` symbol keys.
-pub const fn letter_of(physical: &PhysicalKey) -> Option<char> {
+pub const fn letter_of(physical: PhysicalKey) -> Option<char> {
 	let PhysicalKey::Code(code) = physical else {
 		return None;
 	};
@@ -223,7 +223,7 @@ mod tests {
 			(KeyCode::Period, '.'),
 		];
 		for (code, expected) in cases {
-			assert_eq!(letter_of(&PhysicalKey::Code(code)), Some(expected));
+			assert_eq!(letter_of(PhysicalKey::Code(code)), Some(expected));
 		}
 	}
 }

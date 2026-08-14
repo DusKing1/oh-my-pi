@@ -103,7 +103,7 @@ impl JobBoard {
 		&self,
 		job_id: &str,
 		item: thread::Item,
-	) -> Result<bool, flume::TrySendError<Interrupt>> {
+	) -> Result<bool, Box<flume::TrySendError<Interrupt>>> {
 		let delivered = self.inner.deliver(job_id, item)?;
 		if delivered && let Some(watcher) = self.inner.watchers.lock().remove(job_id) {
 			watcher.abort();
@@ -132,7 +132,7 @@ impl JobBoardInner {
 		&self,
 		job_id: &str,
 		item: thread::Item,
-	) -> Result<bool, flume::TrySendError<Interrupt>> {
+	) -> Result<bool, Box<flume::TrySendError<Interrupt>>> {
 		let mut pending = self.pending.lock();
 		let Some(job) = pending.get(job_id) else {
 			return Ok(false);
@@ -338,7 +338,7 @@ fn settlement_error_item(job: &JobRef, reason: &str) -> thread::Item {
 	}])
 }
 
-fn system_item(parts: Vec<thread::Part>) -> thread::Item {
+const fn system_item(parts: Vec<thread::Part>) -> thread::Item {
 	thread::Item {
 		seq:           0,
 		created_at_ms: 0,
