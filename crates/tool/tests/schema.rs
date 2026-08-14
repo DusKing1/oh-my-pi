@@ -151,3 +151,12 @@ fn fallback_map_schema_stays_permissive() {
 	let bytes = schema::<BTreeMap<String, Value>>();
 	assert_eq!(bytes.as_ref(), br#"{"type":"object","additionalProperties":true}"#);
 }
+
+#[test]
+fn option_values_stay_nullable_outside_properties() {
+	assert_eq!(
+		<Vec<Option<f64>> as ToolParam>::schema(),
+		json!({ "type": "array", "items": { "anyOf": [{ "type": "number" }, { "type": "null" }] } }),
+		"value-position Option keeps accepting null"
+	);
+}

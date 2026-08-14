@@ -41,8 +41,16 @@ pub trait ToolParam {
 	/// object entirely, keeping it out of `required`.
 	const OPTIONAL: bool = false;
 
-	/// Returns this type's inline JSON Schema value.
+	/// Returns this type's inline JSON Schema in value position, where
+	/// `Option` means a nullable value.
 	fn schema() -> Value;
+
+	/// Returns this type's schema when it sits directly in an object property
+	/// whose absence is representable: `Option` contributes its inner schema
+	/// plus omission instead of `null`.
+	fn property_schema() -> Value {
+		Self::schema()
+	}
 }
 
 macro_rules! leaf {
@@ -65,6 +73,10 @@ impl<T: ToolParam> ToolParam for Option<T> {
 	const OPTIONAL: bool = true;
 
 	fn schema() -> Value {
+		json!({ "anyOf": [T::schema(), { "type": "null" }] })
+	}
+
+	fn property_schema() -> Value {
 		T::schema()
 	}
 }
@@ -87,7 +99,7 @@ impl<V: ToolParam> ToolParam for BTreeMap<String, V> {
 	}
 }
 
-impl<V: ToolParam> ToolParam for HashMap<String, V> {
+impl<V: ToolParam, S> ToolParam for HashMap<String, V, S> {
 	fn schema() -> Value {
 		json!({ "type": "object", "additionalProperties": V::schema() })
 	}
@@ -96,7 +108,7 @@ impl<V: ToolParam> ToolParam for HashMap<String, V> {
 /// Any JSON value; schemas to the permissive `true`.
 impl ToolParam for Value {
 	fn schema() -> Value {
-		Value::Bool(true)
+		Self::Bool(true)
 	}
 }
 
@@ -107,7 +119,7 @@ impl ToolParam for Value {
 pub fn schema<T: ToolParam>() -> Bytes {
 	let mut root = T::schema();
 	if let Some(object) = root.as_object_mut() {
-		object.remove("description");
+		object.shift_remove("description");
 	}
 	Bytes::from(
 		serde_json::to_vec(&root).expect("model-facing JSON Schema serializes to compact JSON"),

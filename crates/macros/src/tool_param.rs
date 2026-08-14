@@ -12,8 +12,8 @@
 //!   honored so the schema always describes deserialization.
 //! - `#[param(...)]` carries the schema-only knobs: `description` overrides
 //!   (empty string suppresses), `minimum`/`maximum`/`min_length`/`max_length`
-//!   bounds, `nullable`, and `extend({ ... })` merging raw JSON Schema into
-//!   the surrounding object.
+//!   bounds, `nullable`, and `extend({ ... })` merging raw JSON Schema into the
+//!   surrounding object.
 //!
 //! Unit-variant enums derive as `{"type": "string", "enum": [...]}`.
 
@@ -92,7 +92,7 @@ fn expand_struct(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<
 		steps.extend(quote! {
 			::omp_tool::__private::merge_defaults(
 				&mut prop,
-				<#ty as ::omp_tool::ToolParam>::schema(),
+				<#ty as ::omp_tool::ToolParam>::property_schema(),
 			);
 		});
 		for (key, value) in &param.bounds {
@@ -314,8 +314,7 @@ fn param_attrs(attrs: &[Attribute]) -> syn::Result<ParamAttrs> {
 				let tokens: TokenStream2 = content.parse()?;
 				let mut trees = tokens.clone().into_iter();
 				match (trees.next(), trees.next()) {
-					(Some(TokenTree::Group(group)), None)
-						if group.delimiter() == Delimiter::Brace => {},
+					(Some(TokenTree::Group(group)), None) if group.delimiter() == Delimiter::Brace => {},
 					_ => return Err(meta.error("extend takes a single JSON object: extend({ ... })")),
 				}
 				out.extend = Some(tokens);
@@ -355,8 +354,12 @@ fn doc_text(attrs: &[Attribute]) -> Option<String> {
 		if !attr.path().is_ident("doc") {
 			continue;
 		}
-		let Meta::NameValue(pair) = &attr.meta else { continue };
-		let Expr::Lit(ExprLit { lit: Lit::Str(text), .. }) = &pair.value else { continue };
+		let Meta::NameValue(pair) = &attr.meta else {
+			continue;
+		};
+		let Expr::Lit(ExprLit { lit: Lit::Str(text), .. }) = &pair.value else {
+			continue;
+		};
 		let line = text.value();
 		let line = line.trim();
 		if line.is_empty() {
@@ -398,10 +401,7 @@ enum RenameRule {
 impl RenameRule {
 	fn parse(rule: &LitStr) -> syn::Result<Self> {
 		rule.value().parse().map_err(|_| {
-			syn::Error::new_spanned(
-				rule,
-				format!("unsupported rename_all rule `{}`", rule.value()),
-			)
+			syn::Error::new_spanned(rule, format!("unsupported rename_all rule `{}`", rule.value()))
 		})
 	}
 
@@ -459,7 +459,11 @@ fn separate_words(pascal: &str, separator: char, screaming: bool) -> String {
 		if ch.is_ascii_uppercase() && index > 0 {
 			out.push(separator);
 		}
-		out.push(if screaming { ch.to_ascii_uppercase() } else { ch.to_ascii_lowercase() });
+		out.push(if screaming {
+			ch.to_ascii_uppercase()
+		} else {
+			ch.to_ascii_lowercase()
+		});
 	}
 	out
 }
