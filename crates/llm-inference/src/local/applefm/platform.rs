@@ -101,6 +101,7 @@ impl BridgeFailure {
 	}
 }
 
+#[repr(transparent)]
 struct Runtime {
 	handle: *mut c_void,
 }

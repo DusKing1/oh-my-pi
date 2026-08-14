@@ -132,6 +132,8 @@ pub struct SessionRequest {
 	pub turn:         TurnId,
 	/// Requested context transport strategy.
 	pub strategy:     ContextStrategy,
+	/// Whether the caller deliberately forked from an earlier revision.
+	pub forked:       bool,
 }
 
 /// Determines how canonical conversation context reaches a provider.
