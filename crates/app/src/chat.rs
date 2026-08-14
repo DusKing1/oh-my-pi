@@ -35,6 +35,7 @@ use crate::{
 
 const PROMPT_CAPS: PromptCaps =
 	PromptCaps { maximum_parts: 1, maximum_text_bytes: 64 * 1024, media: false };
+const DEFAULT_EVAL_CONCURRENCY_LIMIT: usize = 32;
 
 /// Failures while resolving or running one durable project-chat session.
 #[derive(Debug, Error)]
@@ -77,16 +78,16 @@ pub enum ChatError {
 	},
 	/// Durable transcript state failed to open, create, or project.
 	#[error(transparent)]
-	Journal(#[source] Box<omp_agent::JournalError>),
+	Journal(Box<omp_agent::JournalError>),
 	/// A durable transcript could not be projected into canonical replay items.
 	#[error(transparent)]
-	Projection(#[source] Box<omp_agent::ProjectionError>),
+	Projection(Box<omp_agent::ProjectionError>),
 	/// The project environment authority failed to start or connect.
 	#[error(transparent)]
-	Environment(#[source] Box<crate::envd::EnvdError>),
+	Environment(Box<crate::envd::EnvdError>),
 	/// The in-process turn authority could not be constructed.
 	#[error(transparent)]
-	TurnClient(#[source] Box<omp_agent::Error>),
+	TurnClient(Box<omp_agent::Error>),
 	/// A live tool declaration could not be represented on the turn protocol.
 	#[error("tool {0} uses a grammar input unsupported by the turn protocol")]
 	GrammarTool(Str),
@@ -353,7 +354,7 @@ impl<C: TurnClient + Clone + 'static> crate::envd::eval::ParentSessionHost for C
 	}
 
 	async fn concurrency(&self, _args: Value) -> Result<Value, crate::envd::eval::BridgeHostError> {
-		Ok(json!({ "limit": 0 }))
+		Ok(json!({ "limit": DEFAULT_EVAL_CONCURRENCY_LIMIT }))
 	}
 
 	async fn budget(&self, _args: Value) -> Result<Value, crate::envd::eval::BridgeHostError> {
@@ -1024,6 +1025,11 @@ mod tests {
 		.await
 		.expect("live completion call");
 		assert_eq!(completion, json!({"text":"completion answer"}));
+
+		let concurrency = crate::envd::eval::ParentSessionHost::concurrency(&host, json!({}))
+			.await
+			.expect("concurrency bridge call");
+		assert_eq!(concurrency, json!({ "limit": DEFAULT_EVAL_CONCURRENCY_LIMIT }));
 
 		let agent = tokio::time::timeout(
 			std::time::Duration::from_secs(1),

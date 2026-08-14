@@ -1,4 +1,10 @@
-use std::{ffi::CString, sync::Arc};
+use std::{
+	ffi::CString,
+	sync::{
+		Arc,
+		atomic::{AtomicI64, Ordering},
+	},
+};
 
 use async_trait::async_trait;
 use omp_core::Str;
@@ -16,9 +22,24 @@ use super::*;
 
 static PYTHON_TEST: Mutex<()> = Mutex::new(());
 
-#[derive(Default)]
 struct PreludeHost {
-	calls: parking_lot::Mutex<Vec<(String, Value)>>,
+	calls:             parking_lot::Mutex<Vec<(String, Value)>>,
+	concurrency_limit: AtomicI64,
+}
+
+impl Default for PreludeHost {
+	fn default() -> Self {
+		Self {
+			calls:             parking_lot::Mutex::new(Vec::new()),
+			concurrency_limit: AtomicI64::new(2),
+		}
+	}
+}
+
+impl PreludeHost {
+	fn set_concurrency_limit(&self, limit: i64) {
+		self.concurrency_limit.store(limit, Ordering::Release);
+	}
 }
 
 #[async_trait]
@@ -46,7 +67,9 @@ impl BridgeHost for PreludeHost {
 				"text": "child output",
 				"details": { "id": "child-1", "agent": "task", "isolated": true }
 			})),
-			"__concurrency__" => Ok(json!({ "limit": 2 })),
+			"__concurrency__" => {
+				Ok(json!({ "limit": self.concurrency_limit.load(Ordering::Acquire) }))
+			},
 			"__budget__" => Ok(json!({ "total": 100, "spent": 35, "hard": true })),
 			_ => Err(BridgeHostError::message(format!("unexpected bridge call: {name}"))),
 		}
@@ -188,6 +211,38 @@ assert __omp_timeout_events.count("pause") > 0
 # Namespace and one-time prelude guard persist across cells.
 persisted_value = 73
 "#.to_owned())?;
+		run(py, &globals, r#"
+import concurrent.futures as _omp_test_futures
+
+def _observed_parallel_width(item_count):
+    original = _omp_test_futures.ThreadPoolExecutor
+    observed = []
+    class RecordingPool(original):
+        def __init__(self, max_workers=None, *args, **kwargs):
+            observed.append(max_workers)
+            super().__init__(max_workers=max_workers, *args, **kwargs)
+    _omp_test_futures.ThreadPoolExecutor = RecordingPool
+    try:
+        values = parallel([lambda i=i: i for i in range(item_count)])
+        assert values == list(range(item_count))
+    finally:
+        _omp_test_futures.ThreadPoolExecutor = original
+    return observed
+"#.to_owned())?;
+		host.set_concurrency_limit(0);
+		run(
+			py,
+			&globals,
+			"assert _observed_parallel_width(1000) == [32]\n".to_owned(),
+		)?;
+		host.set_concurrency_limit(10_000);
+		run(
+			py,
+			&globals,
+			"assert _observed_parallel_width(1000) == [32]\n".to_owned(),
+		)?;
+		host.set_concurrency_limit(3);
+		run(py, &globals, "assert _observed_parallel_width(1000) == [3]\n".to_owned())?;
 		install_python_prelude(py, &globals)?;
 		run(py, &globals, "assert persisted_value == 73\nassert tool.echo({'again': True})['again'] is True\n".to_owned())?;
 		Ok(())
@@ -206,7 +261,7 @@ persisted_value = 73
 
 #[test]
 fn python_bridge_propagates_host_errors_and_capability_denial() {
-	let _serial = PYTHON_TEST.lock().expect("serialize embedded Python tests");
+	let _serial = PYTHON_TEST.lock();
 	let runtime = Runtime::new().expect("test runtime");
 	let dispatcher = BridgeDispatcher::new();
 	let registration = dispatcher

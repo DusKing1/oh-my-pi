@@ -14,6 +14,8 @@ pub mod worker;
 pub mod workspace;
 use std::{io, path::Path, sync::Arc};
 
+#[doc(hidden)]
+pub use eval::{EVAL_CHILD_ARG, ProcessError as EvalChildError, run_eval_child_entry};
 use miette::IntoDiagnostic as _;
 use omp_core::Str;
 use omp_env::EnvClient;

@@ -758,7 +758,7 @@ fn lower_verdict(
 	if let Some(parts) = harness_parts(&verdict) {
 		return lower_tool_parts(call, &wire.json, is_error, wire.useless, &parts);
 	}
-	match registry.prompt(&call.identity, &wire.json, caps) {
+	match registry.prompt(&call.identity, &wire.json, &caps) {
 		Ok(Some(parts)) => lower_tool_parts(call, &wire.json, is_error, wire.useless, &parts),
 		Ok(None) => unreachable!("harness verdict branches were handled before registry projection"),
 		Err(_) => lower_canonical_parts(call, &wire.json, is_error, wire.useless, wire.parts),

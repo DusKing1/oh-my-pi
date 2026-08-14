@@ -1,6 +1,6 @@
 //! RPC and in-memory tonic implementations of the turn seam.
 
-use std::{future::Future, io, sync::Arc};
+use std::{io, sync::Arc};
 
 use flume::Sender;
 use hyper_util::rt::TokioIo;

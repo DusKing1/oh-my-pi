@@ -284,9 +284,9 @@ async fn fourth_empty_output_hits_cap_after_exactly_three_reminders() {
 		panic!("expected terminal turn error")
 	};
 	assert_eq!(error.detail, CAP_DETAIL);
-	let opened = opened.lock();
-	assert_eq!(opened.len(), 4);
-	let reminders: Vec<_> = opened
+	let inputs = opened.lock();
+	assert_eq!(inputs.len(), 4);
+	let reminders: Vec<_> = inputs
 		.iter()
 		.skip(1)
 		.map(|input| {
@@ -300,7 +300,7 @@ async fn fourth_empty_output_hits_cap_after_exactly_three_reminders() {
 	assert!(reminders[0].contains("Attempt #1/3"));
 	assert!(reminders[1].contains("Attempt #2/3"));
 	assert!(reminders[2].contains("Attempt #3/3"));
-	drop(opened);
+	drop(inputs);
 	assert_eq!(agent.events().phase(), AgentPhase::Idle);
 	agent
 		.submit([user_text("fresh after cap")], TurnId::new("fresh"))
@@ -375,11 +375,15 @@ async fn retry_count_survives_journal_reopen() {
 			.iter()
 			.any(|text| text.contains("Attempt #3/3"))
 	);
-	assert!(
-		!input_texts(&opened[1])
+	// The full-reseed projection retains prior reminders; each attempt number
+	// must appear exactly once (no duplicated reminder on reopen).
+	for attempt in ["Attempt #1/3", "Attempt #2/3", "Attempt #3/3"] {
+		let occurrences = input_texts(&opened[1])
 			.iter()
-			.any(|text| text.contains("Attempt #2/3"))
-	);
+			.filter(|text| text.contains(attempt))
+			.count();
+		assert_eq!(occurrences, 1, "{attempt} duplicated in reopened continuation");
+	}
 	drop(opened);
 	drop(agent);
 	std::fs::remove_file(path).expect("remove journal");

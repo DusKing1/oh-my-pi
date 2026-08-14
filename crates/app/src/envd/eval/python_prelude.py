@@ -527,19 +527,25 @@ if "__omp_prelude_loaded__" not in globals():
                 node[dst_key] = details[src_key]
         return node
 
-    def _concurrency_limit():
-        """Worker-pool ceiling from the host ``task.maxConcurrency`` setting.
+    # Eval fan-out must stay bounded even if an older/unconfigured host reports
+    # task.maxConcurrency as unlimited (0), malformed, or implausibly large.
+    _MAX_PARALLEL_WORKERS = 32
 
-        An eval fan-out runs as wide as a ``task`` batch would. Returns ``0`` for
-        unbounded (run every item at once); falls back to ``0`` if the host
-        bridge is unreachable.
+    def _concurrency_limit():
+        """Return the finite worker-pool ceiling advertised by the host.
+
+        The host's task concurrency setting is honored up to the defensive
+        process-local ceiling. Missing, zero, negative, malformed, and excessive
+        values all use that ceiling rather than creating one thread per item.
         """
         try:
             snap = _bridge_call("__concurrency__", {}) or {}
             n = int(snap.get("limit") or 0)
         except Exception:
-            return 0
-        return n if n > 0 else 0
+            return _MAX_PARALLEL_WORKERS
+        if n <= 0:
+            return _MAX_PARALLEL_WORKERS
+        return min(n, _MAX_PARALLEL_WORKERS)
 
     class _AwaitableList(list):
         """Completed list result accepted by both sync and ``await`` syntax."""
@@ -555,16 +561,14 @@ if "__omp_prelude_loaded__" not in globals():
         Preserves input order, barriers until every task settles, and raises the
         lowest-index exception if any task failed. Each task runs inside a copy
         of the submitting thread's context so the ``_CURRENT_RID`` ContextVar
-        propagates and bridge calls (agent(), tool.*, etc.) keep working. The
-        pool width tracks ``task.maxConcurrency`` (0 = run every item at once).
+        propagates and bridge calls (agent(), tool.*, etc.) keep working.
         """
         import concurrent.futures, contextvars
 
         items = list(items)
         if not items:
             return _AwaitableList()
-        limit = _concurrency_limit()
-        workers = min(limit, len(items)) if limit > 0 else len(items)
+        workers = min(_concurrency_limit(), len(items))
         results = _AwaitableList(None for _ in items)
         errors = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
@@ -586,7 +590,7 @@ if "__omp_prelude_loaded__" not in globals():
         """Run zero-arg callables through a bounded pool, preserving input order.
 
         Barriers until all finish; re-raises the lowest-index exception if any
-        thunk raised. Pool width tracks the task tool's ``task.maxConcurrency``.
+        thunk raised. Pool width honors the host limit within the defensive cap.
         """
         thunks = list(thunks)
         for t in thunks:
@@ -599,7 +603,7 @@ if "__omp_prelude_loaded__" not in globals():
 
         Every item clears stage N before any item enters stage N+1 (barrier per
         stage). Stage 1 receives the original item; later stages receive the
-        previous stage's result. Pool width tracks ``task.maxConcurrency``.
+        previous stage's result. Pool width honors the defensive host limit.
         """
         current = _AwaitableList(items)
         for stage in stages:

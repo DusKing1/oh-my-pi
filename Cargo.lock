@@ -4918,6 +4918,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "itertools 0.14.0",
  "libc",
  "miette",
  "nix 0.31.3",

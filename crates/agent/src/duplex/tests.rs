@@ -20,7 +20,7 @@ const WAIT: Duration = Duration::from_secs(2);
 
 fn expect_complete(result: Result<InvokeFrame, DuplexError>, context: &str) -> InvokeComplete {
 	match result.expect(context) {
-		InvokeFrame::Complete(complete) => complete,
+		InvokeFrame::Complete(complete) => *complete,
 		InvokeFrame::Input(_) => panic!("expected terminal invocation completion"),
 	}
 }
@@ -288,6 +288,7 @@ async fn two_invocations_remain_concurrent_and_complete_independently() {
 async fn cancellation_interrupts_then_structurally_cancels_and_suppresses_completion() {
 	let (mut manager, requests, responses) = manager_with_projection(true);
 	let (committed_tx, committed_rx) = flume::bounded(1);
+	let (done_tx, done_rx) = flume::bounded(1);
 	let server = thread::spawn(move || {
 		let open = recv(&requests);
 		let request_id = open.request_id;
@@ -310,6 +311,7 @@ async fn cancellation_interrupts_then_structurally_cancels_and_suppresses_comple
 		let cancel = recv(&requests);
 		assert_eq!(cancel.request_id, 0);
 		assert!(matches!(cancel.body, Some(frame::client_frame::Body::Cancel(_))));
+		done_tx.send(()).expect("notify cancellation observed");
 		drop(responses);
 	});
 	manager.start(invoke("invoke-c", "call-c", 3));
@@ -320,6 +322,13 @@ async fn cancellation_interrupts_then_structurally_cancels_and_suppresses_comple
 	manager.cancel("invoke-c");
 	assert!(manager.is_empty());
 	assert!(manager.next().await.is_none(), "cancelled completion must be suppressed");
+	// `join` would block the only current-thread-runtime worker before the
+	// spawned invocation task can observe cancellation and emit Interrupt;
+	// await the server's acknowledgement first so the task gets polled.
+	done_rx
+		.recv_async()
+		.await
+		.expect("interrupt and cancel observed");
 	server
 		.join()
 		.expect("interrupt and structural cancellation");

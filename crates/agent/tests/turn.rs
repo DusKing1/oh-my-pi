@@ -388,7 +388,7 @@ async fn conflict_and_need_full_are_typed_terminal_recoveries_without_seam_polic
 		match (&error, pb::turn_error::Kind::try_from(expected.kind).expect("known kind")) {
 			(Error::Conflict(actual), pb::turn_error::Kind::Conflict)
 			| (Error::NeedFull(actual), pb::turn_error::Kind::NeedFull) => {
-				assert_eq!(actual, expected);
+				assert_eq!(actual.as_ref(), expected);
 				assert!(error.is_recovery());
 				assert_eq!(error.turn_error(), Some(expected));
 			},
@@ -448,7 +448,7 @@ async fn replay_acceptance_and_unknown_terminal_errors_pass_through_verbatim() {
 		.await
 		.expect("future-error turn opens");
 	match next_event(&mut future_error).await {
-		Some(Err(Error::Terminal(actual))) => assert_eq!(actual, unknown),
+		Some(Err(Error::Terminal(actual))) => assert_eq!(*actual, unknown),
 		other => panic!("expected retained unknown terminal error, got {other:?}"),
 	}
 	assert!(next_event(&mut future_error).await.is_none());

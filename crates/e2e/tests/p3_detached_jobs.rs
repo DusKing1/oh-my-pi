@@ -196,7 +196,7 @@ fn tool_use_outcome(mut call: thread::Item, head: u64) -> inference::Outcome {
 	inference::Outcome {
 		output: vec![call],
 		stop: StopReason::StopToolUse as i32,
-		revision: revision(head),
+		revision: Some(revision(head)),
 		provider: "p3-script".to_owned(),
 		model: "deterministic".to_owned(),
 		..Default::default()

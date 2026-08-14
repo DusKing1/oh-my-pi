@@ -1,6 +1,8 @@
 //! Production built-in tool registry assembly.
 
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::LazyLock;
 
 use omp_core::Str;
 use omp_proto::toolhost::v1::{GrammarSyntax as WorkerGrammarSyntax, ToolDecl, tool_constraint};
@@ -11,7 +13,7 @@ use super::{
 	EnvdError,
 	blobs::BlobHost,
 	docs::DocumentHost,
-	eval::{BridgeNamespaceInstaller, SessionBridgeHost},
+	eval::{ProcessEvalExec, SessionBridgeHost},
 	exec::ExecHost,
 	tool_read_sources::ReadSourceAdapter,
 	tool_search::WorkspaceSearchAdapter,
@@ -48,12 +50,9 @@ pub fn production_registry(
 	registry.register(omp_tools::grep::tool(search.clone(), blobs.clone()))?;
 	registry.register(omp_tools::glob::tool(search, blobs.clone()))?;
 	let eval_host = Arc::new(SessionBridgeHost::new());
-	let runtime = tokio::runtime::Handle::try_current()
+	let eval_exec = ProcessEvalExec::production(Arc::clone(&eval_host))
 		.map_err(|error| EnvdError::Eval(Str::from(error.to_string())))?;
-	let installer = Arc::new(BridgeNamespaceInstaller::new(Arc::clone(&eval_host), runtime));
-	let (eval_tool, eval_control) = omp_tools::eval::eval_controlled(
-		omp_tools::eval::kernel::EmbeddedPython::with_installer(python_engine()?, installer),
-	);
+	let (eval_tool, eval_control) = omp_tools::eval::eval_controlled(eval_exec);
 	registry.register(eval_tool)?;
 	for declaration in workers.registrations() {
 		let spec = worker_spec(declaration)?;
@@ -67,6 +66,7 @@ pub fn production_registry(
 	Ok((registry, eval_host, eval_control))
 }
 
+#[cfg(test)]
 pub(super) fn python_engine() -> Result<Arc<omp_py::Engine>, EnvdError> {
 	static ENGINE: LazyLock<Result<Arc<omp_py::Engine>, Str>> = LazyLock::new(|| {
 		omp_py::Engine::builder()

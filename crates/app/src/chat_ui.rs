@@ -92,15 +92,15 @@ pub async fn start() -> anyhow::Result<App> {
 }
 
 /// Drives one durable session inside an existing inline chat host.
-pub fn run<C, R>(
-	app: &mut App,
+pub fn run<'a, C, R>(
+	app: &'a mut App,
 	mut agent: Agent<C>,
 	session: ChatUiSession,
 	mut list_sessions: R,
-) -> impl Future<Output = anyhow::Result<ChatUiExit>> + '_
+) -> impl Future<Output = anyhow::Result<ChatUiExit>> + 'a
 where
 	C: TurnClient + 'static,
-	R: FnMut() -> anyhow::Result<Vec<ResumeChoice>>,
+	R: FnMut() -> anyhow::Result<Vec<ResumeChoice>> + 'a,
 {
 	async move {
 		let bus = agent.events().clone();

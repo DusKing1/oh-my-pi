@@ -330,10 +330,15 @@ pub fn render_shell(ui: &mut Ui, fold: &ToolFold) -> bool {
 		if tail_text.is_empty() {
 			c.replace_body(Col::new());
 		} else {
-			let tail_preview = tail_text
-				.lines()
-				.skip(tail_text.lines().count().saturating_sub(5))
-				.join("\n");
+			let lines = tail_text.lines();
+			let first_preview_line = lines.clone().count().saturating_sub(5);
+			let mut tail_preview = String::new();
+			for line in lines.skip(first_preview_line) {
+				if !tail_preview.is_empty() {
+					tail_preview.push('\n');
+				}
+				tail_preview.push_str(line);
+			}
 			let col = Col::new().child(TextLeaf::new().text(tail_preview));
 			c.replace_body(col);
 		}
@@ -449,7 +454,7 @@ pub fn render_eval(ui: &mut Ui, fold: &ToolFold) -> bool {
 		}
 
 		if let Some(verdict) =
-			get_verdict::<omp_tools::eval::Payload, omp_tools::eval::Fault>(&fold.item)
+			get_verdict::<omp_tools::eval::Payload, omp_tools::eval::Fault>(fold.item.as_ref())
 		{
 			match &verdict {
 				omp_tool::Verdict::Ok(payload) => {
@@ -502,7 +507,7 @@ pub fn render_grep(ui: &mut Ui, fold: &ToolFold) -> bool {
 
 		if fold.state != ToolState::Streaming
 			&& let Some(verdict) =
-				get_verdict::<omp_tools::grep::Payload, serde_json::Value>(&fold.item)
+				get_verdict::<omp_tools::grep::Payload, serde_json::Value>(fold.item.as_ref())
 		{
 			match &verdict {
 				omp_tool::Verdict::Ok(payload) => {
@@ -542,7 +547,7 @@ pub fn render_glob(ui: &mut Ui, fold: &ToolFold) -> bool {
 
 		if fold.state != ToolState::Streaming
 			&& let Some(verdict) =
-				get_verdict::<omp_tools::glob::Payload, serde_json::Value>(&fold.item)
+				get_verdict::<omp_tools::glob::Payload, serde_json::Value>(fold.item.as_ref())
 		{
 			match &verdict {
 				omp_tool::Verdict::Ok(payload) => {
@@ -587,7 +592,7 @@ pub fn render_write(ui: &mut Ui, fold: &ToolFold) -> bool {
 
 		if fold.state != ToolState::Streaming
 			&& let Some(verdict) =
-				get_verdict::<omp_tools::write::Payload, serde_json::Value>(&fold.item)
+				get_verdict::<omp_tools::write::Payload, serde_json::Value>(fold.item.as_ref())
 		{
 			match &verdict {
 				omp_tool::Verdict::Ok(payload) => {

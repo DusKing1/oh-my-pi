@@ -1,6 +1,7 @@
 //! Eval helper prelude and authenticated host bridge.
 
 mod bridge;
+mod process;
 #[cfg(test)]
 mod tests;
 
@@ -12,6 +13,7 @@ pub use bridge::{
 	BridgeHostError, BridgeNamespaceInstaller, EvalSessionConfig, ParentSessionHost,
 	SessionBridgeHost,
 };
+pub use process::{EVAL_CHILD_ARG, ProcessError, ProcessEvalExec, run_eval_child_entry};
 
 /// Python helpers installed once in every persistent eval namespace.
 pub const PYTHON_PRELUDE: &str = include_str!("python_prelude.py");

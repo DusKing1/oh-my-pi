@@ -785,13 +785,30 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 	let harness = Harness::start(Registry::new()).await;
 	std::fs::write(harness.root.path().join("bridge-note.txt"), "bridge\n")
 		.expect("eval bridge fixture");
+	let changed_cwd = harness.root.path().join("eval-mutated-cwd");
+	std::fs::create_dir(&changed_cwd).expect("eval cwd mutation fixture");
+	let changed_cwd_literal =
+		serde_json::to_string(&changed_cwd.to_string_lossy()).expect("encode eval cwd fixture");
+	let expected_cwd = std::env::current_dir().expect("current test directory");
+	let expected_cwd_literal =
+		serde_json::to_string(&expected_cwd.to_string_lossy()).expect("encode expected cwd");
 
 	let seed = invoke_builtin(
 		harness.client(),
 		"eval-seed",
 		"eval",
 		"1",
-		json!({"language":"py","code":"state = 40\nprint('seeded')","title":"seed"}),
+		json!({
+			"language":"py",
+			"code":format!(
+				"import builtins, math, os, sys, threading\nstate = 40\nbuiltins.OMP_EVAL_LEAK = \
+				 'owner-a'\nmath.OMP_EVAL_LEAK = 'owner-a'\nsys.modules['omp_eval_leak'] = \
+				 object()\nos.environ['OMP_EVAL_LEAK'] = 'owner-a'\nos.chdir({changed_cwd_literal})\ndef \
+				 _leaked_thread():\n    while True:\n        pass\nthreading.Thread(target=_leaked_thread, \
+				 daemon=False).start()\nprint('seeded')"
+			),
+			"title":"seed"
+		}),
 	)
 	.await;
 	assert!(!seed.is_error, "embedded Python seed cell failed");
@@ -804,6 +821,35 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 	assert_eq!(seed.frames[0].channel, omp_tools::eval::OutputChannel::Stdout);
 	assert_eq!(seed.frames[0].data.as_ref(), b"seeded\n");
 	assert_eq!(seed.status.outcome, omp_tools::eval::CellOutcome::Complete);
+
+	let (unrelated, unrelated_task) = harness.connect("eval-unrelated-owner").await;
+	let isolated = invoke_builtin(
+		&unrelated,
+		"eval-owner-isolation",
+		"eval",
+		"1",
+		json!({
+			"language":"py",
+			"code":format!(
+				"import builtins, math, os, sys\n(hasattr(builtins, 'OMP_EVAL_LEAK'), \
+				 hasattr(math, 'OMP_EVAL_LEAK'), 'omp_eval_leak' in sys.modules, \
+				 os.environ.get('OMP_EVAL_LEAK'), os.getcwd() == {expected_cwd_literal})"
+			)
+		}),
+	)
+	.await;
+	assert!(!isolated.is_error, "unrelated eval owner failed");
+	let isolated: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
+		serde_json::from_slice(&isolated.json).expect("typed owner-isolation verdict");
+	let Verdict::Ok(isolated) = isolated else {
+		panic!("unrelated eval owner returned a fault");
+	};
+	assert_eq!(
+		isolated.result.and_then(|result| result.json),
+		Some(json!([false, false, false, null, true])),
+		"Python process globals leaked between authenticated owners"
+	);
+	unrelated_task.abort();
 
 	let bridged_glob = invoke_builtin(
 		harness.client(),
@@ -880,7 +926,16 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 		"eval-reset",
 		"eval",
 		"1",
-		json!({"language":"py","code":"'state' in globals()","reset":true}),
+		json!({
+			"language":"py",
+			"code":format!(
+				"import builtins, math, os, sys\n('state' in globals(), \
+				 hasattr(builtins, 'OMP_EVAL_LEAK'), hasattr(math, 'OMP_EVAL_LEAK'), \
+				 'omp_eval_leak' in sys.modules, os.environ.get('OMP_EVAL_LEAK'), \
+				 os.getcwd() == {expected_cwd_literal})"
+			),
+			"reset":true
+		}),
 	)
 	.await;
 	assert!(!reset.is_error, "embedded Python reset cell failed");
@@ -892,16 +947,18 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 	assert_eq!(reset.session_id, seed.session_id);
 	assert!(reset.reset);
 	assert_eq!(
-		reset.result,
-		Some(omp_tools::eval::CellValue { text: Str::from("False"), json: Some(json!(false)) })
+		reset.result.and_then(|result| result.json),
+		Some(json!([false, false, false, false, null, true])),
+		"reset did not replace process-global Python state"
 	);
 
+	let timeout_started = std::time::Instant::now();
 	let timed_out = invoke_builtin(
 		harness.client(),
 		"eval-timeout",
 		"eval",
 		"1",
-		json!({"language":"py","code":"while True:\n    pass","timeout":0.01}),
+		json!({"language":"py","code":"import time\ntime.sleep(5)","timeout":0.025}),
 	)
 	.await;
 	assert!(!timed_out.is_error, "timed-out Python cell did not return typed cell truth");
@@ -911,6 +968,11 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 		panic!("timed-out Python cell returned a resource fault");
 	};
 	assert_eq!(timed_out.status.outcome, omp_tools::eval::CellOutcome::Timeout);
+	assert!(
+		timeout_started.elapsed() < Duration::from_millis(500),
+		"hard eval timeout exceeded 500ms: {:?}",
+		timeout_started.elapsed()
+	);
 	assert_eq!(
 		timed_out
 			.status
@@ -935,6 +997,7 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 		panic!("post-timeout Python cell returned a fault");
 	};
 	assert_eq!(recovered.session_id, seed.session_id);
+	assert!(recovered.reset, "respawn after timeout was not reported as a reset");
 	assert_eq!(
 		recovered.result,
 		Some(omp_tools::eval::CellValue { text: Str::from("42"), json: Some(json!(42)) })
@@ -944,8 +1007,9 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 	let started_literal =
 		serde_json::to_string(&started.to_string_lossy()).expect("encode cancellation marker path");
 	let code = format!(
-		"from pathlib import Path\nPath({started_literal}).write_text('started')\nwhile True:\n    \
-		 pass"
+		"import threading\nfrom pathlib import Path\ndef spin_forever():\n    while True:\n        \
+		 pass\nthreading.Thread(target=spin_forever, \
+		 daemon=False).start()\nPath({started_literal}).write_text('started')\nwhile True:\n    pass"
 	);
 	let mut cancelled = harness
 		.client()
@@ -1005,6 +1069,7 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 	let Verdict::Ok(after_cancel) = after_cancel else {
 		panic!("post-cancel Python cell returned a fault");
 	};
+	assert!(after_cancel.reset, "respawn after cancellation was not reported as a reset");
 	assert_eq!(
 		after_cancel.result,
 		Some(omp_tools::eval::CellValue { text: Str::from("49"), json: Some(json!(49)) })

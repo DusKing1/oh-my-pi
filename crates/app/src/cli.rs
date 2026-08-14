@@ -9,7 +9,7 @@ use std::{
 
 use clap::{Args, Parser, Subcommand};
 use futures::StreamExt as _;
-use miette::{Context as _, IntoDiagnostic as _, miette};
+use miette::{IntoDiagnostic as _, miette};
 use omp_core::Str;
 use omp_llm_catalog::{ModelKey, compile::compile_oracle};
 #[cfg(feature = "local-applefm")]

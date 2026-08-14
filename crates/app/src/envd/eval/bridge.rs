@@ -72,7 +72,7 @@ impl BridgeCapabilities {
 		self
 	}
 
-	fn allows(&self, name: &str) -> bool {
+	pub(super) fn allows(&self, name: &str) -> bool {
 		match name {
 			COMPLETION => self.completion,
 			AGENT => self.agent,
@@ -80,6 +80,39 @@ impl BridgeCapabilities {
 			BUDGET => self.budget,
 			_ => self.tools.iter().any(|tool| tool.as_str() == name),
 		}
+	}
+
+	pub(super) fn allowed_names(&self) -> Vec<Str> {
+		let mut names = self.tools.iter().cloned().collect::<Vec<_>>();
+		if self.completion {
+			names.push(Str::new_static(COMPLETION));
+		}
+		if self.agent {
+			names.push(Str::new_static(AGENT));
+		}
+		if self.concurrency {
+			names.push(Str::new_static(CONCURRENCY));
+		}
+		if self.budget {
+			names.push(Str::new_static(BUDGET));
+		}
+		names
+	}
+
+	pub(super) fn from_allowed_names(names: impl IntoIterator<Item = Str>) -> Self {
+		let mut capabilities = Self::default();
+		for name in names {
+			match name.as_str() {
+				COMPLETION => capabilities.completion = true,
+				AGENT => capabilities.agent = true,
+				CONCURRENCY => capabilities.concurrency = true,
+				BUDGET => capabilities.budget = true,
+				_ => {
+					capabilities.tools.insert(name);
+				},
+			}
+		}
+		capabilities
 	}
 }
 
@@ -120,6 +153,13 @@ impl BridgeHostError {
 /// passed grant authentication and capability checks.
 #[async_trait]
 pub trait BridgeHost: Send + Sync {
+	async fn call(&self, name: &str, args: Value) -> Result<Value, BridgeHostError>;
+}
+
+#[async_trait]
+pub(super) trait ChildBridgeTransport: Send + Sync {
+	fn capabilities(&self) -> BridgeCapabilities;
+	fn session_config(&self) -> Option<EvalSessionConfig>;
 	async fn call(&self, name: &str, args: Value) -> Result<Value, BridgeHostError>;
 }
 
@@ -487,11 +527,11 @@ impl SessionBridgeHost {
 		*self.config.lock() = Some(config);
 	}
 
-	fn session_config(&self) -> Option<EvalSessionConfig> {
+	pub(super) fn session_config(&self) -> Option<EvalSessionConfig> {
 		self.config.lock().clone()
 	}
 
-	fn capabilities(&self) -> Result<BridgeCapabilities, BridgeHostError> {
+	pub(super) fn capabilities(&self) -> Result<BridgeCapabilities, BridgeHostError> {
 		let registry = self
 			.registry
 			.get()
@@ -576,11 +616,42 @@ struct NamespaceBridge {
 	watchdog: TimeoutHandle,
 }
 
+enum NamespaceHost {
+	Parent(Arc<SessionBridgeHost>),
+	Child(Arc<dyn ChildBridgeTransport>),
+}
+
+impl NamespaceHost {
+	fn capabilities(&self) -> Result<BridgeCapabilities, BridgeHostError> {
+		match self {
+			Self::Parent(host) => host.capabilities(),
+			Self::Child(host) => Ok(host.capabilities()),
+		}
+	}
+
+	fn session_config(&self) -> Option<EvalSessionConfig> {
+		match self {
+			Self::Parent(host) => host.session_config(),
+			Self::Child(host) => host.session_config(),
+		}
+	}
+}
+
+#[async_trait]
+impl BridgeHost for NamespaceHost {
+	async fn call(&self, name: &str, args: Value) -> Result<Value, BridgeHostError> {
+		match self {
+			Self::Parent(host) => host.call(name, args).await,
+			Self::Child(host) => host.call(name, args).await,
+		}
+	}
+}
+
 /// Installs namespace-local bridge grants and tracks cancellation per active
 /// cell.
 pub struct BridgeNamespaceInstaller {
 	dispatcher: BridgeDispatcher,
-	host:       Arc<SessionBridgeHost>,
+	host:       Arc<NamespaceHost>,
 	runtime:    Handle,
 	session:    Str,
 	next_run:   AtomicU64,
@@ -590,6 +661,14 @@ pub struct BridgeNamespaceInstaller {
 
 impl BridgeNamespaceInstaller {
 	pub(crate) fn new(host: Arc<SessionBridgeHost>, runtime: Handle) -> Self {
+		Self::with_host(Arc::new(NamespaceHost::Parent(host)), runtime)
+	}
+
+	pub(super) fn new_child(host: Arc<dyn ChildBridgeTransport>, runtime: Handle) -> Self {
+		Self::with_host(Arc::new(NamespaceHost::Child(host)), runtime)
+	}
+
+	fn with_host(host: Arc<NamespaceHost>, runtime: Handle) -> Self {
 		Self {
 			dispatcher: BridgeDispatcher::new(),
 			host,
@@ -666,6 +745,17 @@ impl NamespaceInstaller for BridgeNamespaceInstaller {
 		let watchdog = namespace.watchdog.clone();
 		drop(state);
 		watchdog.restart(timeout);
+		if matches!(self.host.as_ref(), NamespaceHost::Child(_)) {
+			let generation = watchdog.generation();
+			let expiry = watchdog.clone();
+			self.runtime.spawn(async move {
+				expiry.expired().await;
+				tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+				if expiry.is_current(generation) {
+					std::process::exit(124);
+				}
+			});
+		}
 		abort.begin(cell_id);
 		let stale = self
 			.cells
