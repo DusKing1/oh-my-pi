@@ -461,6 +461,7 @@ struct FormatLeaseSet {
 	bindings:         Vec<FormatBindingLease>,
 	shadow_document:  DocumentId,
 	shadow_uri:       Url,
+	policy_uri:       Url,
 	base_language_id: Option<LanguageId>,
 }
 
@@ -483,9 +484,9 @@ struct LeaseRecord {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct ProvisionalLeaseKey {
-	binding_id:     LspBindingId,
-	document_id:    DocumentId,
-	transaction:    TransactionId,
+	binding_id:      LspBindingId,
+	document_id:     DocumentId,
+	transaction:     TransactionId,
 	shadow_document: DocumentId,
 }
 
@@ -1484,22 +1485,13 @@ impl LspRegistry {
 			}
 			desired_by_lease.insert(*lease_id, desired);
 		}
-		let mut provisional_counts = HashMap::<LspBindingId, usize>::new();
-		for lease in &self.inner.state.lock().provisional_leases {
-			if lease.document_id == document_id {
-				*provisional_counts.entry(lease.binding_id).or_default() += 1;
-			}
-		}
 
 		let mut progress = Vec::new();
 		for binding in bindings {
 			let binding_id = binding.id;
 			let server = binding.server.clone();
-			let provisional = provisional_counts.get(&binding_id).copied().unwrap_or(0);
-			let current_committed = current_counts.get(&binding_id).copied().unwrap_or(0);
-			let desired_committed = desired_counts.get(&binding_id).copied().unwrap_or(0);
-			let current = current_committed + provisional;
-			let desired = desired_committed + provisional;
+			let current = current_counts.get(&binding_id).copied().unwrap_or(0);
+			let desired = desired_counts.get(&binding_id).copied().unwrap_or(0);
 			let current_language = current_languages.get(&binding_id).cloned().flatten();
 			let index = progress.len();
 			progress.push(RefreshProgress {
@@ -1510,7 +1502,7 @@ impl LspRegistry {
 				released: 0,
 				current_language,
 			});
-			if desired_committed > 0 {
+			if desired > 0 {
 				let version = match server
 					.synchronize(
 						lsp_document(
@@ -1567,8 +1559,7 @@ impl LspRegistry {
 				.binding_ids = binding_ids;
 		}
 		for binding_id in current_counts.keys().chain(desired_counts.keys()) {
-			let desired = desired_counts.get(binding_id).copied().unwrap_or(0)
-				+ provisional_counts.get(binding_id).copied().unwrap_or(0);
+			let desired = desired_counts.get(binding_id).copied().unwrap_or(0);
 			if desired == 0 {
 				state.public_versions.remove(&(*binding_id, document_id));
 			}
@@ -1727,27 +1718,6 @@ impl LspRegistry {
 	}
 
 	fn binding_document_count(&self, binding_id: LspBindingId, document_id: DocumentId) -> usize {
-		let state = self.inner.state.lock();
-		let committed = state
-			.leases
-			.values()
-			.filter(|record| {
-				record.document_id == document_id && record.binding_ids.contains(&binding_id)
-			})
-			.count();
-		let provisional = state
-			.provisional_leases
-			.iter()
-			.filter(|lease| lease.binding_id == binding_id && lease.document_id == document_id)
-			.count();
-		committed + provisional
-	}
-
-	fn committed_binding_document_count(
-		&self,
-		binding_id: LspBindingId,
-		document_id: DocumentId,
-	) -> usize {
 		self
 			.inner
 			.state
@@ -1798,7 +1768,6 @@ impl LspRegistry {
 		};
 		Ok(Arc::new(DocumentSnapshot::new(read.head().clone(), content)?))
 	}
-
 
 	fn ensure_binding_generation(
 		&self,
@@ -1861,9 +1830,9 @@ impl LspRegistry {
 		let base_uri = match self.current_snapshot(document_id).await {
 			Ok((_, uri)) => uri,
 			Err(_error)
-				if all_bindings.iter().all(|binding| {
-					self.committed_binding_document_count(binding.id, document_id) == 0
-				}) =>
+				if all_bindings
+					.iter()
+					.all(|binding| self.binding_document_count(binding.id, document_id) == 0) =>
 			{
 				request.uri().clone()
 			},
@@ -1920,6 +1889,7 @@ impl LspRegistry {
 			bindings: acquired,
 			shadow_document,
 			shadow_uri,
+			policy_uri: base_uri,
 			base_language_id,
 		})
 	}
@@ -1945,7 +1915,11 @@ impl LspRegistry {
 	}
 
 	async fn release_shadow(&self, binding: &Binding, shadow_document: DocumentId) {
-		if binding.server.tracked_version_revision(shadow_document).is_none() {
+		if binding
+			.server
+			.tracked_version_revision(shadow_document)
+			.is_none()
+		{
 			return;
 		}
 		if binding
@@ -1987,7 +1961,10 @@ impl LspRegistry {
 					.release_document(key.shadow_document, cancel.child_token())
 					.await
 				{
-					binding.server.abandon_document_lease(key.shadow_document).await;
+					binding
+						.server
+						.abandon_document_lease(key.shadow_document)
+						.await;
 					if first_error.is_none() {
 						first_error = Some(LspRegistryError::from(error));
 					}
@@ -1995,8 +1972,11 @@ impl LspRegistry {
 				self.inner.state.lock().provisional_leases.remove(&key);
 			}
 			if close_public_when_unleased
-				&& self.committed_binding_document_count(binding.id, document_id) == 0
-				&& binding.server.tracked_version_revision(document_id).is_some()
+				&& self.binding_document_count(binding.id, document_id) == 0
+				&& binding
+					.server
+					.tracked_version_revision(document_id)
+					.is_some()
 				&& let Err(error) = binding
 					.server
 					.release_document(document_id, cancel.child_token())
@@ -2033,6 +2013,7 @@ impl LspRegistry {
 		}
 		let bindings = &leases.bindings;
 		let uri = &leases.shadow_uri;
+		let policy_uri = &leases.policy_uri;
 		let language_id = leases.base_language_id.as_ref();
 		let mut content = request.candidate().clone();
 		let mut performed = false;
@@ -2044,7 +2025,7 @@ impl LspRegistry {
 				.server
 				.synchronize(lsp_document(&snapshot, uri, language_id), cancel.child_token())
 				.await?;
-			let policy = binding.server.sync_policy(uri, language_id);
+			let policy = binding.server.sync_policy(policy_uri, language_id);
 			if policy.will_save {
 				binding
 					.server
@@ -2068,7 +2049,7 @@ impl LspRegistry {
 					.synchronize(lsp_document(&snapshot, uri, language_id), cancel.child_token())
 					.await?;
 			}
-			if binding.server.supports_formatting(uri, language_id) {
+			if binding.server.supports_formatting(policy_uri, language_id) {
 				content = binding
 					.server
 					.format_document(
@@ -2100,7 +2081,6 @@ impl LspRegistry {
 		}
 		Ok(content)
 	}
-
 
 	async fn publish_committed_inner(
 		&self,
@@ -2317,31 +2297,13 @@ fn format_shadow_document(request: &FormatRequest) -> DocumentId {
 }
 
 fn format_shadow_uri(request: &FormatRequest) -> Url {
-	let extension = std::path::Path::new(request.uri().path())
-		.extension()
-		.and_then(std::ffi::OsStr::to_str);
-	let name = match extension {
-		Some(extension) => format!(
-			".omp-format-{}-{}.{}",
-			request.transaction_id(),
-			request.operation_index(),
-			extension
-		),
-		None => format!(
-			".omp-format-{}-{}",
-			request.transaction_id(),
-			request.operation_index()
-		),
-	};
 	let mut uri = request.uri().clone();
-	if let Ok(mut segments) = uri.path_segments_mut() {
-		segments.pop();
-		segments.push(&name);
-	} else {
-		uri.set_query(Some(&name));
-	}
+	uri.query_pairs_mut()
+		.append_pair("omp-format-transaction", &request.transaction_id().to_string())
+		.append_pair("omp-format-operation", &request.operation_index().to_string());
 	uri
 }
+#[cfg(test)]
 
 fn provisional_snapshot(
 	base: &DocumentSnapshot,
@@ -3035,6 +2997,8 @@ mod tests {
 			ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
 		));
 		std::fs::create_dir_all(&root).unwrap();
+		let path = root.join("file.txt");
+		std::fs::write(&path, b"base").unwrap();
 		let store = DocumentStore::new(ServerConfig::new(&root).unwrap()).unwrap();
 		let registry = LspRegistry::new(store);
 		let transport =
@@ -3047,25 +3011,29 @@ mod tests {
 		).unwrap();
 		let binding_id = registry
 			.add_binding(
-				LspBindingSpec::new("formatter", 0, LspSelector::all()).unwrap(),
+				LspBindingSpec::new(
+					"formatter",
+					0,
+					LspSelector::new(Vec::new(), vec![Str::new_static("file")], vec![Str::new_static(
+						"**/file.txt",
+					)])
+					.unwrap(),
+				)
+				.unwrap(),
 				server,
 				CancellationToken::new(),
 			)
 			.await
 			.unwrap();
 		let binding_handle = registry.binding_handle(binding_id).unwrap();
-		let content = Bytes::from_static(b"base");
-		let revision = Revision::for_content(1, &content);
-		let head = DocumentHead::new(
-			DocumentId::from_bytes([5; 16]),
-			revision,
-			DocumentPresence::Present,
-			DocumentKind::Text(None),
-			content.len() as u64,
-		)
-		.unwrap();
-		let base = Arc::new(DocumentSnapshot::new(head, content).unwrap());
-		let uri = Url::from_file_path(root.join("file.txt")).unwrap();
+		let opened = registry.inner.store.open(path.clone()).await.unwrap();
+		let (base_lease, head, _) = opened.into_parts();
+		let base = registry
+			.snapshot_from_store(base_lease, None)
+			.await
+			.unwrap();
+		let uri = Url::from_file_path(&path).unwrap();
+		let document_id = head.document_id();
 		let transaction_id = TransactionId::from_bytes([6; 16]);
 		let rollback_base = base.clone();
 		let rollback_uri = uri.clone();
@@ -3077,6 +3045,7 @@ mod tests {
 			None,
 			Bytes::from_static(b"candidate"),
 		);
+		let first_shadow_document = format_shadow_document(&request);
 		let formatting_registry = registry.clone();
 		let formatting = tokio::spawn(async move {
 			formatting_registry
@@ -3084,6 +3053,13 @@ mod tests {
 				.await
 		});
 		transport.started.notified().await;
+		let opening_registry = registry.clone();
+		let opening_path = path.clone();
+		let public_open = tokio::spawn(async move {
+			opening_registry
+				.open_document(opening_path, None, CancellationToken::new())
+				.await
+		});
 		tokio::time::timeout(
 			std::time::Duration::from_secs(1),
 			registry.register_capabilities(
@@ -3099,6 +3075,11 @@ mod tests {
 		.unwrap();
 		transport.release.notify_one();
 		assert_eq!(formatting.await.unwrap().unwrap().content(), &Bytes::from_static(b"candidate"),);
+		let public_lease = tokio::time::timeout(std::time::Duration::from_secs(1), public_open)
+			.await
+			.unwrap()
+			.unwrap()
+			.unwrap();
 		let second_request = FormatRequest::new(
 			transaction_id,
 			1,
@@ -3107,6 +3088,8 @@ mod tests {
 			None,
 			Bytes::from_static(b"candidate-two"),
 		);
+		let second_shadow_document = format_shadow_document(&second_request);
+		let second_shadow_uri = format_shadow_uri(&second_request);
 		let second_registry = registry.clone();
 		let second_format = tokio::spawn(async move {
 			second_registry
@@ -3121,10 +3104,11 @@ mod tests {
 		);
 		let bound_server = registry.binding(binding_id).unwrap().server;
 		let (version, _) = bound_server
-			.tracked_version_revision(DocumentId::from_bytes([5; 16]))
+			.tracked_version_revision(second_shadow_document)
 			.unwrap();
-		let diagnostics =
-			Bytes::from(format!(r#"{{"uri":"{uri}","version":{version},"diagnostics":[]}}"#));
+		let diagnostics = Bytes::from(format!(
+			r#"{{"uri":"{second_shadow_uri}","version":{version},"diagnostics":[]}}"#
+		));
 		assert_eq!(
 			registry
 				.tag_inbound_event(
@@ -3143,7 +3127,10 @@ mod tests {
 			)
 			.await
 			.unwrap();
-		assert_eq!(bound_server.tracked_version_revision(DocumentId::from_bytes([5; 16])), None,);
+		assert_eq!(bound_server.tracked_version_revision(first_shadow_document), None);
+		assert_eq!(bound_server.tracked_version_revision(second_shadow_document), None);
+		let (_, public_revision) = bound_server.tracked_version_revision(document_id).unwrap();
+		assert_eq!(public_revision, head.revision());
 		assert_eq!(
 			registry
 				.tag_inbound_event(binding_handle, "textDocument/publishDiagnostics", diagnostics,)
@@ -3151,6 +3138,11 @@ mod tests {
 				.revision(),
 			None,
 		);
+		registry
+			.close_document(public_lease.lease_id(), CancellationToken::new())
+			.await
+			.unwrap();
+		registry.inner.store.close(base_lease).await.unwrap();
 		std::fs::remove_dir_all(root).unwrap();
 	}
 	#[tokio::test]
@@ -3432,7 +3424,7 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn formatting_acquisition_failure_restores_base_identity_and_mapping() {
+	async fn formatting_acquisition_failure_closes_shadow_and_preserves_public_mapping() {
 		static ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(50_000);
 		let root = std::env::temp_dir().join(format!(
 			"omp-lsp-registry-format-rollback-{}-{}",
@@ -3487,18 +3479,18 @@ mod tests {
 		first_transport.params.lock().clear();
 		second_transport.params.lock().clear();
 		second_transport.fail.store(true, Ordering::Relaxed);
+		let request = FormatRequest::new(
+			TransactionId::from_bytes([51; 16]),
+			0,
+			base.clone(),
+			candidate_uri,
+			Some(LanguageId::new("rust").unwrap()),
+			Bytes::from_static(b"candidate"),
+		);
+		let shadow_document = format_shadow_document(&request);
+		let shadow_uri = format_shadow_uri(&request);
 		let result = registry
-			.format_candidate(
-				FormatRequest::new(
-					TransactionId::from_bytes([51; 16]),
-					0,
-					base.clone(),
-					candidate_uri.clone(),
-					Some(LanguageId::new("rust").unwrap()),
-					Bytes::from_static(b"candidate"),
-				),
-				CancellationToken::new(),
-			)
+			.format_candidate(request, CancellationToken::new())
 			.await;
 		assert!(result.is_err());
 		let first = registry.binding(first_id).unwrap();
@@ -3521,16 +3513,15 @@ mod tests {
 					.all(|(uri, _)| uri.as_str() == base_uri.as_str())
 			);
 		}
-		let candidate = candidate_uri.as_str().as_bytes();
-		let candidate_absent = {
+		assert_eq!(first.server.tracked_version_revision(shadow_document), None);
+		let shadow = shadow_uri.as_str().as_bytes();
+		let shadow_was_used = {
 			let params = first_transport.params.lock();
-			params.iter().all(|params| {
-				!params
-					.windows(candidate.len())
-					.any(|window| window == candidate)
-			})
+			params
+				.iter()
+				.any(|params| params.windows(shadow.len()).any(|window| window == shadow))
 		};
-		assert!(candidate_absent);
+		assert!(shadow_was_used);
 		second_transport.fail.store(false, Ordering::Relaxed);
 		registry
 			.close_document(lease.lease_id(), CancellationToken::new())
