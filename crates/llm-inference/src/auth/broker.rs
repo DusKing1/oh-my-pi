@@ -313,7 +313,7 @@ impl CredentialSource for CredentialBroker {
 	}
 }
 
-fn credential_kind(kind: AuthSpecKind) -> Option<CredentialKind> {
+const fn credential_kind(kind: AuthSpecKind) -> Option<CredentialKind> {
 	match kind {
 		AuthSpecKind::None => None,
 		AuthSpecKind::ApiKey => Some(CredentialKind::ApiKey),

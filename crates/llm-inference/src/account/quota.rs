@@ -76,7 +76,7 @@ pub struct QuotaWindow {
 }
 
 impl QuotaWindow {
-	fn new() -> Self {
+	const fn new() -> Self {
 		Self {
 			consumed:  None,
 			remaining: None,

@@ -16,7 +16,7 @@ use crate::{
 /// A route-definition-bound HTTP service that delegates to one preconstructed
 /// stack.
 #[derive(Clone)]
-pub(crate) struct HttpRouteService {
+pub struct HttpRouteService {
 	route: RouteDef,
 	inner: RouteProviderService,
 }
@@ -42,7 +42,7 @@ impl HttpRouteService {
 	}
 
 	/// Borrows the declarative route bound to this service.
-	pub(crate) fn route(&self) -> &RouteDef {
+	pub(crate) const fn route(&self) -> &RouteDef {
 		&self.route
 	}
 

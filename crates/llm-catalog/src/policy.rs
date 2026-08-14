@@ -18,13 +18,23 @@ use crate::{
 };
 
 macro_rules! policy_enum {
-	($(#[$meta:meta])* $name:ident { $($(#[$variant_meta:meta])* $variant:ident),+ $(,)? }) => {
+	($(#[$meta:meta])* $name:ident {
+		$(#[$first_meta:meta])* $first:ident
+		$(, $(#[$variant_meta:meta])* $variant:ident)* $(,)?
+	}) => {
 		$(#[$meta])*
 		#[derive(Clone, Copy, Debug, Display, EnumString, Eq, Hash, IntoStaticStr, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 		#[serde(rename_all = "snake_case")]
 		#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
+		#[derive(Default)]
 		pub enum $name {
-			$($(#[$variant_meta])* $variant),+
+			$(#[$first_meta])*
+			#[default]
+			$first,
+			$(
+				$(#[$variant_meta])*
+				$variant,
+			)*
 		}
 	};
 }
@@ -214,11 +224,6 @@ policy_enum!(/// Additional provider-specific thinking text representation.
 		QwenChatTemplate,
 	}
 );
-impl Default for ThinkingFormat {
-	fn default() -> Self {
-		Self::OpenAi
-	}
-}
 
 policy_enum!(/// Wire operation used to explicitly disable reasoning.
 	ReasoningDisableMode {

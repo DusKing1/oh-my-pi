@@ -68,7 +68,7 @@ pub struct OllamaOptions {
 	pub stop:        Box<[Str]>,
 }
 
-fn slice_is_empty<T>(value: &[T]) -> bool {
+const fn slice_is_empty<T>(value: &[T]) -> bool {
 	value.is_empty()
 }
 
@@ -549,7 +549,7 @@ fn encode_message<'a>(
 				thinking.push_str(text.as_str());
 			},
 			ContentPart::Image(MediaInput::Bytes { data, .. }) => {
-				images.push(base64::encode(data).into_string())
+				images.push(base64::encode(data).into_string());
 			},
 			ContentPart::Image(_) => {
 				return Err(invalid_request("ollama_image_source_requires_staging"));
@@ -580,7 +580,7 @@ fn encode_message<'a>(
 					ToolResultContent::Json(json) => {
 						content.push_str(&serde_json::to_string(json.as_value()).map_err(|_| {
 							protocol_error("ollama_tool_result_serialization", ErrorPhase::Encoding)
-						})?)
+						})?);
 					},
 					ToolResultContent::Image(_) | ToolResultContent::Document(_) => {
 						return Err(invalid_request("ollama_tool_result_media_unsupported"));

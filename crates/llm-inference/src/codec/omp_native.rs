@@ -57,7 +57,7 @@ pub enum OmpRollbackCause {
 }
 
 /// Atomic disposition of an internal OMP turn.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OmpTurnDisposition {
 	/// The request has not reached a terminal frame.
 	Pending,
@@ -70,7 +70,7 @@ pub enum OmpTurnDisposition {
 }
 
 /// Secret-free transactional receipt for one internal OMP turn.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OmpTurnReceipt {
 	/// Whether admission was observed.
 	pub accepted:    bool,
@@ -448,14 +448,14 @@ impl Decoder for OmpNativeDecoder {
 		match envelope.kind {
 			ConnectEnvelopeKind::Message => self.push_message(&envelope.payload, emit),
 			ConnectEnvelopeKind::EndStream => {
-				OmpNativeDecoder::finish(self, emit);
+				Self::finish(self, emit);
 				Ok(())
 			},
 		}
 	}
 
 	fn finish(&mut self, emit: &mut dyn FnMut(RawEvent)) -> Result<(), Error> {
-		OmpNativeDecoder::finish(self, emit);
+		Self::finish(self, emit);
 		Ok(())
 	}
 }

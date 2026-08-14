@@ -28,7 +28,7 @@ pub(crate) struct AwsCredential {
 }
 
 impl AwsCredential {
-	pub(crate) fn new(
+	pub(crate) const fn new(
 		access_key_id: SecretString,
 		secret_access_key: SecretString,
 		session_token: Option<SecretString>,

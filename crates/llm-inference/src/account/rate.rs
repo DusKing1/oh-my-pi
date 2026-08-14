@@ -66,7 +66,7 @@ pub struct RateWindow {
 }
 
 impl RateWindow {
-	fn new() -> Self {
+	const fn new() -> Self {
 		Self {
 			limit:     None,
 			remaining: None,
@@ -459,7 +459,7 @@ const fn is_leap_year(year: i64) -> bool {
 }
 
 fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-	let adjusted_year = year - if month <= 2 { 1 } else { 0 };
+	let adjusted_year = year - i64::from(month <= 2);
 	let era = if adjusted_year >= 0 {
 		adjusted_year
 	} else {

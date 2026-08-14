@@ -209,7 +209,7 @@ impl CassetteTransport {
 
 	/// Makes the next readiness cycle return `Pending` this many times.
 	#[must_use]
-	pub fn with_pending_ready_polls(mut self, polls: usize) -> Self {
+	pub const fn with_pending_ready_polls(mut self, polls: usize) -> Self {
 		self.pending_ready_polls = polls;
 		self
 	}
@@ -222,7 +222,7 @@ impl CassetteTransport {
 	/// Headers and credentials are never captured; provider frames remain
 	/// redacted.
 	#[must_use]
-	pub fn with_request_body_capture(mut self, max_bytes: NonZeroUsize) -> Self {
+	pub const fn with_request_body_capture(mut self, max_bytes: NonZeroUsize) -> Self {
 		self.request_body_capture_limit = Some(max_bytes);
 		self
 	}
@@ -903,7 +903,7 @@ pub(crate) fn capture_frame(
 	*remaining -= retained as u64;
 }
 
-fn frame_metadata(frame: &Frame) -> (&'static str, usize) {
+const fn frame_metadata(frame: &Frame) -> (&'static str, usize) {
 	match frame {
 		Frame::Raw(data) => ("raw", data.len()),
 		Frame::Sse(event) => ("sse", event.data.len()),
@@ -914,7 +914,7 @@ fn frame_metadata(frame: &Frame) -> (&'static str, usize) {
 	}
 }
 
-fn websocket_payload_len(message: &crate::transport::WebSocketMessage) -> usize {
+const fn websocket_payload_len(message: &crate::transport::WebSocketMessage) -> usize {
 	match message {
 		crate::transport::WebSocketMessage::Text(data)
 		| crate::transport::WebSocketMessage::Binary(data)
@@ -924,7 +924,7 @@ fn websocket_payload_len(message: &crate::transport::WebSocketMessage) -> usize 
 	}
 }
 
-pub(crate) fn is_commit_candidate(event: &RawEvent) -> bool {
+pub(crate) const fn is_commit_candidate(event: &RawEvent) -> bool {
 	matches!(
 		event,
 		RawEvent::Chat(_)
@@ -936,13 +936,13 @@ pub(crate) fn is_commit_candidate(event: &RawEvent) -> bool {
 	)
 }
 
-fn precommit(mut error: Error) -> Error {
+const fn precommit(mut error: Error) -> Error {
 	error.committed = false;
 	error.phase = ErrorPhase::Handshake;
 	error
 }
 
-fn committed(mut error: Error) -> Error {
+const fn committed(mut error: Error) -> Error {
 	error.committed = true;
 	error.phase = ErrorPhase::Streaming;
 	error.action = RetryAction::Never;

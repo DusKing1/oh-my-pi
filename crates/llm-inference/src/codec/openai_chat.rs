@@ -1,4 +1,4 @@
-//! Typed OpenAI Chat Completions request and incremental response codec.
+//! Typed `OpenAI` Chat Completions request and incremental response codec.
 
 use std::collections::BTreeMap;
 
@@ -35,7 +35,7 @@ use crate::{
 pub enum MaxTokensField {
 	/// Legacy `max_tokens`.
 	MaxTokens,
-	/// Current OpenAI `max_completion_tokens`.
+	/// Current `OpenAI` `max_completion_tokens`.
 	#[default]
 	MaxCompletionTokens,
 	/// Compatibility endpoint `max_output_tokens`.
@@ -47,10 +47,10 @@ pub enum MaxTokensField {
 /// Reasoning request shape accepted by an OpenAI-compatible endpoint.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ReasoningWireFormat {
-	/// OpenAI `reasoning_effort` string.
+	/// `OpenAI` `reasoning_effort` string.
 	#[default]
 	OpenAiEffort,
-	/// OpenRouter `reasoning` object.
+	/// `OpenRouter` `reasoning` object.
 	OpenRouter,
 	/// Z.ai `thinking` object.
 	Zai,
@@ -181,7 +181,7 @@ impl Default for OpenAiChatProfile {
 	}
 }
 impl OpenAiChatProfile {
-	fn apply_policy(&mut self, policy: &omp_llm_catalog::policy::WirePolicy) {
+	const fn apply_policy(&mut self, policy: &omp_llm_catalog::policy::WirePolicy) {
 		if let Some(value) = policy.role.supports_developer_role {
 			self.system_role = if value {
 				WireRole::Developer
@@ -253,7 +253,7 @@ impl OpenAiChatProfile {
 	}
 }
 
-/// Explicit OpenAI request extensions.
+/// Explicit `OpenAI` request extensions.
 #[derive(Clone, Debug, Default)]
 pub struct OpenAiOptions {
 	/// Stable prompt-cache identity.
@@ -264,7 +264,7 @@ pub struct OpenAiOptions {
 	pub tool_stream:            Option<bool>,
 }
 
-/// Explicit OpenRouter routing extensions.
+/// Explicit `OpenRouter` routing extensions.
 #[derive(Clone, Debug, Default)]
 pub struct OpenRouterOptions {
 	/// Ordered upstream provider slugs.
@@ -285,7 +285,7 @@ pub struct VercelGatewayOptions {
 pub enum OpenAiChatAdapterOptions {
 	/// Direct OpenAI-compatible request extensions.
 	OpenAi(OpenAiOptions),
-	/// OpenRouter routing extensions.
+	/// `OpenRouter` routing extensions.
 	OpenRouter(OpenRouterOptions),
 	/// Vercel AI Gateway extensions.
 	Vercel(VercelGatewayOptions),
@@ -301,7 +301,7 @@ pub struct OpenAiChatCodec {
 impl OpenAiChatCodec {
 	/// Constructs a route-specific codec without provider-name or model-name
 	/// inspection.
-	pub fn new(profile: OpenAiChatProfile, adapter: Option<OpenAiChatAdapterOptions>) -> Self {
+	pub const fn new(profile: OpenAiChatProfile, adapter: Option<OpenAiChatAdapterOptions>) -> Self {
 		Self { profile, adapter }
 	}
 
@@ -1006,8 +1006,7 @@ fn proof_detail(value: &[u8], id: Option<Str>) -> Result<WireReasoningReplay, Er
 		return Ok(WireReasoningReplay::Opaque(raw));
 	}
 	let data = std::str::from_utf8(value)
-		.map(str::to_owned)
-		.unwrap_or_else(|_| base64::encode(value).into_string());
+		.map_or_else(|_| base64::encode(value).into_string(), str::to_owned);
 	Ok(WireReasoningReplay::Encrypted { kind: ReasoningEncryptedTag::Encrypted, id, data })
 }
 
@@ -1461,14 +1460,13 @@ impl OpenAiChatDecoder {
 			.content
 			.map(WireDeltaContent::into_text)
 			.or(payload._text)
+			&& !content.is_empty()
 		{
-			if !content.is_empty() {
-				let block = *state
-					.text_block
-					.get_or_insert_with(|| self.start_block(BlockKind::Text, emit));
-				emit(RawEvent::Chat(ChatEvent::TextDelta { index: block, text: content }));
-				self.committed = true;
-			}
+			let block = *state
+				.text_block
+				.get_or_insert_with(|| self.start_block(BlockKind::Text, emit));
+			emit(RawEvent::Chat(ChatEvent::TextDelta { index: block, text: content }));
+			self.committed = true;
 		}
 		if let Some(refusal) = payload.refusal.filter(|text| !text.is_empty()) {
 			let block = *state
@@ -1488,14 +1486,14 @@ impl OpenAiChatDecoder {
 		}
 		for (position, call) in payload.tool_calls.into_iter().enumerate() {
 			let wire_index = call.index.unwrap_or(position as u32);
-			if !state.tools.contains_key(&wire_index) {
+			if let std::collections::btree_map::Entry::Vacant(e) = state.tools.entry(wire_index) {
 				let block = self.next_block;
 				self.next_block = self.next_block.saturating_add(1);
 				let id = call
 					.id
 					.clone()
 					.unwrap_or_else(|| Str::from(format!("tool-{index}-{wire_index}")));
-				state.tools.insert(wire_index, PendingTool {
+				e.insert(PendingTool {
 					block,
 					id: ToolCallId::from(id.as_str()),
 					name: Str::default(),
@@ -1744,11 +1742,15 @@ impl WireUsage {
 			.cached_tokens
 			.max(self.cached_tokens)
 			.max(self.prompt_cache_hit_tokens);
-		let cache_write = self.prompt_tokens_details.cache_write_tokens.max(
-			(self.prompt_cache_hit_tokens > 0)
-				.then_some(self.prompt_cache_miss_tokens)
-				.unwrap_or(0),
-		);
+		let cache_write =
+			self
+				.prompt_tokens_details
+				.cache_write_tokens
+				.max(if self.prompt_cache_hit_tokens > 0 {
+					self.prompt_cache_miss_tokens
+				} else {
+					0
+				});
 		Usage {
 			input_tokens: self.prompt_tokens,
 			output_tokens: self.completion_tokens,
@@ -1792,7 +1794,7 @@ enum WireFinishReason {
 }
 
 impl WireFinishReason {
-	fn normalize(self) -> Result<FinishReason, Error> {
+	const fn normalize(self) -> Result<FinishReason, Error> {
 		Ok(match self {
 			Self::Stop | Self::End | Self::EndTurn => FinishReason::Stop,
 			Self::ToolCalls | Self::FunctionCall | Self::ToolUse => FinishReason::ToolCalls,
@@ -1894,7 +1896,7 @@ fn protocol_error(committed: bool, code: Option<Str>) -> Error {
 	error
 }
 
-fn merge_usage(current: &mut Usage, update: Usage) {
+const fn merge_usage(current: &mut Usage, update: Usage) {
 	if update.input_tokens != 0 {
 		current.input_tokens = update.input_tokens;
 	}
@@ -1914,7 +1916,7 @@ fn merge_usage(current: &mut Usage, update: Usage) {
 }
 
 fn merge_finish(current: FinishReason, incoming: FinishReason) -> FinishReason {
-	fn rank(reason: &FinishReason) -> u8 {
+	const fn rank(reason: &FinishReason) -> u8 {
 		match reason {
 			FinishReason::ContentFilter => 4,
 			FinishReason::ToolCalls => 3,

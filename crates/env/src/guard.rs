@@ -22,13 +22,13 @@ struct GuardState {
 }
 
 impl RunGuard {
-	pub(crate) fn new(request_id: u64, cancel: Sender<u64>) -> Self {
+	pub(crate) const fn new(request_id: u64, cancel: Sender<u64>) -> Self {
 		Self { state: GuardState { request_id, armed: AtomicBool::new(true), cancel } }
 	}
 
 	/// Returns the request correlation identifier scoped by this guard.
 	#[must_use]
-	pub fn request_id(&self) -> u64 {
+	pub const fn request_id(&self) -> u64 {
 		self.state.request_id
 	}
 

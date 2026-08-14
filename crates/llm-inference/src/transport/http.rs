@@ -105,7 +105,7 @@ pub struct HttpTransport {
 impl Clone for HttpTransport {
 	fn clone(&self) -> Self {
 		Self {
-			inner:        self.inner.as_ref().cloned(),
+			inner:        self.inner.clone(),
 			ready_permit: false,
 			captures:     Arc::clone(&self.captures),
 		}
@@ -713,14 +713,11 @@ fn decode_stream(
 				guard.disarm();
 				break;
 			};
-			let body_frame = match next {
-				Ok(frame) => frame,
-				Err(_) => {
-					let error = connectivity(if emitted { ErrorPhase::Streaming } else { ErrorPhase::Handshake }, emitted, "http-response-body");
-					yield Err(record_failure(error, &attempt, &evidence, Some(status), provider_request_id.as_ref(), started, emitted));
-					break;
-				},
-			};
+			let body_frame = if let Ok(frame) = next { frame } else {
+						let error = connectivity(if emitted { ErrorPhase::Streaming } else { ErrorPhase::Handshake }, emitted, "http-response-body");
+						yield Err(record_failure(error, &attempt, &evidence, Some(status), provider_request_id.as_ref(), started, emitted));
+						break;
+					};
 			let Ok(chunk) = body_frame.into_data() else { continue };
 			response_bytes = response_bytes.saturating_add(chunk.len() as u64);
 			if response_bytes > response_limit {
@@ -858,11 +855,11 @@ struct CancelOnDrop {
 }
 
 impl CancelOnDrop {
-	fn new(cancel: Cancellation) -> Self {
+	const fn new(cancel: Cancellation) -> Self {
 		Self { cancel, armed: true }
 	}
 
-	fn disarm(&mut self) {
+	const fn disarm(&mut self) {
 		self.armed = false;
 	}
 }

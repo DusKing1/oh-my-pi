@@ -514,7 +514,11 @@ struct BoundaryNormalization {
 	ambiguities: Vec<BoundaryAmbiguity>,
 }
 
-fn textual_boundary_warning(start_line: usize, leading: usize, trailing: usize) -> ApplyWarning {
+const fn textual_boundary_warning(
+	start_line: usize,
+	leading: usize,
+	trailing: usize,
+) -> ApplyWarning {
 	ApplyWarning::BoundaryEchoDropped { line: start_line, leading, trailing }
 }
 
@@ -1010,7 +1014,7 @@ fn materialize_for_probe(lines: &[Str], edits: &[Edit]) -> String {
 	materialize(lines, &landed).0
 }
 
-fn ambiguous_placement(group: &ReplacementGroup) -> ApplyError {
+const fn ambiguous_placement(group: &ReplacementGroup) -> ApplyError {
 	ApplyError::AmbiguousBoundaryPlacement { start: group.start_line, end: group.end_line }
 }
 
@@ -1119,7 +1123,7 @@ fn repair_boundary_variants(
 	Ok(Some((splice_boundary_combo(edits, &groups, &best), warnings)))
 }
 
-fn ambiguous_echo(ambiguity: &BoundaryAmbiguity) -> ApplyError {
+const fn ambiguous_echo(ambiguity: &BoundaryAmbiguity) -> ApplyError {
 	match ambiguity.side {
 		BoundarySide::Leading => ApplyError::LeadingBoundaryEchoTooShort {
 			start: ambiguity.start_line,

@@ -138,7 +138,7 @@ pub struct StagingPolicy {
 impl StagingPolicy {
 	/// Creates a memory-only policy; crossing `memory_threshold` fails rather
 	/// than spilling plaintext.
-	pub fn memory_only(max_bytes: u64, memory_threshold: u64) -> Self {
+	pub const fn memory_only(max_bytes: u64, memory_threshold: u64) -> Self {
 		Self {
 			max_bytes,
 			memory_threshold,
@@ -150,7 +150,7 @@ impl StagingPolicy {
 
 	/// Creates a policy that migrates the complete body to
 	/// authenticated-encrypted temporary storage.
-	pub fn encrypted_spill(
+	pub const fn encrypted_spill(
 		max_bytes: u64,
 		memory_threshold: u64,
 		key_provider: StagingKeyProvider,
@@ -320,16 +320,18 @@ pub enum StagingDecision {
 }
 
 /// Plans semantic-retry staging without reading or buffering the source.
-pub fn plan_semantic_retry_staging(
+pub const fn plan_semantic_retry_staging(
 	replayability: Replayability,
 	kind: StagingInputKind,
 	explicit_policy: Option<&StagingPolicy>,
 ) -> StagingDecision {
 	match (replayability, kind, explicit_policy.is_some()) {
 		(Replayability::Replayable | Replayability::Staged, ..) => StagingDecision::NotNeeded,
-		(Replayability::OneShot, StagingInputKind::Attachment, true)
-		| (Replayability::OneShot, StagingInputKind::Media, true)
-		| (Replayability::OneShot, StagingInputKind::LiveAudio, true) => StagingDecision::ExplicitlyStage,
+		(
+			Replayability::OneShot,
+			StagingInputKind::Attachment | StagingInputKind::Media | StagingInputKind::LiveAudio,
+			true,
+		) => StagingDecision::ExplicitlyStage,
 		(Replayability::OneShot, _, false) => StagingDecision::RejectOneShot,
 	}
 }
@@ -537,7 +539,7 @@ pub async fn stage_body(
 		let encryption = builder.encryption_evidence();
 		(
 			StagingStorage::EncryptedTemporaryFile,
-			Some(encryption.clone()),
+			Some(encryption),
 			StoredStage::Disk(builder.into_storage()),
 		)
 	} else {
@@ -567,7 +569,7 @@ async fn cancellable<F: Future>(
 ) -> Result<F::Output, ()> {
 	tokio::select! {
 		biased;
-		_ = cancellation.cancelled() => Err(()),
+		() = cancellation.cancelled() => Err(()),
 		output = future => Ok(output),
 	}
 }
@@ -758,7 +760,7 @@ impl DiskBuilder {
 			.map_err(|_| io_error("secure_staging_sync_failed"))
 	}
 
-	fn encryption_evidence(&self) -> StagingEncryption {
+	const fn encryption_evidence(&self) -> StagingEncryption {
 		StagingEncryption {
 			algorithm:     StagingEncryptionAlgorithm::ChaCha20Poly1305,
 			key_source:    self.key_source,
@@ -1013,7 +1015,7 @@ impl DiskReader {
 			.open_in_place(
 				nonce(self.index),
 				Aad::from(aad(self.index, plain_len as u32)),
-				&mut *sealed,
+				&mut sealed,
 			)
 			.map_err(|_| tamper_error())?;
 		let bytes = Bytes::copy_from_slice(plaintext);
@@ -1606,17 +1608,16 @@ impl SecureTemporaryGateSpool {
 		}
 		.map_err(|_| gate_unavailable("secure_gate_spool_create_failed"))?;
 		let path = named.into_temp_path();
-		let file = match StdOpenOptions::new()
+		let file = if let Ok(file) = StdOpenOptions::new()
 			.read(true)
 			.write(true)
 			.truncate(true)
 			.open(&path)
 		{
-			Ok(file) => file,
-			Err(_) => {
-				drop(path);
-				return Err(gate_unavailable("secure_gate_spool_open_failed"));
-			},
+			file
+		} else {
+			drop(path);
+			return Err(gate_unavailable("secure_gate_spool_open_failed"));
 		};
 		let key = match derive_ephemeral_key(key) {
 			Ok(key) => key,
@@ -1758,7 +1759,7 @@ impl SecureGateSpool for SecureTemporaryGateSpool {
 				.open_in_place(
 					nonce(record.index),
 					Aad::from(gate_aad(record.index, record.event_bytes, plain_len)),
-					&mut *sealed,
+					&mut sealed,
 				)
 				.map_err(|_| gate_corrupt("secure_gate_spool_authentication_failed"))?;
 			decode_chat_event(plaintext)
@@ -1786,7 +1787,7 @@ impl SecureGateSpool for SecureTemporaryGateSpool {
 
 impl Drop for SecureTemporaryGateSpool {
 	fn drop(&mut self) {
-		self.state.invalidate()
+		self.state.invalidate();
 	}
 }
 
@@ -2125,11 +2126,11 @@ struct GateCursor<'a> {
 	offset: usize,
 }
 impl<'a> GateCursor<'a> {
-	fn new(input: &'a [u8]) -> Self {
+	const fn new(input: &'a [u8]) -> Self {
 		Self { input, offset: 0 }
 	}
 
-	fn done(&self) -> bool {
+	const fn done(&self) -> bool {
 		self.offset == self.input.len()
 	}
 

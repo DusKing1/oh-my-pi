@@ -98,7 +98,7 @@ pub struct PlannedOperation<O: Operation> {
 
 impl<O: Operation> PlannedOperation<O> {
 	/// Borrows the clone-cheap erased call for inspection.
-	pub fn call(&self) -> &Call {
+	pub const fn call(&self) -> &Call {
 		&self.call
 	}
 
@@ -127,22 +127,22 @@ where
 {
 	/// Creates a client with a clone-cheap planner and caller-supplied metadata
 	/// defaults.
-	pub fn new(service: S, planner: P, meta: CallMeta) -> Self {
+	pub const fn new(service: S, planner: P, meta: CallMeta) -> Self {
 		Self { service, planner, meta }
 	}
 
 	/// Borrows the underlying service.
-	pub fn service(&self) -> &S {
+	pub const fn service(&self) -> &S {
 		&self.service
 	}
 
 	/// Mutably borrows the underlying service.
-	pub fn service_mut(&mut self) -> &mut S {
+	pub const fn service_mut(&mut self) -> &mut S {
 		&mut self.service
 	}
 
 	/// Borrows the side-effect-free planner.
-	pub fn planner(&self) -> &P {
+	pub const fn planner(&self) -> &P {
 		&self.planner
 	}
 

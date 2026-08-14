@@ -80,7 +80,7 @@ pub struct CcaRequestEnvelope {
 	pub model:   Str,
 	/// Credential project identity supplied by auth/account middleware.
 	pub project: Str,
-	/// Typed GenerateContent request.
+	/// Typed `GenerateContent` request.
 	pub request: GenerateContentRequest,
 }
 
@@ -127,11 +127,11 @@ pub struct AntigravityRequestEnvelope {
 	pub request:      AntigravityGenerateContentRequest,
 }
 
-/// Antigravity's GenerateContent request extensions.
+/// Antigravity's `GenerateContent` request extensions.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AntigravityGenerateContentRequest {
-	/// Standard GenerateContent fields flattened into this request.
+	/// Standard `GenerateContent` fields flattened into this request.
 	#[serde(flatten)]
 	pub generate:   GenerateContentRequest,
 	/// Optional provider session identity.
@@ -163,9 +163,9 @@ pub struct AntigravityLabels {
 	pub used_claude_conservative: Str,
 }
 
-/// Wraps a typed GenerateContent request for Gemini CLI CCA.
+/// Wraps a typed `GenerateContent` request for Gemini CLI CCA.
 #[must_use]
-pub fn wrap_request(
+pub const fn wrap_request(
 	request: GenerateContentRequest,
 	model: Str,
 	project: Str,
@@ -173,7 +173,7 @@ pub fn wrap_request(
 	CcaRequestEnvelope { model, project, request }
 }
 
-/// Shapes a typed GenerateContent request as Antigravity without model-name
+/// Shapes a typed `GenerateContent` request as Antigravity without model-name
 /// heuristics.
 #[must_use]
 pub fn wrap_antigravity_request(
@@ -529,7 +529,7 @@ impl GoogleCcaCodec {
 		Ok(EncodedRequest {
 			operation:   OperationKind::DiscoverModels,
 			method:      RequestMethod::Post,
-			uri:         format!("{}{}", base_url.trim_end_matches('/'), FETCH_AVAILABLE_MODELS_PATH,)
+			uri:         format!("{}{}", base_url.trim_end_matches('/'), FETCH_AVAILABLE_MODELS_PATH)
 				.into(),
 			headers:     self.discovery_headers(),
 			body:        BodySource::Bytes(Bytes::from_static(b"{}")),
@@ -746,7 +746,7 @@ impl Decoder for CanonicalCcaDecoder {
 /// Typed CCA stream envelope.
 #[derive(Debug, Deserialize)]
 pub struct CcaResponseEnvelope {
-	/// Embedded GenerateContent response.
+	/// Embedded `GenerateContent` response.
 	pub response: Option<GenerateContentResponse>,
 	/// In-band CCA error.
 	pub error:    Option<CcaWireError>,
@@ -1008,7 +1008,7 @@ impl Decoder for CcaDiscoveryDecoder {
 }
 
 /// Incremental CCA decoder that unwraps envelopes then delegates
-/// GenerateContent semantics.
+/// `GenerateContent` semantics.
 #[derive(Debug, Default)]
 pub struct CcaDecoder {
 	gemini:    GeminiDecoder,
@@ -1030,7 +1030,7 @@ impl CcaDecoder {
 		Ok(self.filter(events))
 	}
 
-	/// Completes the embedded GenerateContent stream and flushes visible
+	/// Completes the embedded `GenerateContent` stream and flushes visible
 	/// buffered text.
 	pub fn finish(&mut self) -> Result<Vec<GoogleDecodedEvent>, GoogleCodecError> {
 		if self.completed {

@@ -90,9 +90,9 @@ pub struct RequestStream {
 /// One open tool invocation and its correlated event stream.
 #[derive(Debug)]
 pub struct Invocation {
-	client:        EnvClient,
-	invocation_id: Str,
-	stream:        RequestStream,
+	client: EnvClient,
+	id:     Str,
+	stream: RequestStream,
 	guard:         Option<RunGuard>,
 }
 
@@ -217,12 +217,13 @@ impl EnvClient {
 	/// Performs the request-id-zero protocol handshake.
 	pub async fn hello(&self, hello: ClientHello) -> Result<ServerHello, ClientError> {
 		let (sender, receiver) = flume::bounded(1);
+	{
 		let mut slot = self.inner.hello.lock();
 		if slot.is_some() {
 			return Err(ClientError::UnexpectedResponse { expected: "a single in-flight hello" });
 		}
 		*slot = Some(sender);
-		drop(slot);
+	}
 		let send = self
 			.inner
 			.outgoing
@@ -258,11 +259,11 @@ impl EnvClient {
 
 	/// Opens a tool invocation before its arguments have committed.
 	pub async fn invoke(&self, request: InvokeTool) -> Result<Invocation, ClientError> {
-		let invocation_id = Str::from(request.invocation_id.as_str());
+		let id = Str::from(request.invocation_id.as_str());
 		let (stream, guard) = self
 			.open_guarded(client_frame::Body::InvokeTool(request))
 			.await?;
-		Ok(Invocation { client: self.clone(), invocation_id, stream, guard: Some(guard) })
+		Ok(Invocation { client: self.clone(), id, stream, guard: Some(guard) })
 	}
 
 	/// Opens a persistent, server-owned exec session.
@@ -380,7 +381,7 @@ impl EnvClient {
 	/// [`BlobUpload::commit`]. Dropping an uncommitted upload only abandons its
 	/// client-side response route; blob visibility remains gated by the commit
 	/// frame.
-	pub async fn blob_put(&self) -> Result<BlobUpload, ClientError> {
+	pub fn blob_put(&self) -> Result<BlobUpload, ClientError> {
 		let request_id = self.allocate_request_id()?;
 		let stream = self.register(request_id);
 		Ok(BlobUpload { client: self.clone(), request_id, stream })
@@ -470,8 +471,8 @@ impl InProcessEnvTransport {
 	}
 
 	/// Sends one server frame asynchronously.
-	pub async fn send(&self, frame: ServerFrame) -> Result<(), flume::SendError<ServerFrame>> {
-		self.responses.send_async(frame).await
+	pub async fn send(&self, frame: ServerFrame) -> Result<(), Box<flume::SendError<ServerFrame>>> {
+		self.responses.send_async(frame).await.map_err(Box::new)
 	}
 
 	/// Splits this transport into the server's receive and send endpoints.
@@ -531,12 +532,12 @@ impl Invocation {
 	/// Returns the invocation's logical identifier.
 	#[must_use]
 	pub fn invocation_id(&self) -> &str {
-		&self.invocation_id
+		&self.id
 	}
 
 	/// Returns the request-scoped cancellation guard.
 	#[must_use]
-	pub fn guard(&self) -> &RunGuard {
+	pub const fn guard(&self) -> &RunGuard {
 		self
 			.guard
 			.as_ref()
@@ -550,7 +551,7 @@ impl Invocation {
 			.send(
 				self.stream.request_id,
 				client_frame::Body::ArgText(ArgText {
-					invocation_id: self.invocation_id.to_string(),
+					invocation_id: self.id.to_string(),
 					fragment: fragment.to_string(),
 					..ArgText::default()
 				}),
@@ -565,7 +566,7 @@ impl Invocation {
 			.send(
 				self.stream.request_id,
 				client_frame::Body::ArgsCommitted(ArgsCommitted {
-					invocation_id: self.invocation_id.to_string(),
+					invocation_id: self.id.to_string(),
 					raw,
 					..ArgsCommitted::default()
 				}),
@@ -580,7 +581,7 @@ impl Invocation {
 			.send(
 				self.stream.request_id,
 				client_frame::Body::Interrupt(Interrupt {
-					invocation_id: self.invocation_id.to_string(),
+					invocation_id: self.id.to_string(),
 					reason: reason.to_string(),
 					..Interrupt::default()
 				}),
@@ -640,7 +641,7 @@ impl Invocation {
 impl ExecRun {
 	/// Returns the request-scoped command cancellation guard.
 	#[must_use]
-	pub fn guard(&self) -> &RunGuard {
+	pub const fn guard(&self) -> &RunGuard {
 		self
 			.guard
 			.as_ref()

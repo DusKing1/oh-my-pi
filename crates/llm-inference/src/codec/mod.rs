@@ -150,7 +150,7 @@ pub struct EncodedRequest {
 impl EncodedRequest {
 	/// Constructs an ordinary credential-free encoded request.
 	#[must_use]
-	pub fn new(
+	pub const fn new(
 		operation: OperationKind,
 		method: RequestMethod,
 		uri: Str,
@@ -167,7 +167,7 @@ impl EncodedRequest {
 		self
 	}
 
-	pub(crate) fn take_sealed_body(&mut self) -> Option<SealedBodyTemplate> {
+	pub(crate) const fn take_sealed_body(&mut self) -> Option<SealedBodyTemplate> {
 		self.sealed_body.take()
 	}
 }

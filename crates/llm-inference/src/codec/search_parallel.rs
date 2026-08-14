@@ -256,7 +256,7 @@ impl Decoder for ParallelSearchDecoder {
 		match envelope {
 			WireEnvelope::Error(error) => emit(RawEvent::Failure(provider_error(error))),
 			WireEnvelope::Result(response) => {
-				emit(RawEvent::Answer(AnswerBody::Search(project(response)?)))
+				emit(RawEvent::Answer(AnswerBody::Search(project(response)?)));
 			},
 		}
 		Ok(())
@@ -343,7 +343,7 @@ fn parse_date(value: &str) -> Option<SystemTime> {
 	UNIX_EPOCH.checked_add(Duration::from_secs(days.checked_mul(86_400)?))
 }
 
-fn days_in_month(year: i32, month: u32) -> u32 {
+const fn days_in_month(year: i32, month: u32) -> u32 {
 	match month {
 		1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
 		4 | 6 | 9 | 11 => 30,

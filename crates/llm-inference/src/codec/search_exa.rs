@@ -361,7 +361,7 @@ const fn recency_days(recency: SearchRecency) -> u32 {
 	}
 }
 
-fn slice_is_empty(slice: &&[Str]) -> bool {
+const fn slice_is_empty(slice: &&[Str]) -> bool {
 	slice.is_empty()
 }
 

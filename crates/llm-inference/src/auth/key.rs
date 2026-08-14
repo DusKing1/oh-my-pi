@@ -59,7 +59,7 @@ impl EncryptionKey {
 
 	/// Returns the non-secret key identifier.
 	#[must_use]
-	pub fn id(&self) -> &KeyId {
+	pub const fn id(&self) -> &KeyId {
 		&self.id
 	}
 

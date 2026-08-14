@@ -142,7 +142,7 @@ impl SpeechStreamState {
 	}
 
 	/// Confirms the stream ended with an explicit final chunk.
-	pub fn finish(&self) -> Result<SpeechStreamReceipt, SpeechError> {
+	pub const fn finish(&self) -> Result<SpeechStreamReceipt, SpeechError> {
 		if !self.final_seen {
 			return Err(SpeechError::MissingFinalChunk);
 		}
@@ -174,7 +174,7 @@ pub struct SpeechService<S> {
 
 impl<S> SpeechService<S> {
 	/// Wraps a route backend with speech request and chunk validation.
-	pub fn new(inner: S, limits: SpeechLimits) -> Self {
+	pub const fn new(inner: S, limits: SpeechLimits) -> Self {
 		Self { inner, limits }
 	}
 }

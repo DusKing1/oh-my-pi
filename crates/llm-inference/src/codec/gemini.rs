@@ -1,4 +1,4 @@
-//! Typed Google GenerateContent and Vertex request/response projection.
+//! Typed Google `GenerateContent` and Vertex request/response projection.
 
 use std::{
 	collections::{BTreeMap, BTreeSet},
@@ -21,7 +21,7 @@ use crate::{
 		ChatRequest, ContentPart, CountTokensRequest, EmbedRequest, EmbeddingInput, HostedTool,
 		MediaInput, Message, OpaqueJson, OperationCall, ProviderProof, ReasoningRequest,
 		ReasoningVisibility, Role, SafetySetting, SafetyThreshold, Setting, StructuredOutput,
-		ToolChoice, ToolDefinition, ToolInputConstraint, ToolResultContent, TruncationPolicy,
+		ToolChoice, ToolDefinition, ToolResultContent, TruncationPolicy,
 	},
 	codec::{
 		Codec, DecodeContext, Decoder, DecoderState, EncodeContext, EncodedRequest,
@@ -41,7 +41,7 @@ pub const GENERATIVE_LANGUAGE_BASE: &str = "https://generativelanguage.googleapi
 /// Public Generative Language streaming path suffix.
 pub const GENERATIVE_LANGUAGE_STREAM_PATH: &str = ":streamGenerateContent?alt=sse";
 
-/// GenerateContent endpoint behavior that affects the JSON body.
+/// `GenerateContent` endpoint behavior that affects the JSON body.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum GoogleEndpointKind {
 	/// Public Generative Language endpoint, which preserves function-part IDs.
@@ -141,7 +141,7 @@ pub struct GoogleFileData {
 	pub file_uri:  Str,
 }
 
-/// Complete typed GenerateContent request body.
+/// Complete typed `GenerateContent` request body.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateContentRequest {
@@ -167,7 +167,7 @@ pub struct GenerateContentRequest {
 	pub generation_config:  Option<GoogleGenerationConfig>,
 }
 
-/// One role-tagged GenerateContent content item.
+/// One role-tagged `GenerateContent` content item.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct GoogleContent {
 	/// Wire role (`user` or `model`).
@@ -186,7 +186,7 @@ pub struct GoogleSystemInstruction {
 	pub parts: Vec<GooglePart>,
 }
 
-/// GenerateContent's heterogeneous part union.
+/// `GenerateContent`'s heterogeneous part union.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GooglePart {
@@ -277,7 +277,7 @@ pub struct GoogleCodeExecutionResult {
 	pub output:  Str,
 }
 
-/// One GenerateContent tool group.
+/// One `GenerateContent` tool group.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GoogleTool {
@@ -305,7 +305,7 @@ pub struct GoogleFunctionDeclaration {
 	/// Human-readable function purpose.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub description:            Option<Str>,
-	/// Modern GenerateContent JSON Schema key.
+	/// Modern `GenerateContent` JSON Schema key.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub parameters_json_schema: Option<GoogleSchema>,
 	/// Legacy CCA JSON Schema key.
@@ -417,13 +417,13 @@ pub struct GoogleSchema {
 	pub nullable:              Option<bool>,
 	/// Object properties, preserving declaration order.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub properties:            Option<BTreeMap<String, GoogleSchema>>,
+	pub properties:            Option<BTreeMap<String, Self>>,
 	/// Required property names.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub required:              Vec<Str>,
 	/// Array item schema.
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub items:                 Option<Box<GoogleSchema>>,
+	pub items:                 Option<Box<Self>>,
 	/// Opaque enum members.
 	#[serde(rename = "enum", default, skip_serializing_if = "Vec::is_empty")]
 	pub enum_values:           Vec<Box<RawValue>>,
@@ -513,7 +513,7 @@ pub enum GoogleSchemaType {
 }
 
 impl GoogleSchema {
-	/// Parses and recursively normalizes an opaque schema for GenerateContent.
+	/// Parses and recursively normalizes an opaque schema for `GenerateContent`.
 	pub fn from_opaque(value: &OpaqueJson) -> Result<Self, GoogleCodecError> {
 		let raw = serde_json::value::to_raw_value(value.0.as_ref())
 			.map_err(|error| GoogleCodecError::encoding(format!("invalid JSON Schema: {error}")))?;
@@ -623,7 +623,7 @@ pub struct GoogleProjection {
 	pub adjustments: Vec<GoogleAdjustment>,
 }
 
-/// Pure GenerateContent request projector.
+/// Pure `GenerateContent` request projector.
 #[derive(Clone, Copy, Debug)]
 pub struct GeminiCodec {
 	endpoint:        GoogleEndpointKind,
@@ -636,12 +636,12 @@ impl GeminiCodec {
 		Self { endpoint: GoogleEndpointKind::GenerativeLanguage, thinking_policy }
 	}
 
-	/// Creates a codec for Vertex GenerateContent.
+	/// Creates a codec for Vertex `GenerateContent`.
 	pub const fn vertex(thinking_policy: Option<GoogleThinkingPolicy>) -> Self {
 		Self { endpoint: GoogleEndpointKind::Vertex, thinking_policy }
 	}
 
-	/// Creates a codec for Cloud Code Assist's embedded GenerateContent body.
+	/// Creates a codec for Cloud Code Assist's embedded `GenerateContent` body.
 	pub const fn cloud_code_assist(thinking_policy: Option<GoogleThinkingPolicy>) -> Self {
 		Self { endpoint: GoogleEndpointKind::CloudCodeAssist, thinking_policy }
 	}
@@ -1184,7 +1184,7 @@ fn shortest_wire_f32(value: f32) -> Result<f64, GoogleCodecError> {
 		.map_err(|_| GoogleCodecError::encoding("Google sampling control is not a JSON number"))
 }
 
-fn generation_config_is_empty(generation: &GoogleGenerationConfig) -> bool {
+const fn generation_config_is_empty(generation: &GoogleGenerationConfig) -> bool {
 	generation.temperature.is_none()
 		&& generation.top_p.is_none()
 		&& generation.top_k.is_none()
@@ -1418,7 +1418,7 @@ fn project_tool_choice(
 	}))
 }
 
-/// Typed native Google CountTokens request.
+/// Typed native Google `CountTokens` request.
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GoogleCountTokensRequest {
@@ -1431,7 +1431,7 @@ pub struct GoogleCountTokensRequest {
 	pub generate_content_request: Option<GenerateContentRequest>,
 }
 
-/// Typed native Google CountTokens response.
+/// Typed native Google `CountTokens` response.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GoogleCountTokensResponse {
@@ -1490,7 +1490,7 @@ pub struct GoogleEmbeddingResponse {
 	pub error:      Option<GoogleWireError>,
 }
 
-/// Typed GenerateContent response chunk.
+/// Typed `GenerateContent` response chunk.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateContentResponse {
@@ -1561,7 +1561,7 @@ pub struct GooglePromptFeedback {
 	pub block_reason_message: Option<Str>,
 }
 
-/// In-band GenerateContent error object.
+/// In-band `GenerateContent` error object.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct GoogleWireError {
 	/// Numeric provider code.
@@ -1723,7 +1723,7 @@ pub struct GoogleCandidateMetadata {
 	pub finish_message: Option<Str>,
 }
 
-/// Sans-I/O incremental GenerateContent frame decoder.
+/// Sans-I/O incremental `GenerateContent` frame decoder.
 #[derive(Debug, Default)]
 pub struct GeminiDecoder {
 	next_index:      u32,
@@ -1870,27 +1870,27 @@ impl GeminiDecoder {
 			});
 			return Ok(());
 		}
-		if let Some(text) = part.text {
-			if !text.is_empty() {
-				if part.thought.unwrap_or(false) {
-					let index = *self
-						.thinking_index
-						.get_or_insert_with(|| take_index(&mut self.next_index));
-					events.push(GoogleDecodedEvent::Thinking {
-						index,
-						text,
-						signature: part.thought_signature,
-					});
-				} else {
-					let index = *self
-						.text_index
-						.get_or_insert_with(|| take_index(&mut self.next_index));
-					events.push(GoogleDecodedEvent::Text {
-						index,
-						text,
-						signature: part.thought_signature,
-					});
-				}
+		if let Some(text) = part.text
+			&& !text.is_empty()
+		{
+			if part.thought.unwrap_or(false) {
+				let index = *self
+					.thinking_index
+					.get_or_insert_with(|| take_index(&mut self.next_index));
+				events.push(GoogleDecodedEvent::Thinking {
+					index,
+					text,
+					signature: part.thought_signature,
+				});
+			} else {
+				let index = *self
+					.text_index
+					.get_or_insert_with(|| take_index(&mut self.next_index));
+				events.push(GoogleDecodedEvent::Text {
+					index,
+					text,
+					signature: part.thought_signature,
+				});
 			}
 		}
 		if let Some(code) = part.executable_code {
@@ -1919,7 +1919,7 @@ impl GeminiDecoder {
 	}
 }
 
-fn take_index(next: &mut u32) -> u32 {
+const fn take_index(next: &mut u32) -> u32 {
 	let index = *next;
 	*next = next.saturating_add(1);
 	index
@@ -2493,8 +2493,8 @@ fn google_stream_uri(
 			validate_path("project", project, false)?;
 			validate_path("location", location, false)?;
 			format!(
-				"{base}/projects/{project}/locations/{location}/publishers/google/models/{model}{}",
-				GENERATIVE_LANGUAGE_STREAM_PATH,
+				"{base}/projects/{project}/locations/{location}/publishers/google/models/\
+				 {model}{GENERATIVE_LANGUAGE_STREAM_PATH}",
 			)
 		},
 		GoogleEndpointKind::CloudCodeAssist => {
@@ -2716,7 +2716,7 @@ fn parse_google_retry_delay_ms(delay: &str) -> Option<u64> {
 	let seconds = delay.strip_suffix('s')?.parse::<f64>().ok()?;
 	let milliseconds = seconds * 1_000.0;
 	(seconds.is_finite() && seconds >= 0.0 && milliseconds <= u64::MAX as f64)
-		.then(|| milliseconds as u64)
+		.then_some(milliseconds as u64)
 }
 
 /// Stable Google codec error category.

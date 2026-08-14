@@ -517,7 +517,12 @@ fn continuation(
 			let page = value
 				.parse::<u32>()
 				.ok()
-				.filter(|page| page.to_string() == value.as_str() && page >= first_page);
+				.filter(|page| {
+					if page.to_string() != value.as_str() {
+						return false;
+					}
+					*page >= *first_page
+				});
 			page
 				.map(|page| DiscoveryContinuation::PageNumber {
 					query_parameter: query_parameter.clone(),
@@ -529,7 +534,7 @@ fn continuation(
 }
 
 /// Returns a model-capability record containing no positive evidence.
-pub fn unknown_capabilities() -> ModelCapabilities {
+pub const fn unknown_capabilities() -> ModelCapabilities {
 	ModelCapabilities {
 		operations:    OperationBits::empty(),
 		chat:          None,
@@ -556,7 +561,7 @@ fn declared_capabilities(row: &DiscoveredModel) -> ModelCapabilities {
 	capabilities
 }
 
-fn unknown_chat_capabilities() -> ChatCapabilities {
+const fn unknown_chat_capabilities() -> ChatCapabilities {
 	ChatCapabilities {
 		roles:             Availability::Unknown,
 		mid_session_roles: Availability::Unknown,

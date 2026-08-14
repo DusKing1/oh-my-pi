@@ -71,7 +71,7 @@ pub struct EmptyCompletionStage {
 impl EmptyCompletionStage {
 	/// Creates an observer with catalog policy evidence.
 	#[must_use]
-	pub fn new(wire_policy: WirePolicyId, attempt: u32) -> Self {
+	pub const fn new(wire_policy: WirePolicyId, attempt: u32) -> Self {
 		Self {
 			wire_policy,
 			attempt,
@@ -85,7 +85,7 @@ impl EmptyCompletionStage {
 		}
 	}
 
-	fn reset(&mut self) {
+	const fn reset(&mut self) {
 		self.saw_block = false;
 		self.saw_text = false;
 		self.saw_non_whitespace_text = false;
@@ -95,7 +95,7 @@ impl EmptyCompletionStage {
 		self.completed = false;
 	}
 
-	fn classification(&self) -> Option<EmptyCompletionKind> {
+	const fn classification(&self) -> Option<EmptyCompletionKind> {
 		if self.saw_tool_or_artifact || self.saw_non_whitespace_text {
 			return None;
 		}

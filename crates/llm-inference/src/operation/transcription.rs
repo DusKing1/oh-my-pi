@@ -40,7 +40,7 @@ pub struct TranscriptionLimits {
 }
 
 /// Typed transcription validation or stream failure.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TranscriptionError {
 	/// Input media type is not accepted.
 	MediaType(Str),
@@ -83,7 +83,7 @@ pub fn validate_request(
 		},
 		MediaInput::Body { media_type, .. } => validate_media_type(media_type, limits)?,
 		MediaInput::Remote { media_type: Some(media_type), .. } => {
-			validate_media_type(media_type, limits)?
+			validate_media_type(media_type, limits)?;
 		},
 		MediaInput::Stored(_) | MediaInput::Remote { media_type: None, .. } => {},
 	}
@@ -262,7 +262,11 @@ impl TranscriptState {
 	}
 }
 
-fn validate_time(previous_end: &mut u64, start: u64, end: u64) -> Result<(), TranscriptionError> {
+const fn validate_time(
+	previous_end: &mut u64,
+	start: u64,
+	end: u64,
+) -> Result<(), TranscriptionError> {
 	if start > end || start < *previous_end {
 		return Err(TranscriptionError::InvalidTimestamp);
 	}
@@ -291,7 +295,7 @@ pub struct TranscriptionService<S> {
 
 impl<S> TranscriptionService<S> {
 	/// Wraps a route backend with media and transcript-event validation.
-	pub fn new(inner: S, limits: TranscriptionLimits) -> Self {
+	pub const fn new(inner: S, limits: TranscriptionLimits) -> Self {
 		Self { inner, limits }
 	}
 }

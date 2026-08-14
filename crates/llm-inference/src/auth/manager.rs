@@ -18,7 +18,7 @@ use omp_llm_catalog::{
 	provider::{AuthSpecKind, OAuthFlowSpec},
 };
 use parking_lot::Mutex;
-use secrecy::{ExposeSecret as _, SecretBox, SecretString};
+use secrecy::{ExposeSecret as _, SecretBox};
 
 use super::{
 	AuthSpec, CredentialBroker, CredentialError, CredentialNeed, CredentialOrigin, CredentialSource,
@@ -27,10 +27,7 @@ use super::{
 	OAuthError, OAuthHttpClient, default_login_channels,
 };
 use crate::{
-	account::{
-		AccountPool, AccountRecord, CredentialFreshness, RefreshCoordinator, RefreshPolicy,
-		RefreshRequest,
-	},
+	account::{AccountPool, AccountRecord, CredentialFreshness, RefreshCoordinator, RefreshRequest},
 	answer::{
 		AccountState, AccountSummary, AuthAnswer, AuthEvent, AuthPrompt, AuthPromptKind,
 		AuthResponse, AuthSession,
@@ -425,7 +422,7 @@ where
 						AuthSpec::OAuthCustom(spec) => custom
 							.exchange(&spec, &driver)
 							.await
-							.map_err(|error| oauth_custom_error(error))?,
+							.map_err(oauth_custom_error)?,
 						_ => return Err(auth_unavailable()),
 					};
 					let principal = tokens
@@ -490,7 +487,7 @@ pub struct StoredOAuthRefreshEngine<C, K> {
 impl<C, K> StoredOAuthRefreshEngine<C, K> {
 	/// Constructs an OAuth refresh adapter over one shared coordinator.
 	#[must_use]
-	pub fn new(
+	pub const fn new(
 		catalog: Arc<Catalog>,
 		store: Arc<CredentialStore>,
 		accounts: AccountPool,

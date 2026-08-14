@@ -17,11 +17,10 @@ use crate::{
 	codec::{
 		Codec, DecodeContext, Decoder, DecoderState, EncodeContext, EncodedRequest,
 		ProviderControlEvent, ProviderControlInput, ProviderStateEvent, RawCompletion, RawEvent,
-		RequestHeader, RequestMethod, SizeBounds, ToolInputKind, UnvalidatedToolCall,
+		RequestHeader, RequestMethod, SizeBounds,
 	},
 	error::{Error, ErrorDetail, ErrorKind, ErrorPhase, RetryAction},
 	event::{BlockKind, ChatEvent, FinishReason, UsageUpdate, WorkflowResponse},
-	id::ToolCallId,
 	receipt::{ExecutionReceipt, ReasonId, Usage, UsageSource},
 	transport::{Frame, FramingProtocol, WebSocketMessage},
 };
@@ -148,9 +147,9 @@ struct GitLabModelRef {
 /// Protocol family returned by GitLab direct-access route resolution.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GitLabDelegationTarget {
-	/// OpenAI Chat Completions and SSE.
+	/// `OpenAI` Chat Completions and SSE.
 	OpenAiChat,
-	/// OpenAI Responses and SSE.
+	/// `OpenAI` Responses and SSE.
 	OpenAiResponses,
 	/// Anthropic Messages and typed SSE.
 	AnthropicMessages,
@@ -254,9 +253,9 @@ struct DirectAccessGrantWire {
 /// Typed shared-codec delegation selected from [`GitLabDirectRoute`].
 #[derive(Clone, Debug)]
 pub enum GitLabDelegatingCodec {
-	/// Delegate request/stream behavior to the shared OpenAI Chat codec.
+	/// Delegate request/stream behavior to the shared `OpenAI` Chat codec.
 	OpenAiChat(OpenAiChatCodec),
-	/// Delegate request/stream behavior to the shared OpenAI Responses codec.
+	/// Delegate request/stream behavior to the shared `OpenAI` Responses codec.
 	OpenAiResponses(OpenAiResponsesCodec),
 	/// Delegate request/stream behavior to the shared Anthropic codec.
 	AnthropicMessages(AnthropicCodec),
@@ -701,7 +700,7 @@ fn build_start_request(
 	})
 }
 
-/// Renders canonical history into GitLab Workflow's flat ChatML goal.
+/// Renders canonical history into GitLab Workflow's flat `ChatML` goal.
 pub fn render_chatml(request: &ChatRequest, context: &EncodeContext<'_>) -> Result<String, Error> {
 	let replay = request
 		.messages
@@ -1175,7 +1174,7 @@ struct WorkflowCheckpoint {
 	#[serde(default)]
 	agent_context_usage: Option<BTreeMap<String, ContextUsage>>,
 	#[serde(default)]
-	checkpoint:          Option<Box<WorkflowCheckpoint>>,
+	checkpoint:          Option<Box<Self>>,
 }
 
 impl WorkflowCheckpoint {

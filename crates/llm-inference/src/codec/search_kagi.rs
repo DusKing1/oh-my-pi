@@ -133,7 +133,7 @@ fn join_search_uri(base: &str) -> Result<Str, Error> {
 		return Err(encoding_error("kagi_search_base_url_invalid"));
 	}
 	url.path_segments_mut()
-		.map_err(|_| encoding_error("kagi_search_base_url_invalid"))?
+		.map_err(|()| encoding_error("kagi_search_base_url_invalid"))?
 		.pop_if_empty()
 		.push(SEARCH_PATH_SEGMENT);
 	Ok(Str::from(url.to_string()))
@@ -337,7 +337,7 @@ fn trimmed(value: Str) -> Option<Str> {
 	} else if text.len() == value.len() {
 		Some(value)
 	} else {
-		Some(Str::from(text))
+		Some(text)
 	}
 }
 
@@ -407,7 +407,7 @@ fn days_from_civil(mut year: i32, month: u32, day: u32) -> Option<i64> {
 	if day == 0 || day > month_days[month as usize - 1] {
 		return None;
 	}
-	year -= if month <= 2 { 1 } else { 0 };
+	year -= i32::from(month <= 2);
 	let era = year.div_euclid(400);
 	let year_of_era = year - era * 400;
 	let shifted_month = i64::from(month) + if month > 2 { -3 } else { 9 };

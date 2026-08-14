@@ -1,4 +1,4 @@
-//! Typed sans-I/O OpenAI Realtime WebSocket protocol.
+//! Typed sans-I/O `OpenAI` Realtime WebSocket protocol.
 
 use std::collections::BTreeMap;
 
@@ -45,7 +45,8 @@ pub fn encode_handshake(
 	))
 }
 
-/// OpenAI Realtime codec state initialized from exact canonical request intent.
+/// `OpenAI` Realtime codec state initialized from exact canonical request
+/// intent.
 pub struct OpenAiRealtimeWireCodec {
 	request:         RealtimeRequest,
 	calls:           BTreeMap<Str, PendingTool>,
@@ -60,7 +61,7 @@ struct PendingTool {
 
 impl OpenAiRealtimeWireCodec {
 	/// Constructs wire state without opening a connection.
-	pub fn new(request: RealtimeRequest) -> Self {
+	pub const fn new(request: RealtimeRequest) -> Self {
 		Self { request, calls: BTreeMap::new(), next_call_index: 0 }
 	}
 }
@@ -194,14 +195,13 @@ impl RealtimeWireCodec for OpenAiRealtimeWireCodec {
 				}));
 			},
 			ServerEvent::FunctionCallDone { call_id, name, arguments } => {
-				let mut call = match self.calls.remove(&call_id) {
-					Some(call) => call,
-					None => {
-						let name = name.ok_or_else(protocol_error)?;
-						let index = self.next_call_index;
-						self.next_call_index = self.next_call_index.saturating_add(1);
-						PendingTool { index, name, arguments: String::new() }
-					},
+				let mut call = if let Some(call) = self.calls.remove(&call_id) {
+					call
+				} else {
+					let name = name.ok_or_else(protocol_error)?;
+					let index = self.next_call_index;
+					self.next_call_index = self.next_call_index.saturating_add(1);
+					PendingTool { index, name, arguments: String::new() }
 				};
 				if !arguments.is_empty() {
 					call.arguments = arguments.to_string();
@@ -548,13 +548,13 @@ fn stable_index(value: &str) -> u32 {
 		.bytes()
 		.fold(2_166_136_261_u32, |hash, byte| (hash ^ u32::from(byte)).wrapping_mul(16_777_619))
 }
-fn setting<T: Copy>(setting: &Setting<T>) -> Option<T> {
+const fn setting<T: Copy>(setting: &Setting<T>) -> Option<T> {
 	match setting {
 		Setting::Unset => None,
 		Setting::Require(value) | Setting::Prefer(value) => Some(*value),
 	}
 }
-fn setting_ref<T>(setting: &Setting<T>) -> Option<&T> {
+const fn setting_ref<T>(setting: &Setting<T>) -> Option<&T> {
 	match setting {
 		Setting::Unset => None,
 		Setting::Require(value) | Setting::Prefer(value) => Some(value),

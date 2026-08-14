@@ -250,7 +250,7 @@ impl VideoProgress {
 	}
 
 	/// Confirms the provider emitted an explicit completion event.
-	pub fn finish(&self) -> Result<(), VideoError> {
+	pub const fn finish(&self) -> Result<(), VideoError> {
 		if self.finished {
 			Ok(())
 		} else {
@@ -271,7 +271,7 @@ pub struct VideoService<S> {
 impl<S> VideoService<S> {
 	/// Wraps a route backend with request, polling-event, and download
 	/// validation.
-	pub fn new(inner: S, limits: VideoLimits, artifact_limits: ArtifactLimits) -> Self {
+	pub const fn new(inner: S, limits: VideoLimits, artifact_limits: ArtifactLimits) -> Self {
 		Self { inner, limits, artifact_limits }
 	}
 }

@@ -329,7 +329,7 @@ pub struct OAuthEngine<'a, C, K, R = SystemEntropySource> {
 impl<'a, C, K> OAuthEngine<'a, C, K, SystemEntropySource> {
 	/// Constructs an engine using operating-system cryptographic entropy.
 	#[must_use]
-	pub fn new(http: &'a C, clock: &'a K) -> Self {
+	pub const fn new(http: &'a C, clock: &'a K) -> Self {
 		Self { http, clock, entropy: SystemEntropySource }
 	}
 }
@@ -342,7 +342,7 @@ where
 {
 	/// Constructs an engine with deterministic injectable entropy.
 	#[must_use]
-	pub fn with_entropy(http: &'a C, clock: &'a K, entropy: R) -> Self {
+	pub const fn with_entropy(http: &'a C, clock: &'a K, entropy: R) -> Self {
 		Self { http, clock, entropy }
 	}
 
@@ -632,7 +632,7 @@ pub struct PkcePending {
 	completion:   PkceCompletion,
 }
 
-impl<'a, C, K, R> OAuthEngine<'a, C, K, R>
+impl<C, K, R> OAuthEngine<'_, C, K, R>
 where
 	C: OAuthHttpClient,
 	K: OAuthClock,
@@ -821,7 +821,7 @@ pub struct OAuthTokenSet {
 impl OAuthTokenSet {
 	/// Returns whether the response contains a renewable grant.
 	#[must_use]
-	pub fn is_refreshable(&self) -> bool {
+	pub const fn is_refreshable(&self) -> bool {
 		self.refresh_token.is_some()
 	}
 

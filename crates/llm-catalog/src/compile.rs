@@ -104,17 +104,17 @@ pub enum SourceTransport {
 	/// Anthropic on Vertex.
 	#[serde(rename = "anthropic-vertex")]
 	AnthropicVertex,
-	/// OpenAI Chat Completions.
+	/// `OpenAI` Chat Completions.
 	#[serde(rename = "open-ai-chat", alias = "openai-completions", alias = "openrouter")]
 	OpenAiChat,
-	/// OpenAI Responses.
+	/// `OpenAI` Responses.
 	#[serde(
 		rename = "open-ai-responses",
 		alias = "openai-responses",
 		alias = "azure-openai-responses"
 	)]
 	OpenAiResponses,
-	/// OpenAI Codex.
+	/// `OpenAI` Codex.
 	#[serde(rename = "open-ai-codex", alias = "openai-codex-responses")]
 	OpenAiCodex,
 	/// Google Generative AI.
@@ -2948,7 +2948,7 @@ fn compile_providers(
 		if !matches!(&source.auth, SourceAuth::None) || source.oauth_flow.is_some() {
 			management_operations.insert_kind(OperationKind::Auth);
 		}
-		let refresh_flow = source.oauth_flow.as_ref().or_else(|| match &source.auth {
+		let refresh_flow = source.oauth_flow.as_ref().or(match &source.auth {
 			SourceAuth::Oauth { flow } => Some(flow),
 			_ => None,
 		});
@@ -3727,7 +3727,7 @@ fn compile_thinking(
 	Ok((profile, routing))
 }
 
-fn translate_effort(effort: crate::classify::EffortTier) -> ThinkingEffort {
+const fn translate_effort(effort: crate::classify::EffortTier) -> ThinkingEffort {
 	match effort {
 		crate::classify::EffortTier::Off => ThinkingEffort::Off,
 		crate::classify::EffortTier::Minimal => ThinkingEffort::Minimal,
@@ -4246,7 +4246,7 @@ fn decimal_scaled(number: &Number, scale: usize) -> Result<u64, CompileError> {
 		let quotient = coefficient / divisor;
 		let remainder = coefficient % divisor;
 		quotient
-			.checked_add(u128::from(remainder >= (divisor + 1) / 2))
+			.checked_add(u128::from(remainder >= divisor.div_ceil(2)))
 			.ok_or_else(|| CompileError::Invariant(Str::from("decimal is out of range")))?
 	};
 	u64::try_from(scaled).map_err(|_| CompileError::Invariant(Str::from("decimal is out of range")))

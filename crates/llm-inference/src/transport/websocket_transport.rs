@@ -363,7 +363,7 @@ async fn execute(
 						Some(Ok(Message::Ping(data))) => {
 							if socket.send(Message::Pong(data)).await.is_err() { break; }
 						},
-						Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => {},
+						Some(Ok(Message::Pong(_) | Message::Frame(_))) => {},
 						Some(Ok(Message::Text(text))) => {
 							let payload = Bytes::copy_from_slice(text.as_bytes());
 							if payload.len() as u64 > bounds.frame { break; }

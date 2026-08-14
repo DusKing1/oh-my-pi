@@ -198,7 +198,6 @@ async fn watch_job(env: &EnvClient, job: &JobRef) -> Result<thread::Item, Str> {
 
 	let upload = env
 		.blob_put()
-		.await
 		.map_err(|error| fmts!("could not open settlement artifact upload: {error}"))?;
 	let mut header = serde_json::to_vec(&ArtifactHeader {
 		job_id:            job.id.as_str(),

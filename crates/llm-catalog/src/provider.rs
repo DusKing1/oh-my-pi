@@ -302,7 +302,7 @@ pub enum OAuthCompletion {
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case", ascii_case_insensitive, const_into_str)]
 pub enum OAuthExchangeKind {
-	/// Extracts account claims from the OpenAI Codex token response.
+	/// Extracts account claims from the `OpenAI` Codex token response.
 	OpenAiCodexClaims,
 	/// Exchanges a GitHub device token for a Copilot session token.
 	GithubCopilotSessionToken,

@@ -1,4 +1,4 @@
-//! Allowlisted, size-bounded native OpenAI- and Anthropic-compatible facades.
+//! Allowlisted, size-bounded native `OpenAI`- and Anthropic-compatible facades.
 //!
 //! Native payloads are intentionally opaque and byte-preserving. This module
 //! selects only closed method/path pairs and never acts as an arbitrary proxy.

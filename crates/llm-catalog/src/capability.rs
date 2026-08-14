@@ -49,7 +49,7 @@ macro_rules! bitset {
 			}
 
 			/// Adds every bit from `other`.
-			pub fn insert(&mut self, other: Self) {
+			pub const fn insert(&mut self, other: Self) {
 				self.0 |= other.0;
 			}
 		}

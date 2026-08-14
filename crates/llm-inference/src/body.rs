@@ -14,7 +14,6 @@ use std::{
 
 use bytes::Bytes;
 use futures::{Stream, stream};
-use omp_core::Str;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -266,12 +265,12 @@ impl StoredBody {
 	}
 
 	/// Returns the immutable artifact identity.
-	pub fn artifact(&self) -> &ArtifactRef {
+	pub const fn artifact(&self) -> &ArtifactRef {
 		&self.evidence.artifact
 	}
 
 	/// Returns secret-free evidence for the held lease.
-	pub fn lease_evidence(&self) -> &ArtifactLeaseEvidence {
+	pub const fn lease_evidence(&self) -> &ArtifactLeaseEvidence {
 		&self.evidence
 	}
 }
@@ -365,7 +364,7 @@ impl NativeBodySource {
 	}
 
 	/// Returns the validated physical source.
-	pub fn source(&self) -> &BodySource {
+	pub const fn source(&self) -> &BodySource {
 		&self.source
 	}
 }
@@ -551,12 +550,12 @@ pub enum BodySource {
 	OneShot(Arc<OneShotBody>),
 	/// Ordered multipart chunks and streams opened independently without byte
 	/// aggregation.
-	Multipart(Arc<[BodySource]>),
+	Multipart(Arc<[Self]>),
 }
 
 impl BodySource {
 	/// Creates replayable inline body bytes.
-	pub fn bytes(bytes: Bytes) -> Self {
+	pub const fn bytes(bytes: Bytes) -> Self {
 		Self::Bytes(bytes)
 	}
 
@@ -567,7 +566,7 @@ impl BodySource {
 
 	/// Composes ordered multipart preambles, payloads, and boundaries without
 	/// aggregating bytes.
-	pub fn multipart(parts: impl Into<Arc<[BodySource]>>) -> Self {
+	pub fn multipart(parts: impl Into<Arc<[Self]>>) -> Self {
 		Self::Multipart(parts.into())
 	}
 
@@ -864,10 +863,10 @@ impl Stream for BodyReader {
 	type Item = Result<Bytes, Error>;
 
 	fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-		if !self.evidence.state.consumed.swap(true, Ordering::AcqRel) {
-			if let Some(body) = &self.one_shot {
-				body.state.lock().consumed = true;
-			}
+		if !self.evidence.state.consumed.swap(true, Ordering::AcqRel)
+			&& let Some(body) = &self.one_shot
+		{
+			body.state.lock().consumed = true;
 		}
 		self.stream.as_mut().poll_next(context)
 	}

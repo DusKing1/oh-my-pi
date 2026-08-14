@@ -233,7 +233,7 @@ pub struct ProductionRouteComposer {
 
 impl ProductionRouteComposer {
 	/// Creates a composer owning all shared production dependencies.
-	pub fn new(dependencies: ProductionDependencies) -> Self {
+	pub const fn new(dependencies: ProductionDependencies) -> Self {
 		Self { dependencies }
 	}
 }
@@ -394,7 +394,7 @@ fn operation_policy(binding: &CodecBinding, advertised: OperationBits) -> Operat
 	OperationPolicyConfig {
 		embedding:              advertised
 			.contains_kind(OperationKind::Embed)
-			.then(|| binding.embedding)
+			.then_some(binding.embedding)
 			.flatten(),
 		native:                 None,
 		usage:                  UsageServiceConfig::new(Duration::MAX),

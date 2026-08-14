@@ -215,7 +215,7 @@ impl ImageProgress {
 	}
 
 	/// Confirms the stream reached an explicit, count-consistent completion.
-	pub fn finish(&self) -> Result<(), ImageError> {
+	pub const fn finish(&self) -> Result<(), ImageError> {
 		if self.finished {
 			Ok(())
 		} else {

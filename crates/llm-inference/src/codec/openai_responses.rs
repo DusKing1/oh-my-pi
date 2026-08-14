@@ -1,4 +1,4 @@
-//! Typed OpenAI Responses wire shapes and sans-I/O event projection.
+//! Typed `OpenAI` Responses wire shapes and sans-I/O event projection.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -109,7 +109,7 @@ pub enum ResponsesImageDetail {
 }
 
 /// One typed message content entry.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponsesContent {
 	/// Content discriminator.
 	#[serde(rename = "type")]
@@ -154,7 +154,7 @@ impl ResponsesContent {
 }
 
 /// Message input content, preserving the API's string and typed-part shapes.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ResponsesInputContent {
 	/// Compact plain-text content.
@@ -206,7 +206,7 @@ pub struct ResponsesSummaryPart {
 }
 
 /// A computer-use action.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponsesComputerAction {
 	/// Action discriminator such as `click`, `type`, or `screenshot`.
 	#[serde(rename = "type")]
@@ -248,7 +248,7 @@ pub struct ResponsesSafetyCheck {
 }
 
 /// Canonical computer-call arguments assembled for validation and execution.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponsesComputerArguments {
 	/// Ordered computer actions.
 	pub actions:               Vec<ResponsesComputerAction>,
@@ -340,7 +340,7 @@ pub struct ResponsesInputItem {
 impl ResponsesInputItem {
 	/// Constructs an ordinary message input with the wire `type` intentionally
 	/// omitted.
-	pub fn message(role: ResponsesRole, content: Vec<ResponsesContent>) -> Self {
+	pub const fn message(role: ResponsesRole, content: Vec<ResponsesContent>) -> Self {
 		Self {
 			kind: None,
 			id: None,
@@ -387,7 +387,7 @@ pub enum ResponsesToolKind {
 }
 
 /// Custom tool input grammar.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponsesCustomToolFormat {
 	/// Format kind, for example `text` or `grammar`.
 	#[serde(rename = "type")]
@@ -409,7 +409,7 @@ pub struct ResponsesCodeContainer {
 }
 
 /// A typed Responses tool declaration.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponsesTool {
 	/// Tool discriminator.
 	#[serde(rename = "type")]
@@ -543,7 +543,7 @@ pub enum ResponsesTextFormatKind {
 }
 
 /// Structured text output configuration.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponsesTextFormat {
 	/// Format discriminator.
 	#[serde(rename = "type")]
@@ -560,7 +560,7 @@ pub struct ResponsesTextFormat {
 }
 
 /// Responses text controls.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponsesTextOptions {
 	/// Output verbosity.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -662,7 +662,7 @@ pub struct ResponsesContinuation {
 	pub committed_items: usize,
 }
 
-/// OpenAI Responses-specific typed options.
+/// `OpenAI` Responses-specific typed options.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct OpenAiResponsesOptions {
 	/// Enable provider-side response storage and continuation.
@@ -764,7 +764,7 @@ pub enum ResponsesOutputItemKind {
 }
 
 /// Typed output item carried by stream events and terminal responses.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponsesOutputItem {
 	/// Item discriminator.
 	#[serde(rename = "type")]
@@ -1194,16 +1194,15 @@ impl OpenAiResponsesDecoder {
 		if self.terminal {
 			return Vec::new();
 		}
-		let event = match serde_json::from_slice::<ResponsesStreamEvent>(payload) {
-			Ok(event) => event,
-			Err(_) => {
-				self.terminal = true;
-				return vec![ResponsesProjection::Error(ResponsesErrorEvidence {
-					code:         Some(Str::from("invalid_responses_event")),
-					message:      Str::from("invalid Responses event"),
-					continuation: ResponsesContinuationFailure::Malformed,
-				})];
-			},
+		let event = if let Ok(event) = serde_json::from_slice::<ResponsesStreamEvent>(payload) {
+			event
+		} else {
+			self.terminal = true;
+			return vec![ResponsesProjection::Error(ResponsesErrorEvidence {
+				code:         Some(Str::from("invalid_responses_event")),
+				message:      Str::from("invalid Responses event"),
+				continuation: ResponsesContinuationFailure::Malformed,
+			})];
 		};
 		self.push_event(event)
 	}
@@ -1238,7 +1237,7 @@ impl OpenAiResponsesDecoder {
 				self.append_delta(&event, SlotClass::Tool, &mut out);
 			},
 			ResponsesStreamEventKind::OutputTextDone | ResponsesStreamEventKind::RefusalDone => {
-				self.replace_done(&event, SlotClass::Text)
+				self.replace_done(&event, SlotClass::Text);
 			},
 			ResponsesStreamEventKind::ReasoningSummaryDone
 			| ResponsesStreamEventKind::ReasoningDone => self.replace_done(&event, SlotClass::Thinking),
@@ -1455,13 +1454,13 @@ impl OpenAiResponsesDecoder {
 				out.push(ResponsesProjection::Canonical(ChatEvent::BlockStarted {
 					index,
 					kind: BlockKind::Text,
-				}))
+				}));
 			},
 			OutputSlot::Thinking { .. } => {
 				out.push(ResponsesProjection::Canonical(ChatEvent::BlockStarted {
 					index,
 					kind: BlockKind::Thinking,
-				}))
+				}));
 			},
 			OutputSlot::Tool { call_id, .. } | OutputSlot::Computer { call_id, .. } => {
 				let name = match &slot {
@@ -1623,7 +1622,7 @@ impl OpenAiResponsesDecoder {
 				*completed = item
 					.status
 					.as_deref()
-					.is_none_or(|status| status == "completed")
+					.is_none_or(|status| status == "completed");
 			},
 			Some(OutputSlot::Image { encoded }) => {
 				if let Some(value) = &item.result {
@@ -1666,7 +1665,7 @@ impl OpenAiResponsesDecoder {
 					name: name.clone(),
 					arguments: arguments.clone().freeze(),
 					custom: *custom,
-				})
+				});
 			},
 			Some(OutputSlot::Computer { call_id, arguments, .. }) => {
 				out.push(ResponsesProjection::ToolCallComplete {
@@ -1675,10 +1674,10 @@ impl OpenAiResponsesDecoder {
 					name: Str::from("computer"),
 					arguments: arguments.clone(),
 					custom: false,
-				})
+				});
 			},
 			Some(OutputSlot::Hosted { kind, completed }) => {
-				out.push(ResponsesProjection::HostedTool { index, kind: *kind, completed: *completed })
+				out.push(ResponsesProjection::HostedTool { index, kind: *kind, completed: *completed });
 			},
 			Some(OutputSlot::Image { encoded }) => {
 				if let Ok(bytes) = omp_core::encoding::base64::decode(encoded).into_vec() {
@@ -1890,7 +1889,7 @@ pub fn syntactically_valid_function_call(arguments: &[u8]) -> Option<OpaqueJson>
 
 /// Converts a schema-validated complete call into the sole executable canonical
 /// event.
-pub fn authorize_validated_tool_call(
+pub const fn authorize_validated_tool_call(
 	index: u32,
 	id: ToolCallId,
 	name: Str,
@@ -1936,7 +1935,7 @@ pub fn decode_provider_proof(bytes: &[u8]) -> Result<ResponsesProviderProof, ser
 	serde_json::from_slice(bytes)
 }
 
-/// Pure OpenAI Responses codec.
+/// Pure `OpenAI` Responses codec.
 #[derive(Clone, Debug, Default)]
 pub struct OpenAiResponsesCodec {
 	options: OpenAiResponsesOptions,
@@ -1944,7 +1943,7 @@ pub struct OpenAiResponsesCodec {
 
 impl OpenAiResponsesCodec {
 	/// Constructs a codec with typed route/session options.
-	pub fn new(options: OpenAiResponsesOptions) -> Self {
+	pub const fn new(options: OpenAiResponsesOptions) -> Self {
 		Self { options }
 	}
 
@@ -1989,7 +1988,7 @@ impl OpenAiResponsesCodec {
 						}
 					},
 					crate::session::StoredProviderStateEvent::OutputItem { id, .. } => {
-						output_items.push(id)
+						output_items.push(id);
 					},
 					crate::session::StoredProviderStateEvent::ReasoningSignature { .. }
 					| crate::session::StoredProviderStateEvent::ToolCallProof { .. }
@@ -2682,7 +2681,7 @@ impl ResponsesDecoderAdapter {
 		match projection {
 			ResponsesProjection::Canonical(event) => emit(super::RawEvent::Chat(event)),
 			ResponsesProjection::Completion(completion) => {
-				emit(super::RawEvent::Completion(completion))
+				emit(super::RawEvent::Completion(completion));
 			},
 			ResponsesProjection::ToolCallComplete { index, id, name, arguments, custom } => {
 				emit(super::RawEvent::ToolCallComplete {
@@ -2703,7 +2702,7 @@ impl ResponsesDecoderAdapter {
 				emit(super::RawEvent::ProviderState(super::ProviderStateEvent::OutputItem {
 					index,
 					id,
-				}))
+				}));
 			},
 			ResponsesProjection::ReasoningSignature { index, item_id, signature } => {
 				if let Some(id) = item_id {

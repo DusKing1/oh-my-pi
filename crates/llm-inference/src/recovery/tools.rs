@@ -179,7 +179,11 @@ pub struct ToolAssembler<'a> {
 
 impl<'a> ToolAssembler<'a> {
 	/// Creates an assembler for the declarations in one request.
-	pub fn new(definitions: &'a [ToolDefinition], limits: ToolAssemblyLimits, attempt: u32) -> Self {
+	pub const fn new(
+		definitions: &'a [ToolDefinition],
+		limits: ToolAssemblyLimits,
+		attempt: u32,
+	) -> Self {
 		Self {
 			definitions,
 			limits,
@@ -443,7 +447,7 @@ impl<'a> ToolAssembler<'a> {
 	}
 }
 
-fn rejection_rule(rejection: &ToolRejection) -> &'static str {
+const fn rejection_rule(rejection: &ToolRejection) -> &'static str {
 	match rejection {
 		ToolRejection::UnknownCall => "tool.unknown-call",
 		ToolRejection::LimitExceeded { .. } => "tool.limit-exceeded",
@@ -511,15 +515,15 @@ fn validate_node(
 	let Some(object) = schema.as_object() else {
 		return violation(path, "schemaType");
 	};
-	if let Some(constant) = object.get("const") {
-		if value != constant {
-			return violation(path, "const");
-		}
+	if let Some(constant) = object.get("const")
+		&& value != constant
+	{
+		return violation(path, "const");
 	}
-	if let Some(values) = object.get("enum").and_then(Value::as_array) {
-		if !values.contains(value) {
-			return violation(path, "enum");
-		}
+	if let Some(values) = object.get("enum").and_then(Value::as_array)
+		&& !values.contains(value)
+	{
+		return violation(path, "enum");
 	}
 	if let Some(types) = object.get("type") {
 		let valid = match types {
@@ -609,15 +613,15 @@ fn validate_node(
 				)?;
 			}
 		}
-		if let Some(min) = object.get("minProperties").and_then(Value::as_u64) {
-			if properties.len() < min as usize {
-				return violation(path, "minProperties");
-			}
+		if let Some(min) = object.get("minProperties").and_then(Value::as_u64)
+			&& properties.len() < min as usize
+		{
+			return violation(path, "minProperties");
 		}
-		if let Some(max) = object.get("maxProperties").and_then(Value::as_u64) {
-			if properties.len() > max as usize {
-				return violation(path, "maxProperties");
-			}
+		if let Some(max) = object.get("maxProperties").and_then(Value::as_u64)
+			&& properties.len() > max as usize
+		{
+			return violation(path, "maxProperties");
 		}
 	}
 	if let Some(items) = value.as_array() {
@@ -634,15 +638,15 @@ fn validate_node(
 				)?;
 			}
 		}
-		if let Some(min) = object.get("minItems").and_then(Value::as_u64) {
-			if items.len() < min as usize {
-				return violation(path, "minItems");
-			}
+		if let Some(min) = object.get("minItems").and_then(Value::as_u64)
+			&& items.len() < min as usize
+		{
+			return violation(path, "minItems");
 		}
-		if let Some(max) = object.get("maxItems").and_then(Value::as_u64) {
-			if items.len() > max as usize {
-				return violation(path, "maxItems");
-			}
+		if let Some(max) = object.get("maxItems").and_then(Value::as_u64)
+			&& items.len() > max as usize
+		{
+			return violation(path, "maxItems");
 		}
 		if object.get("uniqueItems") == Some(&Value::Bool(true)) {
 			for (index, item) in items.iter().enumerate() {
@@ -654,37 +658,37 @@ fn validate_node(
 	}
 	if let Some(text) = value.as_str() {
 		let length = unicode_scalar_count(text);
-		if let Some(min) = object.get("minLength").and_then(Value::as_u64) {
-			if length < min as usize {
-				return violation(path, "minLength");
-			}
+		if let Some(min) = object.get("minLength").and_then(Value::as_u64)
+			&& length < min as usize
+		{
+			return violation(path, "minLength");
 		}
-		if let Some(max) = object.get("maxLength").and_then(Value::as_u64) {
-			if length > max as usize {
-				return violation(path, "maxLength");
-			}
+		if let Some(max) = object.get("maxLength").and_then(Value::as_u64)
+			&& length > max as usize
+		{
+			return violation(path, "maxLength");
 		}
 	}
 	if let Some(number) = value.as_f64() {
-		if let Some(min) = object.get("minimum").and_then(Value::as_f64) {
-			if number < min {
-				return violation(path, "minimum");
-			}
+		if let Some(min) = object.get("minimum").and_then(Value::as_f64)
+			&& number < min
+		{
+			return violation(path, "minimum");
 		}
-		if let Some(max) = object.get("maximum").and_then(Value::as_f64) {
-			if number > max {
-				return violation(path, "maximum");
-			}
+		if let Some(max) = object.get("maximum").and_then(Value::as_f64)
+			&& number > max
+		{
+			return violation(path, "maximum");
 		}
-		if let Some(min) = object.get("exclusiveMinimum").and_then(Value::as_f64) {
-			if number <= min {
-				return violation(path, "exclusiveMinimum");
-			}
+		if let Some(min) = object.get("exclusiveMinimum").and_then(Value::as_f64)
+			&& number <= min
+		{
+			return violation(path, "exclusiveMinimum");
 		}
-		if let Some(max) = object.get("exclusiveMaximum").and_then(Value::as_f64) {
-			if number >= max {
-				return violation(path, "exclusiveMaximum");
-			}
+		if let Some(max) = object.get("exclusiveMaximum").and_then(Value::as_f64)
+			&& number >= max
+		{
+			return violation(path, "exclusiveMaximum");
 		}
 	}
 	if strict {
@@ -808,7 +812,7 @@ impl Default for ToolResultPairer {
 
 impl ToolResultPairer {
 	/// Creates a pairer with a hard total-call bound.
-	pub fn new(max_calls: usize) -> Self {
+	pub const fn new(max_calls: usize) -> Self {
 		Self { outstanding: BTreeSet::new(), completed: BTreeSet::new(), max_calls }
 	}
 

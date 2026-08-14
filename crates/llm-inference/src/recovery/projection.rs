@@ -290,7 +290,7 @@ impl<'a> RecoveryProjector<'a> {
 					if let Some(index) = self.canonical_indexes.remove(&(channel, source_index)) {
 						match self.pairer.register_ready(&call) {
 							ToolRegistration::Registered => {
-								output.events.push(ChatEvent::ToolCallReady { index, call })
+								output.events.push(ChatEvent::ToolCallReady { index, call });
 							},
 							ToolRegistration::Duplicate | ToolRegistration::LimitExceeded => {
 								self.stopped = true;
@@ -335,14 +335,13 @@ impl<'a> RecoveryProjector<'a> {
 			return output;
 		}
 		let hold = partial_opener_suffix(&self.pending_text);
-		let valid = match valid_utf8_prefix(&self.pending_text) {
-			Ok(valid) => valid,
-			Err(()) => {
-				self.pending_text.clear();
-				self.stopped = true;
-				output.failure = Some(ProjectionFailure::InvalidUtf8);
-				return output;
-			},
+		let valid = if let Ok(valid) = valid_utf8_prefix(&self.pending_text) {
+			valid
+		} else {
+			self.pending_text.clear();
+			self.stopped = true;
+			output.failure = Some(ProjectionFailure::InvalidUtf8);
+			return output;
 		};
 		let emit = valid.saturating_sub(hold.min(valid));
 		if emit != 0 {
@@ -373,16 +372,15 @@ impl<'a> RecoveryProjector<'a> {
 		let Some(text) = decode_utf8(&bytes) else {
 			return;
 		};
-		let index = match self.text_index {
-			Some(index) => index,
-			None => {
-				let index = self.allocate_index();
-				self.text_index = Some(index);
-				output
-					.events
-					.push(ChatEvent::BlockStarted { index, kind: BlockKind::Text });
-				index
-			},
+		let index = if let Some(index) = self.text_index {
+			index
+		} else {
+			let index = self.allocate_index();
+			self.text_index = Some(index);
+			output
+				.events
+				.push(ChatEvent::BlockStarted { index, kind: BlockKind::Text });
+			index
 		};
 		output
 			.events
@@ -398,7 +396,7 @@ impl<'a> RecoveryProjector<'a> {
 		index
 	}
 
-	fn allocate_index(&mut self) -> u32 {
+	const fn allocate_index(&mut self) -> u32 {
 		let index = self.next_index;
 		self.next_index = self.next_index.saturating_add(1);
 		index

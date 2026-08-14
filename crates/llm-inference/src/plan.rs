@@ -74,7 +74,7 @@ pub enum NegotiationDecision {
 }
 
 /// Caller policy governing native, emulated, unknown, and dropped behavior.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct PlanningPolicy {
 	/// Whether native support is mandatory for required features.
 	pub allow_emulation:           bool,
@@ -84,17 +84,6 @@ pub struct PlanningPolicy {
 	pub allow_unknown_preferences: bool,
 	/// Whether unsupported preferences may be dropped with an adjustment.
 	pub allow_dropped_preferences: bool,
-}
-
-impl Default for PlanningPolicy {
-	fn default() -> Self {
-		Self {
-			allow_emulation:           false,
-			allow_lossy_emulation:     false,
-			allow_unknown_preferences: false,
-			allow_dropped_preferences: false,
-		}
-	}
 }
 
 /// A typed codec-specific option requested by an operation.
@@ -306,7 +295,7 @@ impl ExecutionPlan {
 	}
 
 	/// Borrows the codec-only wire target at the encoding boundary.
-	pub(crate) fn wire_target(&self) -> Option<&WireTarget> {
+	pub(crate) const fn wire_target(&self) -> Option<&WireTarget> {
 		self.wire_target.as_ref()
 	}
 }
@@ -339,12 +328,11 @@ pub fn negotiate(
 			.find(|item| item.feature == requirement.feature);
 		let availability = observed.map_or(CapabilityAvailability::Unknown, |item| item.availability);
 		let reason = observed
-			.map(|item| item.reason.clone())
-			.unwrap_or_else(|| ReasonId(Str::from("no-route-evidence")));
+			.map_or_else(|| ReasonId(Str::from("no-route-evidence")), |item| item.reason.clone());
 
 		match availability {
 			CapabilityAvailability::Native => {
-				decisions.push(NegotiationDecision::Native { feature: requirement.feature.clone() })
+				decisions.push(NegotiationDecision::Native { feature: requirement.feature.clone() });
 			},
 			CapabilityAvailability::Emulated(method)
 				if policy.allow_emulation

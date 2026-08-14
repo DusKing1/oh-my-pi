@@ -1,5 +1,5 @@
-//! Typed ChatGPT Codex Responses Lite, WebSocket, continuation, and attestation
-//! shapes.
+//! Typed `ChatGPT` Codex Responses Lite, WebSocket, continuation, and
+//! attestation shapes.
 
 use std::{fmt, sync::Arc};
 
@@ -28,7 +28,7 @@ pub enum CodexWireTransport {
 	WebSocket,
 }
 
-/// Opaque DeviceCheck attestation envelope.
+/// Opaque `DeviceCheck` attestation envelope.
 #[derive(Clone)]
 pub struct CodexAttestation(Arc<SecretString>);
 
@@ -140,10 +140,11 @@ pub fn transform_codex_request(
 			.include
 			.push(Str::from("reasoning.encrypted_content"));
 	}
-	if let Some(reasoning) = request.reasoning.as_mut() {
-		if reasoning.effort.is_some() && reasoning.summary.is_none() {
-			reasoning.summary = Some(Some(Str::from("auto")));
-		}
+	if let Some(reasoning) = request.reasoning.as_mut()
+		&& reasoning.effort.is_some()
+		&& reasoning.summary.is_none()
+	{
+		reasoning.summary = Some(Some(Str::from("auto")));
 	}
 	if concurrent_summaries {
 		request.stream_options = Some(ResponsesStreamOptions {
@@ -455,7 +456,7 @@ impl CodexFrameRouter {
 	}
 }
 
-fn is_terminal(kind: ResponsesStreamEventKind) -> bool {
+const fn is_terminal(kind: ResponsesStreamEventKind) -> bool {
 	matches!(
 		kind,
 		ResponsesStreamEventKind::Completed
@@ -478,7 +479,7 @@ pub struct CodexContinuationState {
 
 impl CodexContinuationState {
 	/// Captures authoritative successful state.
-	pub fn new(
+	pub const fn new(
 		previous_request: ResponsesRequest,
 		previous_response_id: Str,
 		previous_response_items: Vec<ResponsesOutputItem>,
@@ -1003,16 +1004,15 @@ impl super::Codec for OpenAiCodexCodec {
 			.unwrap_or(self.options.responses_lite);
 		transform_codex_request(&mut request, responses_lite, self.options.concurrent_summaries)
 			.map_err(|_| fail("invalid_codex_responses_lite_request"))?;
-		let transport =
-			self
-				.options
-				.transport
-				.unwrap_or_else(|| match context.route.codex_transport {
-					crate::catalog::CodexTransportPreference::WebsocketPreferred => {
-						CodexWireTransport::WebSocket
-					},
-					crate::catalog::CodexTransportPreference::HttpOnly => CodexWireTransport::Http,
-				});
+		let transport = self
+			.options
+			.transport
+			.unwrap_or(match context.route.codex_transport {
+				crate::catalog::CodexTransportPreference::WebsocketPreferred => {
+					CodexWireTransport::WebSocket
+				},
+				crate::catalog::CodexTransportPreference::HttpOnly => CodexWireTransport::Http,
+			});
 		if let Some(identity) = &self.options.identity {
 			apply_codex_client_metadata(
 				&mut request,

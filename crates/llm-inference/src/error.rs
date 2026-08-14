@@ -279,7 +279,7 @@ impl fmt::Debug for Error {
 
 impl Error {
 	/// Constructs a structured error with no provider-specific evidence.
-	pub fn new(
+	pub const fn new(
 		kind: ErrorKind,
 		phase: ErrorPhase,
 		action: RetryAction,

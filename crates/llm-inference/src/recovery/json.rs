@@ -211,8 +211,7 @@ fn repair(input: &[u8], limits: JsonRepairLimits) -> Result<(Vec<u8>, u32), Reco
 				.unwrap_or(rest)
 		})
 		.and_then(|rest| rest.strip_suffix(b"```"))
-		.map(trim_ascii)
-		.unwrap_or(trimmed);
+		.map_or(trimmed, trim_ascii);
 	let mut steps = u32::from(body.len() != trimmed.len());
 	let mut output = Vec::with_capacity(body.len().saturating_add(16));
 	let mut stack: Vec<u8> = Vec::new();
@@ -341,7 +340,7 @@ fn repair(input: &[u8], limits: JsonRepairLimits) -> Result<(Vec<u8>, u32), Reco
 	Ok((output, steps))
 }
 
-fn bump(steps: &mut u32, limit: u32) -> Result<(), RecoveryError> {
+const fn bump(steps: &mut u32, limit: u32) -> Result<(), RecoveryError> {
 	*steps = steps.saturating_add(1);
 	if *steps > limit {
 		Err(RecoveryError::LimitExceeded { stage: "json-steps", limit: limit as usize })
@@ -349,17 +348,17 @@ fn bump(steps: &mut u32, limit: u32) -> Result<(), RecoveryError> {
 		Ok(())
 	}
 }
-fn ensure_depth(stack: &[u8], limit: usize) -> Result<(), RecoveryError> {
+const fn ensure_depth(stack: &[u8], limit: usize) -> Result<(), RecoveryError> {
 	if stack.len() > limit {
 		Err(RecoveryError::LimitExceeded { stage: "json-depth", limit })
 	} else {
 		Ok(())
 	}
 }
-fn is_identifier_start(byte: u8) -> bool {
+const fn is_identifier_start(byte: u8) -> bool {
 	byte == b'_' || byte.is_ascii_alphabetic()
 }
-fn is_identifier_continue(byte: u8) -> bool {
+const fn is_identifier_continue(byte: u8) -> bool {
 	is_identifier_start(byte) || byte.is_ascii_digit() || byte == b'-'
 }
 fn trim_ascii(mut input: &[u8]) -> &[u8] {

@@ -157,7 +157,7 @@ impl ArtifactMeter {
 	}
 
 	/// Finalizes accounting and checks a declared content length.
-	pub fn finish(&mut self) -> Result<u64, ArtifactViolation> {
+	pub const fn finish(&mut self) -> Result<u64, ArtifactViolation> {
 		if self.finished {
 			return Err(ArtifactViolation::AlreadyFinished);
 		}
@@ -220,7 +220,7 @@ impl ArtifactTransfer {
 	}
 
 	/// Cancels forwarding without polling or buffering another body chunk.
-	pub fn cancel(&mut self) -> ArtifactCancellationReceipt {
+	pub const fn cancel(&mut self) -> ArtifactCancellationReceipt {
 		self.cancelled = true;
 		ArtifactCancellationReceipt { bytes_forwarded: self.meter.observed() }
 	}
@@ -276,12 +276,12 @@ pub trait ArtifactStore: Send + Sync {
 		Self: 'a;
 
 	/// Streams an object into storage and atomically publishes it on success.
-	fn put<'a>(
-		&'a self,
+	fn put(
+		&self,
 		descriptor: ArtifactDescriptor,
 		body: ByteStream,
 		limits: ArtifactLimits,
-	) -> Self::PutFuture<'a>;
+	) -> Self::PutFuture<'_>;
 	/// Opens a new repeatable stream for an immutable stored object.
 	fn open<'a>(
 		&'a self,

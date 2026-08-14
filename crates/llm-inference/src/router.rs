@@ -47,7 +47,7 @@ pub struct RouteSelection {
 
 impl RouteSelection {
 	/// Returns the exact primary model without exposing a wire identifier.
-	pub fn primary_model(&self) -> Option<&ModelKey> {
+	pub const fn primary_model(&self) -> Option<&ModelKey> {
 		match &self.target {
 			Target::Model(model) | Target::Provider { model, .. } | Target::Route { model, .. } => {
 				Some(model)
@@ -126,7 +126,7 @@ impl Router {
 					.ok_or_else(|| target_not_found(&call.target))?;
 				let policy_model = Arc::new(PolicyModel::from(spec));
 				let mut candidates = Vec::new();
-				for route_id in spec.routes.iter() {
+				for route_id in &spec.routes {
 					let Some(route) = self.registry.catalog().route(route_id) else {
 						continue;
 					};
@@ -201,7 +201,7 @@ impl Router {
 			})?;
 		let mut eligible = Vec::new();
 		let mut last_error = None;
-		for route_id in definition.routes.iter() {
+		for route_id in &definition.routes {
 			let route = self
 				.registry
 				.catalog()
@@ -340,7 +340,7 @@ impl Router {
 	}
 
 	/// Borrows the registry used to construct and later validate plans.
-	pub fn registry(&self) -> &Registry {
+	pub const fn registry(&self) -> &Registry {
 		&self.registry
 	}
 
@@ -812,7 +812,9 @@ fn catalog_capability_evidence(
 	}
 }
 
-fn availability_class<C>(availability: &crate::catalog::Availability<C>) -> CapabilityAvailability {
+const fn availability_class<C>(
+	availability: &crate::catalog::Availability<C>,
+) -> CapabilityAvailability {
 	match availability {
 		crate::catalog::Availability::Unsupported => CapabilityAvailability::Unsupported,
 		crate::catalog::Availability::Unknown => CapabilityAvailability::Unknown,
@@ -873,8 +875,9 @@ fn operation_replay(operation: &OperationCall) -> ReplayRequirements {
 			semantic_retry_possible = !matches!(request.output, crate::call::Setting::Unset)
 				|| matches!(
 					request.tool_choice,
-					crate::call::Setting::Require(crate::call::ToolChoice::Named(_))
-						| crate::call::Setting::Require(crate::call::ToolChoice::Required)
+					crate::call::Setting::Require(
+						crate::call::ToolChoice::Named(_) | crate::call::ToolChoice::Required
+					)
 				);
 		},
 		OperationCall::GenerateImage(request) => {
@@ -982,7 +985,7 @@ fn model_less_route_is_candidate(
 	route_operations: Option<crate::catalog::OperationBits>,
 	operation: OperationKind,
 ) -> bool {
-	!pinned_route.is_some_and(|pinned| pinned != route)
+	pinned_route.is_none_or(|pinned| pinned == route)
 		&& model_less_operation_advertised(provider_support, route_operations, operation)
 }
 

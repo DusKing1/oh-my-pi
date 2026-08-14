@@ -226,7 +226,7 @@ impl JobCancelHandle {
 	}
 
 	/// Returns the stable provider-qualified job identity.
-	pub fn job(&self) -> &JobRef {
+	pub const fn job(&self) -> &JobRef {
 		&self.job
 	}
 
@@ -237,7 +237,7 @@ impl JobCancelHandle {
 
 	/// Disarms Drop after a containing session rejects ownership before
 	/// publication.
-	pub(crate) fn disarm(&mut self) {
+	pub(crate) const fn disarm(&mut self) {
 		self.command_sent = true;
 	}
 }
@@ -327,7 +327,7 @@ impl JobController {
 	}
 
 	/// Requests cancellation; the next action is exactly one cancel dispatch.
-	pub fn request_cancel(&mut self) -> Result<(), JobError> {
+	pub const fn request_cancel(&mut self) -> Result<(), JobError> {
 		if self.terminal {
 			return Err(JobError::AlreadyTerminal);
 		}

@@ -31,7 +31,7 @@ pub enum FramingProtocol {
 	WebSocket,
 	/// Connect protocol envelopes.
 	Connect,
-	/// AWS EventStream messages.
+	/// AWS `EventStream` messages.
 	AwsEventStream,
 }
 
@@ -46,16 +46,16 @@ pub enum Utf8Field {
 	WebSocketText,
 	/// A WebSocket close reason.
 	WebSocketCloseReason,
-	/// An AWS EventStream string header.
+	/// An AWS `EventStream` string header.
 	EventStreamHeader,
 }
 
-/// CRC-bearing portion of an AWS EventStream message.
+/// CRC-bearing portion of an AWS `EventStream` message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CrcScope {
-	/// The eight-byte EventStream prelude.
+	/// The eight-byte `EventStream` prelude.
 	Prelude,
-	/// The complete EventStream message except its trailing CRC.
+	/// The complete `EventStream` message except its trailing CRC.
 	Message,
 }
 
@@ -132,7 +132,7 @@ pub enum FramingError {
 		/// Textual field that failed validation.
 		field:    Utf8Field,
 	},
-	/// An AWS EventStream CRC did not match the encoded bytes.
+	/// An AWS `EventStream` CRC did not match the encoded bytes.
 	#[error(
 		"AWS EventStream {scope:?} CRC mismatch: expected {expected:#010x}, actual {actual:#010x}"
 	)]
@@ -144,7 +144,7 @@ pub enum FramingError {
 		/// CRC calculated from the message bytes.
 		actual:   u32,
 	},
-	/// AWS EventStream lengths could not describe a valid message.
+	/// AWS `EventStream` lengths could not describe a valid message.
 	#[error("invalid AWS EventStream lengths: total={total}, headers={headers}")]
 	InvalidEventStreamLengths {
 		/// Declared total message length.
@@ -152,13 +152,13 @@ pub enum FramingError {
 		/// Declared headers length.
 		headers: usize,
 	},
-	/// An AWS EventStream header was malformed.
+	/// An AWS `EventStream` header was malformed.
 	#[error("invalid AWS EventStream header at byte {offset}")]
 	InvalidEventStreamHeader {
 		/// Byte offset within the encoded header block.
 		offset: usize,
 	},
-	/// An AWS EventStream header used an unknown value type.
+	/// An AWS `EventStream` header used an unknown value type.
 	#[error("unknown AWS EventStream header value type {kind}")]
 	UnknownEventStreamHeaderType {
 		/// Unknown header type tag.
@@ -180,7 +180,7 @@ pub enum Frame {
 	WebSocket(WebSocketMessage),
 	/// Connect protocol envelope.
 	Connect(ConnectEnvelope),
-	/// AWS EventStream message.
+	/// AWS `EventStream` message.
 	EventStream(EventStreamMessage),
 }
 

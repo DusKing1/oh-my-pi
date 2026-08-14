@@ -148,7 +148,7 @@ pub enum WorkflowResponse {
 
 impl WorkflowResponse {
 	/// Borrows the provider correlation identity.
-	pub fn invocation(&self) -> &Str {
+	pub const fn invocation(&self) -> &Str {
 		match self {
 			Self::WorkflowActionResponse(response) => &response.invocation,
 			Self::InvokeInput(input) => &input.invocation,

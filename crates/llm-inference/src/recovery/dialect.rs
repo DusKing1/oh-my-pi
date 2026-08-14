@@ -72,7 +72,7 @@ pub enum Dialect {
 	Xml,
 	/// Anthropic function-call XML.
 	Anthropic,
-	/// DeepSeek token calls.
+	/// `DeepSeek` token calls.
 	DeepSeek,
 	/// Harmony recipient messages.
 	Harmony,
@@ -82,7 +82,7 @@ pub enum Dialect {
 	Gemini,
 	/// Gemma token-delimited calls.
 	Gemma,
-	/// MiniMax wrapped XML calls.
+	/// `MiniMax` wrapped XML calls.
 	MiniMax,
 }
 
@@ -201,7 +201,7 @@ impl Stage<Bytes, DialectEvent> for DialectStage {
 		let attempt = self.attempt;
 		let diagnostic = self.max_diagnostic_bytes;
 		self.scanner.push(input, &mut |event| {
-			project_event(dialect, &policy, attempt, diagnostic, event, emit)
+			project_event(dialect, &policy, attempt, diagnostic, event, emit);
 		})
 	}
 
@@ -415,8 +415,7 @@ fn python_calls(body: &[u8]) -> Vec<(Str, Map<String, Value>)> {
 		let name_end = bytes[start..]
 			.iter()
 			.position(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
-			.map(|end| start + end)
-			.unwrap_or(bytes.len());
+			.map_or(bytes.len(), |end| start + end);
 		if name_end == start || bytes.get(name_end) != Some(&b'(') {
 			at = name_end.saturating_add(1);
 			continue;
@@ -483,8 +482,7 @@ fn parse_python_value(text: &str) -> Option<Value> {
 			}
 			let colon = top_level_index(item, b':')?;
 			let key = quote_body(item[..colon].trim())
-				.map(|value| unescape_python(value, item[..colon].trim().as_bytes()[0]))
-				.flatten()?;
+				.and_then(|value| unescape_python(value, item[..colon].trim().as_bytes()[0]))?;
 			values.insert(key, parse_python_value(item[colon + 1..].trim())?);
 		}
 		return Some(Value::Object(values));

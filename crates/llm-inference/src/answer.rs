@@ -86,9 +86,7 @@ impl Stream for ChatStream {
 				Poll::Ready(Some(Ok(ChatEvent::WorkflowCancelled { invocation }))) => {
 					control.state.lock().pending.remove(invocation);
 				},
-				Poll::Ready(Some(Ok(ChatEvent::Completed(_))))
-				| Poll::Ready(Some(Err(_)))
-				| Poll::Ready(None) => control.close(),
+				Poll::Ready(Some(Ok(ChatEvent::Completed(_)) | Err(_)) | None) => control.close(),
 				_ => {},
 			}
 		}
@@ -138,16 +136,17 @@ impl ChatControl {
 			}
 			deadline
 		};
-		let result = match deadline {
-			Some(deadline) => tokio::select! {
+		let result = if let Some(deadline) = deadline {
+			tokio::select! {
 				result = self.responses.send_async(response.clone()) => result.map_err(|_| ChatControlError::Closed),
-				_ = closed => Err(ChatControlError::Closed),
-				_ = tokio::time::sleep_until(deadline.into()) => Err(ChatControlError::DeadlineExceeded),
-			},
-			None => tokio::select! {
+				() = closed => Err(ChatControlError::Closed),
+				() = tokio::time::sleep_until(deadline.into()) => Err(ChatControlError::DeadlineExceeded),
+			}
+		} else {
+			tokio::select! {
 				result = self.responses.send_async(response.clone()) => result.map_err(|_| ChatControlError::Closed),
-				_ = closed => Err(ChatControlError::Closed),
-			},
+				() = closed => Err(ChatControlError::Closed),
+			}
 		};
 		if response.is_terminal() || result == Err(ChatControlError::DeadlineExceeded) {
 			self.state.lock().pending.remove(&invocation);
@@ -525,7 +524,7 @@ impl<T> GenerationSession<T> {
 	}
 
 	/// Borrows the stable provider-qualified job identity.
-	pub fn job(&self) -> &JobRef {
+	pub const fn job(&self) -> &JobRef {
 		self.cancel.job()
 	}
 
@@ -725,7 +724,7 @@ pub struct RealtimeSession {
 impl RealtimeSession {
 	/// Creates a session from one bounded channel pair and its shared terminal
 	/// state.
-	pub(crate) fn from_channels(
+	pub(crate) const fn from_channels(
 		outbound: flume::Sender<RealtimeInput>,
 		inbound: flume::Receiver<Result<RealtimeEvent, Error>>,
 		closed: Arc<AtomicBool>,

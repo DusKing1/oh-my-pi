@@ -292,17 +292,17 @@ impl<'doc> IncomingJson<'doc> {
 	}
 
 	/// Convert this cursor into a decoded incremental string cursor.
-	pub fn string(self) -> IncomingString<'doc> {
+	pub const fn string(self) -> IncomingString<'doc> {
 		IncomingString { json: self, emitted: 0, done: false }
 	}
 
 	/// Convert this cursor into an array element cursor.
-	pub fn array(self) -> IncomingArray<'doc> {
+	pub const fn array(self) -> IncomingArray<'doc> {
 		IncomingArray { json: self, next: 0 }
 	}
 
 	/// Convert this cursor into an object cursor.
-	pub fn object(self) -> IncomingObject<'doc> {
+	pub const fn object(self) -> IncomingObject<'doc> {
 		IncomingObject { json: self }
 	}
 
@@ -560,7 +560,7 @@ fn pull_issue(path: &[PathPart], expected: &'static str, kind: PullIssueKind) ->
 	})
 }
 
-fn value_name(value: &Value) -> &'static str {
+const fn value_name(value: &Value) -> &'static str {
 	match value {
 		Value::Null => "null",
 		Value::Bool(_) => "boolean",
@@ -903,11 +903,11 @@ fn scan_array(parser: &mut Parser<'_>, ended: bool, depth: u32, start: usize) ->
 	}
 }
 
-fn incomplete_container(start: usize, kind: Kind) -> Probe {
+const fn incomplete_container(start: usize, kind: Kind) -> Probe {
 	Probe::Located(Located { start, end: None, kind })
 }
 
-fn byte_name(byte: u8) -> &'static str {
+const fn byte_name(byte: u8) -> &'static str {
 	match byte {
 		b'{' => "object",
 		b'[' => "array",

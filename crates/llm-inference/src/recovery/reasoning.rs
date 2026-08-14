@@ -50,7 +50,7 @@ pub struct ReasoningStallGuard {
 
 impl ReasoningStallGuard {
 	/// Creates a reasoning guard with fixed memory bounds.
-	pub fn new(limits: ReasoningLimits) -> Self {
+	pub const fn new(limits: ReasoningLimits) -> Self {
 		Self { limits, last: None, repeated: 0, no_progress: 0, input_bytes: 0 }
 	}
 

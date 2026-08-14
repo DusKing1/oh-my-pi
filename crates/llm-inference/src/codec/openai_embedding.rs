@@ -82,11 +82,11 @@ impl OpenAiEmbeddingCodec {
 	/// Constructs a codec from route-protocol constants; model evidence is
 	/// supplied per call.
 	#[must_use]
-	pub fn new(profile: OpenAiEmbeddingProfile) -> Self {
+	pub const fn new(profile: OpenAiEmbeddingProfile) -> Self {
 		Self { profile }
 	}
 
-	/// Constructs the fixed direct OpenAI `/embeddings` protocol profile.
+	/// Constructs the fixed direct `OpenAI` `/embeddings` protocol profile.
 	#[must_use]
 	pub fn for_openai_protocol() -> Self {
 		Self::new(openai_protocol_profile())
@@ -362,10 +362,10 @@ impl Serialize for WireEmbeddingInputs<'_> {
 		for input in self.inputs {
 			match (self.kind, input) {
 				(WireInputKind::Text, EmbeddingInput::Text(text)) => {
-					sequence.serialize_element(text.as_str())?
+					sequence.serialize_element(text.as_str())?;
 				},
 				(WireInputKind::Tokens, EmbeddingInput::Tokens(tokens)) => {
-					sequence.serialize_element(tokens.as_ref())?
+					sequence.serialize_element(tokens.as_ref())?;
 				},
 				_ => return Err(serde::ser::Error::custom("validated embedding input kind changed")),
 			}
@@ -435,7 +435,7 @@ pub struct OpenAiEmbeddingDecoder {
 }
 
 impl OpenAiEmbeddingDecoder {
-	fn new(
+	const fn new(
 		maximum_bytes: u64,
 		expected_inputs: u32,
 		expected_dimensions: Option<u32>,

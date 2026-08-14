@@ -99,7 +99,7 @@ pub struct CursorProtocolError {
 }
 
 impl CursorProtocolError {
-	fn new(kind: CursorErrorKind, reason: &'static str, committed: bool) -> Self {
+	const fn new(kind: CursorErrorKind, reason: &'static str, committed: bool) -> Self {
 		Self { kind, reason: Str::new_static(reason), committed, status: None }
 	}
 }
@@ -113,7 +113,7 @@ impl fmt::Display for CursorProtocolError {
 impl std::error::Error for CursorProtocolError {}
 
 /// Maps an HTTP response status into Cursor's secret-free error vocabulary.
-pub fn classify_http_status(status: u16) -> Option<CursorProtocolError> {
+pub const fn classify_http_status(status: u16) -> Option<CursorProtocolError> {
 	let mut error = match status {
 		200..=299 => return None,
 		401 | 403 => CursorProtocolError::new(
@@ -907,7 +907,7 @@ impl CursorDecoder {
 	}
 
 	/// Verifies that the attempt reached a protocol terminal.
-	pub fn finish(&mut self) -> Result<(), CursorProtocolError> {
+	pub const fn finish(&mut self) -> Result<(), CursorProtocolError> {
 		if self.cancelled || self.terminal {
 			return Ok(());
 		}
@@ -958,10 +958,10 @@ impl CursorDecoder {
 		match update.message {
 			Some(Message::TextDelta(delta)) => self.push_text(OpenKind::Text, delta.text, &mut events),
 			Some(Message::ThinkingDelta(delta)) => {
-				self.push_text(OpenKind::Thinking, delta.text, &mut events)
+				self.push_text(OpenKind::Thinking, delta.text, &mut events);
 			},
 			Some(Message::ToolCallStarted(started)) => {
-				self.start_tool(started.call_id, started.tool_call.as_ref(), &mut events)
+				self.start_tool(started.call_id, started.tool_call.as_ref(), &mut events);
 			},
 			Some(Message::PartialToolCall(partial)) => {
 				let id = call_id(partial.call_id, partial.tool_call.as_ref());
@@ -1264,7 +1264,7 @@ fn encode_chat_call(
 		match message.role {
 			Role::System => roots.push(CursorRootPrompt { role: CursorPromptRole::System, text }),
 			Role::Developer => {
-				roots.push(CursorRootPrompt { role: CursorPromptRole::Developer, text })
+				roots.push(CursorRootPrompt { role: CursorPromptRole::Developer, text });
 			},
 			Role::User if user.is_none() => user = Some(text),
 			Role::User => return Err(encoding_error("cursor_requires_delta_or_checkpoint_context")),
@@ -1573,7 +1573,7 @@ fn cursor_raw_event(event: CursorEvent) -> RawEvent {
 	}
 }
 
-fn interaction_query_kind(query: &wire::interaction_query::Query) -> Str {
+const fn interaction_query_kind(query: &wire::interaction_query::Query) -> Str {
 	use wire::interaction_query::Query;
 	Str::new_static(match query {
 		Query::WebSearchRequestQuery(_) => "web_search",

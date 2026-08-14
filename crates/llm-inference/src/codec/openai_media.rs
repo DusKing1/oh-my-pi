@@ -589,13 +589,13 @@ fn seconds_ms(seconds: f64) -> Result<u64, Error> {
 	Ok((seconds * 1000.0).round() as u64)
 }
 
-fn setting<T: Copy>(setting: &Setting<T>) -> Option<T> {
+const fn setting<T: Copy>(setting: &Setting<T>) -> Option<T> {
 	match setting {
 		Setting::Unset => None,
 		Setting::Require(value) | Setting::Prefer(value) => Some(*value),
 	}
 }
-fn setting_ref<T>(setting: &Setting<T>) -> Option<&T> {
+const fn setting_ref<T>(setting: &Setting<T>) -> Option<&T> {
 	match setting {
 		Setting::Unset => None,
 		Setting::Require(value) | Setting::Prefer(value) => Some(value),

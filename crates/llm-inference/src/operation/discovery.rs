@@ -45,7 +45,7 @@ pub struct CatalogDiscoveryProjector {
 impl CatalogDiscoveryProjector {
 	/// Constructs a projector from exact route identity and compiler-owned
 	/// normalization defaults.
-	pub fn new(normalizer: DiscoveryNormalizer, provider: ProviderId, route: RouteId) -> Self {
+	pub const fn new(normalizer: DiscoveryNormalizer, provider: ProviderId, route: RouteId) -> Self {
 		Self { normalizer, allowlist: None, provider, route }
 	}
 
@@ -82,7 +82,7 @@ impl CatalogDiscoveryProjector {
 		}
 		let mut allowlist = BTreeMap::new();
 		for model in catalog.models() {
-			for (candidate, wire_model) in model.wire_ids.iter() {
+			for (candidate, wire_model) in &model.wire_ids {
 				if candidate != &route.id {
 					continue;
 				}

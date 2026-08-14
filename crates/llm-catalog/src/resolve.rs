@@ -75,7 +75,7 @@ impl FallbackChain {
 		Self { primary: ModelSelector::Exact(primary), fallbacks: Box::new([]) }
 	}
 
-	pub fn iter(&self) -> impl Iterator<Item = &ModelSelector> + DoubleEndedIterator + '_ {
+	pub fn iter(&self) -> impl DoubleEndedIterator<Item = &ModelSelector> + '_ {
 		std::iter::once(&self.primary).chain(self.fallbacks.iter())
 	}
 }
@@ -382,7 +382,7 @@ pub enum ResolveError {
 	/// The exact selector failed typed constraints.
 	Constraints { selector: ExactSelector, failures: Box<[ConstraintFailure]> },
 	/// Every explicitly named selector failed.
-	FallbacksExhausted(Box<[ResolveError]>),
+	FallbacksExhausted(Box<[Self]>),
 }
 
 impl fmt::Display for ResolveError {
@@ -416,7 +416,7 @@ pub struct CatalogResolver<'a> {
 
 impl<'a> CatalogResolver<'a> {
 	/// Creates a resolver borrowing, but never mutating, the bundled catalog.
-	pub fn new(base: BundledCatalog<'a>) -> Self {
+	pub const fn new(base: BundledCatalog<'a>) -> Self {
 		Self { base, discovery: Vec::new(), user: Vec::new() }
 	}
 
@@ -541,7 +541,7 @@ impl<'a> CatalogResolver<'a> {
 		let model = model.ok_or_else(|| ResolveError::ModelNotFound(exact.clone()))?;
 		let mut routes = Vec::new();
 		let mut route_sources = BTreeMap::new();
-		for route_id in model.routes.iter() {
+		for route_id in &model.routes {
 			let mut route = self
 				.base
 				.routes
@@ -657,17 +657,17 @@ fn validate_overlay(overlay: &CatalogOverlay, scope: UnsafeTrustScope) -> Result
 		if (route.added.is_some() || route.patch.auth.is_some()) && !scope.auth_trust {
 			return Err(ResolveError::UnsafeAuthChange(route.route.clone()));
 		}
-		if let Some(added) = &route.added {
-			if added.id != route.route {
-				return Err(ResolveError::MismatchedRouteAddition(route.route.clone()));
-			}
+		if let Some(added) = &route.added
+			&& added.id != route.route
+		{
+			return Err(ResolveError::MismatchedRouteAddition(route.route.clone()));
 		}
 	}
 	for model in &overlay.models {
-		if let Some(added) = &model.added {
-			if added.key != model.selector.model {
-				return Err(ResolveError::MismatchedModelAddition(model.selector.clone()));
-			}
+		if let Some(added) = &model.added
+			&& added.key != model.selector.model
+		{
+			return Err(ResolveError::MismatchedModelAddition(model.selector.clone()));
 		}
 	}
 	Ok(())
@@ -837,10 +837,10 @@ fn constraint_failures(
 		match capability_support(&model.capabilities, requirement) {
 			CapabilitySupport::Supported => {},
 			CapabilitySupport::Unsupported => {
-				failures.push(ConstraintFailure::Unsupported(requirement.clone()))
+				failures.push(ConstraintFailure::Unsupported(requirement.clone()));
 			},
 			CapabilitySupport::Unknown => {
-				failures.push(ConstraintFailure::Unknown(requirement.clone()))
+				failures.push(ConstraintFailure::Unknown(requirement.clone()));
 			},
 		}
 	}
@@ -863,11 +863,11 @@ fn route_satisfies(route: &RouteDef, constraints: &ResolutionConstraints) -> boo
 	{
 		return false;
 	}
-	!route
+	route
 		.capability_limits
 		.maximum_output_tokens
 		.zip(constraints.minimum_output_tokens)
-		.is_some_and(|(available, required)| available < required)
+		.is_none_or(|(available, required)| available >= required)
 }
 
 fn check_limit(
@@ -876,10 +876,10 @@ fn check_limit(
 	available: Option<u64>,
 	failures: &mut Vec<ConstraintFailure>,
 ) {
-	if let Some(required) = required {
-		if available.is_none_or(|available| available < required) {
-			failures.push(ConstraintFailure::Limit { field: field.into(), required, available });
-		}
+	if let Some(required) = required
+		&& available.is_none_or(|available| available < required)
+	{
+		failures.push(ConstraintFailure::Limit { field: field.into(), required, available });
 	}
 }
 

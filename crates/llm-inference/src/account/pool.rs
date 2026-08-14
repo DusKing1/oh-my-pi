@@ -298,7 +298,7 @@ impl AccountPool {
 	}
 
 	/// Returns the durable account-state dependency, when configured.
-	pub fn state_store(&self) -> Option<&Arc<AccountStateStore>> {
+	pub const fn state_store(&self) -> Option<&Arc<AccountStateStore>> {
 		self.store.as_ref()
 	}
 
@@ -401,11 +401,7 @@ impl AccountPool {
 		reason: CooldownReason,
 	) -> Result<(), AccountStateStoreError> {
 		if let Some(store) = &self.store {
-			store.save_cooldown(&PersistedCooldown {
-				account: account.clone(),
-				until,
-				reason: reason.clone(),
-			})?;
+			store.save_cooldown(&PersistedCooldown { account: account.clone(), until, reason })?;
 		}
 		self
 			.state
@@ -778,7 +774,7 @@ fn eligibility(
 	if let Some(cooldown) = state.cooldowns.get(&record.account)
 		&& cooldown.until > request.now
 	{
-		return Eligibility::Cooldown { until: cooldown.until, reason: cooldown.reason.clone() };
+		return Eligibility::Cooldown { until: cooldown.until, reason: cooldown.reason };
 	}
 	match state
 		.quota

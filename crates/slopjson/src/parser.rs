@@ -41,7 +41,7 @@ pub enum Atom {
 }
 
 /// Decoded state of a string token at the current streaming edge.
-pub(crate) struct StringProgress<'a> {
+pub struct StringProgress<'a> {
 	pub(crate) value:      CowStr<'a>,
 	pub(crate) stable_len: usize,
 	pub(crate) complete:   bool,
@@ -263,8 +263,8 @@ impl<'a> Parser<'a> {
 				b'n' => out.push('\n'),
 				b'r' => out.push('\r'),
 				b't' => out.push('\t'),
-				b'u' => match hex4(s, i + 1) {
-					Some(unit) => {
+				b'u' => {
+					if let Some(unit) = hex4(s, i + 1) {
 						i += 4;
 						if let Some(ch) = char::from_u32(unit) {
 							out.push(ch);
@@ -290,13 +290,12 @@ impl<'a> Parser<'a> {
 							// Lone surrogate: representable in a JS string, not in Rust.
 							out.push('\u{FFFD}');
 						}
-					},
-					None => {
+					} else {
 						if i + 5 > n {
 							unstable_from = Some(escape_output_start);
 						}
 						out.push_str("\\u"); // invalid \u — keep literal
-					},
+					}
 				},
 				_ => {
 					// Invalid escape — keep the backslash and the escaped char literal.

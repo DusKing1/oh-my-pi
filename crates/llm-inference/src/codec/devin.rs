@@ -275,7 +275,7 @@ impl DevinCodec {
 
 	/// Constructs a codec with route-approved non-secret client identity fields.
 	#[must_use]
-	pub fn with_metadata(metadata: DevinClientMetadata) -> Self {
+	pub const fn with_metadata(metadata: DevinClientMetadata) -> Self {
 		Self { metadata }
 	}
 
@@ -701,7 +701,7 @@ fn append_tool_result(
 					base64_data: base64::encode(data).into_string(),
 					mime_type: media_type.to_string(),
 					..ImageData::default()
-				})
+				});
 			},
 			_ => return Err(invalid_request("devin.tool_result.media_requires_inline_image")),
 		}
@@ -928,15 +928,15 @@ impl CascadeDecoder {
 				},
 			});
 		}
-		let reason = if !self.tools.is_empty() {
-			FinishReason::ToolCalls
-		} else {
+		let reason = if self.tools.is_empty() {
 			match stop {
 				StopReason::MaxTokens => FinishReason::Length,
 				StopReason::ContentFilter => FinishReason::ContentFilter,
 				StopReason::StopPattern => FinishReason::Stop,
 				other => FinishReason::Other(Str::from(other.as_str_name())),
 			}
+		} else {
+			FinishReason::ToolCalls
 		};
 		emit(RawEvent::Completion(RawCompletion {
 			reason,

@@ -218,7 +218,7 @@ pub fn report_from_account_state(
 	UsageReport { provider, account, principal, windows }
 }
 
-fn quota_source(source: QuotaProvenance) -> UsageSource {
+const fn quota_source(source: QuotaProvenance) -> UsageSource {
 	match source {
 		QuotaProvenance::Provider | QuotaProvenance::Header | QuotaProvenance::Error => {
 			UsageSource::Provider

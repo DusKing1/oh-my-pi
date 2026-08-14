@@ -86,7 +86,7 @@ impl<T> OperationRequest<T> {
 		}
 	}
 
-	/// Reconstructs the closed call for one operation-specific RouteCodecSet
+	/// Reconstructs the closed call for one operation-specific `RouteCodecSet`
 	/// entry.
 	pub fn into_call(self, wrap: impl FnOnce(Arc<T>) -> OperationCall) -> Call {
 		Call {

@@ -562,8 +562,8 @@ pub fn classify(input: ClassificationInput<'_>) -> ModelClassification {
 	} else {
 		(trimmed, None, false)
 	};
-	let family = family(&logical);
-	let version = parse_version(family.as_str(), &logical);
+	let family = family(logical);
+	let version = parse_version(family.as_str(), logical);
 	let structural = effort.is_some() || thinking_variant;
 	let method = if structural {
 		ClassificationMethod::StructuralSuffix
@@ -599,7 +599,7 @@ pub fn classify(input: ClassificationInput<'_>) -> ModelClassification {
 	}
 }
 
-fn is_expired(expiry: Option<u64>, observed: Option<u64>) -> bool {
+const fn is_expired(expiry: Option<u64>, observed: Option<u64>) -> bool {
 	matches!((expiry, observed), (Some(expiry), Some(observed)) if observed >= expiry)
 }
 
@@ -641,15 +641,13 @@ fn family(model: &str) -> FamilyId {
 			"anthropic"
 		} else if namespaced(&lower, "gpt-oss") || bounded(bare, "gpt-oss") {
 			"gpt-oss"
-		} else if segments.iter().any(|segment| *segment == "openai") || openai_family(bare) {
+		} else if segments.contains(&"openai") || openai_family(bare) {
 			"openai"
-		} else if segments.iter().any(|segment| *segment == "moonshotai") || bounded(bare, "kimi") {
+		} else if segments.contains(&"moonshotai") || bounded(bare, "kimi") {
 			"kimi"
 		} else if bare.contains("distill-qwen") || bounded(bare, "qwen") {
 			"qwen"
-		} else if segments.iter().any(|segment| *segment == "minimax")
-			|| bounded(bare, "minimax")
-			|| bounded(bare, "hailuo")
+		} else if segments.contains(&"minimax") || bounded(bare, "minimax") || bounded(bare, "hailuo")
 		{
 			"minimax"
 		} else if namespaced(&lower, "deepseek") || bounded(bare, "deepseek") {
@@ -668,13 +666,13 @@ fn family(model: &str) -> FamilyId {
 				.any(|segment| matches!(*segment, "x-ai" | "xai"))
 		{
 			"xai"
-		} else if bounded(bare, "llama") || segments.iter().any(|segment| *segment == "meta-llama") {
+		} else if bounded(bare, "llama") || segments.contains(&"meta-llama") {
 			"meta"
 		} else if bounded(bare, "mistral") || bounded(bare, "mixtral") {
 			"mistral"
-		} else if bounded(bare, "command") || segments.iter().any(|segment| *segment == "cohere") {
+		} else if bounded(bare, "command") || segments.contains(&"cohere") {
 			"cohere"
-		} else if bounded(bare, "jamba") || segments.iter().any(|segment| *segment == "ai21") {
+		} else if bounded(bare, "jamba") || segments.contains(&"ai21") {
 			"ai21"
 		} else if bounded(bare, "nova") || bounded(bare, "titan") {
 			"amazon"

@@ -1,6 +1,6 @@
 //! Allocation-conscious incremental UTF-8 and delimiter scanners.
 
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut};
 use omp_core::Str;
 
 use super::{DiagnosticContext, RecoveryError, Stage};

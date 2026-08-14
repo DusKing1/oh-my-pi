@@ -123,12 +123,11 @@ pub(crate) fn decrypt(
 		aead::Aad::from(aad),
 		&mut plaintext,
 	);
-	let length = match opened {
-		Ok(bytes) => bytes.len(),
-		Err(_) => {
-			plaintext.zeroize();
-			return Err(CryptoError::AuthenticationFailed);
-		},
+	let length = if let Ok(bytes) = opened {
+		bytes.len()
+	} else {
+		plaintext.zeroize();
+		return Err(CryptoError::AuthenticationFailed);
 	};
 	plaintext[length..].zeroize();
 	plaintext.truncate(length);
@@ -156,15 +155,12 @@ fn authenticated_metadata(context: SecretContext<'_>) -> Result<Vec<u8>, CryptoE
 	aad.extend_from_slice(&kind_len.to_be_bytes());
 	aad.extend_from_slice(context.kind.as_bytes());
 	aad.extend_from_slice(&context.generation.to_be_bytes());
-	match context.expires_at_ms {
-		Some(expires_at_ms) => {
-			aad.push(1);
-			aad.extend_from_slice(&expires_at_ms.to_be_bytes());
-		},
-		None => {
-			aad.push(0);
-			aad.extend_from_slice(&0_u64.to_be_bytes());
-		},
+	if let Some(expires_at_ms) = context.expires_at_ms {
+		aad.push(1);
+		aad.extend_from_slice(&expires_at_ms.to_be_bytes());
+	} else {
+		aad.push(0);
+		aad.extend_from_slice(&0_u64.to_be_bytes());
 	}
 	aad.extend_from_slice(&context.created_at_ms.to_be_bytes());
 	aad.extend_from_slice(&context.updated_at_ms.to_be_bytes());

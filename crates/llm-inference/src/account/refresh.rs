@@ -40,7 +40,7 @@ impl CredentialFreshness {
 
 	/// Returns whether this generation is strictly fresher than a rejected
 	/// generation.
-	pub fn is_newer_than(&self, rejected: &Self) -> bool {
+	pub const fn is_newer_than(&self, rejected: &Self) -> bool {
 		self.generation > rejected.generation
 	}
 }

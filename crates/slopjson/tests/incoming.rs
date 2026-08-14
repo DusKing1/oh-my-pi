@@ -444,11 +444,11 @@ fn cancelled_pull_releases_the_linear_cursor() {
 
 #[test]
 fn finished_and_aborted_are_distinct_terminal_states() {
-	let (feed, mut doc) = IncomingDoc::channel();
+	let (feed, doc) = IncomingDoc::channel();
 	feed.finish();
 	block_on(doc.finished()).unwrap();
 
-	let (feed, mut doc) = IncomingDoc::channel();
+	let (feed, doc) = IncomingDoc::channel();
 	feed.abort();
 	assert!(matches!(block_on(doc.finished()), Err(IncomingError::Aborted)));
 

@@ -1,4 +1,4 @@
-//! Amazon Bedrock ConverseStream request lowering and event projection.
+//! Amazon Bedrock `ConverseStream` request lowering and event projection.
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -59,7 +59,7 @@ pub enum GuardrailStreamMode {
 	Async,
 }
 
-/// Typed Bedrock Guardrail configuration applied before SigV4 credential
+/// Typed Bedrock Guardrail configuration applied before `SigV4` credential
 /// middleware.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BedrockGuardrail {
@@ -81,7 +81,7 @@ pub struct BedrockOptions {
 	pub guardrail:          Option<BedrockGuardrail>,
 	/// Maximum encoded request body.
 	pub max_request_bytes:  u64,
-	/// Maximum CRC-validated EventStream payload.
+	/// Maximum CRC-validated `EventStream` payload.
 	pub max_frame_bytes:    u64,
 	/// Maximum aggregate response bytes.
 	pub max_response_bytes: u64,
@@ -98,7 +98,7 @@ impl Default for BedrockOptions {
 	}
 }
 
-/// Sans-I/O Amazon Bedrock ConverseStream codec.
+/// Sans-I/O Amazon Bedrock `ConverseStream` codec.
 #[derive(Clone, Debug, Default)]
 pub struct BedrockConverseCodec {
 	options: Arc<BedrockOptions>,
@@ -525,29 +525,27 @@ fn encode_converse_request(
 			&mut explicit_cache,
 		)?;
 	}
-	if !explicit_cache {
-		if let Some(retention) = setting_value(&request.cache_retention) {
-			if matches!(retention, CacheRetention::Long)
-				&& context.policy.cache.supports_long_retention == Some(false)
-			{
-				return Err(encoding_error(
-					ErrorKind::CapabilityMismatch,
-					"bedrock.cache.long_retention_unsupported",
-				));
-			}
-			let point = cache_point(*retention);
-			if let Some(message) = messages
-				.iter_mut()
-				.rev()
-				.find(|message| message.role == "user")
-			{
-				message
-					.content
-					.push(WireContentBlock::CachePoint { cache_point: point });
-			}
-			if !system.is_empty() {
-				system.push(SystemBlock::CachePoint { cache_point: cache_point(*retention) });
-			}
+	if !explicit_cache && let Some(retention) = setting_value(&request.cache_retention) {
+		if matches!(retention, CacheRetention::Long)
+			&& context.policy.cache.supports_long_retention == Some(false)
+		{
+			return Err(encoding_error(
+				ErrorKind::CapabilityMismatch,
+				"bedrock.cache.long_retention_unsupported",
+			));
+		}
+		let point = cache_point(*retention);
+		if let Some(message) = messages
+			.iter_mut()
+			.rev()
+			.find(|message| message.role == "user")
+		{
+			message
+				.content
+				.push(WireContentBlock::CachePoint { cache_point: point });
+		}
+		if !system.is_empty() {
+			system.push(SystemBlock::CachePoint { cache_point: cache_point(*retention) });
 		}
 	}
 
@@ -1714,7 +1712,7 @@ struct WireEvent {
 }
 
 impl WireEvent {
-	fn valid_for(&self, kind: WireEventKind) -> bool {
+	const fn valid_for(&self, kind: WireEventKind) -> bool {
 		match kind {
 			WireEventKind::MessageStart => self.role.is_some(),
 			WireEventKind::ContentBlockStart => {

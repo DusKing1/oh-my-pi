@@ -41,7 +41,7 @@ pub enum CredentialKind {
 	Bearer,
 	/// Provider session token.
 	SessionToken,
-	/// AWS access-key tuple used only by SigV4.
+	/// AWS access-key tuple used only by `SigV4`.
 	AwsSigV4,
 }
 
@@ -63,7 +63,7 @@ impl LeaseMaterial {
 		}
 	}
 
-	fn scalar(&self) -> Result<&SecretString, CredentialApplyError> {
+	const fn scalar(&self) -> Result<&SecretString, CredentialApplyError> {
 		match self {
 			Self::ApiKey(value) | Self::Bearer(value) | Self::SessionToken(value) => Ok(value),
 			Self::Aws(_) => Err(CredentialApplyError::WrongKind {
@@ -283,7 +283,7 @@ impl CredentialLease {
 	/// Applies scalar header/query authentication to a finalized streaming
 	/// request.
 	///
-	/// SigV4 is rejected because its canonical request requires exact body
+	/// `SigV4` is rejected because its canonical request requires exact body
 	/// bytes.
 	pub fn apply_streaming<B>(
 		&self,
@@ -416,7 +416,7 @@ impl AppliedCredentials {
 
 	/// Applies credentials to the exact final buffered request.
 	///
-	/// SigV4 hashes and signs these body bytes. Scalar schemes use the same
+	/// `SigV4` hashes and signs these body bytes. Scalar schemes use the same
 	/// header/query path as streaming transport without exposing their values.
 	pub fn finalize_buffered(
 		&self,
@@ -427,7 +427,7 @@ impl AppliedCredentials {
 
 	/// Applies scalar credentials to a final request with a streaming body.
 	///
-	/// SigV4 returns [`CredentialApplyError::RequiresBufferedBody`] before any
+	/// `SigV4` returns [`CredentialApplyError::RequiresBufferedBody`] before any
 	/// request mutation.
 	pub fn finalize_streaming<B>(
 		&self,
@@ -504,7 +504,7 @@ struct SensitiveQuery {
 }
 
 impl SensitiveQuery {
-	fn new(name: Str, value: SecretString) -> Self {
+	const fn new(name: Str, value: SecretString) -> Self {
 		Self { name, value }
 	}
 
@@ -671,7 +671,7 @@ pub enum CredentialApplyError {
 
 /// Creates deterministic non-secret metadata for ephemeral credentials.
 #[must_use]
-pub fn ephemeral_meta(
+pub const fn ephemeral_meta(
 	account: AccountId,
 	principal: PrincipalId,
 	expires_at: Option<SystemTime>,

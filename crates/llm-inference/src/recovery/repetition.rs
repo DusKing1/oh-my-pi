@@ -106,7 +106,7 @@ pub struct AttemptRepetitionGuard {
 
 impl AttemptRepetitionGuard {
 	/// Creates a bounded guard.
-	pub fn new(limits: RepetitionLimits) -> Self {
+	pub const fn new(limits: RepetitionLimits) -> Self {
 		Self { limits, history: VecDeque::new(), consecutive: 0, input_bytes: 0 }
 	}
 
@@ -218,7 +218,7 @@ pub struct CrossTurnLoopGuard {
 
 impl CrossTurnLoopGuard {
 	/// Creates a cross-turn guard.
-	pub fn new(limits: CrossTurnLimits) -> Self {
+	pub const fn new(limits: CrossTurnLimits) -> Self {
 		Self { limits, history: VecDeque::new(), last: None }
 	}
 
@@ -244,7 +244,7 @@ impl CrossTurnLoopGuard {
 		while self.history.len() > self.limits.history_limit {
 			self.history.pop_front();
 		}
-		(repetitions >= self.limits.consecutive_limit).then(|| LoopSignal {
+		(repetitions >= self.limits.consecutive_limit).then_some(LoopSignal {
 			evidence:    LoopEvidence {
 				kind: LoopKind::CrossTurnTool,
 				fingerprint,

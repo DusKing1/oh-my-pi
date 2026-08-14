@@ -157,7 +157,7 @@ impl OutputGate {
 	}
 
 	/// Returns the selected semantic condition.
-	pub fn condition(&self) -> &GateCondition {
+	pub const fn condition(&self) -> &GateCondition {
 		&self.condition
 	}
 
@@ -183,7 +183,7 @@ impl OutputGate {
 	}
 
 	/// Mutably borrows accumulated execution accounting.
-	pub fn receipt_mut(&mut self) -> &mut ExecutionReceipt {
+	pub const fn receipt_mut(&mut self) -> &mut ExecutionReceipt {
 		&mut self.receipt
 	}
 
@@ -279,11 +279,9 @@ impl OutputGate {
 	/// commit evidence.
 	pub fn fail(&mut self, mut error: Error) -> Error {
 		let committed = self.is_committed();
-		if !committed {
-			if let Err(spool_error) = self.discard_private() {
-				self.phase = GatePhase::Failed;
-				return self.spool_error(spool_error);
-			}
+		if !committed && let Err(spool_error) = self.discard_private() {
+			self.phase = GatePhase::Failed;
+			return self.spool_error(spool_error);
 		}
 		self.phase = GatePhase::Failed;
 		error.committed = committed;
@@ -295,11 +293,9 @@ impl OutputGate {
 	/// accounting.
 	pub fn cancel(&mut self) -> Error {
 		let committed = self.is_committed();
-		if !committed {
-			if let Err(spool_error) = self.discard_private() {
-				self.phase = GatePhase::Failed;
-				return self.spool_error(spool_error);
-			}
+		if !committed && let Err(spool_error) = self.discard_private() {
+			self.phase = GatePhase::Failed;
+			return self.spool_error(spool_error);
 		}
 		self.phase = GatePhase::Cancelled;
 		let mut error = Error::new(

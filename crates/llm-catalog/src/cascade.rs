@@ -437,18 +437,17 @@ impl Rule {
 		model: &str,
 		model_lower: &str,
 	) -> Option<(u8, u8, i64)> {
-		if let Some(required) = &self.family {
-			if required.as_str() != family {
-				return None;
-			}
+		if let Some(required) = &self.family
+			&& required.as_str() != family
+		{
+			return None;
 		}
-		if let Some(providers) = &self.providers {
-			if !providers
+		if let Some(providers) = &self.providers
+			&& !providers
 				.iter()
 				.any(|candidate| candidate.as_str() == provider)
-			{
-				return None;
-			}
+		{
+			return None;
 		}
 		let exactness = match &self.models {
 			None => 0,

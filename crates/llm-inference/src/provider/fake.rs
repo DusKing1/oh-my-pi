@@ -325,7 +325,7 @@ impl FakeScript {
 
 	/// Makes readiness return `Pending` exactly `polls` times before becoming
 	/// ready.
-	pub fn readiness_pending(mut self, polls: usize) -> Self {
+	pub const fn readiness_pending(mut self, polls: usize) -> Self {
 		self.readiness_pending = polls;
 		self
 	}
@@ -366,7 +366,7 @@ impl FakeScript {
 
 	/// Sets the response creation time; the deterministic default is the Unix
 	/// epoch.
-	pub fn created_at(mut self, created_at: SystemTime) -> Self {
+	pub const fn created_at(mut self, created_at: SystemTime) -> Self {
 		self.created_at = created_at;
 		self
 	}
@@ -420,7 +420,7 @@ pub enum FakeAnswer {
 }
 
 impl FakeAnswer {
-	fn kind(&self) -> AnswerKind {
+	const fn kind(&self) -> AnswerKind {
 		match self {
 			Self::Chat(_) => AnswerKind::Chat,
 			Self::Tokens(_) => AnswerKind::Tokens,
@@ -742,7 +742,7 @@ impl CapturedOperation {
 	}
 }
 
-fn capture_media(media: &MediaInput) -> CapturedMedia {
+const fn capture_media(media: &MediaInput) -> CapturedMedia {
 	match media {
 		MediaInput::Bytes { data, .. } => CapturedMedia::InlineBytes(data.len()),
 		MediaInput::Stored(_) => CapturedMedia::Stored,
@@ -751,7 +751,7 @@ fn capture_media(media: &MediaInput) -> CapturedMedia {
 	}
 }
 
-fn expected_answer_kind(operation: OperationKind) -> AnswerKind {
+const fn expected_answer_kind(operation: OperationKind) -> AnswerKind {
 	match operation {
 		OperationKind::Chat => AnswerKind::Chat,
 		OperationKind::CountTokens => AnswerKind::Tokens,

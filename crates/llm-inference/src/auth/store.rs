@@ -272,13 +272,13 @@ pub struct StoredCredentialSource {
 impl StoredCredentialSource {
 	/// Creates an opaque lease source over an opened encrypted credential store.
 	#[must_use]
-	pub fn new(store: Arc<CredentialStore>) -> Self {
+	pub const fn new(store: Arc<CredentialStore>) -> Self {
 		Self { store }
 	}
 
 	/// Returns the underlying store for secret-free account metadata operations.
 	#[must_use]
-	pub fn store(&self) -> &Arc<CredentialStore> {
+	pub const fn store(&self) -> &Arc<CredentialStore> {
 		&self.store
 	}
 }
@@ -442,10 +442,9 @@ impl CredentialStore {
 		}
 		if let (Some(expected), actual) =
 			(write.expected_generation, previous.as_ref().map(|row| row.0))
+			&& Some(expected) != actual
 		{
-			if Some(expected) != actual {
-				return Err(StoreError::GenerationConflict);
-			}
+			return Err(StoreError::GenerationConflict);
 		}
 		let generation = previous
 			.as_ref()
@@ -719,14 +718,15 @@ impl CredentialStore {
 				|row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?, row.get::<_, u64>(2)?)),
 			)
 			.optional()?;
-		if let Some((held_owner, epoch, held_until)) = &current {
-			if *held_until > now_ms && held_owner != owner {
-				return Ok(LeaseOutcome::Held {
-					owner:         Str::from(held_owner.as_str()),
-					epoch:         *epoch,
-					expires_at_ms: *held_until,
-				});
-			}
+		if let Some((held_owner, epoch, held_until)) = &current
+			&& *held_until > now_ms
+			&& held_owner != owner
+		{
+			return Ok(LeaseOutcome::Held {
+				owner:         Str::from(held_owner.as_str()),
+				epoch:         *epoch,
+				expires_at_ms: *held_until,
+			});
 		}
 		let epoch = current
 			.map_or(Ok(1), |(_, epoch, _)| epoch.checked_add(1).ok_or(StoreError::CounterExhausted))?;
@@ -974,36 +974,36 @@ impl crate::account::RefreshLeaseStore for CredentialStore {
 		Box::pin(async move {
 			loop {
 				let observed_at = SystemTime::now();
-				if let Some(metadata) = self.metadata(account).map_err(refresh_store_error)? {
-					if metadata.generation >= minimum_generation {
-						let freshness = crate::account::CredentialFreshness {
+				if let Some(metadata) = self.metadata(account).map_err(refresh_store_error)?
+					&& metadata.generation >= minimum_generation
+				{
+					let freshness = crate::account::CredentialFreshness {
+						generation: metadata.generation,
+						issued_at: None,
+						expires_at: metadata
+							.expires_at_ms
+							.map(system_time_from_ms)
+							.transpose()
+							.map_err(refresh_store_error)?,
+						observed_at,
+					};
+					let receipt = crate::account::RefreshReceipt {
+						account:              account.clone(),
+						principal:            metadata.principal_id.clone(),
+						rejected_generation:  minimum_generation.saturating_sub(1),
+						resulting_generation: Some(metadata.generation),
+						steps:                vec![crate::account::RefreshStep::PeerResultObserved {
 							generation: metadata.generation,
-							issued_at: None,
-							expires_at: metadata
-								.expires_at_ms
-								.map(system_time_from_ms)
-								.transpose()
-								.map_err(refresh_store_error)?,
-							observed_at,
-						};
-						let receipt = crate::account::RefreshReceipt {
-							account:              account.clone(),
-							principal:            metadata.principal_id.clone(),
-							rejected_generation:  minimum_generation.saturating_sub(1),
-							resulting_generation: Some(metadata.generation),
-							steps:                vec![crate::account::RefreshStep::PeerResultObserved {
-								generation: metadata.generation,
-							}],
-						};
-						return Ok(crate::account::RefreshLeaseWait::Published(
-							crate::account::RefreshResult {
-								account: account.clone(),
-								principal: metadata.principal_id,
-								freshness,
-								receipt,
-							},
-						));
-					}
+						}],
+					};
+					return Ok(crate::account::RefreshLeaseWait::Published(
+						crate::account::RefreshResult {
+							account: account.clone(),
+							principal: metadata.principal_id,
+							freshness,
+							receipt,
+						},
+					));
 				}
 				if observed_at >= lease_expires_at {
 					return Ok(crate::account::RefreshLeaseWait::LeaseExpired { observed_at });
@@ -1037,8 +1037,8 @@ impl crate::account::RefreshLeaseStore for CredentialStore {
 				epoch,
 				expires_at_ms: unix_ms(lease.expires_at).map_err(refresh_store_error)?,
 			};
-			let renewed = CredentialStore::renew_lease(self, &mut persistent, now, ttl)
-				.map_err(refresh_store_error)?;
+			let renewed =
+				Self::renew_lease(self, &mut persistent, now, ttl).map_err(refresh_store_error)?;
 			if renewed {
 				lease.expires_at =
 					system_time_from_ms(persistent.expires_at_ms).map_err(refresh_store_error)?;

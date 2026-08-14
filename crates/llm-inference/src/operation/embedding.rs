@@ -421,7 +421,7 @@ pub(crate) fn normalize_vector(values: &mut [f32]) -> Result<(), Error> {
 		if !value.is_finite() {
 			return Err(protocol_error("embedding_vector_non_finite"));
 		}
-		squared += f64::from(*value) * f64::from(*value);
+		squared = f64::mul_add(f64::from(*value), f64::from(*value), squared);
 	}
 	let magnitude = squared.sqrt();
 	if !magnitude.is_finite() || magnitude == 0.0 {

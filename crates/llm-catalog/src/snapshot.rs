@@ -221,7 +221,7 @@ impl Catalog {
 
 	/// Returns the immutable catalog revision.
 	#[must_use]
-	pub fn revision(&self) -> &crate::CatalogRevision {
+	pub const fn revision(&self) -> &crate::CatalogRevision {
 		&self.catalog.revision
 	}
 
@@ -457,14 +457,13 @@ fn validate_catalog(catalog: &CompiledCatalog) -> Result<(), SnapshotError> {
 		"discovery specs are not uniquely sorted",
 	)?;
 	for auth in &catalog.auth_specs {
-		if let Some(oauth) = &auth.oauth {
-			if catalog
+		if let Some(oauth) = &auth.oauth
+			&& catalog
 				.oauth_specs
 				.binary_search_by(|record| record.id.cmp(oauth))
 				.is_err()
-			{
-				return Err(SnapshotError::Invariant("auth spec references an unknown OAuth flow"));
-			}
+		{
+			return Err(SnapshotError::Invariant("auth spec references an unknown OAuth flow"));
 		}
 	}
 	for route in &catalog.routes {

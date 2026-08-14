@@ -487,8 +487,7 @@ fn fence_close_end(buffer: &[u8], ticks: usize, final_chunk: bool) -> Option<usi
 		let line_end = buffer[line_start..]
 			.iter()
 			.position(|byte| *byte == b'\n')
-			.map(|at| line_start + at + 1)
-			.unwrap_or(buffer.len());
+			.map_or(buffer.len(), |at| line_start + at + 1);
 		if line_end == buffer.len() && !final_chunk {
 			return None;
 		}

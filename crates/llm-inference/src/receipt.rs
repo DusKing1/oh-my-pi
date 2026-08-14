@@ -147,7 +147,7 @@ impl Usage {
 	}
 
 	/// Returns the total of all token dimensions.
-	pub fn total_tokens(&self) -> u64 {
+	pub const fn total_tokens(&self) -> u64 {
 		self
 			.input_tokens
 			.saturating_add(self.output_tokens)
@@ -177,7 +177,7 @@ impl Cost {
 	}
 
 	/// Adds a cost, saturating only at the integer representation boundary.
-	pub fn accumulate(&mut self, other: Self) {
+	pub const fn accumulate(&mut self, other: Self) {
 		self.micro_usd = self.micro_usd.saturating_add(other.micro_usd);
 	}
 }
@@ -323,6 +323,14 @@ pub enum RecoveryKind {
 	SessionReseed,
 	/// Empty output was classified or recovered.
 	EmptyOutput,
+}
+
+impl RecoveryKind {
+	/// Returns the stable snake-case recovery code derived by `strum`.
+	#[must_use]
+	pub const fn as_str(&self) -> &'static str {
+		self.into_str()
+	}
 }
 
 /// Evidence for one recovery action.

@@ -379,23 +379,22 @@ impl IncrementalFramer for WebSocketDecoder {
 					if encoded & (1 << 63) != 0 {
 						return self.terminal(FramingError::InvalidWebSocketControl, output);
 					}
-					if encoded <= u64::from(u16::MAX) {
+					if u16::try_from(encoded).is_ok() {
 						let error = FramingError::NonCanonicalWebSocketLength {
 							encoded_bytes: 8,
 							payload:       encoded,
 						};
 						return self.terminal(error, output);
 					}
-					let len = match usize::try_from(encoded) {
-						Ok(len) => len,
-						Err(_) => {
-							let error = FramingError::LimitExceeded {
-								protocol: FramingProtocol::WebSocket,
-								limit:    self.max_message_bytes,
-								observed: usize::MAX,
-							};
-							return self.terminal(error, output);
-						},
+					let len = if let Ok(len) = usize::try_from(encoded) {
+						len
+					} else {
+						let error = FramingError::LimitExceeded {
+							protocol: FramingProtocol::WebSocket,
+							limit:    self.max_message_bytes,
+							observed: usize::MAX,
+						};
+						return self.terminal(error, output);
 					};
 					(len, 10)
 				},
@@ -481,6 +480,6 @@ impl IncrementalFramer for WebSocketDecoder {
 	}
 }
 
-fn valid_close_code(code: u16) -> bool {
-	matches!(code, 1000..=1014 | 3000..=4999) && !matches!(code, 1004 | 1005 | 1006)
+const fn valid_close_code(code: u16) -> bool {
+	matches!(code, 1000..=1014 | 3000..=4999) && !matches!(code, 1004..=1006)
 }

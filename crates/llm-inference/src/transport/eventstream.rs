@@ -1,4 +1,5 @@
-//! Bounded incremental AWS EventStream framing with CRC and header validation.
+//! Bounded incremental AWS `EventStream` framing with CRC and header
+//! validation.
 
 use bytes::{Bytes, BytesMut};
 use omp_core::Str;
@@ -13,7 +14,7 @@ const PRELUDE_BYTES: usize = 12;
 const MESSAGE_OVERHEAD_BYTES: usize = 16;
 const DEFAULT_MAX_HEADERS_BYTES: usize = 128 * 1024;
 
-/// One typed AWS EventStream header value.
+/// One typed AWS `EventStream` header value.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EventStreamHeaderValue {
 	/// Boolean value.
@@ -47,7 +48,7 @@ impl EventStreamHeaderValue {
 	}
 }
 
-/// One validated AWS EventStream header.
+/// One validated AWS `EventStream` header.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventStreamHeader {
 	/// Header name.
@@ -56,7 +57,7 @@ pub struct EventStreamHeader {
 	pub value: EventStreamHeaderValue,
 }
 
-/// One complete CRC-validated AWS EventStream message.
+/// One complete CRC-validated AWS `EventStream` message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventStreamMessage {
 	/// Ordered typed headers.
@@ -83,7 +84,7 @@ impl EventStreamMessage {
 	}
 }
 
-/// Bounded incremental AWS EventStream decoder.
+/// Bounded incremental AWS `EventStream` decoder.
 #[derive(Debug)]
 pub struct EventStreamDecoder {
 	buffer:            BytesMut,
@@ -393,7 +394,7 @@ fn parse_headers(
 	Ok(headers)
 }
 
-fn take_u8(
+const fn take_u8(
 	message: &[u8],
 	cursor: &mut usize,
 	end: usize,

@@ -374,10 +374,10 @@ pub enum CatalogAuthSpecError {
 	/// ADC auth contains a source owned by another engine.
 	#[error("catalog ADC auth contains an unexpected credential source")]
 	UnexpectedCredentialSource,
-	/// A SigV4 route did not supply its signing contract.
+	/// A `SigV4` route did not supply its signing contract.
 	#[error("catalog SigV4 route requires explicit signing context")]
 	MissingSigningContext,
-	/// A dynamic SigV4 region was not resolved during route construction.
+	/// A dynamic `SigV4` region was not resolved during route construction.
 	#[error("catalog SigV4 route requires a resolved signing region")]
 	MissingSigningRegion,
 	/// Catalog contains a non-OMP credential environment declaration.
@@ -822,7 +822,7 @@ pub enum AuthSpecError {
 	/// A credential-file source has neither an override nor a default path.
 	#[error("application-default credential-file source has no path")]
 	MissingCredentialPath,
-	/// SigV4 unsigned-header names must already be canonical lower case.
+	/// `SigV4` unsigned-header names must already be canonical lower case.
 	#[error("SigV4 unsigned-header name is not lower case")]
 	UnsignedHeaderNotLowercase,
 	/// Credential environment variables must be explicitly OMP-prefixed.
@@ -835,16 +835,16 @@ fn validate_sources(sources: &[CredentialSourceSpec]) -> Result<(), AuthSpecErro
 		return Err(AuthSpecError::EmptySources);
 	}
 	for source in sources {
-		if let CredentialSourceSpec::Environment { variables } = source {
-			if variables.is_empty() || variables.iter().any(|name| !name.starts_with("OMP_")) {
-				return Err(AuthSpecError::InvalidEnvironmentSource);
-			}
+		if let CredentialSourceSpec::Environment { variables } = source
+			&& (variables.is_empty() || variables.iter().any(|name| !name.starts_with("OMP_")))
+		{
+			return Err(AuthSpecError::InvalidEnvironmentSource);
 		}
 	}
 	Ok(())
 }
 
-fn non_empty(value: &str, field: &'static str) -> Result<(), AuthSpecError> {
+const fn non_empty(value: &str, field: &'static str) -> Result<(), AuthSpecError> {
 	if value.is_empty() {
 		Err(AuthSpecError::EmptyField(field))
 	} else {

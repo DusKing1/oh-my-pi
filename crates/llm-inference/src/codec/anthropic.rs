@@ -182,7 +182,7 @@ pub enum ContentBlock {
 		#[serde(skip_serializing_if = "Option::is_none")]
 		id:            Option<Str>,
 		is_error:      bool,
-		content:       Vec<ContentBlock>,
+		content:       Vec<Self>,
 		#[serde(skip_serializing_if = "Option::is_none")]
 		cache_control: Option<CacheControl>,
 	},
@@ -1519,7 +1519,7 @@ impl AnthropicDecoder {
 	}
 
 	/// Borrows provider metadata accumulated during decoding.
-	pub(crate) fn outcome(&self) -> &AnthropicOutcome {
+	pub(crate) const fn outcome(&self) -> &AnthropicOutcome {
 		&self.outcome
 	}
 
@@ -1674,7 +1674,7 @@ impl AnthropicDecoder {
 			Incoming::ContentBlockDelta { index, delta } => match delta {
 				IncomingDelta::TextDelta { text } => events.push(ChatEvent::TextDelta { index, text }),
 				IncomingDelta::ThinkingDelta { thinking } => {
-					events.push(ChatEvent::ThinkingDelta { index, text: thinking })
+					events.push(ChatEvent::ThinkingDelta { index, text: thinking });
 				},
 				IncomingDelta::SignatureDelta { signature } => {
 					if let Some(Some(BlockState::Thinking { signature: target })) =
@@ -1722,7 +1722,7 @@ impl AnthropicDecoder {
 						});
 					},
 					BlockState::Thinking { signature } if !signature.is_empty() => {
-						self.outcome.signatures.push((index, Str::new(signature)))
+						self.outcome.signatures.push((index, Str::new(signature)));
 					},
 					BlockState::Text | BlockState::Thinking { .. } | BlockState::Server => {},
 				}
@@ -1923,7 +1923,7 @@ struct IncomingError {
 	message: Str,
 }
 
-fn merge_usage(target: &mut Usage, incoming: IncomingUsage) {
+const fn merge_usage(target: &mut Usage, incoming: IncomingUsage) {
 	if let Some(value) = incoming.input_tokens {
 		target.input_tokens = value;
 	}
@@ -2026,17 +2026,14 @@ pub fn classify_http_error(status: u16, body: &[u8]) -> Error {
 	struct Envelope {
 		error: IncomingError,
 	}
-	match serde_json::from_slice::<Envelope>(body) {
-		Ok(envelope) => {
-			let mut error = provider_error(envelope.error.kind, envelope.error.message, false);
-			error.status = Some(status);
-			error
-		},
-		Err(_) => {
-			let mut error = protocol_error("anthropic.http.error_envelope", false);
-			error.status = Some(status);
-			error
-		},
+	if let Ok(envelope) = serde_json::from_slice::<Envelope>(body) {
+		let mut error = provider_error(envelope.error.kind, envelope.error.message, false);
+		error.status = Some(status);
+		error
+	} else {
+		let mut error = protocol_error("anthropic.http.error_envelope", false);
+		error.status = Some(status);
+		error
 	}
 }
 
