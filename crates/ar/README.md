@@ -4,9 +4,9 @@
 
 ## Formats
 
-- ZIP reading supports stored and DEFLATE members, CRC-32 verification, ZIP64 metadata, and capability-scoped extraction. ZIP writing emits ordinary deterministic archives and reports inputs that require ZIP64.
-- TAR reading supports USTAR, GNU long names and links, PAX path/link/size records, hard links, safe symbolic-link aliases, and old-GNU sparse indexing. Sparse payload expansion is rejected explicitly.
-- TAR and TAR.GZ writing emits deterministic USTAR/GNU records. Gzip output fixes the header modification time at zero.
+- ZIP reading supports stored and DEFLATE members, CRC-32 verification, ZIP64 metadata, legacy CP437 and Info-ZIP Unicode names, extended timestamps, prepended archives, and capability-scoped extraction. ZIP writing emits ordinary deterministic archives and reports inputs that require ZIP64.
+- TAR reading supports V7, USTAR, GNU long names and links, PAX path/link/size records, hard links, safe symbolic-link aliases, and bounded old-GNU sparse expansion. PAX sparse members remain listable but reject payload reads because tar 0.4.46 does not expand them.
+- TAR and TAR.GZ writing emits deterministic USTAR/GNU file, directory, hard-link, and symbolic-link records. Gzip output fixes the header modification time at zero.
 
 ## Safety
 

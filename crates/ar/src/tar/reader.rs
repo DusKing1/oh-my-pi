@@ -15,7 +15,7 @@ use zerocopy::FromBytes;
 use super::spec::{BLOCK_SIZE, GnuSparseContinuation, OldGnuHeader, UstarHeader};
 use crate::{
 	Entry, Error, Limits, Result,
-	entry::Storage,
+	entry::{Storage, TarSparse, TarSparseExtent},
 	path::{is_directory_name, normalize, parent, validate},
 };
 
@@ -66,11 +66,17 @@ const fn apply_global_number(current: &mut Option<PaxNumber>, update: Option<Pax
 	}
 }
 
-const fn pax_number(value: Option<PaxNumber>, error: &'static str) -> Result<Option<u64>> {
+const fn pax_number(value: Option<PaxNumber>) -> Option<u64> {
 	match value {
-		None => Ok(None),
-		Some(PaxNumber::Value(value)) => Ok(Some(value)),
-		Some(PaxNumber::Delete) => Err(Error::InvalidArchive(error)),
+		None | Some(PaxNumber::Delete) => None,
+		Some(PaxNumber::Value(value)) => Some(value),
+	}
+}
+
+fn pax_text<'a>(local: Option<&'a Str>, global: Option<&'a Str>) -> Option<&'a Str> {
+	match local {
+		Some(value) => (!value.is_empty()).then_some(value),
+		None => global,
 	}
 }
 
@@ -103,7 +109,6 @@ pub fn read_entries<R: Read + Seek>(
 	let mut long_link = None;
 	let mut local_pax = None;
 	let mut global_pax = PaxState::default();
-	let mut saw_terminator = false;
 
 	while offset < file_size {
 		if file_size - offset < BLOCK_SIZE as u64 {
@@ -114,7 +119,6 @@ pub fn read_entries<R: Read + Seek>(
 			if long_name.is_some() || long_link.is_some() || local_pax.is_some() {
 				return Err(Error::InvalidArchive("orphaned TAR extended header"));
 			}
-			saw_terminator = true;
 			break;
 		}
 		validate_checksum(&block)?;
@@ -123,34 +127,48 @@ pub fn read_entries<R: Read + Seek>(
 			UstarHeader::ref_from_bytes(&block).expect("a TAR header is exactly one typed wire block");
 		let old_gnu = OldGnuHeader::ref_from_bytes(&block)
 			.expect("an old-GNU header is exactly one typed wire block");
+		let ustar = is_ustar_header(header);
+		let gnu = is_gnu_header(header);
+		let recognized = ustar || gnu;
 		let typeflag = header.typeflag;
 		let header_size = parse_number(&header.size)?;
-		let mtime = parse_number(&header.mtime)?;
+		let modified_unix_seconds = parse_mtime(&header.mtime)?;
 		offset = checked_add(offset, BLOCK_SIZE as u64, "TAR offset overflow")?;
 
-		let metadata_end = if matches!(typeflag, b'L' | b'K' | b'N' | b'x' | b'X' | b'g') {
-			let end = padded_end(offset, header_size)?;
-			if end > file_size {
-				return Err(Error::InvalidArchive("truncated TAR member data"));
-			}
-			Some(end)
-		} else {
-			None
-		};
+		let metadata_end =
+			if recognized && matches!(typeflag, b'L' | b'K' | b'N' | b'x' | b'X' | b'g') {
+				let end = padded_end(offset, header_size)?;
+				if end > file_size {
+					return Err(Error::InvalidArchive("truncated TAR member data"));
+				}
+				Some(end)
+			} else {
+				None
+			};
 
 		match typeflag {
-			b'L' => {
+			b'L' if recognized => {
+				if long_name.is_some() {
+					return Err(Error::InvalidArchive(
+						"multiple GNU long-name records describe one TAR member",
+					));
+				}
 				long_name = Some(read_long_text(source, offset, header_size, limits.path_size)?);
 				offset = metadata_end.expect("GNU long name is a metadata record");
 				continue;
 			},
-			b'K' => {
+			b'K' if recognized => {
+				if long_link.is_some() {
+					return Err(Error::InvalidArchive(
+						"multiple GNU long-link records describe one TAR member",
+					));
+				}
 				long_link = Some(read_long_text(source, offset, header_size, limits.path_size)?);
 				offset = metadata_end.expect("GNU long link is a metadata record");
 				continue;
 			},
 			// Obsolete GNUTYPE_NAMES records rename members indexed before this header.
-			b'N' => {
+			b'N' if recognized => {
 				apply_old_gnu_names(
 					source,
 					offset,
@@ -163,12 +181,17 @@ pub fn read_entries<R: Read + Seek>(
 				offset = metadata_end.expect("old-GNU names are a metadata record");
 				continue;
 			},
-			b'x' | b'X' => {
+			b'x' | b'X' if recognized => {
+				if local_pax.is_some() {
+					return Err(Error::InvalidArchive(
+						"multiple local PAX records describe one TAR member",
+					));
+				}
 				local_pax = Some(parse_pax(source, offset, header_size, limits)?);
 				offset = metadata_end.expect("PAX header is a metadata record");
 				continue;
 			},
-			b'g' => {
+			b'g' if recognized => {
 				let update = parse_pax(source, offset, header_size, limits)?;
 				apply_global_pax(&mut global_pax, update);
 				offset = metadata_end.expect("global PAX header is a metadata record");
@@ -177,29 +200,33 @@ pub fn read_entries<R: Read + Seek>(
 			_ => {},
 		}
 
-		let mut name = decode_header_name(header, &block, limits)?;
+		let mut name = decode_header_name(header, ustar, limits)?;
 		let mut link_name = decode_field(&header.link_name);
+
+		let local_pax = local_pax.take();
+		if let Some(value) = pax_text(
+			local_pax
+				.as_ref()
+				.and_then(|attributes| attributes.path.as_ref()),
+			global_pax.path.as_ref(),
+		) {
+			name = value.clone();
+		}
+		if let Some(value) = pax_text(
+			local_pax
+				.as_ref()
+				.and_then(|attributes| attributes.link_path.as_ref()),
+			global_pax.link_path.as_ref(),
+		) {
+			link_name = value.clone();
+		}
+		// tar 0.4.46 gives GNU long-name/link records precedence when both
+		// extension styles describe the same following member.
 		if let Some(value) = long_name.take() {
 			name = value;
 		}
 		if let Some(value) = long_link.take() {
 			link_name = value;
-		}
-
-		let local_pax = local_pax.take();
-		if let Some(value) = local_pax
-			.as_ref()
-			.and_then(|attributes| attributes.path.as_ref())
-			.or(global_pax.path.as_ref())
-		{
-			name = value.clone();
-		}
-		if let Some(value) = local_pax
-			.as_ref()
-			.and_then(|attributes| attributes.link_path.as_ref())
-			.or(global_pax.link_path.as_ref())
-		{
-			link_name = value.clone();
 		}
 
 		let mut stored_size = header_size;
@@ -208,45 +235,52 @@ pub fn read_entries<R: Read + Seek>(
 			.as_ref()
 			.and_then(|attributes| attributes.size)
 			.or(global_pax.size);
-		if let Some(value) = pax_number(pax_size, "invalid PAX member size")? {
+		if let Some(value) = pax_number(pax_size) {
 			stored_size = value;
 			display_size = value;
 		}
-		if let Some(value) = local_pax
-			.as_ref()
-			.and_then(|attributes| attributes.sparse_name.as_ref())
-			.or(global_pax.sparse_name.as_ref())
-		{
+		if let Some(value) = pax_text(
+			local_pax
+				.as_ref()
+				.and_then(|attributes| attributes.sparse_name.as_ref()),
+			global_pax.sparse_name.as_ref(),
+		) {
 			name = value.clone();
 		}
 		let sparse_size = local_pax
 			.as_ref()
 			.and_then(|attributes| attributes.sparse_real_size)
 			.or(global_pax.sparse_real_size);
-		if let Some(value) = pax_number(sparse_size, "invalid PAX sparse real size")? {
+		if let Some(value) = pax_number(sparse_size) {
 			display_size = value;
 		}
-		let mut sparse = typeflag == b'S';
-		sparse |= local_pax
+		let pax_sparse = local_pax
 			.as_ref()
 			.and_then(|attributes| attributes.sparse)
 			.or(global_pax.sparse)
 			.unwrap_or(false);
-
-		if typeflag == b'S' && old_gnu.is_extended != 0 {
-			loop {
-				if file_size.saturating_sub(offset) < BLOCK_SIZE as u64 {
-					return Err(Error::InvalidArchive("truncated GNU sparse continuation"));
-				}
-				let continuation_bytes = read_block_at(source, offset)?;
-				let continuation = GnuSparseContinuation::ref_from_bytes(&continuation_bytes)
-					.expect("a GNU sparse continuation is exactly one typed wire block");
-				offset = checked_add(offset, BLOCK_SIZE as u64, "TAR offset overflow")?;
-				if continuation.is_extended == 0 {
-					break;
-				}
+		let sparse = if typeflag == b'S' {
+			if !gnu {
+				return Err(Error::InvalidArchive("GNU sparse member has a non-GNU TAR header"));
 			}
-		}
+			let (sparse, real_size) = parse_old_gnu_sparse(
+				source,
+				old_gnu,
+				&mut offset,
+				file_size,
+				stored_size,
+				&name,
+				limits,
+			)?;
+			display_size = real_size;
+			sparse
+		} else if pax_sparse {
+			// tar 0.4.46 recognizes only old-GNU sparse maps. Preserve PAX
+			// sparse metadata for bounded listing while refusing a misread.
+			TarSparse::Unsupported
+		} else {
+			TarSparse::None
+		};
 
 		let data_offset = offset;
 		let data_end = padded_end(data_offset, stored_size)?;
@@ -255,12 +289,11 @@ pub fn read_entries<R: Read + Seek>(
 		}
 		offset = data_end;
 
-		let raw_directory = typeflag == b'5' || is_directory_name(name.as_str());
+		let raw_directory = typeflag == b'5'
+			|| matches!(typeflag, b'0' | 0 | b'7') && is_directory_name(name.as_str());
 		let Some(path) = normalize_member_path(name, limits)? else {
 			continue;
 		};
-		let modified_unix_seconds = (mtime > 0).then_some(mtime);
-
 		let (entry, pending_link) = match typeflag {
 			b'5' => (
 				Entry {
@@ -273,26 +306,6 @@ pub fn read_entries<R: Read + Seek>(
 				None,
 			),
 			b'1' | b'2' => make_link_entry(path, link_name, typeflag, modified_unix_seconds, limits)?,
-			b'0' | 0 | b'7' | b'S' => {
-				let actual = stored_size.max(display_size);
-				if actual > limits.member_size {
-					return Err(Error::MemberTooLarge { path, actual, limit: limits.member_size });
-				}
-				(
-					Entry {
-						path,
-						directory: raw_directory,
-						size: if raw_directory { 0 } else { display_size },
-						modified_unix_seconds,
-						storage: if raw_directory {
-							Storage::Synthetic
-						} else {
-							Storage::Tar { data_offset, stored_size, sparse }
-						},
-					},
-					None,
-				)
-			},
 			_ if raw_directory => (
 				Entry {
 					path,
@@ -303,6 +316,22 @@ pub fn read_entries<R: Read + Seek>(
 				},
 				None,
 			),
+			b'0' | 0 | b'7' | b'S' => {
+				let actual = stored_size.max(display_size);
+				if actual > limits.member_size {
+					return Err(Error::MemberTooLarge { path, actual, limit: limits.member_size });
+				}
+				(
+					Entry {
+						path,
+						directory: false,
+						size: display_size,
+						modified_unix_seconds,
+						storage: Storage::Tar { data_offset, stored_size, sparse },
+					},
+					None,
+				)
+			},
 			_ => continue,
 		};
 
@@ -316,8 +345,8 @@ pub fn read_entries<R: Read + Seek>(
 		)?;
 	}
 
-	if !saw_terminator {
-		return Err(Error::InvalidArchive("missing terminating TAR zero block"));
+	if long_name.is_some() || long_link.is_some() || local_pax.is_some() {
+		return Err(Error::InvalidArchive("orphaned TAR extended header"));
 	}
 	resolve_pending_links(&mut entries, &entries_by_path, &pending, limits)?;
 	entries.retain(|entry| !entry.path.is_empty());
@@ -331,26 +360,56 @@ pub fn read_entry_to<R: Read + Seek, W: Write>(
 	output: &mut W,
 ) -> Result<u64> {
 	match &entry.storage {
-		Storage::Tar { data_offset, stored_size, sparse } => {
-			if *sparse {
-				return Err(Error::SparseMember(entry.path.clone()));
-			}
-			if *stored_size < entry.size {
-				return Err(Error::InvalidArchive("truncated TAR member data"));
-			}
-			source.seek(SeekFrom::Start(*data_offset))?;
-			let mut data = source.take(entry.size);
-			let copied = io::copy(&mut data, output)?;
-			if copied != entry.size {
-				return Err(Error::InvalidArchive("truncated TAR member data"));
-			}
-			Ok(copied)
+		Storage::Tar { data_offset, stored_size, sparse } => match sparse {
+			TarSparse::None => {
+				if *stored_size < entry.size {
+					return Err(Error::InvalidArchive("truncated TAR member data"));
+				}
+				source.seek(SeekFrom::Start(*data_offset))?;
+				copy_exact(source, entry.size, output)?;
+				Ok(entry.size)
+			},
+			TarSparse::Unsupported => Err(Error::SparseMember(entry.path.clone())),
+			TarSparse::OldGnu(extents) => {
+				source.seek(SeekFrom::Start(*data_offset))?;
+				let mut logical_offset = 0_u64;
+				let mut stored_offset = 0_u64;
+				for extent in extents {
+					write_zeroes(output, extent.offset - logical_offset)?;
+					copy_exact(source, extent.length, output)?;
+					stored_offset += extent.length;
+					logical_offset = extent.offset + extent.length;
+				}
+				write_zeroes(output, entry.size - logical_offset)?;
+				if stored_offset != *stored_size {
+					return Err(Error::InvalidArchive("GNU sparse stored size changed after indexing"));
+				}
+				Ok(entry.size)
+			},
 		},
 		Storage::TarLink { target_path } => {
 			Err(Error::UnreadableLink { path: entry.path.clone(), target: target_path.clone() })
 		},
 		_ => Err(Error::InvalidArchive("entry is not a TAR member")),
 	}
+}
+fn copy_exact<R: Read, W: Write>(source: &mut R, length: u64, output: &mut W) -> Result<()> {
+	let mut data = source.take(length);
+	if io::copy(&mut data, output)? != length {
+		return Err(Error::InvalidArchive("truncated TAR member data"));
+	}
+	Ok(())
+}
+
+fn write_zeroes<W: Write>(output: &mut W, mut length: u64) -> Result<()> {
+	const ZEROES: [u8; IO_BUFFER_SIZE] = [0; IO_BUFFER_SIZE];
+	while length != 0 {
+		let count = usize::try_from(length.min(ZEROES.len() as u64))
+			.expect("a zero-fill chunk is bounded by its fixed buffer");
+		output.write_all(&ZEROES[..count])?;
+		length -= count as u64;
+	}
+	Ok(())
 }
 
 /// Rewrites a normalized lookup through directory symlink aliases.
@@ -383,6 +442,22 @@ fn read_block_at<R: Read + Seek>(source: &mut R, offset: u64) -> Result<[u8; BLO
 	source.seek(SeekFrom::Start(offset))?;
 	source.read_exact(&mut block)?;
 	Ok(block)
+}
+fn is_ustar_header(header: &UstarHeader) -> bool {
+	header.magic == *b"ustar\0" && header.version == *b"00"
+}
+
+fn is_gnu_header(header: &UstarHeader) -> bool {
+	header.magic == *b"ustar " && header.version == *b" \0"
+}
+
+/// Returns whether `bytes` begin with one checksum-valid nonzero TAR header.
+pub(crate) fn is_header(bytes: &[u8]) -> bool {
+	let Ok(block) = <&[u8; BLOCK_SIZE]>::try_from(bytes.get(..BLOCK_SIZE).unwrap_or_default())
+	else {
+		return false;
+	};
+	!block.iter().all(|&byte| byte == 0) && validate_checksum(block).is_ok()
 }
 
 fn validate_checksum(block: &[u8; BLOCK_SIZE]) -> Result<()> {
@@ -441,6 +516,118 @@ fn parse_number(field: &[u8]) -> Result<u64> {
 	}
 	Ok(value)
 }
+fn parse_mtime(field: &[u8]) -> Result<Option<u64>> {
+	if field.first().is_some_and(|byte| byte & 0xc0 == 0xc0) {
+		// Signed base-256 timestamps before the epoch are valid TAR metadata,
+		// but the format-neutral Entry timestamp is intentionally unsigned.
+		return Ok(None);
+	}
+	let value = parse_number(field)?;
+	Ok((value > 0).then_some(value))
+}
+
+fn parse_old_gnu_sparse<R: Read + Seek>(
+	source: &mut R,
+	header: &OldGnuHeader,
+	offset: &mut u64,
+	file_size: u64,
+	stored_size: u64,
+	path: &Str,
+	limits: Limits,
+) -> Result<(TarSparse, u64)> {
+	let real_size = parse_number(&header.real_size)?;
+	let actual = stored_size.max(real_size);
+	if actual > limits.member_size {
+		return Err(Error::MemberTooLarge { path: path.clone(), actual, limit: limits.member_size });
+	}
+	let mut extents = SmallVec::<TarSparseExtent, 4>::new();
+	let mut logical_end = 0_u64;
+	let mut stored_total = 0_u64;
+
+	for extent in &header.sparse {
+		push_sparse_extent(
+			extent,
+			&mut extents,
+			&mut logical_end,
+			&mut stored_total,
+			stored_size,
+			limits.index_size,
+		)?;
+	}
+	let mut extended = parse_sparse_flag(header.is_extended)?;
+	while extended {
+		if file_size.saturating_sub(*offset) < BLOCK_SIZE as u64 {
+			return Err(Error::InvalidArchive("truncated GNU sparse continuation"));
+		}
+		let bytes = read_block_at(source, *offset)?;
+		let continuation = GnuSparseContinuation::ref_from_bytes(&bytes)
+			.expect("a GNU sparse continuation is exactly one typed wire block");
+		*offset = checked_add(*offset, BLOCK_SIZE as u64, "TAR offset overflow")?;
+		for extent in &continuation.sparse {
+			push_sparse_extent(
+				extent,
+				&mut extents,
+				&mut logical_end,
+				&mut stored_total,
+				stored_size,
+				limits.index_size,
+			)?;
+		}
+		extended = parse_sparse_flag(continuation.is_extended)?;
+	}
+
+	if logical_end != real_size {
+		return Err(Error::InvalidArchive("GNU sparse extents do not cover the logical size"));
+	}
+	if stored_total != stored_size {
+		return Err(Error::InvalidArchive("GNU sparse extents do not match the stored size"));
+	}
+	Ok((TarSparse::OldGnu(extents), real_size))
+}
+
+fn push_sparse_extent(
+	raw: &super::spec::GnuSparseEntry,
+	extents: &mut SmallVec<TarSparseExtent, 4>,
+	logical_end: &mut u64,
+	stored_total: &mut u64,
+	stored_size: u64,
+	index_limit: u64,
+) -> Result<()> {
+	if raw.offset[0] == 0 || raw.num_bytes[0] == 0 {
+		return Ok(());
+	}
+	let offset = parse_number(&raw.offset)?;
+	let length = parse_number(&raw.num_bytes)?;
+	if length != 0 && *stored_total % BLOCK_SIZE as u64 != 0 {
+		return Err(Error::InvalidArchive("GNU sparse stored extents are not block-aligned"));
+	}
+	if offset < *logical_end {
+		return Err(Error::InvalidArchive("GNU sparse extents overlap or are out of order"));
+	}
+	let end = checked_add(offset, length, "GNU sparse extent overflow")?;
+	let total = checked_add(*stored_total, length, "GNU sparse stored size overflow")?;
+	if total > stored_size {
+		return Err(Error::InvalidArchive("GNU sparse extents exceed the stored size"));
+	}
+	let actual_index_size = (extents.len() as u64 + 1)
+		.checked_mul(mem::size_of::<TarSparseExtent>() as u64)
+		.ok_or(Error::IndexTooLarge { actual: u64::MAX, limit: index_limit })?;
+	if actual_index_size > index_limit {
+		return Err(Error::IndexTooLarge { actual: actual_index_size, limit: index_limit });
+	}
+	extents.push(TarSparseExtent { offset, length });
+	*logical_end = end;
+	*stored_total = total;
+	Ok(())
+}
+
+const fn parse_sparse_flag(flag: u8) -> Result<bool> {
+	match flag {
+		0 => Ok(false),
+		1 => Ok(true),
+		_ => Err(Error::InvalidArchive("invalid GNU sparse continuation flag")),
+	}
+}
 
 fn decode_field(field: &[u8]) -> Str {
 	let end = field
@@ -455,25 +642,20 @@ fn decode_text(bytes: &[u8]) -> Str {
 	String::from_units(units).into()
 }
 
-fn decode_header_name(
-	header: &UstarHeader,
-	block: &[u8; BLOCK_SIZE],
-	limits: Limits,
-) -> Result<Str> {
+fn decode_header_name(header: &UstarHeader, ustar: bool, limits: Limits) -> Result<Str> {
 	let name_end = header
 		.name
 		.iter()
 		.position(|&byte| byte == 0)
 		.unwrap_or(header.name.len());
-	let old_gnu = header.typeflag == b'S' || &block[257..265] == b"ustar  \0";
-	let prefix_end = if old_gnu {
-		0
-	} else {
+	let prefix_end = if ustar {
 		header
 			.prefix
 			.iter()
 			.position(|&byte| byte == 0)
 			.unwrap_or(header.prefix.len())
+	} else {
+		0
 	};
 	let separator = usize::from(prefix_end > 0 && name_end > 0);
 	let length = prefix_end

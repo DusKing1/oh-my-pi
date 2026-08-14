@@ -1,6 +1,7 @@
 //! Format-neutral indexed archive member metadata.
 
 use omp_core::Str;
+use smallvec::SmallVec;
 
 /// Compression method recorded for a ZIP member.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +34,20 @@ impl CompressionMethod {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Storage {
+pub(crate) struct TarSparseExtent {
+	pub(crate) offset: u64,
+	pub(crate) length: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TarSparse {
+	None,
+	OldGnu(SmallVec<TarSparseExtent, 4>),
+	Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Storage {
 	Synthetic,
 	Zip {
 		compressed_size:     u64,
@@ -45,7 +59,7 @@ pub enum Storage {
 	Tar {
 		data_offset: u64,
 		stored_size: u64,
-		sparse:      bool,
+		sparse:      TarSparse,
 	},
 	TarLink {
 		target_path: Str,

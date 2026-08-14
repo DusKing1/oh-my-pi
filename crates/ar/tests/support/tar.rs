@@ -91,17 +91,36 @@ pub fn pax_records<K: AsRef<str>, V: AsRef<str>>(records: &[(K, V)]) -> Vec<u8> 
 }
 
 pub fn old_gnu_sparse_fixture() -> Vec<u8> {
-	let stored = b"sparse-extent\n";
+	const CHUNK: usize = BLOCK_SIZE;
+	const REAL_SIZE: u64 = 9 * BLOCK_SIZE as u64;
+	let mut stored = Vec::with_capacity(4 * CHUNK + 4);
+	for byte in [b'A', b'B', b'C', b'D'] {
+		stored.extend(std::iter::repeat_n(byte, CHUNK));
+	}
+	stored.extend_from_slice(b"tail");
+
 	let mut sparse_header = header("data/old-sparse.bin", stored.len() as u64, b'S', None, None);
-	// Old-GNU headers put the continuation flag at byte 482. The final
-	// continuation block uses byte 504 and leaves it clear.
+	sparse_header[257..263].copy_from_slice(b"ustar ");
+	sparse_header[263..265].copy_from_slice(b" \0");
+	for (index, offset) in [0_u64, 1024, 2048, 3072].into_iter().enumerate() {
+		let start = 386 + index * 24;
+		write_octal(&mut sparse_header[start..start + 12], offset);
+		write_octal(&mut sparse_header[start + 12..start + 24], CHUNK as u64);
+	}
 	sparse_header[482] = 1;
+	write_octal(&mut sparse_header[483..495], REAL_SIZE);
 	checksum(&mut sparse_header);
+
+	let mut continuation = [0_u8; BLOCK_SIZE];
+	write_octal(&mut continuation[0..12], 4096);
+	write_octal(&mut continuation[12..24], 4);
+	write_octal(&mut continuation[24..36], REAL_SIZE);
+	write_octal(&mut continuation[36..48], 0);
 
 	let mut output = Vec::new();
 	output.extend_from_slice(&sparse_header);
-	output.resize(output.len() + BLOCK_SIZE, 0);
-	append_data(&mut output, stored);
+	output.extend_from_slice(&continuation);
+	append_data(&mut output, &stored);
 	append_member(&mut output, TarMember::file("data/after.txt", b"after sparse\n"));
 	output.resize(output.len() + 2 * BLOCK_SIZE, 0);
 	output

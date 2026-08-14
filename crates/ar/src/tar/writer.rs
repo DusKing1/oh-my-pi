@@ -48,6 +48,30 @@ impl<W: Write> Writer<W> {
 		self.add_entry(path, true, &[])
 	}
 
+	/// Adds a symbolic-link entry with the supplied link text.
+	///
+	/// Relative `..` components and absolute targets are retained because they
+	/// are meaningful symbolic-link text. Capability-scoped extraction still
+	/// refuses targets that cannot be resolved inside the archive.
+	pub fn add_symlink(&mut self, path: &str, target: &str) -> Result<()> {
+		if is_directory_name(path) {
+			return Err(Error::UnsafePath(path.into()));
+		}
+		let path = normalize_bounded(path, Limits::DEFAULT)?;
+		let target = portable_link_target(target)?;
+		self.add_link(path, target.as_bytes(), b'2')
+	}
+
+	/// Adds a hard-link entry targeting another archive-relative member path.
+	pub fn add_hard_link(&mut self, path: &str, target: &str) -> Result<()> {
+		if is_directory_name(path) {
+			return Err(Error::UnsafePath(path.into()));
+		}
+		let path = normalize_bounded(path, Limits::DEFAULT)?;
+		let target = normalize_bounded(target, Limits::DEFAULT)?;
+		self.add_link(path, target.as_bytes(), b'1')
+	}
+
 	/// Writes the two terminating zero blocks and returns the wrapped writer.
 	pub fn finish(mut self) -> Result<W> {
 		self.inner.write_all(&ZERO_BLOCK)?;
@@ -59,7 +83,6 @@ impl<W: Write> Writer<W> {
 		if self.paths.contains(path.as_str()) {
 			return Err(Error::DuplicatePath(path));
 		}
-
 		let emitted_name = if directory {
 			let mut name = String::with_capacity(path.len() + 1);
 			name.push_str(path.as_str());
@@ -73,10 +96,10 @@ impl<W: Write> Writer<W> {
 
 		let split = split_ustar_name(emitted_name.as_bytes());
 		if split.is_none() {
-			self.write_long_name(emitted_name.as_bytes())?;
+			self.write_long_text(emitted_name.as_bytes(), b'L', "GNU long name size")?;
 		}
 		let (name, prefix) = split.unwrap_or((GNU_LONG_NAME.as_bytes(), &[]));
-		let header = make_header(name, prefix, size, if directory { b'5' } else { b'0' })?;
+		let header = make_header(name, prefix, size, if directory { b'5' } else { b'0' }, &[])?;
 		self.inner.write_all(header.as_bytes())?;
 		self.inner.write_all(data)?;
 		write_padding(&mut self.inner, data.len())?;
@@ -84,17 +107,40 @@ impl<W: Write> Writer<W> {
 		Ok(())
 	}
 
-	fn write_long_name(&mut self, name: &[u8]) -> Result<()> {
-		let payload_len = name
+	fn add_link(&mut self, path: Str, target: &[u8], typeflag: u8) -> Result<()> {
+		if self.paths.contains(path.as_str()) {
+			return Err(Error::DuplicatePath(path));
+		}
+		let split = split_ustar_name(path.as_bytes());
+		if split.is_none() {
+			self.write_long_text(path.as_bytes(), b'L', "GNU long name size")?;
+		}
+		if target.len() > 100 {
+			self.write_long_text(target, b'K', "GNU long link size")?;
+		}
+		let (name, prefix) = split.unwrap_or((GNU_LONG_NAME.as_bytes(), &[]));
+		let link_name = if target.len() <= 100 { target } else { &[] };
+		let header = make_header(name, prefix, 0, typeflag, link_name)?;
+		self.inner.write_all(header.as_bytes())?;
+		self.paths.insert(path);
+		Ok(())
+	}
+
+	fn write_long_text(
+		&mut self,
+		value: &[u8],
+		typeflag: u8,
+		overflow_field: &'static str,
+	) -> Result<()> {
+		let payload_len = value
 			.len()
 			.checked_add(1)
-			.ok_or(Error::TarFieldOverflow("GNU long name size"))?;
-		let size =
-			u64::try_from(payload_len).map_err(|_| Error::TarFieldOverflow("GNU long name size"))?;
-		ensure_octal_fits(size, 12, "GNU long name size")?;
-		let header = make_header(GNU_LONG_NAME.as_bytes(), &[], size, b'L')?;
+			.ok_or(Error::TarFieldOverflow(overflow_field))?;
+		let size = u64::try_from(payload_len).map_err(|_| Error::TarFieldOverflow(overflow_field))?;
+		ensure_octal_fits(size, 12, overflow_field)?;
+		let header = make_header(GNU_LONG_NAME.as_bytes(), &[], size, typeflag, &[])?;
 		self.inner.write_all(header.as_bytes())?;
-		self.inner.write_all(name)?;
+		self.inner.write_all(value)?;
 		self.inner.write_all(&[0])?;
 		write_padding(&mut self.inner, payload_len)
 	}
@@ -150,9 +196,18 @@ fn split_ustar_name(path: &[u8]) -> Option<(&[u8], &[u8])> {
 		.map(|(index, _)| (&path[index + 1..], &path[..index]))
 }
 
-fn make_header(name: &[u8], prefix: &[u8], size: u64, typeflag: u8) -> Result<UstarHeader> {
+fn make_header(
+	name: &[u8],
+	prefix: &[u8],
+	size: u64,
+	typeflag: u8,
+	link_name: &[u8],
+) -> Result<UstarHeader> {
 	if name.len() > 100 || prefix.len() > 155 {
 		return Err(Error::TarFieldOverflow("path"));
+	}
+	if link_name.len() > 100 {
+		return Err(Error::TarFieldOverflow("link name"));
 	}
 	let mut header = UstarHeader {
 		name: [0; 100],
@@ -175,6 +230,7 @@ fn make_header(name: &[u8], prefix: &[u8], size: u64, typeflag: u8) -> Result<Us
 	};
 	header.name[..name.len()].copy_from_slice(name);
 	header.prefix[..prefix.len()].copy_from_slice(prefix);
+	header.link_name[..link_name.len()].copy_from_slice(link_name);
 	write_octal(&mut header.mode, if typeflag == b'5' { 0o755 } else { 0o644 }, "mode")?;
 	write_octal(&mut header.uid, 0, "uid")?;
 	write_octal(&mut header.gid, 0, "gid")?;
@@ -185,6 +241,21 @@ fn make_header(name: &[u8], prefix: &[u8], size: u64, typeflag: u8) -> Result<Us
 	let checksum = header.as_bytes().iter().map(|&byte| u64::from(byte)).sum();
 	write_checksum(&mut header.checksum, checksum)?;
 	Ok(header)
+}
+
+fn portable_link_target(target: &str) -> Result<Cow<'_, str>> {
+	if target.is_empty() || target.contains('\0') {
+		return Err(Error::UnsafePath(target.into()));
+	}
+	let limit = Limits::DEFAULT.max_path_size();
+	if target.len() as u64 > limit {
+		return Err(Error::PathTooLong { actual: target.len() as u64, limit });
+	}
+	if target.contains('\\') {
+		Ok(Cow::Owned(target.replace('\\', "/")))
+	} else {
+		Ok(Cow::Borrowed(target))
+	}
 }
 
 fn ensure_octal_fits(value: u64, width: usize, field: &'static str) -> Result<()> {

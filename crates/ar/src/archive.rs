@@ -61,7 +61,7 @@ impl Format {
 		path.extension()?.to_str()?.parse().ok()
 	}
 
-	/// Sniffs a format from its leading bytes.
+	/// Sniffs a format from archive bytes, including a bounded ZIP footer.
 	pub fn sniff(bytes: &[u8]) -> Option<Self> {
 		if let Some(signature) = bytes.get(..4) {
 			let signature = u32::from_le_bytes(signature.try_into().expect("four-byte ZIP signature"));
@@ -72,8 +72,12 @@ impl Format {
 		if bytes.starts_with(&[0x1f, 0x8b]) {
 			return Some(Self::TarGz);
 		}
-		if bytes.get(257..262) == Some(b"ustar") {
+		if tar::is_header(bytes) {
 			return Some(Self::Tar);
+		}
+		let tail_start = bytes.len().saturating_sub(zip::SNIFF_TAIL_SIZE);
+		if zip::has_eocd(&bytes[tail_start..]) {
+			return Some(Self::Zip);
 		}
 		None
 	}
@@ -126,7 +130,7 @@ impl Limits {
 		self.archive_size
 	}
 
-	/// Returns the maximum ZIP central-directory byte size held for indexing.
+	/// Returns the maximum format metadata byte size retained for indexing.
 	pub const fn max_index_size(self) -> u64 {
 		self.index_size
 	}
@@ -168,7 +172,7 @@ impl Limits {
 		self
 	}
 
-	/// Replaces the ZIP central-directory byte-size ceiling.
+	/// Replaces the retained format-metadata byte-size ceiling.
 	pub const fn with_max_index_size(mut self, bytes: u64) -> Self {
 		self.index_size = bytes;
 		self
@@ -287,6 +291,22 @@ impl<R: Read + Seek> Archive<R> {
 	pub fn entry(&self, path: &str) -> Option<&Entry> {
 		let normalized = normalize(path, false)?;
 		self.entry_normalized(normalized.as_str())
+	}
+
+	/// Resolves a normalized file path through TAR directory aliases.
+	///
+	/// Unlike [`Self::entry`], this follows symbolic directory aliases before
+	/// returning the indexed target.
+	pub fn resolve_entry(&self, path: &str) -> Result<&Entry> {
+		let normalized = normalize(path, false).ok_or_else(|| Error::UnsafePath(Str::new(path)))?;
+		let resolved = if self.entry_normalized(normalized.as_str()).is_some() {
+			normalized
+		} else {
+			self.resolve_path(normalized)?
+		};
+		self
+			.entry_normalized(resolved.as_str())
+			.ok_or_else(|| Error::NotFound(resolved.clone()))
 	}
 
 	/// Lists the direct children of a directory in path order.
@@ -428,17 +448,9 @@ impl<R: Read + Seek> Archive<R> {
 	}
 
 	fn file_entry(&self, path: &str) -> Result<Entry> {
-		let normalized = normalize(path, false).ok_or_else(|| Error::UnsafePath(Str::new(path)))?;
-		let resolved = if self.entry_normalized(normalized.as_str()).is_some() {
-			normalized
-		} else {
-			self.resolve_path(normalized)?
-		};
-		let entry = self
-			.entry_normalized(resolved.as_str())
-			.ok_or_else(|| Error::NotFound(resolved.clone()))?;
+		let entry = self.resolve_entry(path)?;
 		if entry.is_directory() {
-			return Err(Error::IsDirectory(resolved));
+			return Err(Error::IsDirectory(Str::new(entry.path())));
 		}
 		Ok(entry.clone())
 	}
@@ -538,18 +550,39 @@ pub fn unpack_with_format(bytes: &[u8], format: Format) -> Result<Files> {
 }
 
 fn sniff_source(source: &mut (impl Read + Seek)) -> Result<Format> {
-	source.seek(SeekFrom::Start(0))?;
-	let mut probe = [0_u8; 512];
-	let mut read = 0;
-	while read < probe.len() {
-		let count = source.read(&mut probe[read..])?;
-		if count == 0 {
-			break;
+	let original_position = source.stream_position()?;
+	let result = (|| {
+		source.seek(SeekFrom::Start(0))?;
+		let mut probe = [0_u8; 512];
+		let mut read = 0;
+		while read < probe.len() {
+			let count = source.read(&mut probe[read..])?;
+			if count == 0 {
+				break;
+			}
+			read += count;
 		}
-		read += count;
-	}
-	source.seek(SeekFrom::Start(0))?;
-	Format::sniff(&probe[..read]).ok_or(Error::UnknownFormat)
+		if let Some(format) = Format::sniff(&probe[..read]) {
+			return Ok(format);
+		}
+
+		let file_size = source.seek(SeekFrom::End(0))?;
+		let tail_len = cmp::min(file_size, zip::SNIFF_TAIL_SIZE as u64);
+		let tail_start = file_size - tail_len;
+		source.seek(SeekFrom::Start(tail_start))?;
+		let mut tail = vec![
+			0_u8;
+			usize::try_from(tail_len).map_err(|_| Error::InvalidArchive(
+				"ZIP sniff tail does not fit this platform"
+			))?
+		];
+		source.read_exact(&mut tail)?;
+		zip::has_eocd(&tail)
+			.then_some(Format::Zip)
+			.ok_or(Error::UnknownFormat)
+	})();
+	source.seek(SeekFrom::Start(original_position))?;
+	result
 }
 
 const fn check_archive_size(actual: u64, limits: Limits) -> Result<()> {

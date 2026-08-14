@@ -30,9 +30,10 @@ const IO_CHUNK_SIZE: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 struct DirectoryInfo {
-	entries: u64,
-	offset:  u64,
-	size:    u64,
+	entries:        u64,
+	offset:         u64,
+	size:           u64,
+	archive_offset: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -56,22 +57,50 @@ pub fn read_entries<R: Read + Seek>(
 	file_size: u64,
 	limits: Limits,
 ) -> Result<Vec<Entry>> {
-	let info = read_directory_info(source, file_size)?;
-	if info.entries > limits.entries {
-		return Err(Error::TooManyEntries { actual: info.entries, limit: limits.entries });
+	if file_size < EOCD_LEN as u64 {
+		return Err(Error::InvalidArchive("missing end of central directory"));
 	}
-	if info.size > limits.index_size {
-		return Err(Error::IndexTooLarge { actual: info.size, limit: limits.index_size });
+	let tail_len = cmp::min(file_size, (EOCD_LEN + MAX_COMMENT_LEN) as u64);
+	let tail_start = file_size - tail_len;
+	let tail = read_vec_at(source, tail_start, tail_len)?;
+	let last_offset = tail
+		.len()
+		.checked_sub(EOCD_LEN)
+		.ok_or(Error::InvalidArchive("missing end of central directory"))?;
+	let mut best_error = None;
+
+	for eocd_index in (0..=last_offset).rev() {
+		let Ok((eocd, comment)) = EndOfCentralDirectory::ref_from_prefix(&tail[eocd_index..]) else {
+			continue;
+		};
+		if !valid_eocd(eocd, comment) {
+			continue;
+		}
+		let eocd_offset = tail_start + eocd_index as u64;
+		let result = directory_info_for_eocd(source, eocd_offset, eocd, limits).and_then(|info| {
+			if info.entries > limits.entries {
+				return Err(Error::TooManyEntries { actual: info.entries, limit: limits.entries });
+			}
+			if info.size > limits.index_size {
+				return Err(Error::IndexTooLarge { actual: info.size, limit: limits.index_size });
+			}
+			let end = info
+				.offset
+				.checked_add(info.size)
+				.ok_or(Error::InvalidArchive("central-directory range overflows"))?;
+			if end > file_size {
+				return Err(Error::InvalidArchive("central directory exceeds archive size"));
+			}
+			let directory = read_vec_at(source, info.offset, info.size)?;
+			parse_directory(&directory, info.entries, info.archive_offset, limits)
+		});
+		match result {
+			Ok(entries) => return Ok(entries),
+			Err(error) if best_error.is_none() => best_error = Some(error),
+			Err(_) => {},
+		}
 	}
-	let end = info
-		.offset
-		.checked_add(info.size)
-		.ok_or(Error::InvalidArchive("central-directory range overflows"))?;
-	if end > file_size {
-		return Err(Error::InvalidArchive("central directory exceeds archive size"));
-	}
-	let directory = read_vec_at(source, info.offset, info.size)?;
-	parse_directory(&directory, info.entries, limits)
+	Err(best_error.unwrap_or(Error::InvalidArchive("missing end of central directory")))
 }
 
 pub fn read_entry_to<R: Read + Seek, W: Write>(
@@ -154,16 +183,12 @@ pub fn read_entry_to<R: Read + Seek, W: Write>(
 	Ok(actual)
 }
 
-fn read_directory_info<R: Read + Seek>(source: &mut R, file_size: u64) -> Result<DirectoryInfo> {
-	if file_size < EOCD_LEN as u64 {
-		return Err(Error::InvalidArchive("missing end of central directory"));
-	}
-	let tail_len = cmp::min(file_size, (EOCD_LEN + MAX_COMMENT_LEN) as u64);
-	let tail_start = file_size - tail_len;
-	let tail = read_vec_at(source, tail_start, tail_len)?;
-	let (eocd_index, eocd) = find_eocd(&tail)?;
-	let eocd_offset = tail_start + eocd_index as u64;
-
+fn directory_info_for_eocd<R: Read + Seek>(
+	source: &mut R,
+	eocd_offset: u64,
+	eocd: &EndOfCentralDirectory,
+	limits: Limits,
+) -> Result<DirectoryInfo> {
 	if eocd.disk.get() != 0 || eocd.directory_disk.get() != 0 {
 		return Err(Error::InvalidArchive("multi-disk ZIP archives are not supported"));
 	}
@@ -177,21 +202,51 @@ fn read_directory_info<R: Read + Seek>(source: &mut R, file_size: u64) -> Result
 	}
 
 	let legacy = DirectoryInfo {
-		entries: u64::from(total_entries),
-		size:    u64::from(eocd.directory_size.get()),
-		offset:  u64::from(eocd.directory_offset.get()),
+		entries:        u64::from(total_entries),
+		size:           u64::from(eocd.directory_size.get()),
+		offset:         u64::from(eocd.directory_offset.get()),
+		archive_offset: 0,
 	};
 	let needs_zip64 = entries_on_disk == U16_SENTINEL
 		|| total_entries == U16_SENTINEL
 		|| legacy.size == u64::from(U32_SENTINEL)
 		|| legacy.offset == u64::from(U32_SENTINEL);
-	if let Some(zip64) = read_zip64_info(source, file_size, eocd_offset)? {
+	if let Some(zip64) = read_zip64_info(source, eocd_offset, limits.index_size)? {
+		if zip64.entries > limits.entries {
+			return Err(Error::TooManyEntries { actual: zip64.entries, limit: limits.entries });
+		}
+		if zip64.size > limits.index_size {
+			return Err(Error::IndexTooLarge { actual: zip64.size, limit: limits.index_size });
+		}
 		return Ok(zip64);
 	}
 	if needs_zip64 {
 		return Err(Error::InvalidArchive("missing ZIP64 central-directory metadata"));
 	}
-	Ok(legacy)
+	if !needs_zip64 {
+		if legacy.entries > limits.entries {
+			return Err(Error::TooManyEntries { actual: legacy.entries, limit: limits.entries });
+		}
+		if legacy.size > limits.index_size {
+			return Err(Error::IndexTooLarge { actual: legacy.size, limit: limits.index_size });
+		}
+	}
+	let actual_offset = if total_entries == 0 {
+		legacy.offset
+	} else {
+		find_central_header(
+			source,
+			legacy.offset,
+			legacy.size,
+			eocd_offset,
+			u64::from(total_entries),
+			limits.index_size,
+		)?
+	};
+	let archive_offset = actual_offset
+		.checked_sub(legacy.offset)
+		.ok_or(Error::InvalidArchive("central-directory offset exceeds its actual position"))?;
+	Ok(DirectoryInfo { offset: actual_offset, archive_offset, ..legacy })
 }
 
 fn find_eocd(tail: &[u8]) -> Result<(usize, &EndOfCentralDirectory)> {
@@ -202,19 +257,141 @@ fn find_eocd(tail: &[u8]) -> Result<(usize, &EndOfCentralDirectory)> {
 		let Ok((eocd, comment)) = EndOfCentralDirectory::ref_from_prefix(&tail[offset..]) else {
 			continue;
 		};
-		if eocd.signature.get() == EOCD_SIGNATURE
-			&& usize::from(eocd.comment_len.get()) == comment.len()
-		{
+		if valid_eocd(eocd, comment) {
 			return Ok((offset, eocd));
 		}
 	}
 	Err(Error::InvalidArchive("missing end of central directory"))
 }
 
+fn valid_eocd(eocd: &EndOfCentralDirectory, comment: &[u8]) -> bool {
+	eocd.signature.get() == EOCD_SIGNATURE
+		&& usize::from(eocd.comment_len.get()) == comment.len()
+		&& eocd.disk.get() == 0
+		&& eocd.directory_disk.get() == 0
+		&& eocd.entries_on_disk.get() == eocd.entries.get()
+		&& (eocd.entries.get() != 0 || eocd.directory_size.get() == 0)
+}
+
+pub(crate) fn has_eocd(bytes: &[u8]) -> bool {
+	find_eocd(bytes).is_ok()
+}
+
+fn find_central_header<R: Read + Seek>(
+	source: &mut R,
+	declared_offset: u64,
+	directory_size: u64,
+	eocd_offset: u64,
+	entries: u64,
+	search_limit: u64,
+) -> Result<u64> {
+	if declared_offset >= eocd_offset {
+		return Err(Error::InvalidArchive("central-directory offset exceeds end record"));
+	}
+	if let Some(inferred_offset) = eocd_offset.checked_sub(directory_size)
+		&& inferred_offset >= declared_offset
+		&& central_layout_at(source, inferred_offset, directory_size, entries, eocd_offset)?
+	{
+		return Ok(inferred_offset);
+	}
+	if central_layout_at(source, declared_offset, directory_size, entries, eocd_offset)? {
+		return Ok(declared_offset);
+	}
+
+	let search_end = cmp::min(eocd_offset, declared_offset.saturating_add(search_limit));
+	let mut start = declared_offset;
+	let scratch_len =
+		usize::try_from(cmp::min(search_end.saturating_sub(start), IO_CHUNK_SIZE as u64))
+			.expect("scratch length is bounded by IO_CHUNK_SIZE");
+	let mut scratch = vec![0_u8; scratch_len];
+	while start < search_end {
+		let len = usize::try_from(cmp::min(search_end - start, IO_CHUNK_SIZE as u64))
+			.expect("chunk length is bounded by IO_CHUNK_SIZE");
+		source.seek(SeekFrom::Start(start))?;
+		read_exact_archive(source, &mut scratch[..len])?;
+		for (index, _) in scratch[..len]
+			.windows(4)
+			.enumerate()
+			.filter(|(_, bytes)| *bytes == CENTRAL_HEADER_SIGNATURE.to_le_bytes())
+		{
+			let candidate = start + index as u64;
+			if central_layout_at(source, candidate, directory_size, entries, eocd_offset)? {
+				return Ok(candidate);
+			}
+		}
+		let end = start + len as u64;
+		if end == search_end {
+			break;
+		}
+		start = end - 3;
+	}
+	if search_end < eocd_offset {
+		return Err(Error::IndexTooLarge {
+			actual: eocd_offset - declared_offset,
+			limit:  search_limit,
+		});
+	}
+	Err(Error::InvalidArchive("missing central-directory header"))
+}
+
+fn central_layout_at<R: Read + Seek>(
+	source: &mut R,
+	offset: u64,
+	directory_size: u64,
+	entries: u64,
+	eocd_offset: u64,
+) -> Result<bool> {
+	let Some(directory_end) = offset.checked_add(directory_size) else {
+		return Ok(false);
+	};
+	if directory_end > eocd_offset {
+		return Ok(false);
+	}
+
+	source.seek(SeekFrom::Start(offset))?;
+	let mut reader =
+		io::BufReader::with_capacity(IO_CHUNK_SIZE, (&mut *source).take(directory_size));
+	let mut consumed = 0_u64;
+	let mut skip = [0_u8; IO_CHUNK_SIZE];
+	for _ in 0..entries {
+		let Some(header_end) = consumed.checked_add(CENTRAL_HEADER_LEN as u64) else {
+			return Ok(false);
+		};
+		if header_end > directory_size {
+			return Ok(false);
+		}
+		let mut header_bytes = [0_u8; CENTRAL_HEADER_LEN];
+		read_exact_archive(&mut reader, &mut header_bytes)?;
+		let header = CentralDirectoryHeader::ref_from_bytes(&header_bytes)
+			.expect("fixed-size buffer matches central header");
+		if header.signature.get() != CENTRAL_HEADER_SIGNATURE {
+			return Ok(false);
+		}
+		let variable_size = u64::from(header.name_len.get())
+			+ u64::from(header.extra_len.get())
+			+ u64::from(header.comment_len.get());
+		let Some(record_end) = header_end.checked_add(variable_size) else {
+			return Ok(false);
+		};
+		if record_end > directory_size {
+			return Ok(false);
+		}
+		let mut remaining = variable_size;
+		while remaining != 0 {
+			let len = usize::try_from(cmp::min(remaining, IO_CHUNK_SIZE as u64))
+				.expect("skip length is bounded by IO_CHUNK_SIZE");
+			read_exact_archive(&mut reader, &mut skip[..len])?;
+			remaining -= len as u64;
+		}
+		consumed = record_end;
+	}
+	Ok(consumed == directory_size)
+}
+
 fn read_zip64_info<R: Read + Seek>(
 	source: &mut R,
-	file_size: u64,
 	eocd_offset: u64,
+	search_limit: u64,
 ) -> Result<Option<DirectoryInfo>> {
 	let Some(locator_offset) = eocd_offset.checked_sub(ZIP64_LOCATOR_LEN) else {
 		return Ok(None);
@@ -229,38 +406,110 @@ fn read_zip64_info<R: Read + Seek>(
 		return Err(Error::InvalidArchive("multi-disk ZIP archives are not supported"));
 	}
 
-	let record_offset = locator.record_offset.get();
-	let record_end = record_offset
-		.checked_add(ZIP64_EOCD_LEN as u64)
-		.ok_or(Error::InvalidArchive("ZIP64 record range overflows"))?;
-	if record_end > file_size {
-		return Err(Error::InvalidArchive("truncated ZIP64 end of central directory"));
+	let declared_offset = locator.record_offset.get();
+	let Some((mut info, actual_record_offset)) =
+		find_zip64_record(source, locator_offset, declared_offset, search_limit)?
+	else {
+		return Err(Error::InvalidArchive("missing ZIP64 end of central directory"));
+	};
+	let archive_offset = actual_record_offset
+		.checked_sub(declared_offset)
+		.ok_or(Error::InvalidArchive("ZIP64 record precedes its declared offset"))?;
+	info.offset = info
+		.offset
+		.checked_add(archive_offset)
+		.ok_or(Error::InvalidArchive("ZIP64 central-directory offset overflows"))?;
+	info.archive_offset = archive_offset;
+	Ok(Some(info))
+}
+
+fn find_zip64_record<R: Read + Seek>(
+	source: &mut R,
+	locator_offset: u64,
+	declared_offset: u64,
+	search_limit: u64,
+) -> Result<Option<(DirectoryInfo, u64)>> {
+	let lower_bound = locator_offset.saturating_sub(search_limit);
+	let mut end = locator_offset;
+	let mut best = None;
+	let scratch_len =
+		usize::try_from(cmp::min(end.saturating_sub(lower_bound), IO_CHUNK_SIZE as u64))
+			.expect("scratch length is bounded by IO_CHUNK_SIZE");
+	let mut scratch = vec![0_u8; scratch_len];
+	while end > lower_bound {
+		let start = cmp::max(lower_bound, end.saturating_sub(IO_CHUNK_SIZE as u64));
+		let len = usize::try_from(end - start).expect("chunk length is bounded by IO_CHUNK_SIZE");
+		source.seek(SeekFrom::Start(start))?;
+		read_exact_archive(source, &mut scratch[..len])?;
+		for index in (0..len.saturating_sub(3)).rev() {
+			if scratch[index..index + 4] == ZIP64_EOCD_SIGNATURE.to_le_bytes() {
+				let offset = start + index as u64;
+				if let Some(info) = zip64_record_at(source, offset, locator_offset)? {
+					best = Some((info, offset));
+				}
+			}
+		}
+		if start == lower_bound {
+			break;
+		}
+		end = start + 3;
 	}
-	let record_bytes = read_array_at::<_, ZIP64_EOCD_LEN>(source, record_offset)?;
+	if best.is_none() && declared_offset < lower_bound {
+		return Err(Error::IndexTooLarge {
+			actual: locator_offset - declared_offset,
+			limit:  search_limit,
+		});
+	}
+	Ok(best)
+}
+
+fn zip64_record_at<R: Read + Seek>(
+	source: &mut R,
+	offset: u64,
+	locator_offset: u64,
+) -> Result<Option<DirectoryInfo>> {
+	let Some(fixed_end) = offset.checked_add(ZIP64_EOCD_LEN as u64) else {
+		return Ok(None);
+	};
+	if fixed_end > locator_offset {
+		return Ok(None);
+	}
+	let record_bytes = read_array_at::<_, ZIP64_EOCD_LEN>(source, offset)?;
 	let record = Zip64EndOfCentralDirectory::ref_from_bytes(&record_bytes)
 		.expect("fixed-size buffer matches ZIP64 end record");
-	if record.signature.get() != ZIP64_EOCD_SIGNATURE {
-		return Err(Error::InvalidArchive("missing ZIP64 end of central directory"));
+	if record.signature.get() != ZIP64_EOCD_SIGNATURE || record.record_size.get() < 44 {
+		return Ok(None);
 	}
-	if record.record_size.get() < 44 {
-		return Err(Error::InvalidArchive("malformed ZIP64 end of central directory"));
+	let Some(record_end) = offset
+		.checked_add(12)
+		.and_then(|start| start.checked_add(record.record_size.get()))
+	else {
+		return Ok(None);
+	};
+	if record_end != locator_offset {
+		return Ok(None);
 	}
 	if record.disk.get() != 0 || record.directory_disk.get() != 0 {
 		return Err(Error::InvalidArchive("multi-disk ZIP archives are not supported"));
 	}
-	let entries_on_disk = record.entries_on_disk.get();
 	let entries = record.entries.get();
-	if entries_on_disk != entries {
+	if record.entries_on_disk.get() != entries {
 		return Err(Error::InvalidArchive("multi-disk ZIP archives are not supported"));
 	}
 	Ok(Some(DirectoryInfo {
 		entries,
 		size: record.directory_size.get(),
 		offset: record.directory_offset.get(),
+		archive_offset: 0,
 	}))
 }
 
-fn parse_directory(directory: &[u8], expected_entries: u64, limits: Limits) -> Result<Vec<Entry>> {
+fn parse_directory(
+	directory: &[u8],
+	expected_entries: u64,
+	archive_offset: u64,
+	limits: Limits,
+) -> Result<Vec<Entry>> {
 	if expected_entries > (directory.len() / CENTRAL_HEADER_LEN) as u64 {
 		return Err(Error::InvalidArchive("truncated central directory"));
 	}
@@ -297,7 +546,8 @@ fn parse_directory(directory: &[u8], expected_entries: u64, limits: Limits) -> R
 				limit:  limits.path_size,
 			});
 		}
-		let decoded = decode_name(raw_name, flags & UTF8_FLAG != 0);
+		let (decoded, modified_unix_seconds) =
+			decode_entry_metadata(raw_name, extra, flags & UTF8_FLAG != 0)?;
 		if decoded.len() as u64 > limits.path_size {
 			return Err(Error::PathTooLong { actual: decoded.len() as u64, limit: limits.path_size });
 		}
@@ -336,7 +586,7 @@ fn parse_directory(directory: &[u8], expected_entries: u64, limits: Limits) -> R
 				} else {
 					values.uncompressed_size
 				},
-				modified_unix_seconds: None,
+				modified_unix_seconds,
 				storage: Storage::Zip {
 					compressed_size: if directory_entry {
 						0
@@ -346,13 +596,70 @@ fn parse_directory(directory: &[u8], expected_entries: u64, limits: Limits) -> R
 					crc32: header.crc32.get(),
 					method: CompressionMethod::from_code(header.method.get()),
 					flags,
-					local_header_offset: values.local_header_offset,
+					local_header_offset: values
+						.local_header_offset
+						.checked_add(archive_offset)
+						.ok_or(Error::InvalidArchive("local-file header offset overflows"))?,
 				},
 			});
 		}
 		remaining = next;
 	}
 	Ok(indexed)
+}
+
+fn decode_entry_metadata(raw_name: &[u8], extra: &[u8], utf8: bool) -> Result<(Str, Option<u64>)> {
+	let mut fields = extra;
+	let mut unicode_name = None;
+	let mut modified_unix_seconds = None;
+	while !fields.is_empty() {
+		if fields.len() < 2 {
+			break;
+		}
+		let id = u16::from_le_bytes([fields[0], fields[1]]);
+		if fields.len() < 4 {
+			if matches!(id, 0x0001 | 0x5455 | 0x7075) {
+				return Err(Error::InvalidArchive("truncated ZIP extra-field header"));
+			}
+			break;
+		}
+		let data_len = usize::from(u16::from_le_bytes([fields[2], fields[3]]));
+		let (data, next) = fields[4..]
+			.split_at_checked(data_len)
+			.ok_or(Error::InvalidArchive("malformed ZIP extra field"))?;
+		if id == 0x7075 {
+			if data.len() < 5 {
+				return Err(Error::InvalidArchive("Unicode path extra field is too small"));
+			}
+			let expected_crc = u32::from_le_bytes(
+				data[1..5]
+					.try_into()
+					.expect("Unicode-path CRC slice has fixed length"),
+			);
+			if data[0] == 1
+				&& expected_crc == crc32fast::hash(raw_name)
+				&& let Ok(name) = std::str::from_utf8(&data[5..])
+			{
+				unicode_name = Some(name);
+			}
+		} else if id == 0x5455 {
+			let (&timestamp_flags, timestamps) = data
+				.split_first()
+				.ok_or(Error::InvalidArchive("extended timestamp extra field is too small"))?;
+			if timestamp_flags & 1 != 0 {
+				let timestamp = timestamps
+					.get(..4)
+					.ok_or(Error::InvalidArchive("extended timestamp extra field is too small"))?;
+				let signed = i64::from(i32::from_le_bytes(timestamp.try_into().expect("fixed length")));
+				modified_unix_seconds = u64::try_from(signed).ok();
+			}
+		}
+		fields = next;
+	}
+	Ok((
+		unicode_name.map_or_else(|| decode_name(raw_name, utf8), |name| name.into()),
+		modified_unix_seconds,
+	))
 }
 
 fn read_zip64_values(
