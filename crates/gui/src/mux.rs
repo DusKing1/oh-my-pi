@@ -7,22 +7,22 @@
 use smallvec::SmallVec;
 
 /// Minimum pane extent on a split axis, physical px.
-pub(crate) const MIN_PANE: f32 = 80.0;
+pub const MIN_PANE: f32 = 80.0;
 
 /// Stable identity of one pane within a window.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct PaneId(pub u32);
+pub struct PaneId(pub u32);
 
 /// Split orientation: `X` places children side by side, `Y` stacks them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Axis {
+pub enum Axis {
 	X,
 	Y,
 }
 
 /// Directional focus target for pane navigation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Dir {
+pub enum Dir {
 	Left,
 	Right,
 	Up,
@@ -31,7 +31,7 @@ pub(crate) enum Dir {
 
 /// An axis-aligned rectangle in physical px.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub(crate) struct RectPx {
+pub struct RectPx {
 	pub x: f32,
 	pub y: f32,
 	pub w: f32,
@@ -49,20 +49,20 @@ impl RectPx {
 }
 
 /// Path from the root to a split: child indices, 0 = first, 1 = second.
-pub(crate) type Path = SmallVec<u8, 8>;
+pub type Path = SmallVec<u8, 8>;
 
 /// One tab's split tree.
-pub(crate) enum Node {
+pub enum Node {
 	/// A pane fills this slot.
 	Leaf(PaneId),
 	/// Two children share this slot along `axis`; the first child takes
 	/// `ratio` of the extent (gutter excluded).
-	Split { axis: Axis, ratio: f32, children: Box<(Node, Node)> },
+	Split { axis: Axis, ratio: f32, children: Box<(Self, Self)> },
 }
 
 /// Outcome of [`Node::remove`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Removed {
+pub enum Removed {
 	/// The leaf's split collapsed; focus moves to this surviving pane.
 	Collapsed(PaneId),
 	/// The tree was a single matching leaf; the caller drops the tab.
@@ -72,7 +72,7 @@ pub(crate) enum Removed {
 }
 
 /// The gutter band between the two children of one split.
-pub(crate) struct Divider {
+pub struct Divider {
 	/// The gutter rect itself, physical px.
 	pub rect:   RectPx,
 	/// The whole rect of the owning split, for ratio recomputation.
@@ -208,7 +208,7 @@ impl Node {
 /// Partitions `rect` across the tree: every leaf gets its rect and every
 /// split its gutter [`Divider`]. The first child's extent floors so pane
 /// edges stay on whole pixels; the second child absorbs the remainder.
-pub(crate) fn layout(
+pub fn layout(
 	node: &Node,
 	rect: RectPx,
 	gutter: f32,
@@ -261,7 +261,7 @@ fn partition(
 
 /// Clamps `ratio` so both children keep at least [`MIN_PANE`] px; a region
 /// too small for two minima passes the ratio through unchanged.
-pub(crate) fn clamp_ratio(region: RectPx, axis: Axis, gutter: f32, ratio: f32) -> f32 {
+pub fn clamp_ratio(region: RectPx, axis: Axis, gutter: f32, ratio: f32) -> f32 {
 	let extent = match axis {
 		Axis::X => region.w,
 		Axis::Y => region.h,
@@ -276,7 +276,7 @@ pub(crate) fn clamp_ratio(region: RectPx, axis: Axis, gutter: f32, ratio: f32) -
 /// The pane adjacent to `from` in `dir`: among panes strictly past the
 /// facing edge, the one with the largest perpendicular overlap, ties broken
 /// by edge distance.
-pub(crate) fn neighbor(rects: &[(PaneId, RectPx)], from: PaneId, dir: Dir) -> Option<PaneId> {
+pub fn neighbor(rects: &[(PaneId, RectPx)], from: PaneId, dir: Dir) -> Option<PaneId> {
 	let (_, origin) = rects.iter().find(|(id, _)| *id == from)?;
 	let mut best: Option<(PaneId, f32, f32)> = None;
 	for (id, rect) in rects {

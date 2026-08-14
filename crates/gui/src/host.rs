@@ -391,7 +391,7 @@ struct Pane<S> {
 }
 
 impl<S> Pane<S> {
-	fn new(id: PaneId, scene: S) -> Self {
+	const fn new(id: PaneId, scene: S) -> Self {
 		Self {
 			id,
 			scene,
@@ -554,12 +554,12 @@ impl<S: Scene> WindowHost<S> {
 		let mut content = RectPx {
 			x: margin,
 			y: margin,
-			w: (size.width as f32 - margin * 2.0).max(0.0),
-			h: (size.height as f32 - margin * 2.0).max(0.0),
+			w: margin.mul_add(-2.0, size.width as f32).max(0.0),
+			h: margin.mul_add(-2.0, size.height as f32).max(0.0),
 		};
 		if self.tabs.len() > 1 {
 			self.strip_origin = [content.x, content.y];
-			let dy = self.metrics.line_height + STRIP_GAP * scale;
+			let dy = STRIP_GAP.mul_add(scale, self.metrics.line_height);
 			content.y += dy;
 			content.h = (content.h - dy).max(0.0);
 			self.rebuild_strip();
@@ -581,8 +581,8 @@ impl<S: Scene> WindowHost<S> {
 			let rows = (rect.h / metrics.line_height).floor().max(1.0);
 			let viewport = Size::new(cols as u16, rows as u16);
 			pane.origin = [
-				(rect.x + (rect.w - cols * metrics.advance) * 0.5).floor(),
-				(rect.y + (rect.h - rows * metrics.line_height) * 0.5).floor(),
+				f32::mul_add(cols.mul_add(-metrics.advance, rect.w), 0.5, rect.x).floor(),
+				f32::mul_add(rows.mul_add(-metrics.line_height, rect.h), 0.5, rect.y).floor(),
 			];
 			if viewport != pane.viewport || settled {
 				pane.viewport = viewport;
@@ -601,7 +601,7 @@ impl<S: Scene> WindowHost<S> {
 	fn rebuild_strip(&mut self) {
 		let size = self.window.inner_size();
 		let margin = MARGIN * self.px_scale();
-		let cols = ((size.width as f32 - margin * 2.0) / self.metrics.advance)
+		let cols = (margin.mul_add(-2.0, size.width as f32) / self.metrics.advance)
 			.floor()
 			.max(1.0) as u16;
 		self.strip = Frame::new(Size::new(cols, 1));
@@ -687,9 +687,9 @@ impl<S: Scene> WindowHost<S> {
 		};
 		let max = pane_max_scroll(pane, &metrics);
 		pane.scroll = match to {
-			ScrollTo::Lines(lines) => pane.scroll + lines * metrics.line_height,
+			ScrollTo::Lines(lines) => f32::mul_add(lines, metrics.line_height, pane.scroll),
 			ScrollTo::Pages(pages) => {
-				pane.scroll + pages * f32::from(pane.viewport.height) * metrics.line_height
+				f32::mul_add(pages * f32::from(pane.viewport.height), metrics.line_height, pane.scroll)
 			},
 			ScrollTo::Top => max,
 			ScrollTo::Tail => 0.0,
@@ -829,7 +829,7 @@ impl<S: Scene> WindowHost<S> {
 		let now = Instant::now();
 		let consecutive = self.last_select_press.is_some_and(|(last, position)| {
 			now.saturating_duration_since(last) <= MULTI_CLICK_DELAY
-				&& (pointer[0] - position[0]).powi(2) + (pointer[1] - position[1]).powi(2)
+				&& (pointer[1] - position[1]).mul_add(pointer[1] - position[1], (pointer[0] - position[0]).powi(2))
 					<= MULTI_CLICK_DISTANCE.powi(2)
 		});
 		self.last_select_press = Some((now, pointer));
@@ -892,7 +892,7 @@ impl<S: Scene> WindowHost<S> {
 				return false;
 			};
 			let oy = pane.origin[1];
-			let bottom = oy + f32::from(pane.viewport.height) * metrics.line_height;
+			let bottom = f32::mul_add(f32::from(pane.viewport.height), metrics.line_height, oy);
 			let overshoot = if pointer[1] < oy {
 				oy - pointer[1]
 			} else if pointer[1] > bottom {
@@ -902,7 +902,7 @@ impl<S: Scene> WindowHost<S> {
 			};
 			let previous = pane.scroll;
 			let max = pane_max_scroll(pane, &metrics);
-			pane.scroll = (pane.scroll + overshoot * 0.35).clamp(0.0, max);
+			pane.scroll = f32::mul_add(overshoot, 0.35, pane.scroll).clamp(0.0, max);
 			pane.scroll != previous
 		};
 		self.update_selection_focus(id) || scrolled
@@ -953,10 +953,10 @@ impl<S: Scene> WindowHost<S> {
 		let theme = self.theme;
 		let px = self.px;
 		let hairline = self.px_scale().max(1.0);
-		let blink = ((self.blink_epoch.elapsed().as_millis() / 530) % 2) == 0;
+		let blink = (self.blink_epoch.elapsed().as_millis() / 530).is_multiple_of(2);
 		let now = self.started.elapsed();
 		let window = [size.width as f32, size.height as f32];
-		let WindowHost {
+		let Self {
 			compositor,
 			fonts,
 			painter,
@@ -1040,10 +1040,10 @@ impl<S: Scene> WindowHost<S> {
 			let rect = divider.rect;
 			hairlines.push(match divider.axis {
 				Axis::X => {
-					RectInst::fill([rect.x + (rect.w - hairline) * 0.5, rect.y], [hairline, rect.h], ink)
+					RectInst::fill([(rect.w - hairline).mul_add(0.5, rect.x), rect.y], [hairline, rect.h], ink)
 				},
 				Axis::Y => {
-					RectInst::fill([rect.x, rect.y + (rect.h - hairline) * 0.5], [rect.w, hairline], ink)
+					RectInst::fill([rect.x, (rect.h - hairline).mul_add(0.5, rect.y)], [rect.w, hairline], ink)
 				},
 			});
 		}
@@ -1213,7 +1213,7 @@ impl<S: Scene, F: Fn(&UiContext) -> S> Shell<S, F> {
 			Axis::X => pane.rect.w,
 			Axis::Y => pane.rect.h,
 		};
-		if extent < mux::MIN_PANE * 2.0 + gutter {
+		if extent < mux::MIN_PANE.mul_add(2.0, gutter) {
 			return;
 		}
 		let scene = (self.build)(&win.ctx);

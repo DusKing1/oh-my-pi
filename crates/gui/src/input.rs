@@ -112,7 +112,7 @@ fn map_named(named: NamedKey, mods: ModifiersState) -> Option<Key> {
 
 /// The QWERTY keycap character of a physical key, matching terminal chord
 /// reports: letters, digits, and the `- = [ ] , .` symbol keys.
-pub fn letter_of(physical: &PhysicalKey) -> Option<char> {
+pub const fn letter_of(physical: &PhysicalKey) -> Option<char> {
 	let PhysicalKey::Code(code) = physical else {
 		return None;
 	};
@@ -164,7 +164,7 @@ pub fn letter_of(physical: &PhysicalKey) -> Option<char> {
 }
 
 /// winit button → the report's physical button vocabulary.
-pub fn map_button(button: WinitButton) -> Option<MouseButton> {
+pub const fn map_button(button: WinitButton) -> Option<MouseButton> {
 	Some(match button {
 		WinitButton::Left => MouseButton::Left,
 		WinitButton::Right => MouseButton::Right,

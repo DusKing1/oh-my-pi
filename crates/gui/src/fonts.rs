@@ -1,6 +1,6 @@
 //! Font discovery, cluster shaping, glyph rasterization, and the dual atlas.
 //!
-//! System faces are discovered through fontdb (SF Mono / JetBrains Mono /
+//! System faces are discovered through fontdb (SF Mono / `JetBrains` Mono /
 //! Menlo chains), cell clusters are shaped with rustybuzz (ligatures, ZWJ
 //! emoji, combining marks), rasterized by swash with hinting and subpixel-x
 //! positioning, and packed into two etagere atlases: R8 coverage for outlined
@@ -94,7 +94,7 @@ impl SubpixelBin {
 		}
 	}
 
-	fn offset(self) -> f32 {
+	const fn offset(self) -> f32 {
 		match self {
 			Self::Zero => 0.0,
 			Self::One => 0.25,
@@ -121,7 +121,7 @@ fn coverage_lut() -> [u8; 256] {
 	let mut i = 0;
 	while i < 256 {
 		let c = i as f32 / 255.0;
-		lut[i] = ((2.0 * c - c * c) * 255.0 + 0.5) as u8;
+		lut[i] = c.mul_add(-c, 2.0 * c).mul_add(255.0, 0.5) as u8;
 		i += 1;
 	}
 	lut
@@ -216,10 +216,10 @@ pub struct Fonts {
 impl Fonts {
 	/// Discovers system fonts and builds the (empty) atlases. Fails only
 	/// when no monospace face exists at all.
-	pub fn new() -> Result<Fonts, FontError> {
+	pub fn new() -> Result<Self, FontError> {
 		let mut db = fontdb::Database::new();
 		db.load_system_fonts();
-		let mut fonts = Fonts {
+		let mut fonts = Self {
 			db,
 			faces: Vec::new(),
 			by_db_id: HashMap::new(),
@@ -279,12 +279,12 @@ impl Fonts {
 
 	/// Whether a Nerd Font face is available (primary or fallback), gating
 	/// the `Charset::NerdFont` icon tier.
-	pub fn has_nerd_font(&self) -> bool {
+	pub const fn has_nerd_font(&self) -> bool {
 		self.nerd
 	}
 
 	/// Whether the primary family ships a real italic face.
-	pub fn has_italic(&self) -> bool {
+	pub const fn has_italic(&self) -> bool {
 		self.primary_italic.is_some()
 	}
 
@@ -301,13 +301,18 @@ impl Fonts {
 		}
 		let metrics = self.faces[self.primary as usize]
 			.font()
-			.map(|font| {
+			.map_or(LineMetrics {
+				advance:     px * 0.6,
+				ascent:      px * 0.8,
+				descent:     px * 0.2,
+				line_height: (px * 1.2).ceil(),
+			}, |font| {
 				let sm = font.metrics(&[]).scale(px);
 				let advance = font
 					.charmap()
 					.map('0')
 					.checked_sub(0)
-					.map(|gid| font.glyph_metrics(&[]).scale(px).advance_width(gid as u16))
+					.map(|gid| font.glyph_metrics(&[]).scale(px).advance_width(gid))
 					.filter(|advance| *advance > 0.0)
 					.unwrap_or(px * 0.6);
 				LineMetrics {
@@ -319,12 +324,6 @@ impl Fonts {
 					// seams connect; editor-style leading would break them.
 					line_height: (sm.ascent + sm.descent).ceil(),
 				}
-			})
-			.unwrap_or(LineMetrics {
-				advance:     px * 0.6,
-				ascent:      px * 0.8,
-				descent:     px * 0.2,
-				line_height: (px * 1.2).ceil(),
 			});
 		self.metrics.insert(key, metrics);
 		metrics
@@ -547,15 +546,13 @@ impl Fonts {
 		if let (Some(c), None) = (chars.next(), chars.next()) {
 			let gid = self.faces[face as usize]
 				.font()
-				.map(|f| f.charmap().map(c))
-				.unwrap_or(0);
+				.map_or(0, |f| f.charmap().map(c));
 			if gid == 0 {
 				return SmallVec::new();
 			}
 			let advance = self.faces[face as usize]
 				.font()
-				.map(|f| f.glyph_metrics(&[]).scale(px).advance_width(gid))
-				.unwrap_or(px * 0.5);
+				.map_or(px * 0.5, |f| f.glyph_metrics(&[]).scale(px).advance_width(gid));
 			let mut shaped = SmallVec::new();
 			shaped.push((gid, advance));
 			return shaped;
@@ -606,8 +603,7 @@ impl Fonts {
 				.db
 				.with_face_data(id, |data, index| {
 					FontRef::from_index(data, index as usize)
-						.map(|font| font.charmap().map(ch) != 0)
-						.unwrap_or(false)
+						.is_some_and(|font| font.charmap().map(ch) != 0)
 				})
 				.unwrap_or(false);
 			if covers && let Some(face) = self.load_face(id) {

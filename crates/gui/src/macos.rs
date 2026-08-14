@@ -1,5 +1,5 @@
 //! macOS window polish for the borderless, transparent shell: a compositor
-//! shadow shaped by the window's alpha, and WindowServer blur behind the
+//! shadow shaped by the window's alpha, and `WindowServer` blur behind the
 //! translucent regions.
 //!
 //! Blur uses `CGSSetWindowBackgroundBlurRadius` — the classic terminal
@@ -41,7 +41,7 @@ pub fn polish(window: &Window) {
 			return;
 		};
 		ns_window.setHasShadow(true);
-		let number = ns_window.windowNumber() as isize;
+		let number = ns_window.windowNumber();
 		CGSSetWindowBackgroundBlurRadius(CGSMainConnectionID(), number, 24);
 	}
 }

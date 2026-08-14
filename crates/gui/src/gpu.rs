@@ -42,7 +42,7 @@ pub struct Gpu {
 
 impl Gpu {
 	/// Brings up an adapter/device, optionally compatible with a surface.
-	pub fn new(compatible: Option<&wgpu::Surface<'_>>) -> Result<Gpu, GpuError> {
+	pub fn new(compatible: Option<&wgpu::Surface<'_>>) -> Result<Self, GpuError> {
 		let instance = wgpu::Instance::default();
 		let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
 			power_preference:       wgpu::PowerPreference::HighPerformance,
@@ -59,7 +59,7 @@ impl Gpu {
 			},
 			..Default::default()
 		}))?;
-		Ok(Gpu { instance, adapter, device, queue })
+		Ok(Self { instance, adapter, device, queue })
 	}
 }
 
@@ -85,7 +85,7 @@ pub struct RectInst {
 
 impl RectInst {
 	/// A plain sharp-edged fill.
-	pub fn fill(pos: [f32; 2], size: [f32; 2], color: [f32; 4]) -> Self {
+	pub const fn fill(pos: [f32; 2], size: [f32; 2], color: [f32; 4]) -> Self {
 		Self {
 			pos,
 			size,
@@ -189,7 +189,7 @@ pub struct Painter {
 impl Painter {
 	/// Builds both pipelines, the shared uniforms, and the glyph atlases for
 	/// targets of `format`.
-	pub fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Painter {
+	pub fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Self {
 		let device = &gpu.device;
 		let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
 			label:  Some("omp-gui-shader"),
@@ -437,7 +437,7 @@ impl Painter {
 			&glyph_attrs,
 		);
 
-		Painter {
+		Self {
 			rect_pipeline,
 			glyph_pipeline,
 			globals,
@@ -571,7 +571,7 @@ impl WindowGpu {
 	/// Creates and configures the surface for `window`, preferring a
 	/// non-sRGB format (gamma-space text blending) and premultiplied alpha
 	/// (translucent window compositing).
-	pub fn new(gpu: &Gpu, window: Arc<Window>) -> Result<WindowGpu, GpuError> {
+	pub fn new(gpu: &Gpu, window: Arc<Window>) -> Result<Self, GpuError> {
 		let surface = gpu.instance.create_surface(Arc::clone(&window))?;
 		let caps = surface.get_capabilities(&gpu.adapter);
 		let format = caps
@@ -600,11 +600,11 @@ impl WindowGpu {
 			color_space: Default::default(),
 		};
 		surface.configure(&gpu.device, &config);
-		Ok(WindowGpu { surface, config })
+		Ok(Self { surface, config })
 	}
 
 	/// The surface's pixel format, for the painter's pipelines.
-	pub fn format(&self) -> wgpu::TextureFormat {
+	pub const fn format(&self) -> wgpu::TextureFormat {
 		self.config.format
 	}
 

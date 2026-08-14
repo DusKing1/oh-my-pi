@@ -175,13 +175,13 @@ impl Compositor {
 		);
 
 		for band in &bands {
-			let bx = view.origin[0] + f32::from(band.x) * advance;
-			let by = view.origin[1] + f32::from(band.y) * line_height;
+			let bx = f32::mul_add(f32::from(band.x), advance, view.origin[0]);
+			let by = f32::mul_add(f32::from(band.y), line_height, view.origin[1]);
 			let bw = f32::from(band.frame.size().width) * advance;
 			let bh = f32::from(band.rows) * line_height;
 			let starts = self.starts();
 			let mut shadow =
-				RectInst::fill([bx, by + line_height * 0.1], [bw, bh], [0.0, 0.0, 0.0, 0.35]);
+				RectInst::fill([bx, f32::mul_add(line_height, 0.1, by)], [bw, bh], [0.0, 0.0, 0.0, 0.35]);
 			shadow.params = [line_height * 0.3, line_height * 0.45, 0.0, 0.0];
 			self.instances.rects.push(shadow);
 			self.finish_batch(Some(clip), starts);
@@ -232,21 +232,21 @@ impl Compositor {
 				.flatten()
 				.and_then(|(cx, cy)| {
 					(cy >= first && cy < last)
-						.then_some((cx, view.origin[1] + (cy as f32 - start) * line_height))
+						.then_some((cx, (cy as f32 - start).mul_add(line_height, view.origin[1])))
 				});
 			let caret = match (layer_cursor, base_cursor) {
 				(Some((cx, row)), _) => Some((
-					view.origin[0] + f32::from(cx) * advance,
-					view.origin[1] + f32::from(row) * line_height,
+					f32::mul_add(f32::from(cx), advance, view.origin[0]),
+					f32::mul_add(f32::from(row), line_height, view.origin[1]),
 				)),
-				(None, Some((cx, py))) => Some((view.origin[0] + f32::from(cx) * advance, py)),
+				(None, Some((cx, py))) => Some((f32::mul_add(f32::from(cx), advance, view.origin[0]), py)),
 				(None, None) => None,
 			};
 			if let Some((cx, py)) = caret {
 				let width = (advance * 0.14).max(2.0);
 				let pad = line_height * 0.08;
 				let mut rect =
-					RectInst::fill([cx, py + pad], [width, line_height - pad * 2.0], theme.cursor);
+					RectInst::fill([cx, py + pad], [width, f32::mul_add(pad, -2.0, line_height)], theme.cursor);
 				rect.params[0] = width * 0.5;
 				self.instances.rects.push(rect);
 			}
@@ -258,7 +258,7 @@ impl Compositor {
 			let track_x = view.origin[0] + grid_w - track_w - 1.0;
 			let thumb_h = (grid_h * f32::from(vp_rows) / f32::from(doc_rows)).max(line_height);
 			let progress = (max_scroll - view.scroll.clamp(0.0, max_scroll)) / max_scroll;
-			let thumb_y = view.origin[1] + progress * (grid_h - thumb_h);
+			let thumb_y = f32::mul_add(progress, grid_h - thumb_h, view.origin[1]);
 			let alpha = if view.scroll > 0.0 { 0.55 } else { 0.22 };
 			let mut rect = RectInst::fill([track_x, thumb_y], [track_w, thumb_h], [
 				theme.accent[0],
@@ -283,7 +283,7 @@ impl Compositor {
 	}
 
 	/// Finishes the frame, yielding the assembled instance buffers.
-	pub fn finish(&self) -> &Instances {
+	pub const fn finish(&self) -> &Instances {
 		&self.instances
 	}
 
@@ -311,7 +311,7 @@ impl Compositor {
 
 		let starts = self.starts();
 		for y in pass.first..pass.last {
-			let py = view.origin[1] + (pass.row_offset + f32::from(y)) * metrics.line_height;
+			let py = (pass.row_offset + f32::from(y)).mul_add(metrics.line_height, view.origin[1]);
 			let mut run = BgRun::default();
 			for x in 0..pass.frame.size().width {
 				if !self.visible(pass, x, y) {
@@ -342,7 +342,7 @@ impl Compositor {
 
 		let starts = self.starts();
 		for y in pass.first..pass.last {
-			let py = view.origin[1] + (pass.row_offset + f32::from(y)) * metrics.line_height;
+			let py = (pass.row_offset + f32::from(y)).mul_add(metrics.line_height, view.origin[1]);
 			for x in 0..pass.frame.size().width {
 				if self.visible(pass, x, y) {
 					self.paint_image(
@@ -361,7 +361,7 @@ impl Compositor {
 
 		let starts = self.starts();
 		for y in pass.first..pass.last {
-			let py = view.origin[1] + (pass.row_offset + f32::from(y)) * metrics.line_height;
+			let py = (pass.row_offset + f32::from(y)).mul_add(metrics.line_height, view.origin[1]);
 			for x in 0..pass.frame.size().width {
 				if !self.visible(pass, x, y) || self.wide_seam(pass, x, y) {
 					continue;
@@ -388,7 +388,7 @@ impl Compositor {
 		self.finish_batch(Some(pass.clip), starts);
 	}
 
-	fn starts(&self) -> (u32, u32) {
+	const fn starts(&self) -> (u32, u32) {
 		(self.instances.rects.len() as u32, self.instances.glyphs.len() as u32)
 	}
 
@@ -453,8 +453,8 @@ impl Compositor {
 				for band in bands {
 					let cut = PxRect {
 						pos:  [
-							view.origin[0] + f32::from(band.x) * metrics.advance,
-							view.origin[1] + f32::from(band.y) * metrics.line_height,
+							f32::mul_add(f32::from(band.x), metrics.advance, view.origin[0]),
+							f32::mul_add(f32::from(band.y), metrics.line_height, view.origin[1]),
 						],
 						size: [
 							f32::from(band.frame.size().width) * metrics.advance,
@@ -629,10 +629,10 @@ impl Compositor {
 		let padding = 10.0_f32;
 		let half_width = 6.0 * advance;
 		let length = size[0] / advance.max(f32::EPSILON);
-		let track = length + padding * 2.0;
+		let track = padding.mul_add(2.0, length);
 		let period = period.as_nanos().max(1);
 		let phase = (now.as_nanos() % period) as f32 / period as f32;
-		let center = pos[0] + (phase * track - padding) * advance;
+		let center = phase.mul_add(track, -padding).mul_add(advance, pos[0]);
 		let left = pos[0];
 		let right = pos[0] + size[0];
 		self.push_shimmer_ramp(
@@ -693,7 +693,7 @@ impl Compositor {
 			&& end > run.start
 		{
 			self.instances.rects.push(RectInst::fill(
-				[ox + f32::from(col_offset + run.start) * metrics.advance, py],
+				[f32::mul_add(f32::from(col_offset + run.start), metrics.advance, ox), py],
 				[f32::from(end - run.start) * metrics.advance, metrics.line_height],
 				color,
 			));
@@ -760,8 +760,8 @@ impl Compositor {
 			for (seg_start, seg_end) in segments {
 				self.instances.rects.push(RectInst::fill(
 					[
-						view.origin[0] + f32::from(pass.col_offset + seg_start) * metrics.advance,
-						view.origin[1] + (pass.row_offset + f32::from(y)) * metrics.line_height,
+						f32::mul_add(f32::from(pass.col_offset + seg_start), metrics.advance, view.origin[0]),
+						(pass.row_offset + f32::from(y)).mul_add(metrics.line_height, view.origin[1]),
 					],
 					[f32::from(seg_end - seg_start) * metrics.advance, metrics.line_height],
 					color,
@@ -790,7 +790,7 @@ impl Compositor {
 			return;
 		};
 		self.instances.glyphs.push(GlyphInst {
-			pos: [ox + f32::from(col_offset + x) * metrics.advance, py],
+			pos: [f32::mul_add(f32::from(col_offset + x), metrics.advance, ox), py],
 			size,
 			uv,
 			color: [1.0; 4],
@@ -823,8 +823,8 @@ impl Compositor {
 		if spec.dim {
 			fg = [fg[0] * 0.65, fg[1] * 0.65, fg[2] * 0.65, fg[3]];
 		}
-		let baseline = (py + (metrics.line_height + metrics.ascent - metrics.descent) * 0.5).round();
-		let pen_x = ox + f32::from(col_offset + x) * metrics.advance;
+		let baseline = (metrics.line_height + metrics.ascent - metrics.descent).mul_add(0.5, py).round();
+		let pen_x = f32::mul_add(f32::from(col_offset + x), metrics.advance, ox);
 		let CellContent::Grapheme { text, width } = cell.content() else {
 			return;
 		};
@@ -863,14 +863,14 @@ impl Compositor {
 		if spec.underline {
 			let color = color4(spec.underline_color, None).unwrap_or(fg);
 			self.instances.rects.push(RectInst::fill(
-				[pen_x, baseline + metrics.descent * 0.35],
+				[pen_x, metrics.descent.mul_add(0.35, baseline)],
 				[box_width, line_h],
 				color,
 			));
 		}
 		if spec.strikethrough {
 			self.instances.rects.push(RectInst::fill(
-				[pen_x, baseline - metrics.ascent * 0.3],
+				[pen_x, metrics.ascent.mul_add(-0.3, baseline)],
 				[box_width, line_h],
 				fg,
 			));
@@ -913,8 +913,8 @@ fn decor_box(
 ) -> ([f32; 2], [f32; 2]) {
 	(
 		[
-			view.origin[0] + f32::from(pass.col_offset + rect.x) * metrics.advance,
-			view.origin[1] + (pass.row_offset + f32::from(rect.y)) * metrics.line_height,
+			f32::mul_add(f32::from(pass.col_offset + rect.x), metrics.advance, view.origin[0]),
+			(pass.row_offset + f32::from(rect.y)).mul_add(metrics.line_height, view.origin[1]),
 		],
 		[f32::from(rect.width) * metrics.advance, f32::from(rect.height) * metrics.line_height],
 	)
@@ -948,10 +948,10 @@ fn decor_fill_sample(
 		return start;
 	}
 	let point = [
-		f32::from(run.x - bounds.x) * metrics.advance + f32::from(run.width) * metrics.advance * 0.5,
-		f32::from(run.y - bounds.y) * metrics.line_height + metrics.line_height * 0.5,
+		(f32::from(run.width) * metrics.advance).mul_add(0.5, f32::from(run.x - bounds.x) * metrics.advance),
+		metrics.line_height.mul_add(0.5, f32::from(run.y - bounds.y) * metrics.line_height),
 	];
-	let amount = ((point[0] * grad[0] + point[1] * grad[1] - grad[2]) * grad[3]).clamp(0.0, 1.0);
+	let amount = ((point[1].mul_add(grad[1], point[0] * grad[0]) - grad[2]) * grad[3]).clamp(0.0, 1.0);
 	[
 		(end[0] - start[0]).mul_add(amount, start[0]),
 		(end[1] - start[1]).mul_add(amount, start[1]),
@@ -995,7 +995,7 @@ fn gradient_projection(gradient: Gradient, size: [f32; 2]) -> [f32; 4] {
 }
 
 fn offset_projection(mut projection: [f32; 4], offset: [f32; 2]) -> [f32; 4] {
-	projection[2] -= offset[0] * projection[0] + offset[1] * projection[1];
+	projection[2] -= offset[1].mul_add(projection[1], offset[0] * projection[0]);
 	projection
 }
 
