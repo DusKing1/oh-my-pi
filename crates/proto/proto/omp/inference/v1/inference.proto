@@ -632,6 +632,9 @@ message TurnError {
     KIND_OVERLOADED = 7;
     // An in-turn Invoke deadline elapsed without InvokeComplete.
     KIND_INVOKE_TIMEOUT = 8;
+    // Provider completed without actionable output (for example thought-only);
+    // session-level recovery owns the bounded continuation.
+    KIND_EMPTY_OUTPUT = 9;
   }
   Kind kind = 1;
   string detail = 2;
