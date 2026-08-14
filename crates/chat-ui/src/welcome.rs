@@ -24,24 +24,15 @@ use std::{
 
 use omp_core::{Str, fmts};
 use omp_tui::{
-	Border, Charset, Color, Frame, Icon, Rect, Size, Style,
+	Border, Charset,
+	Color::{self, Rgb as RgbColor},
+	Frame, Icon, Key, Rect, Size, Style, Theme, UiContext,
 	anim::{Easing, Lerp, Tween},
 	scene::{self, Camera, Ray, Trace, Vec3, vec3},
 	shader::{Eclipse, Surface},
 };
 
-// ── card palette (independent of the chat chrome) ──────────────────────────
-const CARD_BG: Color = Color::Rgb(10, 10, 12);
-const CARD_BORDER: Color = Color::Rgb(42, 42, 50);
-const FOOTER_BG: Color = Color::Rgb(0, 0, 0);
-const SELECTED_BG: Color = Color::Rgb(8, 18, 23);
-const TEXT: Color = Color::Rgb(202, 214, 222);
-const TEXT_STRONG: Color = Color::Rgb(230, 250, 255);
-const MUTED: Color = Color::Rgb(112, 126, 136);
-const FAINT: Color = Color::Rgb(53, 53, 63);
-const CYAN: Color = Color::Rgb(68, 207, 255);
-const VIOLET: Color = Color::Rgb(168, 106, 244);
-const AMBER: Color = Color::Rgb(246, 193, 119);
+use crate::SessionRow;
 
 /// Wide card: logo on the left, recent sessions on the right.
 const CARD_COLS: u16 = 98;
@@ -57,9 +48,6 @@ const AMBIENT_REVEAL_INTERVAL: Duration = Duration::from_millis(40);
 const LOGO_IDLE_INTERVAL: Duration = Duration::from_millis(120);
 const BACKDROP_IDLE_INTERVAL: Duration = Duration::from_millis(80);
 const AMBIENT_REVEAL_END: Duration = Duration::from_millis(1_200);
-/// The eclipse's black chassis behind the bare aperture, so braille
-/// composites over the backdrop instead of punching a background hole.
-const PLATE: Color = Color::Rgb(10, 10, 12);
 /// Backdrop fade-in horizon (seconds): the eclipse resolves out of black
 /// while the aperture completes its reveal orbit.
 const BACKDROP_FADE: f32 = 1.2;
@@ -108,13 +96,6 @@ fn shortest_angle_delta(from: f32, to: f32) -> f32 {
 	(to - from + PI).rem_euclid(TAU) - PI
 }
 
-const SESSIONS: [(&str, &str); 4] = [
-	("Optimize custom status widget rendering", "NOW"),
-	("Check Unicode character display", "01m"),
-	("Add ╰─ cursor shift", "02m"),
-	("The Unicode Similarity", "18m"),
-];
-
 // ── scene constants ─────────────────────────────────────────────────────────
 const LOGO_COLS: usize = 29;
 const LOGO_ROWS: usize = 11;
@@ -138,29 +119,86 @@ const CAMERA_DISTANCE: f32 = 4.05;
 const CAMERA_PITCH: f32 = 0.36;
 const CAMERA_FOCAL: f32 = 2.82;
 
-/// Cyan instrument ramp: deep mass → hard edge → white glint → cyan.
-const CYAN_STOPS: [Vec3; 4] = [
-	Vec3::rgb(18, 91, 122),
-	Vec3::rgb(68, 207, 255),
-	Vec3::rgb(230, 250, 255),
-	Vec3::rgb(68, 207, 255),
-];
-const BACKGROUND: Vec3 = Vec3::rgb(10, 10, 12);
-const WHITE: Vec3 = Vec3::rgb(230, 250, 255);
-const INK: Vec3 = Vec3::rgb(0, 0, 0);
-const LIVE: Vec3 = Vec3::rgb(168, 106, 244);
-const GLASS: Vec3 = Vec3::rgb(118, 238, 218);
+/// Theme-derived colors sampled by the aperture raytracer.
+#[derive(Clone, Copy)]
+struct AperturePalette {
+	plate:       Color,
+	fade_origin: Color,
+	cyan:        [Vec3; 4],
+	background:  Vec3,
+	white:       Vec3,
+	ink:         Vec3,
+	live:        Vec3,
+	glass:       Vec3,
+	tone_lift:   Vec3,
+}
+
+impl AperturePalette {
+	fn new(theme: Theme) -> Self {
+		let panel = color_vec(theme.panel);
+		let shadow = color_vec(theme.shadow);
+		let info = color_vec(theme.info);
+		let accent = color_vec(theme.accent);
+		let fg = color_vec(theme.fg);
+		let secondary = color_vec(theme.secondary);
+
+		Self {
+			plate:       scaled_color(theme.panel, vec3(0.825_585_1, 0.635_398_7, 0.607_804_4)),
+			fade_origin: theme.shadow,
+			cyan:        [
+				info * vec3(0.065, 0.223_642_81, 0.360_751_12),
+				accent * vec3(0.483_571_95, 1.455_503_2, 1.158_537_5),
+				fg * vec3(1.370_022, 1.583_189_9, 1.518_891_6),
+				accent * vec3(0.483_571_95, 1.455_503_2, 1.158_537_5),
+			],
+			background:  panel * vec3(0.825_585_1, 0.635_398_7, 0.607_804_4),
+			white:       fg * vec3(1.370_022, 1.583_189_9, 1.518_891_6),
+			ink:         shadow * 0.0,
+			live:        secondary * vec3(0.961_527_05, 0.781_290_01, 1.143_262_4),
+			glass:       info * vec3(1.946_768_4, 1.827_751_6, 1.299_589_5),
+			tone_lift:   panel * vec3(0.247_675_54, 0.190_619_6, 0.200_717_71),
+		}
+	}
+}
+
+fn color_vec(color: Color) -> Vec3 {
+	match color {
+		RgbColor(red, green, blue) => Vec3::rgb(red, green, blue),
+		Color::Indexed(value) => Vec3::rgb(value, value, value),
+		Color::Default => Vec3::ZERO,
+	}
+}
+
+fn scaled_color(color: Color, scale: Vec3) -> Color {
+	let value = color_vec(color) * scale;
+	Color::from(value)
+}
 
 type LogoGrid = [[Option<(char, Color)>; LOGO_COLS]; LOGO_ROWS];
 
-/// The animated welcome screen: a retained full-viewport frame, the
-/// pre-built title chip, and the pointer-orbit camera. [`crate::run_welcome`]
-/// drives it until the user resumes into the chat demo.
+/// Result of routing a key through the welcome session index.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WelcomeEvent {
+	/// The session index consumed the key without committing a row.
+	Consumed,
+	/// Start a fresh session.
+	NewSession,
+	/// Resume the selected recent session.
+	Resume(Str),
+	/// Leave the terminal host.
+	Quit,
+}
+
+/// Animated welcome screen with a host-provided recent-session index.
 pub struct Welcome {
 	frame:          Frame,
 	title:          Str,
 	/// Detected glyph tier for the card chrome.
 	charset:        Charset,
+	theme:          Theme,
+	palette:        AperturePalette,
+	sessions:       Vec<SessionRow>,
+	selected:       usize,
 	camera:         (f32, f32),
 	camera_target:  (f32, f32),
 	last_elapsed:   f32,
@@ -180,28 +218,63 @@ pub struct Welcome {
 }
 
 impl Welcome {
-	pub fn new(charset: Charset) -> Self {
+	/// Creates the animated welcome card with host-provided recent sessions.
+	pub fn new(ctx: &UiContext, sessions: Vec<SessionRow>) -> Self {
 		Self {
-			charset,
-			frame: Frame::new(Size::new(0, 0)),
-			title: fmts!(" {} omp v{} ", charset.icon(Icon::Omp), env!("CARGO_PKG_VERSION")),
-			camera: (0.0, 0.0),
-			camera_target: (0.0, 0.0),
-			last_elapsed: 0.0,
-			orbit_rect: Rect::new(0, 0, 1, 1),
-			logo: [[None; LOGO_COLS]; LOGO_ROWS],
-			logo_at: None,
+			charset:        ctx.charset,
+			theme:          ctx.theme,
+			palette:        AperturePalette::new(ctx.theme),
+			frame:          Frame::new(Size::new(0, 0)),
+			title:          fmts!(
+				" {} omp v{} ",
+				ctx.charset.icon(Icon::Omp),
+				env!("CARGO_PKG_VERSION")
+			),
+			sessions:       sessions.into_iter().take(3).collect(),
+			selected:       0,
+			camera:         (0.0, 0.0),
+			camera_target:  (0.0, 0.0),
+			last_elapsed:   0.0,
+			orbit_rect:     Rect::new(0, 0, 1, 1),
+			logo:           [[None; LOGO_COLS]; LOGO_ROWS],
+			logo_at:        None,
 			backdrop_frame: Frame::new(Size::new(0, 0)),
-			backdrop_at: None,
-			backdrop: Eclipse::default(),
-			surface: Surface::new(),
-			pointer: None,
-			hover: Tween::settled(0.0),
+			backdrop_at:    None,
+			backdrop:       Eclipse::default(),
+			surface:        Surface::new(),
+			pointer:        None,
+			hover:          Tween::settled(0.0),
 		}
 	}
 
-	/// Records the pointer and retargets the camera from its nearest card edge.
-	///
+	/// Replaces the recent-session index while preserving a visible selection.
+	pub fn set_sessions(&mut self, mut sessions: Vec<SessionRow>) {
+		sessions.truncate(3);
+		self.sessions = sessions;
+		self.selected = self.selected.min(self.sessions.len());
+	}
+
+	/// Routes navigation and commit keys through the session index.
+	pub fn handle_key(&mut self, key: Key) -> WelcomeEvent {
+		match key {
+			Key::Up => {
+				self.selected = self.selected.saturating_sub(1);
+				WelcomeEvent::Consumed
+			},
+			Key::Down => {
+				self.selected = (self.selected + 1).min(self.sessions.len());
+				WelcomeEvent::Consumed
+			},
+			Key::Enter if self.selected == 0 => WelcomeEvent::NewSession,
+			Key::Enter => self
+				.sessions
+				.get(self.selected - 1)
+				.map_or(WelcomeEvent::Consumed, |session| WelcomeEvent::Resume(session.id.clone())),
+			Key::Esc | Key::Ctrl('c') => WelcomeEvent::Quit,
+			_ => WelcomeEvent::Consumed,
+		}
+	}
+
 	/// The perimeter runs clockwise: top-left `0°`, bottom-left `90°`,
 	/// bottom-right `180°`, and top-right `270°`. Points inside use their
 	/// physically nearest edge; points outside clamp to the card first.
@@ -243,7 +316,7 @@ impl Welcome {
 			.logo_at
 			.is_none_or(|rendered_at| clock.saturating_sub(rendered_at) >= logo_interval)
 		{
-			self.logo = logo_cells(elapsed, self.camera);
+			self.logo = logo_cells(elapsed, self.camera, self.palette);
 			self.logo_at = Some(clock);
 		}
 		let cols = if viewport.width >= CARD_COLS && viewport.height >= CARD_ROWS {
@@ -262,7 +335,7 @@ impl Welcome {
 				(LOGO_COLS as u16).min(viewport.width),
 				(LOGO_ROWS as u16).min(viewport.height),
 			);
-			blit_logo(&mut self.frame, &self.logo, left, top, PLATE);
+			blit_logo(&mut self.frame, &self.logo, left, top, self.palette.plate);
 			return &self.frame;
 		};
 
@@ -294,7 +367,7 @@ impl Welcome {
 				.fill(Rect::new(0, 0, viewport.width, viewport.height), Style::default());
 			let frame = &mut self.backdrop_frame;
 			let mut buffer = [0_u8; 4];
-			let dim = |color: Color| Color::Rgb(0, 0, 0).lerp(color, fade);
+			let dim = |color: Color| self.palette.fade_origin.lerp(color, fade);
 			self.surface.render(
 				&mut self.backdrop,
 				clock,
@@ -321,27 +394,28 @@ impl Welcome {
 		} else {
 			left + (cols - LOGO_COLS as u16) / 2
 		};
+		let theme = self.theme;
 
 		let pointer = self.pointer;
 		let center =
 			(f32::from(left) + f32::from(cols) / 2.0, f32::from(top) + f32::from(CARD_ROWS) / 2.0);
 		let edge_at = move |x: u16, y: u16| -> Style {
 			let Some((px, py)) = pointer.filter(|_| hover > 0.02) else {
-				return on_card(CARD_BORDER);
+				return on_card(theme, theme.border);
 			};
 			let dx = (f32::from(x) - f32::from(px)) * 0.5;
 			let dy = f32::from(y) - f32::from(py);
 			let glow = hover * (-(dx * dx + dy * dy) / 34.0).exp();
 			if glow < 0.02 {
-				return on_card(CARD_BORDER);
+				return on_card(theme, theme.border);
 			}
 			let angle = (f32::from(y) - center.1).atan2((f32::from(x) - center.0) * 0.5);
 			let glint = (0.5 + 0.5 * (elapsed * 2.4 - angle * 2.0).sin()) * 0.38;
-			let edge = CYAN.lerp(TEXT_STRONG, glint);
-			on_card(CARD_BORDER.lerp(edge, glow))
+			let edge = theme.info.lerp(theme.fg, glint);
+			on_card(theme, theme.border.lerp(edge, glow))
 		};
 		let frame = &mut self.frame;
-		frame.fill(Rect::new(left, top, cols, CARD_ROWS), on_card(TEXT));
+		frame.fill(Rect::new(left, top, cols, CARD_ROWS), on_card(theme, theme.fg));
 
 		let right = left + cols - 1;
 		let bottom = top + CARD_ROWS - 1;
@@ -367,85 +441,100 @@ impl Welcome {
 			}
 		}
 
-		frame.put(left + 2, top, self.title.as_str(), on_card(TEXT_STRONG));
+		frame.put(left + 2, top, self.title.as_str(), on_card(theme, theme.fg).bold());
 		if full {
-			frame.put(left + 39, top, " SESSION INDEX ", on_card(FAINT));
+			frame.put(left + 39, top, " SESSION INDEX ", on_card(theme, theme.border));
 			let live = fmts!(" {} LIVE ", self.charset.icon(Icon::Enabled));
-			frame.put(left + cols - 11, top, &live, on_card(VIOLET));
-			draw_sessions(frame, left, top, self.charset);
+			frame.put(left + cols - 11, top, &live, on_card(theme, theme.secondary));
+			draw_sessions(frame, left, top, self.charset, theme, &self.sessions, self.selected);
 		}
 
-		draw_instrument_hud(frame, logo_left, top);
-		blit_logo(frame, &self.logo, logo_left, top + 2, CARD_BG);
+		draw_instrument_hud(frame, logo_left, top, theme);
+		blit_logo(frame, &self.logo, logo_left, top + 2, theme.panel);
 
 		let footer = divider + 1;
-		frame.fill(Rect::new(left + 1, footer, cols - 2, 1), on_footer(TEXT));
+		frame.fill(Rect::new(left + 1, footer, cols - 2, 1), on_footer(theme, theme.fg));
 		if full {
-			frame.put(left + 3, divider, " COMMAND DECK ", on_card(FAINT));
-			draw_full_hints(frame, left, footer);
+			frame.put(left + 3, divider, " COMMAND DECK ", on_card(theme, theme.border));
+			draw_full_hints(frame, left, footer, theme);
 		} else {
-			draw_smol_hints(frame, left, cols, footer);
+			draw_smol_hints(frame, left, cols, footer, theme);
 		}
 	}
 }
 
 impl Default for Welcome {
 	fn default() -> Self {
-		Self::new(Charset::NerdFont)
+		Self::new(&UiContext::default(), Vec::new())
 	}
 }
 
-fn draw_instrument_hud(frame: &mut Frame, logo_left: u16, top: u16) {
-	frame.put(logo_left, top + 1, "00 / APERTURE", on_card(FAINT));
-	frame.put(logo_left + 25, top + 1, "Y+", on_card(FAINT));
+fn draw_instrument_hud(frame: &mut Frame, logo_left: u16, top: u16, theme: Theme) {
+	frame.put(logo_left, top + 1, "00 / APERTURE", on_card(theme, theme.border));
+	frame.put(logo_left + 25, top + 1, "Y+", on_card(theme, theme.border));
 }
 
-fn draw_sessions(frame: &mut Frame, left: u16, top: u16, charset: Charset) {
+fn draw_sessions(
+	frame: &mut Frame,
+	left: u16,
+	top: u16,
+	charset: Charset,
+	theme: Theme,
+	sessions: &[SessionRow],
+	selected: usize,
+) {
 	let (_, _, _, _, _, vertical) = charset.border(Border::Square);
 	let mut glyph = [0_u8; 4];
 	let panel_x = left + 40;
-	frame.put(panel_x, top + 2, "RECENT SESSIONS", on_card(MUTED));
-	frame.put(left + CARD_COLS - 15, top + 2, "04 / LOCAL", on_card(FAINT));
+	frame.put(panel_x, top + 2, "RECENT SESSIONS", on_card(theme, theme.muted));
+	let count = fmts!("{:02} / LOCAL", sessions.len());
+	frame.put(left + CARD_COLS - 15, top + 2, &count, on_card(theme, theme.border));
 	for y in top + 4..=top + 11 {
-		frame.put(panel_x, y, vertical.encode_utf8(&mut glyph), on_card(FAINT));
+		frame.put(panel_x, y, vertical.encode_utf8(&mut glyph), on_card(theme, theme.border));
 	}
-	for (index, (label, age)) in SESSIONS.iter().enumerate() {
+	let rows = std::iter::once((Str::new_static("New session"), Str::new_static("NEW"))).chain(
+		sessions
+			.iter()
+			.take(3)
+			.map(|row| (row.label.clone(), row.detail.clone())),
+	);
+	for (index, (label, detail)) in rows.enumerate() {
 		let y = top + 4 + index as u16 * 2;
-		if index == 0 {
-			frame.fill(Rect::new(panel_x - 2, y, CARD_COLS - 39, 1), on_selected(TEXT));
-			frame.put(panel_x - 2, y, charset.rail(), on_selected(CYAN));
-			frame.put(panel_x, y, charset.radio(true), on_selected(CYAN));
-			frame.put(panel_x + 2, y, age, on_selected(CYAN));
-			frame.put(panel_x + 7, y, label, on_selected(TEXT_STRONG));
+		if index == selected {
+			frame.fill(Rect::new(panel_x - 2, y, CARD_COLS - 39, 1), on_selected(theme, theme.fg));
+			frame.put(panel_x - 2, y, charset.rail(), on_selected(theme, theme.info));
+			frame.put(panel_x, y, charset.radio(true), on_selected(theme, theme.info));
+			frame.put(panel_x + 2, y, detail.as_str(), on_selected(theme, theme.info));
+			frame.put(panel_x + 7, y, label.as_str(), on_selected(theme, theme.fg).bold());
 		} else {
-			frame.put(panel_x, y, charset.radio(false), on_card(FAINT));
-			frame.put(panel_x + 2, y, age, on_card(FAINT));
-			frame.put(panel_x + 7, y, label, on_card(MUTED));
+			frame.put(panel_x, y, charset.radio(false), on_card(theme, theme.border));
+			frame.put(panel_x + 2, y, detail.as_str(), on_card(theme, theme.border));
+			frame.put(panel_x + 7, y, label.as_str(), on_card(theme, theme.muted));
 		}
 	}
-	frame.put(panel_x, top + 12, "INDEXED / LOCAL", on_card(FAINT));
+	frame.put(panel_x, top + 12, "INDEXED / LOCAL", on_card(theme, theme.border));
 }
 
-fn draw_full_hints(frame: &mut Frame, left: u16, y: u16) {
-	frame.put(left + 3, y, "#", on_footer(CYAN));
-	frame.put(left + 5, y, "actions", on_footer(MUTED));
-	frame.put(left + 14, y, "/", on_footer(FAINT));
-	frame.put(left + 16, y, "commands", on_footer(MUTED));
-	frame.put(left + 27, y, "!", on_footer(AMBER));
-	frame.put(left + 29, y, "shell", on_footer(MUTED));
-	frame.put(left + 37, y, "$", on_footer(FAINT));
-	frame.put(left + 39, y, "python", on_footer(MUTED));
-	frame.put(left + CARD_COLS - 26, y, "↑↓ select", on_footer(FAINT));
-	frame.put(left + CARD_COLS - 14, y, "↵ resume", on_footer(CYAN).bold());
+fn draw_full_hints(frame: &mut Frame, left: u16, y: u16, theme: Theme) {
+	frame.put(left + 3, y, "#", on_footer(theme, theme.info));
+	frame.put(left + 5, y, "actions", on_footer(theme, theme.muted));
+	frame.put(left + 14, y, "/", on_footer(theme, theme.border));
+	frame.put(left + 16, y, "commands", on_footer(theme, theme.muted));
+	frame.put(left + 27, y, "!", on_footer(theme, theme.warn));
+	frame.put(left + 29, y, "shell", on_footer(theme, theme.muted));
+	frame.put(left + 37, y, "$", on_footer(theme, theme.border));
+	frame.put(left + 39, y, "python", on_footer(theme, theme.muted));
+	frame.put(left + CARD_COLS - 26, y, "↑↓ select", on_footer(theme, theme.border));
+	frame.put(left + CARD_COLS - 14, y, "↵ resume", on_footer(theme, theme.info).bold());
 }
 
-fn draw_smol_hints(frame: &mut Frame, left: u16, cols: u16, y: u16) {
-	frame.put(left + 3, y, "#", on_footer(CYAN));
-	frame.put(left + 5, y, "/", on_footer(FAINT));
-	frame.put(left + 7, y, "!", on_footer(AMBER));
-	frame.put(left + 9, y, "$", on_footer(FAINT));
-	frame.put(left + cols - 14, y, "enter", on_footer(FAINT));
-	frame.put(left + cols - 8, y, "resume", on_footer(CYAN).bold());
+fn draw_smol_hints(frame: &mut Frame, left: u16, cols: u16, y: u16, theme: Theme) {
+	frame.put(left + 3, y, "#", on_footer(theme, theme.info));
+	frame.put(left + 5, y, "/", on_footer(theme, theme.border));
+	frame.put(left + 7, y, "!", on_footer(theme, theme.warn));
+	frame.put(left + 9, y, "$", on_footer(theme, theme.border));
+	frame.put(left + cols - 14, y, "enter", on_footer(theme, theme.border));
+	frame.put(left + cols - 8, y, "resume", on_footer(theme, theme.info).bold());
 }
 
 fn blit_logo(frame: &mut Frame, logo: &LogoGrid, left: u16, top: u16, background: Color) {
@@ -459,16 +548,16 @@ fn blit_logo(frame: &mut Frame, logo: &LogoGrid, left: u16, top: u16, background
 	}
 }
 
-const fn on_card(fg: Color) -> Style {
-	Style::new().fg(fg).bg(CARD_BG)
+const fn on_card(theme: Theme, fg: Color) -> Style {
+	Style::new().fg(fg).bg(theme.panel)
 }
 
-const fn on_footer(fg: Color) -> Style {
-	Style::new().fg(fg).bg(FOOTER_BG)
+const fn on_footer(theme: Theme, fg: Color) -> Style {
+	Style::new().fg(fg).bg(theme.shadow)
 }
 
-const fn on_selected(fg: Color) -> Style {
-	Style::new().fg(fg).bg(SELECTED_BG)
+const fn on_selected(theme: Theme, fg: Color) -> Style {
+	Style::new().fg(fg).bg(theme.hover)
 }
 
 // ── raytraced logo ───────────────────────────────────────────────────────────
@@ -506,10 +595,10 @@ fn orbit_rotation(elapsed: f32) -> f32 {
 }
 
 /// Samples the cyan instrument ramp by angle.
-fn cyan_ramp(angle: f32) -> Vec3 {
+fn cyan_ramp(palette: AperturePalette, angle: f32) -> Vec3 {
 	let position = (angle / TAU + 0.5).rem_euclid(1.0) * 3.0;
 	let index = (position as usize).min(2);
-	CYAN_STOPS[index].lerp(CYAN_STOPS[index + 1], position - index as f32)
+	palette.cyan[index].lerp(palette.cyan[index + 1], position - index as f32)
 }
 
 /// Three soft light shafts crossing the floor in the key light's plane.
@@ -640,13 +729,14 @@ fn spark_position(index: usize, angle: f32) -> Vec3 {
 
 /// Terminal display lift in linear light so braille remains legible on the
 /// black chassis.
-fn tone(color: Vec3) -> Vec3 {
-	color * 1.20 + Vec3::rgb(3, 3, 4)
+fn tone(color: Vec3, lift: Vec3) -> Vec3 {
+	color * 1.20 + lift
 }
 
 /// Per-frame orbital aperture state shared by every ray.
 struct Aperture {
 	sun:        Vec3,
+	palette:    AperturePalette,
 	angle:      f32,
 	activation: f32,
 	/// Smoothed pointer camera from [`Welcome`]: (lift, yaw).
@@ -654,18 +744,24 @@ struct Aperture {
 }
 
 impl Aperture {
-	fn new(pointer: (f32, f32)) -> Self {
-		Self { sun: vec3(-0.55, 1.0, 0.38).normalize(), angle: 0.0, activation: 0.0, pointer }
+	fn new(pointer: (f32, f32), palette: AperturePalette) -> Self {
+		Self {
+			sun: vec3(-0.55, 1.0, 0.38).normalize(),
+			angle: 0.0,
+			activation: 0.0,
+			pointer,
+			palette,
+		}
 	}
 
 	/// Dithered floor aura, cast shafts, soft shadow, and core reflection.
 	fn ground(&self, origin: Vec3, direction: Vec3) -> (Vec3, f32) {
 		if direction.y >= 0.0 {
-			return (BACKGROUND, 0.0);
+			return (self.palette.background, 0.0);
 		}
 		let depth = (FLOOR_Y - origin.y) / direction.y;
 		if depth <= 0.0 {
-			return (BACKGROUND, 0.0);
+			return (self.palette.background, 0.0);
 		}
 		let floor = origin + direction * depth;
 		let stage =
@@ -682,9 +778,9 @@ impl Aperture {
 		let live_alpha = stage * aura * occlusion * 0.30;
 		let mut alpha = (cyan_alpha + live_alpha).clamp(0.0, 0.78);
 		let live_mix = live_alpha / (cyan_alpha + live_alpha).max(1.0e-6);
-		let mut color = CYAN_STOPS[1]
-			.lerp(LIVE, live_mix)
-			.lerp(WHITE, shafts * 0.14);
+		let mut color = self.palette.cyan[1]
+			.lerp(self.palette.live, live_mix)
+			.lerp(self.palette.white, shafts * 0.14);
 
 		let mirrored = vec3(direction.x, -direction.y, direction.z);
 		let reflected_depth =
@@ -694,7 +790,7 @@ impl Aperture {
 			let reflected_normal = (reflected_point - CORE_CENTER).normalize();
 			let edge = (1.0 - reflected_normal.dot(mirrored * -1.0).abs()).powi(3);
 			let reflection_alpha = self.activation * (0.18 + edge * 0.26);
-			color = color.lerp(CYAN_STOPS[1].lerp(LIVE, 0.28), reflection_alpha);
+			color = color.lerp(self.palette.cyan[1].lerp(self.palette.live, 0.28), reflection_alpha);
 			alpha = reflection_alpha + alpha * (1.0 - reflection_alpha);
 		}
 		(color, alpha)
@@ -711,12 +807,15 @@ impl Aperture {
 		let band_phase = normal.y * 7.0 + longitude * 2.0 - self.angle * 1.35;
 		let scan = (-(band_phase.sin() / 0.13).powi(2)).exp();
 		let pulse = 0.58 + 0.42 * (self.angle * 2.4).sin();
-		let mass = INK.lerp(LIVE, self.activation * (0.18 + 0.24 * pulse));
+		let mass = self
+			.palette
+			.ink
+			.lerp(self.palette.live, self.activation * (0.18 + 0.24 * pulse));
 		let reflected = direction.reflect(normal);
 		(mass * (0.54 + 0.28 * diffuse)
-			+ cyan_ramp(reflected.z.atan2(reflected.x)) * (0.18 + fresnel * 0.64)
-			+ CYAN_STOPS[1] * (scan * self.activation * 0.34)
-			+ WHITE * (specular * 0.78 + fresnel * 0.34))
+			+ cyan_ramp(self.palette, reflected.z.atan2(reflected.x)) * (0.18 + fresnel * 0.64)
+			+ self.palette.cyan[1] * (scan * self.activation * 0.34)
+			+ self.palette.white * (specular * 0.78 + fresnel * 0.34))
 			.clamp01()
 	}
 
@@ -734,12 +833,15 @@ impl Aperture {
 		let ticks = (angle * 18.0).cos().abs().powi(24);
 		let live_distance = (angle - 0.42 + PI).rem_euclid(TAU) - PI;
 		let live_arc = (-(live_distance / 0.22).powi(2)).exp() * self.activation;
-		let body = BACKGROUND.lerp(GLASS, 0.20 + 0.24 * diffuse);
+		let body = self
+			.palette
+			.background
+			.lerp(self.palette.glass, 0.20 + 0.24 * diffuse);
 		(body * (0.48 + 0.24 * diffuse)
-			+ GLASS * (edge * 0.62 + fresnel * 0.28)
-			+ CYAN_STOPS[1] * (ticks * 0.14)
-			+ LIVE * (live_arc * 0.72)
-			+ WHITE * (specular * 0.96 + live_arc * 0.18))
+			+ self.palette.glass * (edge * 0.62 + fresnel * 0.28)
+			+ self.palette.cyan[1] * (ticks * 0.14)
+			+ self.palette.live * (live_arc * 0.72)
+			+ self.palette.white * (specular * 0.96 + live_arc * 0.18))
 			.clamp01()
 	}
 
@@ -752,9 +854,9 @@ impl Aperture {
 		let height = ((point.y - POLE_BOTTOM) / (POLE_TOP - POLE_BOTTOM)).clamp(0.0, 1.0);
 		let pulse_height = 0.5 + 0.5 * (self.angle * 1.8).sin();
 		let pulse = (-((height - pulse_height) / 0.075).powi(2)).exp() * self.activation;
-		(CYAN_STOPS[1] * (0.38 + 0.40 * diffuse + 0.22 * fresnel)
-			+ WHITE * (0.20 + 0.72 * specular + 0.82 * pulse)
-			+ LIVE * (0.20 * pulse))
+		(self.palette.cyan[1] * (0.38 + 0.40 * diffuse + 0.22 * fresnel)
+			+ self.palette.white * (0.20 + 0.72 * specular + 0.82 * pulse)
+			+ self.palette.live * (0.20 * pulse))
 			.clamp01()
 	}
 
@@ -765,8 +867,13 @@ impl Aperture {
 		let diffuse = normal.dot(self.sun).max(0.0);
 		let specular = normal.dot(halfway).max(0.0).powi(48);
 		let fresnel = (1.0 - normal.dot(view).max(0.0)).powi(3);
-		let base = if index == 0 { LIVE } else { CYAN_STOPS[1] };
-		(base * (0.42 + 0.58 * diffuse) + WHITE * (specular * 0.80 + fresnel * 0.48)).clamp01()
+		let base = if index == 0 {
+			self.palette.live
+		} else {
+			self.palette.cyan[1]
+		};
+		(base * (0.42 + 0.58 * diffuse) + self.palette.white * (specular * 0.80 + fresnel * 0.48))
+			.clamp01()
 	}
 }
 
@@ -790,7 +897,7 @@ impl Trace for Aperture {
 	fn shade(&self, ray: Ray) -> (Vec3, f32) {
 		let Ray { origin, dir: direction } = ray;
 		let (ground_color, ground_alpha) = self.ground(origin, direction);
-		let mut color = ground_color * ground_alpha + BACKGROUND * (1.0 - ground_alpha);
+		let mut color = ground_color * ground_alpha + self.palette.background * (1.0 - ground_alpha);
 		let mut alpha = ground_alpha;
 
 		let core_depth = sphere_depth(origin, direction, CORE_CENTER, CORE_RADIUS);
@@ -798,7 +905,7 @@ impl Trace for Aperture {
 		let halo = smooth(((CORE_RADIUS + 0.24 - halo_distance) / 0.24).clamp(0.0, 1.0));
 		let halo_alpha = halo * self.activation * 0.44;
 		if halo_alpha > 0.0 {
-			let halo_color = CYAN_STOPS[1].lerp(WHITE, halo * 0.22);
+			let halo_color = self.palette.cyan[1].lerp(self.palette.white, halo * 0.22);
 			color = halo_color * halo_alpha + color * (1.0 - halo_alpha);
 			alpha = halo_alpha + alpha * (1.0 - halo_alpha);
 		}
@@ -846,14 +953,14 @@ impl Trace for Aperture {
 			color = ring_color * ring_opacity + color * (1.0 - ring_opacity);
 			alpha = ring_opacity + alpha * (1.0 - ring_opacity);
 		}
-		(tone(color), alpha)
+		(tone(color, self.palette.tone_lift), alpha)
 	}
 }
 
 /// Renders the scene at `elapsed` under the pointer camera and packs it
 /// into braille cells through [`scene::rasterize`].
-fn logo_cells(elapsed: f32, pointer: (f32, f32)) -> LogoGrid {
-	let mut aperture = Aperture::new(pointer);
+fn logo_cells(elapsed: f32, pointer: (f32, f32), palette: AperturePalette) -> LogoGrid {
+	let mut aperture = Aperture::new(pointer, palette);
 	let camera = aperture.advance(Duration::from_secs_f32(elapsed));
 	let mut grid: LogoGrid = [[None; LOGO_COLS]; LOGO_ROWS];
 	scene::rasterize(
@@ -870,19 +977,41 @@ fn logo_cells(elapsed: f32, pointer: (f32, f32)) -> LogoGrid {
 
 #[cfg(test)]
 mod tests {
+	use omp_core::Str;
 	use omp_tui::{
 		scene::{Ray, Trace},
 		test_support::{frame_cell_style, frame_row_text},
 	};
 
 	use super::{
-		Aperture, CARD_BORDER, CARD_ROWS, CORE_CENTER, Charset, Duration, PI, RING_GLASS_OPACITY,
-		RING_INNER_RADIUS, RING_OUTER_RADIUS, RING_RIM_WIDTH, Rect, Size, TAU, Welcome,
-		perimeter_angle, ring_basis, shortest_angle_delta,
+		Aperture, AperturePalette, CARD_ROWS, CORE_CENTER, Charset, Color, Duration, PI,
+		RING_GLASS_OPACITY, RING_INNER_RADIUS, RING_OUTER_RADIUS, RING_RIM_WIDTH, Rect, Size, TAU,
+		Theme, UiContext, Welcome, perimeter_angle, ring_basis, shortest_angle_delta,
 	};
+	use crate::SessionRow;
+
+	fn context() -> UiContext {
+		UiContext { charset: Charset::NerdFont, ..UiContext::default() }
+	}
+
+	fn sessions() -> Vec<SessionRow> {
+		[
+			("1", "Optimize custom status widget rendering", "NOW"),
+			("2", "Check Unicode character display", "01m"),
+			("3", "Add ╰─ cursor shift", "02m"),
+			("4", "The Unicode Similarity", "18m"),
+		]
+		.into_iter()
+		.map(|(id, label, detail)| SessionRow {
+			id:     Str::from(id),
+			label:  Str::from(label),
+			detail: Str::from(detail),
+		})
+		.collect()
+	}
 
 	fn rows(viewport: Size, elapsed_ms: u64) -> Vec<String> {
-		let mut welcome = Welcome::new(Charset::NerdFont);
+		let mut welcome = Welcome::new(&context(), sessions());
 		let frame = welcome.render(viewport, Duration::from_millis(elapsed_ms));
 		(0..frame.size().height)
 			.map(|row| frame_row_text(frame, row))
@@ -906,9 +1035,9 @@ mod tests {
 		let rows = rows(Size::new(100, 21), 2_000);
 		// Card spans rows 2..=18 when centered in a 100x21 viewport.
 		assert!(rows[2].contains("omp v"), "title chip in the top border: {}", rows[2]);
-		assert!(rows[2].contains("LIVE"), "live state in the top border");
-		assert!(rows[4].contains("RECENT SESSIONS") && rows[4].contains("04 / LOCAL"));
-		assert!(rows[6].contains("Optimize custom status widget rendering"));
+		assert!(rows[4].contains("RECENT SESSIONS") && rows[4].contains("03 / LOCAL"));
+		assert!(rows[6].contains("New session"));
+		assert!(rows[8].contains("Optimize custom status widget rendering"));
 		assert!(rows[16].contains("COMMAND DECK"), "divider labels the command rail");
 		assert!(rows[17].contains("actions") && rows[17].contains("resume"));
 		assert!(
@@ -952,7 +1081,7 @@ mod tests {
 		let settle = Duration::from_millis(1_000);
 		let sample = Duration::from_millis(2_000);
 
-		let mut centered = Welcome::new(Charset::NerdFont);
+		let mut centered = Welcome::new(&context(), sessions());
 		centered.render(viewport, settle);
 		let baseline: Vec<String> = {
 			let frame = centered.render(viewport, sample);
@@ -961,7 +1090,7 @@ mod tests {
 				.collect()
 		};
 
-		let mut orbited = Welcome::new(Charset::NerdFont);
+		let mut orbited = Welcome::new(&context(), sessions());
 		// First render fixes the card bounds the pointer maps against; the
 		// second, a full second later, lets the exponential chase converge.
 		orbited.render(viewport, settle);
@@ -976,7 +1105,7 @@ mod tests {
 
 	#[test]
 	fn pointer_perimeter_maps_clockwise_from_the_top_left() {
-		let mut welcome = Welcome::new(Charset::NerdFont);
+		let mut welcome = Welcome::new(&context(), sessions());
 		welcome.render(Size::new(100, 21), Duration::from_secs(1));
 		for ((column, row), expected) in
 			[((1, 2), 0.0), ((1, 18), PI * 0.5), ((98, 18), PI), ((98, 2), PI * 1.5)]
@@ -1003,7 +1132,8 @@ mod tests {
 	#[test]
 	fn hovering_the_card_glows_the_border_near_the_pointer() {
 		let viewport = Size::new(100, 21);
-		let mut welcome = Welcome::new(Charset::NerdFont);
+		let context = context();
+		let mut welcome = Welcome::new(&context, sessions());
 		welcome.render(viewport, Duration::from_millis(1_000));
 
 		// Hover just under a bare stretch of the top border (clear of the
@@ -1015,20 +1145,42 @@ mod tests {
 		let near_pointer = frame_cell_style(frame, 27, 2).foreground_color();
 		let far_border = frame_cell_style(frame, 8, 18).foreground_color();
 		assert!(frame_row_text(frame, 2).contains('┌'), "the card stays on row 2 while hovered");
-		assert_ne!(near_pointer, CARD_BORDER, "border glows near the pointer");
-		assert_eq!(far_border, CARD_BORDER, "the glow stays local to the pointer");
+		assert_ne!(near_pointer, context.theme.border, "border glows near the pointer");
+		assert_eq!(far_border, context.theme.border, "the glow stays local to the pointer");
+	}
+
+	#[test]
+	fn card_chrome_uses_the_supplied_theme() {
+		let mut context = context();
+		context.theme = Theme::for_appearance(omp_tui::Appearance::Light);
+		let mut welcome = Welcome::new(&context, sessions());
+		let frame = welcome.render(Size::new(100, 21), Duration::from_secs(2));
+
+		assert_eq!(frame_cell_style(frame, 8, 18).foreground_color(), context.theme.border);
+		assert_eq!(frame_cell_style(frame, 2, 3).background_color(), context.theme.panel);
+		assert_eq!(frame_cell_style(frame, 2, 17).background_color(), context.theme.shadow);
+		let mut bare = Welcome::new(&context, sessions());
+		let plate = bare.palette.plate;
+		let frame = bare.render(Size::new(29, 11), Duration::from_secs(2));
+		assert!(
+			(0..frame.size().height).any(|row| {
+				(0..frame.size().width)
+					.any(|column| frame_cell_style(frame, column, row).background_color() == plate)
+			}),
+			"bare aperture uses the theme-derived plate"
+		);
+		assert_ne!(plate, Color::Rgb(0, 0, 0));
 	}
 
 	#[test]
 	fn glass_ring_keeps_a_half_transparent_interior_and_solid_rim() {
-		let mut aperture = Aperture::new((0.0, 0.0));
+		let mut aperture = Aperture::new((0.0, 0.0), AperturePalette::new(Theme::default()));
 		aperture.activation = 1.0;
 		let (normal, tangent, _) = ring_basis();
 		let coverage_at = |radial: f32| {
 			let target = CORE_CENTER + tangent * radial;
 			Trace::shade(&aperture, Ray::new(target - normal * 2.0, normal)).1
 		};
-
 		let glass_radius = (RING_INNER_RADIUS + RING_OUTER_RADIUS - RING_RIM_WIDTH) * 0.5;
 		assert!((coverage_at(glass_radius) - RING_GLASS_OPACITY).abs() < 1.0e-6);
 		let rim_radius = RING_OUTER_RADIUS - RING_RIM_WIDTH * 0.5;

@@ -1,0 +1,21 @@
+[package]
+name = "omp-chat-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Host-agnostic designed chat scene and overlays for omp"
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+flume = { workspace = true }
+omp-core = { workspace = true }
+omp-tui = { workspace = true }
+smallvec = { workspace = true }
+tokio = { workspace = true }
+xutf = { workspace = true }
