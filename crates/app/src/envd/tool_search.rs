@@ -1294,18 +1294,19 @@ mod tests {
 	struct CannedHttpClient;
 
 	impl web::types::HttpClient for CannedHttpClient {
-		async fn get(
+		fn get(
 			&self,
 			request: web::types::HttpRequest,
-		) -> Result<web::types::HttpResponse, web::types::WebError> {
+		) -> impl Future<Output = Result<web::types::HttpResponse, web::types::WebError>> + Send + '_
+		{
 			assert_eq!(request.url, "https://example.test/data.txt");
-			Ok(web::types::HttpResponse {
+			std::future::ready(Ok(web::types::HttpResponse {
 				final_url:    request.url,
 				status:       200,
 				content_type: Some(Str::from("text/plain")),
 				headers:      Default::default(),
 				body:         Bytes::from_static(b"alpha\nneedle\nomega\n"),
-			})
+			}))
 		}
 	}
 

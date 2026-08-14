@@ -1249,25 +1249,28 @@ struct ResolvedPlainWrite {
 }
 
 impl WriteDocuments for DocumentHost {
-	async fn probe_literal(
+	fn probe_literal(
 		&self,
 		path: Str,
-	) -> Result<omp_tools::read::selector::LiteralPathProbe, WriteFault> {
+	) -> impl Future<Output = Result<omp_tools::read::selector::LiteralPathProbe, WriteFault>> + Send + '_
+	{
 		use omp_tools::read::selector::LiteralPathProbe;
-		let resolved = resolve_plain_write(self, &path)
-			.map_err(|message| WriteFault::Document { message: Str::from(message) })?;
-		Ok(match std::fs::symlink_metadata(resolved.path) {
-			Ok(_) => LiteralPathProbe::Exists,
-			Err(error)
-				if matches!(
-					error.kind(),
-					std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-				) =>
-			{
-				LiteralPathProbe::Missing
-			},
-			Err(_) => LiteralPathProbe::Unknown,
-		})
+		ready(
+			resolve_plain_write(self, &path)
+				.map_err(|message| WriteFault::Document { message: Str::from(message) })
+				.map(|resolved| match std::fs::symlink_metadata(resolved.path) {
+					Ok(_) => LiteralPathProbe::Exists,
+					Err(error)
+						if matches!(
+							error.kind(),
+							std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+						) =>
+					{
+						LiteralPathProbe::Missing
+					},
+					Err(_) => LiteralPathProbe::Unknown,
+				}),
+		)
 	}
 
 	async fn write_plain(
@@ -1420,8 +1423,7 @@ impl WriteDocuments for DocumentHost {
 		>,
 	> + Send
 	+ '_ {
-		let host = self.clone();
-		async move { write_archive_member(&host, &display_path, content) }
+		ready(write_archive_member(self, &display_path, content))
 	}
 
 	fn write_sqlite_row(
@@ -1435,8 +1437,7 @@ impl WriteDocuments for DocumentHost {
 		>,
 	> + Send
 	+ '_ {
-		let host = self.clone();
-		async move { write_sqlite_row(&host, &display_path, &content) }
+		ready(write_sqlite_row(self, &display_path, &content))
 	}
 }
 

@@ -2,6 +2,7 @@
 
 use std::{
 	borrow::Cow,
+	future::{Future, ready},
 	io,
 	path::{Component, Path, PathBuf},
 	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -129,8 +130,11 @@ impl Default for SystemHttpClient {
 }
 
 impl HttpClient for SystemHttpClient {
-	async fn get(&self, request: HttpRequest) -> Result<HttpResponse, WebError> {
-		self.request(request).await
+	fn get(
+		&self,
+		request: HttpRequest,
+	) -> impl Future<Output = Result<HttpResponse, WebError>> + Send + '_ {
+		self.request(request)
 	}
 }
 
@@ -433,8 +437,11 @@ impl ReadSourceAdapter {
 }
 
 impl HttpClient for ReadSourceAdapter {
-	async fn get(&self, request: HttpRequest) -> Result<HttpResponse, WebError> {
-		self.http.get(request).await
+	fn get(
+		&self,
+		request: HttpRequest,
+	) -> impl Future<Output = Result<HttpResponse, WebError>> + Send + '_ {
+		self.http.get(request)
 	}
 }
 
@@ -573,42 +580,48 @@ impl ReadSources for ReadSourceAdapter {
 		Ok(Bytes::from(prefix))
 	}
 
-	async fn list_directory(&self, path: Str, max_depth: usize) -> Result<DirectorySource, Fault> {
-		let root = PathBuf::from(path.as_str());
-		let request = WalkRequest::new(root.clone())
-			.hidden(true)
-			.gitignore(false)
-			.skip_git(true)
-			.skip_node_modules(true)
-			.detail(WalkDetail::Full)
-			.order(WalkOrder::Path)
-			.emit_root(false)
-			.depth(1, max_depth);
-		let outcome = if root.starts_with(self.workspace.root()) {
-			self
-				.workspace
-				.walk(&request, &CancellationToken::new())
-				.map_err(|error| Fault::source(format!("Cannot read directory: {error}")))?
-		} else {
-			request
-				.collect()
-				.map_err(|error| Fault::source(format!("Cannot read directory: {error}")))?
-		};
-		let entries = outcome
-			.entries
-			.into_iter()
-			.map(|entry| DirectoryEntry {
-				path:        Str::from(entry.path),
-				kind:        walker_kind(entry.file_type),
-				byte_len:    entry.size.map_or(0, float_to_u64),
-				modified_ms: entry.mtime.map(float_to_u64),
+	fn list_directory(
+		&self,
+		path: Str,
+		max_depth: usize,
+	) -> impl Future<Output = Result<DirectorySource, Fault>> + Send + '_ {
+		ready((|| {
+			let root = PathBuf::from(path.as_str());
+			let request = WalkRequest::new(root.clone())
+				.hidden(true)
+				.gitignore(false)
+				.skip_git(true)
+				.skip_node_modules(true)
+				.detail(WalkDetail::Full)
+				.order(WalkOrder::Path)
+				.emit_root(false)
+				.depth(1, max_depth);
+			let outcome = if root.starts_with(self.workspace.root()) {
+				self
+					.workspace
+					.walk(&request, &CancellationToken::new())
+					.map_err(|error| Fault::source(format!("Cannot read directory: {error}")))?
+			} else {
+				request
+					.collect()
+					.map_err(|error| Fault::source(format!("Cannot read directory: {error}")))?
+			};
+			let entries = outcome
+				.entries
+				.into_iter()
+				.map(|entry| DirectoryEntry {
+					path:        Str::from(entry.path),
+					kind:        walker_kind(entry.file_type),
+					byte_len:    entry.size.map_or(0, float_to_u64),
+					modified_ms: entry.mtime.map(float_to_u64),
+				})
+				.collect();
+			Ok(DirectorySource {
+				root: utf8_path(&root)?,
+				entries,
+				truncated: outcome.stats.limited_entries != 0,
 			})
-			.collect();
-		Ok(DirectorySource {
-			root: utf8_path(&root)?,
-			entries,
-			truncated: outcome.stats.limited_entries != 0,
-		})
+		})())
 	}
 
 	fn record_snapshot(&self, record: SnapshotRecord) -> Result<Option<Str>, Fault> {

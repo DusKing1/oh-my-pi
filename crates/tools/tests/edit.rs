@@ -73,23 +73,26 @@ impl EditPrepared for Lease {
 impl EditDocuments for Fake {
 	type Prepared = Lease;
 
-	async fn prepare(&self, request: PrepareRequest) -> Result<Self::Prepared, Fault> {
+	fn prepare(
+		&self,
+		request: PrepareRequest,
+	) -> impl Future<Output = Result<Self::Prepared, Fault>> + Send + '_ {
 		self.state.lock().prepared.push(request.clone());
 		if let Some(fault) = &self.fault {
-			return Err(fault.clone());
+			return std::future::ready(Err(fault.clone()));
 		}
 		let Some(content) = self.files.get(&request.path).cloned() else {
-			return Err(Fault {
+			return std::future::ready(Err(Fault {
 				reason:    RejectionReason::InvalidPatch { message: "file not found".into() },
 				conflicts: Vec::new(),
-			});
+			}));
 		};
-		Ok(Lease {
+		std::future::ready(Ok(Lease {
 			path:     request.path,
 			revision: "r1".into(),
 			base:     content.clone(),
 			authored: content,
-		})
+		}))
 	}
 
 	fn record_noop(&self, canonical_path: &str, display_path: &str, input: Bytes) -> NoopResult {
@@ -110,12 +113,12 @@ impl EditDocuments for Fake {
 		Clipboard::default()
 	}
 
-	async fn commit(
-		&self,
-		_prepared: Vec<&mut Self::Prepared>,
+	fn commit<'a>(
+		&'a self,
+		_prepared: Vec<&'a mut Self::Prepared>,
 		proposals: Vec<EditProposal>,
 		_clipboard: Clipboard,
-	) -> Result<CommitResult, EditCommitError> {
+	) -> impl Future<Output = Result<CommitResult, EditCommitError>> + Send + 'a {
 		let sections = proposals
 			.iter()
 			.map(|proposal| CommittedSection {
@@ -130,7 +133,7 @@ impl EditDocuments for Fake {
 			})
 			.collect();
 		self.state.lock().commits.extend(proposals);
-		Ok(CommitResult { sections })
+		std::future::ready(Ok(CommitResult { sections }))
 	}
 }
 

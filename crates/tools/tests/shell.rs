@@ -49,30 +49,30 @@ impl ShellRun for FakeRun {
 		futures::future::pending().await
 	}
 
-	async fn cancel(&self) -> Result<(), Fault> {
+	fn cancel(&self) -> impl Future<Output = Result<(), Fault>> + Send + '_ {
 		self.state.lock().cancels += 1;
 		*self.cancelled.lock() = Some(RunEvent::Exit(status(ExecOutcome::Cancelled)));
-		Ok(())
+		std::future::ready(Ok(()))
 	}
 }
 
 impl ShellExec for FakeExec {
 	type Run = FakeRun;
 
-	async fn open_session(&self) -> Result<Session, Fault> {
+	fn open_session(&self) -> impl Future<Output = Result<Session, Fault>> + Send + '_ {
 		let mut state = self.state.lock();
 		state.opens += 1;
 		if state.cwd.is_empty() {
 			state.cwd = "/workspace".into();
 		}
-		Ok(Session { id: Bytes::from_static(b"session-41") })
+		std::future::ready(Ok(Session { id: Bytes::from_static(b"session-41") }))
 	}
 
-	async fn run<'a>(
+	fn run<'a>(
 		&'a self,
 		session: &'a Session,
 		request: RunRequest,
-	) -> Result<Self::Run, Fault> {
+	) -> impl Future<Output = Result<Self::Run, Fault>> + Send + 'a {
 		let mut events = VecDeque::new();
 		let command = request.command.clone();
 		self.state.lock().runs.push((session.id.clone(), request));
@@ -128,7 +128,11 @@ impl ShellExec for FakeExec {
 			},
 			_ => events.push_back(RunEvent::Exit(status(ExecOutcome::Exited))),
 		}
-		Ok(FakeRun { events, cancelled: Arc::new(Mutex::new(None)), state: Arc::clone(&self.state) })
+		std::future::ready(Ok(FakeRun {
+			events,
+			cancelled: Arc::new(Mutex::new(None)),
+			state: Arc::clone(&self.state),
+		}))
 	}
 
 	async fn detach(&self, request: DetachRequest) -> Result<DetachedJob, Fault> {
@@ -243,7 +247,7 @@ fn execution_waits_for_the_explicit_commit_gate() {
 	pin_mut!(stream);
 	assert!(stream.next().now_or_never().is_none());
 	assert_eq!(exec.state.lock().opens, 0);
-	assert!(exec.state.lock().runs.is_empty());
+	assert_eq!(exec.state.lock().runs, [] as [(bytes::Bytes, omp_tools::shell::RunRequest); 0]);
 
 	feed
 		.args_committed(Str::from(r#"{"command":"ordered"}"#))
@@ -318,7 +322,7 @@ fn transcript_overflow_preserves_the_host_blob_reference() {
 	let events = call(&registry(exec, 4), r#"{"command":"overflow"}"#);
 	let result = payload(&events);
 	assert!(result.transcript_truncated);
-	assert!(result.transcript.is_empty());
+	assert_eq!(result.transcript, [] as [omp_tools::shell::TranscriptFrame; 0]);
 	assert_eq!(result.status.spilled_output.as_ref().unwrap().hash, "sha256:overflow");
 	assert!(matches!(events.first(), Some(ErasedEv::Update(_))), "live output is never capped");
 }
@@ -447,7 +451,7 @@ fn malformed_whole_arguments_are_a_structured_args_verdict() {
 	assert!(matches!(verdict, Verdict::Args(_)));
 	let state = exec.state.lock();
 	assert_eq!(state.opens, 0);
-	assert!(state.runs.is_empty());
+	assert_eq!(state.runs, [] as [(bytes::Bytes, omp_tools::shell::RunRequest); 0]);
 }
 
 #[test]

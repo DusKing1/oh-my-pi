@@ -310,18 +310,20 @@ impl CellAbort {
 	}
 
 	fn cancel(&self, cell_id: &Bytes) {
-		if let Some((_, token)) = self
+		let token = self
 			.active
 			.lock()
 			.as_ref()
 			.filter(|(current, _)| current == cell_id)
-		{
+			.map(|(_, token)| token.clone());
+		if let Some(token) = token {
 			token.cancel();
 		}
 	}
 
 	fn cancel_active(&self) {
-		if let Some((_, token)) = self.active.lock().take() {
+		let active = self.active.lock().take();
+		if let Some((_, token)) = active {
 			token.cancel();
 		}
 	}
@@ -616,34 +618,22 @@ struct NamespaceBridge {
 	watchdog: TimeoutHandle,
 }
 
-enum NamespaceHost {
-	Parent(Arc<SessionBridgeHost>),
-	Child(Arc<dyn ChildBridgeTransport>),
-}
+struct NamespaceHost(Arc<dyn ChildBridgeTransport>);
 
 impl NamespaceHost {
-	fn capabilities(&self) -> Result<BridgeCapabilities, BridgeHostError> {
-		match self {
-			Self::Parent(host) => host.capabilities(),
-			Self::Child(host) => Ok(host.capabilities()),
-		}
+	fn capabilities(&self) -> BridgeCapabilities {
+		self.0.capabilities()
 	}
 
 	fn session_config(&self) -> Option<EvalSessionConfig> {
-		match self {
-			Self::Parent(host) => host.session_config(),
-			Self::Child(host) => host.session_config(),
-		}
+		self.0.session_config()
 	}
 }
 
 #[async_trait]
 impl BridgeHost for NamespaceHost {
 	async fn call(&self, name: &str, args: Value) -> Result<Value, BridgeHostError> {
-		match self {
-			Self::Parent(host) => host.call(name, args).await,
-			Self::Child(host) => host.call(name, args).await,
-		}
+		self.0.call(name, args).await
 	}
 }
 
@@ -660,12 +650,8 @@ pub struct BridgeNamespaceInstaller {
 }
 
 impl BridgeNamespaceInstaller {
-	pub(crate) fn new(host: Arc<SessionBridgeHost>, runtime: Handle) -> Self {
-		Self::with_host(Arc::new(NamespaceHost::Parent(host)), runtime)
-	}
-
 	pub(super) fn new_child(host: Arc<dyn ChildBridgeTransport>, runtime: Handle) -> Self {
-		Self::with_host(Arc::new(NamespaceHost::Child(host)), runtime)
+		Self::with_host(Arc::new(NamespaceHost(host)), runtime)
 	}
 
 	fn with_host(host: Arc<NamespaceHost>, runtime: Handle) -> Self {
@@ -693,10 +679,7 @@ impl BridgeNamespaceInstaller {
 impl NamespaceInstaller for BridgeNamespaceInstaller {
 	fn install(&self, py: Python<'_>, globals: &Bound<'_, PyDict>) -> PyResult<()> {
 		let run = Str::from(format!("namespace-{}", self.next_run.fetch_add(1, Ordering::Relaxed)));
-		let capabilities = self
-			.host
-			.capabilities()
-			.map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+		let capabilities = self.host.capabilities();
 		let host: Arc<dyn BridgeHost> = self.host.clone();
 		let watchdog = TimeoutHandle::new(None);
 		let registration = self
@@ -745,17 +728,15 @@ impl NamespaceInstaller for BridgeNamespaceInstaller {
 		let watchdog = namespace.watchdog.clone();
 		drop(state);
 		watchdog.restart(timeout);
-		if matches!(self.host.as_ref(), NamespaceHost::Child(_)) {
-			let generation = watchdog.generation();
-			let expiry = watchdog.clone();
-			self.runtime.spawn(async move {
-				expiry.expired().await;
-				tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-				if expiry.is_current(generation) {
-					std::process::exit(124);
-				}
-			});
-		}
+		let generation = watchdog.generation();
+		let expiry = watchdog.clone();
+		self.runtime.spawn(async move {
+			expiry.expired().await;
+			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+			if expiry.is_current(generation) {
+				std::process::exit(124);
+			}
+		});
 		abort.begin(cell_id);
 		let stale = self
 			.cells
@@ -1064,10 +1045,27 @@ mod tests {
 		assert!(dispatcher.inner.registrations.lock().is_empty());
 	}
 
+	struct TestChildTransport;
+
+	#[async_trait]
+	impl ChildBridgeTransport for TestChildTransport {
+		fn capabilities(&self) -> BridgeCapabilities {
+			BridgeCapabilities::new([])
+		}
+
+		fn session_config(&self) -> Option<EvalSessionConfig> {
+			None
+		}
+
+		async fn call(&self, _name: &str, _args: Value) -> Result<Value, BridgeHostError> {
+			Ok(Value::Null)
+		}
+	}
+
 	#[tokio::test]
 	async fn cancelling_one_worker_cell_does_not_cancel_another_namespace() {
 		let installer =
-			BridgeNamespaceInstaller::new(Arc::new(SessionBridgeHost::new()), Handle::current());
+			BridgeNamespaceInstaller::new_child(Arc::new(TestChildTransport), Handle::current());
 		let first_id = Bytes::from_static(b"session-a:cell-1");
 		let second_id = Bytes::from_static(b"session-b:cell-2");
 		let first = Arc::new(CellAbort::default());

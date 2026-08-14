@@ -9,10 +9,7 @@ mod tests;
 pub use bridge::{
 	BridgeCapabilities, BridgeDispatcher, BridgeHost, install_python_bridge, install_python_prelude,
 };
-pub use bridge::{
-	BridgeHostError, BridgeNamespaceInstaller, EvalSessionConfig, ParentSessionHost,
-	SessionBridgeHost,
-};
+pub use bridge::{BridgeHostError, EvalSessionConfig, ParentSessionHost, SessionBridgeHost};
 pub use process::{EVAL_CHILD_ARG, ProcessError, ProcessEvalExec, run_eval_child_entry};
 
 /// Python helpers installed once in every persistent eval namespace.

@@ -29,8 +29,13 @@ impl grep::WorkspaceSearch for FakeWorkspace {
 		async move { result }
 	}
 
-	async fn glob(&self, _request: glob::WalkRequest) -> Result<glob::WalkResult, glob::Fault> {
-		Err(glob::Fault::Workspace { message: Str::from("unused fake glob boundary") })
+	fn glob(
+		&self,
+		_request: glob::WalkRequest,
+	) -> impl Future<Output = Result<glob::WalkResult, glob::Fault>> + Send + '_ {
+		std::future::ready(Err(glob::Fault::Workspace {
+			message: Str::from("unused fake glob boundary"),
+		}))
 	}
 }
 

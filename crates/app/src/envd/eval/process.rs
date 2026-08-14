@@ -2,6 +2,7 @@
 
 use std::{
 	collections::{BTreeMap, HashMap},
+	future::Future,
 	io,
 	path::{Path, PathBuf},
 	process::Stdio,
@@ -95,7 +96,7 @@ impl ProcessEvalExec {
 impl EvalExec for ProcessEvalExec {
 	type Run = ProcessEvalRun;
 
-	async fn open_session(&self) -> Result<Session, Fault> {
+	fn open_session(&self) -> impl Future<Output = Result<Session, Fault>> + Send + '_ {
 		let id = Bytes::from(format!("py-process-{}", Ulid::generate()));
 		self.inner.sessions.lock().insert(
 			id.clone(),
@@ -106,23 +107,23 @@ impl EvalExec for ProcessEvalExec {
 				needs_reset: AtomicBool::new(false),
 			}),
 		);
-		Ok(Session { id })
+		std::future::ready(Ok(Session { id }))
 	}
 
-	async fn run<'a>(
+	fn run<'a>(
 		&'a self,
 		session: &'a Session,
 		mut request: RunRequest,
-	) -> Result<Self::Run, Fault> {
-		let owned = self
-			.inner
-			.sessions
-			.lock()
-			.get(&session.id)
-			.cloned()
-			.ok_or_else(|| Fault::SessionLost {
+	) -> impl Future<Output = Result<Self::Run, Fault>> + Send + 'a {
+		let owned = {
+			let sessions = self.inner.sessions.lock();
+			sessions.get(&session.id).cloned()
+		};
+		let Some(owned) = owned else {
+			return std::future::ready(Err(Fault::SessionLost {
 				message: Str::from("unknown Python process session"),
-			})?;
+			}));
+		};
 		let number = self.inner.next_cell.fetch_add(1, Ordering::Relaxed);
 		let cell_id =
 			Bytes::from(format!("{}:cell-{number}", String::from_utf8_lossy(session.id.as_ref())));
@@ -171,7 +172,7 @@ impl EvalExec for ProcessEvalExec {
 				owned.needs_reset.store(true, Ordering::Release);
 			}
 		});
-		Ok(ProcessEvalRun { events, cancelled, terminal: false, effective_reset })
+		std::future::ready(Ok(ProcessEvalRun { events, cancelled, terminal: false, effective_reset }))
 	}
 }
 
@@ -192,9 +193,9 @@ impl EvalRun for ProcessEvalRun {
 		}
 	}
 
-	async fn cancel(&self) -> Result<(), Fault> {
+	fn cancel(&self) -> impl Future<Output = Result<(), Fault>> + Send + '_ {
 		self.cancelled.cancel();
-		Ok(())
+		std::future::ready(Ok(()))
 	}
 
 	fn reset(&self) -> bool {
@@ -368,28 +369,37 @@ impl EvalChild {
 				ChildFrame::BridgeCall { run_id: actual, request_id, token, name, args }
 					if actual == run_id && token == self.token =>
 				{
-					let capabilities = match host.capabilities() {
-						Ok(value) if value.allows(name.as_str()) => value,
+					match host.capabilities() {
+						Ok(value) if value.allows(name.as_str()) => {},
 						Ok(_) => {
-							let _ = write_frame(&mut self.stdin, &ParentFrame::BridgeResponse {
+							if write_frame(&mut self.stdin, &ParentFrame::BridgeResponse {
 								request_id,
 								value: None,
 								error: Some(Str::from(format!("bridge capability denied: {name}"))),
 							})
-							.await;
+							.await
+							.is_err()
+							{
+								needs_reset.store(true, Ordering::Release);
+								return false;
+							}
 							continue;
 						},
 						Err(error) => {
-							let _ = write_frame(&mut self.stdin, &ParentFrame::BridgeResponse {
+							if write_frame(&mut self.stdin, &ParentFrame::BridgeResponse {
 								request_id,
 								value: None,
 								error: Some(Str::from(error.to_string())),
 							})
-							.await;
+							.await
+							.is_err()
+							{
+								needs_reset.store(true, Ordering::Release);
+								return false;
+							}
 							continue;
 						},
-					};
-					let _ = capabilities;
+					}
 					let call = timeout.host_wait(host.call(name.as_str(), args));
 					tokio::pin!(call);
 					let response = tokio::select! {
@@ -581,7 +591,8 @@ struct ChildBridgeHost {
 
 impl ChildBridgeHost {
 	fn resolve(&self, request_id: u64, result: Result<Value, Str>) {
-		if let Some(pending) = self.pending.lock().remove(&request_id) {
+		let pending = self.pending.lock().remove(&request_id);
+		if let Some(pending) = pending {
 			let _ = pending.send(result);
 		}
 	}
@@ -782,7 +793,7 @@ pub enum ProcessError {
 	Bridge(#[from] BridgeHostError),
 }
 
-async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
+async fn write_frame<W: AsyncWrite + Unpin + Send, T: Serialize + Sync>(
 	writer: &mut W,
 	frame: &T,
 ) -> Result<(), ProcessError> {
@@ -790,14 +801,21 @@ async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
 	if encoded.len() > MAX_FRAME_BYTES {
 		return Err(ProcessError::FrameTooLarge);
 	}
+	write_encoded_frame(writer, &encoded).await
+}
+
+async fn write_encoded_frame<W: AsyncWrite + Unpin + Send>(
+	writer: &mut W,
+	encoded: &[u8],
+) -> Result<(), ProcessError> {
 	let length = u32::try_from(encoded.len()).map_err(|_| ProcessError::FrameTooLarge)?;
 	writer.write_all(&length.to_be_bytes()).await?;
-	writer.write_all(&encoded).await?;
+	writer.write_all(encoded).await?;
 	writer.flush().await?;
 	Ok(())
 }
 
-async fn read_frame<R: AsyncRead + Unpin, T: DeserializeOwned>(
+async fn read_frame<R: AsyncRead + Unpin + Send, T: DeserializeOwned>(
 	reader: &mut R,
 ) -> Result<Option<T>, ProcessError> {
 	let mut prefix = [0_u8; 4];
@@ -853,7 +871,7 @@ fn elapsed_ms(started: Instant) -> u64 {
 	u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-fn timeout_completion(duration_ms: u64) -> RunCompletion {
+const fn timeout_completion(duration_ms: u64) -> RunCompletion {
 	RunCompletion {
 		status:          CellStatus {
 			outcome: CellOutcome::Timeout,

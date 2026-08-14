@@ -20,11 +20,13 @@ struct FakeWorkspace {
 }
 
 impl grep::WorkspaceSearch for FakeWorkspace {
-	async fn search(
+	fn search(
 		&self,
 		_request: grep::SearchRequest,
-	) -> Result<grep::SearchResult, grep::Fault> {
-		Err(grep::Fault::Workspace { message: Str::from("unused fake search boundary") })
+	) -> impl Future<Output = Result<grep::SearchResult, grep::Fault>> + Send + '_ {
+		std::future::ready(Err(grep::Fault::Workspace {
+			message: Str::from("unused fake search boundary"),
+		}))
 	}
 
 	fn glob(
