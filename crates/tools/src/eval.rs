@@ -34,8 +34,6 @@ use crate::render::TextProjection;
 pub mod idle_timeout;
 /// Embedded CPython implementation of the eval resource boundary.
 pub mod kernel;
-/// Session-owned kernel lifecycle primitives.
-pub mod lifecycle;
 
 const EVAL_DESCRIPTION: &str = r#"Run one step of code in a persistent kernel. State persists across calls and subagents.
 
@@ -92,12 +90,23 @@ pub enum Language {
 	Py,
 }
 
-// Complete arguments for one Python cell.
+#[derive(JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[expect(
+	dead_code,
+	reason = "schemars instantiates this type only while generating the wire schema"
+)]
+enum LanguageSchema {
+	Py,
+}
+
+/// Complete arguments for one Python cell.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Params {
 	/// Runtime selector. Only `"py"` is accepted.
 	#[schemars(description = "runtime: \"py\" for the IPython kernel")]
+	#[schemars(with = "LanguageSchema")]
 	pub language: Language,
 	/// Exact cell source.
 	#[schemars(
@@ -107,18 +116,20 @@ pub struct Params {
 	pub code:     Str,
 	/// Optional short transcript label.
 	#[schemars(
-		with = "Option<String>",
+		with = "omp_tool::OptionalSchema<String>",
 		description = "short label shown in transcript (e.g. \"imports\", \"load config\")"
 	)]
 	pub title:    Option<Str>,
 	/// Runtime-work timeout in seconds. Zero disables it.
 	#[schemars(
+		with = "omp_tool::OptionalSchema<f64>",
 		transform = omit_schema_format,
 		description = "timeout for this eval call in seconds; 0 disables the cell timeout"
 	)]
 	pub timeout:  Option<f64>,
 	/// Whether to replace the session namespace before executing this cell.
 	#[schemars(
+		with = "omp_tool::OptionalSchema<bool>",
 		description = "wipe this language's kernel before running. Other languages are untouched."
 	)]
 	pub reset:    Option<bool>,

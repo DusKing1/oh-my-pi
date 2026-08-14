@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-#[derive(JsonSchema)]
+#[derive(Deserialize, JsonSchema)]
 struct Nested {
 	enabled: bool,
 }
@@ -14,6 +14,7 @@ struct Params {
 	/// Required input value.
 	required: String,
 	/// Optional nested settings.
+	#[schemars(with = "omp_tool::OptionalSchema<Nested>")]
 	optional: Option<Nested>,
 }
 

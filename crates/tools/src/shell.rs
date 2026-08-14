@@ -22,7 +22,7 @@ fn omit_schema_format(schema: &mut schemars::Schema) {
 	schema.remove("format");
 }
 
-// Complete arguments for `shell@1`.
+/// Complete arguments for `shell@1`.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
@@ -40,6 +40,7 @@ pub struct Params {
 	pub command:    Str,
 	/// Optional host-enforced timeout in milliseconds.
 	#[schemars(
+		with = "omp_tool::OptionalSchema<u64>",
 		range(min = 1),
 		transform = omit_schema_format,
 		description = "Host-enforced execution timeout in milliseconds."
@@ -51,7 +52,7 @@ pub struct Params {
 	pub detach:     bool,
 	/// Stable named-process name. Required when `detach` is true.
 	#[schemars(
-		with = "Option<String>",
+		with = "omp_tool::OptionalSchema<String>",
 		length(min = 1),
 		description = "Required stable process name when detach is true."
 	)]

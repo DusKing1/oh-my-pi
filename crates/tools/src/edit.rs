@@ -185,11 +185,19 @@ pub trait EditPrepared: Send + Sync {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EditAction {
 	/// Replace the source file with these exact bytes.
-	Write { content: Bytes },
+	Write {
+		/// Final file contents.
+		content: Bytes,
+	},
 	/// Remove the source file.
 	Delete,
 	/// Move the source identity and persist the supplied final bytes.
-	Move { destination: Str, content: Bytes },
+	Move {
+		/// New path for the source identity.
+		destination: Str,
+		/// Final contents persisted at the destination.
+		content:     Bytes,
+	},
 }
 
 /// One fully preflighted proposal in authored section order.
@@ -241,11 +249,20 @@ pub enum RejectionReason {
 	/// Edit collided with intervening workspace edits.
 	Conflict,
 	/// Base revision is stale and cannot be automatically recovered.
-	StaleUnrecoverable { message: Str },
+	StaleUnrecoverable {
+		/// Exact stale-snapshot diagnostic.
+		message: Str,
+	},
 	/// Formatter execution failed on the edited document.
-	Format { message: Str },
+	Format {
+		/// Exact formatter diagnostic.
+		message: Str,
+	},
 	/// Submitted patch syntax or structure was invalid.
-	InvalidPatch { message: Str },
+	InvalidPatch {
+		/// Exact patch diagnostic.
+		message: Str,
+	},
 }
 
 /// Durable typed edit failure.
@@ -288,7 +305,10 @@ pub enum EditCommitError {
 	/// Atomic transaction rejection; no section or clipboard state landed.
 	Rejected(Fault),
 	/// The resource cannot prove whether effects landed.
-	EffectsUnknown { reason: Str },
+	EffectsUnknown {
+		/// Why the document owner cannot determine the final state.
+		reason: Str,
+	},
 }
 
 /// Resource boundary implemented by the environment's document host.

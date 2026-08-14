@@ -28,7 +28,7 @@ use crate::{
 	render::{
 		TextProjection,
 		paths::{GroupedTreeEventKind, PathTreeInput, build_path_tree, walk_path_tree},
-		truncate::spill_truncated_text,
+		truncate::{DEFAULT_MAX_COLUMN, spill_truncated_text},
 	},
 };
 
@@ -38,9 +38,8 @@ const SINGLE_FILE_MATCHES: usize = 200;
 const INTERNAL_TOTAL_CAP: u32 = 2_000;
 const NATIVE_GREP_MAX_FILE_BYTES: u32 = 4 * 1024 * 1024;
 const SEARCH_GREP_TIMEOUT_MS: u32 = 30_000;
-const DEFAULT_MAX_COLUMN: u32 = 512;
 
-// Model arguments for `grep@1`.
+/// Model arguments for `grep@1`.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Params {
@@ -50,12 +49,14 @@ pub struct Params {
 	/// file, directory, glob, internal URL, or "<file>:<lines>" selector to
 	/// search; pass several as a semicolon-delimited list ("src; tests").
 	/// Omitted -> searches the workspace root (".")
-	#[schemars(with = "Option<String>")]
+	#[schemars(with = "omp_tool::OptionalSchema<String>")]
 	pub path:      Option<Str>,
 	/// case-sensitive search
 	#[serde(rename = "case")]
+	#[schemars(with = "omp_tool::OptionalSchema<bool>")]
 	pub case:      Option<bool>,
 	/// respect gitignore
+	#[schemars(with = "omp_tool::OptionalSchema<bool>")]
 	pub gitignore: Option<bool>,
 	/// files to skip before collecting results — use to paginate when the prior
 	/// call hit the file limit

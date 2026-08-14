@@ -12,7 +12,7 @@ pub(crate) const DEFAULT_MAX_LINES: usize = 3000;
 /// Default maximum rendered output size in UTF-8 bytes.
 pub(crate) const DEFAULT_MAX_BYTES: usize = 50 * 1024;
 /// Default maximum number of UTF-16 code units in one rendered line.
-pub(crate) const DEFAULT_MAX_COLUMN: usize = 512;
+pub(crate) const DEFAULT_MAX_COLUMN: u32 = 512;
 
 /// Limit that caused a head truncation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,11 +66,6 @@ impl TruncationResult<'_> {
 	pub fn shown_lines(&self) -> usize {
 		self.output_lines.unwrap_or(self.total_lines)
 	}
-
-	/// Number of UTF-8 bytes represented by `content`.
-	pub fn shown_bytes(&self) -> usize {
-		self.output_bytes.unwrap_or(self.total_bytes)
-	}
 }
 
 /// Complete pre-projection text after applying the shared output bounds.
@@ -122,6 +117,7 @@ pub(crate) struct ByteTruncationResult<'a> {
 }
 
 /// A possibly-owned result from [`truncate_line`].
+#[expect(dead_code, reason = "pi parity primitive retained for streaming adapters")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LineTruncationResult<'a> {
 	/// Original line, or its retained prefix followed by an ellipsis.
@@ -156,6 +152,7 @@ pub(crate) fn truncate_head_bytes(text: &str, max_bytes: usize) -> ByteTruncatio
 /// Truncates one line at pi's JavaScript UTF-16 column boundary.
 ///
 /// A truncated line ends with `…`; an unmodified line remains borrowed.
+#[expect(dead_code, reason = "pi parity primitive retained for streaming adapters")]
 pub(crate) fn truncate_line(line: &str, max_chars: usize) -> LineTruncationResult<'_> {
 	// Every UTF-16 code unit occupies at least one UTF-8 byte, so this is the
 	// overwhelmingly common no-truncation path without scanning the string.

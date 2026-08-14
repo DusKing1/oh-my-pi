@@ -68,11 +68,28 @@ pub enum WriteOperation {
 	/// ZIP/TAR member create or replacement.
 	ArchiveMember,
 	/// SQLite row insertion.
-	SqliteInsert { table: Str },
+	SqliteInsert {
+		/// Mutated table.
+		table: Str,
+	},
 	/// SQLite row update, including a no-match result.
-	SqliteUpdate { table: Str, key: Str, changed: bool },
+	SqliteUpdate {
+		/// Mutated table.
+		table:   Str,
+		/// Authored row key.
+		key:     Str,
+		/// Whether a row matched.
+		changed: bool,
+	},
 	/// SQLite row deletion, including a no-match result.
-	SqliteDelete { table: Str, key: Str, changed: bool },
+	SqliteDelete {
+		/// Mutated table.
+		table:   Str,
+		/// Authored row key.
+		key:     Str,
+		/// Whether a row matched.
+		changed: bool,
+	},
 }
 
 /// Fully validated whole-file request passed to the document owner.

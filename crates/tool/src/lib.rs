@@ -7,7 +7,7 @@
 mod incoming;
 mod registry;
 
-use std::{fmt, future::Future};
+use std::{borrow::Cow, fmt, future::Future, marker::PhantomData};
 
 use bytes::Bytes;
 use futures::Stream;
@@ -37,10 +37,46 @@ pub fn schema<T: schemars::JsonSchema>() -> Bytes {
 	let mut root = generator.into_root_schema_for::<T>();
 	root.remove("$schema");
 	root.remove("title");
+	root.remove("description");
 	Bytes::from(
 		serde_json::to_vec(root.as_value())
 			.expect("schemars-generated JSON Schema must serialize to compact JSON"),
 	)
+}
+
+/// Marks a generated field schema as optional without accepting JSON `null`.
+///
+/// Tool argument structs use this with `#[schemars(with = "...")]` when their
+/// Rust field is `Option<T>` but the model-facing schema follows JSON Schema's
+/// absent-property convention rather than a nullable value.
+pub struct OptionalSchema<T>(PhantomData<T>);
+
+impl<T: schemars::JsonSchema> schemars::JsonSchema for OptionalSchema<T> {
+	fn inline_schema() -> bool {
+		T::inline_schema()
+	}
+
+	fn schema_name() -> Cow<'static, str> {
+		T::schema_name()
+	}
+
+	fn schema_id() -> Cow<'static, str> {
+		T::schema_id()
+	}
+
+	fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+		T::json_schema(generator)
+	}
+
+	fn _schemars_private_non_optional_json_schema(
+		generator: &mut schemars::SchemaGenerator,
+	) -> schemars::Schema {
+		T::_schemars_private_non_optional_json_schema(generator)
+	}
+
+	fn _schemars_private_is_option() -> bool {
+		true
+	}
 }
 /// Namespaced thread-item property carrying a committed tool revision.
 pub const TOOL_REV_PROP: &str = "omp/tool-rev";

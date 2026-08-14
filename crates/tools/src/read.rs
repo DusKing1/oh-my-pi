@@ -28,6 +28,7 @@ pub mod notebook;
 pub mod profile;
 pub mod selector;
 pub mod sqlite;
+pub use sqlite::looks_like_sqlite;
 pub mod web;
 
 const DESCRIPTION: &str = r#"Read files, directories, archives, SQLite, images, documents, and web URLs via `path`.
@@ -243,15 +244,30 @@ pub struct Payload {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Fault {
 	/// Invalid selector or target syntax.
-	Invalid { message: Str },
+	Invalid {
+		/// Exact diagnostic.
+		message: Str,
+	},
 	/// Missing or unreadable local source.
-	Source { message: Str },
+	Source {
+		/// Exact diagnostic.
+		message: Str,
+	},
 	/// Unsupported internal resource seam.
-	Unsupported { message: Str },
+	Unsupported {
+		/// Exact diagnostic.
+		message: Str,
+	},
 	/// Web transport, decoding, or rendering failure.
-	Web { message: Str },
+	Web {
+		/// Exact diagnostic.
+		message: Str,
+	},
 	/// Durable blob storage failure.
-	Blob { message: Str },
+	Blob {
+		/// Exact diagnostic.
+		message: Str,
+	},
 }
 
 impl Fault {

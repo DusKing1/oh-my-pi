@@ -29,24 +29,34 @@ fn default_true() -> bool {
 	true
 }
 
-// Model arguments for `glob@1`.
+fn omit_schema_format(schema: &mut schemars::Schema) {
+	schema.remove("format");
+}
+
+/// Model arguments for `glob@1`.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Params {
 	/// glob, file, or directory to search — a single path or a
 	/// semicolon-delimited list ("src/**/*.ts; test/**/*.ts"). Omitted ->
 	/// searches the workspace root (".")
-	#[schemars(with = "Option<String>")]
+	#[schemars(
+		with = "omp_tool::OptionalSchema<String>",
+		description = "glob, file, or directory to search — a single path or a semicolon-delimited \
+		               list (\"src/**/*.ts; test/**/*.ts\"). Omitted -> searches the workspace root \
+		               (\".\")"
+	)]
 	pub path:      Option<Str>,
 	/// include hidden files
 	#[serde(default = "default_true")]
-	#[schemars(!default, with = "Option<bool>")]
+	#[schemars(!default, with = "omp_tool::OptionalSchema<bool>")]
 	pub hidden:    bool,
 	/// respect gitignore
 	#[serde(default = "default_true")]
-	#[schemars(!default, with = "Option<bool>")]
+	#[schemars(!default, with = "omp_tool::OptionalSchema<bool>")]
 	pub gitignore: bool,
 	/// max results
+	#[schemars(with = "omp_tool::OptionalSchema<f64>", transform = omit_schema_format)]
 	pub limit:     Option<f64>,
 }
 

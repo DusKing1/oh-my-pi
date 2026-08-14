@@ -51,7 +51,9 @@ pub struct ResultPayload {
 /// Parsed archive member selector, independent of filesystem resolution.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArchiveTarget {
+	/// Authored archive container path.
 	pub archive_path: String,
+	/// Normalized member path within the container.
 	pub member_path:  String,
 }
 
@@ -239,8 +241,11 @@ fn archive_error(error: impl std::fmt::Display) -> Fault {
 /// Parsed SQLite table or row target.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SqliteTarget {
+	/// Authored SQLite database path.
 	pub sqlite_path: String,
+	/// Target table.
 	pub table:       String,
+	/// Optional primary-key or rowid spelling.
 	pub key:         Option<String>,
 }
 
@@ -278,7 +283,9 @@ pub fn sqlite_targets(path: &str) -> Result<Vec<SqliteTarget>, Fault> {
 /// Typed committed SQLite mutation truth.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SqliteMutation {
+	/// Mutation kind and affected-row truth.
 	pub operation:   WriteOperation,
+	/// Whether the mutation creates or overwrites logical state.
 	pub disposition: WriteDisposition,
 }
 
@@ -334,6 +341,7 @@ pub fn mutate_sqlite_row(
 				disposition: WriteDisposition::Overwrote,
 			}
 		} else {
+			insert_row(&transaction, &target.table, &columns, values)?;
 			SqliteMutation {
 				operation:   WriteOperation::SqliteInsert { table: target.table.clone().into() },
 				disposition: WriteDisposition::Created,
