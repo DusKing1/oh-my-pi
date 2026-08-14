@@ -7,6 +7,7 @@ authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
 description = "Typed, revisioned tool contracts and registry for the OMP agent mesh"
+readme = "README.md"
 
 [lints]
 workspace = true

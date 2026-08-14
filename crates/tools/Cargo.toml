@@ -7,6 +7,7 @@ authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
 description = "Resource-owning built-in executors for the OMP environment"
+readme = "README.md"
 
 [lints]
 workspace = true
