@@ -33,7 +33,7 @@ use crate::{
 		AuthResponse, AuthSession,
 	},
 	call::{AccountRoutingContext, AuthInput, AuthMethod, AuthRequest, LoginRequest},
-	error::{Error, ErrorKind, ErrorPhase, RetryAction},
+	error::{Error, ErrorDetail, ErrorKind, ErrorPhase, RetryAction},
 	id::{AccountId, LoginSessionId, PrincipalId},
 	receipt::ExecutionReceipt,
 };
@@ -940,6 +940,7 @@ fn principal_unresolved() -> Error {
 }
 
 fn oauth_error(error: OAuthError) -> Error {
+	let detail = ErrorDetail::provider(Str::from(error.to_string()));
 	match error {
 		OAuthError::Cancelled => Error::new(
 			ErrorKind::Cancelled,
@@ -947,8 +948,12 @@ fn oauth_error(error: OAuthError) -> Error {
 			RetryAction::Never,
 			ExecutionReceipt::default(),
 		),
-		OAuthError::PrincipalUnresolved => principal_unresolved(),
-		_ => auth_unavailable(),
+		OAuthError::PrincipalUnresolved => principal_unresolved().detail(detail),
+		OAuthError::Provider { status, code, .. } => auth_unavailable()
+			.status(Some(status))
+			.code(Str::from(code.as_str()))
+			.detail(detail),
+		_ => auth_unavailable().detail(detail),
 	}
 }
 
@@ -995,5 +1000,163 @@ fn credential_error(error: CredentialError) -> Error {
 		| CredentialError::StaleGeneration
 		| CredentialError::InvalidSource
 		| CredentialError::SourceFailure => auth_unavailable(),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::{
+		collections::VecDeque,
+		sync::Arc,
+		time::{Duration, SystemTime, UNIX_EPOCH},
+	};
+
+	use futures::future::{BoxFuture, FutureExt as _};
+	use http::HeaderMap;
+	use omp_llm_catalog::{ProviderId, snapshot::Catalog};
+	use parking_lot::Mutex;
+	use secrecy::{ExposeSecret as _, SecretString};
+
+	use super::{AuthLoginEngine as _, OAuthLoginEngine};
+	use crate::{
+		account::AccountPool,
+		answer::AuthEvent,
+		auth::{
+			CredentialStore, HeadlessKeySource, KeyId, OAuthClock, OAuthCustomDispatcher,
+			OAuthHttpClient, OAuthHttpRequest, OAuthHttpResponse, OAuthTransportError,
+		},
+		call::{AuthMethod, LoginRequest},
+	};
+
+	struct ImmediateClock(SystemTime);
+
+	impl OAuthClock for ImmediateClock {
+		fn now(&self) -> SystemTime {
+			self.0
+		}
+
+		fn sleep(&self, _duration: Duration) -> BoxFuture<'_, ()> {
+			async {}.boxed()
+		}
+	}
+
+	struct FixtureHttp {
+		responses: Mutex<VecDeque<OAuthHttpResponse>>,
+		requests:  Mutex<Vec<(String, String)>>,
+	}
+
+	impl OAuthHttpClient for FixtureHttp {
+		fn execute(
+			&self,
+			request: OAuthHttpRequest,
+		) -> BoxFuture<'_, Result<OAuthHttpResponse, OAuthTransportError>> {
+			let (_, url, _, body) = request.into_parts();
+			self.requests.lock().push((
+				url.to_string(),
+				body.map_or_else(String::new, |body| body.expose_secret().to_owned()),
+			));
+			let response = self.responses.lock().pop_front().expect("fixture response");
+			async move { Ok(response) }.boxed()
+		}
+	}
+
+	#[tokio::test]
+	async fn embedded_kimi_login_starts_and_resolves_its_principal() {
+		let catalog = Arc::new(Catalog::embedded().clone());
+		let provider = ProviderId::from("kimi-code");
+		let auth = catalog
+			.provider(&provider)
+			.and_then(|provider| provider.auth.first())
+			.cloned()
+			.expect("Kimi OAuth auth spec");
+		let suffix = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.unwrap()
+			.as_nanos();
+		let store_path = std::env::temp_dir()
+			.join(format!("omp-kimi-login-{}-{suffix}.sqlite", std::process::id()));
+		let store = Arc::new(
+			CredentialStore::open(
+				&store_path,
+				Arc::new(HeadlessKeySource::new(KeyId::new("kimi-login-test"), [9; 32])),
+			)
+			.unwrap(),
+		);
+		let http = Arc::new(FixtureHttp {
+			responses: Mutex::new(VecDeque::from([
+				OAuthHttpResponse {
+					status:  200,
+					headers: HeaderMap::new(),
+					body:    SecretString::from(
+						r#"{"device_code":"device","user_code":"ABCD-EFGH","verification_uri":"https://www.kimi.com/code/authorize_device","verification_uri_complete":"https://www.kimi.com/code/authorize_device?user_code=ABCD-EFGH","expires_in":1800,"interval":5}"#
+							.to_owned(),
+					),
+				},
+				OAuthHttpResponse {
+					status:  200,
+					headers: HeaderMap::new(),
+					body:    SecretString::from(
+						r#"{"access_token":"access","refresh_token":"refresh","token_type":"Bearer","expires_in":3600}"#
+							.to_owned(),
+					),
+				},
+			])),
+			requests:  Mutex::new(Vec::new()),
+		});
+		let engine = OAuthLoginEngine::new(
+			AuthMethod::OAuthDevice,
+			catalog,
+			store,
+			AccountPool::new(),
+			Arc::clone(&http),
+			Arc::new(ImmediateClock(SystemTime::UNIX_EPOCH)),
+			Arc::new(OAuthCustomDispatcher::new()),
+		)
+		.unwrap();
+		let session = engine
+			.begin(LoginRequest { provider, method: None }, auth)
+			.await
+			.unwrap();
+		let mut saw_code = false;
+		loop {
+			let event = tokio::time::timeout(Duration::from_secs(1), session.events.recv_async())
+				.await
+				.expect("Kimi login event")
+				.expect("Kimi login event channel")
+				.expect("successful Kimi login event");
+			match event {
+				AuthEvent::ShowDeviceCode { code, verification_url } => {
+					assert_eq!(code.expose_secret(), "ABCD-EFGH");
+					assert_eq!(verification_url, "https://www.kimi.com/code/authorize_device");
+					saw_code = true;
+				},
+				AuthEvent::Complete(account) => {
+					assert_eq!(account.account.as_str(), "kimi-code:kimi-code");
+					assert_eq!(
+						account
+							.principal
+							.as_ref()
+							.map(|principal| principal.as_str()),
+						Some("kimi-code")
+					);
+					break;
+				},
+				AuthEvent::OpenUrl(_) | AuthEvent::Waiting => {},
+				AuthEvent::Prompt(_) => panic!("Kimi device flow must not request private input"),
+			}
+		}
+		assert!(saw_code);
+		let requests = http.requests.lock();
+		assert_eq!(requests.len(), 2);
+		assert_eq!(requests[0].0, "https://auth.kimi.com/api/oauth/device_authorization");
+		assert!(
+			requests[0]
+				.1
+				.contains("client_id=17e5f671-d194-4dfb-9706-5516cb48c098")
+		);
+		drop(requests);
+		drop(session);
+		drop(engine);
+		let _ = std::fs::remove_file(store_path);
 	}
 }
