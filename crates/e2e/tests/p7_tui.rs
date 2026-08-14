@@ -48,7 +48,7 @@ use omp_llm_inference::{
 	id::ToolCallId,
 	layer::{LayerCall, stack::RouteProviderService},
 	provider::fake::{FakeProvider, FakeScript},
-	receipt::{ExecutionReceipt, ReasonId, Usage},
+	receipt::{Cost, ExecutionReceipt, ReasonId, Usage, UsageSource},
 	registry::RouteUnavailable,
 	session::ConversationSessionPlanner,
 };
@@ -368,6 +368,30 @@ fn text_script(text: &'static str) -> FakeScript {
 	])
 }
 
+fn metered_text_script(text: &'static str) -> FakeScript {
+	let usage = Usage {
+		input_tokens: 4_096,
+		output_tokens: 128,
+		source: UsageSource::Provider,
+		..Usage::default()
+	};
+	let receipt = ExecutionReceipt {
+		usage,
+		cost: Cost::from_micro_usd(1_500_000),
+		..ExecutionReceipt::default()
+	};
+	FakeScript::chat(vec![
+		Ok(ChatEvent::BlockStarted { index: 0, kind: BlockKind::Text }),
+		Ok(ChatEvent::TextDelta { index: 0, text: Str::from(text) }),
+		Ok(ChatEvent::Completed(Completion {
+			reason: FinishReason::Stop,
+			blocks: 1,
+			usage,
+			receipt,
+		})),
+	])
+}
+
 fn completed(reason: FinishReason, blocks: usize) -> ChatEvent {
 	ChatEvent::Completed(Completion {
 		reason,
@@ -404,7 +428,7 @@ fn scripts(shell_release: &Path) -> Vec<FakeScript> {
 			"p7_unknown",
 			json!({ "path": "mystery.fixture", "opaque": true }),
 		)]),
-		text_script("The deterministic tool sequence is complete."),
+		metered_text_script("The deterministic tool sequence is complete."),
 		tool_script(&[
 			(
 				"batch-1",
@@ -890,10 +914,11 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	});
 	assert_surface(&unknown, "unknown");
 	gateway.release(4);
-	let summary = wait_snapshot(&mut debug, &raw_capture, "first turn complete", |snapshot| {
-		snapshot
-			.frame
-			.contains("deterministic tool sequence is complete")
+	let summary = wait_snapshot(&mut debug, &raw_capture, "first turn metrics complete", |snapshot| {
+		snapshot.frame.contains("deterministic tool sequence is complete")
+			&& snapshot.frame.contains(&gateway.model)
+			&& snapshot.frame.contains("Ctx:")
+			&& snapshot.frame.contains("Cost: $1.5000")
 	});
 	assert_surface(&summary, "summary");
 

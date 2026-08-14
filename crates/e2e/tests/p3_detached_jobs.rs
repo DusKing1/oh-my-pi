@@ -161,13 +161,6 @@ fn revision(head: u64) -> Option<Revision> {
 	Some(Revision { head, token: Bytes::from(head.to_le_bytes().to_vec()) })
 }
 
-fn scripted(outcomes: impl IntoIterator<Item = inference::Outcome>) -> ScriptedTurnClient {
-	ScriptedTurnClient::new(
-		outcomes
-			.into_iter()
-			.map(|outcome| ScriptedTurn::events([outcome_event(outcome)])),
-	)
-}
 
 fn end_outcome(head: u64) -> inference::Outcome {
 	inference::Outcome {

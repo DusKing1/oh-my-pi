@@ -7,7 +7,7 @@ use std::{
 	collections::VecDeque,
 	fs::{self, OpenOptions},
 	future::{Future, ready},
-	io::{BufRead as _, BufReader, Write as _},
+	io::{BufRead as _, BufReader, Read as _, Write as _},
 	os::unix::{fs::PermissionsExt as _, net::UnixStream, process::CommandExt as _},
 	path::{Path, PathBuf},
 	pin::Pin,
@@ -531,7 +531,7 @@ async fn real_chat_resume_replays_pending_turn_through_cli_startup() {
 			receipt: ExecutionReceipt::default(),
 		})),
 	]);
-	let mut gateway = ScriptedGateway::spawn_gated(&scratch, [script], Arc::new(Registry::new()))
+	let gateway = ScriptedGateway::spawn_gated(&scratch, [script], Arc::new(Registry::new()))
 		.await
 		.expect("start gated real gateway");
 	let binary = omp_binary().expect("locate worker-capable omp binary");
@@ -668,14 +668,20 @@ impl ChatDebug {
 					return Self { reader: BufReader::new(stream), writer };
 				},
 				Err(error) => {
-					assert!(
-						process
-							.child
-							.try_wait()
-							.expect("poll binary chat")
-							.is_none(),
-						"binary chat exited before debug socket: {error}"
-					);
+					if let Some(status) = process.child.try_wait().expect("poll binary chat") {
+						let mut stdout = String::new();
+						let mut stderr = String::new();
+						if let Some(mut pipe) = process.child.stdout.take() {
+							pipe.read_to_string(&mut stdout).expect("read early binary stdout");
+						}
+						if let Some(mut pipe) = process.child.stderr.take() {
+							pipe.read_to_string(&mut stderr).expect("read early binary stderr");
+						}
+						panic!(
+							"binary chat exited before debug socket: {status}; connect: {error}\n\
+							 stdout:\n{stdout}\nstderr:\n{stderr}"
+						);
+					}
 					assert!(Instant::now() < deadline, "binary chat debug socket timed out: {error}");
 					std_thread::sleep(Duration::from_millis(20));
 				},
@@ -776,8 +782,8 @@ impl ChatPty {
 			.env("OMP_TUI_DEBUG", debug)
 			.env("NO_COLOR", "1")
 			.stdin(Stdio::null())
-			.stdout(Stdio::null())
-			.stderr(Stdio::null())
+			.stdout(Stdio::piped())
+			.stderr(Stdio::piped())
 			.process_group(0);
 		let child = command.spawn().expect("spawn real omp chat");
 		Self { child, _master: pty.master, _slave: pty.slave, stop_reader, reader: Some(reader) }
