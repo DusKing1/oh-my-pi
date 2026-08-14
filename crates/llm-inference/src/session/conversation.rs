@@ -125,7 +125,7 @@ pub enum StoredMedia {
 
 /// Postcard-safe canonical content preserving opaque JSON and provider proofs
 /// exactly.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub enum StoredContent {
 	/// Visible text and its optional provider proof.
 	Text { text: Str, proof: Option<StoredProof> },

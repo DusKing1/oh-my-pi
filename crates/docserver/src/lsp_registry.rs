@@ -2300,6 +2300,11 @@ fn record_public_version(
 		entry_uri.as_str() != uri.as_str() || *entry_version != version
 	});
 	if entries.len() == PUBLIC_VERSION_LIMIT {
+		entries.pop_front();
+	}
+	entries.push_back((Str::new(uri.as_str()), version));
+}
+
 fn format_shadow_document(request: &FormatRequest) -> DocumentId {
 	let mut hasher = blake3::Hasher::new();
 	hasher.update(b"omp-lsp-format-shadow-v1\0");
@@ -2338,26 +2343,6 @@ fn format_shadow_uri(request: &FormatRequest) -> Url {
 	uri
 }
 
-		entries.pop_front();
-	}
-	entries.push_back((Str::new(uri.as_str()), version));
-}
-
-fn provisional_snapshot(
-	base: &DocumentSnapshot,
-	content: Bytes,
-) -> crate::Result<DocumentSnapshot> {
-	let sequence = base
-		.head()
-		.revision()
-		.sequence()
-		.checked_add(1)
-		.unwrap_or_else(|| base.head().revision().sequence());
-	let revision = Revision::for_content(sequence, &content);
-	let presence = DocumentPresence::Present;
-	let head = DocumentHead::new(
-		base.head().document_id(),
-		revision,
 fn provisional_snapshot(
 	base: &DocumentSnapshot,
 	content: Bytes,
@@ -2378,10 +2363,30 @@ fn provisional_snapshot_for(
 		.unwrap_or_else(|| base.head().revision().sequence());
 	let revision = Revision::for_content(sequence, &content);
 	let presence = DocumentPresence::Present;
-	let head =
-		DocumentHead::new(document_id, revision, presence, base.head().kind().clone(), content.len() as u64)?;
+	let head = DocumentHead::new(
+		document_id,
+		revision,
+		presence,
+		base.head().kind().clone(),
+		content.len() as u64,
+	)?;
 	DocumentSnapshot::new(head, content)
 }
+
+const fn language_for_head(head: &DocumentHead) -> Option<&LanguageId> {
+	match head.kind() {
+		DocumentKind::Text(language_id) => language_id.as_ref(),
+		DocumentKind::Binary => None,
+	}
+}
+
+fn registry_protocol_error(error: LspRegistryError) -> crate::Error {
+	crate::Error::Protocol { reason: Str::new(error.to_string()) }
+}
+
+const fn lsp_document<'a>(
+	snapshot: &'a DocumentSnapshot,
+	uri: &'a Url,
 	language_id: Option<&'a LanguageId>,
 ) -> LspDocument<'a> {
 	LspDocument { snapshot, uri, language_id }

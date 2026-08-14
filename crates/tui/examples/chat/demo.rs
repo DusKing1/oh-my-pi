@@ -933,7 +933,7 @@ impl Demo {
 
 	/// Height in rows of the composer block at the document tail; the GUI
 	/// host routes plain pointer gestures there to the scene.
-	pub fn composer_rows(&self) -> u16 {
+	pub const fn composer_rows(&self) -> u16 {
 		self.editor_ui.height()
 	}
 

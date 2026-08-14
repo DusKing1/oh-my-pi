@@ -420,10 +420,7 @@ async fn delta_context_prompt_rewind_preserves_exact_provider_prefixes() {
 
 	let mut revisions = Vec::new();
 	let mut diagnostic_codes = Vec::new();
-	for (turn, text) in [(1, "steady one"), (2, "steady two"), (3, "steady tri")] {
-		if turn == 3 {
-			state.update(|snapshot| snapshot.registry = Arc::clone(&tools_v1));
-		}
+	for text in ["steady one", "steady two", "steady tri"] {
 		let summary = within(
 			"p5 steady turn",
 			Duration::from_secs(5),
@@ -514,7 +511,12 @@ async fn delta_context_prompt_rewind_preserves_exact_provider_prefixes() {
 			.map(|value| value.code.clone())
 			.collect::<Vec<_>>(),
 	);
-	revisions.push(sixth.outcome.revision.expect("continued stable registry revision"));
+	revisions.push(
+		sixth
+			.outcome
+			.revision
+			.expect("continued stable registry revision"),
+	);
 	let seventh = within(
 		"p5 final stable registry",
 		Duration::from_secs(5),
@@ -531,7 +533,12 @@ async fn delta_context_prompt_rewind_preserves_exact_provider_prefixes() {
 			.map(|value| value.code.clone())
 			.collect::<Vec<_>>(),
 	);
-	revisions.push(seventh.outcome.revision.expect("final stable registry revision"));
+	revisions.push(
+		seventh
+			.outcome
+			.revision
+			.expect("final stable registry revision"),
+	);
 
 	for pair in revisions.windows(2) {
 		assert!(pair[0].head < pair[1].head, "gateway revisions must be strictly monotone");

@@ -889,7 +889,7 @@ pub struct ResponsesStatusDetails {
 }
 
 /// Typed response envelope carried by lifecycle events.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponsesResponse {
 	/// Authoritative response identity.
 	#[serde(default)]

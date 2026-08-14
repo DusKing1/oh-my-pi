@@ -40,7 +40,7 @@ use omp_app::{
 	envd::{server::EnvServer, worker::ToolWorkerConfig},
 };
 use omp_core::Str;
-use omp_e2e::support::{Scratch, ScriptedGateway, omp_binary};
+use omp_e2e::support::{DocServerTask, Scratch, ScriptedGateway, omp_binary};
 use omp_env::EnvClient;
 use omp_llm_catalog::{
 	CompiledCatalog, ManagementCapabilities, OperationBits, OperationKind,
@@ -508,6 +508,15 @@ async fn real_chat_resume_replays_pending_turn_through_cli_startup() {
 	fs::create_dir_all(&sessions).expect("create chat session directory");
 	fs::set_permissions(&omp_dir, fs::Permissions::from_mode(0o700)).expect("secure .omp");
 	fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).expect("secure sessions");
+	let docserver = DocServerTask::spawn(
+		project.clone(),
+		scratch.socket("binary-docserver.sock"),
+		Vec::new(),
+	)
+	.await
+	.expect("start real binary-resume document authority");
+	std::os::unix::fs::symlink(docserver.socket(), omp_dir.join("docserver.sock"))
+		.expect("link binary-resume document authority");
 	let journal_path = sessions.join(format!("{BINARY_SESSION}.jsonl"));
 	drop(
 		Journal::create(&journal_path, &Header {
