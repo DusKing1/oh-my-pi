@@ -7,7 +7,6 @@ use std::{
 
 use omp_core::Str;
 use serde::{Deserialize, Serialize};
-use strum::IntoStaticStr;
 
 pub use crate::body::{AttemptBodyEvidence, Replayability};
 use crate::{
@@ -297,37 +296,45 @@ pub struct AttemptReceipt {
 	pub elapsed:           Duration,
 }
 
-/// Kind of deterministic recovery applied to canonical output.
 #[allow(
 	missing_docs,
-	reason = "`strum` generates an undocumented `IntoStaticStr::into_str` implementation method"
+	reason = "strum generates the public string-conversion method in this private module"
 )]
-#[derive(Clone, Debug, Deserialize, Eq, IntoStaticStr, PartialEq, Serialize)]
-#[strum(serialize_all = "snake_case", const_into_str)]
-pub enum RecoveryKind {
-	/// Malformed JSON was repaired within configured bounds.
-	JsonRepair,
-	/// Leaked dialect markup was normalized.
-	DialectNormalization,
-	/// A partial tool call was assembled and validated.
-	ToolAssembly,
-	/// Leaked reasoning was classified into a thinking block.
-	ThinkingClassification,
-	/// Reasoning stopped making bounded forward progress.
-	ReasoningStall,
-	/// Repetition was detected within one attempt.
-	WithinAttemptRepetition,
-	/// A tool call repeated across committed conversation turns.
-	CrossTurnToolLoop,
-	/// A malformed tool result was repaired within declared bounds.
-	ToolResultRepair,
-	/// A model-fabricated tool result was rejected.
-	FabricatedResultRejection,
-	/// Expired server state was reseeded from replay.
-	SessionReseed,
-	/// Empty output was classified or recovered.
-	EmptyOutput,
+mod recovery_kind {
+	use serde::{Deserialize, Serialize};
+	use strum::IntoStaticStr;
+
+	/// Kind of deterministic recovery applied to canonical output.
+	#[derive(Clone, Debug, Deserialize, Eq, IntoStaticStr, PartialEq, Serialize)]
+	#[strum(serialize_all = "snake_case", const_into_str)]
+	pub enum RecoveryKind {
+		/// Malformed JSON was repaired within configured bounds.
+		JsonRepair,
+		/// Leaked dialect markup was normalized.
+		DialectNormalization,
+		/// A partial tool call was assembled and validated.
+		ToolAssembly,
+		/// Leaked reasoning was classified into a thinking block.
+		ThinkingClassification,
+		/// Reasoning stopped making bounded forward progress.
+		ReasoningStall,
+		/// Repetition was detected within one attempt.
+		WithinAttemptRepetition,
+		/// A tool call repeated across committed conversation turns.
+		CrossTurnToolLoop,
+		/// A malformed tool result was repaired within declared bounds.
+		ToolResultRepair,
+		/// A model-fabricated tool result was rejected.
+		FabricatedResultRejection,
+		/// Expired server state was reseeded from replay.
+		SessionReseed,
+		/// Empty output was classified or recovered.
+		EmptyOutput,
+	}
 }
+
+#[doc(inline)]
+pub use recovery_kind::RecoveryKind;
 
 impl RecoveryKind {
 	/// Returns the stable snake-case recovery code derived by `strum`.

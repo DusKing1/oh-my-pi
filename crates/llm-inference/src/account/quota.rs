@@ -3,7 +3,6 @@
 use std::{collections::BTreeMap, time::SystemTime};
 
 use omp_core::Str;
-use strum::{Display, EnumString, IntoStaticStr};
 
 use super::rate::Sample;
 
@@ -23,23 +22,30 @@ impl QuotaWindowId {
 	}
 }
 
-/// Provenance of a quota measurement.
 #[allow(
 	missing_docs,
-	reason = "strum generates the public string-conversion method from documented variants"
+	reason = "strum generates the public string-conversion method in this private module"
 )]
-#[derive(Clone, Copy, Debug, Display, EnumString, Eq, IntoStaticStr, PartialEq)]
-#[strum(serialize_all = "snake_case", const_into_str)]
-pub enum QuotaProvenance {
-	/// A usage or quota endpoint reported the value.
-	Provider,
-	/// Response headers reported the value.
-	Header,
-	/// A structured provider error reported exhaustion.
-	Error,
-	/// The runtime derived the value from accepted usage.
-	Measured,
+mod quota_provenance {
+	use strum::{Display, EnumString, IntoStaticStr};
+
+	/// Provenance of a quota measurement.
+	#[derive(Clone, Copy, Debug, Display, EnumString, Eq, IntoStaticStr, PartialEq)]
+	#[strum(serialize_all = "snake_case", const_into_str)]
+	pub enum QuotaProvenance {
+		/// A usage or quota endpoint reported the value.
+		Provider,
+		/// Response headers reported the value.
+		Header,
+		/// A structured provider error reported exhaustion.
+		Error,
+		/// The runtime derived the value from accepted usage.
+		Measured,
+	}
 }
+
+#[doc(inline)]
+pub use quota_provenance::QuotaProvenance;
 
 /// A partial receipt for one account quota window.
 #[derive(Clone, Debug, Eq, PartialEq)]

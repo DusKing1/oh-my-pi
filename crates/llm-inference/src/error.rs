@@ -224,7 +224,7 @@ pub enum ErrorDetail {
 
 impl ErrorDetail {
 	/// Records an exhausted budget dimension and its observed value.
-	pub fn budget(dimension: Str, limit: u128, observed: u128) -> Self {
+	pub const fn budget(dimension: Str, limit: u128, observed: u128) -> Self {
 		Self::Budget { dimension, limit, observed }
 	}
 
@@ -234,37 +234,37 @@ impl ErrorDetail {
 	}
 
 	/// Records an unsatisfied capability and its typed reason.
-	pub fn capability(feature: Str, reason: ReasonId) -> Self {
+	pub const fn capability(feature: Str, reason: ReasonId) -> Self {
 		Self::Capability { feature, reason }
 	}
 
 	/// Records a sanitized selector that did not resolve.
-	pub fn target(selector: Str) -> Self {
+	pub const fn target(selector: Str) -> Self {
 		Self::Target { selector }
 	}
 
 	/// Records the planned and current revisions for a stale plan.
-	pub fn stale_plan(planned_revision: Str, current_revision: Str) -> Self {
+	pub const fn stale_plan(planned_revision: Str, current_revision: Str) -> Self {
 		Self::StalePlan { planned_revision, current_revision }
 	}
 
 	/// Records why replay or staging is required.
-	pub fn replay(reason: ReasonId) -> Self {
+	pub const fn replay(reason: ReasonId) -> Self {
 		Self::Replay { reason }
 	}
 
 	/// Records a sanitized protocol reason.
-	pub fn protocol(reason: ReasonId) -> Self {
+	pub const fn protocol(reason: ReasonId) -> Self {
 		Self::Protocol { reason }
 	}
 
 	/// Records a sanitized provider message.
-	pub fn provider(sanitized_message: Str) -> Self {
+	pub const fn provider(sanitized_message: Str) -> Self {
 		Self::Provider { sanitized_message }
 	}
 
 	/// Records why a local backend is unavailable.
-	pub fn local_unavailable(reason: ReasonId) -> Self {
+	pub const fn local_unavailable(reason: ReasonId) -> Self {
 		Self::LocalUnavailable { reason }
 	}
 }
@@ -402,7 +402,7 @@ impl Error {
 
 	/// Attaches an HTTP-like status when available.
 	#[must_use]
-	pub fn status(mut self, status: Option<u16>) -> Self {
+	pub const fn status(mut self, status: Option<u16>) -> Self {
 		self.status = status;
 		self
 	}
@@ -423,7 +423,7 @@ impl Error {
 
 	/// Marks whether ordinary output had become visible.
 	#[must_use]
-	pub fn committed(mut self, committed: bool) -> Self {
+	pub const fn committed(mut self, committed: bool) -> Self {
 		self.committed = committed;
 		self
 	}

@@ -10,7 +10,6 @@ use std::{
 use omp_core::Str;
 use omp_llm_catalog::{ProviderId, RouteId};
 use parking_lot::RwLock;
-use strum::{Display, EnumString, IntoStaticStr};
 
 use super::{
 	AccountAffinity, AccountChangeEvidence, AccountStateStore, AccountStateStoreError,
@@ -54,21 +53,28 @@ impl AccountRecord {
 	}
 }
 
-/// Why an account was placed in cooldown.
 #[allow(
 	missing_docs,
-	reason = "strum generates the public string-conversion method from documented variants"
+	reason = "strum generates the public string-conversion method in this private module"
 )]
-#[derive(Clone, Copy, Debug, Display, EnumString, Eq, IntoStaticStr, PartialEq)]
-#[strum(serialize_all = "snake_case", const_into_str)]
-pub enum CooldownReason {
-	/// Structured evidence disabled or revoked the credential.
-	CredentialRejected,
-	/// Structured evidence disabled the account itself.
-	AccountDisabled,
-	/// A caller explicitly imposed a temporary health cooldown.
-	Health,
+mod cooldown_reason {
+	use strum::{Display, EnumString, IntoStaticStr};
+
+	/// Why an account was placed in cooldown.
+	#[derive(Clone, Copy, Debug, Display, EnumString, Eq, IntoStaticStr, PartialEq)]
+	#[strum(serialize_all = "snake_case", const_into_str)]
+	pub enum CooldownReason {
+		/// Structured evidence disabled or revoked the credential.
+		CredentialRejected,
+		/// Structured evidence disabled the account itself.
+		AccountDisabled,
+		/// A caller explicitly imposed a temporary health cooldown.
+		Health,
+	}
 }
+
+#[doc(inline)]
+pub use cooldown_reason::CooldownReason;
 
 /// Current attempt eligibility for one candidate.
 #[derive(Clone, Debug, Eq, PartialEq)]

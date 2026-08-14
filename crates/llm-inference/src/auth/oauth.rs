@@ -26,7 +26,6 @@ use ring::rand::{SecureRandom, SystemRandom};
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use strum::IntoStaticStr;
 use url::Url;
 use zeroize::Zeroizing;
 
@@ -1027,43 +1026,50 @@ impl std::fmt::Debug for OAuthTokenSet {
 	}
 }
 
-/// Closed, sanitized OAuth provider error vocabulary.
 #[allow(
 	missing_docs,
-	reason = "strum generates the public const string-conversion method from documented variants"
+	reason = "strum generates the public string-conversion method in this private module"
 )]
-#[derive(Clone, Copy, Debug, Eq, IntoStaticStr, PartialEq)]
-#[strum(serialize_all = "snake_case", const_into_str)]
-pub enum OAuthProviderCode {
-	/// Device authorization remains pending.
-	AuthorizationPending,
-	/// Device polling must slow down.
-	SlowDown,
-	/// Authorization was declined by the resource owner.
-	AccessDenied,
-	/// Device or authorization grant expired.
-	ExpiredToken,
-	/// Refresh or authorization grant is invalid/revoked.
-	InvalidGrant,
-	/// Public client declaration is invalid.
-	InvalidClient,
-	/// Request shape is invalid.
-	InvalidRequest,
-	/// Requested scope is invalid.
-	InvalidScope,
-	/// Provider failed transiently.
-	ServerError,
-	/// Provider is temporarily unavailable.
-	TemporarilyUnavailable,
-	/// Provider returned an unknown code; raw text is deliberately discarded.
-	Unknown,
+mod oauth_provider_code {
+	use strum::IntoStaticStr;
+
+	/// Closed, sanitized OAuth provider error vocabulary.
+	#[derive(Clone, Copy, Debug, Eq, IntoStaticStr, PartialEq)]
+	#[strum(serialize_all = "snake_case", const_into_str)]
+	pub enum OAuthProviderCode {
+		/// Device authorization remains pending.
+		AuthorizationPending,
+		/// Device polling must slow down.
+		SlowDown,
+		/// Authorization was declined by the resource owner.
+		AccessDenied,
+		/// Device or authorization grant expired.
+		ExpiredToken,
+		/// Refresh or authorization grant is invalid/revoked.
+		InvalidGrant,
+		/// Public client declaration is invalid.
+		InvalidClient,
+		/// Request shape is invalid.
+		InvalidRequest,
+		/// Requested scope is invalid.
+		InvalidScope,
+		/// Provider failed transiently.
+		ServerError,
+		/// Provider is temporarily unavailable.
+		TemporarilyUnavailable,
+		/// Provider returned an unknown code; raw text is deliberately discarded.
+		Unknown,
+	}
 }
+
+#[doc(inline)]
+pub use oauth_provider_code::OAuthProviderCode;
 
 impl OAuthProviderCode {
 	/// Stable machine-readable string representation of this error code.
 	#[must_use]
-	pub const fn as_str(self) -> &'static str {
-		self.into_str()
+	pub const fn as_str(&self) -> &'static str {
+		(*self).into_str()
 	}
 }
 
@@ -1336,7 +1342,7 @@ fn provider_error(status: u16, body: &SecretString, refresh: bool) -> OAuthError
 		return OAuthError::RefreshRejected(AuthRejection {
 			kind:        AuthRejectionKind::RefreshRejected,
 			status:      Some(status),
-			code:        Some(code.as_str().into()),
+			code:        Some(Str::new_static(code.as_str())),
 			refreshable: false,
 		});
 	}
@@ -1505,6 +1511,12 @@ mod tests {
 		},
 		id::{LoginSessionId, PrincipalId},
 	};
+
+	#[test]
+	fn provider_codes_keep_wire_spelling() {
+		assert_eq!(OAuthProviderCode::AuthorizationPending.as_str(), "authorization_pending");
+		assert_eq!(OAuthProviderCode::TemporarilyUnavailable.as_str(), "temporarily_unavailable");
+	}
 
 	struct FixedEntropy;
 	impl OAuthEntropy for FixedEntropy {

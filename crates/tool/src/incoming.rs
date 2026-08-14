@@ -178,7 +178,7 @@ impl<'c> IncomingParams<'c> {
 	}
 
 	/// Authenticated owner of the persistent resources used by this invocation.
-	pub fn owner(&self) -> Option<&Str> {
+	pub const fn owner(&self) -> Option<&Str> {
 		self.owner.as_ref()
 	}
 
