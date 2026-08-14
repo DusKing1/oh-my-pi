@@ -27,6 +27,7 @@ use crate::{
 			build_execution_stack,
 		},
 	},
+	operation::usage::ConsoleUsageManager,
 	provider::ProviderService,
 	receipt::{AttemptOutcome, ExecutionReceipt, ReasonId},
 };
@@ -55,16 +56,23 @@ pub struct Registry {
 }
 
 struct RegistryInner {
-	catalog:      Arc<Catalog>,
-	bindings:     HashMap<RouteId, RouteBinding>,
-	auth_manager: Option<AuthManager>,
-	generation:   u64,
+	catalog:       Arc<Catalog>,
+	bindings:      HashMap<RouteId, RouteBinding>,
+	auth_manager:  Option<AuthManager>,
+	usage_manager: Option<ConsoleUsageManager>,
+	generation:    u64,
 }
 
 impl Registry {
 	/// Starts a construction-time builder for one immutable catalog snapshot.
 	pub fn builder(catalog: Arc<Catalog>) -> RegistryBuilder {
-		RegistryBuilder { catalog, bindings: HashMap::new(), auth_manager: None, generation: 1 }
+		RegistryBuilder {
+			catalog,
+			bindings: HashMap::new(),
+			auth_manager: None,
+			usage_manager: None,
+			generation: 1,
+		}
 	}
 
 	/// Returns the immutable catalog revision used by this registry.
@@ -158,10 +166,11 @@ impl Registry {
 /// Construction-time builder; mutation ends permanently at
 /// [`RegistryBuilder::build`].
 pub struct RegistryBuilder {
-	catalog:      Arc<Catalog>,
-	bindings:     HashMap<RouteId, RouteBinding>,
-	auth_manager: Option<AuthManager>,
-	generation:   u64,
+	catalog:       Arc<Catalog>,
+	bindings:      HashMap<RouteId, RouteBinding>,
+	auth_manager:  Option<AuthManager>,
+	usage_manager: Option<ConsoleUsageManager>,
+	generation:    u64,
 }
 
 impl RegistryBuilder {
@@ -206,6 +215,13 @@ impl RegistryBuilder {
 		self
 	}
 
+	/// Registers route-independent provider console usage backends.
+	pub fn with_usage_manager(mut self, manager: ConsoleUsageManager) -> Self {
+		self.usage_manager = Some(manager);
+		self.generation = self.generation.saturating_add(1);
+		self
+	}
+
 	/// Constructs every catalog route exactly once through a production
 	/// route-stack factory.
 	pub fn with_factory(mut self, factory: Arc<dyn RouteStackFactory>) -> Result<Self, Error> {
@@ -226,10 +242,15 @@ impl RegistryBuilder {
 	/// Constructs every built-in route once from complete production composition
 	/// dependencies.
 	pub fn with_builtins(self, config: BuiltinConfig) -> Result<Self, Error> {
-		let manager = config.auth_manager().cloned();
-		let builder = match manager {
+		let auth_manager = config.auth_manager().cloned();
+		let usage_manager = config.usage_manager().cloned();
+		let builder = match auth_manager {
 			Some(manager) => self.with_auth_manager(manager),
 			None => self,
+		};
+		let builder = match usage_manager {
+			Some(manager) => builder.with_usage_manager(manager),
+			None => builder,
 		};
 		builder.with_factory(Arc::new(BuiltinRouteStackFactory::new(config)))
 	}
@@ -267,10 +288,11 @@ impl RegistryBuilder {
 		}
 		Ok(Registry {
 			inner: Arc::new(RegistryInner {
-				catalog:      self.catalog,
-				bindings:     self.bindings,
-				auth_manager: self.auth_manager,
-				generation:   self.generation,
+				catalog:       self.catalog,
+				bindings:      self.bindings,
+				auth_manager:  self.auth_manager,
+				usage_manager: self.usage_manager,
+				generation:    self.generation,
 			}),
 		})
 	}
@@ -346,6 +368,46 @@ async fn dispatch_preplanned(
 			},
 			receipt: layered.context.receipt(),
 			body:    AnswerBody::Auth(body),
+		});
+	}
+	if let OperationCall::Usage(request) = &layered.payload.operation {
+		let manager = registry.inner.usage_manager.as_ref().ok_or_else(|| {
+			Error::planning(
+				ErrorKind::RouteUnavailable,
+				ErrorDetail::capability(
+					Str::from(OperationKind::Usage.to_string()),
+					ReasonId(Str::from("usage-manager-not-constructed")),
+				),
+				layered.context.receipt(),
+			)
+		})?;
+		let deadline = layered.payload.deadline.or_else(|| {
+			layered.payload.budget.max_elapsed.and_then(|maximum| {
+				std::time::Instant::now().checked_add(maximum.saturating_sub(layered.context.elapsed()))
+			})
+		});
+		let body = match manager
+			.execute(&plan.provider, &plan.route, request, deadline)
+			.await
+		{
+			Ok(body) => body,
+			Err(mut error) => {
+				attribute_error(&mut error, &plan.provider, &plan.route, &layered.payload.id);
+				layered.context.finalize_error(&mut error);
+				return Err(error);
+			},
+		};
+		return Ok(Answer {
+			meta:    ResponseMeta {
+				request_id:          layered.payload.id.clone(),
+				provider:            plan.provider.clone(),
+				route:               plan.route.clone(),
+				model:               None,
+				provider_request_id: None,
+				created_at:          SystemTime::now(),
+			},
+			receipt: layered.context.receipt(),
+			body:    AnswerBody::Usage(body),
 		});
 	}
 	let candidates = plan.fallbacks.iter().cloned().collect::<Vec<_>>();
@@ -504,6 +566,10 @@ mod tests {
 	impl AuthLoginEngine for UnusedLogin {
 		fn method(&self) -> AuthMethod {
 			self.0
+		}
+
+		fn supports(&self, _provider: &ProviderId) -> bool {
+			true
 		}
 
 		fn begin(
@@ -683,10 +749,11 @@ mod tests {
 		}));
 		let registry = Registry {
 			inner: Arc::new(RegistryInner {
-				catalog:      catalog.clone(),
-				bindings:     HashMap::from([(route.id.clone(), RouteBinding::Available(service))]),
-				auth_manager: Some(manager),
-				generation:   1,
+				catalog:       catalog.clone(),
+				bindings:      HashMap::from([(route.id.clone(), RouteBinding::Available(service))]),
+				auth_manager:  Some(manager),
+				usage_manager: None,
+				generation:    1,
 			}),
 		};
 		let budget = ExecutionBudget::default();

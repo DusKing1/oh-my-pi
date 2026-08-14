@@ -2,22 +2,36 @@
 //! login protocols.
 
 pub mod adc;
+pub mod alibaba_token_plan;
 pub mod broker;
 pub mod crypto;
+pub mod github_copilot;
 pub mod key;
 pub mod lease;
 pub mod login;
 pub mod manager;
 pub mod oauth;
+pub mod shape;
 pub mod sigv4;
 pub mod spec;
 pub mod store;
 pub use adc::{
 	AdcEngine, AdcError, AdcResolution, AdcRuntime, AdcRuntimeError, AdcSourceKind, SystemAdcRuntime,
 };
+pub use alibaba_token_plan::{
+	ALIBABA_TOKEN_PLAN_BASE_URL, ALIBABA_TOKEN_PLAN_CN_BASE_URL, AlibabaTokenPlanCredential,
+	AlibabaTokenPlanLoginEngine, AlibabaTokenPlanLoginError, AlibabaTokenPlanShaper,
+	parse_alibaba_token_plan_credential, serialize_alibaba_token_plan_credential,
+};
 pub use broker::{
 	CredentialBroker, CredentialBrokerEngines, CredentialBrokerError, CredentialEnvironment,
 	SystemCredentialEnvironment,
+};
+pub use github_copilot::{
+	COPILOT_API_VERSION, COPILOT_USER_AGENT, CopilotProbeFuture, GithubCopilotShaper,
+	PERSONAL_GITHUB_COPILOT_BASE_URL, PUBLIC_GITHUB_HOSTS, ParsedCopilotApiKey, copilot_base_url,
+	discover_copilot_api_endpoint, is_personal_base_url, is_public_github_host,
+	normalize_api_endpoint, normalize_domain, normalize_enterprise_domain, parse_copilot_api_key,
 };
 pub use key::{
 	HeadlessKeySource, KeyError, KeyId, KeySource, OsCredentialKeySource, UnavailableKeySource,
@@ -41,6 +55,10 @@ pub use oauth::{
 	OAuthCustomDispatcher, OAuthCustomHandler, OAuthEngine, OAuthEntropy, OAuthError,
 	OAuthHttpClient, OAuthHttpRequest, OAuthHttpResponse, OAuthProviderCode, OAuthTokenSet,
 	OAuthTransportError, PkcePending, SystemEntropySource, SystemOAuthClock, SystemOAuthHttpClient,
+};
+pub use shape::{
+	CredentialShaperRegistry, DuplicateShaperError, ProviderShapeFuture, ProviderShaper,
+	ShapedCredential,
 };
 pub use spec::{
 	AdcSourceSpec, AdcSpec, AuthSpec, AuthSpecError, BearerScheme, BodyPlacement,

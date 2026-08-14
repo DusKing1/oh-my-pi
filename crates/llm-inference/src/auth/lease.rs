@@ -98,13 +98,14 @@ impl fmt::Debug for LeaseInner {
 
 /// Opaque claim on one generation of secret credential material.
 ///
-/// The lease has no secret accessor and no serialization implementation. Its
-/// only secret-bearing operations mutate a sensitive header/query sink or sign
-/// a finalized request.
+/// The lease has no public secret accessor and no serialization implementation.
+/// Its only public secret-bearing operations mutate a sensitive header/query
+/// sink or sign a finalized request.
 #[derive(Clone)]
 pub struct CredentialLease {
-	inner:      Arc<LeaseInner>,
-	source_tag: Option<Str>,
+	inner:             Arc<LeaseInner>,
+	source_tag:        Option<Str>,
+	endpoint_override: Option<Str>,
 }
 
 impl CredentialLease {
@@ -112,8 +113,9 @@ impl CredentialLease {
 	#[must_use]
 	pub fn api_key(meta: LeaseMeta, secret: SecretString) -> Self {
 		Self {
-			inner:      Arc::new(LeaseInner { meta, material: LeaseMaterial::ApiKey(secret) }),
-			source_tag: None,
+			inner:             Arc::new(LeaseInner { meta, material: LeaseMaterial::ApiKey(secret) }),
+			source_tag:        None,
+			endpoint_override: None,
 		}
 	}
 
@@ -121,8 +123,9 @@ impl CredentialLease {
 	#[must_use]
 	pub fn bearer(meta: LeaseMeta, secret: SecretString) -> Self {
 		Self {
-			inner:      Arc::new(LeaseInner { meta, material: LeaseMaterial::Bearer(secret) }),
-			source_tag: None,
+			inner:             Arc::new(LeaseInner { meta, material: LeaseMaterial::Bearer(secret) }),
+			source_tag:        None,
+			endpoint_override: None,
 		}
 	}
 
@@ -130,8 +133,12 @@ impl CredentialLease {
 	#[must_use]
 	pub fn session_token(meta: LeaseMeta, secret: SecretString) -> Self {
 		Self {
-			inner:      Arc::new(LeaseInner { meta, material: LeaseMaterial::SessionToken(secret) }),
-			source_tag: None,
+			inner:             Arc::new(LeaseInner {
+				meta,
+				material: LeaseMaterial::SessionToken(secret),
+			}),
+			source_tag:        None,
+			endpoint_override: None,
 		}
 	}
 
@@ -144,7 +151,7 @@ impl CredentialLease {
 		session_token: Option<SecretString>,
 	) -> Self {
 		Self {
-			inner:      Arc::new(LeaseInner {
+			inner:             Arc::new(LeaseInner {
 				meta,
 				material: LeaseMaterial::Aws(AwsCredential::new(
 					access_key_id,
@@ -152,7 +159,8 @@ impl CredentialLease {
 					session_token,
 				)),
 			}),
-			source_tag: None,
+			source_tag:        None,
+			endpoint_override: None,
 		}
 	}
 
@@ -185,6 +193,34 @@ impl CredentialLease {
 
 	pub(crate) fn source_tag(&self) -> Option<&str> {
 		self.source_tag.as_deref()
+	}
+
+	pub(crate) fn scalar_secret(&self) -> Option<&SecretString> {
+		self.inner.material.scalar().ok()
+	}
+
+	pub(crate) fn with_shape(self, shaped: super::shape::ShapedCredential) -> Self {
+		let kind = self.kind();
+		let Self { inner, source_tag, .. } = self;
+		let inner = match shaped.secret {
+			None => inner,
+			Some(secret) => {
+				let material = match kind {
+					CredentialKind::ApiKey => LeaseMaterial::ApiKey(secret),
+					CredentialKind::Bearer => LeaseMaterial::Bearer(secret),
+					CredentialKind::SessionToken => LeaseMaterial::SessionToken(secret),
+					CredentialKind::AwsSigV4 => {
+						return Self { inner, source_tag, endpoint_override: None };
+					},
+				};
+				Arc::new(LeaseInner { meta: inner.meta.clone(), material })
+			},
+		};
+		Self { inner, source_tag, endpoint_override: shaped.endpoint_override }
+	}
+
+	pub(crate) const fn endpoint_override(&self) -> Option<&Str> {
+		self.endpoint_override.as_ref()
 	}
 
 	/// Prepares an opaque credential application for the innermost transport.
@@ -332,6 +368,7 @@ impl fmt::Debug for CredentialLease {
 			.field("expires_at", &self.inner.meta.expires_at)
 			.field("kind", &self.kind())
 			.field("material", &"[REDACTED]")
+			.field("endpoint_override", &self.endpoint_override)
 			.finish()
 	}
 }
@@ -709,6 +746,19 @@ mod tests {
 			generation: 7,
 			expires_at: None,
 		}
+	}
+
+	#[test]
+	fn endpoint_only_shape_reuses_secret_lease_allocation() {
+		let lease =
+			CredentialLease::bearer(meta(), SecretString::from("unchanged-secret".to_owned()));
+		let original = Arc::clone(&lease.inner);
+		let shaped = lease.with_shape(crate::auth::ShapedCredential {
+			secret:            None,
+			endpoint_override: Some(Str::from("https://override.example")),
+		});
+		assert!(Arc::ptr_eq(&original, &shaped.inner));
+		assert_eq!(shaped.endpoint_override().map(Str::as_str), Some("https://override.example"),);
 	}
 
 	#[test]

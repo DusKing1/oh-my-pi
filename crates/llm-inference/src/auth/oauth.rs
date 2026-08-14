@@ -1,6 +1,8 @@
 //! Generic OAuth PKCE, device, paste, and refresh protocol engines.
+mod custom;
 
 use std::{
+	future::Future,
 	sync::Arc,
 	time::{Duration, SystemTime},
 };
@@ -238,6 +240,15 @@ pub trait OAuthCustomHandler: Send + Sync {
 		spec: &'a OAuthCustomSpec,
 		driver: &'a LoginDriver,
 	) -> BoxFuture<'a, Result<OAuthTokenSet, OAuthError>>;
+
+	/// Refreshes a token for protocols whose renewal wire shape is custom.
+	fn refresh<'a>(
+		&'a self,
+		_spec: &'a OAuthCustomSpec,
+		_refresh_token: SecretString,
+	) -> BoxFuture<'a, Result<OAuthTokenSet, OAuthError>> {
+		async { Err(OAuthError::RefreshUnsupported) }.boxed()
+	}
 }
 
 /// Registry dispatching custom OAuth strictly by catalog exchange enum.
@@ -251,6 +262,16 @@ impl OAuthCustomDispatcher {
 	#[must_use]
 	pub const fn new() -> Self {
 		Self { handlers: Vec::new() }
+	}
+
+	/// Constructs the complete built-in custom exchange registry.
+	pub fn builtin(
+		http: Arc<dyn OAuthHttpClient>,
+		clock: Arc<dyn OAuthClock>,
+	) -> Result<Self, OAuthCustomDispatchError> {
+		let mut dispatcher = Self::new();
+		custom::register_all(&mut dispatcher, http, clock)?;
+		Ok(dispatcher)
 	}
 
 	/// Registers one handler, rejecting duplicate typed discriminators.
@@ -286,6 +307,19 @@ impl OAuthCustomDispatcher {
 			.exchange(spec, driver)
 			.await
 			.map_err(OAuthCustomDispatchError::Protocol)
+	}
+
+	pub(crate) async fn refresh(
+		&self,
+		spec: &OAuthCustomSpec,
+		refresh_token: SecretString,
+	) -> Result<OAuthTokenSet, OAuthError> {
+		let handler = self
+			.handlers
+			.iter()
+			.find(|handler| handler.exchange_kind() == spec.exchange)
+			.ok_or(OAuthError::RefreshUnsupported)?;
+		handler.refresh(spec, refresh_token).await
 	}
 }
 
@@ -651,7 +685,7 @@ where
 	K: OAuthClock,
 	R: OAuthEntropy,
 {
-	/// Persists a successful interactive OAuth result as one opaque renewable
+	/// Persists a successful interactive OAuth result as one opaque credential
 	/// bundle.
 	pub fn persist_login(
 		&self,
@@ -664,7 +698,7 @@ where
 		let expires_at = tokens
 			.expires_in()
 			.and_then(|duration| issued_at.checked_add(duration));
-		let bundle = tokens.into_renewable_bundle()?.encode()?;
+		let bundle = tokens.into_stored_bundle().encode()?;
 		let now_ms = unix_millis(issued_at)?;
 		let expires_at_ms = expires_at.map(unix_millis).transpose()?;
 		let stored = store.put_oauth_bundle(OAuthCredentialWrite {
@@ -684,7 +718,7 @@ where
 		})
 	}
 
-	/// Loads a persisted renewable access token as an opaque request lease.
+	/// Loads a persisted OAuth access token as an opaque request lease.
 	pub fn lease_persisted(
 		&self,
 		store: &CredentialStore,
@@ -692,7 +726,7 @@ where
 		now: SystemTime,
 	) -> Result<CredentialLease, OAuthCredentialManagerError> {
 		let stored = store.load_oauth_bundle(account)?;
-		let bundle = RenewableCredentialBundle::decode(&stored.bundle)?;
+		let bundle = StoredOAuthBundle::decode(&stored.bundle)?;
 		let expires_at = stored
 			.metadata
 			.expires_at_ms
@@ -710,17 +744,61 @@ where
 		Ok(CredentialLease::bearer(meta, bundle.access_token))
 	}
 
-	/// Refreshes and fenced-persists one rejected OAuth generation through the
-	/// shared process/cross-process coordinator.
+	/// Refreshes and fenced-persists one rejected standard OAuth generation
+	/// through the shared process/cross-process coordinator.
 	pub async fn refresh_persisted(
 		&self,
 		coordinator: &RefreshCoordinator,
-		store: std::sync::Arc<CredentialStore>,
+		store: Arc<CredentialStore>,
 		client: OAuthClientSpec,
 		request: RefreshRequest,
 		origin: CredentialOrigin,
 	) -> Result<RefreshOutcome, OAuthCredentialManagerError> {
 		let engine = self;
+		self
+			.refresh_persisted_with(
+				coordinator,
+				store,
+				request,
+				origin,
+				move |refresh_token| async move { engine.refresh(&client, refresh_token).await },
+			)
+			.await
+	}
+
+	/// Refreshes and fenced-persists one rejected custom OAuth generation.
+	pub(crate) async fn refresh_custom_persisted(
+		&self,
+		coordinator: &RefreshCoordinator,
+		store: Arc<CredentialStore>,
+		custom: Arc<OAuthCustomDispatcher>,
+		spec: OAuthCustomSpec,
+		request: RefreshRequest,
+		origin: CredentialOrigin,
+	) -> Result<RefreshOutcome, OAuthCredentialManagerError> {
+		self
+			.refresh_persisted_with(
+				coordinator,
+				store,
+				request,
+				origin,
+				move |refresh_token| async move { custom.refresh(&spec, refresh_token).await },
+			)
+			.await
+	}
+
+	async fn refresh_persisted_with<F, Fut>(
+		&self,
+		coordinator: &RefreshCoordinator,
+		store: Arc<CredentialStore>,
+		request: RefreshRequest,
+		origin: CredentialOrigin,
+		refresh: F,
+	) -> Result<RefreshOutcome, OAuthCredentialManagerError>
+	where
+		F: FnOnce(SecretString) -> Fut + Send,
+		Fut: Future<Output = Result<OAuthTokenSet, OAuthError>> + Send,
+	{
 		let account = request.account.clone();
 		let principal = request.principal.clone();
 		let rejected_generation = request.rejected.generation;
@@ -744,18 +822,17 @@ where
 							summary: "credential principal changed before refresh".into(),
 						});
 					}
-					let bundle = RenewableCredentialBundle::decode(&stored.bundle)
-						.map_err(refresh_oauth_operation)?;
-					let tokens = engine
-						.refresh(&client, bundle.into_refresh())
+					let bundle =
+						StoredOAuthBundle::decode(&stored.bundle).map_err(refresh_oauth_operation)?;
+					let refresh_token = bundle.into_refresh().map_err(refresh_oauth_operation)?;
+					let tokens = refresh(refresh_token)
 						.await
 						.map_err(refresh_oauth_operation)?;
 					let expires_at = tokens
 						.expires_in()
 						.and_then(|duration| requested_at.checked_add(duration));
 					let bundle = tokens
-						.into_renewable_bundle()
-						.map_err(refresh_oauth_operation)?
+						.into_stored_bundle()
 						.encode()
 						.map_err(refresh_oauth_operation)?;
 					let write = OAuthCredentialWrite {
@@ -910,8 +987,8 @@ impl OAuthTokenSet {
 
 	/// Converts a non-renewable access token into an ephemeral opaque lease.
 	///
-	/// Renewable results must use [`Self::into_renewable_bundle`] so their
-	/// refresh grant is persisted atomically instead of being discarded.
+	/// Interactive logins normally persist through
+	/// [`OAuthEngine::persist_login`].
 	pub fn into_ephemeral_lease(
 		self,
 		mut meta: LeaseMeta,
@@ -928,31 +1005,33 @@ impl OAuthTokenSet {
 		Ok(CredentialLease::bearer(meta, self.access_token))
 	}
 
-	/// Moves a renewable result into the opaque persistence bundle.
-	pub(crate) fn into_renewable_bundle(self) -> Result<RenewableCredentialBundle, OAuthError> {
-		let refresh_token = self.refresh_token.ok_or(OAuthError::MissingRefreshToken)?;
-		Ok(RenewableCredentialBundle {
-			access_token: self.access_token,
-			refresh_token,
-			token_type: self.token_type,
-			expires_in: self.expires_in,
-		})
+	/// Moves an OAuth result into the opaque persistence bundle.
+	pub(crate) fn into_stored_bundle(self) -> StoredOAuthBundle {
+		StoredOAuthBundle {
+			access_token:  self.access_token,
+			refresh_token: self.refresh_token,
+			token_type:    self.token_type,
+			expires_in:    self.expires_in,
+		}
 	}
 }
 
-/// Move-only renewable OAuth material owned inside the auth boundary.
-pub(crate) struct RenewableCredentialBundle {
+/// Move-only OAuth material owned inside the auth boundary.
+pub(crate) struct StoredOAuthBundle {
 	access_token:  SecretString,
-	refresh_token: SecretString,
+	refresh_token: Option<SecretString>,
 	token_type:    Str,
 	expires_in:    Option<Duration>,
 }
 
-impl RenewableCredentialBundle {
+impl StoredOAuthBundle {
 	/// Encodes the bundle into an opaque zeroizing store payload.
 	pub(crate) fn encode(&self) -> Result<SecretBox<Vec<u8>>, OAuthError> {
 		let access = self.access_token.expose_secret().as_bytes();
-		let refresh = self.refresh_token.expose_secret().as_bytes();
+		let refresh = self
+			.refresh_token
+			.as_ref()
+			.map_or(&[][..], |token| token.expose_secret().as_bytes());
 		let token_type = self.token_type.as_bytes();
 		let mut encoded =
 			Zeroizing::new(Vec::with_capacity(24 + access.len() + refresh.len() + token_type.len()));
@@ -993,25 +1072,25 @@ impl RenewableCredentialBundle {
 			.map_err(|_| OAuthError::MalformedRenewableCredential)?;
 		let token_type = String::from_utf8(token_type.to_vec())
 			.map_err(|_| OAuthError::MalformedRenewableCredential)?;
-		if access.is_empty() || refresh.is_empty() || token_type.is_empty() {
+		if access.is_empty() || token_type.is_empty() {
 			return Err(OAuthError::MalformedRenewableCredential);
 		}
 		Ok(Self {
 			access_token:  SecretString::from(access),
-			refresh_token: SecretString::from(refresh),
+			refresh_token: (!refresh.is_empty()).then(|| SecretString::from(refresh)),
 			token_type:    token_type.into(),
 			expires_in:    (expires != u64::MAX).then(|| Duration::from_secs(expires)),
 		})
 	}
 
-	pub(crate) fn into_refresh(self) -> SecretString {
-		self.refresh_token
+	pub(crate) fn into_refresh(self) -> Result<SecretString, OAuthError> {
+		self.refresh_token.ok_or(OAuthError::RefreshUnsupported)
 	}
 }
 
-impl std::fmt::Debug for RenewableCredentialBundle {
+impl std::fmt::Debug for StoredOAuthBundle {
 	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		formatter.write_str("RenewableCredentialBundle([REDACTED])")
+		formatter.write_str("StoredOAuthBundle([REDACTED])")
 	}
 }
 
@@ -1151,11 +1230,8 @@ pub enum OAuthError {
 	/// Renewable token was routed to the ephemeral lease path.
 	#[error("renewable OAuth credential requires encrypted persistence")]
 	RenewableCredentialRequiresPersistence,
-	/// OAuth result did not include a refresh grant.
-	#[error("OAuth response did not include a refresh token")]
-	MissingRefreshToken,
-	/// Authenticated renewable bundle had an invalid internal shape.
-	#[error("stored renewable OAuth credential is malformed")]
+	/// Stored OAuth bundle had an invalid internal shape.
+	#[error("stored OAuth credential is malformed")]
 	MalformedRenewableCredential,
 	/// Catalog-selected identity evidence was absent or invalid.
 	#[error("OAuth principal identity could not be resolved")]
@@ -1173,13 +1249,13 @@ impl From<LoginChannelError> for OAuthError {
 		}
 	}
 }
-/// Converts a stored opaque renewable bundle into a lease without exposing its
+/// Converts a stored opaque OAuth bundle into a lease without exposing its
 /// encoding or token material to the store-backed credential source.
 pub(crate) fn lease_stored_bundle(
 	stored: super::store::StoredOAuthCredential,
 	valid_after: SystemTime,
 ) -> Result<CredentialLease, super::lease::CredentialError> {
-	let bundle = RenewableCredentialBundle::decode(&stored.bundle)
+	let bundle = StoredOAuthBundle::decode(&stored.bundle)
 		.map_err(|_| super::lease::CredentialError::SourceFailure)?;
 	let expires_at = stored
 		.metadata
@@ -1565,6 +1641,22 @@ mod tests {
 			async move { Ok(self.0.lock().pop_front().expect("fixture response")) }.boxed()
 		}
 	}
+	struct RecordingHttp {
+		response: Mutex<Option<OAuthHttpResponse>>,
+		body:     Mutex<Option<String>>,
+	}
+
+	impl OAuthHttpClient for RecordingHttp {
+		fn execute(
+			&self,
+			request: OAuthHttpRequest,
+		) -> BoxFuture<'_, Result<OAuthHttpResponse, OAuthTransportError>> {
+			let (_, _, _, body) = request.into_parts();
+			*self.body.lock() = body.map(|body| body.expose_secret().to_owned());
+			let response = self.response.lock().take().expect("fixture response");
+			async move { Ok(response) }.boxed()
+		}
+	}
 
 	fn client() -> OAuthClientSpec {
 		OAuthClientSpec {
@@ -1577,6 +1669,34 @@ mod tests {
 			token_params: Vec::new(),
 			placement:    HeaderPlacement::bearer().into(),
 		}
+	}
+	#[tokio::test]
+	async fn device_authorization_sends_declared_scopes() {
+		let http = RecordingHttp {
+			response: Mutex::new(Some(OAuthHttpResponse {
+				status:  200,
+				headers: HeaderMap::new(),
+				body:    SecretString::from(
+					r#"{"device_code":"device","user_code":"CODE","verification_uri":"https://auth.example/verify","expires_in":600}"#.to_owned(),
+				),
+			})),
+			body:     Mutex::new(None),
+		};
+		let clock = TestClock(SystemTime::UNIX_EPOCH);
+		let engine = OAuthEngine::with_entropy(&http, &clock, FixedEntropy);
+		let (_session, driver, _) = default_login_channels(LoginSessionId::from("device-scopes"));
+		let spec = OAuthDeviceSpec {
+			client:                   client(),
+			device_authorization_url: "https://auth.example/device".into(),
+			max_polls:                2,
+			default_interval:         Duration::from_secs(1),
+			max_interval:             Duration::from_secs(5),
+		};
+		engine
+			.begin_device(&spec, &driver)
+			.await
+			.expect("device authorization");
+		assert_eq!(http.body.lock().as_deref(), Some("client_id=client&scope=openid+profile"));
 	}
 
 	#[tokio::test]
@@ -1669,7 +1789,7 @@ mod tests {
 	}
 
 	#[test]
-	fn renewable_bundle_round_trips_opaque_bytes_and_redacts_debug() {
+	fn stored_bundle_round_trips_opaque_bytes_and_redacts_debug() {
 		let access = "access-secret-marker";
 		let refresh = "refresh-secret-marker";
 		let tokens = OAuthTokenSet {
@@ -1679,14 +1799,27 @@ mod tests {
 			expires_in:        Some(Duration::from_secs(3600)),
 			identity_response: SecretString::from("{}".to_owned()),
 		};
-		let bundle = tokens.into_renewable_bundle().expect("renewable");
+		let bundle = tokens.into_stored_bundle();
 		let encoded = bundle.encode().expect("encode");
 		assert!(!format!("{bundle:?} {encoded:?}").contains(access));
 		assert!(!format!("{bundle:?} {encoded:?}").contains(refresh));
-		let decoded = RenewableCredentialBundle::decode(&encoded).expect("decode");
+		let decoded = StoredOAuthBundle::decode(&encoded).expect("decode");
 		let debug = format!("{decoded:?}");
 		assert!(!debug.contains(access));
 		assert!(!debug.contains(refresh));
+	}
+	#[test]
+	fn stored_bundle_preserves_nonrenewable_access_tokens() {
+		let tokens = OAuthTokenSet {
+			access_token:      SecretString::from("access".to_owned()),
+			refresh_token:     None,
+			token_type:        "Bearer".into(),
+			expires_in:        None,
+			identity_response: SecretString::from("{}".to_owned()),
+		};
+		let encoded = tokens.into_stored_bundle().encode().expect("encode");
+		let decoded = StoredOAuthBundle::decode(&encoded).expect("decode");
+		assert!(matches!(decoded.into_refresh(), Err(OAuthError::RefreshUnsupported)));
 	}
 
 	#[test]
@@ -1708,6 +1841,39 @@ mod tests {
 			tokens.into_ephemeral_lease(meta, SystemTime::UNIX_EPOCH),
 			Err(OAuthError::RenewableCredentialRequiresPersistence)
 		));
+	}
+
+	#[test]
+	fn access_only_login_persists_and_leases() {
+		let directory = tempdir().expect("temporary directory");
+		let keys = Arc::new(HeadlessKeySource::new(KeyId::new("oauth-access-only-key"), [0x7b; 32]));
+		let store = CredentialStore::open(directory.path().join("credentials.sqlite"), keys)
+			.expect("credential store");
+		let issued_at = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+		let meta = LeaseMeta {
+			account:    AccountId::from("access-only-account"),
+			principal:  PrincipalId::from("access-only-principal"),
+			generation: 0,
+			expires_at: None,
+		};
+		let tokens = OAuthTokenSet {
+			access_token:      SecretString::from("access-only-marker".to_owned()),
+			refresh_token:     None,
+			token_type:        "Bearer".into(),
+			expires_in:        None,
+			identity_response: SecretString::from("{}".to_owned()),
+		};
+		let http = TestHttp(Mutex::new(VecDeque::new()));
+		let clock = TestClock(issued_at);
+		let engine = OAuthEngine::with_entropy(&http, &clock, FixedEntropy);
+
+		let freshness = engine
+			.persist_login(&store, tokens, &meta, CredentialOrigin::Persistent, issued_at)
+			.expect("persist access-only login");
+		assert_eq!(freshness.generation, 1);
+		engine
+			.lease_persisted(&store, &meta.account, issued_at)
+			.expect("lease access-only login");
 	}
 
 	#[tokio::test]
@@ -1786,7 +1952,9 @@ mod tests {
 	#[tokio::test]
 	async fn principal_resolution_uses_only_catalog_selected_evidence() {
 		let claim = "https://api.example/account";
-		let claims = format!(r#"{{"{claim}":"claim-principal"}}"#);
+		let claims = format!(
+			r#"{{"{claim}":"claim-principal","https://api.openai.com/auth":{{"chatgpt_account_id":"nested-principal"}}}}"#
+		);
 		let payload = base64_url::encode_raw(claims.as_bytes()).into_string();
 		let identity = format!(
 			r#"{{"profile":{{"id":"response-principal"}},"id_token":"e30.{payload}.signature"}}"#,
@@ -1821,6 +1989,19 @@ mod tests {
 				.expect("ID token principal")
 				.as_str(),
 			"claim-principal",
+		);
+		assert_eq!(
+			tokens
+				.resolve_principal(
+					&PrincipalResolution::IdTokenClaim {
+						claim: "/https:~1~1api.openai.com~1auth/chatgpt_account_id".into(),
+					},
+					&http,
+				)
+				.await
+				.expect("nested ID token principal")
+				.as_str(),
+			"nested-principal",
 		);
 		assert_eq!(
 			tokens

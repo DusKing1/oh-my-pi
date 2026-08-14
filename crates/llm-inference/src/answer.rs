@@ -799,21 +799,158 @@ pub enum UsageWindowKind {
 	Balance,
 }
 
+/// Unit in which a usage amount is reported.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UsageUnit {
+	/// Percentage points.
+	Percent,
+	/// Model tokens.
+	Tokens,
+	/// Requests or operations.
+	Requests,
+	/// United States dollars.
+	Usd,
+	/// Minutes.
+	Minutes,
+	/// Bytes.
+	Bytes,
+	/// Provider-defined units with no stronger classification.
+	Unknown,
+}
+
+/// Exact fixed-point quantity.
+///
+/// The represented value is `units / 10^decimal_exponent`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UsageQuantity {
+	/// Integer coefficient.
+	pub units:            u64,
+	/// Base-10 fractional digits.
+	pub decimal_exponent: u8,
+}
+
+impl UsageQuantity {
+	/// Constructs a fixed-point quantity.
+	#[must_use]
+	pub const fn new(units: u64, decimal_exponent: u8) -> Self {
+		Self { units, decimal_exponent }
+	}
+}
+
+/// Exact quantities for one usage window.
+///
+/// Per-value exponents preserve providers whose consumed, remaining, and limit
+/// USD amounts use different minor-unit scales. `consumed` may exceed `limit`
+/// for provider-reported overage; in that case `remaining` is absent or zero.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UsageAmount {
+	/// Quantity unit shared by every populated field.
+	pub unit:      UsageUnit,
+	/// Consumed quantity.
+	pub consumed:  Option<UsageQuantity>,
+	/// Remaining quantity.
+	pub remaining: Option<UsageQuantity>,
+	/// Total limit.
+	pub limit:     Option<UsageQuantity>,
+}
+
+/// Provider account metadata safe to expose outside the credential boundary.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct UsageAccountMetadata {
+	/// Provider-native account identifier, when distinct from the broker ID.
+	pub provider_account_id: Option<Str>,
+	/// Account email exposed by the provider.
+	pub email:               Option<Str>,
+	/// Provider project identifier.
+	pub project_id:          Option<Str>,
+	/// Provider organization identifier.
+	pub organization_id:     Option<Str>,
+	/// Provider organization display name.
+	pub organization_name:   Option<Str>,
+}
+
+/// One saved rate-limit reset credit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UsageResetCredit {
+	/// Time at which the credit was granted.
+	pub granted_at: Option<SystemTime>,
+	/// Time after which the credit can no longer be redeemed.
+	pub expires_at: Option<SystemTime>,
+	/// Provider-defined lifecycle state such as `available` or `redeemed`.
+	pub status:     Option<Str>,
+}
+
+/// Saved rate-limit resets available to an account.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UsageResetCredits {
+	/// Number of credits redeemable now.
+	pub available: u64,
+	/// Per-credit details, including expiry times used for soonest-expiry
+	/// selection.
+	pub credits:   Box<[UsageResetCredit]>,
+}
+
+impl UsageResetCredits {
+	/// Returns the soonest expiry among credits that are available or have no
+	/// provider status.
+	#[must_use]
+	pub fn soonest_expiry(&self) -> Option<SystemTime> {
+		self
+			.credits
+			.iter()
+			.filter(|credit| {
+				credit
+					.status
+					.as_deref()
+					.is_none_or(|status| status.eq_ignore_ascii_case("available"))
+			})
+			.filter_map(|credit| credit.expires_at)
+			.min()
+	}
+}
+
+/// Provider-declared state of a usage window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UsageStatus {
+	/// Usage is below the provider warning threshold.
+	Ok,
+	/// Usage is near its limit.
+	Warning,
+	/// Usage is exhausted or provider-declared rate-limited.
+	Exhausted,
+	/// The provider did not expose enough data to classify the window.
+	Unknown,
+}
+
 /// Account-scoped usage or quota window.
+///
+/// The shape covers Pi's stable bucket IDs and display labels, fixed-point
+/// percent/count/token/USD amounts, model or shared scopes, rolling durations,
+/// reset verbs and timestamps, per-window advisories, and provenance.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UsageWindow {
+	/// Stable provider-defined limit identifier.
+	pub id:          Str,
 	/// Window category.
 	pub kind:        UsageWindowKind,
-	/// Dimension name, such as requests or input tokens.
+	/// Dimension name, such as requests, tokens, credits, or concurrency.
 	pub dimension:   Str,
-	/// Consumed integer units when exposed or safely derived.
-	pub consumed:    Option<u64>,
-	/// Remaining integer units when exposed.
-	pub remaining:   Option<u64>,
-	/// Total integer limit when exposed.
-	pub limit:       Option<u64>,
+	/// Human-facing provider label.
+	pub label:       Option<Str>,
+	/// Model, tier, backend counter, or shared-bucket scope.
+	pub scope:       Option<Str>,
+	/// Exact fixed-point quantities.
+	pub amount:      UsageAmount,
+	/// Provider-declared status when available.
+	pub status:      Option<UsageStatus>,
+	/// Rolling or calendar duration when known.
+	pub duration:    Option<Duration>,
 	/// Window reset time when exposed.
 	pub resets_at:   Option<SystemTime>,
+	/// Verb describing the reset event, such as `tick` or `regen`.
+	pub reset_label: Option<Str>,
+	/// Window-specific advisory notes.
+	pub notes:       Box<[Str]>,
 	/// Observation provenance.
 	pub source:      UsageSource,
 	/// Time at which this observation was recorded.
@@ -821,16 +958,34 @@ pub struct UsageWindow {
 }
 
 /// Account-scoped usage, quota, and balance answer.
+///
+/// This is the lossless Pi usage contract: windows carry fractional or
+/// absolute percent/request/token/USD values (including independent minor-unit
+/// exponents), stable IDs and labels, model/shared scopes, and reset times;
+/// reports add plan and account/source metadata, advisory notes, and saved
+/// reset-credit details. The fetch boundary separately declares whether a
+/// credential lease is needed and distinguishes retainable unavailability,
+/// credential rejection, and protocol failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UsageReport {
 	/// Provider to which the report belongs.
-	pub provider:  ProviderId,
+	pub provider:      ProviderId,
 	/// Account to which the report belongs.
-	pub account:   AccountId,
+	pub account:       AccountId,
 	/// Principal owning account affinity.
-	pub principal: Option<PrincipalId>,
+	pub principal:     Option<PrincipalId>,
+	/// Provider plan or tier display name.
+	pub plan:          Option<Str>,
+	/// Provider account metadata.
+	pub account_meta:  UsageAccountMetadata,
+	/// Provider-defined observation source label.
+	pub source_label:  Option<Str>,
+	/// Report-wide advisory notes.
+	pub notes:         Box<[Str]>,
+	/// Saved rate-limit reset credits, when supported.
+	pub reset_credits: Option<UsageResetCredits>,
 	/// Typed windows returned by the provider or local runtime.
-	pub windows:   Vec<UsageWindow>,
+	pub windows:       Vec<UsageWindow>,
 }
 
 /// Non-secret account metadata safe for display and receipts.
@@ -881,6 +1036,10 @@ pub enum AuthPromptKind {
 	ApiKey,
 	/// Provider session token.
 	SessionToken,
+	/// Visible plain text, including an empty default selection.
+	PlainText,
+	/// Optional secret text for which an empty response means skip.
+	OptionalSecret,
 	/// Yes-or-no confirmation.
 	Confirmation,
 }

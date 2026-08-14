@@ -884,7 +884,9 @@ impl SessionCompletion for DurableCompletion {
 					route: self.prepared.route.clone(),
 					model: self.prepared.model.clone(),
 					principal,
-					trust_domain: self.prepared.trust_domain.clone(),
+					trust_domain: context
+						.effective_trust_domain()
+						.unwrap_or_else(|| self.prepared.trust_domain.clone()),
 					credential_generation: generation,
 					credential_policy: self.prepared.credential_policy,
 					created_at: SystemTime::now(),

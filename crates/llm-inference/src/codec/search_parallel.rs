@@ -158,6 +158,7 @@ enum WireEnvelope {
 struct WireResponse {
 	#[serde(rename = "type", default)]
 	_kind:      Option<ResultKind>,
+	#[serde(rename = "search_id")]
 	_search_id: Str,
 	results:    Vec<WireSearchResult>,
 	#[serde(default)]
@@ -201,6 +202,7 @@ struct WireUsageItem {
 struct WireErrorEnvelope {
 	#[serde(rename = "type")]
 	_kind:  WireErrorKind,
+	#[serde(rename = "error")]
 	_error: WireError,
 }
 

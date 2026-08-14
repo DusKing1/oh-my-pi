@@ -18,8 +18,8 @@ use omp_proto::{
 		ClientHello, CloseSessionRequest, CloseSessionResponse, CommitBlobPut, EventStreamError,
 		ExecRequest, ExecStarted, ExitEvent, Interrupt, InvokeAccepted, InvokeTool, ListProcesses,
 		OpenSessionRequest, OpenSessionResponse, OutputAttached, OutputFrame, ProcessCommandAccepted,
-		ProcessList, ProcessOutput, ProcessStarted, ProcessStateEvent, ProtocolError, SendInput,
-		Retire, ServerFrame, ServerHello, SignalProcess, SignalRequest, StartProcess, StdinFrame,
+		ProcessList, ProcessOutput, ProcessStarted, ProcessStateEvent, ProtocolError, Retire,
+		SendInput, ServerFrame, ServerHello, SignalProcess, SignalRequest, StartProcess, StdinFrame,
 		StopProcess, Update, Verdict, cancel_request, client_frame, server_frame,
 	},
 };
@@ -256,7 +256,10 @@ impl EnvClient {
 	/// `RetireStarted`. Pre-change servers reject the request with a protocol
 	/// error, which surfaces as [`ClientError::Protocol`].
 	pub async fn retire(&self) -> Result<(), ClientError> {
-		match self.one_shot(client_frame::Body::Retire(Retire::default())).await? {
+		match self
+			.one_shot(client_frame::Body::Retire(Retire::default()))
+			.await?
+		{
 			server_frame::Body::RetireStarted(_) => Ok(()),
 			_ => Err(ClientError::UnexpectedResponse { expected: "RetireStarted" }),
 		}

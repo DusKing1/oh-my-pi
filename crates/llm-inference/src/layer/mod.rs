@@ -86,6 +86,7 @@ struct ExecutionState {
 	action:                  Mutex<AttemptAction>,
 	session_affinity:        Mutex<Option<SessionAffinity>>,
 	session_state:           Mutex<Option<crate::session::ServerStateBinding>>,
+	effective_trust_domain:  Mutex<Option<crate::catalog::TrustDomain>>,
 	provider_state:          Mutex<Vec<ProviderStateEvent>>,
 	provider_response_id:    Mutex<Option<omp_core::Str>>,
 	session_completion:      Mutex<Option<Arc<dyn session::SessionCompletion>>>,
@@ -114,6 +115,7 @@ impl ExecutionContext {
 			action: Mutex::new(AttemptAction::Initial),
 			session_affinity: Mutex::new(None),
 			session_state: Mutex::new(None),
+			effective_trust_domain: Mutex::new(None),
 			provider_state: Mutex::new(Vec::new()),
 			provider_response_id: Mutex::new(None),
 			session_completion: Mutex::new(None),
@@ -186,6 +188,16 @@ impl ExecutionContext {
 	/// Returns the compatible provider-side state selected for encoding.
 	pub fn session_state(&self) -> Option<crate::session::ServerStateBinding> {
 		self.0.session_state.lock().clone()
+	}
+
+	/// Stores the trust boundary of the endpoint used by the current attempt.
+	pub fn set_effective_trust_domain(&self, domain: crate::catalog::TrustDomain) {
+		*self.0.effective_trust_domain.lock() = Some(domain);
+	}
+
+	/// Returns the trust boundary of the endpoint used by the latest attempt.
+	pub fn effective_trust_domain(&self) -> Option<crate::catalog::TrustDomain> {
+		self.0.effective_trust_domain.lock().clone()
 	}
 
 	/// Registers the active transport cancellation handle for propagation.

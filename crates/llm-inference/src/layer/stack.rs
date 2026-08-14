@@ -53,25 +53,28 @@ pub trait RouteComposer: Send + Sync + 'static {
 /// Production configuration for built-in route construction.
 #[derive(Clone)]
 pub struct BuiltinConfig {
-	composer:     std::sync::Arc<dyn RouteComposer>,
-	auth_manager: Option<crate::auth::manager::AuthManager>,
+	composer:      std::sync::Arc<dyn RouteComposer>,
+	auth_manager:  Option<crate::auth::manager::AuthManager>,
+	usage_manager: Option<crate::operation::usage::ConsoleUsageManager>,
 }
 impl BuiltinConfig {
 	/// Creates configuration from a production composer owning all route-scoped
 	/// dependencies.
 	pub fn new(composer: std::sync::Arc<dyn RouteComposer>) -> Self {
-		Self { composer, auth_manager: None }
+		Self { composer, auth_manager: None, usage_manager: None }
 	}
 
 	/// Creates the canonical production composer from explicit shared
 	/// dependencies.
 	pub fn production(dependencies: crate::provider::builtin::ProductionDependencies) -> Self {
 		let auth_manager = dependencies.auth_manager();
+		let usage_manager = dependencies.usage_manager();
 		Self {
-			composer:     std::sync::Arc::new(crate::provider::builtin::ProductionRouteComposer::new(
+			composer: std::sync::Arc::new(crate::provider::builtin::ProductionRouteComposer::new(
 				dependencies,
 			)),
 			auth_manager: Some(auth_manager),
+			usage_manager,
 		}
 	}
 
@@ -82,9 +85,26 @@ impl BuiltinConfig {
 		self
 	}
 
+	/// Attaches provider console usage backends used by usage operations.
+	pub fn with_usage_manager(
+		mut self,
+		usage_manager: crate::operation::usage::ConsoleUsageManager,
+	) -> Self {
+		self.usage_manager = Some(usage_manager);
+		self
+	}
+
 	/// Borrows the auth manager for registry management-service injection.
 	pub(crate) const fn auth_manager(&self) -> Option<&crate::auth::manager::AuthManager> {
 		self.auth_manager.as_ref()
+	}
+
+	/// Borrows the console usage manager for registry management-service
+	/// injection.
+	pub(crate) const fn usage_manager(
+		&self,
+	) -> Option<&crate::operation::usage::ConsoleUsageManager> {
+		self.usage_manager.as_ref()
 	}
 }
 

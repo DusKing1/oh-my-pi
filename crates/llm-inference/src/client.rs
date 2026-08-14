@@ -222,7 +222,8 @@ mod tests {
 		answer::{
 			AccountState, AccountSummary, Answer, AnswerBody, AuthAnswer, EmbeddingBatch,
 			GenerationSession, NativeResponse, NativeResponseBody, RealtimeSession, ResponseMeta,
-			SearchResults, TokenCount, TokenSequence, TokenizerProvenance, UsageReport,
+			SearchResults, TokenCount, TokenSequence, TokenizerProvenance, UsageAccountMetadata,
+			UsageReport,
 		},
 		call::CallMeta,
 		catalog::{ModelKey, OperationKind, ProviderId, RouteId},
@@ -327,10 +328,15 @@ mod tests {
 		);
 		assert!(
 			UsageRequest::extract(answer(AnswerBody::Usage(UsageReport {
-				provider:  ProviderId::from("provider"),
-				account:   AccountId::from("account"),
-				principal: None,
-				windows:   Vec::new(),
+				provider:      ProviderId::from("provider"),
+				account:       AccountId::from("account"),
+				principal:     None,
+				plan:          None,
+				account_meta:  UsageAccountMetadata::default(),
+				source_label:  None,
+				notes:         Box::default(),
+				reset_credits: None,
+				windows:       Vec::new(),
 			})))
 			.is_ok()
 		);

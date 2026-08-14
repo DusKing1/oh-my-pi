@@ -1131,7 +1131,7 @@ pub enum AuthMethod {
 	SessionToken,
 }
 
-/// Secret response submitted to an authentication session.
+/// Caller response submitted to an authentication session.
 #[derive(Clone)]
 pub enum AuthInput {
 	/// Authorization code pasted by the caller.
@@ -1142,6 +1142,10 @@ pub enum AuthInput {
 	SessionToken(SecretString),
 	/// Callback URL containing authorization response parameters.
 	CallbackUrl(SecretString),
+	/// Visible plain-text response, including an empty default selection.
+	PlainText(Str),
+	/// Optional secret response for which an empty value means skip.
+	OptionalSecret(SecretString),
 	/// Confirmation that a device-code step was completed externally.
 	DeviceConfirmed,
 	/// Caller cancelled the interactive flow.
@@ -1155,6 +1159,8 @@ impl fmt::Debug for AuthInput {
 			Self::ApiKey(_) => formatter.write_str("ApiKey([REDACTED])"),
 			Self::SessionToken(_) => formatter.write_str("SessionToken([REDACTED])"),
 			Self::CallbackUrl(_) => formatter.write_str("CallbackUrl([REDACTED])"),
+			Self::PlainText(_) => formatter.write_str("PlainText([REDACTED])"),
+			Self::OptionalSecret(_) => formatter.write_str("OptionalSecret([REDACTED])"),
 			Self::DeviceConfirmed => formatter.write_str("DeviceConfirmed"),
 			Self::Cancel => formatter.write_str("Cancel"),
 		}

@@ -1091,17 +1091,15 @@ mod tests {
 	use crate::codec::ToolInputKind;
 
 	#[derive(Deserialize)]
-	#[serde(rename_all = "camelCase")]
+	#[serde(deny_unknown_fields, rename_all = "camelCase")]
 	struct FixtureResponse {
-		#[serde(default)]
 		delta_tool_calls: Vec<FixtureTool>,
-		stop_reason:      String,
-		#[serde(default)]
+		stop_reason:      FixtureStopReason,
 		usage:            Option<FixtureUsage>,
 	}
 
 	#[derive(Deserialize)]
-	#[serde(rename_all = "camelCase")]
+	#[serde(deny_unknown_fields, rename_all = "camelCase")]
 	struct FixtureTool {
 		id:             String,
 		name:           String,
@@ -1109,11 +1107,20 @@ mod tests {
 	}
 
 	#[derive(Deserialize)]
-	#[serde(rename_all = "camelCase")]
+	#[serde(deny_unknown_fields, rename_all = "camelCase")]
 	struct FixtureUsage {
-		input:        String,
-		output:       String,
-		cached_input: String,
+		input_tokens:       String,
+		output_tokens:      String,
+		cache_write_tokens: String,
+		cache_read_tokens:  String,
+	}
+
+	#[derive(Deserialize)]
+	enum FixtureStopReason {
+		#[serde(rename = "STOP_REASON_UNSPECIFIED")]
+		Unspecified,
+		#[serde(rename = "STOP_REASON_FUNCTION_CALL")]
+		FunctionCall,
 	}
 
 	#[test]
@@ -1127,9 +1134,13 @@ mod tests {
 		for line in fixture.lines() {
 			let row: FixtureResponse = serde_json::from_str(line).expect("typed fixture row");
 			let usage = row.usage.map(|usage| ModelUsageStats {
-				input_tokens: usage.input.parse().expect("input tokens"),
-				output_tokens: usage.output.parse().expect("output tokens"),
-				cache_read_tokens: usage.cached_input.parse().expect("cache tokens"),
+				input_tokens: usage.input_tokens.parse().expect("input tokens"),
+				output_tokens: usage.output_tokens.parse().expect("output tokens"),
+				cache_write_tokens: usage
+					.cache_write_tokens
+					.parse()
+					.expect("cache write tokens"),
+				cache_read_tokens: usage.cache_read_tokens.parse().expect("cache read tokens"),
 				..ModelUsageStats::default()
 			});
 			let response = GetChatMessageResponse {
@@ -1143,10 +1154,9 @@ mod tests {
 						..ChatToolCall::default()
 					})
 					.collect(),
-				stop_reason: match row.stop_reason.as_str() {
-					"UNSPECIFIED" => StopReason::Unspecified as i32,
-					"TOOL_USE" => StopReason::FunctionCall as i32,
-					other => panic!("unexpected fixture stop reason {other}"),
+				stop_reason: match row.stop_reason {
+					FixtureStopReason::Unspecified => StopReason::Unspecified as i32,
+					FixtureStopReason::FunctionCall => StopReason::FunctionCall as i32,
 				},
 				usage,
 				..GetChatMessageResponse::default()
@@ -1181,7 +1191,13 @@ mod tests {
 			event,
 			RawEvent::Completion(RawCompletion {
 				reason: FinishReason::ToolCalls,
-				usage: Usage { input_tokens: 11, output_tokens: 7, cache_read_tokens: 5, .. },
+				usage: Usage {
+					input_tokens: 11,
+					output_tokens: 7,
+					cache_read_tokens: 5,
+					cache_write_tokens: 0,
+					..
+				},
 				..
 			})
 		)));

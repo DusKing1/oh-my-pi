@@ -18,12 +18,13 @@ use crate::{
 };
 
 /// Pure construction-time codec binding for a planned request.
-pub trait AttemptEncoder<R>: Clone + Send + 'static {
+pub trait AttemptEncoder<R, L>: Clone + Send + 'static {
 	/// Encodes with a fresh body source and decoder; it must not acquire
 	/// credentials or perform I/O.
 	fn encode(
 		&self,
 		request: &R,
+		lease: &L,
 		execution: &crate::layer::ExecutionContext,
 		attempt: u32,
 		provisional: bool,
@@ -71,7 +72,7 @@ impl<S, E: Clone> Layer<S> for EncodeLayer<E> {
 }
 impl<S, E, R, A, L> Service<LayerCall<Authorized<R, A, L>>> for EncodeService<S, E>
 where
-	E: AttemptEncoder<R>,
+	E: AttemptEncoder<R, L>,
 	S: Service<LayerCall<EncodedAttempt<A, L>>, Error = Error>,
 {
 	type Error = Error;
@@ -92,9 +93,14 @@ where
 			.context
 			.checkpoint(ErrorPhase::Encoding)
 			.and_then(|()| {
-				self
-					.encoder
-					.encode(&planned, &request.context, attempt, self.provisional, cancel)
+				self.encoder.encode(
+					&planned,
+					&lease,
+					&request.context,
+					attempt,
+					self.provisional,
+					cancel,
+				)
 			});
 		let next = encoded.map(|transport| LayerCall {
 			payload: EncodedAttempt { account, transport, lease },
@@ -295,10 +301,11 @@ mod tests {
 	}
 	#[derive(Clone)]
 	struct Encoder(Arc<Mutex<Vec<&'static str>>>);
-	impl AttemptEncoder<()> for Encoder {
+	impl AttemptEncoder<(), u8> for Encoder {
 		fn encode(
 			&self,
 			&(): &(),
+			_: &u8,
 			_: &ExecutionContext,
 			_: u32,
 			_: bool,

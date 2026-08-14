@@ -1269,7 +1269,7 @@ fn encode_chat_call(
 	context: &EncodeContext<'_>,
 	request: &ChatRequest,
 ) -> Result<EncodedRequest, Error> {
-	reject_unprojected_chat_options(request)?;
+	reject_unprojected_chat_options(request, context.thinking_selection.is_some())?;
 	let mut roots = Vec::new();
 	let mut user = None;
 	let target = context
@@ -1373,11 +1373,14 @@ fn cursor_message_text(context: &EncodeContext<'_>, content: &[ContentPart]) -> 
 	Ok(Str::from(text))
 }
 
-fn reject_unprojected_chat_options(request: &ChatRequest) -> Result<(), Error> {
+fn reject_unprojected_chat_options(
+	request: &ChatRequest,
+	reasoning_projected_by_model: bool,
+) -> Result<(), Error> {
 	if !request.hosted_tools.is_empty()
 		|| !matches!(request.tool_choice, Setting::Unset)
 		|| !matches!(request.output, Setting::Unset)
-		|| !matches!(request.reasoning, Setting::Unset)
+		|| (!reasoning_projected_by_model && !matches!(request.reasoning, Setting::Unset))
 		|| !matches!(request.verbosity, Setting::Unset)
 		|| !matches!(request.cache_retention, Setting::Unset)
 		|| !matches!(request.service_tier, Setting::Unset)
@@ -1637,6 +1640,8 @@ fn encoding_error(reason: &'static str) -> Error {
 
 #[cfg(test)]
 mod tests {
+	use std::sync::Arc;
+
 	use super::*;
 	use crate::transport::ConnectDecoder as ConnectFramer;
 
@@ -1645,6 +1650,39 @@ mod tests {
 
 	fn fixture(name: &str) -> Vec<u8> {
 		std::fs::read(format!("{FIXTURES}{name}")).expect("Cursor oracle fixture")
+	}
+
+	fn empty_chat_request() -> ChatRequest {
+		ChatRequest {
+			messages:          Arc::from([]),
+			tools:             Arc::from([]),
+			hosted_tools:      Arc::from([]),
+			tool_choice:       Setting::Unset,
+			output:            Setting::Unset,
+			reasoning:         Setting::Unset,
+			verbosity:         Setting::Unset,
+			cache_retention:   Setting::Unset,
+			service_tier:      Setting::Unset,
+			sampling:          Default::default(),
+			max_output_tokens: None,
+			top_logprobs:      None,
+			safety:            Arc::from([]),
+			negotiation:       Default::default(),
+		}
+	}
+
+	#[test]
+	fn model_routed_reasoning_is_not_rejected_as_unprojected() {
+		let mut request = empty_chat_request();
+		request.reasoning = Setting::Require(crate::call::ReasoningRequest {
+			visibility:          crate::call::ReasoningVisibility::Visible,
+			effort:              Some(omp_llm_catalog::ReasoningEffort::High),
+			max_tokens:          None,
+			preserve_signatures: false,
+		});
+
+		assert!(reject_unprojected_chat_options(&request, true).is_ok());
+		assert!(reject_unprojected_chat_options(&request, false).is_err());
 	}
 
 	fn update(message: wire::interaction_update::Message) -> Bytes {

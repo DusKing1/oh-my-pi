@@ -22,8 +22,8 @@ use crate::{
 		AccountPool, AccountSelection, AccountSelectionRequest, RateAvailability, RotationPolicy,
 	},
 	auth::{
-		AuthManager, CredentialBroker, CredentialNeed, CredentialSource, OAuthHttpClient,
-		OAuthHttpRequest,
+		AuthManager, CredentialBroker, CredentialNeed, CredentialShaperRegistry, CredentialSource,
+		OAuthHttpClient, OAuthHttpRequest,
 	},
 	call::{Call, NativeResponseFraming, OperationCall, Setting, ToolChoice},
 	codec::{
@@ -97,7 +97,7 @@ pub struct GoogleCcaConfig {
 ///
 /// Returns `None` on any transport, status, or parse failure; callers keep
 /// the pinned [`DEFAULT_ANTIGRAVITY_VERSION`] fallback valid. The request
-/// mimics electron-builder's update probe so the endpoint serves the same
+/// mimics `electron-builder`'s update probe so the endpoint serves the same
 /// manifest the real client sees.
 ///
 /// [`DEFAULT_ANTIGRAVITY_VERSION`]: crate::codec::google_cca::DEFAULT_ANTIGRAVITY_VERSION
@@ -164,6 +164,8 @@ pub struct ProductionDependencies {
 	google_cca:           GoogleCcaConfig,
 	transport_timeout:    Duration,
 	auth_application:     AuthApplicationConfig,
+	credential_shapers:   Arc<CredentialShaperRegistry>,
+	usage_manager:        Option<crate::operation::usage::ConsoleUsageManager>,
 	local_routes:         Arc<BTreeMap<crate::catalog::RouteId, LocalRouteBackend>>,
 	discovery_projectors: Arc<BTreeMap<crate::catalog::RouteId, Arc<dyn DiscoveryProjector>>>,
 	local_unavailable:    Arc<BTreeMap<crate::catalog::RouteId, ReasonId>>,
@@ -183,6 +185,7 @@ impl ProductionDependencies {
 		admission: AdmissionController,
 		transport_timeout: Duration,
 		discovery_projectors: Arc<BTreeMap<crate::catalog::RouteId, Arc<dyn DiscoveryProjector>>>,
+		credential_shapers: Arc<CredentialShaperRegistry>,
 	) -> Self {
 		Self {
 			credentials,
@@ -195,6 +198,8 @@ impl ProductionDependencies {
 			google_cca,
 			auth_application,
 			transport_timeout,
+			credential_shapers,
+			usage_manager: None,
 			discovery_projectors,
 			local_routes: Arc::new(BTreeMap::new()),
 			local_unavailable: Arc::new(BTreeMap::new()),
@@ -203,6 +208,20 @@ impl ProductionDependencies {
 
 	pub(crate) fn auth_manager(&self) -> AuthManager {
 		self.auth_manager.clone()
+	}
+
+	pub(crate) fn usage_manager(&self) -> Option<crate::operation::usage::ConsoleUsageManager> {
+		self.usage_manager.clone()
+	}
+
+	/// Installs application-composed provider console usage backends.
+	#[must_use]
+	pub fn with_usage_manager(
+		mut self,
+		manager: crate::operation::usage::ConsoleUsageManager,
+	) -> Self {
+		self.usage_manager = Some(manager);
+		self
 	}
 
 	/// Adds feature-gated local codec/transport pairs keyed by exact catalog
@@ -334,6 +353,9 @@ impl RouteComposer for ProductionRouteComposer {
 		};
 		let leases = RouteLeaseProvider {
 			source: self.dependencies.credentials.clone(),
+			shapers: self.dependencies.credential_shapers.clone(),
+			provider: route.provider.clone(),
+			route_base_url: route.endpoint.base_url.clone(),
 			spec: route.auth.clone(),
 			authenticated,
 		};
@@ -757,10 +779,11 @@ fn encode_wire_request(
 	}
 }
 
-impl AttemptEncoder<Call> for RouteEncoder {
+impl AttemptEncoder<Call, Option<crate::auth::CredentialLease>> for RouteEncoder {
 	fn encode(
 		&self,
 		call: &Call,
+		lease: &Option<crate::auth::CredentialLease>,
 		execution: &ExecutionContext,
 		attempt: u32,
 		provisional: bool,
@@ -775,18 +798,47 @@ impl AttemptEncoder<Call> for RouteEncoder {
 		}
 		let account = execution.account_routing();
 		let server_state = execution.session_state();
+		let endpoint_override = lease
+			.as_ref()
+			.and_then(crate::auth::CredentialLease::endpoint_override);
+		let mut effective_route = None;
+		let mut effective_target = None;
+		if let Some(endpoint_override) = endpoint_override {
+			let mut route = self.route.clone();
+			route.endpoint.base_url = endpoint_override.clone();
+			route.trust_domain.origin = url::Url::parse(endpoint_override).map_or_else(
+				|_| endpoint_override.clone(),
+				|url| Str::from(url.origin().ascii_serialization()),
+			);
+			effective_route = Some(route);
+			effective_target = plan.wire_target().cloned().map(|mut target| {
+				target.endpoint.base_url = endpoint_override.clone();
+				target
+			});
+		}
+		let route = effective_route.as_ref().unwrap_or(&self.route);
+		if endpoint_override.is_some() {
+			execution.set_effective_trust_domain(route.trust_domain.clone());
+		}
+		if server_state
+			.as_ref()
+			.is_some_and(|binding| binding.key.trust_domain != route.trust_domain)
+		{
+			return Err(session_trust_error(execution));
+		}
+		let target = effective_target.as_ref().or_else(|| plan.wire_target());
 		let encode_context = EncodeContext {
-			request_id:         &call.id,
-			route:              &self.route,
-			target:             plan.wire_target(),
-			policy_model:       plan.policy_model.as_deref(),
-			policy:             &plan.wire_policy,
-			thinking_policy:    plan.thinking_policy.as_deref(),
+			request_id: &call.id,
+			route,
+			target,
+			policy_model: plan.policy_model.as_deref(),
+			policy: &plan.wire_policy,
+			thinking_policy: plan.thinking_policy.as_deref(),
 			thinking_selection: plan.thinking_selection.as_ref(),
-			session:            call.session.as_ref(),
-			server_state:       server_state.as_ref(),
-			account:            account.as_ref(),
-			attempt:            EncodeAttempt { index: attempt, provisional },
+			session: call.session.as_ref(),
+			server_state: server_state.as_ref(),
+			account: account.as_ref(),
+			attempt: EncodeAttempt { index: attempt, provisional },
 		};
 		let mut encoded =
 			encode_wire_request(self.codec.as_ref(), &encode_context, &call.operation, execution)?;
@@ -810,7 +862,7 @@ impl AttemptEncoder<Call> for RouteEncoder {
 			request_id: &call.id,
 			provider: &plan.provider,
 			route: &plan.route,
-			target: plan.wire_target(),
+			target,
 			policy_model: plan.policy_model.as_deref(),
 			policy: &plan.wire_policy,
 			thinking_policy: plan.thinking_policy.as_deref(),
@@ -968,9 +1020,12 @@ impl AccountSelector<Call> for RouteAccountSelector {
 
 #[derive(Clone)]
 struct RouteLeaseProvider {
-	source:        CredentialBroker,
-	spec:          crate::catalog::AuthSpecId,
-	authenticated: bool,
+	source:         CredentialBroker,
+	shapers:        Arc<CredentialShaperRegistry>,
+	provider:       omp_llm_catalog::ProviderId,
+	route_base_url: Str,
+	spec:           crate::catalog::AuthSpecId,
+	authenticated:  bool,
 }
 
 impl LeaseProvider<Call, RouteAccount> for RouteLeaseProvider {
@@ -980,7 +1035,7 @@ impl LeaseProvider<Call, RouteAccount> for RouteLeaseProvider {
 
 	fn acquire<'a>(
 		&'a self,
-		_: &'a Call,
+		call: &'a Call,
 		account: &'a RouteAccount,
 		context: &'a ExecutionContext,
 	) -> Self::Future<'a> {
@@ -1008,15 +1063,52 @@ impl LeaseProvider<Call, RouteAccount> for RouteLeaseProvider {
 				principal,
 				valid_after: SystemTime::now(),
 			};
-			self.source.lease(need).await.map(Some).map_err(|_| {
+			let lease = self.source.lease(need).await.map_err(|_| {
 				Error::new(
 					ErrorKind::Authentication,
 					ErrorPhase::Authentication,
 					RetryAction::Never,
 					context.receipt(),
 				)
-			})
+			})?;
+			let Some(shaper) = self.shapers.get(&self.provider) else {
+				return Ok(Some(lease));
+			};
+			if lease.scalar_secret().is_none() {
+				return Ok(Some(lease));
+			}
+			// The call budget bounds provider I/O; shapers additionally self-cap
+			// network work at ten seconds.
+			let deadline = shaper_deadline(call, context);
+			Ok(Some(shape_scalar_lease(shaper, lease, &self.route_base_url, deadline).await))
 		}
+	}
+}
+
+async fn shape_scalar_lease(
+	shaper: &crate::auth::ProviderShaper,
+	lease: crate::auth::CredentialLease,
+	route_base_url: &str,
+	deadline: Option<Instant>,
+) -> crate::auth::CredentialLease {
+	let Some(raw) = lease.scalar_secret() else {
+		return lease;
+	};
+	match shaper.shape(raw, route_base_url, deadline).await {
+		Some(shaped) => lease.with_shape(shaped),
+		None => lease,
+	}
+}
+
+fn shaper_deadline(call: &Call, context: &ExecutionContext) -> Option<Instant> {
+	let budget_deadline = call.budget.max_elapsed.and_then(|max_elapsed| {
+		Instant::now().checked_add(max_elapsed.saturating_sub(context.elapsed()))
+	});
+	match (call.deadline, budget_deadline) {
+		(Some(deadline), Some(budget_deadline)) => Some(deadline.min(budget_deadline)),
+		(Some(deadline), None) => Some(deadline),
+		(None, Some(budget_deadline)) => Some(budget_deadline),
+		(None, None) => None,
 	}
 }
 
@@ -1172,16 +1264,266 @@ fn contract_error(context: &ExecutionContext, reason: &'static str) -> Error {
 	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
+fn session_trust_error(context: &ExecutionContext) -> Error {
+	Error::new(
+		ErrorKind::SessionExpired,
+		ErrorPhase::Session,
+		RetryAction::ReseedSession,
+		context.receipt(),
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::new_static(
+		"dynamic-endpoint-trust-domain-changed",
+	))))
+}
+
 #[cfg(test)]
 mod tests {
-	use omp_llm_catalog::{PolicyModel, WireTarget};
+	use bytes::Bytes;
+	use http::{Request, header::AUTHORIZATION};
+	use omp_llm_catalog::{ModelKey, PolicyModel, ProviderId, WireTarget};
+	use secrecy::SecretString;
 
 	use super::*;
 	use crate::{
-		call::{NegotiationPolicy, RealtimeRequest},
-		id::RequestId,
+		auth::{CredentialLease, CredentialShaperRegistry, LeaseMeta, ShapedCredential},
+		call::{DiscoveryRequest, NegotiationPolicy, RealtimeRequest, Target},
+		id::{AccountId, ConversationId, PrincipalId, RequestId, Revision},
+		plan::{
+			CapabilityAvailability, ExecutionPlan, FallbackScope, ReplayPlan, RouteHealth,
+			RuntimeRouteEvidence,
+		},
 		receipt::ExecutionBudget,
+		session::{CredentialGenerationPolicy, PendingServerStateBinding},
 	};
+
+	fn lease(provider: &ProviderId, secret: &str) -> CredentialLease {
+		CredentialLease::bearer(
+			LeaseMeta {
+				account:    AccountId::new("account"),
+				principal:  PrincipalId::new(provider.as_str()),
+				generation: 1,
+				expires_at: None,
+			},
+			SecretString::from(secret.to_owned()),
+		)
+	}
+
+	fn discovery_fixture()
+	-> (RouteEncoder, Call, RouteAccount, crate::auth::AuthSpec, ProviderId, Str) {
+		let catalog = Catalog::try_embedded().expect("embedded catalog");
+		let route = catalog
+			.routes()
+			.iter()
+			.find(|route| route.id.as_str() == "github-copilot/primary")
+			.expect("GitHub Copilot route")
+			.clone();
+		let provider = catalog.provider(&route.provider).expect("provider");
+		let cca = GoogleCcaConfig {
+			gemini_cli_platform: Str::from("test"),
+			gemini_cli_arch:     Str::from("test"),
+			antigravity_headers: CcaHeaders::antigravity(
+				&crate::codec::google_cca::AntigravityFingerprint::default(),
+				false,
+				None,
+			),
+			antigravity_policy:  AntigravityPolicy::default(),
+		};
+		let binding = codec_binding(&route, &cca).expect("route codec binding");
+		let codec = discovery_codec(&catalog, &route, &binding)
+			.expect("discovery codec")
+			.expect("route supports discovery");
+		let auth = catalog.auth_spec(&route.auth).expect("catalog auth");
+		let oauth = auth.oauth.as_ref().and_then(|id| catalog.oauth_spec(id));
+		let runtime_auth =
+			crate::auth::AuthSpec::from_catalog(auth, oauth, route.endpoint.region.clone())
+				.expect("runtime auth");
+		let budget = ExecutionBudget::default();
+		let operation = OperationCall::DiscoverModels(Arc::new(DiscoveryRequest {
+			provider:  Some(route.provider.clone()),
+			route:     Some(route.id.clone()),
+			cursor:    None,
+			page_size: 100,
+			operation: None,
+		}));
+		let plan = ExecutionPlan {
+			planned_at:          SystemTime::now(),
+			catalog_revision:    catalog.revision().clone(),
+			registry_generation: 1,
+			expires_at:          Instant::now() + Duration::from_secs(30),
+			operation:           OperationKind::DiscoverModels,
+			model:               None,
+			provider:            route.provider.clone(),
+			route:               route.id.clone(),
+			codec:               route.codec.clone(),
+			policy_model:        None,
+			wire_policy:         Arc::new(
+				catalog
+					.wire_policy(&provider.wire_policy)
+					.expect("wire policy")
+					.clone(),
+			),
+			thinking_policy:     None,
+			thinking_selection:  None,
+			decisions:           Arc::from([]),
+			fallback_scope:      FallbackScope { primary: None, explicit: Arc::from([]) },
+			fallbacks:           Arc::from([]),
+			replay:              ReplayPlan::Replayable,
+			budget:              budget.clone(),
+			runtime_evidence:    RuntimeRouteEvidence {
+				route:            route.id.clone(),
+				generation:       1,
+				health:           RouteHealth::Unknown,
+				quota_millionths: 0,
+				latency:          Duration::MAX,
+				affinity:         false,
+				operation:        CapabilityAvailability::Native,
+				capabilities:     Arc::from([]),
+			},
+			wire_target:         None,
+		};
+		let call = Call {
+			id: RequestId::new("credential-shaping-discovery"),
+			target: Target::RouteService(route.id.clone()),
+			deadline: None,
+			budget,
+			session: None,
+			execution: Some(Arc::new(plan)),
+			operation,
+		};
+		let account = RouteAccount::Brokered {
+			_account: BrokeredAccount {
+				_provider: route.provider.clone(),
+				_route:    route.id.clone(),
+			},
+		};
+		let base_url = route.endpoint.base_url.clone();
+		(
+			RouteEncoder {
+				route,
+				headers: Box::new([]),
+				codec,
+				transport_timeout: Duration::from_secs(30),
+			},
+			call,
+			account,
+			runtime_auth,
+			provider.id.clone(),
+			base_url,
+		)
+	}
+
+	fn assert_applied_bearer(
+		mut transport: TransportRequest,
+		account: &RouteAccount,
+		auth: crate::auth::AuthSpec,
+		lease: CredentialLease,
+		context: &ExecutionContext,
+		expected: &str,
+	) {
+		RouteCredentialApplier { auth }
+			.apply(account, Some(lease), &mut transport, context)
+			.expect("prepare credentials");
+		let credentials = transport.credentials.take().expect("prepared credentials");
+		let mut request = Request::builder()
+			.uri(transport.encoded.uri.as_str())
+			.body(Bytes::new())
+			.expect("HTTP request");
+		credentials
+			.finalize_streaming(&mut request)
+			.expect("apply credentials");
+		assert_eq!(
+			request
+				.headers()
+				.get(AUTHORIZATION)
+				.expect("authorization")
+				.to_str()
+				.expect("ASCII authorization"),
+			expected,
+		);
+	}
+
+	#[test]
+	fn shaped_credential_rewrites_discovery_uri_and_applied_secret() {
+		let (encoder, call, account, auth, provider, _) = discovery_fixture();
+		let raw = lease(&provider, "raw");
+		let shaped = raw.with_shape(ShapedCredential {
+			secret:            Some(SecretString::from("shaped".to_owned())),
+			endpoint_override: Some(Str::from("https://override.example")),
+		});
+		let context = ExecutionContext::new(call.budget.clone());
+		let transport = encoder
+			.encode(&call, &Some(shaped.clone()), &context, 0, false, Cancellation::default())
+			.expect("encode discovery");
+		assert!(
+			transport
+				.encoded
+				.uri
+				.as_str()
+				.starts_with("https://override.example/")
+		);
+		assert_applied_bearer(transport, &account, auth, shaped, &context, "Bearer shaped");
+	}
+
+	#[test]
+	fn missing_shaper_preserves_discovery_uri_and_applied_secret() {
+		let (encoder, call, account, auth, provider, base_url) = discovery_fixture();
+		let registry = CredentialShaperRegistry::new();
+		assert!(registry.get(&provider).is_none());
+		let raw = lease(&provider, "raw");
+		let context = ExecutionContext::new(call.budget.clone());
+		let transport = encoder
+			.encode(&call, &Some(raw.clone()), &context, 0, false, Cancellation::default())
+			.expect("encode discovery");
+		assert!(
+			transport
+				.encoded
+				.uri
+				.as_str()
+				.starts_with(base_url.as_str())
+		);
+		assert_applied_bearer(transport, &account, auth, raw, &context, "Bearer raw");
+	}
+
+	#[test]
+	fn dynamic_endpoint_reseeds_state_bound_to_the_catalog_origin() {
+		let (encoder, call, _, _, provider, _) = discovery_fixture();
+		let raw = lease(&provider, "raw");
+		let shaped = raw.with_shape(ShapedCredential {
+			secret:            Some(SecretString::from("shaped".to_owned())),
+			endpoint_override: Some(Str::from("https://override.example")),
+		});
+		let context = ExecutionContext::new(call.budget.clone());
+		let binding = PendingServerStateBinding {
+			conversation:          ConversationId::new("conversation"),
+			route:                 encoder.route.id.clone(),
+			model:                 ModelKey::new("model"),
+			principal:             PrincipalId::new("principal"),
+			trust_domain:          encoder.route.trust_domain.clone(),
+			credential_generation: 1,
+			credential_policy:     CredentialGenerationPolicy::PrincipalBound,
+			created_at:            SystemTime::now(),
+			expires_at:            None,
+			handle:                Bytes::from_static(b"state"),
+		}
+		.commit(Revision::new("revision"));
+		context.set_session_state(Some(binding));
+
+		let error =
+			match encoder.encode(&call, &Some(shaped), &context, 0, false, Cancellation::default()) {
+				Err(error) => error,
+				Ok(_) => panic!("endpoint change must reseed provider state"),
+			};
+
+		assert_eq!(error.kind, ErrorKind::SessionExpired);
+		assert_eq!(error.action, RetryAction::ReseedSession);
+		assert_eq!(
+			context
+				.effective_trust_domain()
+				.expect("effective trust domain")
+				.origin,
+			"https://override.example",
+		);
+	}
 
 	#[test]
 	fn realtime_route_encoder_constructs_websocket_handshake_before_http_encode() {

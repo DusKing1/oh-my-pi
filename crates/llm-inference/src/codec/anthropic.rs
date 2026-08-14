@@ -1620,7 +1620,7 @@ impl AnthropicDecoder {
 
 	/// Decodes one complete SSE `data` payload into canonical events.
 	pub(crate) fn push_data(&mut self, data: &[u8]) -> Result<Vec<AnthropicEvent>, Error> {
-		if self.completed || data.is_empty() || data == b"[DONE]" {
+		if data.is_empty() || data == b"[DONE]" {
 			return Ok(Vec::new());
 		}
 		let incoming: Incoming = match serde_json::from_slice(data) {
@@ -1630,6 +1630,13 @@ impl AnthropicDecoder {
 			},
 			Err(_) => return Err(protocol_error("anthropic.sse.json", self.completed)),
 		};
+		if self.completed {
+			return if matches!(incoming, Incoming::MessageStop) {
+				Ok(Vec::new())
+			} else {
+				Err(protocol_error("anthropic.sse.after_terminal", true))
+			};
+		}
 		self.decode(incoming)
 	}
 
@@ -1972,12 +1979,17 @@ enum IncomingBlock {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type")]
 enum IncomingDelta {
+	#[serde(rename = "text_delta")]
 	Text { text: Str },
+	#[serde(rename = "thinking_delta")]
 	Thinking { thinking: Str },
+	#[serde(rename = "signature_delta")]
 	Signature { signature: Str },
+	#[serde(rename = "input_json_delta")]
 	InputJson { partial_json: Str },
+	#[serde(rename = "citation_delta")]
 	Citation { citation: Value },
 }
 
@@ -2472,8 +2484,12 @@ mod tests {
 				fallback.push_data(data).unwrap();
 			},
 		);
-		assert_eq!(fallback.outcome().usage.input_tokens, 5);
-		assert_eq!(fallback.outcome().usage.output_tokens, 1);
+		assert_eq!(fallback.outcome().usage, Usage {
+			input_tokens: 5,
+			output_tokens: 1,
+			source: UsageSource::Provider,
+			..Usage::default()
+		});
 		let mut thinking_events = Vec::new();
 		replay_sse(
 			include_bytes!(
@@ -2483,10 +2499,14 @@ mod tests {
 				thinking_events.extend(thinking.push_data(data).unwrap());
 			},
 		);
-		assert_eq!(thinking.outcome().usage.input_tokens, 11);
-		assert_eq!(thinking.outcome().usage.output_tokens, 18);
-		assert_eq!(thinking.outcome().usage.cache_read_tokens, 7);
-		assert_eq!(thinking.outcome().usage.cache_write_tokens, 3);
+		assert_eq!(thinking.outcome().usage, Usage {
+			input_tokens: 11,
+			output_tokens: 18,
+			cache_read_tokens: 7,
+			cache_write_tokens: 3,
+			source: UsageSource::Provider,
+			..Usage::default()
+		});
 		assert!(thinking.finish().unwrap().is_empty());
 		assert!(
 			thinking_events
@@ -2495,18 +2515,43 @@ mod tests {
 		);
 
 		let mut server = AnthropicDecoder::new();
+		let mut server_events = Vec::new();
 		replay_sse(
 			include_bytes!(
 				"../../../../fixtures/llm-oracle/anthropic/legacy/stream.server_tools_citations.sse"
 			),
 			|data| {
-				server.push_data(data).unwrap();
+				server_events.extend(server.push_data(data).unwrap());
 			},
 		);
-		assert_eq!(server.outcome().usage.search_calls, 2);
+		assert_eq!(server.outcome().usage, Usage {
+			input_tokens: 12,
+			output_tokens: 9,
+			cache_read_tokens: 4,
+			cache_write_tokens: 3,
+			search_calls: 2,
+			source: UsageSource::Provider,
+			..Usage::default()
+		});
 		assert_eq!(server.outcome().citations.len(), 1);
 		assert_eq!(server.outcome().server_blocks.len(), 2);
 		assert_eq!(server.outcome().stop_sequence.as_deref(), Some("END"));
+		assert_eq!(
+			server_events
+				.iter()
+				.filter(|event| matches!(event, AnthropicEvent::Completion(_)))
+				.count(),
+			1
+		);
+		assert!(server.finish().unwrap().is_empty());
+		assert_eq!(
+			server.push_data(br#"{"type":"ping"}"#).unwrap_err().kind,
+			ErrorKind::StreamCorruption
+		);
+		assert_eq!(
+			server.push_data(br#"{"type":"ping""#).unwrap_err().kind,
+			ErrorKind::StreamCorruption
+		);
 
 		let mut truncated = AnthropicDecoder::new();
 		replay_sse(

@@ -23,8 +23,8 @@ use secrecy::{ExposeSecret as _, SecretBox};
 use super::{
 	AuthSpec, CredentialBroker, CredentialError, CredentialNeed, CredentialOrigin, CredentialSource,
 	CredentialStore, CredentialWrite, LoginChannelError, OAuthClientSpec, OAuthClock,
-	OAuthCredentialManagerError, OAuthCustomDispatchError, OAuthCustomDispatcher, OAuthEngine,
-	OAuthError, OAuthHttpClient, default_login_channels,
+	OAuthCredentialManagerError, OAuthCustomDispatchError, OAuthCustomDispatcher, OAuthCustomSpec,
+	OAuthEngine, OAuthError, OAuthHttpClient, default_login_channels,
 };
 use crate::{
 	account::{AccountPool, AccountRecord, CredentialFreshness, RefreshCoordinator, RefreshRequest},
@@ -41,6 +41,11 @@ use crate::{
 pub trait AuthLoginEngine: Send + Sync {
 	/// Public login method implemented by this engine.
 	fn method(&self) -> AuthMethod;
+	/// Returns whether this engine supports the provider.
+	///
+	/// Provider-scoped engines must be registered before generic engines for
+	/// the same method because dispatch selects the first supporting engine.
+	fn supports(&self, provider: &omp_llm_catalog::ProviderId) -> bool;
 
 	/// Begins the exact catalog-selected authentication specification.
 	fn begin(
@@ -96,6 +101,10 @@ impl AuthLoginEngine for SecretLoginEngine {
 		self.method
 	}
 
+	fn supports(&self, _provider: &omp_llm_catalog::ProviderId) -> bool {
+		true
+	}
+
 	fn begin(
 		&self,
 		request: LoginRequest,
@@ -108,14 +117,12 @@ impl AuthLoginEngine for SecretLoginEngine {
 		let method = self.method;
 		async move {
 			let auth = catalog.auth_spec(&spec).ok_or_else(auth_not_found)?;
-			let expected = match method {
-				AuthMethod::ApiKey => AuthSpecKind::ApiKey,
-				AuthMethod::SessionToken => AuthSpecKind::OmpSession,
+			let credential_kind = match (method, auth.kind) {
+				(AuthMethod::ApiKey, AuthSpecKind::ApiKey) => "api-key",
+				(AuthMethod::ApiKey, AuthSpecKind::Bearer) => "bearer",
+				(AuthMethod::SessionToken, AuthSpecKind::OmpSession) => "session-token",
 				_ => return Err(auth_unavailable()),
 			};
-			if auth.kind != expected {
-				return Err(auth_unavailable());
-			}
 			let provider = catalog
 				.provider(&request.provider)
 				.ok_or_else(auth_not_found)?;
@@ -156,10 +163,7 @@ impl AuthLoginEngine for SecretLoginEngine {
 						.put(CredentialWrite {
 							account_id:          &account,
 							principal_id:        &principal,
-							kind:                match method {
-								AuthMethod::ApiKey => "api-key",
-								_ => "session-token",
-							},
+							kind:                credential_kind,
 							secret:              &bytes,
 							expires_at_ms:       None,
 							origin:              CredentialOrigin::Persistent,
@@ -237,6 +241,10 @@ impl CredentialAcquisitionLoginEngine {
 impl AuthLoginEngine for CredentialAcquisitionLoginEngine {
 	fn method(&self) -> AuthMethod {
 		self.method
+	}
+
+	fn supports(&self, _provider: &omp_llm_catalog::ProviderId) -> bool {
+		true
 	}
 
 	fn begin(
@@ -352,6 +360,10 @@ where
 {
 	fn method(&self) -> AuthMethod {
 		self.method
+	}
+
+	fn supports(&self, _provider: &omp_llm_catalog::ProviderId) -> bool {
+		true
 	}
 
 	fn begin(
@@ -474,6 +486,11 @@ where
 	}
 }
 
+enum OAuthRefreshRuntime {
+	Standard(OAuthClientSpec),
+	Custom(OAuthCustomSpec),
+}
+
 /// Owned refresh adapter for encrypted OAuth credentials.
 pub struct StoredOAuthRefreshEngine<C, K> {
 	catalog:     Arc<Catalog>,
@@ -481,6 +498,7 @@ pub struct StoredOAuthRefreshEngine<C, K> {
 	accounts:    AccountPool,
 	http:        Arc<C>,
 	clock:       Arc<K>,
+	custom:      Arc<OAuthCustomDispatcher>,
 	coordinator: Arc<RefreshCoordinator>,
 }
 
@@ -493,9 +511,10 @@ impl<C, K> StoredOAuthRefreshEngine<C, K> {
 		accounts: AccountPool,
 		http: Arc<C>,
 		clock: Arc<K>,
+		custom: Arc<OAuthCustomDispatcher>,
 		coordinator: Arc<RefreshCoordinator>,
 	) -> Self {
-		Self { catalog, store, accounts, http, clock, coordinator }
+		Self { catalog, store, accounts, http, clock, custom, coordinator }
 	}
 }
 
@@ -510,13 +529,14 @@ where
 		let accounts = self.accounts.clone();
 		let http = Arc::clone(&self.http);
 		let clock = Arc::clone(&self.clock);
+		let custom = Arc::clone(&self.custom);
 		let coordinator = Arc::clone(&self.coordinator);
 		async move {
 			let record = accounts.account(&account).ok_or_else(auth_not_found)?;
 			let provider = catalog
 				.provider(&record.provider)
 				.ok_or_else(auth_not_found)?;
-			let mut client = None;
+			let mut runtime = None;
 			for id in &provider.auth {
 				let auth = catalog.auth_spec(id).ok_or_else(auth_not_found)?;
 				if auth.kind != AuthSpecKind::Oauth {
@@ -524,14 +544,17 @@ where
 				}
 				let oauth_id = auth.oauth.as_ref().ok_or_else(auth_unavailable)?;
 				let oauth = catalog.oauth_spec(oauth_id).ok_or_else(auth_unavailable)?;
-				let runtime =
+				let candidate =
 					AuthSpec::from_catalog(auth, Some(oauth), None).map_err(|_| auth_unavailable())?;
-				client = oauth_client(&runtime);
-				if client.is_some() {
+				runtime = match candidate {
+					AuthSpec::OAuthCustom(spec) => Some(OAuthRefreshRuntime::Custom(spec)),
+					candidate => oauth_client(&candidate).map(OAuthRefreshRuntime::Standard),
+				};
+				if runtime.is_some() {
 					break;
 				}
 			}
-			let client = client.ok_or_else(auth_unavailable)?;
+			let runtime = runtime.ok_or_else(auth_unavailable)?;
 			let metadata = store
 				.metadata(&account)
 				.map_err(|_| auth_store_failure())?
@@ -545,26 +568,43 @@ where
 				.map(system_time_from_millis)
 				.transpose()?;
 			let engine = OAuthEngine::new(http.as_ref(), clock.as_ref());
-			let outcome = engine
-				.refresh_persisted(
-					&coordinator,
-					Arc::clone(&store),
-					client,
-					RefreshRequest {
-						account: account.clone(),
-						principal: record.principal.clone(),
-						rejected: CredentialFreshness {
-							generation: metadata.generation,
-							issued_at: Some(system_time_from_millis(metadata.updated_at_ms)?),
-							expires_at,
-							observed_at: requested_at,
-						},
-						requested_at,
-					},
-					CredentialOrigin::Persistent,
-				)
-				.await
-				.map_err(oauth_manager_error)?;
+			let request = RefreshRequest {
+				account: account.clone(),
+				principal: record.principal.clone(),
+				rejected: CredentialFreshness {
+					generation: metadata.generation,
+					issued_at: Some(system_time_from_millis(metadata.updated_at_ms)?),
+					expires_at,
+					observed_at: requested_at,
+				},
+				requested_at,
+			};
+			let outcome = match runtime {
+				OAuthRefreshRuntime::Standard(client) => {
+					engine
+						.refresh_persisted(
+							&coordinator,
+							Arc::clone(&store),
+							client,
+							request,
+							CredentialOrigin::Persistent,
+						)
+						.await
+				},
+				OAuthRefreshRuntime::Custom(spec) => {
+					engine
+						.refresh_custom_persisted(
+							&coordinator,
+							Arc::clone(&store),
+							custom,
+							spec,
+							request,
+							CredentialOrigin::Persistent,
+						)
+						.await
+				},
+			}
+			.map_err(oauth_manager_error)?;
 			if !accounts
 				.update_credential_generation(
 					&account,
@@ -590,9 +630,6 @@ where
 /// Typed failure constructing a complete direct authentication service.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum AuthManagerBuildError {
-	/// Two engines claim the same public login method.
-	#[error("duplicate authentication login engine")]
-	DuplicateLoginEngine(AuthMethod),
 	/// The catalog advertises a login method with no constructed engine.
 	#[error("catalog authentication method has no constructed login engine")]
 	MissingLoginEngine(AuthMethod),
@@ -614,14 +651,14 @@ pub struct AuthManager {
 	store:    Arc<CredentialStore>,
 	broker:   CredentialBroker,
 	accounts: AccountPool,
-	login:    Arc<BTreeMap<AuthMethodKey, Arc<dyn AuthLoginEngine>>>,
+	login:    Arc<BTreeMap<AuthMethodKey, Vec<Arc<dyn AuthLoginEngine>>>>,
 	refresh:  Arc<dyn AuthRefreshEngine>,
 	sessions: Arc<Mutex<BTreeMap<LoginSessionId, Sender<AuthResponse>>>>,
 }
 
 impl AuthManager {
-	/// Constructs a complete manager, rejecting duplicate or missing advertised
-	/// engines.
+	/// Constructs a complete manager, preserving registration order among
+	/// engines for the same public method.
 	pub fn new(
 		catalog: Arc<Catalog>,
 		store: Arc<CredentialStore>,
@@ -630,12 +667,12 @@ impl AuthManager {
 		login_engines: Vec<Arc<dyn AuthLoginEngine>>,
 		refresh: Arc<dyn AuthRefreshEngine>,
 	) -> Result<Self, AuthManagerBuildError> {
-		let mut login = BTreeMap::new();
+		let mut login: BTreeMap<AuthMethodKey, Vec<Arc<dyn AuthLoginEngine>>> = BTreeMap::new();
 		for engine in login_engines {
-			let method = engine.method();
-			if login.insert(AuthMethodKey::from(method), engine).is_some() {
-				return Err(AuthManagerBuildError::DuplicateLoginEngine(method));
-			}
+			login
+				.entry(AuthMethodKey::from(engine.method()))
+				.or_default()
+				.push(engine);
 		}
 		let required = required_login_methods(&catalog)?;
 		for method in required {
@@ -744,10 +781,11 @@ impl AuthManager {
 			}
 		}
 		let (spec, method) = selected.ok_or_else(auth_not_found)?;
-		let engine = self
+		let engines = self
 			.login
 			.get(&AuthMethodKey::from(method))
 			.ok_or_else(auth_unavailable)?;
+		let engine = select_login_engine(engines, &request.provider).ok_or_else(auth_unavailable)?;
 		let session = engine.begin(request, spec).await?;
 		self
 			.sessions
@@ -824,6 +862,12 @@ fn required_login_methods(
 	}
 	Ok(required)
 }
+fn select_login_engine<'a>(
+	engines: &'a [Arc<dyn AuthLoginEngine>],
+	provider: &omp_llm_catalog::ProviderId,
+) -> Option<&'a Arc<dyn AuthLoginEngine>> {
+	engines.iter().find(|engine| engine.supports(provider))
+}
 
 fn auth_method(
 	catalog: &Catalog,
@@ -831,10 +875,8 @@ fn auth_method(
 ) -> Result<AuthMethod, Error> {
 	match spec.kind {
 		AuthSpecKind::None => Err(auth_unavailable()),
-		AuthSpecKind::ApiKey => Ok(AuthMethod::ApiKey),
-		AuthSpecKind::Bearer | AuthSpecKind::AzureAd | AuthSpecKind::GithubApp => {
-			Ok(AuthMethod::SessionToken)
-		},
+		AuthSpecKind::ApiKey | AuthSpecKind::Bearer => Ok(AuthMethod::ApiKey),
+		AuthSpecKind::AzureAd | AuthSpecKind::GithubApp => Ok(AuthMethod::SessionToken),
 		AuthSpecKind::GcpAdc => Ok(AuthMethod::ApplicationDefault),
 		AuthSpecKind::AwsSigv4 => Ok(AuthMethod::AwsCredentialChain),
 		AuthSpecKind::OmpSession => Ok(AuthMethod::SessionToken),
@@ -1013,17 +1055,18 @@ mod tests {
 
 	use futures::future::{BoxFuture, FutureExt as _};
 	use http::HeaderMap;
-	use omp_llm_catalog::{ProviderId, snapshot::Catalog};
+	use omp_llm_catalog::{ProviderId, provider::AuthSpecKind, snapshot::Catalog};
 	use parking_lot::Mutex;
 	use secrecy::{ExposeSecret as _, SecretString};
 
-	use super::{AuthLoginEngine as _, OAuthLoginEngine};
+	use super::{AuthLoginEngine, OAuthLoginEngine, auth_method, select_login_engine};
 	use crate::{
 		account::AccountPool,
 		answer::AuthEvent,
 		auth::{
-			CredentialStore, HeadlessKeySource, KeyId, OAuthClock, OAuthCustomDispatcher,
-			OAuthHttpClient, OAuthHttpRequest, OAuthHttpResponse, OAuthTransportError,
+			AlibabaTokenPlanLoginEngine, CredentialStore, HeadlessKeySource, KeyId, OAuthClock,
+			OAuthCustomDispatcher, OAuthHttpClient, OAuthHttpRequest, OAuthHttpResponse,
+			OAuthTransportError, SecretLoginEngine,
 		},
 		call::{AuthMethod, LoginRequest},
 	};
@@ -1038,6 +1081,64 @@ mod tests {
 		fn sleep(&self, _duration: Duration) -> BoxFuture<'_, ()> {
 			async {}.boxed()
 		}
+	}
+
+	#[test]
+	fn plain_bearer_auth_is_an_api_key_login_method() {
+		let catalog = Catalog::embedded();
+		let provider = catalog
+			.provider(&ProviderId::from("alibaba-token-plan"))
+			.expect("Alibaba Token Plan provider");
+		let spec = catalog
+			.auth_spec(provider.auth.first().expect("Alibaba auth spec id"))
+			.expect("Alibaba auth spec");
+		assert_eq!(spec.kind, AuthSpecKind::Bearer);
+		assert_eq!(auth_method(catalog, spec).expect("login method"), AuthMethod::ApiKey);
+	}
+
+	#[test]
+	fn alibaba_scoped_api_key_engine_precedes_generic_engine() {
+		let catalog = Arc::new(Catalog::embedded().clone());
+		let provider = ProviderId::from("alibaba-token-plan");
+		let suffix = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.expect("current timestamp")
+			.as_nanos();
+		let path = std::env::temp_dir()
+			.join(format!("omp-alibaba-dispatch-{}-{suffix}.sqlite", std::process::id()));
+		let store = Arc::new(
+			CredentialStore::open(
+				&path,
+				Arc::new(HeadlessKeySource::new(KeyId::new("alibaba-dispatch"), [8; 32])),
+			)
+			.expect("credential store"),
+		);
+		let http: Arc<dyn OAuthHttpClient> = Arc::new(FixtureHttp {
+			responses: Mutex::new(VecDeque::new()),
+			requests:  Mutex::new(Vec::new()),
+		});
+		let scoped: Arc<dyn AuthLoginEngine> = Arc::new(AlibabaTokenPlanLoginEngine::new(
+			Arc::clone(&catalog),
+			Arc::clone(&store),
+			AccountPool::new(),
+			http,
+		));
+		let generic: Arc<dyn AuthLoginEngine> = Arc::new(
+			SecretLoginEngine::new(
+				AuthMethod::ApiKey,
+				"generic".into(),
+				catalog,
+				store,
+				AccountPool::new(),
+			)
+			.expect("generic API-key engine"),
+		);
+		let engines = vec![Arc::clone(&scoped), generic];
+		let selected = select_login_engine(&engines, &provider).expect("supporting engine");
+		assert!(Arc::ptr_eq(selected, &scoped));
+		drop(engines);
+		drop(scoped);
+		let _ = std::fs::remove_file(path);
 	}
 
 	struct FixtureHttp {
@@ -1154,6 +1255,13 @@ mod tests {
 				.1
 				.contains("client_id=17e5f671-d194-4dfb-9706-5516cb48c098")
 		);
+		assert!(!requests[0].1.contains("scope="));
+		assert!(
+			requests[1]
+				.1
+				.contains("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code")
+		);
+		assert!(requests[1].1.contains("device_code=device"));
 		drop(requests);
 		drop(session);
 		drop(engine);
