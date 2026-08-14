@@ -1,3 +1,5 @@
+#![feature(impl_trait_in_assoc_type)]
+
 //! Shared bounded authority harness for OMP's executable acceptance proofs.
 //!
 //! Scenario bodies live in integration-test targets. This crate owns only the

@@ -80,8 +80,7 @@ async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> R
 			TEST_TIMEOUT,
 			direct_a.open(Str::new(&uri), None, &CancellationToken::new()),
 		)
-		.await??
-		.context("open persistent LSP observer")?;
+		.await??;
 
 		let identity = ToolIdentity {
 			name: Str::new_static("edit"),
@@ -416,7 +415,7 @@ async fn storm(scratch: &Scratch, docserver: &DocServerTask, lsp_log: &Path) -> 
 						)),
 						stale_policy:  document::StalePolicy::RebaseNonOverlapping as i32,
 						format_policy: if index == 0 {
-							document::FormatPolicy::Configured as i32
+							document::FormatPolicy::Required as i32
 						} else {
 							document::FormatPolicy::Disabled as i32
 						},
@@ -625,10 +624,9 @@ fn assert_lsp_publication(
 		.collect();
 	ensure!(!changes.is_empty(), "LSP received no didChange for {uri}");
 	ensure!(
-		changes
-			.iter()
-			.all(|record| published.contains(&record.text)),
-		"LSP didChange was attributed to bytes that never became a published head"
+		changes.iter().all(|record| published.contains(&record.text)),
+		"LSP didChange was attributed to bytes that never became a published head: \
+		 changes={changes:?}, published={published:?}"
 	);
 	ensure!(
 		changes.windows(2).all(|pair| pair[0]

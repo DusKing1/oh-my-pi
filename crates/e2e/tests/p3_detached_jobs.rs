@@ -9,18 +9,24 @@ use std::{
 };
 
 use bytes::Bytes;
+use futures::StreamExt as _;
 use nix::{sys::stat::Mode, unistd::mkfifo};
 use omp_agent::{
-	Agent, AgentEvent, AgentSnapshot, AgentState, EventSubscription, Journal, TurnId, TurnInput,
-	TurnOptions, WorkspaceInput,
+	Agent, AgentEvent, AgentSnapshot, AgentState, EventSubscription, Journal, TurnClient, TurnId,
+	TurnInput, TurnOptions, TurnSession, WorkspaceInput,
 };
 use omp_app::envd::{server::EnvServer, worker::ToolWorkerConfig};
 use omp_core::Str;
 use omp_e2e::support::{
-	Gate, ScriptedStep, ScriptedTurn, ScriptedTurnClient, omp_binary, outcome_event, tool_call_item,
-	user_item,
+	Gate, Scratch, ScriptedGateway, ScriptedStep, ScriptedTurn, ScriptedTurnClient, omp_binary,
+	outcome_event, tool_call_item, user_item,
 };
 use omp_env::{BlobDownloadEvent, EnvClient, ProcessAttachmentEvent};
+use omp_llm_inference::{
+	event::{BlockKind, ChatEvent, Completion, FinishReason},
+	provider::fake::FakeScript,
+	receipt::{ExecutionReceipt, Usage},
+};
 use omp_proto::{
 	SCHEMA_REV,
 	blob::v1::GetRequest,
@@ -481,8 +487,14 @@ async fn detached_shell_settles_once_after_reconnect_with_exact_artifact() {
 		"printf 'output-1\\noutput-2\\n'; read _ < '{}'; printf 'output-3\\n'",
 		fifo.display(),
 	);
-	let initial_client =
-		scripted([tool_use_outcome(shell_call(process_name, command), 3), end_outcome(4)]);
+	let detached_gate = Gate::default();
+	let initial_client = ScriptedTurnClient::new([
+		ScriptedTurn::events([outcome_event(tool_use_outcome(shell_call(process_name, command), 3))]),
+		ScriptedTurn::steps([
+			ScriptedStep::Wait(detached_gate.clone()),
+			ScriptedStep::from(outcome_event(end_outcome(4))),
+		]),
+	]);
 	let initial_capture = initial_client.clone();
 	let mut agent = Agent::new(
 		initial_client,
@@ -492,10 +504,20 @@ async fn detached_shell_settles_once_after_reconnect_with_exact_artifact() {
 		PROMPT_CAPS,
 	);
 	let events = agent.events().subscribe_lossless();
-	agent
-		.submit([user_item("start detached shell")], TurnId::new(ulid::Ulid::generate().to_string()))
+	let detached_start = tokio::spawn(async move {
+		tokio::time::timeout(
+			LIMIT,
+			agent.submit(
+				[user_item("start detached shell")],
+				TurnId::new(ulid::Ulid::generate().to_string()),
+			),
+		)
 		.await
-		.expect("detached tool turn");
+	});
+	detached_gate
+		.wait_arrived(LIMIT)
+		.await
+		.expect("detached result follow-up reached provider");
 	let captures = initial_capture.captures();
 	assert_eq!(captures.len(), 2);
 	let result = tool_result(&delta(&captures[1].input).append, "shell-detached");
@@ -527,21 +549,28 @@ async fn detached_shell_settles_once_after_reconnect_with_exact_artifact() {
 		),
 	);
 	let _registered = one_job_event(&events, job.id.as_str(), true).await;
-	assert_eq!(job_event_counts(agent.journal(), job.id.as_str()), (1, 0));
-	assert_eq!(agent.jobs().len(), 1);
 
-	drop(agent);
+	// Simulate losing the host while the detached-result follow-up is still in
+	// flight. The bounded submit must be cancellable, while the real named
+	// process remains owned by the environment.
+	assert!(!detached_start.is_finished(), "detached-start submit returned before gate release");
+	detached_start.abort();
+	let _ = tokio::time::timeout(LIMIT, detached_start)
+		.await
+		.expect("detached-start cancellation timeout");
+
 	let reconnected = env.reconnect("p3-reconnected").await;
 	let settlement_gate = Gate::default();
 	let next_client = ScriptedTurnClient::new([
 		ScriptedTurn::steps([
 			ScriptedStep::Wait(settlement_gate.clone()),
-			ScriptedStep::from(outcome_event(end_outcome(5))),
+			ScriptedStep::from(outcome_event(end_outcome(4))),
 		]),
-		ScriptedTurn::events([outcome_event(end_outcome(6))]),
+		ScriptedTurn::events([outcome_event(end_outcome(5))]),
 	]);
 	let next_capture = next_client.clone();
 	let reopened_journal = Journal::open(&journal_path).expect("reopen pending detached journal");
+	assert_eq!(job_event_counts(&reopened_journal, job.id.as_str()), (1, 0));
 	let mut reopened = Agent::new(
 		next_client,
 		reconnected,
@@ -551,19 +580,32 @@ async fn detached_shell_settles_once_after_reconnect_with_exact_artifact() {
 	);
 	let settled_events = reopened.events().subscribe_lossless();
 	let board = Arc::clone(reopened.jobs());
-	let release = tokio::spawn({
-		let settlement_gate = settlement_gate.clone();
-		async move {
-			release_fifo(fifo).await;
-			wait_board_empty(&board).await;
-			settlement_gate.release();
-		}
+	let resumed = tokio::spawn(async move {
+		let result = tokio::time::timeout(
+			LIMIT,
+			reopened
+				.submit(Vec::<thread::Item>::new(), TurnId::new(ulid::Ulid::generate().to_string())),
+		)
+		.await;
+		(reopened, result)
 	});
-	reopened
-		.submit([user_item("observe settlement")], TurnId::new(ulid::Ulid::generate().to_string()))
+	settlement_gate
+		.wait_arrived(LIMIT)
 		.await
+		.expect("replayed detached follow-up reached provider");
+	release_fifo(fifo).await;
+	wait_terminal(&env.client, process_name, 1).await;
+	assert!(!resumed.is_finished(), "TurnBoundary settlement ended the active turn");
+	wait_board_empty(&board).await;
+	assert!(!resumed.is_finished(), "settlement bypassed the blocked turn boundary");
+	settlement_gate.release();
+	let (reopened, resumed_result) = tokio::time::timeout(LIMIT, resumed)
+		.await
+		.expect("resumed detached submit join timeout")
+		.expect("resumed detached submit task");
+	resumed_result
+		.expect("resumed detached submit timeout")
 		.expect("turn after detached settlement");
-	release.await.expect("settlement release task");
 	let _settled = one_job_event(&settled_events, job.id.as_str(), false).await;
 	let next = next_capture.captures();
 	assert_eq!(next.len(), 2);
@@ -627,9 +669,9 @@ async fn detached_shell_settles_once_after_reconnect_with_exact_artifact() {
 	let final_client = ScriptedTurnClient::new([
 		ScriptedTurn::steps([
 			ScriptedStep::Wait(early_gate.clone()),
-			ScriptedStep::from(outcome_event(end_outcome(7))),
+			ScriptedStep::from(outcome_event(end_outcome(6))),
 		]),
-		ScriptedTurn::events([outcome_event(end_outcome(8))]),
+		ScriptedTurn::events([outcome_event(end_outcome(7))]),
 	]);
 	let final_capture = final_client.clone();
 	let mut final_agent = Agent::new(
@@ -665,4 +707,94 @@ async fn detached_shell_settles_once_after_reconnect_with_exact_artifact() {
 	assert_eq!(job_event_counts(final_agent.journal(), early_job.id.as_str()), (1, 1));
 	assert_eq!(job_event_counts(final_agent.journal(), job.id.as_str()), (1, 1));
 	assert!(final_agent.jobs().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn detached_replay_acceptance_comes_from_real_gateway_authority() {
+	let scratch = Scratch::new().expect("gateway replay scratch");
+	let script = FakeScript::chat(vec![
+		Ok(ChatEvent::BlockStarted { index: 0, kind: BlockKind::Text }),
+		Ok(ChatEvent::TextDelta { index: 0, text: Str::new_static("durable replay") }),
+		Ok(ChatEvent::Completed(Completion {
+			reason:  FinishReason::Stop,
+			blocks:  1,
+			usage:   Usage::default(),
+			receipt: ExecutionReceipt::default(),
+		})),
+	]);
+	let mut gateway = ScriptedGateway::spawn(&scratch, [script], Arc::new(Registry::new()))
+		.await
+		.expect("real scripted gateway");
+	let options = TurnOptions {
+		context_id: Some(Str::new_static("p3-replay-context")),
+		params: inference::ChatParams { model: gateway.model().to_owned(), ..Default::default() },
+		..Default::default()
+	};
+	let input = TurnInput::Full(thread::Thread {
+		items: vec![user_item("persist this exact detached acceptance turn")],
+	});
+	let turn_id = TurnId::new(ulid::Ulid::generate().to_string());
+	let first_outcome = {
+		let client = gateway.client().await.expect("first real gateway client");
+		let mut session =
+			tokio::time::timeout(LIMIT, client.turn(turn_id.clone(), input.clone(), &options))
+				.await
+				.expect("first gateway turn open timeout")
+				.expect("first gateway turn open");
+		let mut events = session.events();
+		let accepted = tokio::time::timeout(LIMIT, events.next())
+			.await
+			.expect("first acceptance timeout")
+			.expect("first acceptance event")
+			.expect("first acceptance protocol");
+		assert!(matches!(
+			accepted.event,
+			Some(inference::turn_event::Event::Accepted(inference::Accepted { replay: false }))
+		));
+		loop {
+			let event = tokio::time::timeout(LIMIT, events.next())
+				.await
+				.expect("first outcome timeout")
+				.expect("first outcome event")
+				.expect("first outcome protocol");
+			if let Some(inference::turn_event::Event::Outcome(outcome)) = event.event {
+				break outcome;
+			}
+		}
+	};
+
+	gateway
+		.restart()
+		.await
+		.expect("restart durable gateway authority");
+	let replay_outcome = {
+		let client = gateway.client().await.expect("replay real gateway client");
+		let mut session = tokio::time::timeout(LIMIT, client.turn(turn_id, input, &options))
+			.await
+			.expect("replay gateway turn open timeout")
+			.expect("replay gateway turn open");
+		let mut events = session.events();
+		let accepted = tokio::time::timeout(LIMIT, events.next())
+			.await
+			.expect("replay acceptance timeout")
+			.expect("replay acceptance event")
+			.expect("replay acceptance protocol");
+		assert!(matches!(
+			accepted.event,
+			Some(inference::turn_event::Event::Accepted(inference::Accepted { replay: true }))
+		));
+		loop {
+			let event = tokio::time::timeout(LIMIT, events.next())
+				.await
+				.expect("replay outcome timeout")
+				.expect("replay outcome event")
+				.expect("replay outcome protocol");
+			if let Some(inference::turn_event::Event::Outcome(outcome)) = event.event {
+				break outcome;
+			}
+		}
+	};
+	assert_eq!(replay_outcome, first_outcome, "gateway replay changed durable outcome");
+	assert_eq!(gateway.calls().len(), 1, "replay reached provider instead of durable authority");
+	gateway.shutdown().await.expect("gateway shutdown");
 }

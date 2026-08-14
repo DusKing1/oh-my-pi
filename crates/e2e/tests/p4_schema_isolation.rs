@@ -1,7 +1,9 @@
 //! Executable P4 proof that historical tool schemas cannot poison live
 //! inference.
 
-use std::fmt::Write as _;
+#![cfg(unix)]
+
+use std::{fmt::Write as _, sync::Arc};
 
 use bytes::Bytes;
 use futures::{Stream, StreamExt as _};
@@ -9,9 +11,14 @@ use omp_agent::{
 	Journal, TurnClient, TurnId, TurnInput, TurnOptions, TurnSession, project_journal,
 };
 use omp_core::Str;
-use omp_e2e::support::{ScriptedTurn, ScriptedTurnClient};
+use omp_e2e::support::{DEFAULT_TIMEOUT, Scratch, ScriptedGateway, within};
 use omp_llm_catalog::GrammarBits;
-use omp_llm_inference::call::{ChatRequest, ContentPart, ToolResultContent};
+use omp_llm_inference::{
+	call::{ChatRequest, ContentPart, ToolResultContent},
+	event::{ChatEvent, Completion, FinishReason},
+	provider::fake::FakeScript,
+	receipt::{ExecutionReceipt, Usage},
+};
 use omp_proto::{inference::v1 as pb, thread::v1 as thread_pb};
 use omp_storage::transcript::{Header, SessionId};
 use omp_tool::{
@@ -86,7 +93,6 @@ impl Tool for HistoricalEdit {
 		Vec::new()
 	}
 }
-
 
 impl Tool for LiveEdit {
 	type Fault = Value;
@@ -242,6 +248,12 @@ fn historical_items() -> Vec<thread_pb::Item> {
 				props:         Some(props([
 					("omp/tool-rev", string_value("hl.1")),
 					("fixture/call-meta", string_value(nonce)),
+					(
+						"fixture/recorded-tool-schema",
+						string_value(
+							std::str::from_utf8(HL1_SCHEMA).expect("historical schema fixture is UTF-8"),
+						),
+					),
 				])),
 			},
 			thread_pb::Item {
@@ -398,6 +410,23 @@ async fn historical_edit_schema_is_isolated_and_lifts_from_recorded_truth() {
 
 	let data = project_journal(&log, &without_lift, &PROMPT_CAPS)
 		.expect("unliftable historical revision projects as canonical data");
+	let recorded_schema = original.items[0]
+		.props
+		.as_ref()
+		.and_then(|props| props.fields.get("fixture/recorded-tool-schema"))
+		.and_then(|value| value.kind.as_ref());
+	assert!(matches!(
+		recorded_schema,
+		Some(pb::value::Kind::String(schema))
+			if schema.as_bytes() == HL1_SCHEMA
+	));
+	assert!(
+		original
+			.encode_to_vec()
+			.windows(HL1_SCHEMA_FRAGMENT.len())
+			.any(|window| window == HL1_SCHEMA_FRAGMENT),
+		"historical authority must positively contain the distinctive hl.1 schema"
+	);
 	assert_eq!(
 		data.encode_to_vec(),
 		original.encode_to_vec(),
@@ -547,32 +576,59 @@ async fn historical_edit_schema_is_isolated_and_lifts_from_recorded_truth() {
 	}
 
 	let expected_full = first.encode_to_vec();
-	let client = ScriptedTurnClient::new([ScriptedTurn::events([pb::TurnEvent {
-		event: Some(pb::turn_event::Event::Accepted(pb::Accepted { replay: false })),
-	}])]);
-	let options = TurnOptions::default();
+	let scratch = Scratch::new().expect("real gateway scratch space");
+	let gateway = ScriptedGateway::spawn(
+		&scratch,
+		[FakeScript::chat(vec![Ok(ChatEvent::Completed(Completion {
+			reason:  FinishReason::Stop,
+			blocks:  0,
+			usage:   Usage::default(),
+			receipt: ExecutionReceipt::default(),
+		}))])],
+		Arc::new(with_lift),
+	)
+	.await
+	.expect("spawn real inference RPC gateway");
+	let client = gateway.client().await.expect("connect real RPC TurnClient");
+	let mut gateway_params = params;
+	gateway_params.model = gateway.model().to_owned();
+	let options = TurnOptions { params: gateway_params, ..TurnOptions::default() };
 	let turn_id = TurnId::new(ulid::Ulid::generate().to_string());
 	let mut session = client
-		.turn(turn_id.clone(), TurnInput::Full(first), &options)
+		.turn(turn_id, TurnInput::Full(first), &options)
 		.await
-		.expect("TurnClient accepts the full projected thread");
-	assert!(matches!(
-		session.events().next().await,
-		Some(Ok(pb::TurnEvent {
-			event: Some(pb::turn_event::Event::Accepted(pb::Accepted { replay: false })),
-		}))
-	));
-	let captures = client.captures();
-	let [captured] = captures.as_slice() else {
-		panic!("TurnClient must capture exactly one accepted request")
+		.expect("real gateway accepts opening Full projected thread");
+	let accepted = {
+		let mut events = session.events();
+		within("real gateway Accepted", DEFAULT_TIMEOUT, events.next())
+			.await
+			.expect("Accepted arrives within bound")
+			.expect("gateway emits Accepted")
+			.expect("Accepted is not a turn error")
 	};
-	assert_eq!(captured.turn_id.as_str(), turn_id.as_str());
-	match &captured.input {
-		TurnInput::Full(thread) => assert_eq!(
-			thread.encode_to_vec(),
-			expected_full,
-			"the accepted full input is the byte-identical projected thread"
-		),
-		TurnInput::Delta(..) => panic!("projected replay must be submitted as TurnInput::Full"),
-	}
+	assert!(matches!(accepted, pb::TurnEvent {
+		event: Some(pb::turn_event::Event::Accepted(pb::Accepted { replay: false })),
+	}));
+	let outcome = {
+		let mut events = session.events();
+		within("real gateway Outcome", DEFAULT_TIMEOUT, events.next())
+			.await
+			.expect("Outcome arrives within bound")
+			.expect("gateway emits Outcome")
+			.expect("Outcome is not a turn error")
+	};
+	assert!(
+		matches!(outcome.event, Some(pb::turn_event::Event::Outcome(_))),
+		"scripted upstream must consume the accepted full history"
+	);
+	assert_eq!(
+		expected_full,
+		project_journal(&log, &registry(true), &PROMPT_CAPS)
+			.expect("accepted history remains projectable")
+			.encode_to_vec()
+	);
+	gateway
+		.shutdown()
+		.await
+		.expect("shutdown real inference RPC gateway");
 }

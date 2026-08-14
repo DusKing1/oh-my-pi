@@ -10,6 +10,16 @@ description = "Executable cross-crate acceptance proofs for the OMP agent mesh"
 readme = "README.md"
 publish = false
 
+[[bin]]
+name = "baseline"
+path = "src/bin/baseline.rs"
+test = false
+
+[[bin]]
+name = "omp_e2e_host"
+path = "src/bin/omp_e2e_host.rs"
+test = false
+
 [dependencies]
 anyhow = { workspace = true }
 async-stream = { workspace = true }

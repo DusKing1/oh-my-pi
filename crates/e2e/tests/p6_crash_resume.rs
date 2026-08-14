@@ -7,8 +7,8 @@ use std::{
 	collections::VecDeque,
 	fs::{self, OpenOptions},
 	future::{Future, ready},
-	io::Write as _,
-	os::unix::process::CommandExt as _,
+	io::{BufRead as _, BufReader, Write as _},
+	os::unix::{fs::PermissionsExt as _, net::UnixStream, process::CommandExt as _},
 	path::{Path, PathBuf},
 	pin::Pin,
 	process::{Child, Command, ExitStatus, Stdio},
@@ -17,12 +17,18 @@ use std::{
 		atomic::{AtomicUsize, Ordering},
 	},
 	task::{Context, Poll},
+	thread as std_thread,
 	time::{Duration, Instant},
 };
 
 use async_stream::stream;
 use bytes::Bytes;
 use futures::{Stream, StreamExt as _};
+use nix::{
+	fcntl::{FcntlArg, OFlag, fcntl},
+	pty::{Winsize, openpty},
+	unistd::ttyname,
+};
 use omp_agent::{
 	Agent, AgentError, AgentEvent, AgentSnapshot, AgentState, Error as TurnError, InvokeFrame,
 	Journal, PromptHash, RpcTurnClient, RpcTurnSession, TurnClient, TurnId, TurnInput,
@@ -34,7 +40,7 @@ use omp_app::{
 	envd::{server::EnvServer, worker::ToolWorkerConfig},
 };
 use omp_core::Str;
-use omp_e2e::support::omp_binary;
+use omp_e2e::support::{Scratch, ScriptedGateway, omp_binary};
 use omp_env::EnvClient;
 use omp_llm_catalog::{
 	CompiledCatalog, ManagementCapabilities, OperationBits, OperationKind,
@@ -44,6 +50,7 @@ use omp_llm_inference::{
 	Answer, Error as InferenceError, Registry as InferenceRegistry,
 	call::Call,
 	event::{BlockKind, ChatEvent, Completion, FinishReason, WorkflowResponse},
+	id::TurnId as ProviderTurnId,
 	layer::{LayerCall, stack::RouteProviderService},
 	provider::fake::{FakeProvider, FakeScript},
 	receipt::{ExecutionReceipt, ReasonId, Usage},
@@ -59,7 +66,7 @@ use omp_tool::{
 	TOOL_REV_PROP, Tool, ToolSpec, Verdict,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::Service;
 
 const TEST_NAME: &str = "crash_resume_replays_exact_durable_truth";
@@ -70,10 +77,11 @@ const BATCH_TURN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
 const FALLBACK_TURN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
 const TOOLSET_TURN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
 const RECEIPT_TURN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
+const BINARY_SESSION: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
 const TOOL_NAME: &str = "p6_hang";
 
 fn assert_fixed_turn_ids() {
-	let ids = [ROOT_TURN, BATCH_TURN, FALLBACK_TURN, TOOLSET_TURN, RECEIPT_TURN];
+	let ids = [ROOT_TURN, BATCH_TURN, FALLBACK_TURN, TOOLSET_TURN, RECEIPT_TURN, BINARY_SESSION];
 	for (index, id) in ids.iter().enumerate() {
 		assert!(id.parse::<ulid::Ulid>().is_ok(), "invalid fixed test TurnId {id}");
 		assert!(!ids[..index].contains(id), "duplicate fixed test TurnId {id}");
@@ -490,6 +498,328 @@ async fn resume_rejects_changed_toolset_before_opening_any_authority() {
 	assert!(!scratch.path().join("must-not-run").exists(), "changed tool effect was launched");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_chat_resume_replays_pending_turn_through_cli_startup() {
+	assert_fixed_turn_ids();
+	let scratch = Scratch::new().expect("binary resume scratch");
+	let project = std::fs::canonicalize(scratch.project()).expect("canonical scratch project");
+	let omp_dir = project.join(".omp");
+	let sessions = omp_dir.join("sessions");
+	fs::create_dir_all(&sessions).expect("create chat session directory");
+	fs::set_permissions(&omp_dir, fs::Permissions::from_mode(0o700)).expect("secure .omp");
+	fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).expect("secure sessions");
+	let journal_path = sessions.join(format!("{BINARY_SESSION}.jsonl"));
+	drop(
+		Journal::create(&journal_path, &Header {
+			v:       4,
+			id:      SessionId(Str::from(BINARY_SESSION)),
+			created: 1,
+			cwd:     project.clone(),
+		})
+		.expect("create resumable binary journal"),
+	);
+	fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600))
+		.expect("secure binary journal");
+
+	let script = FakeScript::chat(vec![
+		Ok(ChatEvent::BlockStarted { index: 0, kind: BlockKind::Text }),
+		Ok(ChatEvent::TextDelta { index: 0, text: Str::from("binary resume outcome") }),
+		Ok(ChatEvent::Completed(Completion {
+			reason:  FinishReason::Stop,
+			blocks:  1,
+			usage:   Usage::default(),
+			receipt: ExecutionReceipt::default(),
+		})),
+	]);
+	let mut gateway = ScriptedGateway::spawn_gated(&scratch, [script], Arc::new(Registry::new()))
+		.await
+		.expect("start gated real gateway");
+	let binary = omp_binary().expect("locate worker-capable omp binary");
+	let args = chat_resume_args(&gateway, &project);
+	let first_debug = scratch.socket("binary-first-debug.sock");
+	let mut first = ChatPty::spawn(&binary, &args, &project, &first_debug);
+	let mut first_ui =
+		ChatDebug::connect(&first_debug, Instant::now() + Duration::from_secs(15), &mut first);
+	first_ui.keys("'exercise binary resume' enter");
+	gateway
+		.wait_response_gated(Duration::from_secs(15))
+		.await
+		.expect("provider response reached deterministic gate");
+	let pending_turn = wait_pending_turn(&journal_path, Duration::from_secs(10)).await;
+	assert!(pending_turn.parse::<ulid::Ulid>().is_ok(), "chat minted non-ULID TurnId");
+	first.stop();
+	gateway
+		.release_response()
+		.expect("release gated provider response");
+	let replay = gateway
+		.wait_turn_replay(&ProviderTurnId::from(pending_turn.as_str()), Duration::from_secs(10))
+		.await
+		.expect("gateway committed exact turn replay while chat was frozen");
+	assert!(!replay.outcome.is_empty(), "gateway replay omitted terminal outcome");
+	drop(first_ui);
+	first.kill();
+	let crashed = Journal::open(&journal_path).expect("open abandoned binary journal");
+	assert_eq!(
+		crashed.pending_turn().map(|start| start.turn_id.as_str()),
+		Some(pending_turn.as_str()),
+		"frozen chat did not leave its durable TurnStart pending",
+	);
+	assert!(crashed.receipt(pending_turn.as_str()).is_none());
+	drop(crashed);
+
+	let second_debug = scratch.socket("binary-resume-debug.sock");
+	let mut second = ChatPty::spawn(&binary, &args, &project, &second_debug);
+	let mut second_ui =
+		ChatDebug::connect(&second_debug, Instant::now() + Duration::from_secs(15), &mut second);
+	second_ui.wait_text("binary resume outcome", Duration::from_secs(15));
+	second_ui.keys("'/quit' enter");
+	drop(second_ui);
+	let status = second.wait(Duration::from_secs(15));
+	assert!(status.success(), "resumed omp chat did not quit cleanly: {status}");
+	assert_eq!(gateway.calls().len(), 1, "CLI resume invoked the provider instead of RPC replay");
+	assert_binary_resume_journal(&journal_path, &pending_turn);
+	gateway.shutdown().await.expect("stop scripted gateway");
+}
+
+fn chat_resume_args(gateway: &ScriptedGateway, project: &Path) -> Vec<String> {
+	vec![
+		"chat".to_owned(),
+		"--model".to_owned(),
+		gateway.model().to_owned(),
+		"--project".to_owned(),
+		project.display().to_string(),
+		"--gateway".to_owned(),
+		gateway.endpoint().display().to_string(),
+		"--resume".to_owned(),
+		BINARY_SESSION.to_owned(),
+	]
+}
+
+async fn wait_pending_turn(path: &Path, limit: Duration) -> String {
+	let deadline = Instant::now() + limit;
+	loop {
+		if let Ok(log) = transcript::load(path) {
+			for index in 0..u64::try_from(log.len()).expect("binary journal length") {
+				if let Some(Entry::Ok(event)) = log.get(index)
+					&& let Kind::TurnStart(start) = &event.kind
+				{
+					return start.turn_id.to_string();
+				}
+			}
+		}
+		assert!(Instant::now() < deadline, "binary chat did not durably start a turn");
+		tokio::time::sleep(Duration::from_millis(10)).await;
+	}
+}
+
+fn assert_binary_resume_journal(path: &Path, turn_id: &str) {
+	let journal = Journal::open(path).expect("open CLI-resumed journal");
+	assert!(journal.pending_turn().is_none(), "CLI resume left its TurnStart pending");
+	let receipt = journal
+		.receipt(turn_id)
+		.expect("CLI resume terminal receipt");
+	assert_eq!(receipt.turn_id.as_str(), turn_id);
+	let log = journal.load().expect("load CLI-resumed journal");
+	assert_eq!(
+		event_count(&log, |kind| matches!(
+			kind,
+			Kind::TurnReceipt(receipt) if receipt.turn_id.as_str() == turn_id
+		)),
+		1,
+		"CLI resume duplicated its terminal receipt",
+	);
+	let projected =
+		project_journal(&log, &Registry::new(), &caps()).expect("project CLI-resumed journal");
+	let outputs = projected
+		.items
+		.iter()
+		.filter(|item| {
+			matches!(
+				item.kind.as_ref(),
+				Some(thread::item::Kind::Message(message))
+					if message.role == thread::Role::Assistant as i32
+						&& message.parts.iter().any(|part| matches!(
+							part.kind.as_ref(),
+							Some(thread::part::Kind::Text(text)) if text == "binary resume outcome"
+						))
+			)
+		})
+		.count();
+	assert_eq!(outputs, 1, "CLI resume duplicated or lost the terminal assistant item");
+}
+
+struct ChatDebug {
+	reader: BufReader<UnixStream>,
+	writer: UnixStream,
+}
+
+impl ChatDebug {
+	fn connect(path: &Path, deadline: Instant, process: &mut ChatPty) -> Self {
+		loop {
+			match UnixStream::connect(path) {
+				Ok(stream) => {
+					stream
+						.set_read_timeout(Some(Duration::from_secs(2)))
+						.expect("debug read timeout");
+					stream
+						.set_write_timeout(Some(Duration::from_secs(2)))
+						.expect("debug write timeout");
+					let writer = stream.try_clone().expect("clone debug socket");
+					return Self { reader: BufReader::new(stream), writer };
+				},
+				Err(error) => {
+					assert!(
+						process
+							.child
+							.try_wait()
+							.expect("poll binary chat")
+							.is_none(),
+						"binary chat exited before debug socket: {error}"
+					);
+					assert!(Instant::now() < deadline, "binary chat debug socket timed out: {error}");
+					std_thread::sleep(Duration::from_millis(20));
+				},
+			}
+		}
+	}
+
+	fn request(&mut self, request: Value) -> Value {
+		serde_json::to_writer(&mut self.writer, &request).expect("write debug request");
+		self
+			.writer
+			.write_all(b"\n")
+			.expect("terminate debug request");
+		self.writer.flush().expect("flush debug request");
+		let mut line = String::new();
+		self
+			.reader
+			.read_line(&mut line)
+			.expect("read debug response");
+		let response: Value = serde_json::from_str(&line).expect("decode debug response");
+		assert_eq!(response.get("ok").and_then(Value::as_bool), Some(true), "{response}");
+		response
+	}
+
+	fn keys(&mut self, keys: &str) {
+		self.request(json!({ "op": "keys", "keys": keys }));
+	}
+
+	fn wait_text(&mut self, needle: &str, limit: Duration) {
+		let deadline = Instant::now() + limit;
+		loop {
+			let response = self.request(json!({ "op": "text" }));
+			let found = response
+				.get("lines")
+				.and_then(Value::as_array)
+				.is_some_and(|lines| {
+					lines
+						.iter()
+						.any(|line| line.as_str().is_some_and(|line| line.contains(needle)))
+				});
+			if found {
+				return;
+			}
+			assert!(Instant::now() < deadline, "binary chat never displayed {needle:?}");
+			std_thread::sleep(Duration::from_millis(20));
+		}
+	}
+}
+
+struct ChatPty {
+	child:       Child,
+	_master:     std::os::fd::OwnedFd,
+	_slave:      std::os::fd::OwnedFd,
+	stop_reader: Arc<AtomicUsize>,
+	reader:      Option<std_thread::JoinHandle<()>>,
+}
+
+impl ChatPty {
+	fn spawn(binary: &Path, args: &[String], project: &Path, debug: &Path) -> Self {
+		let window = Winsize { ws_row: 32, ws_col: 100, ws_xpixel: 0, ws_ypixel: 0 };
+		let pty = openpty(Some(&window), None).expect("open binary chat PTY");
+		let device = ttyname(&pty.slave).expect("binary chat PTY slave path");
+		fcntl(&pty.master, FcntlArg::F_SETFL(OFlag::O_NONBLOCK))
+			.expect("nonblocking binary chat PTY");
+		let reader_fd = pty.master.try_clone().expect("clone binary chat PTY");
+		let stop_reader = Arc::new(AtomicUsize::new(0));
+		let reader_stop = Arc::clone(&stop_reader);
+		let reader = std_thread::spawn(move || {
+			let mut buffer = [0_u8; 8192];
+			loop {
+				match nix::unistd::read(&reader_fd, &mut buffer) {
+					Ok(0) if reader_stop.load(Ordering::Acquire) != 0 => break,
+					Ok(_) => {},
+					Err(nix::errno::Errno::EAGAIN) if reader_stop.load(Ordering::Acquire) != 0 => {
+						break;
+					},
+					Err(nix::errno::Errno::EAGAIN) => {
+						std_thread::sleep(Duration::from_millis(5));
+					},
+					Err(nix::errno::Errno::EIO) => break,
+					Err(error) => panic!("binary chat PTY read failed: {error}"),
+				}
+			}
+		});
+		let home = project
+			.parent()
+			.expect("project parent")
+			.join("binary-home");
+		fs::create_dir_all(&home).expect("create binary chat home");
+		let mut command = Command::new(binary);
+		command
+			.args(args)
+			.current_dir(project)
+			.env("TERM", "xterm-256color")
+			.env("HOME", &home)
+			.env("OMP_DATA_DIR", home.join("data"))
+			.env("OMP_TTY", &device)
+			.env("OMP_TUI_DEBUG", debug)
+			.env("NO_COLOR", "1")
+			.stdin(Stdio::null())
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.process_group(0);
+		let child = command.spawn().expect("spawn real omp chat");
+		Self { child, _master: pty.master, _slave: pty.slave, stop_reader, reader: Some(reader) }
+	}
+
+	fn stop(&self) {
+		nix::sys::signal::killpg(
+			nix::unistd::Pid::from_raw(i32::try_from(self.child.id()).expect("chat pid")),
+			Some(nix::sys::signal::Signal::SIGSTOP),
+		)
+		.expect("freeze binary chat process group");
+	}
+
+	fn kill(&mut self) {
+		let _ = nix::sys::signal::killpg(
+			nix::unistd::Pid::from_raw(i32::try_from(self.child.id()).expect("chat pid")),
+			Some(nix::sys::signal::Signal::SIGKILL),
+		);
+		let _ = self.child.wait();
+		self.finish_reader();
+	}
+
+	fn wait(mut self, limit: Duration) -> ExitStatus {
+		let deadline = Instant::now() + limit;
+		let status = loop {
+			if let Some(status) = self.child.try_wait().expect("poll binary chat exit") {
+				break status;
+			}
+			assert!(Instant::now() < deadline, "binary chat did not exit within {limit:?}");
+			std_thread::sleep(Duration::from_millis(20));
+		};
+		self.finish_reader();
+		status
+	}
+
+	fn finish_reader(&mut self) {
+		self.stop_reader.store(1, Ordering::Release);
+		if let Some(reader) = self.reader.take() {
+			reader.join().expect("binary chat PTY reader joins");
+		}
+	}
+}
 async fn run_child(stage: &str, root: &Path) {
 	match stage {
 		"replay-crash" => replay_child(root, true, false).await,
