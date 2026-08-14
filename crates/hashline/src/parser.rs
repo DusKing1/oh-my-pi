@@ -1163,12 +1163,9 @@ mod tests {
 			assert_eq!(deleted, [2], "{patch}");
 		}
 		let cut = parse_patch("CUT 2.=").unwrap();
-		assert!(
-			cut
-				.edits
-				.iter()
-				.any(|edit| matches!(edit, Edit::Cut { range, .. } if range.start.line == 2 && range.end.line == 2))
-		);
+		assert!(cut.edits.iter().any(
+			|edit| matches!(edit, Edit::Cut { range, .. } if range.start.line == 2 && range.end.line == 2)
+		));
 		// A dangling separator followed by junk stays on the strict rejection path.
 		assert!(parse_patch("PUT 2.= junk:\n+X").is_err());
 	}
