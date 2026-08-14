@@ -31,6 +31,9 @@ use crate::{
 
 const INTERRUPT_GRACE: Duration = Duration::from_millis(500);
 const TOOL_DEADLINE: Duration = Duration::from_secs(300);
+const EMPTY_OUTPUT_RETRY_CAP: u8 = 3;
+const EMPTY_OUTPUT_RETRY_DETAIL: &str =
+	"Assistant returned no final output after retry cap; try switching models";
 
 /// Terminal result of one complete caller submission, including tool
 /// follow-ups.
@@ -238,10 +241,34 @@ impl<C: TurnClient> Agent<C> {
 			(pending_indexes, root_turn_id)
 		};
 		let mut committed_turns = 0_u32;
+		let mut empty_output_retries = 0_u8;
 
 		loop {
-			let (outcome, mut speculative, submitted_context_id, snapshot, enabled_tools) =
-				self.run_turn(turn_id.clone(), pending_indexes).await?;
+			let turn = self.run_turn(turn_id.clone(), pending_indexes).await;
+			let (outcome, mut speculative, submitted_context_id, snapshot, enabled_tools) = match turn
+			{
+				Ok(turn) => {
+					empty_output_retries = 0;
+					turn
+				},
+				Err(AgentError::Turn(TurnError::Terminal(mut error)))
+					if pb::turn_error::Kind::try_from(error.kind)
+						== Ok(pb::turn_error::Kind::EmptyOutput) =>
+				{
+					self.journal.abort_turn(now_ms(), turn_id.as_str())?;
+					if empty_output_retries >= EMPTY_OUTPUT_RETRY_CAP {
+						error.detail = EMPTY_OUTPUT_RETRY_DETAIL.to_owned();
+						return Err(AgentError::Turn(TurnError::Terminal(error)));
+					}
+					empty_output_retries = empty_output_retries.saturating_add(1);
+					let next_turn_id = follow_up_id(&turn_id, u32::from(empty_output_retries));
+					pending_indexes = self
+						.append_pending(&next_turn_id, [empty_output_retry_item(empty_output_retries)])?;
+					turn_id = next_turn_id;
+					continue;
+				},
+				Err(error) => return Err(error),
+			};
 			committed_turns = committed_turns.saturating_add(1);
 			let stop = outcome.stop();
 			self.context = outcome.revision.clone().and_then(|expected| {
@@ -973,6 +1000,23 @@ fn duplex_turn_error(error: DuplexError) -> TurnError {
 		DuplexError::MissingToolResult => "duplex completion missing tool result",
 	})
 }
+fn empty_output_retry_item(attempt: u8) -> Item {
+	let text = format!(
+		"<system-injection>\nStopped without actionable output; task incomplete. Continue with a \
+		 user-visible final answer or the next required tool call.\nAttempt \
+		 #{attempt}/{EMPTY_OUTPUT_RETRY_CAP}\n</system-injection>"
+	);
+	Item {
+		seq:           0,
+		created_at_ms: now_ms(),
+		kind:          Some(thread::item::Kind::Message(thread::Message {
+			role:  thread::Role::User as i32,
+			parts: vec![thread::Part { kind: Some(thread::part::Kind::Text(text)) }],
+		})),
+		props:         None,
+	}
+}
+
 fn follow_up_id(_root: &TurnId, _ordinal: u32) -> TurnId {
 	TurnId::new(ulid::Ulid::generate().to_string())
 }
