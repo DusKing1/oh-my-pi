@@ -1,0 +1,194 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".cargo/**"
+      - ".github/workflows/ci.yml"
+      - "crates/**"
+      - "fixtures/**"
+      - "scripts/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "clippy.toml"
+      - "rust-toolchain.toml"
+      - "rustfmt.toml"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".cargo/**"
+      - ".github/workflows/ci.yml"
+      - "crates/**"
+      - "fixtures/**"
+      - "scripts/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "clippy.toml"
+      - "rust-toolchain.toml"
+      - "rustfmt.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  format:
+    name: Rust format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  rust:
+    name: Rust workspace and acceptance proofs
+    needs: format
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select pinned Rust toolchain
+        run: |
+          test "$(uname -m)" = arm64
+          rustup show active-toolchain
+
+      - name: Install native build tools
+        run: brew install lld uv zstd
+
+      - name: Cache embedded Python
+        id: python-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: vendor/python
+          key: python-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/py/scripts/fetch-python.sh', 'crates/py/scripts/pack-pymodules.py', 'crates/py/scripts/gen-py-notices.py', 'crates/py/requirements.txt') }}
+
+      - name: Prepare embedded Python
+        if: steps.python-cache.outputs.cache-hit != 'true'
+        run: crates/py/scripts/fetch-python.sh
+
+      - name: Verify embedded Python toolchain
+        run: |
+          test -f vendor/python/pyo3-config.txt
+          crates/py/scripts/ld64.lld --version
+
+      - name: Cache Cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-
+            cargo-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Lint workspace
+        run: cargo clippy --workspace --locked
+
+      - name: Test workspace
+        run: cargo test --workspace --exclude omp-e2e --locked
+
+      - name: Compile acceptance proofs
+        run: cargo test -p omp-e2e --tests --no-run --locked
+
+      - name: Run acceptance proofs P1-P6
+        run: |
+          cargo test -p omp-e2e --locked \
+            --test p1_doc_race \
+            --test p2_cancel_matrix \
+            --test p3_detached_jobs \
+            --test p4_schema_isolation \
+            --test p5_prefix_stability \
+            --test p6_crash_resume
+
+      - name: Run terminal proof P7
+        env:
+          TERM: xterm-256color
+        run: cargo test -p omp-e2e --test p7_tui --locked
+
+      - name: Validate P8 baseline contract
+        run: cargo test -p omp-e2e --test p8_baselines --locked
+
+      - name: Record P8 baseline
+        continue-on-error: true
+        run: |
+          cargo run -p omp-e2e --bin baseline --locked -- \
+            --artifact target/e2e-artifacts/p8-baselines.json
+
+      - name: Upload P8 baseline
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: omp-e2e-baseline-macos-arm64
+          path: target/e2e-artifacts/p8-baselines.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  p7_linux:
+    name: Terminal proof P7 (Linux PTY)
+    needs: format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select pinned Rust toolchain
+        run: |
+          test "$(uname -m)" = x86_64
+          rustup show active-toolchain
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y pipx zstd
+          command -v uv >/dev/null || pipx install uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache embedded Python
+        id: python-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: vendor/python
+          key: python-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/py/scripts/fetch-python.sh', 'crates/py/scripts/pack-pymodules.py', 'crates/py/scripts/gen-py-notices.py', 'crates/py/requirements.txt') }}
+
+      - name: Prepare embedded Python
+        if: steps.python-cache.outputs.cache-hit != 'true'
+        run: crates/py/scripts/fetch-python.sh
+
+      - name: Verify embedded Python toolchain
+        run: |
+          test -f vendor/python/pyo3-config.txt
+          test -x vendor/python/install/bin/python3.14td
+
+      - name: Cache Cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-p7-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-p7-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml') }}-
+            cargo-p7-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Run terminal proof P7 on Linux PTY
+        env:
+          TERM: xterm-256color
+        run: cargo test -p omp-e2e --test p7_tui --locked

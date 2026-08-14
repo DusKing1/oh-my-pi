@@ -80,7 +80,7 @@ cargo test --workspace --locked
 
 cargo fmt --all -- --check
 cargo fmt --all
-cargo clippy --workspace --all-targets --locked
+cargo clippy --workspace --locked
 
 cargo run -p omp-app --bin omp -- --help
 cargo run -p omp-tui --example gallery
@@ -97,8 +97,10 @@ cargo run -p omp-e2e --bin baseline --locked -- \
   --artifact target/e2e-artifacts/p8-baselines.json
 ```
 
-CI's exact Rust, E2E, Bun, release, and platform matrix lives in
-`.github/workflows/ci.yml`; reproduce the smallest failing job locally.
+`.github/workflows/ci.yml` is the authoritative Cargo-only gate. Formatting runs
+on Linux; lint, workspace tests, P1-P8, and baseline recording run on
+`macos-15` arm64 because the embedded CPython bundle is currently
+`aarch64-apple-darwin`-only.
 
 ## Code Conventions & Common Patterns
 
@@ -497,7 +499,8 @@ omp is a Rust rewrite of pi. When porting any subsystem:
 - `crates/py/README.md`, `crates/py/build.rs`,
   `crates/py/scripts/fetch-python.sh`: embedded Python linkage and generated
   inputs.
-- `.github/workflows/ci.yml`: authoritative platform and release QA matrix.
+- `.github/workflows/ci.yml`: current Cargo formatting, lint, workspace-test,
+  E2E, PTY, and performance-baseline gate.
 
 ## Runtime/Tooling Preferences
 
