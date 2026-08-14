@@ -77,6 +77,7 @@ pub struct DiffPrefixes {
 }
 
 impl Charset {
+	/// Prefixes diff lines for this terminal's capability tier.
 	pub const fn diff_prefixes(self) -> DiffPrefixes {
 		match self {
 			Self::Ascii => DiffPrefixes { header: "  ", context: "  ", add: "+ ", remove: "- " },

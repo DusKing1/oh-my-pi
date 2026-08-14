@@ -331,6 +331,7 @@ fn parse_token(token: &str) -> Result<Key, String> {
 		"right" => Key::Right,
 		"tab" => Key::Tab,
 		"backtab" | "shift-tab" => Key::BackTab,
+		"alt-enter" => Key::FollowUp,
 		"enter" | "return" | "cr" => Key::Enter,
 		"space" => Key::Space,
 		"esc" | "escape" => Key::Esc,
@@ -792,7 +793,7 @@ mod tests {
 
 	#[test]
 	fn key_spec_tokens_chords_and_literals() {
-		let keys = parse_keys("tab C-c M-y 'hi there' x pgdn f5").expect("valid spec");
+		let keys = parse_keys("tab C-c M-y 'hi there' x pgdn f5 alt-enter").expect("valid spec");
 		assert_eq!(keys, vec![
 			Key::Tab,
 			Key::Ctrl('c'),
@@ -808,6 +809,7 @@ mod tests {
 			Key::Char('x'),
 			Key::PageDown,
 			Key::Function(5),
+			Key::FollowUp,
 		]);
 	}
 

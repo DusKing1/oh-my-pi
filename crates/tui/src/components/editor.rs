@@ -1268,7 +1268,7 @@ mod tests {
 
 	#[test]
 	fn editor_pane_forwards_submit_and_handles_enter() {
-		let mut pane = EditorPane::new().with(Prop::Submit, true);
+		let pane = EditorPane::new().with(Prop::Submit, true);
 		assert!(pane.children[0].comp().props().flag(Prop::Submit));
 
 		let mut ui = Ui::from_root(pane, 40, UiContext::default());

@@ -121,7 +121,6 @@ mod tests {
 	use super::TranscriptView;
 	use crate::{
 		component::{Cached, Component},
-		components,
 		context::UiContext,
 		frame::Rect,
 		props::Props,

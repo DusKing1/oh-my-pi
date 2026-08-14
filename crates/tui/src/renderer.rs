@@ -1390,12 +1390,12 @@ impl<W: Write> Renderer<W> {
 		}
 		seam = seam.min(natural_top);
 
-		let epoch_id = if epoch_reset || self.width_epoch.is_none() {
+		let epoch_id = if let (false, Some(epoch)) = (epoch_reset, self.width_epoch) {
+			epoch.id
+		} else {
 			let id = self.next_epoch;
 			self.next_epoch = self.next_epoch.wrapping_add(1).max(1);
 			id
-		} else {
-			self.width_epoch.expect("checked above").id
 		};
 		self.width_epoch = Some(WidthEpoch {
 			id: epoch_id,
@@ -2670,15 +2670,14 @@ fn place_cursor_absolute(
 	window: Window,
 	document_height: u16,
 ) {
-	let (row, col, visible) = match cursor {
-		Some(cursor) => (cursor.row.min(window.height - 1), cursor.col, true),
-		None => {
-			let content_rows = window
-				.height
-				.min(document_height.saturating_sub(window.top))
-				.max(1);
-			(content_rows - 1, 0, false)
-		},
+	let (row, col, visible) = if let Some(cursor) = cursor {
+		(cursor.row.min(window.height - 1), cursor.col, true)
+	} else {
+		let content_rows = window
+			.height
+			.min(document_height.saturating_sub(window.top))
+			.max(1);
+		(content_rows - 1, 0, false)
 	};
 	let _ = write!(output, "\x1b[{};{}H", row + 1, col + 1);
 	output.push_str(if visible { SHOW_CURSOR } else { HIDE_CURSOR });

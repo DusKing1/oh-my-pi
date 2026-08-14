@@ -119,7 +119,7 @@ impl ToolCard {
 	}
 
 	/// In-place update: fold state.
-	pub fn set_folded(&mut self, folded: bool) -> bool {
+	pub const fn set_folded(&mut self, folded: bool) -> bool {
 		if self.folded == folded {
 			return false;
 		}
@@ -128,7 +128,7 @@ impl ToolCard {
 	}
 
 	/// Sets whether the card is folded (hides children).
-	pub fn folded(mut self, folded: bool) -> Self {
+	pub const fn folded(mut self, folded: bool) -> Self {
 		self.set_folded(folded);
 		self
 	}
@@ -146,7 +146,7 @@ impl ToolCard {
 		self
 	}
 
-	fn header_color(&self, ctx: &UiContext) -> Color {
+	const fn header_color(&self, ctx: &UiContext) -> Color {
 		match self.state {
 			ToolState::Streaming => ctx.theme.accent,
 			ToolState::Success => ctx.theme.ok,

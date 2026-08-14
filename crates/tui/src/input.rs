@@ -63,13 +63,14 @@ pub enum Key {
 	Ctrl(char),
 	/// Alt-chord with a letter, normalized to lowercase, for chords without
 	/// a canonical cross-terminal meaning (e.g. pi binds `alt+y` yank-pop).
-	/// Encoding variants of one physical intent (`alt+f`/`alt+b` word
-	/// motion, `alt+d` word delete, ESC-CR newline) normalize to their
+	/// Encoding variants of one physical intent normalize to their
 	/// semantic keys instead and never reach this variant.
 	Alt(char),
 	/// Ctrl+Alt chord, normalized to lowercase. Used by pi's backward
 	/// character-jump binding and available to embedders for other chords.
 	CtrlAlt(char),
+	/// Alt+Enter: follow-up to an active turn, or standard submission if idle.
+	FollowUp,
 	/// Shift+Enter: literal newline in multiline text entry.
 	ShiftEnter,
 	/// Ctrl/Alt+Left: previous word boundary.
@@ -1165,8 +1166,8 @@ pub struct Keymap {
 }
 
 /// Default chord table. Mirrors pi's defaults: word motion/delete spellings
-/// (including macOS `super+alt+…`), the readline rubouts, every modified-Enter
-/// newline encoding, and smart/raw clipboard paste.
+/// (including macOS `super+alt+…`), the readline rubouts, Shift/Ctrl-Enter
+/// newline spellings plus Alt follow-up, and smart/raw clipboard paste.
 ///
 /// Modifier bits are `1 = Shift`, `2 = Alt`, `4 = Ctrl`, and `8 = Super`.
 const DEFAULT_BINDINGS: &[(Key, u8, Key)] = &[
@@ -1205,11 +1206,11 @@ const DEFAULT_BINDINGS: &[(Key, u8, Key)] = &[
 	// xterm modifyOtherKeys emits the shifted codepoint, so this exact row must win
 	// before shift-folding `Ctrl+Shift+V` into the smart-paste `Ctrl+v` row.
 	(Key::Char('V'), 5, Key::PasteRaw),
-	// pi tui.input.newLine: every modified-Enter spelling; rows cover
-	// each shift/ctrl/alt combination so the semantics stay table-owned
+	// pi tui.input.newLine: Shift/Ctrl-Enter spelling; Alt+Enter maps to FollowUp.
+	// Rows cover each combination so the semantics stay table-owned.
 	(Key::Char('j'), 4, Key::ShiftEnter),
 	(Key::Enter, 1, Key::ShiftEnter),
-	(Key::Enter, 2, Key::ShiftEnter),
+	(Key::Enter, 2, Key::FollowUp),
 	(Key::Enter, 3, Key::ShiftEnter),
 	(Key::Enter, 4, Key::ShiftEnter),
 	(Key::Enter, 5, Key::ShiftEnter),
@@ -1585,7 +1586,7 @@ mod tests {
 			(Key::Char('Z'), 1, Key::Char('Z')),
 			(Key::BackTab, 1, Key::BackTab),
 			(Key::PageDown, 0, Key::PageDown),
-			(Key::Enter, 2, Key::ShiftEnter),
+			(Key::Enter, 2, Key::FollowUp),
 			(Key::Enter, 4, Key::ShiftEnter),
 			(Key::Char('j'), 4, Key::ShiftEnter),
 			(Key::Function(3), 1, Key::ShiftEnter),
@@ -1822,6 +1823,18 @@ mod tests {
 			InputEvent::Key(Key::Esc),
 			InputEvent::Key(Key::Esc),
 		]);
+	}
+
+	#[test]
+	fn decoder_maps_alt_enter_variants_to_followup() {
+		let start = Instant::now();
+		let mut events = Vec::new();
+		let mut decoder = InputDecoder::new();
+		decoder.feed(b"\x1b[13;3u", start, &mut events);
+		assert_eq!(events, [InputEvent::Key(Key::FollowUp)]);
+		events.clear();
+		decoder.feed(b"\x1b\r", start, &mut events);
+		assert_eq!(events, [InputEvent::Key(Key::FollowUp)]);
 	}
 
 	#[test]

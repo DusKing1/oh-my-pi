@@ -297,7 +297,7 @@ mod tests {
 			DiffLine { kind: DiffKind::Remove, text: Str::from("line 2") },
 			DiffLine { kind: DiffKind::Add, text: Str::from("line 3") },
 		]);
-		let frame_fresh = paint_with_ctx(&mut fresh, ctx.clone(), 20, 10);
+		let frame_fresh = paint_with_ctx(&mut fresh, ctx, 20, 10);
 
 		// Verify identity
 		assert_eq!(frame_row_text(&frame_incremental, 0), frame_row_text(&frame_fresh, 0));
@@ -322,11 +322,8 @@ mod tests {
 		let mut diff = DiffView::new();
 		diff.push(DiffKind::Add, "test");
 
-		let mut ctx_ascii = UiContext::default();
-		ctx_ascii.charset = Charset::Ascii;
-
-		let mut ctx_unicode = UiContext::default();
-		ctx_unicode.charset = Charset::Unicode;
+		let ctx_ascii = UiContext { charset: Charset::Ascii, ..UiContext::default() };
+		let ctx_unicode = UiContext { charset: Charset::Unicode, ..UiContext::default() };
 
 		let frame_ascii = paint_with_ctx(&mut diff, ctx_ascii, 10, 2);
 		let frame_unicode = paint_with_ctx(&mut diff, ctx_unicode, 10, 2);

@@ -1640,7 +1640,7 @@ impl Editor {
 
 	/// Takes the text captured by the last `Copy`/`Cut`; see
 	/// [`EditBuffer::take_copied`].
-	pub fn take_copied(&mut self) -> Option<Str> {
+	pub const fn take_copied(&mut self) -> Option<Str> {
 		self.buffer.take_copied()
 	}
 
