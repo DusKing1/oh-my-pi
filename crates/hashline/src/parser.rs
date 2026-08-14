@@ -6,7 +6,7 @@ use omp_core::Str;
 
 use crate::{
 	format::HL_RANGE_SEP,
-	tokenizer::{BlockTarget, Token, Tokenizer, is_hunk_header_text},
+	tokenizer::{BlockTarget, Token, Tokenizer, is_hunk_header_text, is_read_metadata_line},
 	types::{
 		Anchor, BlockMode, Cursor, Diagnostic, DiagnosticCode, Edit, FileOp, InsertMode, ParseError,
 		ParsedPatch, ParsedRange, PasteTarget,
@@ -1060,29 +1060,6 @@ fn bare_literal_value(text: &str) -> bool {
 	}
 }
 
-fn is_read_metadata_line(line: &str) -> bool {
-	let trimmed = line.trim();
-	if matches!(trimmed, "…" | "...") {
-		return true;
-	}
-	if trimmed.starts_with('[')
-		&& trimmed.ends_with(']')
-		&& (trimmed.contains("Showing lines")
-			|| trimmed.contains("more line")
-			|| trimmed.contains("ln elided;"))
-	{
-		return true;
-	}
-	let Some((prefix, body)) = trimmed.split_once(':') else {
-		return false;
-	};
-	prefix.contains('-')
-		&& prefix
-			.chars()
-			.all(|ch| ch.is_ascii_digit() || ch == '-' || ch.is_whitespace())
-		&& (body.contains('…') || body.contains("..."))
-}
-
 fn foreign_patch_message(text: &str) -> Option<Str> {
 	let trimmed = text.trim_start();
 	if ["*** Update File:", "*** Add File:", "*** Delete File:", "*** Move to:"]
@@ -1168,6 +1145,32 @@ mod tests {
 		assert!(
 			codes(&parse_patch("2..3:\n+X").unwrap()).contains(&DiagnosticCode::BareRangeRecovered)
 		);
+	}
+
+	#[test]
+	fn recovers_dangling_range_separator_as_single_line_range() {
+		for patch in ["PUT 2.=:\n+X", "PUT 2-:\n+X"] {
+			let parsed = parse_patch(patch).unwrap();
+			assert!(matches!(parsed.edits[0], Edit::Insert { mode: InsertMode::Replacement, .. }));
+			let deleted: Vec<usize> = parsed
+				.edits
+				.iter()
+				.filter_map(|edit| match edit {
+					Edit::Delete { anchor, .. } => Some(anchor.line),
+					_ => None,
+				})
+				.collect();
+			assert_eq!(deleted, [2], "{patch}");
+		}
+		let cut = parse_patch("CUT 2.=").unwrap();
+		assert!(
+			cut
+				.edits
+				.iter()
+				.any(|edit| matches!(edit, Edit::Cut { range, .. } if range.start.line == 2 && range.end.line == 2))
+		);
+		// A dangling separator followed by junk stays on the strict rejection path.
+		assert!(parse_patch("PUT 2.= junk:\n+X").is_err());
 	}
 
 	#[test]

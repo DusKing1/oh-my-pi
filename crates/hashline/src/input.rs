@@ -11,7 +11,7 @@ use crate::{
 	format::{ABORT_MARKER, BEGIN_PATCH_MARKER, END_PATCH_MARKER, HL_FILE_HASH_LENGTH},
 	normalize::strip_bom,
 	parser::parse_patch,
-	tokenizer::{Token, Tokenizer},
+	tokenizer::{Token, Tokenizer, is_read_metadata_line},
 	types::{
 		BlockMode, Diagnostic, DiagnosticCode, Edit, FileOp, ParseError, ParsedPatch, SplitOptions,
 	},
@@ -225,13 +225,15 @@ fn split_raw_sections(input: &str, options: &SplitOptions) -> Result<Vec<RawSect
 		if trimmed == BEGIN_PATCH_MARKER {
 			continue;
 		}
-		if trimmed.starts_with('[') {
+		if trimmed.starts_with('[') && !is_read_metadata_line(trimmed) {
 			if let Some(header) = parse_header_line(line, line_num, options)? {
 				flush(&mut current, &mut body, &mut sections);
 				current = Some(header);
 				continue;
 			}
-		} else if matches!(tokenizer.tokenize(line, line_num), Token::Header { .. }) {
+		} else if !is_read_metadata_line(trimmed)
+			&& matches!(tokenizer.tokenize(line, line_num), Token::Header { .. })
+		{
 			unreachable!("strict headers always begin with `[`")
 		}
 		body.push(line);
@@ -243,7 +245,7 @@ fn split_raw_sections(input: &str, options: &SplitOptions) -> Result<Vec<RawSect
 fn normalize_fallback_input(input: &str, options: &SplitOptions) -> Result<String, ParseError> {
 	let stripped = strip_bom(input).text;
 	for (index, line) in stripped.lines().enumerate() {
-		if parse_header_line(line, index + 1, options)?.is_some() {
+		if !is_read_metadata_line(line) && parse_header_line(line, index + 1, options)?.is_some() {
 			return Ok(input.to_owned());
 		}
 	}
@@ -500,6 +502,22 @@ mod tests {
 		assert_eq!(patch.sections[0].path, "dir with spaces/a.rs");
 		assert_eq!(patch.sections[0].file_hash.as_deref(), Some("1A2B"));
 		assert_eq!(patch.sections[1].diff, "CUT 2");
+	}
+
+	#[test]
+	fn copied_read_metadata_is_not_misclassified_as_a_file_header() {
+		let patch = Patch::parse_default(
+			"[a.rs#1A2B]\n[…8ln elided; re-read needed ranges with |, e.g. a.rs:10-17]\nPUT 1.=1:\n+x",
+		)
+		.unwrap();
+		assert_eq!(patch.sections.len(), 1);
+		let parsed = patch.sections[0].parse().unwrap();
+		assert!(
+			parsed
+				.diagnostics
+				.iter()
+				.any(|diagnostic| diagnostic.code == DiagnosticCode::ReadMetadataIgnored)
+		);
 	}
 
 	#[test]

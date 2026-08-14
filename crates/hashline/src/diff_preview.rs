@@ -727,7 +727,7 @@ mod tests {
 			.replace("return b1;", "return b1 + 1;");
 		let diff =
 			numbered_diff(base.as_bytes(), current.as_bytes(), Some(Path::new("sample.ts"))).unwrap();
-		let rows = diff.text.split('\n').collect::<Vec<_>>();
+		let rows = diff.text.split("\n").collect::<Vec<_>>();
 		let closer = rows.iter().position(|row| *row == " 7|}").unwrap();
 		let opener = rows
 			.iter()
@@ -754,7 +754,7 @@ mod tests {
 			Some(Path::new("sample.ts")),
 		)
 		.unwrap();
-		let rows = contiguous_diff.text.split('\n').collect::<Vec<_>>();
+		let rows = contiguous_diff.text.split("\n").collect::<Vec<_>>();
 		let closer = rows.iter().position(|row| *row == " 7|}").unwrap();
 		let opener = rows
 			.iter()

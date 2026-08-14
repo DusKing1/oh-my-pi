@@ -327,6 +327,28 @@ fn marker_equals(line: &str, marker: &str) -> bool {
 	line.trim_end() == marker
 }
 
+pub(crate) fn is_read_metadata_line(line: &str) -> bool {
+	let trimmed = line.trim();
+	if matches!(trimmed, "…" | "...") {
+		return true;
+	}
+	if trimmed.starts_with('[')
+		&& trimmed.ends_with(']')
+		&& (trimmed.contains("Showing lines")
+			|| trimmed.contains("more line")
+			|| trimmed.contains("ln elided;"))
+	{
+		return true;
+	}
+	let Some((prefix, body)) = trimmed.split_once(':') else {
+		return false;
+	};
+	prefix.contains('-')
+		&& prefix
+			.chars()
+			.all(|ch| ch.is_ascii_digit() || ch == '-' || ch.is_whitespace())
+		&& (body.contains('…') || body.contains("..."))
+}
 fn classify_line(line: &str, line_num: usize) -> Token {
 	if line.is_empty() {
 		return Token::Blank { line_num };
@@ -339,6 +361,9 @@ fn classify_line(line: &str, line_num: usize) -> Token {
 	}
 	if marker_equals(line, ABORT_MARKER) {
 		return Token::Abort { line_num };
+	}
+	if is_read_metadata_line(line) {
+		return Token::Raw { line_num, text: line.into() };
 	}
 	if let Some((path, file_hash)) = try_parse_header(line) {
 		return Token::Header { line_num, path, file_hash };
@@ -498,9 +523,27 @@ fn parse_locator_range(text: &str) -> Option<(ParsedRange, bool, bool)> {
 		return Some((ParsedRange { start: anchor, end: anchor }, false, false));
 	}
 	let rest = &trimmed[first_end..];
-	let second_start = rest
+	let Some(second_start) = rest
 		.char_indices()
-		.find_map(|(index, ch)| ch.is_ascii_digit().then_some(index))?;
+		.find_map(|(index, ch)| ch.is_ascii_digit().then_some(index))
+	else {
+		// A dangling range separator (`2.=`, `5-`, `12..`) is written intending an
+		// open range; recover it as the single-line range `N.=N`. Any other
+		// trailing token keeps the header on the strict rejection path.
+		let mut saw_separator = false;
+		for ch in rest.chars() {
+			match ch {
+				'-' | '.' | '=' | '…' => saw_separator = true,
+				ch if ch.is_whitespace() => {},
+				_ => return None,
+			}
+		}
+		if !saw_separator {
+			return None;
+		}
+		let anchor = Anchor { line: start };
+		return Some((ParsedRange { start: anchor, end: anchor }, true, false));
+	};
 	let separator = &rest[..second_start];
 	if separator.is_empty()
 		|| !separator
@@ -592,6 +635,17 @@ mod tests {
 		for separator in ["-", "=", ".", "..", "…", " ", ".=-"] {
 			assert!(tokenizer.is_op(&format!("PUT 2{separator}4:")));
 			assert!(tokenizer.is_op(&format!("CUT 2{separator}4")));
+		}
+	}
+
+	#[test]
+	fn recovers_dangling_range_separators_as_single_line_ranges() {
+		let tokenizer = Tokenizer::new();
+		for header in ["PUT 2.=:", "PUT 2-:", "CUT 2.=", "PUT 2.. @r", "CUT 5-"] {
+			assert!(tokenizer.is_op(header), "{header}");
+		}
+		for header in ["PUT 2.= junk:", "CUT 2.=junk", "PUT 2*.:"] {
+			assert!(!tokenizer.is_op(header), "{header}");
 		}
 	}
 
