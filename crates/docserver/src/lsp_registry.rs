@@ -454,13 +454,13 @@ struct Binding {
 }
 
 struct FormatBindingLease {
-	binding:  Binding,
-	existing: usize,
+	binding: Binding,
 }
 
 struct FormatLeaseSet {
 	bindings:         Vec<FormatBindingLease>,
-	base_uri:         Url,
+	shadow_document:  DocumentId,
+	shadow_uri:       Url,
 	base_language_id: Option<LanguageId>,
 }
 
@@ -483,9 +483,10 @@ struct LeaseRecord {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct ProvisionalLeaseKey {
-	binding_id:  LspBindingId,
-	document_id: DocumentId,
-	transaction: TransactionId,
+	binding_id:     LspBindingId,
+	document_id:    DocumentId,
+	transaction:    TransactionId,
+	shadow_document: DocumentId,
 }
 
 #[derive(Default)]
@@ -1798,25 +1799,6 @@ impl LspRegistry {
 		Ok(Arc::new(DocumentSnapshot::new(read.head().clone(), content)?))
 	}
 
-	fn mark_private_version(
-		&self,
-		binding_id: LspBindingId,
-		document_id: DocumentId,
-		uri: &Url,
-		version: i32,
-	) {
-		if let Some(entries) = self
-			.inner
-			.state
-			.lock()
-			.public_versions
-			.get_mut(&(binding_id, document_id))
-		{
-			entries.retain(|(entry_uri, entry_version)| {
-				entry_uri.as_str() != uri.as_str() || *entry_version != version
-			});
-		}
-	}
 
 	fn ensure_binding_generation(
 		&self,
@@ -1896,129 +1878,83 @@ impl LspRegistry {
 					.matches(&base_uri, base_language_id.as_ref())
 			})
 			.collect::<Vec<_>>();
-		let snapshot = provisional_snapshot(request.base(), request.candidate().clone())?;
+		let shadow_document = format_shadow_document(request);
+		let shadow_uri = format_shadow_uri(request);
+		let snapshot =
+			provisional_snapshot_for(shadow_document, request.base(), request.candidate().clone())?;
 		let mut acquired = Vec::new();
 		for binding in &bindings {
 			let key = ProvisionalLeaseKey {
 				binding_id: binding.id,
 				document_id,
 				transaction: request.transaction_id(),
+				shadow_document,
 			};
-			let existing = self.committed_binding_document_count(binding.id, document_id);
 			if self.inner.state.lock().provisional_leases.contains(&key) {
-				acquired.push(FormatBindingLease { binding: binding.clone(), existing });
+				acquired.push(FormatBindingLease { binding: binding.clone() });
 				continue;
 			}
-			let retained = existing > 0;
-			if retained && let Err(error) = binding.server.retain_document(document_id).await {
+			if let Err(error) = binding
+				.server
+				.synchronize(
+					lsp_document(&snapshot, &shadow_uri, base_language_id.as_ref()),
+					cancel.child_token(),
+				)
+				.await
+			{
+				self.release_shadow(binding, shadow_document).await;
 				self
 					.rollback_format_acquisition(
-						request,
-						&base_uri,
-						base_language_id.as_ref(),
+						document_id,
+						request.transaction_id(),
+						shadow_document,
 						&mut acquired,
 					)
 					.await;
 				return Err(error.into());
 			}
-			let version = match binding
-				.server
-				.synchronize(
-					lsp_document(&snapshot, &base_uri, base_language_id.as_ref()),
-					cancel.child_token(),
-				)
-				.await
-			{
-				Ok(version) => version,
-				Err(error) => {
-					if retained
-						&& let Ok(version) = binding
-							.server
-							.synchronize(
-								lsp_document(request.base(), &base_uri, base_language_id.as_ref()),
-								CancellationToken::new(),
-							)
-							.await
-					{
-						self.mark_public_version(binding.id, document_id, &base_uri, version);
-					}
-					if retained
-						&& binding
-							.server
-							.release_document(document_id, CancellationToken::new())
-							.await
-							.is_err()
-					{
-						binding.server.abandon_document_lease(document_id).await;
-					}
-					self
-						.rollback_format_acquisition(
-							request,
-							&base_uri,
-							base_language_id.as_ref(),
-							&mut acquired,
-						)
-						.await;
-					return Err(error.into());
-				},
-			};
-			self.mark_private_version(binding.id, document_id, &base_uri, version);
 			self.inner.state.lock().provisional_leases.insert(key);
-			acquired.push(FormatBindingLease { binding: binding.clone(), existing });
+			acquired.push(FormatBindingLease { binding: binding.clone() });
 		}
-		Ok(FormatLeaseSet { bindings: acquired, base_uri, base_language_id })
+		Ok(FormatLeaseSet {
+			bindings: acquired,
+			shadow_document,
+			shadow_uri,
+			base_language_id,
+		})
 	}
 
 	async fn rollback_format_acquisition(
 		&self,
-		request: &FormatRequest,
-		base_uri: &Url,
-		base_language_id: Option<&LanguageId>,
+		document_id: DocumentId,
+		transaction_id: TransactionId,
+		shadow_document: DocumentId,
 		acquired: &mut Vec<FormatBindingLease>,
 	) {
-		let document_id = request.base().head().document_id();
 		for lease in acquired.drain(..).rev() {
 			let key = ProvisionalLeaseKey {
 				binding_id: lease.binding.id,
 				document_id,
-				transaction: request.transaction_id(),
+				transaction: transaction_id,
+				shadow_document,
 			};
-			if !self.inner.state.lock().provisional_leases.remove(&key) {
-				continue;
+			if self.inner.state.lock().provisional_leases.remove(&key) {
+				self.release_shadow(&lease.binding, shadow_document).await;
 			}
-			if lease.existing > 0
-				&& let Ok(version) = lease
-					.binding
-					.server
-					.synchronize(
-						lsp_document(request.base(), base_uri, base_language_id),
-						CancellationToken::new(),
-					)
-					.await
-			{
-				self.mark_public_version(lease.binding.id, document_id, base_uri, version);
-			}
-			if lease
-				.binding
-				.server
-				.release_document(document_id, CancellationToken::new())
-				.await
-				.is_err()
-			{
-				lease
-					.binding
-					.server
-					.abandon_document_lease(document_id)
-					.await;
-			}
-			if lease.existing == 0 {
-				self
-					.inner
-					.state
-					.lock()
-					.public_versions
-					.remove(&(lease.binding.id, document_id));
-			}
+		}
+	}
+
+	async fn release_shadow(&self, binding: &Binding, shadow_document: DocumentId) {
+		if binding.server.tracked_version_revision(shadow_document).is_none() {
+			return;
+		}
+		if binding
+			.server
+			.release_document(shadow_document, CancellationToken::new())
+			.await
+			.is_err()
+		{
+			binding.server.abandon_document_lease(shadow_document).await;
 		}
 	}
 
@@ -2027,32 +1963,57 @@ impl LspRegistry {
 		bindings: &[Binding],
 		document_id: DocumentId,
 		transaction_id: TransactionId,
+		close_public_when_unleased: bool,
 		cancel: CancellationToken,
 	) -> Result<(), LspRegistryError> {
 		let mut first_error = None;
 		for binding in bindings {
-			let key = ProvisionalLeaseKey {
-				binding_id: binding.id,
-				document_id,
-				transaction: transaction_id,
-			};
-			if self.inner.state.lock().provisional_leases.contains(&key) {
+			let keys = self
+				.inner
+				.state
+				.lock()
+				.provisional_leases
+				.iter()
+				.copied()
+				.filter(|key| {
+					key.binding_id == binding.id
+						&& key.document_id == document_id
+						&& key.transaction == transaction_id
+				})
+				.collect::<Vec<_>>();
+			for key in keys {
 				if let Err(error) = binding
 					.server
-					.release_document(document_id, cancel.child_token())
-					.await && first_error.is_none()
+					.release_document(key.shadow_document, cancel.child_token())
+					.await
 				{
-					first_error = Some(LspRegistryError::from(error));
+					binding.server.abandon_document_lease(key.shadow_document).await;
+					if first_error.is_none() {
+						first_error = Some(LspRegistryError::from(error));
+					}
 				}
 				self.inner.state.lock().provisional_leases.remove(&key);
-				if self.binding_document_count(binding.id, document_id) == 0 {
-					self
-						.inner
-						.state
-						.lock()
-						.public_versions
-						.remove(&(binding.id, document_id));
+			}
+			if close_public_when_unleased
+				&& self.committed_binding_document_count(binding.id, document_id) == 0
+				&& binding.server.tracked_version_revision(document_id).is_some()
+				&& let Err(error) = binding
+					.server
+					.release_document(document_id, cancel.child_token())
+					.await
+			{
+				binding.server.abandon_document_lease(document_id).await;
+				if first_error.is_none() {
+					first_error = Some(LspRegistryError::from(error));
 				}
+			}
+			if self.binding_document_count(binding.id, document_id) == 0 {
+				self
+					.inner
+					.state
+					.lock()
+					.public_versions
+					.remove(&(binding.id, document_id));
 			}
 		}
 		match first_error {
@@ -2071,18 +2032,18 @@ impl LspRegistry {
 			return Err(LspRegistryError::FormattingUnavailable);
 		}
 		let bindings = &leases.bindings;
-		let uri = &leases.base_uri;
+		let uri = &leases.shadow_uri;
 		let language_id = leases.base_language_id.as_ref();
 		let mut content = request.candidate().clone();
 		let mut performed = false;
 		for binding in bindings {
 			let binding = &binding.binding;
-			let mut snapshot = provisional_snapshot(request.base(), content.clone())?;
-			let version = binding
+			let mut snapshot =
+				provisional_snapshot_for(leases.shadow_document, request.base(), content.clone())?;
+			binding
 				.server
 				.synchronize(lsp_document(&snapshot, uri, language_id), cancel.child_token())
 				.await?;
-			self.mark_private_version(binding.id, request.base().head().document_id(), uri, version);
 			let policy = binding.server.sync_policy(uri, language_id);
 			if policy.will_save {
 				binding
@@ -2100,17 +2061,12 @@ impl LspRegistry {
 					)
 					.await?;
 				performed = true;
-				snapshot = provisional_snapshot(request.base(), content.clone())?;
-				let version = binding
+				snapshot =
+					provisional_snapshot_for(leases.shadow_document, request.base(), content.clone())?;
+				binding
 					.server
 					.synchronize(lsp_document(&snapshot, uri, language_id), cancel.child_token())
 					.await?;
-				self.mark_private_version(
-					binding.id,
-					request.base().head().document_id(),
-					uri,
-					version,
-				);
 			}
 			if binding.server.supports_formatting(uri, language_id) {
 				content = binding
@@ -2122,57 +2078,29 @@ impl LspRegistry {
 					)
 					.await?;
 				performed = true;
-				snapshot = provisional_snapshot(request.base(), content.clone())?;
-				let version = binding
+				snapshot =
+					provisional_snapshot_for(leases.shadow_document, request.base(), content.clone())?;
+				binding
 					.server
 					.synchronize(lsp_document(&snapshot, uri, language_id), cancel.child_token())
 					.await?;
-				self.mark_private_version(
-					binding.id,
-					request.base().head().document_id(),
-					uri,
-					version,
-				);
 			}
 		}
 		if !performed {
 			return Err(LspRegistryError::FormattingUnavailable);
 		}
-		let snapshot = provisional_snapshot(request.base(), content.clone())?;
+		let snapshot =
+			provisional_snapshot_for(leases.shadow_document, request.base(), content.clone())?;
 		for binding in bindings {
-			let binding = &binding.binding;
-			let version = binding
+			binding
+				.binding
 				.server
 				.synchronize(lsp_document(&snapshot, uri, language_id), cancel.child_token())
 				.await?;
-			self.mark_private_version(binding.id, request.base().head().document_id(), uri, version);
 		}
 		Ok(content)
 	}
 
-	async fn rollback_candidate(&self, request: &FormatRequest, leases: &FormatLeaseSet) {
-		for lease in &leases.bindings {
-			if lease.existing == 0 {
-				continue;
-			}
-			let binding = &lease.binding;
-			if let Ok(version) = binding
-				.server
-				.synchronize(
-					lsp_document(request.base(), &leases.base_uri, leases.base_language_id.as_ref()),
-					CancellationToken::new(),
-				)
-				.await
-			{
-				self.mark_public_version(
-					binding.id,
-					request.base().head().document_id(),
-					&leases.base_uri,
-					version,
-				);
-			}
-		}
-	}
 
 	async fn publish_committed_inner(
 		&self,
@@ -2218,7 +2146,6 @@ impl FormatCoordinator for LspRegistry {
 			Ok(content) => Ok(FormatResult::new(content)),
 			Err(error) => {
 				let _mutation = self.inner.mutation.lock().await;
-				self.rollback_candidate(&request, &leases).await;
 				let bindings = leases
 					.bindings
 					.iter()
@@ -2229,6 +2156,7 @@ impl FormatCoordinator for LspRegistry {
 						&bindings,
 						request.base().head().document_id(),
 						request.transaction_id(),
+						false,
 						CancellationToken::new(),
 					)
 					.await;
@@ -2295,6 +2223,7 @@ impl FormatCoordinator for LspRegistry {
 				&bindings,
 				document.head().document_id(),
 				document.transaction_id(),
+				true,
 				cancel,
 			)
 			.await;
@@ -2323,46 +2252,29 @@ impl FormatCoordinator for LspRegistry {
 			})
 			.collect::<Vec<_>>();
 		let mut bindings = Vec::new();
+		let mut included = HashSet::new();
 		let mut first_error = None;
 		for key in keys {
-			let binding = match self.binding(key.binding_id) {
-				Ok(binding) => binding,
+			match self.binding(key.binding_id) {
+				Ok(binding) => {
+					if included.insert(binding.id) {
+						bindings.push(binding);
+					}
+				},
 				Err(error) => {
 					self.inner.state.lock().provisional_leases.remove(&key);
 					if first_error.is_none() {
 						first_error = Some(error);
 					}
-					continue;
 				},
-			};
-			match binding
-				.server
-				.synchronize(
-					lsp_document(snapshot, document.uri(), document.language_id()),
-					cancel.child_token(),
-				)
-				.await
-			{
-				Ok(version) => {
-					self.mark_public_version(
-						binding.id,
-						snapshot.head().document_id(),
-						document.uri(),
-						version,
-					);
-				},
-				Err(error) if first_error.is_none() => {
-					first_error = Some(LspRegistryError::from(error));
-				},
-				Err(_) => {},
 			}
-			bindings.push(binding);
 		}
 		let release_result = self
 			.release_provisional_in_gate(
 				&bindings,
 				snapshot.head().document_id(),
 				document.transaction_id(),
+				false,
 				cancel,
 			)
 			.await;
@@ -2388,6 +2300,44 @@ fn record_public_version(
 		entry_uri.as_str() != uri.as_str() || *entry_version != version
 	});
 	if entries.len() == PUBLIC_VERSION_LIMIT {
+fn format_shadow_document(request: &FormatRequest) -> DocumentId {
+	let mut hasher = blake3::Hasher::new();
+	hasher.update(b"omp-lsp-format-shadow-v1\0");
+	hasher.update(request.base().head().document_id().as_bytes());
+	hasher.update(request.transaction_id().as_bytes());
+	hasher.update(&request.operation_index().to_be_bytes());
+	let mut bytes = [0; 16];
+	bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+	DocumentId::from_bytes(bytes)
+}
+
+fn format_shadow_uri(request: &FormatRequest) -> Url {
+	let extension = std::path::Path::new(request.uri().path())
+		.extension()
+		.and_then(std::ffi::OsStr::to_str);
+	let name = match extension {
+		Some(extension) => format!(
+			".omp-format-{}-{}.{}",
+			request.transaction_id(),
+			request.operation_index(),
+			extension
+		),
+		None => format!(
+			".omp-format-{}-{}",
+			request.transaction_id(),
+			request.operation_index()
+		),
+	};
+	let mut uri = request.uri().clone();
+	if let Ok(mut segments) = uri.path_segments_mut() {
+		segments.pop();
+		segments.push(&name);
+	} else {
+		uri.set_query(Some(&name));
+	}
+	uri
+}
+
 		entries.pop_front();
 	}
 	entries.push_back((Str::new(uri.as_str()), version));
@@ -2408,27 +2358,30 @@ fn provisional_snapshot(
 	let head = DocumentHead::new(
 		base.head().document_id(),
 		revision,
-		presence,
-		base.head().kind().clone(),
-		content.len() as u64,
-	)?;
+fn provisional_snapshot(
+	base: &DocumentSnapshot,
+	content: Bytes,
+) -> crate::Result<DocumentSnapshot> {
+	provisional_snapshot_for(base.head().document_id(), base, content)
+}
+
+fn provisional_snapshot_for(
+	document_id: DocumentId,
+	base: &DocumentSnapshot,
+	content: Bytes,
+) -> crate::Result<DocumentSnapshot> {
+	let sequence = base
+		.head()
+		.revision()
+		.sequence()
+		.checked_add(1)
+		.unwrap_or_else(|| base.head().revision().sequence());
+	let revision = Revision::for_content(sequence, &content);
+	let presence = DocumentPresence::Present;
+	let head =
+		DocumentHead::new(document_id, revision, presence, base.head().kind().clone(), content.len() as u64)?;
 	DocumentSnapshot::new(head, content)
 }
-
-const fn language_for_head(head: &DocumentHead) -> Option<&LanguageId> {
-	match head.kind() {
-		DocumentKind::Text(language_id) => language_id.as_ref(),
-		DocumentKind::Binary => None,
-	}
-}
-
-fn registry_protocol_error(error: LspRegistryError) -> crate::Error {
-	crate::Error::Protocol { reason: Str::new(error.to_string()) }
-}
-
-const fn lsp_document<'a>(
-	snapshot: &'a DocumentSnapshot,
-	uri: &'a Url,
 	language_id: Option<&'a LanguageId>,
 ) -> LspDocument<'a> {
 	LspDocument { snapshot, uri, language_id }
