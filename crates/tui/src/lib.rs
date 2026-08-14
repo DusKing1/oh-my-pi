@@ -64,8 +64,8 @@ pub use context::{Appearance, Charset, Graphics, Grid, JamoWidth, Theme, UiConte
 pub use debug::respond_debug_query;
 pub use editcore::{
 	BufferOutcome, Command, CompletionEdit, EditBuffer, EditOutcome, Editor, EditorCompletion,
-	EditorOptions, Picker, SlashCommands, Suggestion, SuggestionDisplay, SuggestionList,
-	Suggestions, TabAction, VisualRow,
+	EditorCompletion as Completion, EditorOptions, Picker, SlashCommands, Suggestion,
+	SuggestionDisplay, SuggestionList, Suggestions, TabAction, VisualRow,
 };
 pub use frame::{
 	Cell, CellContent, Color, Decor, DecorFill, DecorKind, Frame, Gradient, LinkId, Rect, Size,

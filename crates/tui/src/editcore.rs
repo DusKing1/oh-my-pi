@@ -1570,6 +1570,17 @@ impl Editor {
 		self.completion = Some(completion);
 		self.refresh();
 	}
+	/// Replaces the editor text without adding an undo entry, preserving
+	/// completion and history configuration.
+	pub fn set_text(&mut self, text: &str) {
+		self.buffer.replace_external(text, false);
+		self.refresh();
+	}
+
+	/// Returns the underlying edit buffer for component rendering.
+	pub(crate) const fn buffer(&self) -> &EditBuffer {
+		&self.buffer
+	}
 
 	/// Returns the feature switches the editor was built with, so
 	/// renderers can honor them (e.g. XML highlighting).

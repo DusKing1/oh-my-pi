@@ -11,7 +11,7 @@ use xutf::Text;
 
 use super::Img;
 use crate::{
-	BufferOutcome, EditBuffer,
+	Completion, EditBuffer, EditOutcome, Editor, EditorOptions, SuggestionDisplay,
 	component::{
 		Cached, Component, EventCtx, Flow, Hit, HitTag, IntoComponent, PaintCtx, Slot, next_slot,
 	},
@@ -27,7 +27,7 @@ use crate::{
 pub struct EditInput {
 	props:       Props,
 	slot:        Slot,
-	buffer:      EditBuffer,
+	editor:      Editor,
 	attachments: Option<Attachments>,
 	dragging:    bool,
 	last_click:  Option<((u16, u16), Instant)>,
@@ -39,7 +39,7 @@ impl EditInput {
 		Self {
 			props:       Props::new(),
 			slot:        next_slot(),
-			buffer:      EditBuffer::default(),
+			editor:      Editor::new(EditorOptions::default()),
 			attachments: None,
 			dragging:    false,
 			last_click:  None,
@@ -61,8 +61,8 @@ impl EditInput {
 		let Some(attachments) = &self.attachments else {
 			return false;
 		};
-		let text = self.buffer.text();
-		let ranges = self.buffer.atom_ranges();
+		let text = self.editor.text();
+		let ranges = self.editor.atom_ranges();
 		attachments.set_visible(|attachment| {
 			let chip = chip_label(attachment, ctx.charset);
 			ranges
@@ -73,12 +73,7 @@ impl EditInput {
 
 	#[allow(dead_code, reason = "acceptance-suite probe")]
 	pub(crate) const fn buffer(&self) -> &EditBuffer {
-		&self.buffer
-	}
-
-	#[allow(dead_code, reason = "acceptance-suite probe")]
-	pub(crate) const fn buffer_mut(&mut self) -> &mut EditBuffer {
-		&mut self.buffer
+		self.editor.buffer()
 	}
 
 	/// Sets one editor property, updating its buffer for `value`.
@@ -87,7 +82,7 @@ impl EditInput {
 		if prop == Prop::Value
 			&& let PropValue::Str(text) = &value
 		{
-			self.buffer = EditBuffer::new(text);
+			self.editor.set_text(text);
 		}
 		self.props.set(prop, value);
 		self
@@ -97,6 +92,11 @@ impl EditInput {
 	pub fn with_str(self, prop: Prop, value: &str) -> Self {
 		self.with(prop, value)
 	}
+	/// Registers the completion engine used by this editable leaf.
+	pub fn set_completion(&mut self, completion: Box<dyn Completion>) {
+		self.editor.set_completion(completion);
+	}
+
 
 	fn text_width(width: u16) -> u16 {
 		width.saturating_sub(2).max(1)
@@ -104,6 +104,48 @@ impl EditInput {
 
 	fn page_rows(ec: &EventCtx<'_>) -> usize {
 		usize::from(ec.view_rows.max(1))
+	}
+	fn paint_picker(&self, pc: &mut PaintCtx<'_>, rect: Rect, y: u16) {
+		let Some(picker) = self.editor.picker() else {
+			return;
+		};
+		let (start, suggestions) = picker.visible_suggestions();
+		for (offset, suggestion) in suggestions.iter().enumerate() {
+			let Ok(offset) = u16::try_from(offset) else {
+				break;
+			};
+			let row = y.saturating_add(offset);
+			if row >= pc.clip {
+				break;
+			}
+			let selected = start + usize::from(offset) == picker.selected();
+			let style = Style::new().fg(if selected {
+				pc.ctx.theme.accent
+			} else {
+				pc.ctx.theme.muted
+			});
+			let mut x = pc.frame.put(
+				rect.x,
+				row,
+				if selected { pc.ctx.charset.cursor() } else { "  " },
+				style,
+			);
+			x = match suggestion.display() {
+				SuggestionDisplay::Text(name) => pc.frame.put(x, row, name, style),
+				SuggestionDisplay::Emoji { emoji, shortcode } => {
+					let x = pc.frame.put(x, row, emoji, style);
+					let x = pc.frame.put(x, row, "  :", style);
+					let x = pc.frame.put(x, row, shortcode.trim_matches(':'), style);
+					pc.frame.put(x, row, ":", style)
+				},
+			};
+			if let Some(description) = suggestion.description() {
+				let x = x.saturating_add(2);
+				if x < rect.x.saturating_add(rect.width) {
+					pc.frame.put(x, row, description, style);
+				}
+			}
+		}
 	}
 }
 
@@ -130,19 +172,22 @@ impl Component for EditInput {
 		(20, 40)
 	}
 
-	fn height(&mut self, _ctx: &UiContext, _width: u16) -> u16 {
-		4
+	fn height(&mut self, _ctx: &UiContext, width: u16) -> u16 {
+		self
+			.editor
+			.input_height_for(Self::text_width(width))
+			.saturating_add(self.editor.picker_height())
 	}
 
 	fn paint(&mut self, pc: &mut PaintCtx<'_>, rect: Rect) {
 		pc.hits
 			.push(Hit { rect, slot: self.slot, tag: HitTag::Press });
 		let focused = pc.focus == Some(self.slot);
-		let text = self.buffer.text();
-		let atoms = self.buffer.atom_ranges();
-		let rows = self
-			.buffer
-			.rows(Self::text_width(rect.width), usize::from(rect.height));
+		let text = self.editor.text();
+		let atoms = self.editor.atom_ranges();
+		let input_width = Self::text_width(rect.width);
+		let input_height = self.editor.input_height_for(input_width);
+		let rows = self.editor.view(input_width);
 		let rail = if focused {
 			Style::new().fg(pc.ctx.theme.accent)
 		} else {
@@ -185,7 +230,7 @@ impl Component for EditInput {
 			let runs = overlay_chip_runs(&runs, &chips, content.text.len());
 
 			let x = pc.frame.put(rect.x, y, pc.ctx.charset.rail(), rail);
-			let selection = self.buffer.selection_span(content);
+			let selection = self.editor.selection_span(content);
 			let selection_bytes = selection.map(|(start, end)| {
 				(byte_at_column(content.text, start), byte_at_column(content.text, end))
 			});
@@ -205,6 +250,7 @@ impl Component for EditInput {
 				cursor_style,
 			);
 		}
+		self.paint_picker(pc, rect, rect.y.saturating_add(input_height));
 	}
 
 	fn focusable(&self) -> bool {
@@ -212,36 +258,37 @@ impl Component for EditInput {
 	}
 
 	fn key(&mut self, ec: &mut EventCtx<'_>, key: Key) -> Flow {
-		if key == Key::Enter && self.props.flag(Prop::Submit) {
-			if !self.buffer.text().trim().is_empty() {
+		if key == Key::Enter
+			&& self.props.flag(Prop::Submit)
+			&& self.editor.picker().is_none()
+		{
+			if !self.editor.text().trim().is_empty() {
 				return Flow::Event(UiEvent::Submit);
 			}
 			return Flow::Consumed;
 		}
 
-		if matches!(key, Key::Up) && self.buffer.at_visual_start()
-			|| matches!(key, Key::Down) && self.buffer.at_visual_end()
+		if self.editor.picker().is_none()
+			&& (matches!(key, Key::Up) && self.editor.buffer().at_visual_start()
+				|| matches!(key, Key::Down) && self.editor.buffer().at_visual_end())
 		{
 			return Flow::Skip;
 		}
-		if matches!(
-			self
-				.buffer
-				.handle(key, Self::text_width(ec.width), Self::page_rows(ec)),
-			BufferOutcome::Changed
-		) {
-			if self.reconcile(ec.ctx) {
-				// The pane's attachment band changed height outside this
-				// leaf's own box.
+		match self.editor.handle(key) {
+			EditOutcome::Changed => {
 				ec.request_layout();
-			}
-			match self.buffer.take_copied() {
-				// The host owns the clipboard write (OSC 52 / native).
-				Some(text) => Flow::Event(UiEvent::Copied(text)),
-				None => Flow::Consumed,
-			}
-		} else {
-			Flow::Skip
+				if self.reconcile(ec.ctx) {
+					// The pane's attachment band changed height outside this
+					// leaf's own box.
+					ec.request_layout();
+				}
+				match self.editor.take_copied() {
+					// The host owns the clipboard write (OSC 52 / native).
+					Some(text) => Flow::Event(UiEvent::Copied(text)),
+					None => Flow::Consumed,
+				}
+			},
+			EditOutcome::Submitted(_) | EditOutcome::Ignored => Flow::Skip,
 		}
 	}
 
@@ -263,17 +310,17 @@ impl Component for EditInput {
 				let column = at.0.saturating_sub(rect.x + 2);
 				let width = Self::text_width(rect.width);
 				if same_cell {
-					self.buffer.select_word_visual_row(row, column, width);
+					self.editor.select_word_visual_row(row, column, width);
 					self.last_click = None;
 				} else {
-					self.buffer.set_cursor_visual_row(row, column, width);
+					self.editor.set_cursor_visual_row(row, column, width);
 					self.last_click = Some((at, now));
 				}
 				self.dragging = true;
 				Flow::Consumed
 			},
 			Mouse::Drag if self.dragging => {
-				self.buffer.extend_selection_visual_row(
+				self.editor.extend_selection_visual_row(
 					usize::from(at.1.saturating_sub(rect.y)),
 					at.0.saturating_sub(rect.x + 2),
 					Self::text_width(rect.width),
@@ -287,7 +334,7 @@ impl Component for EditInput {
 			Mouse::WheelUp | Mouse::WheelDown => {
 				let delta = if mouse == Mouse::WheelUp { -1 } else { 1 };
 				if self
-					.buffer
+					.editor
 					.scroll_rows(delta, Self::text_width(ec.width), Self::page_rows(ec))
 				{
 					Flow::Consumed
@@ -317,8 +364,8 @@ impl Component for EditInput {
 				for path in paths {
 					let attachment = attachments.push_image(path.clone());
 					let chip = chip_label(&attachment, ec.ctx.charset);
-					let _ = self.buffer.insert_reference(&chip, path.as_str());
-					let _ = self.buffer.insert_text(" ");
+					let _ = self.editor.insert_reference(&chip, path.as_str());
+					let _ = self.editor.insert_text(" ");
 				}
 				ec.request_layout();
 				return Flow::Consumed;
@@ -330,21 +377,21 @@ impl Component for EditInput {
 			let attachment = attachments.push_text(text);
 			let chip = chip_label(&attachment, ec.ctx.charset);
 			let payload = sanitize_paste(text);
-			let _ = self.buffer.insert_reference(&chip, &payload);
-			let _ = self.buffer.insert_text(" ");
+			let _ = self.editor.insert_reference(&chip, &payload);
+			let _ = self.editor.insert_text(" ");
 			ec.request_layout();
 			return Flow::Consumed;
 		}
 		let sanitized = sanitize_paste(text);
 		let path_prefix = matches!(sanitized.as_bytes().first(), Some(b'/' | b'~' | b'.'));
-		let before_is_word = self.buffer.text()[..self.buffer.cursor()]
+		let before_is_word = self.editor.text()[..self.editor.buffer().cursor()]
 			.chars()
 			.next_back()
 			.is_some_and(|ch| ch.is_alphanumeric() || ch == '_');
 		if path_prefix && before_is_word {
-			let _ = self.buffer.insert_text(" ");
+			let _ = self.editor.insert_text(" ");
 		}
-		if matches!(self.buffer.insert_text(&sanitized), BufferOutcome::Changed) {
+		if matches!(self.editor.insert_text(&sanitized), EditOutcome::Changed) {
 			Flow::Consumed
 		} else {
 			Flow::Skip
@@ -355,7 +402,7 @@ impl Component for EditInput {
 		// Verbatim insertion (pi's raw-paste binding): the text stays inline
 		// and editable — no attachment staging, no large-paste chip, no
 		// auto-spacing. Sanitization still applies inside `insert_text`.
-		if matches!(self.buffer.insert_text(text), BufferOutcome::Changed) {
+		if matches!(self.editor.insert_text(text), EditOutcome::Changed) {
 			Flow::Consumed
 		} else {
 			Flow::Skip
@@ -364,15 +411,15 @@ impl Component for EditInput {
 
 	fn value(&self, out: &mut serde_json::Map<String, Value>) {
 		if let Some(id) = self.props.id() {
-			out.insert(id.to_string(), Value::String(self.buffer.expanded_text()));
+			out.insert(id.to_string(), Value::String(self.editor.buffer().expanded_text()));
 		}
 	}
 
 	fn set_text(&mut self, _ctx: &UiContext, text: Str) -> bool {
-		if self.buffer.text() == text {
+		if self.editor.text() == text {
 			return false;
 		}
-		self.buffer = EditBuffer::new(&text);
+		self.editor.set_text(&text);
 		true
 	}
 }
@@ -509,6 +556,8 @@ pub enum AttachmentContent {
 	},
 	/// Pasted text collapsed out of the composer.
 	Text {
+		/// Complete pasted text delivered to the composer host on submit.
+		text:    Str,
 		/// Leading rows previewed inside the card, pre-clipped to the frame.
 		snippet: Str,
 		/// Logical line count of the paste.
@@ -578,7 +627,12 @@ impl Attachments {
 			}
 			snippet.push_str(&line[..byte_at_column(line, PREVIEW_COLS)]);
 		}
-		self.stage(AttachmentContent::Text { snippet: Str::from(snippet), lines, chars })
+		self.stage(AttachmentContent::Text {
+			text: Str::from(text),
+			snippet: Str::from(snippet),
+			lines,
+			chars,
+		})
 	}
 
 	fn stage(&self, content: AttachmentContent) -> Attachment {
@@ -690,6 +744,22 @@ impl EditorPane {
 		self.children[0] = Cached::new(input.into_component());
 		self
 	}
+	/// Sets the composer's completion source (for example, slash commands).
+	#[must_use]
+	pub fn completion(mut self, completion: Box<dyn Completion>) -> Self {
+		self.set_completion(completion);
+		self
+	}
+
+	/// Replaces the composer's completion source.
+	pub fn set_completion(&mut self, completion: Box<dyn Completion>) {
+		self.children[0]
+			.comp_mut()
+			.downcast_mut::<EditInput>()
+			.expect("completion requires the default editor input")
+			.set_completion(completion);
+	}
+
 
 	/// Adds or replaces the status band above the editable content.
 	pub fn status(mut self, status: impl IntoComponent) -> Self {
@@ -869,14 +939,6 @@ impl EditorPane {
 			.buffer()
 	}
 
-	#[cfg(test)]
-	pub(crate) fn buffer_mut(&mut self) -> &mut EditBuffer {
-		self.children[0]
-			.comp_mut()
-			.downcast_mut::<EditInput>()
-			.expect("default editor input was replaced")
-			.buffer_mut()
-	}
 }
 
 impl Default for EditorPane {
@@ -1298,6 +1360,33 @@ mod tests {
 			.text();
 		assert_eq!(text, " \na", "buffer should not be cleared on submit");
 	}
+
+	#[test]
+	fn editor_pane_opens_slash_completion_popup() {
+		let commands = vec![
+			crate::Command::new("help", "Show available commands", &[]),
+			crate::Command::new("models", "Choose a model", &[]),
+		];
+		let pane = EditorPane::new()
+			.completion(Box::new(crate::SlashCommands::new(commands.into_boxed_slice())));
+		let mut ui = Ui::from_root(pane, 40, UiContext::default());
+		let collapsed_height = ui.height();
+
+		ui.focus_first();
+		assert_eq!(ui.handle_key(Key::Char('/')), UiEvent::None);
+
+		let input = ui
+			.root()
+			.comp()
+			.downcast_ref::<EditorPane>()
+			.expect("UI root is an editor pane")
+			.children[0]
+			.comp()
+			.downcast_ref::<EditInput>()
+			.expect("pane has its default editor input");
+		assert_eq!(input.editor.picker().expect("slash popup").len(), 2);
+		assert!(ui.height() > collapsed_height);
+	}
 	#[test]
 	fn editor_status_replaces_top_border_with_rounded_band() {
 		let ctx = UiContext { charset: Charset::NerdFont, ..UiContext::default() };
@@ -1453,7 +1542,11 @@ mod tests {
 			.join("\n");
 		let card = attachments.push_text(&paste);
 		assert_eq!(card.marker, 1);
-		assert!(matches!(card.content, AttachmentContent::Text { lines: 12, .. }));
+		let AttachmentContent::Text { text, lines, .. } = &card.content else {
+			panic!("paste attachment must carry text");
+		};
+		assert_eq!(text.as_str(), paste);
+		assert_eq!(*lines, 12);
 
 		let mut editor = Cached::new(Box::new(pane));
 		let height = editor.height(&ctx, 40);
