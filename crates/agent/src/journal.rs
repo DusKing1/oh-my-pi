@@ -9,7 +9,7 @@ use omp_core::Str;
 use omp_proto::{inference::v1::Outcome, thread::v1::Item};
 use omp_storage::transcript::{
 	self, AmendPatch, Event, Header, ItemRecord, JobRegistered, JobSettled, Kind, Log,
-	PromptRewriteCommit, PromptRewriteIntent, PromptRewriteStage, ToolBatchAuthorized,
+	PromptRewriteCommit, PromptRewriteIntent, PromptRewriteStage, ToolBatchAuthorized, TurnAbort,
 	TurnInputItem, Writer,
 };
 pub use omp_storage::transcript::{TurnInputRecord, TurnOptionsRecord, TurnReceipt, TurnStart};
@@ -35,6 +35,9 @@ pub enum JournalError {
 	/// A logical turn was started again with a different prompt identity.
 	#[error("turn start for {0} changed its durable prompt identity")]
 	TurnStartMismatch(Str),
+	/// A settled failed turn was opened again under the same identity.
+	#[error("turn {0} was already aborted")]
+	TurnAlreadyAborted(Str),
 	/// One optimistic item was claimed by two live logical turns.
 	#[error("journal item {target} is already claimed by live turn {turn_id}")]
 	ItemAlreadyClaimed {
@@ -93,6 +96,7 @@ pub struct Journal {
 	writer:                  Writer,
 	receipts:                BTreeMap<Str, TurnReceipt>,
 	starts:                  BTreeMap<Str, (u64, TurnStart)>,
+	aborted:                 BTreeMap<Str, u64>,
 	claims:                  BTreeMap<u64, Str>,
 	last_start:              Option<TurnStart>,
 	last_receipt:            Option<TurnReceipt>,
@@ -115,6 +119,7 @@ impl Journal {
 			writer,
 			receipts: BTreeMap::new(),
 			starts: BTreeMap::new(),
+			aborted: BTreeMap::new(),
 			claims: BTreeMap::new(),
 			last_start: None,
 			last_receipt: None,
@@ -134,6 +139,7 @@ impl Journal {
 		let log = transcript::load(path)?;
 		let mut receipts = BTreeMap::new();
 		let mut starts: BTreeMap<Str, (u64, TurnStart)> = BTreeMap::new();
+		let mut aborted = BTreeMap::new();
 		let mut last_start = None;
 		let mut pending: BTreeMap<Str, Vec<(u64, Item, Option<[u8; 32]>)>> = BTreeMap::new();
 		let mut pending_jobs = BTreeMap::new();
@@ -180,6 +186,9 @@ impl Journal {
 					started_turns.insert(start.turn_id.clone());
 					claimed_ever.extend(start.item_events.iter().copied());
 				},
+				Kind::TurnAbort(abort) => {
+					aborted.insert(abort.turn_id.clone(), index);
+				},
 				Kind::TurnReceipt(receipt) => {
 					receipts.insert(receipt.turn_id.clone(), receipt.clone());
 					last_receipt = Some(receipt.clone());
@@ -201,7 +210,7 @@ impl Journal {
 				_ => {},
 			}
 		}
-		starts.retain(|turn_id, _| !receipts.contains_key(turn_id));
+		starts.retain(|turn_id, _| !receipts.contains_key(turn_id) && !aborted.contains_key(turn_id));
 		let mut claims = BTreeMap::new();
 		for (turn_id, (_, start)) in &starts {
 			for target in &start.item_events {
@@ -229,7 +238,8 @@ impl Journal {
 				}
 			}
 		}
-		pending.retain(|turn_id, _| !receipts.contains_key(turn_id));
+		pending
+			.retain(|turn_id, _| !receipts.contains_key(turn_id) && !aborted.contains_key(turn_id));
 		for turn_id in started_turns.iter().chain(receipts.keys()) {
 			turn_inputs.remove(turn_id.as_str());
 		}
@@ -264,6 +274,7 @@ impl Journal {
 			writer,
 			receipts,
 			starts,
+			aborted,
 			claims,
 			last_start,
 			last_receipt,
@@ -395,6 +406,9 @@ impl Journal {
 		if let Some(receipt) = self.receipts.get(start.turn_id.as_str()) {
 			return Ok(receipt.item_events.last().copied().unwrap_or_default());
 		}
+		if self.aborted.contains_key(start.turn_id.as_str()) {
+			return Err(JournalError::TurnAlreadyAborted(start.turn_id));
+		}
 		if let Some((index, durable)) = self.starts.get(start.turn_id.as_str()) {
 			if durable == &start {
 				return Ok(*index);
@@ -453,6 +467,29 @@ impl Journal {
 		}
 		self.last_start = Some(start.clone());
 		self.starts.insert(start.turn_id.clone(), (index, start));
+		Ok(index)
+	}
+
+	/// Durably settles a started turn that failed without an authoritative
+	/// outcome.
+	///
+	/// The turn's claimed inputs remain transcript content, but crash replay
+	/// will never reopen the failed request. Repeated settlement is idempotent.
+	pub fn abort_turn(&mut self, ts: u64, turn_id: &str) -> Result<u64, JournalError> {
+		if let Some(index) = self.aborted.get(turn_id) {
+			return Ok(*index);
+		}
+		let turn_id = Str::from(turn_id);
+		if !self.starts.contains_key(turn_id.as_str()) {
+			return Err(JournalError::MissingTurnStart(turn_id));
+		}
+		let index = self
+			.writer
+			.append(&Event { ts, kind: Kind::TurnAbort(TurnAbort { turn_id: turn_id.clone() }) })?;
+		self.starts.remove(turn_id.as_str());
+		self.pending.remove(turn_id.as_str());
+		self.claims.retain(|_, claimed| claimed != &turn_id);
+		self.aborted.insert(turn_id, index);
 		Ok(index)
 	}
 
@@ -1508,6 +1545,40 @@ mod tests {
 		)
 		.expect("project partial");
 		assert_eq!(projected.items, vec![message("system"), message("input")]);
+		std::fs::remove_file(path).expect("remove journal");
+	}
+	#[test]
+	fn aborted_turn_is_settled_across_reopen() {
+		let path = path("turn-abort");
+		let mut journal = Journal::create(&path, &header()).expect("create journal");
+		let start = TurnStart {
+			turn_id:            Str::from("failed-turn"),
+			item_events:        Vec::new(),
+			prompt_hash:        [3; 32],
+			prompt_head_events: Vec::new(),
+			toolset_hash:       [4; 32],
+			enabled_tools:      Vec::new(),
+			sequence_targets:   Vec::new(),
+			input:              TurnInputRecord::Full { thread: thread_pb::Thread::default() },
+			options:            TurnOptionsRecord {
+				context_id: None,
+				params:     pb::ChatParams::default(),
+				executor:   None,
+				props:      None,
+			},
+		};
+		journal.start_turn(2, start).expect("start turn");
+		let abort = journal.abort_turn(3, "failed-turn").expect("abort turn");
+		assert_eq!(
+			journal.abort_turn(4, "failed-turn").expect("repeat abort"),
+			abort,
+			"abort settlement must be idempotent"
+		);
+		assert!(journal.pending_turn().is_none());
+		drop(journal);
+
+		let reopened = Journal::open(&path).expect("reopen aborted turn");
+		assert!(reopened.pending_turn().is_none());
 		std::fs::remove_file(path).expect("remove journal");
 	}
 
