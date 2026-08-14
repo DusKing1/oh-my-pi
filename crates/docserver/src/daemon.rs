@@ -428,7 +428,7 @@ async fn serve_socket_until(
 
 	loop {
 		tokio::select! {
-			_ = shutdown.cancelled() => {
+			() = shutdown.cancelled() => {
 				break;
 			},
 			accepted = listener.accept(), if connections.len() < MAX_SOCKET_CONNECTIONS => {
@@ -660,6 +660,39 @@ mod tests {
 		drop(listener);
 		drop(cleanup);
 		assert!(!path.exists());
+	}
+
+	#[tokio::test]
+	async fn serve_until_cancellation_removes_socket() {
+		let scratch = TempDir::new().expect("temporary directory");
+		let project = scratch.path().join("project");
+		let runtime = scratch.path().join("runtime");
+		std::fs::create_dir(&project).expect("project directory");
+		std::fs::create_dir(&runtime).expect("runtime directory");
+		let socket = runtime.join("document.sock");
+		let shutdown = CancellationToken::new();
+		let task_shutdown = shutdown.clone();
+		let task_project = project.clone();
+		let task_socket = socket.clone();
+		let task = tokio::spawn(async move {
+			serve_until(task_project, Transport::Socket(task_socket), Vec::new(), task_shutdown).await
+		});
+		let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+		loop {
+			if UnixStream::connect(&socket).await.is_ok() {
+				break;
+			}
+			assert!(tokio::time::Instant::now() < deadline, "document socket did not start");
+			tokio::time::sleep(Duration::from_millis(10)).await;
+		}
+
+		shutdown.cancel();
+		timeout(Duration::from_secs(5), task)
+			.await
+			.expect("document authority stopped")
+			.expect("document authority task")
+			.expect("document authority result");
+		assert!(!socket.exists(), "document socket must be removed after shutdown");
 	}
 
 	#[test]

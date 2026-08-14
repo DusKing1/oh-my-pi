@@ -671,6 +671,20 @@ message MoveMutation {
     bool destination_must_not_exist = 4;
   }
 }
+// Atomically moves the source identity and installs exact final bytes at the
+// destination. The source revision and destination precondition are checked
+// before either path is durably changed.
+message MoveWithContentMutation {
+  Revision base_revision = 1;
+  string destination_uri = 2;
+  oneof destination_precondition {
+    Revision destination_revision = 3;
+    bool destination_must_not_exist = 4;
+  }
+  bytes content = 5;
+  FormatPolicy format_policy = 6;
+}
+
 
 // Operations execute in declared order against a transaction-local overlay.
 message DocumentMutation {
@@ -680,6 +694,7 @@ message DocumentMutation {
     CreateMutation create = 3;
     DeleteMutation delete = 4;
     MoveMutation move = 5;
+    MoveWithContentMutation move_with_content = 6;
   }
 }
 

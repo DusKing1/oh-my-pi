@@ -121,7 +121,9 @@ pub struct TurnStart {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TurnAbort {
 	/// Gateway turn identifier that must not be resumed.
-	pub turn_id: Str,
+	pub turn_id:     Str,
+	/// Whether crash replay should continue this failed submission.
+	pub recoverable: bool,
 }
 
 /// Durable intent for an atomic system-prompt head replacement.

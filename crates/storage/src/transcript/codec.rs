@@ -263,6 +263,7 @@ pub fn write_line(event: &Event, out: &mut impl BufMut) -> Result<(), Error> {
 		Kind::TurnAbort(abort) => {
 			object.field("k", "turn_abort")?;
 			object.field("turn_id", &abort.turn_id)?;
+			object.field("recoverable", &abort.recoverable)?;
 		},
 		Kind::TurnReceipt(receipt) => {
 			object.field("k", "turn_receipt")?;
@@ -427,7 +428,7 @@ payload!(ToolBatchAuthorizedPayload {
 	turn_id: Str,
 	call_ids: Vec<Str>,
 });
-payload!(TurnAbortPayload { turn_id: Str });
+payload!(TurnAbortPayload { turn_id: Str, recoverable: bool });
 payload!(TurnReceiptPayload {
 	turn_id: Str,
 	prompt_hash: [u8; 32],
@@ -606,7 +607,10 @@ pub fn read_line(line: &[u8]) -> Result<Event, Error> {
 		},
 		"turn_abort" => {
 			let payload: TurnAbortPayload = serde_json::from_slice(line)?;
-			Kind::TurnAbort(TurnAbort { turn_id: payload.turn_id })
+			Kind::TurnAbort(TurnAbort {
+				turn_id:     payload.turn_id,
+				recoverable: payload.recoverable,
+			})
 		},
 		"turn_receipt" => {
 			let payload: TurnReceiptPayload = serde_json::from_slice(line)?;

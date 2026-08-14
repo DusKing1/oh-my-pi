@@ -8,7 +8,7 @@
 - `fs` and `path_ops` provide portable filesystem values and actor-aware path operations; `watch` classifies and tracks file changes.
 - `transaction`, `rebase`, `summary`, and `edit_adapter` validate and apply edits, manage transactions, summarize content, and lower supported edit formats.
 - `lsp`, `lsp_registry`, and `position` manage language-server lifecycle and synchronization, server registration, and checked position/text-edit conversion.
-- `protocol`, `connection`, `wire`, and `daemon` implement protobuf request handling, concurrent connections, bounded length-delimited framing, and the long-lived server process.
+- `protocol`, `connection`, `wire`, and `daemon` implement protobuf request handling, concurrent connections, bounded length-delimited framing, and the authority service hosted by `omp envd`.
 
 ## Philosophy
 

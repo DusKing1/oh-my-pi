@@ -30,9 +30,9 @@ use crate::{
 	},
 	transaction::{
 		CreateMutation, DeleteMutation, DocumentMutation, DocumentTarget, ExistingDocumentPolicy,
-		FormatPolicy, MoveDestinationPrecondition, MoveMutation, MutationOperation, OperationResult,
-		StalePolicy, TextMutation, TextProposal, TransactionBuildError, TransactionOutcome,
-		TransactionRejectReason,
+		FormatPolicy, MoveDestinationPrecondition, MoveMutation, MoveWithContentMutation,
+		MutationOperation, OperationResult, StalePolicy, TextMutation, TextProposal,
+		TransactionBuildError, TransactionOutcome, TransactionRejectReason,
 	},
 };
 
@@ -649,6 +649,9 @@ async fn build_operations(
 			proto::document_mutation::Operation::Move(moved) => {
 				MutationOperation::Move(build_move_mutation(moved)?)
 			},
+			proto::document_mutation::Operation::MoveWithContent(moved) => {
+				MutationOperation::MoveWithContent(build_move_with_content_mutation(moved)?)
+			},
 		};
 		built.push(DocumentMutation::new(target, native));
 	}
@@ -760,6 +763,36 @@ fn build_move_mutation(moved: proto::MoveMutation) -> Result<MoveMutation, Trans
 		},
 	};
 	Ok(MoveMutation::new(base, destination, precondition))
+}
+
+fn build_move_with_content_mutation(
+	moved: proto::MoveWithContentMutation,
+) -> Result<MoveWithContentMutation, TransactionBuildError> {
+	let base = moved
+		.base_revision
+		.ok_or_else(|| build_invalid("move base revision is required"))
+		.and_then(|revision| parse_revision(revision).map_err(build_from_failure))?;
+	let destination = parse_file_uri(&moved.destination_uri).map_err(build_from_failure)?;
+	let precondition = match moved
+		.destination_precondition
+		.ok_or_else(|| build_invalid("move destination precondition is required"))?
+	{
+		proto::move_with_content_mutation::DestinationPrecondition::DestinationRevision(revision) => {
+			MoveDestinationPrecondition::Revision(
+				parse_revision(revision).map_err(build_from_failure)?,
+			)
+		},
+		proto::move_with_content_mutation::DestinationPrecondition::DestinationMustNotExist(true) => {
+			MoveDestinationPrecondition::MustNotExist
+		},
+		proto::move_with_content_mutation::DestinationPrecondition::DestinationMustNotExist(
+			false,
+		) => {
+			return Err(build_invalid("destination_must_not_exist must be true"));
+		},
+	};
+	let format = parse_format_policy(moved.format_policy).map_err(build_from_failure)?;
+	Ok(MoveWithContentMutation::new(base, destination, precondition, moved.content, format))
 }
 
 async fn get_lsp_bindings(

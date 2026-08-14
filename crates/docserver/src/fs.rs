@@ -273,6 +273,7 @@ pub struct PreparedMove {
 	owner:       Arc<LocalFsInner>,
 	source:      PreparedEntry,
 	destination: PreparedEntry,
+	content:     Option<PreparedWrite>,
 }
 
 impl fmt::Debug for PreparedMove {
@@ -283,6 +284,7 @@ impl fmt::Debug for PreparedMove {
 			.field("destination", &self.destination.path)
 			.field("source_expected", &self.source.expected)
 			.field("destination_expected", &self.destination.expected)
+			.field("replaces_content", &self.content.is_some())
 			.finish_non_exhaustive()
 	}
 }
@@ -679,12 +681,31 @@ impl LocalFs {
 		}
 		Self::reject_prepared_move_directory(&source)?;
 		Self::reject_prepared_move_directory(&destination)?;
-		Ok(PreparedMove { owner: Arc::clone(&self.inner), source, destination })
+		Ok(PreparedMove { owner: Arc::clone(&self.inner), source, destination, content: None })
+	}
+
+	/// Stages exact final bytes for an atomic move-with-content commit.
+	pub fn prepare_move_with_content(
+		&self,
+		source: impl AsRef<Path>,
+		destination: impl AsRef<Path>,
+		content: Bytes,
+		source_expected: DiskExpectation,
+		destination_expected: DiskExpectation,
+	) -> Result<PreparedMove> {
+		let mut prepared = self.prepare_move(
+			source,
+			destination.as_ref(),
+			source_expected,
+			destination_expected.clone(),
+		)?;
+		prepared.content = Some(self.prepare_write(destination, content, destination_expected)?);
+		Ok(prepared)
 	}
 
 	/// Moves a prepared file only while both parents and exact states remain
 	/// current.
-	pub fn commit_prepared_move(&self, prepared: PreparedMove) -> Result<DiskState> {
+	pub fn commit_prepared_move(&self, mut prepared: PreparedMove) -> Result<DiskState> {
 		self.verify_prepared_owner(&prepared.owner, &prepared.source.path, "move")?;
 		if !self.prepared_entry_parent_is_current(&prepared.source)?
 			|| !self.prepared_entry_parent_is_current(&prepared.destination)?
@@ -708,6 +729,70 @@ impl LocalFs {
 		let source_state = self.stable_expected_state(&prepared.source)?;
 		if !Self::expectation_matches(&prepared.source.expected, &source_state) {
 			return Err(Self::stale_entry(&prepared.source));
+		}
+		if let Some(content) = prepared.content.take() {
+			let destination_state = self.stable_expected_state(&prepared.destination)?;
+			if !Self::expectation_matches(&prepared.destination.expected, &destination_state) {
+				return Err(Self::stale_entry(&prepared.destination));
+			}
+			let mut quarantine = None;
+			for _ in 0..TEMP_CREATE_ATTEMPTS {
+				let candidate = self.next_temporary_name(&prepared.source.name);
+				match Self::rename_noreplace(
+					&prepared.source.parent,
+					&prepared.source.name,
+					&prepared.source.parent,
+					&candidate,
+				) {
+					Ok(()) => {
+						quarantine = Some(candidate);
+						break;
+					},
+					Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {},
+					Err(error) => {
+						return Err(Self::persistence_error(&prepared.source.path, error));
+					},
+				}
+			}
+			let quarantine = quarantine.ok_or_else(|| {
+				Self::persistence_error(
+					&prepared.source.path,
+					io::Error::new(
+						io::ErrorKind::AlreadyExists,
+						"could not allocate a move source quarantine name",
+					),
+				)
+			})?;
+			let installed = match self.commit_prepared(content) {
+				Ok(installed) => installed,
+				Err(error) => {
+					if Self::rename_noreplace(
+						&prepared.source.parent,
+						&quarantine,
+						&prepared.source.parent,
+						&prepared.source.name,
+					)
+					.is_err()
+					{
+						return Err(Self::persistence_error(
+							&prepared.source.path,
+							io::Error::other("move-with-content rollback failed"),
+						));
+					}
+					return Err(error);
+				},
+			};
+			Self::run_mutation_hook(self, MutationStage::AfterMove, &prepared.destination.path);
+			let _ = prepared.source.parent.remove_file(&quarantine);
+			let same_parent = Self::directory_identities_match(
+				prepared.source.parent_identity,
+				prepared.destination.parent_identity,
+			);
+			let _ = Self::flush_directory(&prepared.destination.parent, &prepared.destination.path);
+			if !same_parent {
+				let _ = Self::flush_directory(&prepared.source.parent, &prepared.source.path);
+			}
+			return Ok(installed);
 		}
 		let exchanged = matches!(&prepared.destination.expected, DiskExpectation::Present(_));
 		let mutation = if exchanged {
@@ -2740,6 +2825,30 @@ mod tests {
 		));
 		assert_eq!(fs::read(&source).expect("unchanged source"), b"source");
 		assert_eq!(fs::read(&destination).expect("unchanged destination"), b"external");
+	}
+
+	#[test]
+	fn prepared_move_with_content_rejects_a_raced_destination_without_partial_state() {
+		let (_root, filesystem) = self::filesystem();
+		let source = filesystem.root_path().join("source");
+		let destination = filesystem.root_path().join("destination");
+		fs::write(&source, b"source").expect("source fixture");
+		let prepared = filesystem
+			.prepare_move_with_content(
+				&source,
+				&destination,
+				Bytes::from_static(b"edited"),
+				present_expectation(&filesystem, &source),
+				DiskExpectation::Missing,
+			)
+			.expect("prepare move with content");
+		fs::write(&destination, b"external").expect("raced destination");
+		assert!(matches!(
+			filesystem.commit_prepared_move(prepared),
+			Err(Error::StaleDiskState { path }) if path == destination
+		));
+		assert_eq!(fs::read(&source).expect("source remains"), b"source");
+		assert_eq!(fs::read(&destination).expect("external remains"), b"external");
 	}
 
 	#[test]

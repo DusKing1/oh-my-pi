@@ -228,6 +228,59 @@ impl MoveMutation {
 		self.destination_precondition
 	}
 }
+/// An atomic revisioned move that installs exact final content.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MoveWithContentMutation {
+	base_revision:            Revision,
+	destination:              Url,
+	destination_precondition: MoveDestinationPrecondition,
+	content:                  Bytes,
+	format_policy:            FormatPolicy,
+}
+
+impl MoveWithContentMutation {
+	/// Creates an atomic move-with-content request.
+	#[must_use]
+	pub const fn new(
+		base_revision: Revision,
+		destination: Url,
+		destination_precondition: MoveDestinationPrecondition,
+		content: Bytes,
+		format_policy: FormatPolicy,
+	) -> Self {
+		Self { base_revision, destination, destination_precondition, content, format_policy }
+	}
+
+	/// Returns the exact source revision.
+	#[must_use]
+	pub const fn base_revision(&self) -> Revision {
+		self.base_revision
+	}
+
+	/// Returns the destination URI.
+	#[must_use]
+	pub const fn destination(&self) -> &Url {
+		&self.destination
+	}
+
+	/// Returns the destination precondition.
+	#[must_use]
+	pub const fn destination_precondition(&self) -> MoveDestinationPrecondition {
+		self.destination_precondition
+	}
+
+	/// Returns the final destination bytes.
+	#[must_use]
+	pub const fn content(&self) -> &Bytes {
+		&self.content
+	}
+
+	/// Returns formatting behavior.
+	#[must_use]
+	pub const fn format_policy(&self) -> FormatPolicy {
+		self.format_policy
+	}
+}
 
 /// One declared mutation operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -240,6 +293,8 @@ pub enum MutationOperation {
 	Delete(DeleteMutation),
 	/// A revisioned move.
 	Move(MoveMutation),
+	/// An atomic revisioned move with final content.
+	MoveWithContent(MoveWithContentMutation),
 }
 
 /// One targeted transaction operation.
@@ -1252,11 +1307,18 @@ impl<F: FormatCoordinator + 'static> TransactionCoordinator<F> {
 				},
 			};
 			overlay_paths.insert(path.clone(), handle.clone());
-			if let MutationOperation::Move(movement) = &mutation.operation {
+			let destination = match &mutation.operation {
+				MutationOperation::Move(movement) => Some(&movement.destination),
+				MutationOperation::MoveWithContent(movement) => Some(&movement.destination),
+				MutationOperation::Text(_)
+				| MutationOperation::Create(_)
+				| MutationOperation::Delete(_) => None,
+			};
+			if let Some(destination) = destination {
 				let destination = self
 					.inner
 					.store
-					.resolve_entry_path(&movement.destination)
+					.resolve_entry_path(destination)
 					.map_err(|error| PlanningFailure::from_error(operation_index, error))?;
 				overlay_paths.remove(&path);
 				overlay_paths.insert(destination, handle.clone());
@@ -1331,8 +1393,10 @@ impl<F: FormatCoordinator + 'static> TransactionCoordinator<F> {
 				.find(|plan| plan.handle.document_id() == operation.handle.document_id())
 				.expect("resolved actor has a plan");
 			let combines_move = plan.move_precondition.is_some()
-				|| (matches!(&operation.mutation.operation, MutationOperation::Move(_))
-					&& !plan.operation_indices.is_empty());
+				|| (matches!(
+					&operation.mutation.operation,
+					MutationOperation::Move(_) | MutationOperation::MoveWithContent(_)
+				) && !plan.operation_indices.is_empty());
 			if combines_move {
 				return Err(PlanningFailure::precondition(
 					operation.operation_index,
@@ -1532,6 +1596,67 @@ impl<F: FormatCoordinator + 'static> TransactionCoordinator<F> {
 					plan.path = destination;
 					plan.move_precondition = Some(movement.destination_precondition);
 				},
+				MutationOperation::MoveWithContent(movement) => {
+					if movement.base_revision != plan.reserved.snapshot.head().revision()
+						|| plan.presence != DocumentPresence::Present
+					{
+						return Err(PlanningFailure::precondition(
+							operation.operation_index,
+							"move base is stale or the source is missing",
+						));
+					}
+					let destination = self
+						.inner
+						.store
+						.resolve_entry_path(&movement.destination)
+						.map_err(|error| PlanningFailure::from_error(operation.operation_index, error))?;
+					if destination == plan.path {
+						return Err(PlanningFailure::precondition(
+							operation.operation_index,
+							"move source and destination are the same path",
+						));
+					}
+					plan.previous_uri =
+						Some(self.inner.store.file_uri(&plan.path).map_err(|error| {
+							PlanningFailure::from_error(operation.operation_index, error)
+						})?);
+					plan.uri =
+						self.inner.store.file_uri(&destination).map_err(|error| {
+							PlanningFailure::from_error(operation.operation_index, error)
+						})?;
+					plan.path = destination;
+					let mut candidate = movement.content.clone();
+					if matches!(plan.kind, DocumentKind::Text(_)) {
+						validate_text(&candidate).map_err(|error| {
+							PlanningFailure::from_error(operation.operation_index, error)
+						})?;
+						let formatted;
+						(candidate, formatted) = self
+							.maybe_format(
+								transaction_id,
+								operation.operation_index,
+								plan,
+								candidate,
+								movement.format_policy,
+								cancellation.clone(),
+							)
+							.await?;
+						validate_text(&candidate).map_err(|error| {
+							PlanningFailure::from_error(operation.operation_index, error)
+						})?;
+						if formatted {
+							plan.formatted.push(operation.operation_index);
+						}
+					} else if movement.format_policy == FormatPolicy::Required {
+						return Err(PlanningFailure::format(
+							operation.operation_index,
+							"required formatting is unavailable for binary content",
+						));
+					}
+					plan.content = candidate;
+					plan.overlay_changed = true;
+					plan.move_precondition = Some(movement.destination_precondition);
+				},
 			}
 		}
 		Ok(())
@@ -1620,9 +1745,21 @@ impl<F: FormatCoordinator + 'static> TransactionCoordinator<F> {
 				let source = plan.reserved.path.clone();
 				let destination = plan.path.clone();
 				let source_expected = plan.reserved.disk_expectation.clone();
+				let content =
+					(plan.content != plan.reserved.snapshot.content()).then(|| plan.content.clone());
 				let fs = filesystem.clone();
 				let move_capability = tokio::task::spawn_blocking(move || {
-					fs.prepare_move(source, destination, source_expected, destination_expected)
+					if let Some(content) = content {
+						fs.prepare_move_with_content(
+							source,
+							destination,
+							content,
+							source_expected,
+							destination_expected,
+						)
+					} else {
+						fs.prepare_move(source, destination, source_expected, destination_expected)
+					}
 				})
 				.await
 				.map_err(join_failure)?
@@ -2535,6 +2672,79 @@ mod tests {
 			assert_eq!(std::fs::read(&source_path).expect("source remains"), b"unchanged");
 			assert!(!destination_path.exists());
 		}
+	}
+
+	#[tokio::test]
+	async fn move_with_content_is_one_atomic_transition() {
+		let root = TempDir::new().expect("tempdir");
+		let source_path = root.path().join("move-edit-source.txt");
+		let destination_path = root.path().join("move-edit-destination.txt");
+		std::fs::write(&source_path, b"before").expect("fixture");
+		let store = setup(&root);
+		let opened = store.open(source_path.clone()).await.expect("open");
+		let request = TransactionRequest::new(id(20), vec![DocumentMutation::new(
+			DocumentTarget::Document(opened.head().document_id()),
+			MutationOperation::MoveWithContent(MoveWithContentMutation::new(
+				opened.head().revision(),
+				file_uri(&destination_path),
+				MoveDestinationPrecondition::MustNotExist,
+				Bytes::from_static(b"after"),
+				FormatPolicy::Disabled,
+			)),
+		)]);
+		let outcome = TransactionCoordinator::new(store, [12; 16])
+			.commit(request, CancellationToken::new())
+			.await;
+		let moved = committed_head(&outcome);
+		assert_eq!(moved.document_id(), opened.head().document_id());
+		assert!(!source_path.exists());
+		assert_eq!(std::fs::read(&destination_path).expect("destination bytes"), b"after");
+	}
+
+	#[tokio::test]
+	async fn stale_move_with_content_leaves_both_paths_untouched() {
+		let root = TempDir::new().expect("tempdir");
+		let source_path = root.path().join("stale-move-edit-source.txt");
+		let destination_path = root.path().join("stale-move-edit-destination.txt");
+		std::fs::write(&source_path, b"before").expect("fixture");
+		let store = setup(&root);
+		let opened = store.open(source_path.clone()).await.expect("open");
+		let document_id = opened.head().document_id();
+		let stale_revision = opened.head().revision();
+		let coordinator = TransactionCoordinator::new(store, [13; 16]);
+		let updated = coordinator
+			.commit(
+				text_request(
+					id(21),
+					document_id,
+					stale_revision,
+					b"concurrent",
+					StalePolicy::Fail,
+					FormatPolicy::Disabled,
+				),
+				CancellationToken::new(),
+			)
+			.await;
+		assert!(matches!(&*updated, TransactionOutcome::Committed { .. }));
+		let stale_move = TransactionRequest::new(id(22), vec![DocumentMutation::new(
+			DocumentTarget::Document(document_id),
+			MutationOperation::MoveWithContent(MoveWithContentMutation::new(
+				stale_revision,
+				file_uri(&destination_path),
+				MoveDestinationPrecondition::MustNotExist,
+				Bytes::from_static(b"after"),
+				FormatPolicy::Disabled,
+			)),
+		)]);
+		let outcome = coordinator
+			.commit(stale_move, CancellationToken::new())
+			.await;
+		assert!(matches!(&*outcome, TransactionOutcome::Rejected {
+			reason: TransactionRejectReason::PreconditionFailed,
+			..
+		}));
+		assert_eq!(std::fs::read(&source_path).expect("source bytes"), b"concurrent");
+		assert!(!destination_path.exists());
 	}
 
 	#[tokio::test]

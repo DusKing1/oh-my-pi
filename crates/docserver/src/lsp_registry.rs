@@ -2304,7 +2304,6 @@ fn format_shadow_uri(request: &FormatRequest) -> Url {
 	uri
 }
 #[cfg(test)]
-
 fn provisional_snapshot(
 	base: &DocumentSnapshot,
 	content: Bytes,
