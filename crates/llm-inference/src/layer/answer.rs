@@ -251,16 +251,18 @@ fn chat_stream(
 				Some(Ok(RawEvent::Chat(ChatEvent::Started(_)))) => {},
 				Some(Ok(RawEvent::Chat(mut event))) => {
 					let terminal = matches!(event, ChatEvent::Completed(_));
+					if let ChatEvent::Completed(completion) = &mut event {
+						context.merge_receipt(&completion.receipt);
+						completion.receipt = context.receipt();
+					}
 					if let Err(mut error) = context.record_session_event(&event) {
 						context.finalize_error(&mut error); error.committed = context.is_committed(); context.abort_session(); abort.disarm(); yield Err(error); break;
 					}
 					if event.commits_output() { context.commit(); }
-					if let ChatEvent::Completed(completion) = &mut event {
-						context.merge_receipt(&completion.receipt);
-						if let Err(mut error) = context.commit_session() {
-							context.finalize_error(&mut error); error.committed = context.is_committed(); abort.disarm(); yield Err(error); break;
-						}
-						completion.receipt = context.receipt();
+					if terminal
+						&& let Err(mut error) = context.commit_session()
+					{
+						context.finalize_error(&mut error); error.committed = context.is_committed(); abort.disarm(); yield Err(error); break;
 					}
 					yield Ok(event);
 					if terminal { abort.disarm(); break; }
@@ -613,8 +615,34 @@ fn content_type(headers: &[crate::codec::RequestHeader]) -> Option<Str> {
 
 #[cfg(test)]
 mod tests {
+	use std::{
+		sync::Arc,
+		time::{Duration, SystemTime},
+	};
+
+	use bytes::Bytes;
+	use omp_llm_catalog::{OperationKind, snapshot::Catalog};
+
 	use super::*;
-	use crate::{answer::AudioChunk, receipt::ExecutionBudget};
+	use crate::{
+		answer::{AudioChunk, ResponseMeta},
+		call::{
+			Call, CallMeta, ChatRequest, ContextStrategy, NegotiationPolicy, OperationCall, Sampling,
+			SessionRequest, Setting, Target,
+		},
+		event::{Completion, FinishReason},
+		id::{RequestId, TurnId},
+		layer::session::{SessionAction, SessionPlanner as _},
+		plan::{
+			CapabilityAvailability, ExecutionPlan, FallbackScope, ReplayPlan, RouteHealth,
+			RuntimeRouteEvidence,
+		},
+		receipt::{ExecutionBudget, RecoveryKind, Usage},
+		session::{
+			ConversationSessionPlanner,
+			store::{ConversationStore as _, InMemoryConversationStore},
+		},
+	};
 
 	#[tokio::test]
 	async fn audio_terminal_commits_only_after_final_chunk() {
@@ -631,6 +659,154 @@ mod tests {
 		assert!(output.next().await.unwrap().is_ok());
 		assert!(output.next().await.is_none());
 		assert!(context.is_committed());
+	}
+
+	#[tokio::test]
+	async fn chat_terminal_stages_the_same_fork_receipt_that_it_yields() {
+		fn receipt_bytes(completion: &Completion) -> Bytes {
+			Bytes::from(serde_json::to_vec(&completion.receipt).expect("serialize receipt"))
+		}
+
+		let catalog = Arc::new(Catalog::try_embedded().expect("embedded catalog").clone());
+		let (model, route) = catalog
+			.models()
+			.iter()
+			.find_map(|model| {
+				model
+					.capabilities
+					.operations
+					.contains_kind(OperationKind::Chat)
+					.then(|| {
+						model
+							.routes
+							.iter()
+							.find_map(|route| catalog.route(route))
+							.map(|route| (model, route))
+					})
+					.flatten()
+			})
+			.expect("catalog chat route");
+		let store = Arc::new(InMemoryConversationStore::new());
+		let root = store.create().expect("conversation root");
+		let planner =
+			ConversationSessionPlanner::with_in_memory(Arc::clone(&store), Arc::clone(&catalog));
+		let budget = ExecutionBudget::default();
+		let plan = ExecutionPlan {
+			planned_at:          SystemTime::UNIX_EPOCH,
+			catalog_revision:    catalog.revision().clone(),
+			registry_generation: 1,
+			expires_at:          std::time::Instant::now() + Duration::from_secs(60),
+			operation:           OperationKind::Chat,
+			model:               Some(model.key.clone()),
+			provider:            route.provider.clone(),
+			route:               route.id.clone(),
+			codec:               route.codec.clone(),
+			policy_model:        None,
+			wire_policy:         Arc::new(
+				catalog
+					.wire_policy(&model.wire_policy)
+					.expect("model wire policy")
+					.clone(),
+			),
+			thinking_policy:     None,
+			thinking_selection:  None,
+			decisions:           Arc::from([]),
+			fallback_scope:      FallbackScope { primary: None, explicit: Arc::from([]) },
+			fallbacks:           Arc::from([]),
+			replay:              ReplayPlan::Replayable,
+			budget:              budget.clone(),
+			runtime_evidence:    RuntimeRouteEvidence {
+				route:            route.id.clone(),
+				generation:       1,
+				health:           RouteHealth::Healthy,
+				quota_millionths: 1_000_000,
+				latency:          Duration::ZERO,
+				affinity:         false,
+				operation:        CapabilityAvailability::Native,
+				capabilities:     Arc::from([]),
+			},
+			wire_target:         None,
+		};
+		let request_id = RequestId::new("fork-request");
+		let turn = TurnId::new("fork-turn");
+		let mut call = Call::new(
+			CallMeta {
+				id: request_id.clone(),
+				target: Target::Route { route: route.id.clone(), model: model.key.clone() },
+				deadline: None,
+				budget,
+				session: Some(SessionRequest {
+					conversation: root.conversation().clone(),
+					revision:     root.revision().clone(),
+					turn:         turn.clone(),
+					strategy:     ContextStrategy::Replay,
+					forked:       true,
+				}),
+			},
+			OperationCall::Chat(Arc::new(ChatRequest {
+				messages:          Arc::from([]),
+				tools:             Arc::from([]),
+				hosted_tools:      Arc::from([]),
+				tool_choice:       Setting::Unset,
+				output:            Setting::Unset,
+				reasoning:         Setting::Unset,
+				verbosity:         Setting::Unset,
+				cache_retention:   Setting::Unset,
+				service_tier:      Setting::Unset,
+				sampling:          Sampling::default(),
+				max_output_tokens: None,
+				top_logprobs:      None,
+				safety:            Arc::from([]),
+				negotiation:       NegotiationPolicy::default(),
+			})),
+		);
+		call.execution = Some(Arc::new(plan));
+		let context = crate::layer::ExecutionContext::new(ExecutionBudget::default());
+		assert_eq!(
+			planner
+				.prepare(&mut call, &context)
+				.expect("prepare explicit fork"),
+			SessionAction::Reseed
+		);
+		context.set_session_completion(
+			planner
+				.completion(&call, &context)
+				.expect("session completion"),
+		);
+		planner.stage_turn_replay(
+			request_id.clone(),
+			turn.clone(),
+			Bytes::from_static(b"request"),
+			|completion| Ok(receipt_bytes(completion)),
+		);
+		let input: crate::codec::RawEventStream =
+			Box::pin(futures::stream::iter([Ok(RawEvent::Chat(ChatEvent::Completed(Completion {
+				reason:  FinishReason::Stop,
+				blocks:  0,
+				usage:   Usage::default(),
+				receipt: Default::default(),
+			})))]));
+		let meta = ResponseMeta {
+			request_id,
+			provider: route.provider.clone(),
+			route: route.id.clone(),
+			model: Some(model.key.clone()),
+			provider_request_id: None,
+			created_at: SystemTime::UNIX_EPOCH,
+		};
+		let mut output = chat_stream(input, meta, context);
+		assert!(matches!(output.next().await, Some(Ok(ChatEvent::Started(_)))));
+		let live = match output.next().await {
+			Some(Ok(ChatEvent::Completed(completion))) => completion,
+			other => panic!("expected terminal completion, got {other:?}"),
+		};
+		assert_eq!(live.receipt.recoveries.len(), 1);
+		assert_eq!(live.receipt.recoveries[0].kind, RecoveryKind::SessionReseed);
+		let retained = planner
+			.turn_replay(&turn)
+			.expect("read staged replay")
+			.expect("committed staged replay");
+		assert_eq!(retained.outcome, receipt_bytes(&live));
 	}
 
 	#[tokio::test]

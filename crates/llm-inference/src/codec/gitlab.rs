@@ -900,7 +900,7 @@ impl Decoder for GitLabDiscoveryDecoder {
 				wire_model:            omp_llm_catalog::WireModelId::from(model.provider_model_id),
 				aliases:               Box::new([]),
 				display_name:          Some(model.name),
-				declared_family:       None,
+				declared_class:        None,
 				declared_operations:   omp_llm_catalog::OperationBits::for_kind(
 					omp_llm_catalog::OperationKind::Chat,
 				),

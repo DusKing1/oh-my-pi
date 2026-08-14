@@ -1003,7 +1003,7 @@ fn apple_discovered_model(
 		wire_model:            WireModelId::new("apple-intelligence"),
 		aliases:               Box::new([]),
 		display_name:          Some("Apple Intelligence (on-device)".into()),
-		declared_family:       None,
+		declared_class:        None,
 		declared_operations:   operations,
 		declared_capabilities: None,
 		declared_limits:       Some(ModelLimits {

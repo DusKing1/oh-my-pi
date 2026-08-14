@@ -856,7 +856,7 @@ pub struct CcaModelRecord {
 	pub max_output_tokens: Option<u64>,
 }
 
-/// Parses model discovery without family inference, defaults, or model-name
+/// Parses model discovery without class inference, defaults, or model-name
 /// filtering.
 pub fn parse_cca_models(body: &[u8]) -> Result<Vec<CcaModelRecord>, GoogleCodecError> {
 	let payload: CcaDiscoveryResponse = serde_json::from_slice(body)
@@ -945,7 +945,7 @@ fn cca_discovered_rows(
 				wire_model: WireModelId::from(record.wire_id),
 				aliases: Box::new([]),
 				display_name: record.display_name,
-				declared_family: None,
+				declared_class: None,
 				declared_operations: OperationBits::for_kind(OperationKind::Chat),
 				declared_capabilities,
 				declared_limits,
@@ -1544,7 +1544,7 @@ mod tests {
 
 		assert_eq!(rows.len(), 1);
 		assert_eq!(rows[0].wire_model.as_str(), "opaque-model");
-		assert_eq!(rows[0].declared_family, None);
+		assert_eq!(rows[0].declared_class, None);
 		assert!(
 			rows[0]
 				.declared_operations

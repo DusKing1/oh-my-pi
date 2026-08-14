@@ -248,8 +248,8 @@ pub struct DevinDiscoveredModel {
 	pub id:                Str,
 	/// Devin display label.
 	pub name:              Str,
-	/// Exact schema-provided family uid, when present.
-	pub family:            Option<Str>,
+	/// Class derived from the schema-provided `model_family_uid`, when present.
+	pub declared_class:    Option<Str>,
 	/// Whether image input is supported.
 	pub supports_images:   bool,
 	/// Whether schema features advertise thinking.
@@ -311,11 +311,11 @@ impl DevinCodec {
 				.as_ref()
 				.and_then(|info| positive_i32(info.max_output_tokens))
 				.unwrap_or_else(|| context_window.min(DEFAULT_MAX_OUTPUT));
-			let family = config
+			let declared_class = config
 				.model_info
 				.as_ref()
 				.map(|info| info.model_family_uid.trim())
-				.filter(|family| !family.is_empty())
+				.filter(|class| !class.is_empty())
 				.map(Str::from);
 			let id = Str::from(id);
 			let name = if config.label.trim().is_empty() {
@@ -326,7 +326,7 @@ impl DevinCodec {
 			models.insert(id.clone(), DevinDiscoveredModel {
 				id,
 				name,
-				family,
+				declared_class,
 				supports_images: config.supports_images
 					|| features.is_some_and(|feature| feature.supports_images),
 				reasoning: features.is_some_and(|feature| feature.supports_thinking),
@@ -743,7 +743,7 @@ impl Decoder for DiscoveryDecoder {
 				wire_model:            omp_llm_catalog::WireModelId::from(row.id),
 				aliases:               Box::new([]),
 				display_name:          Some(row.name),
-				declared_family:       row.family.map(omp_llm_catalog::FamilyId::from),
+				declared_class:        row.declared_class.map(omp_llm_catalog::ClassId::from),
 				declared_operations:   omp_llm_catalog::OperationBits::for_kind(
 					omp_llm_catalog::OperationKind::Chat,
 				),

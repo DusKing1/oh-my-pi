@@ -3,7 +3,7 @@
 use bytes::Bytes;
 use omp_core::{Str, encoding::base64};
 use omp_llm_catalog::{
-	FamilyId, OperationBits, OperationKind, ProviderId, RouteId, WireModelId,
+	ClassId, OperationBits, OperationKind, ProviderId, RouteId, WireModelId,
 	discover::DiscoveredModel,
 };
 use serde::{Deserialize, Serialize};
@@ -833,10 +833,10 @@ impl Decoder for OllamaDecoder {
 							aliases:               Box::new([]),
 							display_name:          Some(model.name),
 							extended_context_mode: None,
-							declared_family:       model
+							declared_class:        model
 								.details
 								.and_then(|details| details.family)
-								.map(FamilyId::new),
+								.map(ClassId::new),
 							declared_operations:   OperationBits::empty(),
 							declared_capabilities: None,
 							declared_limits:       None,

@@ -3,7 +3,7 @@
 use bytes::Bytes;
 use omp_core::Str;
 use omp_llm_catalog::{
-	DiscoveredModel, DiscoveryKind, DiscoveryPagination, DiscoverySpec, FamilyId, ModelAvailability,
+	ClassId, DiscoveredModel, DiscoveryKind, DiscoveryPagination, DiscoverySpec, ModelAvailability,
 	ModelLimits, OperationBits, OperationKind, ProviderId, RouteId, WireModelId,
 };
 use serde::Deserialize;
@@ -340,7 +340,7 @@ impl DiscoveryDecoder {
 			rows.push(self.row(
 				wire_model,
 				model.display_name,
-				model.family.map(FamilyId::from),
+				model.family.map(ClassId::from),
 				availability,
 			));
 		}
@@ -357,11 +357,11 @@ impl DiscoveryDecoder {
 			.into_iter()
 			.map(|model| {
 				let wire_model = model.model.unwrap_or_else(|| model.name.clone());
-				let family = model
+				let declared_class = model
 					.details
 					.and_then(|details| details.family)
-					.map(FamilyId::from);
-				self.row(wire_model, Some(model.name), family, None)
+					.map(ClassId::from);
+				self.row(wire_model, Some(model.name), declared_class, None)
 			})
 			.collect();
 		Ok((rows, ProviderCursor::default()))
@@ -371,7 +371,7 @@ impl DiscoveryDecoder {
 		&self,
 		wire_model: Str,
 		display_name: Option<Str>,
-		declared_family: Option<FamilyId>,
+		declared_class: Option<ClassId>,
 		availability: Option<ModelAvailability>,
 	) -> DiscoveredModel {
 		DiscoveredModel {
@@ -380,7 +380,7 @@ impl DiscoveryDecoder {
 			wire_model: WireModelId::from(wire_model),
 			aliases: Box::new([]),
 			display_name,
-			declared_family,
+			declared_class,
 			declared_operations: OperationBits::empty(),
 			declared_capabilities: None,
 			declared_limits: None,
@@ -632,7 +632,7 @@ mod tests {
 		assert_eq!(rows[0].route.as_str(), "route");
 		assert_eq!(rows[0].source.as_str(), "fixture");
 		assert!(rows[0].declared_operations.is_empty());
-		assert_eq!(rows[0].declared_family, None);
+		assert_eq!(rows[0].declared_class, None);
 		assert_eq!(rows[0].declared_capabilities, None);
 	}
 
@@ -721,7 +721,7 @@ mod tests {
 				.declared_operations
 				.contains_kind(OperationKind::Chat)
 		);
-		assert_eq!(rows[0].declared_family, None);
+		assert_eq!(rows[0].declared_class, None);
 		assert_eq!(rows[0].declared_capabilities, None);
 		assert_eq!(rows[0].availability, None);
 	}
@@ -736,13 +736,13 @@ mod tests {
 		assert_eq!(next.as_ref().map(Str::as_str), Some("retired-account-model"));
 		assert_eq!(rows[0].wire_model.as_str(), "gpt-5.2-codex");
 		assert_eq!(rows[0].display_name.as_ref().map(Str::as_str), Some("GPT-5.2 Codex"));
-		assert_eq!(rows[0].declared_family.as_ref().map(FamilyId::as_str), Some("gpt-5-codex"));
+		assert_eq!(rows[0].declared_class.as_ref().map(ClassId::as_str), Some("gpt-5-codex"));
 		assert_eq!(rows[0].availability, Some(ModelAvailability::Available));
 		assert_eq!(rows[1].availability, Some(ModelAvailability::Disabled));
 	}
 
 	#[test]
-	fn ollama_tags_fixture_uses_exact_wire_model_and_declared_family() {
+	fn ollama_tags_fixture_uses_exact_wire_model_and_declared_class() {
 		let (rows, next) = discovered(
 			DiscoveryFlavor::Ollama,
 			DiscoveryPagination::SinglePage,
@@ -752,7 +752,7 @@ mod tests {
 		assert_eq!(rows.len(), 1);
 		assert_eq!(rows[0].wire_model.as_str(), "qwen3:8b");
 		assert_eq!(rows[0].display_name.as_ref().map(Str::as_str), Some("qwen3:8b"));
-		assert_eq!(rows[0].declared_family.as_ref().map(FamilyId::as_str), Some("qwen3"));
+		assert_eq!(rows[0].declared_class.as_ref().map(ClassId::as_str), Some("qwen3"));
 	}
 
 	#[test]

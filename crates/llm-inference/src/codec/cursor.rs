@@ -1449,7 +1449,7 @@ impl Decoder for CursorWireDecoder {
 							.map(WireModelId::new)
 							.collect(),
 						display_name:          Some(model.name),
-						declared_family:       None,
+						declared_class:        None,
 						declared_operations:   OperationBits::for_kind(OperationKind::Chat),
 						declared_capabilities: Some(discovered_capabilities(model.reasoning)),
 						declared_limits:       None,

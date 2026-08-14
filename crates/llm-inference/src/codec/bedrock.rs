@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use bytes::Bytes;
 use omp_core::{Str, encoding::base64};
 use omp_llm_catalog::{
-	Availability, ChatCapabilities, DiscoveredModel, FamilyId, ModalityBits, ModelAvailability,
+	Availability, ChatCapabilities, ClassId, DiscoveredModel, ModalityBits, ModelAvailability,
 	ModelCapabilities, OperationBits, OperationKind, ReasoningEffort, ThinkingEffort, ThinkingMode,
 	ThinkingToolChoiceConflict, WireModelId,
 };
@@ -1255,11 +1255,11 @@ impl FoundationModelSummary {
 		if self.model_id.is_empty() || !self.is_usable() {
 			return None;
 		}
-		let declared_family = self
+		let declared_class = self
 			.provider_name
 			.filter(|name| !name.is_empty())
-			.map(FamilyId::from)
-			.or_else(|| self.model_id.split(".").next().map(FamilyId::from));
+			.map(ClassId::from)
+			.or_else(|| self.model_id.split(".").next().map(ClassId::from));
 		let display_name = self
 			.model_name
 			.filter(|name| !name.is_empty())
@@ -1307,7 +1307,7 @@ impl FoundationModelSummary {
 			wire_model: WireModelId::from(self.model_id),
 			aliases: Box::new([]),
 			display_name,
-			declared_family,
+			declared_class,
 			declared_operations: OperationBits::for_kind(OperationKind::Chat),
 			declared_capabilities: Some(capabilities),
 			declared_limits: None,
@@ -2676,7 +2676,7 @@ mod tests {
 		assert_eq!(rows.len(), 2);
 		assert_eq!(rows[0].wire_model.as_str(), "anthropic.claude-3-5-sonnet-20241022-v2:0",);
 		assert_eq!(rows[0].display_name.as_ref().map(Str::as_str), Some("Claude 3.5 Sonnet v2"));
-		assert_eq!(rows[0].declared_family.as_ref().map(FamilyId::as_str), Some("Anthropic"));
+		assert_eq!(rows[0].declared_class.as_ref().map(ClassId::as_str), Some("Anthropic"));
 		assert!(
 			rows[0]
 				.declared_operations
@@ -2691,6 +2691,6 @@ mod tests {
 			Some(Availability::Native(modalities)) if modalities.contains(ModalityBits::IMAGE)
 		));
 		assert_eq!(rows[1].wire_model.as_str(), "amazon.nova-pro-v1:0");
-		assert_eq!(rows[1].declared_family.as_ref().map(FamilyId::as_str), Some("amazon"));
+		assert_eq!(rows[1].declared_class.as_ref().map(ClassId::as_str), Some("amazon"));
 	}
 }

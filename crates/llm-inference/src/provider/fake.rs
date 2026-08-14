@@ -504,20 +504,22 @@ impl FakeCancellation {
 #[derive(Clone, Debug)]
 pub struct CapturedCall {
 	/// Logical request identity.
-	pub request_id:   RequestId,
+	pub request_id:     RequestId,
 	/// Closed operation discriminant.
-	pub operation:    OperationKind,
+	pub operation:      OperationKind,
 	/// Whether the call carried a deadline; the process-relative instant is not
 	/// retained.
-	pub has_deadline: bool,
+	pub has_deadline:   bool,
 	/// Exact execution budget.
-	pub budget:       ExecutionBudget,
+	pub budget:         ExecutionBudget,
 	/// Whether session context was present; conversation identifiers are not
 	/// retained.
-	pub has_session:  bool,
+	pub has_session:    bool,
+	/// Whether the attached session explicitly forked from an earlier revision.
+	pub session_forked: bool,
 	/// Bounded operation shape with text, secrets, URIs, JSON, and media bytes
 	/// excluded.
-	pub shape:        CapturedOperation,
+	pub shape:          CapturedOperation,
 }
 
 /// Bounded, content-free shape of an operation payload.
@@ -668,12 +670,13 @@ pub enum CapturedNativePayload {
 impl CapturedCall {
 	fn from_call(call: &crate::call::Call) -> Self {
 		Self {
-			request_id:   call.id.clone(),
-			operation:    call.operation.kind(),
-			has_deadline: call.deadline.is_some(),
-			budget:       call.budget.clone(),
-			has_session:  call.session.is_some(),
-			shape:        CapturedOperation::from_operation(&call.operation),
+			request_id:     call.id.clone(),
+			operation:      call.operation.kind(),
+			has_deadline:   call.deadline.is_some(),
+			budget:         call.budget.clone(),
+			has_session:    call.session.is_some(),
+			session_forked: call.session.as_ref().is_some_and(|session| session.forked),
+			shape:          CapturedOperation::from_operation(&call.operation),
 		}
 	}
 }

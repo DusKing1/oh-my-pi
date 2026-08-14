@@ -2915,6 +2915,7 @@ mod tests {
 	use serde_json::Value;
 
 	use super::*;
+	use crate::call::ToolInputConstraint;
 
 	fn opaque(source: &str) -> OpaqueJson {
 		OpaqueJson(Arc::new(serde_json::from_str(source).expect("valid test JSON")))

@@ -867,7 +867,7 @@ impl super::Decoder for CodexModelsDecoder {
 					.clone()
 					.filter(|name| !name.is_empty())
 					.or(Some(wire_model)),
-				declared_family:       None,
+				declared_class:        None,
 				declared_operations:   OperationBits::for_kind(OperationKind::Chat),
 				declared_capabilities: Some(Self::capabilities(&raw)),
 				declared_limits:       Some(ModelLimits {
@@ -1272,6 +1272,6 @@ mod tests {
 				.contains_kind(OperationKind::Chat)
 		);
 		assert_eq!(rows[1].wire_model.as_str(), "opaque-model");
-		assert!(rows[1].declared_family.is_none());
+		assert!(rows[1].declared_class.is_none());
 	}
 }
