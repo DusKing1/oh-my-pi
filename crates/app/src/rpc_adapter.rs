@@ -314,6 +314,7 @@ impl InferenceRpc {
 					revision: revision.clone(),
 					turn,
 					strategy,
+					forked: false,
 				};
 				Ok(ResolvedTurn {
 					request_messages:      messages.clone(),
@@ -368,7 +369,7 @@ impl InferenceRpc {
 						provider_heads: BTreeMap::new(),
 					});
 				}
-				let (request_messages, conversation, revision, provider_heads) =
+				let (request_messages, conversation, revision, provider_heads, forked) =
 					if (delta.truncate_to.is_none() || retained == held.revision)
 						&& held.provider_heads.contains_key(&retained)
 					{
@@ -382,6 +383,7 @@ impl InferenceRpc {
 								.clone()
 								.ok_or_else(|| Status::internal("held context has no provider revision"))?,
 							held.provider_heads,
+							false,
 						)
 					} else if let Some(revision) = held.provider_heads.get(&retained).cloned() {
 						let conversation = self
@@ -397,6 +399,7 @@ impl InferenceRpc {
 								.into_iter()
 								.filter(|(head, _)| *head <= retained)
 								.collect(),
+							true,
 						)
 					} else {
 						let root = self
@@ -408,10 +411,16 @@ impl InferenceRpc {
 							root.conversation().clone(),
 							root.revision().clone(),
 							BTreeMap::from([(0, root.revision().clone())]),
+							true,
 						)
 					};
-				let provider_session =
-					SessionRequest { conversation: conversation.clone(), revision, turn, strategy };
+				let provider_session = SessionRequest {
+					conversation: conversation.clone(),
+					revision,
+					turn,
+					strategy,
+					forked,
+				};
 				Ok(ResolvedTurn {
 					request_messages,
 					committed_messages,
@@ -2960,6 +2969,32 @@ mod tests {
 				last_message_timestamp_ms:      None,
 			})
 		);
+	}
+
+	#[test]
+	fn fork_reseed_outcome_retains_selected_route_and_one_recovery() {
+		let mut receipt = ExecutionReceipt::default();
+		receipt.plan.provider = Some(ProviderId::from("provider-fork"));
+		receipt.plan.model = Some(ModelKey::from("model-fork"));
+		receipt.plan.route = Some(RouteId::from("route-fork"));
+		receipt.recoveries.push(RecoveryRecord {
+			attempt:     1,
+			kind:        RecoveryKind::SessionReseed,
+			rule:        ReasonId(Str::new_static("Fork")),
+			input_bytes: 0,
+			steps:       1,
+		});
+		let completion =
+			Completion { reason: FinishReason::Stop, blocks: 0, usage: Usage::default(), receipt };
+
+		assert_eq!(completion.receipt.plan.route.as_ref().map(RouteId::as_str), Some("route-fork"));
+		assert_eq!(completion.receipt.recoveries.len(), 1);
+		let outcome = build_turn_outcome(&TurnProjection::default(), &completion, None, 0);
+		assert_eq!(outcome.provider, "provider-fork");
+		assert_eq!(outcome.model, "model-fork");
+		assert_eq!(outcome.diagnostics.len(), 1);
+		assert_eq!(outcome.diagnostics[0].code, "session_reseed");
+		assert_eq!(outcome.diagnostics[0].detail, "Fork");
 	}
 
 	#[test]

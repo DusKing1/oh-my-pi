@@ -113,7 +113,7 @@ pub enum StoredRole {
 }
 
 /// Durable immutable media representation.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub enum StoredMedia {
 	/// Inline immutable bytes.
 	Bytes { media_type: Str, data: Bytes },
@@ -156,7 +156,7 @@ pub enum StoredContent {
 }
 
 /// Durable tool-result content.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub enum StoredToolResult {
 	/// Plain text result.
 	Text(Str),

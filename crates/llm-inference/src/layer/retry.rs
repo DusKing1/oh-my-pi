@@ -117,16 +117,17 @@ async fn wait_retry_delay(
 		.budget()
 		.max_elapsed
 		.map(|limit| limit.saturating_sub(context.elapsed()));
-	match remaining {
-		Some(remaining) => tokio::select! {
-			_ = tokio::time::sleep(delay) => context.checkpoint(ErrorPhase::Readiness),
-			_ = tokio::time::sleep(remaining) => context.checkpoint(ErrorPhase::Readiness),
-			_ = wait_cancelled(context.clone()) => context.checkpoint(ErrorPhase::Readiness),
-		},
-		None => tokio::select! {
-			_ = tokio::time::sleep(delay) => context.checkpoint(ErrorPhase::Readiness),
-			_ = wait_cancelled(context.clone()) => context.checkpoint(ErrorPhase::Readiness),
-		},
+	if let Some(remaining) = remaining {
+		tokio::select! {
+			() = tokio::time::sleep(delay) => context.checkpoint(ErrorPhase::Readiness),
+			() = tokio::time::sleep(remaining) => context.checkpoint(ErrorPhase::Readiness),
+			() = wait_cancelled(context.clone()) => context.checkpoint(ErrorPhase::Readiness),
+		}
+	} else {
+		tokio::select! {
+			() = tokio::time::sleep(delay) => context.checkpoint(ErrorPhase::Readiness),
+			() = wait_cancelled(context.clone()) => context.checkpoint(ErrorPhase::Readiness),
+		}
 	}
 }
 

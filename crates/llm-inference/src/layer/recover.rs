@@ -335,7 +335,7 @@ fn observe_reasoning(
 	context.with_receipt(|receipt| {
 		receipt
 			.recoveries
-			.push(recovery_record(context.attempts().saturating_sub(1), &signal))
+			.push(recovery_record(context.attempts().saturating_sub(1), &signal));
 	});
 	let mut error = Error::new(
 		ErrorKind::RepeatedReasoning,

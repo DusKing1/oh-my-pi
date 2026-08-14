@@ -454,8 +454,8 @@ async fn next_with_deadline(
 		tokio::select! {
 			biased;
 			item = input.next() => return Ok(item),
-			_ = tokio::time::sleep(remaining) => {
-				if let Err(error) = context.checkpoint(ErrorPhase::Streaming) { return Err(error); }
+			() = tokio::time::sleep(remaining) => {
+				context.checkpoint(ErrorPhase::Streaming)?;
 			},
 		}
 	}
@@ -526,7 +526,7 @@ async fn unary_body(
 	Ok(body)
 }
 
-fn expected_kind(operation: OperationKind) -> AnswerKind {
+const fn expected_kind(operation: OperationKind) -> AnswerKind {
 	match operation {
 		OperationKind::Chat => AnswerKind::Chat,
 		OperationKind::CountTokens => AnswerKind::Tokens,
@@ -546,7 +546,7 @@ fn expected_kind(operation: OperationKind) -> AnswerKind {
 	}
 }
 
-fn raw_kind(event: &RawEvent) -> AnswerKind {
+const fn raw_kind(event: &RawEvent) -> AnswerKind {
 	match event {
 		RawEvent::Chat(_) | RawEvent::Completion(_) | RawEvent::ToolCallComplete { .. } => {
 			AnswerKind::Chat

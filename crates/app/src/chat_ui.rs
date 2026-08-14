@@ -118,21 +118,10 @@ pub async fn run<C: TurnClient + 'static>(
 			}
 		}
 	});
-	update_status(
-		app.ui_mut(),
-		&session.session_id,
-		&session_model,
-		attempt_indicator,
-		live_jobs.len(),
-		session_cost_nanos,
-		context_tokens,
-		context_window,
-		events.dropped(),
-	);
 	'ui: loop {
 		tokio::select! {
 			event = app.next() => match event {
-				Ok(Some(AppEvent::Submitted)) => {
+				Ok(Some(trigger @ (AppEvent::Submitted | AppEvent::Key(Key::FollowUp)))) => {
 					let text = app.ui().values()["input"].as_str().unwrap_or("").to_owned();
 					app.ui_mut().set_text("input", "");
 					match parse_input(&text) {
@@ -153,28 +142,34 @@ pub async fn run<C: TurnClient + 'static>(
 							enqueue_shutdown_interrupt(&mailbox, phase);
 							break 'ui;
 						},
-						Ok(ChatCommand::Submit(item)) if phase == AgentPhase::Idle => {
-							let sent = render_then_deliver(
-								item,
-								|item| render_submitted_item(app.ui_mut(), item),
-								|item| tx.send(item),
-							);
-							if sent.is_err() {
-								push_error(app.ui_mut(), "Agent input channel is closed.");
-							}
-						},
 						Ok(ChatCommand::Submit(item)) => {
-							let _ = render_then_deliver(
-								item,
-								|item| render_submitted_item(app.ui_mut(), item),
-								|item| {
-									mailbox.try_enqueue(Interrupt {
-										class: InterruptClass::Immediate,
-										item,
-										source: InterruptSource::Producer(Str::new_static("user")),
-									})
-								},
-							);
+							if phase == AgentPhase::Idle {
+								let sent = render_then_deliver(
+									item,
+									|item| render_submitted_item(app.ui_mut(), item),
+									|item| tx.send(item),
+								);
+								if sent.is_err() {
+									push_error(app.ui_mut(), "Agent input channel is closed.");
+								}
+							} else {
+								let class = if matches!(trigger, AppEvent::Key(Key::FollowUp)) {
+									InterruptClass::Idle
+								} else {
+									InterruptClass::Immediate
+								};
+								let _ = render_then_deliver(
+									item,
+									|item| render_submitted_item(app.ui_mut(), item),
+									|item| {
+										mailbox.try_enqueue(Interrupt {
+											class,
+											item,
+											source: InterruptSource::Producer(Str::new_static("user")),
+										})
+									},
+								);
+							}
 						},
 						Err(error) => push_error(app.ui_mut(), error.to_string()),
 					}

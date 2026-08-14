@@ -178,6 +178,14 @@ fn scripted_registry(
 			Ok(ChatEvent::TextDelta { index: 0, text: Str::from("The live result arrived.") }),
 			Ok(completion(FinishReason::Stop, 1)),
 		]),
+		FakeScript::chat(vec![
+			Ok(ChatEvent::BlockStarted { index: 0, kind: BlockKind::Text }),
+			Ok(ChatEvent::TextDelta {
+				index: 0,
+				text:  Str::from("Forked from the retained prefix."),
+			}),
+			Ok(completion(FinishReason::Stop, 1)),
+		]),
 		FakeScript::precommit(
 			OperationKind::Chat,
 			InferenceError::new(
@@ -481,7 +489,7 @@ async fn rpc_turn_client_proves_stateful_replay_duplex_and_recovery_over_owner_u
 			TurnInput::Delta(
 				pb::ContextRef {
 					context_id: "missing-context".to_owned(),
-					expected:   Some(first_revision),
+					expected:   Some(first_revision.clone()),
 				},
 				pb::ThreadDelta::default(),
 			),
@@ -491,6 +499,37 @@ async fn rpc_turn_client_proves_stateful_replay_duplex_and_recovery_over_owner_u
 		.expect("need-full stream opens");
 	assert!(matches!(next_event(&mut need_full).await, Some(Err(TurnError::NeedFull(_)))));
 	assert_eq!(fake.calls().len(), 2, "recovery errors must not reach the provider");
+
+	let mut fork = client
+		.turn(
+			ProviderTurnId::from("turn-fork"),
+			TurnInput::Delta(
+				pb::ContextRef {
+					context_id: "context-1".to_owned(),
+					expected:   second.revision.clone(),
+				},
+				pb::ThreadDelta {
+					truncate_to: Some(first_revision.head),
+					append:      Vec::new(),
+				},
+			),
+			&options,
+		)
+		.await
+		.expect("forked delta stream opens");
+	assert!(matches!(
+		next_event(&mut fork).await,
+		Some(Ok(pb::TurnEvent {
+			event: Some(pb::turn_event::Event::Accepted(pb::Accepted { replay: false })),
+		}))
+	));
+	let forked = outcome(&mut fork).await;
+	assert_eq!(forked.provider, first.provider);
+	assert_eq!(forked.model, first.model);
+	assert_eq!(forked.diagnostics.len(), 1);
+	assert_eq!(forked.diagnostics[0].code, "session_reseed");
+	assert_eq!(forked.diagnostics[0].detail, "Fork");
+	assert_eq!(fake.calls().len(), 3);
 
 	let terminal_options = TurnOptions { context_id: None, ..options.clone() };
 	let mut limited = client
@@ -509,7 +548,7 @@ async fn rpc_turn_client_proves_stateful_replay_duplex_and_recovery_over_owner_u
 		},
 		other => panic!("expected classified terminal failure, got {other:?}"),
 	}
-	assert_eq!(fake.calls().len(), 3);
+	assert_eq!(fake.calls().len(), 4);
 
 	drop(client);
 	daemon.shutdown().await.expect("gateway shutdown");

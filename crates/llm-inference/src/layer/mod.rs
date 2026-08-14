@@ -344,10 +344,10 @@ impl ExecutionContext {
 	pub(crate) fn observe_provider_telemetry(&self, telemetry: ProviderTelemetryEvent) {
 		self.with_receipt(|receipt| match telemetry {
 			ProviderTelemetryEvent::ModelLatency(elapsed) => {
-				receipt.timings.streaming = receipt.timings.streaming.max(elapsed)
+				receipt.timings.streaming = receipt.timings.streaming.max(elapsed);
 			},
 			ProviderTelemetryEvent::SafetyAssessment { guardrail_latency: Some(elapsed), .. } => {
-				receipt.timings.streaming = receipt.timings.streaming.saturating_add(elapsed)
+				receipt.timings.streaming = receipt.timings.streaming.saturating_add(elapsed);
 			},
 			ProviderTelemetryEvent::SafetyAssessment { guardrail_latency: None, .. } => {},
 		});
@@ -467,27 +467,27 @@ impl ExecutionContext {
 			.output_tokens
 			.fetch_add(output, Ordering::AcqRel)
 			.saturating_add(output);
-		if let Some(limit) = self.0.budget.max_input_tokens {
-			if observed_input > limit {
-				return Err(self.error(
-					ErrorKind::BudgetExhausted,
-					ErrorPhase::Streaming,
-					"input_tokens",
-					limit as u128,
-					observed_input as u128,
-				));
-			}
+		if let Some(limit) = self.0.budget.max_input_tokens
+			&& observed_input > limit
+		{
+			return Err(self.error(
+				ErrorKind::BudgetExhausted,
+				ErrorPhase::Streaming,
+				"input_tokens",
+				limit as u128,
+				observed_input as u128,
+			));
 		}
-		if let Some(limit) = self.0.budget.max_output_tokens {
-			if observed_output > limit {
-				return Err(self.error(
-					ErrorKind::BudgetExhausted,
-					ErrorPhase::Streaming,
-					"output_tokens",
-					limit as u128,
-					observed_output as u128,
-				));
-			}
+		if let Some(limit) = self.0.budget.max_output_tokens
+			&& observed_output > limit
+		{
+			return Err(self.error(
+				ErrorKind::BudgetExhausted,
+				ErrorPhase::Streaming,
+				"output_tokens",
+				limit as u128,
+				observed_output as u128,
+			));
 		}
 		Ok(())
 	}
@@ -499,16 +499,16 @@ impl ExecutionContext {
 			*total = total.saturating_add(cost.micro_usd);
 			*total
 		};
-		if let Some(limit) = self.0.budget.max_cost {
-			if observed > limit.micro_usd {
-				return Err(self.error(
-					ErrorKind::BudgetExhausted,
-					ErrorPhase::Streaming,
-					"cost_micro_usd",
-					limit.micro_usd.max(0) as u128,
-					observed.max(0) as u128,
-				));
-			}
+		if let Some(limit) = self.0.budget.max_cost
+			&& observed > limit.micro_usd
+		{
+			return Err(self.error(
+				ErrorKind::BudgetExhausted,
+				ErrorPhase::Streaming,
+				"cost_micro_usd",
+				limit.micro_usd.max(0) as u128,
+				observed.max(0) as u128,
+			));
 		}
 		Ok(())
 	}

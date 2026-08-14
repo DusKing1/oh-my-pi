@@ -83,7 +83,7 @@ impl BuiltinConfig {
 	}
 
 	/// Borrows the auth manager for registry management-service injection.
-	pub(crate) fn auth_manager(&self) -> Option<&crate::auth::manager::AuthManager> {
+	pub(crate) const fn auth_manager(&self) -> Option<&crate::auth::manager::AuthManager> {
 		self.auth_manager.as_ref()
 	}
 }
@@ -141,10 +141,7 @@ pub struct RouteStackLayers<I, SS, SM, AP, AC, RL, EN, CA> {
 }
 
 /// Stack segment from credential application through canonical recovery.
-pub type RecoveryStack<W, CA, EN, RL, AC, AP>
-where
-	CA: Layer<W>,
-= RecoveryService<
+pub type RecoveryStack<W, CA, EN, RL, AC, AP> = RecoveryService<
 	AttemptService<
 		AdmissionService<
 			AccountPoolService<
@@ -158,15 +155,10 @@ where
 	>,
 >;
 /// Stack segment through semantic validation and typed answer projection.
-pub type AnswerStack<W, CA, EN, RL, AC, AP, SM>
-where
-	CA: Layer<W>,
-= AnswerService<SemanticService<RecoveryStack<W, CA, EN, RL, AC, AP>, SM>>;
+pub type AnswerStack<W, CA, EN, RL, AC, AP, SM> =
+	AnswerService<SemanticService<RecoveryStack<W, CA, EN, RL, AC, AP>, SM>>;
 /// Stack segment from intent through session and response processing.
-pub type IntentStack<W, CA, EN, RL, AC, AP, SM, SS, I>
-where
-	CA: Layer<W>,
-= OperationPolicyService<
+pub type IntentStack<W, CA, EN, RL, AC, AP, SM, SS, I> = OperationPolicyService<
 	IntentService<SessionService<AnswerStack<W, CA, EN, RL, AC, AP, SM>, SS>, I>,
 >;
 /// Outer execution service type wrapping the full registry fallback loop
@@ -177,8 +169,8 @@ pub type OuterExecutionService<S, O> = ObserveService<OverallBudgetService<S>, O
 /// existing `LayerCall`.
 ///
 /// Outer to inner: Intent → Session → Answer → Semantic → Recovery →
-/// Attempt(Admission → AccountPool → AuthLease → TransportRetry → Rate → Encode
-/// → CredentialApply → WireTransport).
+/// Attempt(Admission → `AccountPool` → `AuthLease` → `TransportRetry` → Rate →
+/// Encode → `CredentialApply` → `WireTransport`).
 pub fn build_route_stack<W, I, SS, SM, AP, AC, RL, EN, CA>(
 	wire: W,
 	layers: RouteStackLayers<I, SS, SM, AP, AC, RL, EN, CA>,

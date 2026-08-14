@@ -18,7 +18,7 @@ pub struct CommittedRevision<I> {
 }
 
 impl<I> CommittedRevision<I> {
-	pub(crate) fn new(
+	pub(crate) const fn new(
 		conversation: ConversationId,
 		revision: Revision,
 		parent: Option<Revision>,
@@ -29,22 +29,22 @@ impl<I> CommittedRevision<I> {
 	}
 
 	/// Returns the conversation on whose branch this node was committed.
-	pub fn conversation(&self) -> &ConversationId {
+	pub const fn conversation(&self) -> &ConversationId {
 		&self.conversation
 	}
 
 	/// Returns the immutable revision identity.
-	pub fn revision(&self) -> &Revision {
+	pub const fn revision(&self) -> &Revision {
 		&self.revision
 	}
 
 	/// Returns the preceding committed revision, if this is not a root.
-	pub fn parent(&self) -> Option<&Revision> {
+	pub const fn parent(&self) -> Option<&Revision> {
 		self.parent.as_ref()
 	}
 
 	/// Returns the idempotency identity of the committed turn.
-	pub fn turn(&self) -> Option<&TurnId> {
+	pub const fn turn(&self) -> Option<&TurnId> {
 		self.turn.as_ref()
 	}
 
@@ -74,12 +74,12 @@ impl<I> HistoryDelta<I> {
 	}
 
 	/// Returns the excluded base revision, or `None` for a complete replay.
-	pub fn base(&self) -> Option<&Revision> {
+	pub const fn base(&self) -> Option<&Revision> {
 		self.base.as_ref()
 	}
 
 	/// Returns the included head revision.
-	pub fn head(&self) -> &Revision {
+	pub const fn head(&self) -> &Revision {
 		&self.head
 	}
 

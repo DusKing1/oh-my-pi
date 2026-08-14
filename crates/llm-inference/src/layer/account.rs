@@ -43,7 +43,7 @@ pub struct SharedAccountPool<M> {
 }
 impl<M> SharedAccountPool<M> {
 	/// Creates an adapter whose mapper consumes the typed outer-attempt action.
-	pub fn new(pool: crate::account::AccountPool, map: M) -> Self {
+	pub const fn new(pool: crate::account::AccountPool, map: M) -> Self {
 		Self { pool, map }
 	}
 }

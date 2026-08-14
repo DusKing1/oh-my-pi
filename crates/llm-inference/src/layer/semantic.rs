@@ -142,7 +142,7 @@ where
 								&& matches!(gate.condition(), GateCondition::ValidStructuredOutput)
 							{
 								match gate.mark_structured_output_valid(&mut |event| {
-									visible.push(Ok(RawEvent::Chat(event)))
+									visible.push(Ok(RawEvent::Chat(event)));
 								}) {
 									Ok(GateProgress::Committed { .. }) => committed = true,
 									Ok(_) => {
@@ -151,7 +151,7 @@ where
 											ErrorPhase::Recovery,
 											RetryAction::Never,
 											request.context.receipt(),
-										))
+										));
 									},
 									Err(error) => failure = Some(error),
 								}
@@ -178,10 +178,8 @@ where
 					}
 				}
 				request.context.merge_receipt(gate.receipt());
-				if committed {
-					if let Some(terminal) = terminal.take() {
-						visible.push(Ok(terminal));
-					}
+				if committed && let Some(terminal) = terminal.take() {
+					visible.push(Ok(terminal));
 				}
 				if committed {
 					response.events = Some(Box::pin(stream::iter(visible).chain(events)));

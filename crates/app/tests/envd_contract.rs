@@ -1315,7 +1315,7 @@ async fn blob_and_named_process_frames_route_through_one_host() {
 	let harness = Harness::start(Registry::new()).await;
 	let client = harness.client();
 	let payload = Bytes::from_static(b"host-routed-blob");
-	let upload = client.blob_put().await.expect("begin blob upload");
+	let upload = client.blob_put().expect("begin blob upload");
 	upload
 		.send_chunk(Chunk { data: payload.clone(), ..Default::default() })
 		.await

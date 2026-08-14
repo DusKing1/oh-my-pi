@@ -317,7 +317,7 @@ pub struct ReseedState {
 impl ReseedState {
 	/// Records that ordinary output has become visible and can no longer be
 	/// rolled back.
-	pub fn mark_committed(&mut self) {
+	pub const fn mark_committed(&mut self) {
 		self.committed = true;
 	}
 
@@ -348,7 +348,7 @@ impl ReseedState {
 	}
 
 	/// Returns whether this call already consumed its only reseed allowance.
-	pub fn has_reseeded(&self) -> bool {
+	pub const fn has_reseeded(&self) -> bool {
 		self.reseeded
 	}
 }

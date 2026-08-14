@@ -60,14 +60,28 @@ pub struct PrefixCacheIdentity {
 pub enum ContextPlan<I> {
 	/// Send complete canonical history.
 	Replay {
+		/// Canonical messages from the beginning through the requested revision.
 		history:              HistoryDelta<I>,
+		/// Whether successful provider state should be captured for later deltas.
 		capture_server_state: bool,
+		/// Typed cause when replay is recovering or intentionally reseeding
+		/// state.
 		reason:               Option<ReseedReason>,
 	},
 	/// Send complete history with a revision-derived provider cache identity.
-	PrefixCache { history: HistoryDelta<I>, cache: PrefixCacheIdentity },
+	PrefixCache {
+		/// Canonical messages covered by the immutable cache prefix.
+		history: HistoryDelta<I>,
+		/// Revision-derived identity used to address that prefix.
+		cache:   PrefixCacheIdentity,
+	},
 	/// Send an opaque compatible handle and only items after its committed base.
-	ServerState { binding: ServerStateBinding, delta: HistoryDelta<I> },
+	ServerState {
+		/// Valid provider-state binding scoped to this conversation and route.
+		binding: ServerStateBinding,
+		/// Canonical messages committed after the binding's base revision.
+		delta:   HistoryDelta<I>,
+	},
 }
 
 /// Plans replay, prefix-cache, or provider-side delta context without vendor
@@ -462,7 +476,7 @@ impl ConversationSessionPlanner {
 				.map_err(|_| session_error(context, ErrorKind::InvalidRequest, RetryAction::Never))?
 				.into(),
 		};
-		let binding = if force_replay {
+		let binding = if force_replay || session.forked {
 			None
 		} else {
 			self
@@ -477,6 +491,14 @@ impl ConversationSessionPlanner {
 				})?,
 				capture_server_state: matches!(session.strategy, ContextStrategy::ServerState(_)),
 				reason:               Some(ReseedReason::ProviderExpired),
+			}
+		} else if session.forked {
+			ContextPlan::Replay {
+				history:              self.store.delta(None, &session.revision).map_err(|_| {
+					session_error(context, ErrorKind::SessionConflict, RetryAction::Never)
+				})?,
+				capture_server_state: matches!(session.strategy, ContextStrategy::ServerState(_)),
+				reason:               Some(ReseedReason::Fork),
 			}
 		} else if let Some(binding) = binding.as_ref() {
 			let scope = BindingContext {
@@ -505,15 +527,16 @@ impl ConversationSessionPlanner {
 		};
 		let (history, action, selected_binding) = match context_plan {
 			ContextPlan::Replay { history, reason, .. } => {
-				if reason.is_some_and(|reason| reason != ReseedReason::FirstTurn) {
+				if let Some(reseed_reason) = reason.filter(|reason| *reason != ReseedReason::FirstTurn)
+				{
 					context.with_receipt(|receipt| {
 						receipt.recoveries.push(RecoveryRecord {
 							attempt:     context.attempts(),
 							kind:        RecoveryKind::SessionReseed,
-							rule:        ReasonId(Str::from(format!("{reason:?}"))),
+							rule:        ReasonId(Str::from(format!("{reseed_reason:?}"))),
 							input_bytes: 0,
 							steps:       1,
-						})
+						});
 					});
 				}
 				(
@@ -839,11 +862,7 @@ impl SessionCompletion for DurableCompletion {
 						ProviderStateEvent::Continuation { .. } | ProviderStateEvent::Checkpoint { .. }
 					)
 				});
-		if !capture_binding {
-			draft
-				.commit()
-				.map_err(|_| session_error(context, ErrorKind::SessionConflict, RetryAction::Never))?;
-		} else {
+		if capture_binding {
 			let account = context.account_routing().ok_or_else(|| {
 				session_error(context, ErrorKind::SessionConflict, RetryAction::Never)
 			})?;
@@ -874,6 +893,10 @@ impl SessionCompletion for DurableCompletion {
 					expires_at: None,
 					handle,
 				})
+				.map_err(|_| session_error(context, ErrorKind::SessionConflict, RetryAction::Never))?;
+		} else {
+			draft
+				.commit()
 				.map_err(|_| session_error(context, ErrorKind::SessionConflict, RetryAction::Never))?;
 		}
 		self.prepared_turns.lock().remove(&self.prepared.request);
@@ -939,12 +962,14 @@ mod tests {
 	use bytes::Bytes;
 	use omp_core::Str;
 	use omp_llm_catalog::{
+		OperationKind,
 		id::{CodecId, ModelKey, ProviderId, RouteId},
 		provider::{RedirectTrust, TrustDomain},
+		snapshot::Catalog,
 	};
 
 	use super::{
-		ContextPlan,
+		ContextPlan, ConversationSessionPlanner,
 		binding::{
 			BindingContext, BindingValidity, CredentialGenerationPolicy, PendingServerStateBinding,
 			ProviderExpiryDecision, ReseedReason, ReseedState,
@@ -957,9 +982,17 @@ mod tests {
 		account::AccountChangeEvidence,
 		body::{AttemptBodyEvidence, BodySource, Replayability, RetryDecision, RetryDecisionReason},
 		call::{
-			ContentPart, ContextStrategy, MediaInput, Message, ProviderProof, Role, ServerStatePolicy,
+			Call, CallMeta, ChatRequest, ContentPart, ContextStrategy, MediaInput, Message,
+			NegotiationPolicy, OperationCall, ProviderProof, Role, Sampling, ServerStatePolicy,
+			SessionRequest, Setting, Target,
 		},
 		id::{AccountId, PrincipalId, RequestId, TurnId},
+		layer::{ExecutionContext, session::SessionAction},
+		plan::{
+			CapabilityAvailability, ExecutionPlan, FallbackScope, ReplayPlan, RouteHealth,
+			RuntimeRouteEvidence,
+		},
+		receipt::{ExecutionBudget, RecoveryKind},
 	};
 
 	fn trust(origin: &str) -> TrustDomain {
@@ -1075,6 +1108,7 @@ mod tests {
 				revision:     root.revision().clone(),
 				turn:         TurnId::new("turn"),
 				strategy:     server_strategy(),
+				forked:       false,
 			},
 			input:             Arc::clone(&input),
 			provider:          ProviderId::new("provider"),
@@ -1139,6 +1173,117 @@ mod tests {
 			allow_reseed: true,
 			max_age:      Some(Duration::from_secs(3600)),
 		})
+	}
+	#[test]
+	fn explicit_fork_reseeds_replay_and_records_one_recovery() {
+		let catalog = Arc::new(Catalog::try_embedded().expect("embedded catalog").clone());
+		let (model, route) = catalog
+			.models()
+			.iter()
+			.find_map(|model| {
+				if !model
+					.capabilities
+					.operations
+					.contains_kind(OperationKind::Chat)
+				{
+					return None;
+				}
+				model
+					.routes
+					.iter()
+					.find_map(|route| catalog.route(route))
+					.map(|route| (model, route))
+			})
+			.expect("catalog chat route");
+		let store = Arc::new(InMemoryConversationStore::new());
+		let root = store.create().expect("conversation root");
+		let planner =
+			ConversationSessionPlanner::with_in_memory(Arc::clone(&store), Arc::clone(&catalog));
+		let budget = ExecutionBudget::default();
+		let plan = ExecutionPlan {
+			planned_at:          SystemTime::UNIX_EPOCH,
+			catalog_revision:    catalog.revision().clone(),
+			registry_generation: 1,
+			expires_at:          std::time::Instant::now() + Duration::from_secs(60),
+			operation:           OperationKind::Chat,
+			model:               Some(model.key.clone()),
+			provider:            route.provider.clone(),
+			route:               route.id.clone(),
+			codec:               route.codec.clone(),
+			policy_model:        None,
+			wire_policy:         Arc::new(
+				catalog
+					.wire_policy(&model.wire_policy)
+					.expect("model wire policy")
+					.clone(),
+			),
+			thinking_policy:     None,
+			thinking_selection:  None,
+			decisions:           Arc::from([]),
+			fallback_scope:      FallbackScope { primary: None, explicit: Arc::from([]) },
+			fallbacks:           Arc::from([]),
+			replay:              ReplayPlan::Replayable,
+			budget:              budget.clone(),
+			runtime_evidence:    RuntimeRouteEvidence {
+				route:            route.id.clone(),
+				generation:       1,
+				health:           RouteHealth::Healthy,
+				quota_millionths: 1_000_000,
+				latency:          Duration::ZERO,
+				affinity:         false,
+				operation:        CapabilityAvailability::Native,
+				capabilities:     Arc::from([]),
+			},
+			wire_target:         None,
+		};
+		let mut call = Call::new(
+			CallMeta {
+				id: RequestId::new("fork-request"),
+				target: Target::Route { route: route.id.clone(), model: model.key.clone() },
+				deadline: None,
+				budget,
+				session: Some(SessionRequest {
+					conversation: root.conversation().clone(),
+					revision:     root.revision().clone(),
+					turn:         TurnId::new("fork-turn"),
+					strategy:     ContextStrategy::Replay,
+					forked:       true,
+				}),
+			},
+			OperationCall::Chat(Arc::new(ChatRequest {
+				messages:          Arc::from([]),
+				tools:             Arc::from([]),
+				hosted_tools:      Arc::from([]),
+				tool_choice:       Setting::Unset,
+				output:            Setting::Unset,
+				reasoning:         Setting::Unset,
+				verbosity:         Setting::Unset,
+				cache_retention:   Setting::Unset,
+				service_tier:      Setting::Unset,
+				sampling:          Sampling::default(),
+				max_output_tokens: None,
+				top_logprobs:      None,
+				safety:            Arc::from([]),
+				negotiation:       NegotiationPolicy::default(),
+			})),
+		);
+		call.execution = Some(Arc::new(plan));
+		let context = ExecutionContext::new(ExecutionBudget::default());
+
+		assert_eq!(
+			planner
+				.prepare_inner(&mut call, &context, false, None)
+				.expect("fork plan"),
+			SessionAction::Reseed
+		);
+		let prepared_plan = call.execution.as_ref().expect("prepared execution plan");
+		assert_eq!(prepared_plan.model.as_ref(), Some(&model.key));
+		assert_eq!(prepared_plan.provider, route.provider);
+		assert_eq!(prepared_plan.route, route.id);
+		let receipt = context.receipt();
+		assert_eq!(receipt.recoveries.len(), 1);
+		assert_eq!(receipt.recoveries[0].kind, RecoveryKind::SessionReseed);
+		assert_eq!(receipt.recoveries[0].rule.0.as_str(), "Fork");
 	}
 
 	#[test]

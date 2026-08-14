@@ -226,7 +226,7 @@ fn prepare(
 			let capabilities = execution
 				.policy_model
 				.as_ref()
-				.and_then(|model| model.capabilities.search.clone())
+				.and_then(|model| model.capabilities.search)
 				.ok_or_else(|| {
 					crate::operation::media_validation_error(
 						request.payload.operation.kind(),
@@ -390,7 +390,7 @@ fn finish(
 			*results = finalize_search(prepared.search.as_ref().expect("search plan exists"), page)?;
 		},
 		(OperationCall::Usage(request), AnswerBody::Usage(report)) => {
-			normalize_report(report, request, config.usage)?
+			normalize_report(report, request, config.usage)?;
 		},
 		(OperationCall::DiscoverModels(request), AnswerBody::Models(page)) => {
 			validate_discovery_page(page, request, &answer.meta)?;
