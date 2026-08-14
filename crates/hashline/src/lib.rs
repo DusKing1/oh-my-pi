@@ -17,6 +17,8 @@ pub mod format;
 pub mod input;
 /// Repeated no-op escalation.
 pub mod loop_guard;
+/// Pi-compatible stale snapshot mismatch diagnostics.
+pub mod mismatch;
 /// BOM and line-ending normalization.
 pub mod normalize;
 /// Lenient operation state-machine parsing.
@@ -46,6 +48,12 @@ pub use format::{
 };
 pub use input::{
 	Patch, PatchSection, contains_recognizable_hashline_operations, split_patch_input,
+};
+pub use loop_guard::NoopLoopGuard;
+pub use mismatch::{
+	HEADTAIL_DRIFT_WARNING, MISMATCH_CONTEXT, MismatchDetails, MismatchError,
+	RECOVERY_EXTERNAL_WARNING, RECOVERY_LINE_REMAP_WARNING, RECOVERY_SESSION_CHAIN_WARNING,
+	format_anchored_context,
 };
 pub use normalize::{
 	BomResult, LineEnding, detect_line_ending, normalize_to_lf, restore_bom, restore_line_endings,

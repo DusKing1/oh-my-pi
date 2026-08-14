@@ -1,7 +1,13 @@
 //! Compact current-coordinate previews for numbered exact-edit diffs.
 
-use std::{fmt::Write as _, str::Utf8Error};
+use std::{
+	collections::{BTreeMap, BTreeSet},
+	fmt::Write as _,
+	path::Path,
+	str::Utf8Error,
+};
 
+use omp_ast::block::{EnclosingBoundaryOptions, LineRange, enclosing_block_boundaries};
 use omp_core::{Str, StrMut, fmts};
 use similar::{Algorithm, DiffOp, capture_diff_slices};
 
@@ -13,7 +19,7 @@ use crate::{
 const DEFAULT_ADDED_RUN_CONTEXT_LINES: usize = 2;
 const ELISION: &str = "…";
 
-/// Canonical full numbered diff over exact base and current UTF-8 bytes.
+/// Canonical pi-style numbered diff over exact base and current UTF-8 bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NumberedDiff {
 	/// Stable ` N|context`, `-N|old`, and `+N|new` rows.
@@ -24,13 +30,24 @@ pub struct NumberedDiff {
 	pub removed_lines: usize,
 }
 
-/// Produces a stable full line diff with one-based original/current
-/// coordinates.
+/// Produces a stable line diff with one-based original/current coordinates.
+///
+/// As in pi's `generateDiffString`, unchanged regions retain two rows adjacent
+/// to a change and omit their untouched middle. The visible line-number jump
+/// conveys that omission without an invented footer or marker.
 ///
 /// Context and deletion row numbers address `base`; insertion row numbers
 /// address `current`. UTF-8 BOM and line-ending conventions are normalized
 /// before comparison, while row text remains otherwise exact.
-pub fn numbered_diff(base: &[u8], current: &[u8]) -> Result<NumberedDiff, Utf8Error> {
+///
+/// When `path` is present, matching syntactic boundary rows outside the
+/// ordinary window are inserted via tree-sitter, with pi's lexical bracket
+/// fallback for unknown or temporarily invalid sources.
+pub fn numbered_diff(
+	base: &[u8],
+	current: &[u8],
+	path: Option<&Path>,
+) -> Result<NumberedDiff, Utf8Error> {
 	let base = normalize_to_lf(strip_bom(std::str::from_utf8(base)?).text);
 	let current = normalize_to_lf(strip_bom(std::str::from_utf8(current)?).text);
 	let base_lines: Vec<&str> = split_addressable_file_lines(&base).collect();
@@ -40,10 +57,31 @@ pub fn numbered_diff(base: &[u8], current: &[u8]) -> Result<NumberedDiff, Utf8Er
 	let mut removed_lines = 0;
 	let mut first = true;
 
-	for operation in capture_diff_slices(Algorithm::Myers, &base_lines, &current_lines) {
-		match operation {
+	let operations = capture_diff_slices(Algorithm::Myers, &base_lines, &current_lines);
+	for (index, operation) in operations.iter().enumerate() {
+		match *operation {
 			DiffOp::Equal { old_index, new_index: _, len } => {
-				for offset in 0..len {
+				let follows_change =
+					index > 0 && !matches!(operations[index - 1], DiffOp::Equal { .. });
+				let precedes_change = index + 1 < operations.len()
+					&& !matches!(operations[index + 1], DiffOp::Equal { .. });
+				let (leading, trailing) = match (follows_change, precedes_change) {
+					(true, true) if len > 4 => (2, 2),
+					(true, true) => (len, 0),
+					(true, false) => (len.min(2), 0),
+					(false, true) => (0, len.min(2)),
+					(false, false) => (0, 0),
+				};
+				for offset in 0..leading {
+					push_numbered_row(
+						&mut text,
+						&mut first,
+						' ',
+						old_index + offset + 1,
+						base_lines[old_index + offset],
+					);
+				}
+				for offset in len.saturating_sub(trailing)..len {
 					push_numbered_row(
 						&mut text,
 						&mut first,
@@ -101,7 +139,277 @@ pub fn numbered_diff(base: &[u8], current: &[u8]) -> Result<NumberedDiff, Utf8Er
 			},
 		}
 	}
-	Ok(NumberedDiff { text: text.freeze(), added_lines, removed_lines })
+	let text = add_structural_context(text.freeze(), &base, &current, path);
+	Ok(NumberedDiff { text, added_lines, removed_lines })
+}
+
+fn add_structural_context(text: Str, base: &str, current: &str, path: Option<&Path>) -> Str {
+	let Some(path) = path else { return text };
+	let mut rows = if text.is_empty() {
+		Vec::new()
+	} else {
+		text
+			.as_str()
+			.split('\n')
+			.map(str::to_owned)
+			.collect::<Vec<_>>()
+	};
+	if rows.is_empty() {
+		return text;
+	}
+	let mut old_visible = BTreeSet::new();
+	let mut new_visible = BTreeSet::new();
+	let mut changes = Vec::<(i64, i64)>::new();
+	let mut offset = 0i64;
+	for row in &rows {
+		let Some(parsed) = parse_line(row) else {
+			continue;
+		};
+		match parsed.kind {
+			b'-' => {
+				old_visible.insert(parsed.number);
+				changes.push((parsed.number.saturating_add(offset), -1));
+				offset = offset.saturating_sub(1);
+			},
+			b'+' => {
+				new_visible.insert(parsed.number);
+				changes.push((parsed.number, 1));
+				offset = offset.saturating_add(1);
+			},
+			_ => {
+				old_visible.insert(parsed.number);
+				new_visible.insert(parsed.number.saturating_add(offset));
+			},
+		}
+	}
+
+	let path = path.to_string_lossy().into_owned();
+	let mut context = structural_boundaries(base, &old_visible, &path);
+	for (new_line, value) in structural_boundaries(current, &new_visible, &path) {
+		let shift = changes
+			.iter()
+			.filter(|(position, _)| *position <= new_line)
+			.fold(0i64, |total, (_, delta)| total.saturating_add(*delta));
+		let old_line = new_line.saturating_sub(shift);
+		context.entry(old_line).or_insert(value);
+	}
+	insert_context_rows(&mut rows, context);
+	Str::from(rows.join("\n"))
+}
+
+fn structural_boundaries(code: &str, visible: &BTreeSet<i64>, path: &str) -> BTreeMap<i64, Str> {
+	let ranges = visible
+		.iter()
+		.filter_map(|line| u32::try_from(*line).ok())
+		.map(|line| LineRange { start_line: line, end_line: line })
+		.collect();
+	let native = enclosing_block_boundaries(EnclosingBoundaryOptions {
+		code: code.to_owned(),
+		lang: None,
+		path: Some(path.to_owned()),
+		ranges,
+	})
+	.ok()
+	.flatten();
+	let lines = split_addressable_file_lines(code).collect::<Vec<_>>();
+	let Some(boundaries) = native else {
+		return lexical_boundaries(&lines, visible);
+	};
+	boundaries
+		.into_iter()
+		.filter_map(|line| {
+			let number = i64::from(line);
+			(!visible.contains(&number))
+				.then(|| (number, Str::from(lines.get(line as usize - 1).copied().unwrap_or(""))))
+		})
+		.collect()
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ScannerMode {
+	Code,
+	Single,
+	Double,
+	Template,
+	BlockComment,
+}
+
+fn lexical_boundaries(lines: &[&str], visible: &BTreeSet<i64>) -> BTreeMap<i64, Str> {
+	let mut context = BTreeMap::new();
+	let mut stack = Vec::<(u8, i64, bool)>::new();
+	let mut mode = ScannerMode::Code;
+	let mut escaped = false;
+	for (line_index, line) in lines.iter().enumerate() {
+		let line_number = i64::try_from(line_index + 1).unwrap_or(i64::MAX);
+		let line_visible = visible.contains(&line_number);
+		let bytes = line.as_bytes();
+		let mut index = 0;
+		while index < bytes.len() {
+			let byte = bytes[index];
+			let next = bytes.get(index + 1).copied();
+			if mode == ScannerMode::BlockComment {
+				if byte == b'*' && next == Some(b'/') {
+					mode = ScannerMode::Code;
+					index += 2;
+				} else {
+					index += 1;
+				}
+				continue;
+			}
+			if matches!(mode, ScannerMode::Single | ScannerMode::Double | ScannerMode::Template) {
+				if escaped {
+					escaped = false;
+					index += 1;
+					continue;
+				}
+				if byte == b'\\' {
+					escaped = true;
+					index += 1;
+					continue;
+				}
+				let closes = matches!(
+					(mode, byte),
+					(ScannerMode::Single, b'\'')
+						| (ScannerMode::Double, b'"')
+						| (ScannerMode::Template, b'`')
+				);
+				if closes {
+					mode = ScannerMode::Code;
+				}
+				index += 1;
+				continue;
+			}
+			if byte == b'/' && next == Some(b'/') {
+				break;
+			}
+			if byte == b'/' && next == Some(b'*') {
+				mode = ScannerMode::BlockComment;
+				index += 2;
+				continue;
+			}
+			if byte == b'#' && bytes[..index].iter().all(u8::is_ascii_whitespace) {
+				break;
+			}
+			if matches!(byte, b'\'' | b'"' | b'`') {
+				mode = match byte {
+					b'\'' => ScannerMode::Single,
+					b'"' => ScannerMode::Double,
+					_ => ScannerMode::Template,
+				};
+				escaped = false;
+				index += 1;
+				continue;
+			}
+			if matches!(byte, b'(' | b'[' | b'{') {
+				stack.push((byte, line_number, line_visible));
+				index += 1;
+				continue;
+			}
+			let opener = match byte {
+				b')' => Some(b'('),
+				b']' => Some(b'['),
+				b'}' => Some(b'{'),
+				_ => None,
+			};
+			if let Some(opener) = opener
+				&& let Some(match_index) = stack.iter().rposition(|entry| entry.0 == opener)
+			{
+				let (_, open_line, open_visible) = stack.remove(match_index);
+				if line_visible && !open_visible {
+					context.insert(open_line, Str::from(lines[open_line as usize - 1]));
+				}
+				if open_visible && !line_visible {
+					context.insert(line_number, Str::from(*line));
+				}
+			}
+			index += 1;
+		}
+		if matches!(mode, ScannerMode::Single | ScannerMode::Double) {
+			mode = ScannerMode::Code;
+			escaped = false;
+		}
+	}
+	context
+}
+
+fn insert_context_rows(rows: &mut Vec<String>, context: BTreeMap<i64, Str>) {
+	let mut seen = rows.iter().cloned().collect::<BTreeSet<_>>();
+	for (line_number, value) in context {
+		let row = format!(" {line_number}|{value}");
+		if seen.contains(&row) {
+			continue;
+		}
+		let mut insert_index = rows.len();
+		let mut previous_source = None;
+		let mut next_source = None;
+		for (index, existing) in rows.iter().enumerate() {
+			let Some(parsed) = parse_line(existing) else {
+				continue;
+			};
+			if parsed.kind == b'+' {
+				continue;
+			}
+			if parsed.number < line_number {
+				previous_source = Some(parsed.number);
+				continue;
+			}
+			next_source = Some(parsed.number);
+			insert_index = index;
+			break;
+		}
+		let mut start = insert_index;
+		while start > 0 && is_change_row(&rows[start - 1]) {
+			start -= 1;
+		}
+		let mut end = insert_index;
+		while end < rows.len() && is_change_row(&rows[end]) {
+			end += 1;
+		}
+		if insert_index > start && insert_index < end {
+			insert_index = end;
+		}
+		let mut chunk = Vec::with_capacity(3);
+		if previous_source.is_some_and(|previous| line_number > previous + 1) {
+			chunk.push(String::new());
+		}
+		chunk.push(row.clone());
+		if next_source.is_some_and(|next| next > line_number + 1) {
+			chunk.push(String::new());
+		}
+		rows.splice(insert_index..insert_index, chunk);
+		seen.insert(row);
+	}
+	normalize_gap_rows(rows);
+}
+
+fn is_change_row(row: &str) -> bool {
+	row.starts_with('+') || row.starts_with('-')
+}
+
+fn normalize_gap_rows(rows: &mut Vec<String>) {
+	let mut kept = Vec::with_capacity(rows.len());
+	for (index, row) in rows.iter().enumerate() {
+		if !row.is_empty() {
+			kept.push(row.clone());
+			continue;
+		}
+		if kept.is_empty() || kept.last().is_some_and(String::is_empty) {
+			continue;
+		}
+		let before = kept.iter().rev().find_map(|row| {
+			parse_line(row).and_then(|parsed| (parsed.kind != b'+').then_some(parsed.number))
+		});
+		let after = rows[index + 1..].iter().find_map(|row| {
+			parse_line(row).and_then(|parsed| (parsed.kind != b'+').then_some(parsed.number))
+		});
+		if before
+			.zip(after)
+			.is_some_and(|(before, after)| after > before + 1)
+		{
+			kept.push(String::new());
+		}
+	}
+	*rows = kept;
 }
 
 fn push_numbered_row(output: &mut StrMut, first: &mut bool, kind: char, line: usize, value: &str) {
@@ -313,7 +621,7 @@ mod tests {
 	}
 	#[test]
 	fn numbered_replacement_has_true_counts_and_context() {
-		let diff = numbered_diff(b"alpha\nold\nomega\n", b"alpha\nnew\nomega\n").unwrap();
+		let diff = numbered_diff(b"alpha\nold\nomega\n", b"alpha\nnew\nomega\n", None).unwrap();
 		assert_eq!(diff.text, " 1|alpha\n-2|old\n+2|new\n 3|omega");
 		assert_eq!(diff.added_lines, 1);
 		assert_eq!(diff.removed_lines, 1);
@@ -324,6 +632,7 @@ mod tests {
 		let diff = numbered_diff(
 			"α\nleft\nmiddle\nright\n終\n".as_bytes(),
 			"α\nLEFT\nmiddle\nRIGHT\n終\n".as_bytes(),
+			None,
 		)
 		.unwrap();
 		assert_eq!(diff.text, " 1|α\n-2|left\n+2|LEFT\n 3|middle\n-4|right\n+4|RIGHT\n 5|終");
@@ -331,8 +640,131 @@ mod tests {
 	}
 
 	#[test]
+	fn numbered_diff_elides_untouched_middle_like_pi() {
+		let base = (1..=12)
+			.map(|line| format!("L{line}"))
+			.collect::<Vec<_>>()
+			.join("\n")
+			+ "\n";
+		let mut current = (1..=12).map(|line| format!("L{line}")).collect::<Vec<_>>();
+		current[1] = "TWO".into();
+		current[10] = "ELEVEN".into();
+		let current = current.join("\n") + "\n";
+		let diff = numbered_diff(base.as_bytes(), current.as_bytes(), None).unwrap();
+		assert_eq!(
+			diff.text,
+			" 1|L1\n-2|L2\n+2|TWO\n 3|L3\n 4|L4\n 9|L9\n 10|L10\n-11|L11\n+11|ELEVEN\n 12|L12"
+		);
+		let preview = build_compact_diff_preview(&diff.text, CompactDiffOptions::default());
+		assert_eq!(preview.preview, "1:L1\n2:TWO\n3:L3\n4:L4\n9:L9\n10:L10\n11:ELEVEN\n12:L12");
+	}
+
+	#[test]
+	fn path_aware_diff_adds_elided_matching_block_boundary() {
+		let base = b"function outer() {\n  const value = 1;\n  const two = 2;\n  const three = 3;\n  const four = 4;\n  return value;\n}\n";
+		let current = b"function renamed() {\n  const value = 1;\n  const two = 2;\n  const three = 3;\n  const four = 4;\n  return value;\n}\n";
+		let diff = numbered_diff(base, current, Some(Path::new("sample.ts"))).unwrap();
+		assert!(diff.text.contains("-1|function outer() {"));
+		assert!(diff.text.contains("+1|function renamed() {"));
+		assert!(diff.text.contains("\n\n 7|}"));
+		assert!(!diff.text.contains("..."));
+		assert!(!diff.text.contains(" 5|  const four = 4;"));
+	}
+
+	#[test]
+	fn unknown_languages_use_lexical_bracket_context() {
+		let base = b"outer {\n  one\n  two\n  three\n  four\n}\n";
+		let current = b"renamed {\n  one\n  two\n  three\n  four\n}\n";
+		let diff = numbered_diff(base, current, Some(Path::new("sample.unknown"))).unwrap();
+		assert!(diff.text.contains("\n\n 6|}"));
+	}
+
+	#[test]
+	fn new_file_boundaries_are_translated_to_pre_edit_coordinates() {
+		let base = b"function outer() {\n  const a = 1;\n  const keep = 2;\n  const b = 3;\n  const c = 4;\n  const d = 5;\n  const e = 6;\n  const f = 7;\n  return a;\n}\n";
+		let current = b"function outer() {\n  const a = 10;\n  const a2 = 11;\n  const keep = 2;\n  const b = 30;\n  const b2 = 31;\n  const c = 4;\n  const d = 5;\n  const e = 6;\n  const f = 7;\n  return a;\n}\n";
+		let diff = numbered_diff(base, current, Some(Path::new("sample.ts"))).unwrap();
+		assert_eq!(
+			diff
+				.text
+				.lines()
+				.filter(|line| line.ends_with("|}"))
+				.collect::<Vec<_>>(),
+			vec![" 10|}"]
+		);
+		let context = diff
+			.text
+			.lines()
+			.filter_map(|line| line.strip_prefix(' '))
+			.filter_map(|line| line.split_once('|'))
+			.filter_map(|(line, _)| line.parse::<usize>().ok())
+			.collect::<Vec<_>>();
+		assert!(context.windows(2).all(|pair| pair[0] <= pair[1]));
+	}
+
+	#[test]
+	fn structural_boundaries_never_leave_adjacent_or_stranded_gaps() {
+		let base = [
+			"function alpha() {",
+			"  const a1 = 1;",
+			"  const a2 = 2;",
+			"  const a3 = 3;",
+			"  const a4 = 4;",
+			"  return a1;",
+			"}",
+			"// spacer",
+			"function beta() {",
+			"  const b1 = 1;",
+			"  const b2 = 2;",
+			"  const b3 = 3;",
+			"  const b4 = 4;",
+			"  return b1;",
+			"}",
+		]
+		.join("\n");
+		let current = base
+			.replace("const a1 = 1", "const a1 = 100")
+			.replace("return b1;", "return b1 + 1;");
+		let diff =
+			numbered_diff(base.as_bytes(), current.as_bytes(), Some(Path::new("sample.ts"))).unwrap();
+		let rows = diff.text.split('\n').collect::<Vec<_>>();
+		let closer = rows.iter().position(|row| *row == " 7|}").unwrap();
+		let opener = rows
+			.iter()
+			.position(|row| *row == " 9|function beta() {")
+			.unwrap();
+		assert!(opener > closer);
+		assert_eq!(rows[closer - 1], "");
+		assert_eq!(rows[closer + 1], "");
+		assert_eq!(rows[opener - 1], "");
+		assert_eq!(rows[opener + 1], "");
+		assert!(
+			rows
+				.windows(2)
+				.all(|pair| !(pair[0].is_empty() && pair[1].is_empty()))
+		);
+
+		let contiguous = base.replace("// spacer\n", "");
+		let contiguous_current = contiguous
+			.replace("const a1 = 1", "const a1 = 100")
+			.replace("return b1;", "return b1 + 1;");
+		let contiguous_diff = numbered_diff(
+			contiguous.as_bytes(),
+			contiguous_current.as_bytes(),
+			Some(Path::new("sample.ts")),
+		)
+		.unwrap();
+		let rows = contiguous_diff.text.split('\n').collect::<Vec<_>>();
+		let closer = rows.iter().position(|row| *row == " 7|}").unwrap();
+		let opener = rows
+			.iter()
+			.position(|row| *row == " 8|function beta() {")
+			.unwrap();
+		assert_eq!(opener, closer + 1);
+	}
+	#[test]
 	fn numbered_diff_uses_final_formatter_altered_bytes() {
-		let diff = numbered_diff(b"fn x(){ }\n", b"fn x() {\n\tbody();\n}\n").unwrap();
+		let diff = numbered_diff(b"fn x(){ }\n", b"fn x() {\n\tbody();\n}\n", None).unwrap();
 		assert_eq!(diff.text, "-1|fn x(){ }\n+1|fn x() {\n+2|\tbody();\n+3|}");
 		assert_eq!((diff.added_lines, diff.removed_lines), (3, 1));
 	}

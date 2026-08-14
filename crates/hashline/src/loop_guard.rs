@@ -71,11 +71,23 @@ impl NoopLoopGuard {
 		Self::default()
 	}
 
-	/// Records a no-op and returns soft guidance or a mandatory hard failure.
+	/// Records a no-op using its canonical path for loop identity and display.
+	pub fn record_noop(&mut self, canonical_path: impl Into<Str>, payload: Bytes) -> NoopRecord {
+		let canonical_path = canonical_path.into();
+		self.record_noop_for(canonical_path.clone(), &canonical_path, payload)
+	}
+
+	/// Records a no-op while keeping canonical identity separate from the
+	/// authored path shown in pi-compatible diagnostics.
 	///
 	/// Exact payload bytes are retained so a hash collision can never escalate a
 	/// different edit. A different payload on the same path starts again at one.
-	pub fn record_noop(&mut self, canonical_path: impl Into<Str>, payload: Bytes) -> NoopRecord {
+	pub fn record_noop_for(
+		&mut self,
+		canonical_path: impl Into<Str>,
+		display_path: &str,
+		payload: Bytes,
+	) -> NoopRecord {
 		let canonical_path = canonical_path.into();
 		let count = self
 			.entries
@@ -92,18 +104,18 @@ impl NoopLoopGuard {
 		};
 		let diagnostic = match severity {
 			NoopSeverity::Soft => Str::from(format!(
-				"Edits to {canonical_path} parsed and applied cleanly, but produced no change: your \
+				"Edits to {display_path} parsed and applied cleanly, but produced no change: your \
 				 body row(s) are byte-identical to the file at the targeted lines. The bug is \
 				 somewhere else — re-read the file before issuing another edit. Do NOT widen the \
 				 payload or add lines; verify the anchor first."
 			)),
 			NoopSeverity::Hard => Str::from(format!(
-				"STOP. Edits to {canonical_path} have been a byte-identical no-op {count} times in a \
+				"STOP. Edits to {display_path} have been a byte-identical no-op {count} times in a \
 				 row — the patch body matches the file at the targeted lines and the soft hint did \
 				 not break the cycle. Cease re-issuing this payload. Either the intended change is \
-				 already present (move on), or the anchor is wrong (re-read the current line numbers \
-				 and tag, then author a different edit). This exact payload will keep being rejected \
-				 until it changes."
+				 already on disk (move on), or your anchor is wrong (re-read the file with `read` to \
+				 observe the current line numbers and tag, then author a different edit). This exact \
+				 payload will keep being rejected until it changes."
 			)),
 		};
 		NoopRecord { count, severity, diagnostic }
@@ -158,6 +170,39 @@ mod tests {
 		assert!(record.should_escalate());
 		assert!(record.diagnostic().contains("STOP."));
 		assert!(record.diagnostic().contains("a.rs"));
+	}
+
+	#[test]
+	fn diagnostics_match_pi_exactly() {
+		let mut guard = NoopLoopGuard::new();
+		let soft = guard.record_noop("src/a.rs", Bytes::from_static(b"same"));
+		assert_eq!(
+			soft.diagnostic(),
+			"Edits to src/a.rs parsed and applied cleanly, but produced no change: your body row(s) \
+			 are byte-identical to the file at the targeted lines. The bug is somewhere else — \
+			 re-read the file before issuing another edit. Do NOT widen the payload or add lines; \
+			 verify the anchor first."
+		);
+		guard.record_noop("src/a.rs", Bytes::from_static(b"same"));
+		let hard = guard.record_noop("src/a.rs", Bytes::from_static(b"same"));
+		assert_eq!(
+			hard.diagnostic(),
+			"STOP. Edits to src/a.rs have been a byte-identical no-op 3 times in a row — the patch \
+			 body matches the file at the targeted lines and the soft hint did not break the cycle. \
+			 Cease re-issuing this payload. Either the intended change is already on disk (move on), \
+			 or your anchor is wrong (re-read the file with `read` to observe the current line \
+			 numbers and tag, then author a different edit). This exact payload will keep being \
+			 rejected until it changes."
+		);
+	}
+
+	#[test]
+	fn canonical_identity_does_not_leak_into_diagnostic() {
+		let mut guard = NoopLoopGuard::new();
+		let record =
+			guard.record_noop_for("/workspace/src/a.rs", "src/a.rs", Bytes::from_static(b"same"));
+		assert!(record.diagnostic().starts_with("Edits to src/a.rs "));
+		assert!(!record.diagnostic().contains("/workspace"));
 	}
 
 	#[test]

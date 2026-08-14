@@ -790,7 +790,8 @@ impl Executor {
 				current_index,
 				format!(
 					"line {}: anchor line {first_overlap} is already targeted by another hunk on line \
-					 {}. Issue one hunk per range; payload is only final desired content.",
+					 {}. Issue ONE hunk per range; payload is only the final desired content, never a \
+					 before/after pair.",
 					hunks[current_index].line_num, hunks[previous_index].line_num
 				),
 			);
@@ -1199,9 +1200,33 @@ mod tests {
 		assert_eq!(
 			parse_patch("PUT 2.=4:\n+X\nPUT 3.=5:\n+Y")
 				.unwrap_err()
-				.diagnostic
-				.code,
-			DiagnosticCode::OverlappingRange
+				.to_string(),
+			"line 3: anchor line 3 is already targeted by another hunk on line 1. Issue ONE hunk per \
+			 range; payload is only the final desired content, never a before/after pair."
+		);
+	}
+
+	#[test]
+	fn copied_elision_and_malformed_diff_diagnostics_match_pi() {
+		let parsed = parse_patch(
+			"PUT 1.=1:\n+changed\n[…12ln elided; re-read needed ranges with |, e.g. src/a.rs:5-9]",
+		)
+		.unwrap();
+		assert_eq!(
+			parsed
+				.diagnostics
+				.iter()
+				.find(|diagnostic| diagnostic.code == DiagnosticCode::ReadMetadataIgnored)
+				.map(|diagnostic| diagnostic.message.as_str()),
+			Some(
+				"Ignored copied read-output elision row(s). Re-read elided ranges before editing them."
+			)
+		);
+		let malformed = parse_patch("@@ -1,2 +1,2 @@").unwrap_err();
+		assert_eq!(
+			malformed.to_string(),
+			"unified-diff hunk header is not valid in hashline. Drop the `@@ ... @@` wrapper and \
+			 write `PUT N.=M:` or `CUT N.=M`."
 		);
 	}
 
