@@ -2,6 +2,7 @@
 
 use std::{
 	collections::BTreeMap,
+	io::IsTerminal as _,
 	path::{Path, PathBuf},
 	sync::Arc,
 	time::Duration,
@@ -82,21 +83,25 @@ pub enum CredentialKeyMode {
 	#[default]
 	Unavailable,
 	/// Use the operating-system credential service after explicit application
-	/// opt-in.
+	/// opt-in or for an interactive process on a supported platform.
 	OsKeychain,
 }
 
 impl CredentialKeyMode {
-	/// Selects the OS keychain only for exact `OMP_LLM_KEYCHAIN=1`; unset or any
-	/// other value fails closed without OS access.
+	/// Selects the OS keychain for exact `OMP_LLM_KEYCHAIN=1`, or when the
+	/// variable is unset and both stdin and stderr are terminals on a platform
+	/// with a supported credential service. Any other set value fails closed
+	/// without OS access.
 	#[must_use]
 	pub fn from_environment() -> Self {
-		Self::from_value(std::env::var_os(KEYCHAIN_OPT_IN_ENV).as_deref())
+		let interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+		Self::from_value(std::env::var_os(KEYCHAIN_OPT_IN_ENV).as_deref(), interactive)
 	}
 
-	fn from_value(value: Option<&std::ffi::OsStr>) -> Self {
+	fn from_value(value: Option<&std::ffi::OsStr>, interactive: bool) -> Self {
 		match value {
 			Some(value) if value == "1" => Self::OsKeychain,
+			None if interactive && cfg!(target_os = "macos") => Self::OsKeychain,
 			_ => Self::Unavailable,
 		}
 	}
@@ -212,8 +217,8 @@ impl From<omp_llm_inference::Error> for DaemonError {
 	}
 }
 
-/// Opens encrypted production credential state, contacting the OS keychain only
-/// for exact `OMP_LLM_KEYCHAIN=1`.
+/// Opens encrypted production credential state, contacting the OS keychain for
+/// explicit opt-in or by default in a supported interactive process.
 pub fn open_credential_store(
 	database: impl AsRef<Path>,
 ) -> Result<Arc<CredentialStore>, DaemonError> {
@@ -704,13 +709,31 @@ mod credential_key_mode_tests {
 	use super::CredentialKeyMode;
 
 	#[test]
-	fn only_exact_one_opts_into_os_keychain() {
+	fn environment_and_interactivity_select_keychain_mode() {
 		assert_eq!(
-			CredentialKeyMode::from_value(Some(OsStr::new("1"))),
+			CredentialKeyMode::from_value(Some(OsStr::new("1")), false),
 			CredentialKeyMode::OsKeychain
 		);
-		for value in [None, Some(OsStr::new("")), Some(OsStr::new("true")), Some(OsStr::new("0"))] {
-			assert_eq!(CredentialKeyMode::from_value(value), CredentialKeyMode::Unavailable);
+		assert_eq!(
+			CredentialKeyMode::from_value(Some(OsStr::new("1")), true),
+			CredentialKeyMode::OsKeychain
+		);
+		assert_eq!(CredentialKeyMode::from_value(None, false), CredentialKeyMode::Unavailable);
+		assert_eq!(
+			CredentialKeyMode::from_value(None, true),
+			if cfg!(target_os = "macos") {
+				CredentialKeyMode::OsKeychain
+			} else {
+				CredentialKeyMode::Unavailable
+			}
+		);
+		for interactive in [false, true] {
+			for value in [OsStr::new(""), OsStr::new("true"), OsStr::new("0")] {
+				assert_eq!(
+					CredentialKeyMode::from_value(Some(value), interactive),
+					CredentialKeyMode::Unavailable
+				);
+			}
 		}
 	}
 }

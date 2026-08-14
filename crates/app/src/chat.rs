@@ -23,7 +23,7 @@ use omp_llm_inference::{
 	Client, Registry as InferenceRegistry, ToolInputConstraint,
 	answer::{AuthAnswer, AuthEvent, AuthPromptKind as InferenceAuthPromptKind, AuthResponse},
 	call::{AuthInput, AuthRequest, CallMeta, LoginRequest, Target},
-	error::ErrorDetail,
+	error::{ErrorDetail, ErrorKind},
 	id::RequestId,
 	receipt::ExecutionBudget,
 	router::Router,
@@ -42,7 +42,7 @@ use xutf::IntoAnsiStripped as _;
 
 use crate::{
 	chat_ui::{
-		self, AuthPromptKind, ChatAuth, ChatAuthEvent, ChatUiExit, ChatUiSession, ResumeChoice,
+		self, AuthPromptKind, ChatAuth, ChatAuthCommand, ChatAuthEvent, ChatUiSession, ResumeChoice,
 	},
 	cli::ChatArgs,
 };
@@ -108,6 +108,22 @@ pub enum ChatError {
 	/// A tool schema could not be encoded for the turn protocol.
 	#[error("could not encode tool schema")]
 	ToolSchema(#[source] serde_json::Error),
+	/// The requested model selector names a catalog route, not a model.
+	#[error("`{selector}` is a route id, not a model{hint}")]
+	ModelSelectorIsRoute {
+		/// Selector supplied by the caller.
+		selector: Str,
+		/// Preformatted candidate-model hint, or empty.
+		hint:     Str,
+	},
+	/// The requested model selector matches no catalog model or alias.
+	#[error("unknown model `{selector}`{suggestions}")]
+	UnknownModel {
+		/// Selector supplied by the caller.
+		selector:    Str,
+		/// Preformatted nearest-key hint, or empty.
+		suggestions: Str,
+	},
 	/// The session-scoped eval parent bridge could not be bound.
 	#[error("eval session bridge failed: {0}")]
 	EvalBridge(Str),
@@ -162,24 +178,30 @@ pub(crate) struct ChatAuthWorker {
 
 impl ChatAuthWorker {
 	pub(crate) fn start(registry: InferenceRegistry) -> Self {
-		let (request_tx, request_rx) = flume::bounded(1);
-		let (answer_tx, answer_rx) = flume::bounded(1);
+		let (command_tx, command_rx) = flume::unbounded();
 		let (event_tx, event_rx) = flume::unbounded();
 		let active = Arc::new(AtomicBool::new(false));
 		let worker_active = Arc::clone(&active);
 		let task = tokio::spawn(async move {
-			while let Ok(provider) = request_rx.recv_async().await {
+			while let Ok(command) = command_rx.recv_async().await {
+				let ChatAuthCommand::Start(provider) = command else {
+					continue;
+				};
 				let reset = AuthActivity(Arc::clone(&worker_active));
-				let result = run_chat_login(&registry, provider, &event_tx, &answer_rx).await;
+				let result = run_chat_login(&registry, provider, &event_tx, &command_rx).await;
+				drain_auth_commands(&command_rx);
 				drop(reset);
 				let event = match result {
 					Ok(message) => ChatAuthEvent::Complete(message),
-					Err(error) => ChatAuthEvent::Failed(error),
+					Err(ChatLoginFailure::CredentialStorageLocked) => {
+						ChatAuthEvent::CredentialStorageLocked
+					},
+					Err(ChatLoginFailure::Message(error)) => ChatAuthEvent::Failed(error),
 				};
 				let _ = event_tx.send(event);
 			}
 		});
-		Self { ui: ChatAuth::new(request_tx, answer_tx, event_rx, active), task: Some(task) }
+		Self { ui: ChatAuth::new(command_tx, event_rx, active), task: Some(task) }
 	}
 
 	/// Returns the UI-facing handle for the worker.
@@ -211,6 +233,16 @@ impl Drop for AuthActivity {
 	}
 }
 
+enum ChatLoginFailure {
+	CredentialStorageLocked,
+	Message(Str),
+}
+
+impl From<Str> for ChatLoginFailure {
+	fn from(message: Str) -> Self {
+		Self::Message(message)
+	}
+}
 fn auth_error_message(error: &omp_llm_inference::Error) -> Str {
 	let detail = match error.detail_ref() {
 		Some(ErrorDetail::Provider { sanitized_message }) => Some(sanitized_message.as_str()),
@@ -229,19 +261,24 @@ fn auth_error_message(error: &omp_llm_inference::Error) -> Str {
 fn chat_login_failure(
 	provider: &omp_llm_catalog::ProviderId,
 	error: &omp_llm_inference::Error,
-) -> Str {
-	fmts!(
-		"Authentication failed for provider `{provider}`. Use `/login {provider}` to try again. {}",
-		auth_error_message(error)
-	)
+) -> ChatLoginFailure {
+	if error.kind == ErrorKind::CredentialStorageUnavailable {
+		ChatLoginFailure::CredentialStorageLocked
+	} else {
+		ChatLoginFailure::Message(fmts!(
+			"Authentication failed for provider `{provider}`. Use `/login {provider}` to try again. \
+			 {}",
+			auth_error_message(error)
+		))
+	}
 }
 
 async fn run_chat_login(
 	registry: &InferenceRegistry,
 	provider: Str,
 	events: &flume::Sender<ChatAuthEvent>,
-	answers: &flume::Receiver<AuthInput>,
-) -> Result<Str, Str> {
+	commands: &flume::Receiver<ChatAuthCommand>,
+) -> Result<Str, ChatLoginFailure> {
 	let provider = omp_llm_catalog::ProviderId::from(provider);
 	let planner = Router::new(registry.clone(), Duration::from_secs(30));
 	let meta = CallMeta {
@@ -257,68 +294,153 @@ async fn run_chat_login(
 		.await
 		.map_err(|error| chat_login_failure(&provider, &error))?;
 	let AuthAnswer::Session(session) = answer else {
-		return Err(fmts!(
-			"Provider `{provider}` did not start an interactive login. Use `/login {provider}` to \
-			 try again."
-		));
+		return Err(
+			fmts!(
+				"Provider `{provider}` did not start an interactive login. Use `/login {provider}` to \
+				 try again."
+			)
+			.into(),
+		);
 	};
-	while let Ok(event) = session.events.recv_async().await {
-		let event = event.map_err(|error| chat_login_failure(&provider, &error))?;
-		match event {
-			AuthEvent::OpenUrl(url) => {
-				events
-					.send(ChatAuthEvent::Url(url))
-					.map_err(|_| Str::new_static("chat authentication view closed"))?;
-			},
-			AuthEvent::ShowDeviceCode { code, verification_url } => {
-				events
-					.send(ChatAuthEvent::DeviceCode {
-						code: Str::from(code.expose_secret()),
-						url:  verification_url,
-					})
-					.map_err(|_| Str::new_static("chat authentication view closed"))?;
-			},
-			AuthEvent::Prompt(prompt) => {
-				let kind = match prompt.input {
-					InferenceAuthPromptKind::ApiKey => AuthPromptKind::ApiKey,
-					InferenceAuthPromptKind::AuthorizationCode => AuthPromptKind::AuthorizationCode,
-					InferenceAuthPromptKind::SessionToken => AuthPromptKind::SessionToken,
-					InferenceAuthPromptKind::PlainText => AuthPromptKind::PlainText,
-					InferenceAuthPromptKind::OptionalSecret => AuthPromptKind::OptionalSecret,
-					InferenceAuthPromptKind::Confirmation => AuthPromptKind::Confirmation,
-				};
-				events
-					.send(ChatAuthEvent::Prompt { message: prompt.message, kind })
-					.map_err(|_| Str::new_static("chat authentication view closed"))?;
-				let input = answers
-					.recv_async()
-					.await
-					.map_err(|_| Str::new_static("chat authentication view closed"))?;
-				session
-					.responses
-					.send_async(AuthResponse { session: session.id.clone(), input })
-					.await
+	let mut awaiting_prompt = false;
+	loop {
+		tokio::select! {
+			event = session.events.recv_async() => {
+				let event = event
 					.map_err(|_| {
 						fmts!(
-							"Authentication provider `{provider}` stopped accepting input. Use `/login \
-							 {provider}` to try again."
+							"Authentication for provider `{provider}` ended without completing. Use \
+							 `/login {provider}` to try again."
 						)
-					})?;
+					})?
+					.map_err(|error| chat_login_failure(&provider, &error))?;
+				match event {
+					AuthEvent::OpenUrl(url) => {
+						events
+							.send(ChatAuthEvent::Url(url))
+							.map_err(|_| Str::new_static("chat authentication view closed"))?;
+					},
+					AuthEvent::ShowDeviceCode { code, verification_url } => {
+						events
+							.send(ChatAuthEvent::DeviceCode {
+								code: Str::from(code.expose_secret()),
+								url:  verification_url,
+							})
+							.map_err(|_| Str::new_static("chat authentication view closed"))?;
+					},
+					AuthEvent::Prompt(prompt) => {
+						let kind = match prompt.input {
+							InferenceAuthPromptKind::ApiKey => AuthPromptKind::ApiKey,
+							InferenceAuthPromptKind::AuthorizationCode => {
+								AuthPromptKind::AuthorizationCode
+							},
+							InferenceAuthPromptKind::SessionToken => AuthPromptKind::SessionToken,
+							InferenceAuthPromptKind::PlainText => AuthPromptKind::PlainText,
+							InferenceAuthPromptKind::OptionalSecret => AuthPromptKind::OptionalSecret,
+							InferenceAuthPromptKind::Confirmation => AuthPromptKind::Confirmation,
+						};
+						events
+							.send(ChatAuthEvent::Prompt { message: prompt.message, kind })
+							.map_err(|_| Str::new_static("chat authentication view closed"))?;
+						awaiting_prompt = true;
+					},
+					AuthEvent::Waiting => {
+						events
+							.send(ChatAuthEvent::Notice(fmts!(
+								"Waiting for `{provider}` authorization…"
+							)))
+							.map_err(|_| Str::new_static("chat authentication view closed"))?;
+					},
+					AuthEvent::Complete(account) => {
+						return Ok(fmts!(
+							"Authenticated `{}` for `{}`.",
+							account.account,
+							account.provider
+						));
+					},
+				}
 			},
-			AuthEvent::Waiting => {
-				events
-					.send(ChatAuthEvent::Notice(fmts!("Waiting for `{provider}` authorization…")))
-					.map_err(|_| Str::new_static("chat authentication view closed"))?;
-			},
-			AuthEvent::Complete(account) => {
-				return Ok(fmts!("Authenticated `{}` for `{}`.", account.account, account.provider));
+			command = commands.recv_async() => match command {
+				Ok(ChatAuthCommand::Cancel) => {
+					send_auth_response(&session, AuthInput::Cancel, &provider).await?;
+					return Err(
+						fmts!("Authentication for provider `{provider}` was cancelled.").into()
+					);
+				},
+				Ok(ChatAuthCommand::Answer(input)) if awaiting_prompt => {
+					send_auth_response(&session, input, &provider).await?;
+					awaiting_prompt = false;
+				},
+				Ok(ChatAuthCommand::Answer(_) | ChatAuthCommand::Start(_)) => {},
+				Err(_) => {
+					return Err(Str::new_static("chat authentication view closed").into());
+				},
 			},
 		}
 	}
-	Err(fmts!(
-		"Authentication for provider `{provider}` ended without completing. Use `/login {provider}` \
-		 to try again."
-	))
+}
+
+async fn send_auth_response(
+	session: &omp_llm_inference::answer::AuthSession,
+	input: AuthInput,
+	provider: &omp_llm_catalog::ProviderId,
+) -> Result<(), Str> {
+	session
+		.responses
+		.send_async(AuthResponse { session: session.id.clone(), input })
+		.await
+		.map_err(|_| {
+			fmts!(
+				"Authentication provider `{provider}` stopped accepting input. Use `/login \
+				 {provider}` to try again."
+			)
+		})
+}
+
+fn drain_auth_commands(commands: &flume::Receiver<ChatAuthCommand>) {
+	while commands.try_recv().is_ok() {}
+}
+
+#[cfg(test)]
+mod auth_worker_tests {
+	use super::*;
+
+	#[test]
+	fn credential_storage_failure_keeps_typed_ui_signal() {
+		let error = omp_llm_inference::Error::new(
+			ErrorKind::CredentialStorageUnavailable,
+			omp_llm_inference::error::ErrorPhase::Authentication,
+			omp_llm_inference::error::RetryAction::Never,
+			omp_llm_inference::receipt::ExecutionReceipt::default(),
+		);
+		let provider = omp_llm_catalog::ProviderId::from("test-provider");
+		assert!(matches!(
+			chat_login_failure(&provider, &error),
+			ChatLoginFailure::CredentialStorageLocked
+		));
+	}
+
+	#[test]
+	fn completed_flow_drops_answers_before_the_next_login() {
+		let (commands, receiver) = flume::unbounded();
+		commands
+			.send(ChatAuthCommand::Answer(AuthInput::DeviceConfirmed))
+			.expect("stale prompt answer");
+		commands
+			.send(ChatAuthCommand::Cancel)
+			.expect("stale cancellation");
+
+		drain_auth_commands(&receiver);
+		assert!(matches!(receiver.try_recv(), Err(flume::TryRecvError::Empty)));
+
+		commands
+			.send(ChatAuthCommand::Start(Str::from("next-provider")))
+			.expect("next login");
+		assert!(matches!(
+			receiver.try_recv(),
+			Ok(ChatAuthCommand::Start(provider)) if provider == "next-provider"
+		));
+	}
 }
 
 #[derive(Clone)]
@@ -558,13 +680,14 @@ impl<C: TurnClient + Clone + 'static> crate::envd::eval::ParentSessionHost for C
 #[cfg(unix)]
 #[expect(
 	clippy::future_not_send,
-	reason = "the interactive chat future owns a thread-confined omp_tui::App"
+	reason = "the interactive chat future owns a thread-confined terminal scene"
 )]
 pub async fn run(args: ChatArgs) -> miette::Result<()> {
 	use miette::{Context as _, IntoDiagnostic as _};
-	let root = canonical_project(&args.project).into_diagnostic()?;
+	let root = canonical_project(&args.project).map_err(|e| miette::miette!(e))?;
 	let data_dir = crate::cli::data_dir(None)?;
-	let catalog = omp_llm_catalog::snapshot::Catalog::try_embedded().into_diagnostic()?;
+	let catalog =
+		omp_llm_catalog::snapshot::Catalog::try_embedded().map_err(|e| miette::miette!(e))?;
 	let model = match args.model.clone().or_else(|| {
 		crate::settings::Settings::load(&data_dir)
 			.default_model
@@ -575,10 +698,14 @@ pub async fn run(args: ChatArgs) -> miette::Result<()> {
 			.await?
 			.ok_or_else(|| miette::miette!("no model configured — run `omp` again to finish setup"))?,
 	};
-	let state_dir = crate::project_state::directory(&data_dir, &root).into_diagnostic()?;
+	let model = resolve_model_selector(catalog, model.as_str()).map_err(|e| miette::miette!(e))?;
+	let state_dir =
+		crate::project_state::directory(&data_dir, &root).map_err(|e| miette::miette!(e))?;
 	let sessions_dir = state_dir.join("sessions");
-	ensure_state_directory(&state_dir).into_diagnostic()?;
-	ensure_state_directory(&sessions_dir).into_diagnostic()?;
+	ensure_state_directory(&state_dir).map_err(|e| miette::miette!(e))?;
+	ensure_state_directory(&sessions_dir).map_err(|e| miette::miette!(e))?;
+	let resume_requested = args.resume.is_some();
+	let resume = args.resume.clone();
 	let env_socket = crate::project_state::environment_socket(&state_dir);
 	let document_socket = crate::project_state::document_socket(&state_dir);
 	let environment = crate::envd::ProjectEnvironment::connect_or_start(
@@ -589,17 +716,17 @@ pub async fn run(args: ChatArgs) -> miette::Result<()> {
 		args.py_eval,
 	)
 	.await
-	.into_diagnostic()?;
+	.map_err(|e| miette::miette!(e))?;
 	let env = environment.client().clone();
 	let eval_bridge = environment.eval_bridge();
 	let eval_control = environment.eval_control();
 
 	let registry = environment.registry();
-	let session = open_session(&root, &sessions_dir, args.resume.as_ref(), registry.as_ref())
-		.into_diagnostic()?;
+	let session = open_session(&root, &sessions_dir, resume.as_ref(), registry.as_ref())
+		.map_err(|e| miette::miette!(e))?;
 	let snapshot =
 		agent_snapshot(model.as_str(), catalog, &root, &session.id, Arc::clone(&registry))
-			.into_diagnostic()?;
+			.map_err(|e| miette::miette!(e))?;
 	let state = AgentState::new(snapshot);
 
 	if let Some(endpoint) = args.gateway {
@@ -617,18 +744,19 @@ pub async fn run(args: ChatArgs) -> miette::Result<()> {
 			None,
 			data_dir.clone(),
 			ChatScope { catalog, root: &root, sessions_dir: &sessions_dir, registry },
+			!resume_requested,
 		)
 		.await
-		.into_diagnostic()?;
+		.map_err(|e| miette::miette!(e))?;
 	} else {
 		let (inference_registry, inference) =
 			crate::daemon::production_inference(&data_dir, Arc::clone(&registry))
 				.await
-				.into_diagnostic()?;
+				.map_err(|e| miette::miette!(e))?;
 		let client = InProcTurnClient::new(inference)
 			.await
 			.map_err(ChatError::from)
-			.into_diagnostic()?;
+			.map_err(|e| miette::miette!(e))?;
 		run_ui(
 			client,
 			env,
@@ -639,9 +767,10 @@ pub async fn run(args: ChatArgs) -> miette::Result<()> {
 			Some(inference_registry),
 			data_dir,
 			ChatScope { catalog, root: &root, sessions_dir: &sessions_dir, registry },
+			!resume_requested,
 		)
 		.await
-		.into_diagnostic()?;
+		.map_err(|e| miette::miette!(e))?;
 	}
 
 	// `environment` is deliberately retained until the agent and UI have been
@@ -660,7 +789,7 @@ pub async fn run(_args: ChatArgs) -> miette::Result<()> {
 
 #[expect(
 	clippy::future_not_send,
-	reason = "omp_tui::App is deliberately confined to its terminal event-loop thread"
+	reason = "the designed terminal host remains confined to its event-loop thread"
 )]
 async fn run_ui<C: TurnClient + Clone + 'static>(
 	client: C,
@@ -672,6 +801,7 @@ async fn run_ui<C: TurnClient + Clone + 'static>(
 	auth_registry: Option<InferenceRegistry>,
 	data_dir: PathBuf,
 	scope: ChatScope<'_>,
+	mut welcome: bool,
 ) -> Result<(), ChatError> {
 	let parent = Arc::new(ChatParentHost::new(
 		client.clone(),
@@ -685,7 +815,6 @@ async fn run_ui<C: TurnClient + Clone + 'static>(
 		.bind_parent(parent.clone())
 		.map_err(|error| ChatError::EvalBridge(Str::from(error.to_string())))?;
 	let auth = auth_registry.map(ChatAuthWorker::start);
-	let mut app = chat_ui::start().await.map_err(ChatError::Ui)?;
 	loop {
 		parent.update(state.clone(), session.id.clone());
 		let session_root = scope.sessions_dir.join(session.id.as_str());
@@ -712,24 +841,38 @@ async fn run_ui<C: TurnClient + Clone + 'static>(
 		let current_id = id.clone();
 		let agent = Agent::new(client.clone(), env.clone(), state.clone(), journal, PROMPT_CAPS);
 		let exit = chat_ui::run(
-			&mut app,
 			agent,
 			ChatUiSession { session_id: id, initial_items, context_window },
 			auth.as_ref().map(|worker| &worker.ui),
 			data_dir.clone(),
 			|| {
-				resume_choices(scope.sessions_dir, scope.root, &current_id).map_err(anyhow::Error::from)
+				resume_choices(scope.sessions_dir, scope.root, Some(&current_id))
+					.map_err(anyhow::Error::from)
 			},
+			welcome,
 		)
 		.await
 		.map_err(ChatError::Ui)?;
+		welcome = false;
 		match exit {
-			ChatUiExit::Quit => break,
-			ChatUiExit::Resume(id) => {
+			omp_chat_ui::host::HostExit::Quit => break,
+			omp_chat_ui::host::HostExit::Resume(id) => {
 				eval_control.request_reset();
 				let model = state.snapshot().turn.params.model.clone();
 				session =
 					open_session(scope.root, scope.sessions_dir, Some(&id), scope.registry.as_ref())?;
+				state = AgentState::new(agent_snapshot(
+					&model,
+					scope.catalog,
+					scope.root,
+					&session.id,
+					Arc::clone(&scope.registry),
+				)?);
+			},
+			omp_chat_ui::host::HostExit::NewSession => {
+				eval_control.request_reset();
+				let model = state.snapshot().turn.params.model.clone();
+				session = open_session(scope.root, scope.sessions_dir, None, scope.registry.as_ref())?;
 				state = AgentState::new(agent_snapshot(
 					&model,
 					scope.catalog,
@@ -765,6 +908,80 @@ fn model_rejects_tools(catalog: &omp_llm_catalog::snapshot::Catalog, model: &str
 		.or_else(|| catalog.resolve_alias(model))
 		.and_then(|spec| spec.capabilities.chat.as_ref())
 		.is_some_and(|chat| chat.tools.is_unsupported())
+}
+
+/// Canonicalizes a `--model` selector to its exact catalog key.
+///
+/// Exact keys pass through; declared catalog aliases resolve to their target
+/// key; role selectors (`@…`) defer to downstream resolution. A route id or
+/// unknown selector fails fast instead of surfacing as a mid-turn
+/// `TargetNotFound`.
+fn resolve_model_selector(
+	catalog: &omp_llm_catalog::snapshot::Catalog,
+	selector: &str,
+) -> Result<Str, ChatError> {
+	if selector.starts_with('@')
+		|| catalog
+			.model(&omp_llm_catalog::ModelKey::from(selector))
+			.is_some()
+	{
+		return Ok(selector.into());
+	}
+	if let Some(spec) = catalog.resolve_alias(selector) {
+		return Ok(spec.key.as_str().into());
+	}
+	if let Some(route) = catalog.route(&omp_llm_catalog::RouteId::from(selector)) {
+		// Models bound to this exact route, else every model the provider serves.
+		let mut candidates: Vec<&str> = catalog
+			.models()
+			.iter()
+			.filter(|spec| spec.routes.contains(&route.id))
+			.map(|spec| spec.key.as_str())
+			.collect();
+		if candidates.is_empty() {
+			candidates = catalog
+				.models()
+				.iter()
+				.filter(|spec| {
+					spec.routes.iter().any(|id| {
+						catalog
+							.route(id)
+							.is_some_and(|def| def.provider == route.provider)
+					})
+				})
+				.map(|spec| spec.key.as_str())
+				.collect();
+		}
+		let hint = match candidates.as_slice() {
+			[] => Str::new_static(""),
+			[only] => fmts!("; use `--model {only}`"),
+			many => fmts!(
+				"; provider `{}` serves: {}{}",
+				route.provider,
+				many[..many.len().min(4)].join(", "),
+				if many.len() > 4 { ", …" } else { "" },
+			),
+		};
+		return Err(ChatError::ModelSelectorIsRoute { selector: selector.into(), hint });
+	}
+	let needle = selector
+		.rsplit('/')
+		.next()
+		.unwrap_or(selector)
+		.to_ascii_lowercase();
+	let mut near = catalog
+		.models()
+		.iter()
+		.filter(|spec| !needle.is_empty() && spec.key.as_str().to_ascii_lowercase().contains(&needle))
+		.map(|spec| spec.key.as_str())
+		.take(4)
+		.peekable();
+	let suggestions = if near.peek().is_some() {
+		fmts!("; closest: {}", near.collect::<Vec<_>>().join(", "))
+	} else {
+		Str::new_static("")
+	};
+	Err(ChatError::UnknownModel { selector: selector.into(), suggestions })
 }
 
 fn canonical_project(path: &Path) -> Result<PathBuf, ChatError> {
@@ -819,7 +1036,7 @@ fn open_session(
 fn resume_choices(
 	sessions_dir: &Path,
 	root: &Path,
-	current_id: &Str,
+	current_id: Option<&Str>,
 ) -> Result<Vec<ResumeChoice>, ChatError> {
 	let entries = std::fs::read_dir(sessions_dir)
 		.map_err(|source| ChatError::ProjectState { path: sessions_dir.to_owned(), source })?;
@@ -853,7 +1070,7 @@ fn resume_choices(
 			.unwrap_or(UNIX_EPOCH);
 		let age = relative_time(modified);
 		let label = label.unwrap_or_else(|| Str::new_static("Untitled session"));
-		let detail = if &id == current_id {
+		let detail = if current_id.is_some_and(|current| current == &id) {
 			fmts!("current · {age} · {id}")
 		} else {
 			fmts!("{age} · {id}")
@@ -1036,6 +1253,50 @@ mod tests {
 
 	use super::*;
 
+	#[test]
+	fn model_selector_resolution_covers_keys_aliases_routes_and_unknowns() {
+		let catalog = omp_llm_catalog::snapshot::Catalog::try_embedded().expect("embedded catalog");
+		assert_eq!(
+			resolve_model_selector(catalog, "apple-intelligence/apple-intelligence")
+				.expect("exact key resolves")
+				.as_str(),
+			"apple-intelligence/apple-intelligence",
+		);
+		assert_eq!(
+			resolve_model_selector(catalog, "@smol")
+				.expect("role selector passes through")
+				.as_str(),
+			"@smol",
+		);
+
+		// A route serving exactly one model recommends that model.
+		let unique = resolve_model_selector(catalog, "apple-intelligence/primary").unwrap_err();
+		let ChatError::ModelSelectorIsRoute { hint, .. } = &unique else {
+			panic!("expected route error, got {unique}");
+		};
+		assert_eq!(hint.as_str(), "; use `--model apple-intelligence/apple-intelligence`");
+
+		// A route shared by a multi-model provider must not recommend one
+		// arbitrary model.
+		let shared = resolve_model_selector(catalog, "agnes-plan/primary").unwrap_err();
+		let ChatError::ModelSelectorIsRoute { hint, .. } = &shared else {
+			panic!("expected route error, got {shared}");
+		};
+		assert!(
+			hint.starts_with("; provider `agnes-plan` serves: "),
+			"shared route hint lists candidates: {hint}",
+		);
+
+		let unknown = resolve_model_selector(catalog, "apple/apple-intelligence").unwrap_err();
+		let ChatError::UnknownModel { suggestions, .. } = &unknown else {
+			panic!("expected unknown-model error, got {unknown}");
+		};
+		assert!(
+			suggestions.contains("apple-intelligence/apple-intelligence"),
+			"suggestions name the canonical key: {suggestions}",
+		);
+	}
+
 	#[derive(Clone)]
 	struct ScriptedParentClient {
 		outcomes: Arc<Mutex<VecDeque<inference_pb::Outcome>>>,
@@ -1155,7 +1416,9 @@ mod tests {
 		.status(Some(401))
 		.code(Str::from("invalid_grant"))
 		.detail(ErrorDetail::provider(Str::from("device authorization expired")));
-		let message = chat_login_failure(&provider, &error);
+		let ChatLoginFailure::Message(message) = chat_login_failure(&provider, &error) else {
+			panic!("an authentication error is a plain login failure message");
+		};
 		assert!(message.contains("provider `kimi-code`"));
 		assert!(message.contains("`/login kimi-code`"));
 		assert!(message.contains("device authorization expired"));
@@ -1231,7 +1494,7 @@ mod tests {
 			Some("\u{1b}[31mRenamed\u{1b}[0m\nignored"),
 		);
 
-		let choices = resume_choices(&sessions_dir, &root, &titled_id).expect("list sessions");
+		let choices = resume_choices(&sessions_dir, &root, Some(&titled_id)).expect("list sessions");
 		assert_eq!(choices.len(), 2);
 		let prompt = choices
 			.iter()

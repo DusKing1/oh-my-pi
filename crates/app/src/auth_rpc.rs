@@ -284,7 +284,7 @@ impl pb::auth_server::Auth for AuthRpc {
 			})
 			.await
 			.map_err(inference_status)?;
-		Ok(Response::new(pb::GetUsageResponse { reports: vec![usage_report(report)] }))
+		Ok(Response::new(pb::GetUsageResponse { reports: vec![usage_report(*report)] }))
 	}
 
 	async fn put_aws_credential(

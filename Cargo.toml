@@ -111,6 +111,7 @@ num-bigint = "0.4"
 num-traits = "0.2"
 omp-agent = { path = "crates/agent", version = "0.1.0" }
 omp-app = { path = "crates/app", version = "0.1.0" }
+omp-chat-ui = { path = "crates/chat-ui", version = "0.1.0" }
 omp-ar = { path = "crates/ar", version = "0.1.0" }
 omp-ast = { path = "crates/ast", version = "0.1.0" }
 omp-core = { path = "crates/core", version = "0.1.0" }

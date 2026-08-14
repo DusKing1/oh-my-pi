@@ -5024,6 +5024,7 @@ dependencies = [
  "nix 0.31.3",
  "omp-agent",
  "omp-ar",
+ "omp-chat-ui",
  "omp-core",
  "omp-docserver",
  "omp-env",
@@ -5149,6 +5150,18 @@ dependencies = [
  "tree-sitter-xml",
  "tree-sitter-yaml",
  "tree-sitter-zig",
+]
+
+[[package]]
+name = "omp-chat-ui"
+version = "0.1.0"
+dependencies = [
+ "flume",
+ "omp-core",
+ "omp-tui",
+ "smallvec 2.0.0-alpha.12",
+ "tokio",
+ "xutf",
 ]
 
 [[package]]
@@ -5281,6 +5294,7 @@ dependencies = [
  "flume",
  "fontdb",
  "objc2-app-kit 0.3.2",
+ "omp-chat-ui",
  "omp-core",
  "omp-tui",
  "parking_lot",
@@ -5686,6 +5700,7 @@ dependencies = [
  "layout-rs",
  "mermaid-text",
  "nix 0.31.3",
+ "omp-chat-ui",
  "omp-core",
  "omp-macros",
  "parking_lot",

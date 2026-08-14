@@ -1,42 +1,29 @@
-//! The chat demo hosted in a GPU window: the terminal example's scene
-//! modules verbatim (shared via `#[path]`, the gallery's pattern), driven
-//! by `omp-gui` instead of the terminal host.
+//! The designed chat scene hosted in a GPU window.
 //!
 //! Run: `cargo run -p omp-gui --example chat`
 //! Shots: `cargo run -p omp-gui --example chat -- --shot welcome|chat|picker
 //! OUT.png`
 
-#[path = "../../tui/examples/chat/commands.rs"]
-mod commands;
-#[allow(
-	dead_code,
-	reason = "stable_rows/damage serve the terminal host's scrollback commits; the GUI scrolls the \
-	          retained document"
-)]
-#[path = "../../tui/examples/chat/demo.rs"]
-mod demo;
-#[path = "../../tui/examples/chat/picker.rs"]
-mod picker;
-#[path = "../../tui/examples/chat/sidebar.rs"]
-mod sidebar;
-#[path = "../../tui/examples/chat/welcome.rs"]
-mod welcome;
+use std::{
+	sync::{
+		Arc,
+		atomic::{AtomicU64, Ordering},
+	},
+	time::{Duration, Instant},
+};
 
-use std::time::{Duration, Instant};
-
+use flume::{Receiver, Sender};
+use omp_chat_ui::{
+	BackendEvent, Chat, ChatKey, CommandPalette, GitFacts, Intent, ModelPicker, ModelRow,
+	PaletteAction, PaletteEntry, PaletteEvent, PickerEvent, SessionRow, Sidebar, StatusFacts,
+	Welcome, WelcomeEvent,
+};
+use omp_core::Str;
 use omp_gui::{Effect, HostConfig, Scene, SceneFrame};
 use omp_tui::{
 	Frame, Graphics, Key, Layer, Mouse, MouseReport, Size, UiContext, paste::ClipboardRead,
 };
 use smallvec::SmallVec;
-
-use crate::{
-	commands::{CommandPalette, PaletteAction, PaletteEvent},
-	demo::{Demo, DemoKey},
-	picker::{MODELS, ModelPicker, PickerEvent},
-	sidebar::Sidebar,
-	welcome::Welcome,
-};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
@@ -56,14 +43,15 @@ fn main() {
 	);
 }
 
-/// The chat application as one host-agnostic scene: welcome card, then the
-/// chat transcript with its rail and overlays — the terminal host's routing,
-/// minus terminal plumbing (alt-screen staging, scrollback commits).
 struct ChatScene {
 	ctx:      UiContext,
 	started:  Instant,
 	phase:    Phase,
 	viewport: Size,
+	events:   Receiver<BackendEvent>,
+	intents:  Sender<Intent>,
+	models:   Vec<ModelRow>,
+	current:  usize,
 }
 
 enum Phase {
@@ -72,27 +60,24 @@ enum Phase {
 }
 
 struct ChatState {
-	demo:          Demo,
-	sidebar:       Sidebar,
-	overlay:       Option<Overlay>,
-	current_model: usize,
-	/// Last painted document height, for document-space mouse translation.
-	doc_rows:      u16,
-	/// Mid-gesture resize: paint cheap previews until the settle lands.
-	preview_size:  Option<Size>,
-	preview:       Frame,
+	chat:         Chat,
+	sidebar:      Sidebar,
+	overlay:      Option<Overlay>,
+	doc_rows:     u16,
+	preview_size: Option<Size>,
+	preview:      Frame,
 }
 
 impl ChatState {
-	fn new(ctx: &UiContext, viewport: Size) -> Self {
-		let sidebar = Sidebar::new(MODELS[0].name, ctx);
-		let mut demo = Demo::new(ctx);
-		demo.set_right_inset(sidebar.reserved(viewport));
+	fn new(ctx: &UiContext, viewport: Size, facts: &StatusFacts) -> Self {
+		let sidebar = Sidebar::new(facts, ctx);
+		let mut chat = Chat::new(ctx);
+		chat.set_status(facts.clone());
+		chat.set_right_inset(sidebar.reserved(viewport));
 		Self {
-			demo,
+			chat,
 			sidebar,
 			overlay: None,
-			current_model: 0,
 			doc_rows: 0,
 			preview_size: None,
 			preview: Frame::new(Size::new(0, 0)),
@@ -100,123 +85,164 @@ impl ChatState {
 	}
 }
 
-impl ChatScene {
-	fn new(ctx: &UiContext) -> Self {
-		Self {
-			ctx:      ctx.clone(),
-			started:  Instant::now(),
-			phase:    Phase::Welcome(Box::new(Welcome::new(ctx.charset))),
-			viewport: Size::new(0, 0),
-		}
-	}
-}
-
-/// The modal overlay holding pointer and keyboard ownership.
 enum Overlay {
-	Picker(ModelPicker),
+	Models(ModelPicker),
 	Palette(CommandPalette),
 }
 
-/// One routed overlay outcome, unified across overlay kinds.
 enum OverlayEvent {
-	/// Input handled; the overlay stays open.
 	Consumed,
-	/// Dismissed without effect.
 	Close,
-	/// The picker chose a model.
 	Pick(usize),
-	/// The palette activated an entry.
-	Run(PaletteAction),
-}
-
-impl From<PickerEvent> for OverlayEvent {
-	fn from(event: PickerEvent) -> Self {
-		match event {
-			PickerEvent::Consumed => Self::Consumed,
-			PickerEvent::Close => Self::Close,
-			PickerEvent::Pick(index) => Self::Pick(index),
-		}
-	}
-}
-
-impl From<PaletteEvent> for OverlayEvent {
-	fn from(event: PaletteEvent) -> Self {
-		match event {
-			PaletteEvent::Consumed => Self::Consumed,
-			PaletteEvent::Close => Self::Close,
-			PaletteEvent::Run(action) => Self::Run(action),
-		}
-	}
+	Palette(PaletteAction),
 }
 
 impl Overlay {
 	fn handle_key(&mut self, key: Key) -> OverlayEvent {
 		match self {
-			Self::Picker(picker) => picker.handle_key(key).into(),
-			Self::Palette(palette) => palette.handle_key(key).into(),
+			Self::Models(picker) => picker_event(picker.handle_key(key)),
+			Self::Palette(palette) => palette_event(palette.handle_key(key)),
 		}
 	}
 
 	fn handle_paste(&mut self, text: &str) -> OverlayEvent {
 		match self {
-			Self::Picker(picker) => picker.handle_paste(text).into(),
-			Self::Palette(palette) => palette.handle_paste(text).into(),
+			Self::Models(picker) => picker_event(picker.handle_paste(text)),
+			Self::Palette(palette) => palette_event(palette.handle_paste(text)),
 		}
 	}
 
 	fn handle_mouse(&mut self, col: u16, row: u16, kind: Mouse, viewport: Size) -> OverlayEvent {
 		match self {
-			Self::Picker(picker) => picker.handle_mouse(col, row, kind, viewport).into(),
-			Self::Palette(palette) => palette.handle_mouse(col, row, kind, viewport).into(),
+			Self::Models(picker) => picker_event(picker.handle_mouse(col, row, kind, viewport)),
+			Self::Palette(palette) => palette_event(palette.handle_mouse(col, row, kind, viewport)),
 		}
 	}
 
 	fn layer(&mut self, viewport: Size) -> Layer<'_> {
 		match self {
-			Self::Picker(picker) => picker.layer(viewport),
+			Self::Models(picker) => picker.layer(viewport),
 			Self::Palette(palette) => palette.layer(viewport),
 		}
 	}
 }
 
-/// Applies one routed [`OverlayEvent`]; returns the host effect.
-fn apply_overlay_event(
-	state: &mut ChatState,
-	event: OverlayEvent,
-	ctx: &UiContext,
-	viewport: Size,
-) -> Effect {
+fn picker_event(event: PickerEvent) -> OverlayEvent {
 	match event {
-		OverlayEvent::Consumed => Effect::Consumed,
-		OverlayEvent::Close => {
-			state.overlay = None;
-			Effect::Consumed
-		},
-		OverlayEvent::Pick(index) => {
-			state.current_model = index;
-			state.demo.set_model(MODELS[index].name);
-			state.sidebar.set_model(MODELS[index].name);
-			state.overlay = None;
-			Effect::Consumed
-		},
-		OverlayEvent::Run(action) => match action {
-			PaletteAction::SwitchModel => {
-				state.overlay = Some(Overlay::Picker(ModelPicker::open(state.current_model, ctx)));
-				Effect::Consumed
-			},
-			PaletteAction::ToggleSidebar => {
-				state.sidebar.toggle();
-				state.demo.set_right_inset(state.sidebar.reserved(viewport));
+		PickerEvent::Consumed => OverlayEvent::Consumed,
+		PickerEvent::Close => OverlayEvent::Close,
+		PickerEvent::Pick(index) => OverlayEvent::Pick(index),
+	}
+}
+
+fn palette_event(event: PaletteEvent) -> OverlayEvent {
+	match event {
+		PaletteEvent::Consumed => OverlayEvent::Consumed,
+		PaletteEvent::Close => OverlayEvent::Close,
+		PaletteEvent::Run(action) => OverlayEvent::Palette(action),
+	}
+}
+
+impl ChatScene {
+	fn new(ctx: &UiContext) -> Self {
+		let (events, intents) = mock_backend();
+		Self {
+			ctx: ctx.clone(),
+			started: Instant::now(),
+			phase: Phase::Welcome(Box::new(Welcome::new(ctx, Vec::new()))),
+			viewport: Size::new(0, 0),
+			events,
+			intents,
+			models: Vec::new(),
+			current: 0,
+		}
+	}
+
+	fn drain_backend(&mut self) {
+		while let Ok(event) = self.events.try_recv() {
+			match event {
+				BackendEvent::OpenModelPicker { rows, current } => {
+					self.models = rows;
+					self.current = current.min(self.models.len().saturating_sub(1));
+					if let Phase::Chat(state) = &mut self.phase
+						&& !self.models.is_empty()
+					{
+						state.overlay = Some(Overlay::Models(ModelPicker::open(
+							&self.models,
+							self.current,
+							&self.ctx,
+						)));
+					}
+				},
+				BackendEvent::ModelsUpdated { rows, current } => {
+					self.models = rows;
+					self.current = current.min(self.models.len().saturating_sub(1));
+				},
+				BackendEvent::Sessions(rows) => {
+					if let Phase::Welcome(welcome) = &mut self.phase {
+						welcome.set_sessions(rows);
+					}
+				},
+				BackendEvent::Status(facts) => {
+					if let Phase::Chat(state) = &mut self.phase {
+						state.sidebar.set_status(&facts);
+						state.chat.set_status(facts);
+					}
+				},
+				event => {
+					if let Phase::Chat(state) = &mut self.phase {
+						let _ = state.chat.apply_backend_event(event);
+					}
+				},
+			}
+		}
+	}
+
+	fn apply_overlay(&mut self, event: OverlayEvent) -> Effect {
+		let Phase::Chat(state) = &mut self.phase else {
+			return Effect::Ignored;
+		};
+		match event {
+			OverlayEvent::Consumed => Effect::Consumed,
+			OverlayEvent::Close => {
 				state.overlay = None;
 				Effect::Consumed
 			},
-			PaletteAction::Quit => Effect::Quit,
-			PaletteAction::Insert(text) => {
-				state.demo.handle_paste(&text);
+			OverlayEvent::Pick(index) => {
+				if let Some(model) = self.models.get(index) {
+					self.current = index;
+					let _ = self.intents.send(Intent::SwitchModel(model.key.clone()));
+				}
 				state.overlay = None;
 				Effect::Consumed
 			},
-		},
+			OverlayEvent::Palette(action) => match action {
+				PaletteAction::Intent(intent) => {
+					let quit = matches!(&intent, Intent::Quit);
+					let _ = self.intents.send(intent);
+					state.overlay = None;
+					if quit { Effect::Quit } else { Effect::Consumed }
+				},
+				PaletteAction::OpenModelPicker => {
+					state.overlay =
+						Some(Overlay::Models(ModelPicker::open(&self.models, self.current, &self.ctx)));
+					Effect::Consumed
+				},
+				PaletteAction::ToggleSidebar => {
+					state.sidebar.toggle();
+					state
+						.chat
+						.set_right_inset(state.sidebar.reserved(self.viewport));
+					state.overlay = None;
+					Effect::Consumed
+				},
+				PaletteAction::Insert(text) => {
+					state.chat.set_composer_text(&text);
+					state.overlay = None;
+					Effect::Consumed
+				},
+			},
+		}
 	}
 }
 
@@ -224,36 +250,35 @@ impl Scene for ChatScene {
 	fn resize(&mut self, viewport: Size, settled: bool) {
 		self.viewport = viewport;
 		if let Phase::Chat(state) = &mut self.phase {
-			state.demo.set_right_inset(state.sidebar.reserved(viewport));
+			state.chat.set_right_inset(state.sidebar.reserved(viewport));
 			state.preview_size = if settled { None } else { Some(viewport) };
 		}
 	}
 
 	fn render(&mut self) -> SceneFrame<'_> {
+		self.drain_backend();
 		let viewport = self.viewport;
-		let elapsed = self.started.elapsed();
 		match &mut self.phase {
 			Phase::Welcome(welcome) => SceneFrame {
-				frame: welcome.render(viewport, elapsed),
+				frame: welcome.render(viewport, self.started.elapsed()),
 				viewport,
-				// The card is fully interactive; no host text selection.
 				editor_rows: viewport.height,
 				layers: SmallVec::new(),
 			},
 			Phase::Chat(state) => {
 				let mut layers = SmallVec::new();
-				if let Some(layer) = state.sidebar.layer(viewport, elapsed) {
+				if let Some(layer) = state.sidebar.layer(viewport, Instant::now()) {
 					layers.push(layer);
 				}
 				if let Some(overlay) = state.overlay.as_mut() {
 					layers.push(overlay.layer(viewport));
 				}
-				let editor_rows = state.demo.composer_rows();
+				let editor_rows = state.chat.composer_rows();
 				if state.preview_size.is_some() {
-					state.preview = state.demo.render_resize_preview(viewport);
+					state.preview = state.chat.render_resize_preview(viewport);
 					SceneFrame { frame: &state.preview, viewport, editor_rows, layers }
 				} else {
-					let rendered = state.demo.render(viewport);
+					let rendered = state.chat.render(viewport);
 					state.doc_rows = rendered.frame.size().height;
 					SceneFrame { frame: rendered.frame, viewport, editor_rows, layers }
 				}
@@ -262,65 +287,73 @@ impl Scene for ChatScene {
 	}
 
 	fn key(&mut self, key: Key) -> Effect {
-		if matches!(self.phase, Phase::Welcome(_)) {
-			return match key {
-				Key::Enter => {
-					self.phase = Phase::Chat(Box::new(ChatState::new(&self.ctx, self.viewport)));
+		if let Phase::Welcome(welcome) = &mut self.phase {
+			return match welcome.handle_key(key) {
+				WelcomeEvent::Consumed => Effect::Consumed,
+				WelcomeEvent::NewSession => {
+					let _ = self.intents.send(Intent::NewSession);
+					let facts = mock_status("Claude Sonnet", false);
+					self.phase = Phase::Chat(Box::new(ChatState::new(&self.ctx, self.viewport, &facts)));
 					Effect::Consumed
 				},
-				Key::Esc | Key::Ctrl('c') => Effect::Quit,
-				_ => Effect::Ignored,
+				WelcomeEvent::Resume(id) => {
+					let _ = self.intents.send(Intent::Resume(Some(id)));
+					let facts = mock_status("Claude Sonnet", false);
+					self.phase = Phase::Chat(Box::new(ChatState::new(&self.ctx, self.viewport, &facts)));
+					Effect::Consumed
+				},
+				WelcomeEvent::Quit => Effect::Quit,
 			};
 		}
 		let Phase::Chat(state) = &mut self.phase else {
 			return Effect::Ignored;
 		};
 		if state.overlay.is_some() {
-			if key == Key::Ctrl('c') {
-				return Effect::Quit;
-			}
 			let event = state
 				.overlay
 				.as_mut()
-				.expect("overlay checked above")
+				.expect("overlay present")
 				.handle_key(key);
-			return apply_overlay_event(state, event, &self.ctx, self.viewport);
+			return self.apply_overlay(event);
 		}
 		if key == Key::Ctrl('b') {
 			state.sidebar.toggle();
 			state
-				.demo
+				.chat
 				.set_right_inset(state.sidebar.reserved(self.viewport));
 			return Effect::Consumed;
 		}
 		if key == Key::Ctrl('k') {
-			state.overlay = Some(Overlay::Palette(CommandPalette::open(&self.ctx)));
+			state.overlay = Some(Overlay::Palette(CommandPalette::open(palette_entries(), &self.ctx)));
 			return Effect::Consumed;
 		}
 		if state.sidebar.focused() {
-			if key == Key::Ctrl('c') {
-				return Effect::Quit;
-			}
 			state.sidebar.handle_key(key);
 			return Effect::Consumed;
 		}
 		if key == Key::Ctrl('p') || key == Key::Alt('p') {
-			state.overlay = Some(Overlay::Picker(ModelPicker::open(state.current_model, &self.ctx)));
+			state.overlay =
+				Some(Overlay::Models(ModelPicker::open(&self.models, self.current, &self.ctx)));
 			return Effect::Consumed;
 		}
 		if let Some(scope) = ClipboardRead::for_key(key) {
 			return Effect::Clipboard(scope);
 		}
-		let effect = match state.demo.handle_key(key) {
-			DemoKey::Consumed => Effect::Consumed,
-			DemoKey::Ignored => Effect::Ignored,
-			DemoKey::Quit => Effect::Quit,
-		};
-		if state.demo.take_switch_request() {
-			state.overlay = Some(Overlay::Picker(ModelPicker::open(state.current_model, &self.ctx)));
+		if key == Key::Esc && state.chat.is_working() {
+			let _ = self.intents.send(Intent::Abort);
+			return Effect::Consumed;
 		}
-		if let Some(text) = state.demo.take_copied() {
-			// The host writes the clipboard detached off the event loop.
+		let effect = match state.chat.handle_key(key) {
+			ChatKey::Consumed => Effect::Consumed,
+			ChatKey::Ignored => Effect::Ignored,
+			ChatKey::Quit => Effect::Quit,
+		};
+		if let Some((text, attachments, mode)) = state.chat.take_submission() {
+			let _ = self
+				.intents
+				.send(Intent::Submit { text, attachments, mode });
+		}
+		if let Some(text) = state.chat.take_copied() {
 			return Effect::SetClipboard(text);
 		}
 		effect
@@ -338,17 +371,16 @@ impl Scene for ChatScene {
 		};
 		if let Some(overlay) = state.overlay.as_mut() {
 			let event = overlay.handle_mouse(report.col, report.row, report.kind, self.viewport);
-			return apply_overlay_event(state, event, &self.ctx, self.viewport);
+			return self.apply_overlay(event);
 		}
 		if !state
 			.sidebar
 			.handle_mouse(report.col, report.row, report.kind, self.viewport)
 		{
-			// The editor UI expects document-space rows: the live window is
-			// the document tail, offset by the scrollback height.
 			let window_top = state.doc_rows.saturating_sub(self.viewport.height);
-			let doc = MouseReport { row: report.row.saturating_add(window_top), ..report };
-			state.demo.handle_mouse(&doc);
+			state
+				.chat
+				.handle_mouse(&MouseReport { row: report.row.saturating_add(window_top), ..report });
 		}
 		Effect::Consumed
 	}
@@ -359,15 +391,14 @@ impl Scene for ChatScene {
 		};
 		if let Some(overlay) = state.overlay.as_mut() {
 			let event = overlay.handle_paste(text);
-			return apply_overlay_event(state, event, &self.ctx, self.viewport);
+			return self.apply_overlay(event);
 		}
-		if state.sidebar.focused() {
-			return Effect::Consumed;
-		}
-		if raw {
-			state.demo.handle_paste_raw(text);
-		} else {
-			state.demo.handle_paste(text);
+		if !state.sidebar.focused() {
+			if raw {
+				state.chat.handle_paste_raw(text);
+			} else {
+				state.chat.handle_paste(text);
+			}
 		}
 		Effect::Consumed
 	}
@@ -377,6 +408,162 @@ impl Scene for ChatScene {
 	}
 }
 
+fn palette_entries() -> Vec<PaletteEntry> {
+	vec![
+		PaletteEntry::new("Switch model", "Choose a model", PaletteAction::OpenModelPicker)
+			.key("Ctrl+P"),
+		PaletteEntry::new("Toggle sidebar", "Show session facts", PaletteAction::ToggleSidebar)
+			.key("Ctrl+B"),
+		PaletteEntry::new("Help", "Show controls", PaletteAction::Intent(Intent::Help)),
+		PaletteEntry::new("Quit", "Leave chat", PaletteAction::Intent(Intent::Quit)),
+	]
+}
+
+fn mock_backend() -> (Receiver<BackendEvent>, Sender<Intent>) {
+	let (event_tx, event_rx) = flume::unbounded();
+	let (intent_tx, intent_rx) = flume::unbounded();
+	std::thread::spawn(move || run_mock(event_tx, intent_rx));
+	(event_rx, intent_tx)
+}
+
+fn run_mock(events: Sender<BackendEvent>, intents: Receiver<Intent>) {
+	let models = mock_models();
+	let generation = Arc::new(AtomicU64::new(0));
+	let mut current = 0;
+	let _ = events.send(BackendEvent::Sessions(mock_sessions()));
+	let _ = events.send(BackendEvent::ModelsUpdated { rows: models.clone(), current });
+	while let Ok(intent) = intents.recv() {
+		match intent {
+			Intent::Submit { text, attachments, mode: _ } => {
+				let turn = generation.fetch_add(1, Ordering::SeqCst) + 1;
+				let _ = events.send(BackendEvent::UserReplayed {
+					text:  Str::from(text),
+					chips: attachments
+						.iter()
+						.enumerate()
+						.map(|(i, _)| Str::from(format!("attachment {}", i + 1)))
+						.collect(),
+				});
+				let _ = events.send(BackendEvent::Status(mock_status(&models[current].name, true)));
+				let id = Str::from(format!("assistant-{turn}"));
+				let _ = events.send(BackendEvent::AssistantBegin { id: id.clone() });
+				for text in ["Inspecting the scene… ", "preserving stable rows… ", "done."] {
+					if generation.load(Ordering::SeqCst) != turn {
+						break;
+					}
+					let _ = events.send(BackendEvent::AssistantDelta {
+						id:   id.clone(),
+						text: Str::new_static(text),
+					});
+					std::thread::sleep(Duration::from_millis(120));
+				}
+				let tool = Str::from(format!("tool-{turn}"));
+				if generation.load(Ordering::SeqCst) == turn {
+					let _ = events.send(BackendEvent::ToolStarted {
+						id:    tool.clone(),
+						name:  Str::new_static("shell"),
+						title: Str::new_static("Inspect chat scene"),
+					});
+					let _ = events.send(BackendEvent::ToolOutput {
+						id:    tool.clone(),
+						chunk: Str::new_static("checking damage ranges\n"),
+					});
+					let _ = events.send(BackendEvent::ToolFinished {
+						id:      tool,
+						ok:      true,
+						summary: vec![Str::new_static("Host seam verified")],
+					});
+				}
+				if generation.load(Ordering::SeqCst) == turn {
+					let _ = events.send(BackendEvent::AssistantEnd { id });
+					let _ = events.send(BackendEvent::Ack { interrupted: false });
+					let _ = events.send(BackendEvent::Status(mock_status(&models[current].name, false)));
+				}
+			},
+			Intent::Abort => {
+				generation.fetch_add(1, Ordering::SeqCst);
+				let _ = events.send(BackendEvent::Ack { interrupted: true });
+				let _ = events.send(BackendEvent::Status(mock_status(&models[current].name, false)));
+			},
+			Intent::SwitchModel(key) => {
+				if let Some(index) = models.iter().position(|row| row.key == key) {
+					current = index;
+				}
+				let _ = events.send(BackendEvent::Status(mock_status(&models[current].name, false)));
+			},
+			Intent::NewSession => {
+				let _ = events.send(BackendEvent::HistoryCleared);
+			},
+			Intent::Resume(_) => {
+				let _ = events.send(BackendEvent::UserReplayed {
+					text:  Str::new_static("Continue the previous session."),
+					chips: Vec::new(),
+				});
+			},
+			Intent::Help => {
+				let _ = events.send(BackendEvent::Notice(Str::new_static(
+					"Ctrl+P models · Ctrl+K commands · Ctrl+B sidebar",
+				)));
+			},
+			Intent::Login(_)
+			| Intent::AuthAnswer { .. }
+			| Intent::AuthCancel
+			| Intent::RewindRequest
+			| Intent::Rewind { .. } => {},
+			Intent::Quit => break,
+		}
+	}
+}
+
+fn mock_models() -> Vec<ModelRow> {
+	[
+		("anthropic/claude-sonnet", "Claude Sonnet", "anthropic", "Anthropic"),
+		("openai/gpt-5", "GPT-5", "openai", "OpenAI"),
+		("google/gemini-pro", "Gemini Pro", "google", "Google"),
+	]
+	.into_iter()
+	.map(|(key, name, provider_id, provider)| ModelRow {
+		key:         Str::from(key),
+		name:        Str::from(name),
+		provider_id: Str::from(provider_id),
+		provider:    Str::from(provider),
+		context:     Some(200_000),
+		input_mtok:  Some(3.0),
+		output_mtok: Some(15.0),
+	})
+	.collect()
+}
+
+fn mock_sessions() -> Vec<SessionRow> {
+	[
+		("one", "Optimize custom status widget rendering", "NOW"),
+		("two", "Check Unicode character display", "01m"),
+		("three", "Add cursor shift", "02m"),
+	]
+	.into_iter()
+	.map(|(id, label, detail)| SessionRow {
+		id:     Str::from(id),
+		label:  Str::from(label),
+		detail: Str::from(detail),
+	})
+	.collect()
+}
+
+fn mock_status(model: &str, working: bool) -> StatusFacts {
+	StatusFacts {
+		model: Str::from(model),
+		working,
+		turn_started: working.then(Instant::now),
+		context_tokens: 391_000,
+		context_window: Some(1_000_000),
+		cost_nanos: 8_650_000_000,
+		queued: 0,
+		jobs: usize::from(working),
+		attempt: 0,
+		dropped: 0,
+		git: Some(GitFacts { branch: Str::new_static("main"), dirty: 5, staged: 9 }),
+	}
+}
 /// Renders one scripted scene to a PNG without a window, for pixel-level
 /// verification (`--shot welcome|chat|picker OUT.png`).
 fn shot(name: &str, out: &str) {
@@ -425,6 +612,8 @@ fn shot(name: &str, out: &str) {
 		_ => Duration::from_millis(5200),
 	};
 	if name != "welcome" {
+		scene.key(Key::Enter);
+		scene.paste("Show the designed chat scene", false);
 		scene.key(Key::Enter);
 	}
 	std::thread::sleep(wait);

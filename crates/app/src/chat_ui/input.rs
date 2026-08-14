@@ -5,13 +5,18 @@ use omp_tui::Command;
 use super::now_ms;
 
 /// Metadata shared by slash-command completion and `/help`.
-struct CommandSpec {
-	name:        &'static str,
-	description: &'static str,
-	usage:       &'static str,
+pub struct CommandSpec {
+	/// Command token without the leading slash.
+	pub(crate) name:        &'static str,
+	/// Human-readable completion and help text.
+	pub(crate) description: &'static str,
+	/// Optional argument hint appended by help and completion.
+	pub(crate) usage:       &'static str,
 }
 
-const COMMANDS: &[CommandSpec] = &[
+/// Canonical slash-command vocabulary shared by completion, help, and the
+/// command palette.
+pub const COMMANDS: &[CommandSpec] = &[
 	CommandSpec {
 		name:        "help",
 		description: "Show commands and keyboard controls",
@@ -37,7 +42,7 @@ const COMMANDS: &[CommandSpec] = &[
 ];
 
 /// Slash commands offered by the chat composer's completion palette.
-pub(crate) fn commands() -> Vec<Command> {
+pub fn commands() -> Vec<Command> {
 	COMMANDS
 		.iter()
 		.map(|spec| {
@@ -53,7 +58,7 @@ pub(crate) fn commands() -> Vec<Command> {
 
 /// Renders the discoverable slash-command reference from the completion
 /// vocabulary.
-pub(crate) fn help_text() -> String {
+pub fn help_text() -> String {
 	let mut help = String::from("**Commands**\n");
 	for spec in COMMANDS {
 		help.push_str("- `/");
@@ -119,7 +124,7 @@ pub fn parse_input(text: &str) -> Result<ChatCommand, InputError> {
 
 	// A command token never contains a second `/`: an expanded attachment
 	// payload like `/tmp/pic.png describe this` is a message, not a command.
-	let first = text.trim().split_whitespace().next().unwrap_or_default();
+	let first = text.split_whitespace().next().unwrap_or_default();
 	if text.starts_with('/') && !first[1..].contains('/') {
 		let text = text.trim();
 		if let Some(rest) = text.strip_prefix("/model ") {

@@ -192,9 +192,21 @@ impl InferenceRpc {
 		pb::ListModelsResponse { models, cursor: Some(self.cursor()), roles: Default::default() }
 	}
 
+	/// Resolves a model selector to a routing target.
+	///
+	/// Exact catalog keys pass through; declared catalog aliases canonicalize
+	/// to their target key. Anything else stays verbatim so the router reports
+	/// the typed `TargetNotFound`.
 	fn target(&self, selector: &str, operation: OperationKind) -> Result<Target, Status> {
 		if !selector.is_empty() {
-			return Ok(Target::Model(ModelKey::from(selector)));
+			let key = ModelKey::from(selector);
+			let catalog = self.registry.catalog();
+			if catalog.model(&key).is_none()
+				&& let Some(spec) = catalog.resolve_alias(selector)
+			{
+				return Ok(Target::Model(spec.key.clone()));
+			}
+			return Ok(Target::Model(key));
 		}
 		self
 			.registry
@@ -1197,7 +1209,7 @@ impl pb::inference_server::Inference for InferenceRpc {
 		let target = self.management_target(provider.as_ref(), OperationKind::Usage)?;
 		let mut client = self.client(target, rpc_request_id("usage"));
 		let answer = client.execute(operation).await.map_err(inference_status)?;
-		Ok(Response::new(usage_response(answer)))
+		Ok(Response::new(usage_response(*answer)))
 	}
 
 	async fn native(
@@ -1429,13 +1441,15 @@ fn inference_status(error: Error) -> Status {
 		ErrorKind::SessionConflict | ErrorKind::StalePlan => Status::aborted(message),
 		ErrorKind::RouteUnavailable
 		| ErrorKind::LocalModelUnavailable
-		| ErrorKind::CapabilityUnknown => Status::failed_precondition(message),
+		| ErrorKind::CapabilityUnknown
+		| ErrorKind::CredentialStorageUnavailable => Status::failed_precondition(message),
 		_ => Status::internal(message),
 	}
 }
 fn inference_turn_error(error: Error) -> pb::TurnEvent {
 	let kind = match error.kind {
 		ErrorKind::Authentication
+		| ErrorKind::CredentialStorageUnavailable
 		| ErrorKind::Authorization
 		| ErrorKind::AccountDisabled
 		| ErrorKind::PaymentRequired => pb::turn_error::Kind::Auth,

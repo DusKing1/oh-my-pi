@@ -43,6 +43,7 @@ libc.workspace = true
 miette = { workspace = true }
 omp-agent.workspace = true
 omp-ar = { workspace = true }
+omp-chat-ui.workspace = true
 omp-core.workspace = true
 omp-docserver.workspace = true
 omp-env.workspace = true
