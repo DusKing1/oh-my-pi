@@ -45,10 +45,9 @@ pub(crate) struct ProjectEnvironment {
 }
 
 struct ProjectLifecycle {
-	shutdown:   Option<CancellationToken>,
-	_tasks:     Vec<tokio::task::JoinHandle<()>>,
-	_server:    Arc<EnvServer>,
-	_docserver: Option<tokio::process::Child>,
+	shutdown: Option<CancellationToken>,
+	_tasks:   Vec<tokio::task::JoinHandle<()>>,
+	_server:  Arc<EnvServer>,
 }
 
 impl Drop for ProjectLifecycle {
@@ -76,7 +75,7 @@ impl ProjectEnvironment {
 				hello(&owner_probe).await?;
 				bridge.abort();
 				let worker_config = worker_config(py_eval)?;
-				let (server, docserver) = EnvServer::open_project(
+				let server = EnvServer::open_project(
 					root,
 					state_dir,
 					docserver_socket,
@@ -94,12 +93,8 @@ impl ProjectEnvironment {
 					in_process_server.serve_in_process(transport).await;
 				});
 				hello(&client).await?;
-				let lifecycle = ProjectLifecycle {
-					shutdown:   None,
-					_tasks:     vec![in_process],
-					_server:    server,
-					_docserver: docserver,
-				};
+				let lifecycle =
+					ProjectLifecycle { shutdown: None, _tasks: vec![in_process], _server: server };
 				Ok(Self { client, registry, eval_bridge, eval_control, _lifecycle: lifecycle })
 			},
 			Err(EnvdError::Io(error))
@@ -122,7 +117,7 @@ impl ProjectEnvironment {
 		py_eval: bool,
 	) -> Result<Self, EnvdError> {
 		let worker_config = worker_config(py_eval)?;
-		let (server, docserver) =
+		let server =
 			EnvServer::open_project(root, state_dir, docserver_socket, Registry::new(), worker_config)
 				.await?;
 		let server = Arc::new(server);
@@ -142,10 +137,9 @@ impl ProjectEnvironment {
 			let _ = uds_server.serve_uds(&socket, uds_shutdown).await;
 		});
 		let lifecycle = ProjectLifecycle {
-			shutdown:   Some(shutdown),
-			_tasks:     vec![in_process, uds],
-			_server:    server,
-			_docserver: docserver,
+			shutdown: Some(shutdown),
+			_tasks:   vec![in_process, uds],
+			_server:  server,
 		};
 		hello(&client).await?;
 		Ok(Self { client, registry, eval_bridge, eval_control, _lifecycle: lifecycle })

@@ -195,6 +195,28 @@ pub type Result<T = ()> = std::result::Result<T, Error>;
 /// protected by a separate instance lock and created sockets are owner-only.
 /// `SIGINT` or `SIGTERM` starts graceful connection, LSP, and actor shutdown.
 pub async fn run(root: PathBuf, transport: Transport, lsp_config_paths: Vec<PathBuf>) -> Result {
+	run_with_shutdown(root, transport, lsp_config_paths, None).await
+}
+
+/// Serves the document authority until `shutdown` is cancelled.
+///
+/// Environment daemons use this entry point to own the document authority in
+/// process while retaining the same socket transport used by other clients.
+pub async fn serve_until(
+	root: PathBuf,
+	transport: Transport,
+	lsp_config_paths: Vec<PathBuf>,
+	shutdown: CancellationToken,
+) -> Result {
+	run_with_shutdown(root, transport, lsp_config_paths, Some(shutdown)).await
+}
+
+async fn run_with_shutdown(
+	root: PathBuf,
+	transport: Transport,
+	lsp_config_paths: Vec<PathBuf>,
+	shutdown: Option<CancellationToken>,
+) -> Result {
 	let process_configs = load_lsp_process_configs(&lsp_config_paths)?;
 	let config = ServerConfig::new(root)?;
 	let authority_lock = config.try_lock_authority()?;
@@ -210,9 +232,13 @@ pub async fn run(root: PathBuf, transport: Transport, lsp_config_paths: Vec<Path
 			},
 		}
 	}
-	let serve_result = match transport {
-		Transport::Stdio => serve_stdio(environment.clone()).await,
-		Transport::Socket(path) => serve_socket(environment.clone(), path).await,
+	let serve_result = match (transport, shutdown) {
+		(Transport::Stdio, None) => serve_stdio(environment.clone()).await,
+		(Transport::Stdio, Some(shutdown)) => serve_stdio_until(environment.clone(), shutdown).await,
+		(Transport::Socket(path), None) => serve_socket(environment.clone(), path).await,
+		(Transport::Socket(path), Some(shutdown)) => {
+			serve_socket_until(environment.clone(), path, shutdown).await
+		},
 	};
 	let process_result = stop_lsp_processes(&mut processes).await;
 	if timeout(SHUTDOWN_GRACE, environment.shutdown())
@@ -298,16 +324,21 @@ async fn serve_stdio(environment: Environment) -> Result {
 		let _ = shutdown_signal().await;
 		signal_shutdown.cancel();
 	});
-	let result = serve_io_until(
+	let result = serve_stdio_until(environment, shutdown).await;
+	signal.abort();
+	result
+}
+
+async fn serve_stdio_until(environment: Environment, shutdown: CancellationToken) -> Result {
+	serve_io_until(
 		environment.session(),
 		tokio::io::stdin(),
 		tokio::io::stdout(),
 		ConnectionConfig::default(),
 		shutdown,
 	)
-	.await;
-	signal.abort();
-	result.map_err(Into::into)
+	.await
+	.map_err(Into::into)
 }
 
 #[cfg(unix)]
@@ -370,22 +401,34 @@ fn validate_socket_location(path: &Path, root: &Path) -> Result {
 
 #[cfg(unix)]
 async fn serve_socket(environment: Environment, path: PathBuf) -> Result {
+	let shutdown = CancellationToken::new();
+	let signal_shutdown = shutdown.clone();
+	let signal = tokio::spawn(async move {
+		let _ = shutdown_signal().await;
+		signal_shutdown.cancel();
+	});
+	let result = serve_socket_until(environment, path, shutdown).await;
+	signal.abort();
+	result
+}
+
+#[cfg(unix)]
+async fn serve_socket_until(
+	environment: Environment,
+	path: PathBuf,
+	shutdown: CancellationToken,
+) -> Result {
 	let root = environment
 		.root_uri()
 		.to_file_path()
 		.map_err(|()| Error::NonFileUriRoot)?;
 	validate_socket_location(&path, &root)?;
 	let (listener, socket) = bind_socket(path).await?;
-	let shutdown = CancellationToken::new();
-	let signal = shutdown_signal();
-	tokio::pin!(signal);
 	let mut connections = JoinSet::new();
 
 	loop {
 		tokio::select! {
-			result = &mut signal => {
-				result?;
-				shutdown.cancel();
+			_ = shutdown.cancelled() => {
 				break;
 			},
 			accepted = listener.accept(), if connections.len() < MAX_SOCKET_CONNECTIONS => {
@@ -450,6 +493,15 @@ async fn serve_socket(environment: Environment, path: PathBuf) -> Result {
 
 #[cfg(not(unix))]
 async fn serve_socket(_environment: Environment, _path: PathBuf) -> Result {
+	Err(Error::UnsupportedSocket)
+}
+
+#[cfg(not(unix))]
+async fn serve_socket_until(
+	_environment: Environment,
+	_path: PathBuf,
+	_shutdown: CancellationToken,
+) -> Result {
 	Err(Error::UnsupportedSocket)
 }
 

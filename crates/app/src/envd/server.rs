@@ -3,7 +3,7 @@
 use std::{
 	collections::HashMap,
 	io,
-	path::{Path, PathBuf},
+	path::Path,
 	sync::{
 		Arc,
 		atomic::{AtomicU8, Ordering},
@@ -83,8 +83,8 @@ pub enum EnvdError {
 	/// A spawned environment connection task failed.
 	#[error("environment connection task failed: {0}")]
 	Task(#[from] tokio::task::JoinError),
-	/// The autostarted document server exited before accepting a verified hello.
-	#[error("autostarted document server exited before its hello handshake")]
+	/// The embedded document authority exited before accepting a verified hello.
+	#[error("embedded document authority exited before its hello handshake")]
 	DocserverExited,
 }
 
@@ -119,28 +119,57 @@ pub struct ServerIdentity {
 	pub server_version: Str,
 }
 
+struct DocumentAuthority {
+	shutdown: CancellationToken,
+	task:     Option<tokio::task::JoinHandle<omp_docserver::daemon::Result>>,
+}
+
+impl DocumentAuthority {
+	async fn finished_result(
+		&mut self,
+	) -> Option<Result<omp_docserver::daemon::Result, tokio::task::JoinError>> {
+		if !self.task.as_ref()?.is_finished() {
+			return None;
+		}
+		Some(
+			self
+				.task
+				.take()
+				.expect("finished document authority task")
+				.await,
+		)
+	}
+}
+
+impl Drop for DocumentAuthority {
+	fn drop(&mut self) {
+		self.shutdown.cancel();
+	}
+}
+
 /// Concrete environment host shared by in-process and UDS connections.
 ///
 /// Executors remain env-side beside these resources. The server never passes a
 /// capability/facet trait bundle through a tool signature.
 pub struct EnvServer {
-	identity:     ServerIdentity,
-	_documents:   DocumentHost,
-	exec:         ExecHost,
-	_workspace:   WorkspaceHost,
-	blobs:        BlobHost,
-	registry:     Arc<Registry>,
-	eval_bridge:  Arc<SessionBridgeHost>,
-	eval_control: omp_tools::eval::EvalSessionControl,
-	workers:      Arc<ToolWorkerSupervisor>,
+	identity:            ServerIdentity,
+	_documents:          DocumentHost,
+	_document_authority: Option<DocumentAuthority>,
+	exec:                ExecHost,
+	_workspace:          WorkspaceHost,
+	blobs:               BlobHost,
+	registry:            Arc<Registry>,
+	eval_bridge:         Arc<SessionBridgeHost>,
+	eval_control:        omp_tools::eval::EvalSessionControl,
+	workers:             Arc<ToolWorkerSupervisor>,
 }
 
 impl EnvServer {
-	/// Assembles one server from concrete environment-owned resources.
 	#[must_use]
-	pub(crate) fn new(
+	fn new(
 		identity: ServerIdentity,
 		documents: DocumentHost,
+		document_authority: Option<DocumentAuthority>,
 		exec: ExecHost,
 		workspace: WorkspaceHost,
 		blobs: BlobHost,
@@ -152,6 +181,7 @@ impl EnvServer {
 		Self {
 			identity,
 			_documents: documents,
+			_document_authority: document_authority,
 			exec,
 			_workspace: workspace,
 			blobs,
@@ -211,6 +241,7 @@ impl EnvServer {
 		Ok(Self::new(
 			identity,
 			documents,
+			None,
 			exec,
 			workspace,
 			blobs,
@@ -222,9 +253,6 @@ impl EnvServer {
 	}
 
 	/// Opens project resources through the owner-local document authority.
-	///
-	/// The returned child is present only when this call started the document
-	/// server and must be retained for the lifetime of this environment.
 	#[cfg(unix)]
 	pub(crate) async fn open_project(
 		root: &Path,
@@ -232,10 +260,11 @@ impl EnvServer {
 		docserver_socket: &Path,
 		registry: Registry,
 		worker_config: ToolWorkerConfig,
-	) -> Result<(Self, Option<tokio::process::Child>), EnvdError> {
+	) -> Result<Self, EnvdError> {
 		let workspace = WorkspaceHost::open(root)?;
 		let root = workspace.root().to_path_buf();
-		let (documents, docserver) = connect_or_start_docserver(&root, docserver_socket).await?;
+		let (documents, document_authority) =
+			connect_or_start_docserver(&root, docserver_socket).await?;
 		let hello = documents.hello().clone();
 		let exec = ExecHost::new();
 		let blobs = BlobHost::open(state_dir.join("blobs"))?;
@@ -255,19 +284,17 @@ impl EnvServer {
 			server_epoch:   hello.server_epoch,
 			server_version: Str::from(env!("CARGO_PKG_VERSION")),
 		};
-		Ok((
-			Self::new(
-				identity,
-				documents,
-				exec,
-				workspace,
-				blobs,
-				registry,
-				eval_bridge,
-				eval_control,
-				workers,
-			),
-			docserver,
+		Ok(Self::new(
+			identity,
+			documents,
+			document_authority,
+			exec,
+			workspace,
+			blobs,
+			registry,
+			eval_bridge,
+			eval_control,
+			workers,
 		))
 	}
 
@@ -2647,10 +2674,10 @@ pub async fn run_with_registry(args: EnvdArgs, registry: Registry) -> Result<(),
 			.modules
 			.push(Str::new_static(crate::envd::worker::PY_EVAL_MODULE));
 	}
-	let (server, mut docserver) =
+	let server = Arc::new(
 		EnvServer::open_project(&root, &state_dir, &docserver_socket, registry, worker_config)
-			.await?;
-	let server = Arc::new(server);
+			.await?,
+	);
 	let shutdown = CancellationToken::new();
 	let signal = shutdown.clone();
 	let signal_task = tokio::spawn(async move {
@@ -2670,9 +2697,6 @@ pub async fn run_with_registry(args: EnvdArgs, registry: Registry) -> Result<(),
 	});
 	server.serve_uds(&socket, shutdown).await?;
 	signal_task.abort();
-	if let Some(child) = docserver.as_mut() {
-		let _ = child.kill().await;
-	}
 	Ok(())
 }
 /// Reports the Phase 1 transport limitation on platforms without Unix sockets.
@@ -2688,32 +2712,39 @@ pub async fn run(_args: EnvdArgs) -> Result<(), EnvdError> {
 async fn connect_or_start_docserver(
 	root: &Path,
 	socket: &Path,
-) -> Result<(DocumentHost, Option<tokio::process::Child>), EnvdError> {
+) -> Result<(DocumentHost, Option<DocumentAuthority>), EnvdError> {
 	if let Ok(stream) = tokio::net::UnixStream::connect(socket).await {
 		return Ok((DocumentHost::connect(stream).await?, None));
 	}
 	if let Some(parent) = socket.parent() {
 		ensure_directory(parent)?;
 	}
-	let executable = docserver_executable()?;
-	let mut child = tokio::process::Command::new(executable)
-		.arg("--root")
-		.arg(root)
-		.arg("--socket")
-		.arg(socket)
-		.kill_on_drop(true)
-		.spawn()?;
+
+	let shutdown = CancellationToken::new();
+	let task_shutdown = shutdown.clone();
+	let task_root = root.to_path_buf();
+	let task_socket = socket.to_path_buf();
+	let task = tokio::spawn(async move {
+		omp_docserver::daemon::serve_until(
+			task_root,
+			omp_docserver::daemon::Transport::Socket(task_socket),
+			Vec::new(),
+			task_shutdown,
+		)
+		.await
+	});
+	let mut authority = DocumentAuthority { shutdown, task: Some(task) };
 	let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
 	loop {
-		if child.try_wait()?.is_some() {
-			return Err(EnvdError::DocserverExited);
+		if let Some(result) = authority.finished_result().await {
+			match result? {
+				Ok(()) => return Err(EnvdError::DocserverExited),
+				Err(error) => return Err(EnvdError::Document(Str::from(error.to_string()))),
+			}
 		}
 		if let Ok(stream) = tokio::net::UnixStream::connect(socket).await {
-			match DocumentHost::connect(stream).await {
-				Ok(host) => return Ok((host, Some(child))),
-				Err(error) if tokio::time::Instant::now() >= deadline => return Err(error.into()),
-				Err(_) => {},
-			}
+			let documents = DocumentHost::connect(stream).await?;
+			return Ok((documents, Some(authority)));
 		}
 		if tokio::time::Instant::now() >= deadline {
 			return Err(
@@ -2727,18 +2758,4 @@ async fn connect_or_start_docserver(
 #[cfg(unix)]
 fn ensure_directory(path: &Path) -> io::Result<()> {
 	std::fs::create_dir_all(path)
-}
-
-#[cfg(unix)]
-fn docserver_executable() -> io::Result<PathBuf> {
-	if let Some(path) = std::env::var_os("OMP_DOCSERVER_BIN") {
-		return Ok(PathBuf::from(path));
-	}
-	let current = std::env::current_exe()?;
-	let sibling = current.with_file_name("omp-docserverd");
-	Ok(if sibling.is_file() {
-		sibling
-	} else {
-		PathBuf::from("omp-docserverd")
-	})
 }

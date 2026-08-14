@@ -46,9 +46,7 @@ impl SemVer {
 				components[component] = value;
 				has_digit = true;
 			} else if byte == b'.' {
-				if !has_digit || component == 2 {
-					panic!("expected major.minor or major.minor.patch");
-				}
+				assert!(!(!has_digit || component == 2), "expected major.minor or major.minor.patch");
 				component += 1;
 				has_digit = false;
 			} else {
@@ -57,9 +55,7 @@ impl SemVer {
 			index += 1;
 		}
 
-		if !has_digit || component == 0 {
-			panic!("expected major.minor or major.minor.patch");
-		}
+		assert!(!(!has_digit || component == 0), "expected major.minor or major.minor.patch");
 		Self::new(components[0], components[1], components[2])
 	}
 }
