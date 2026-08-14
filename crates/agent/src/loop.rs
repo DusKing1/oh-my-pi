@@ -38,11 +38,24 @@ const EMPTY_OUTPUT_RETRY_DETAIL: &str =
 /// follow-ups.
 #[derive(Clone, Debug)]
 pub struct AgentRunSummary {
-	/// Authoritative terminal gateway outcome.
-	pub outcome:         Outcome,
-	/// Number of distinct outcomes committed during this run.
+	/// Authoritative terminal gateway outcome of the last committed turn, if any.
+	pub outcome:         Option<Outcome>,
+	/// Committed turn count for this submission.
 	pub committed_turns: u32,
+	/// Whether the submission stopped on a caller abort.
+	pub interrupted:     bool,
 }
+/// A live user message that can be rewound and edited.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RewindTarget {
+	/// Physical event index of the user message.
+	pub event: u64,
+	/// Previous live item event to retain, or the transcript root.
+	pub keep:  Option<u64>,
+	/// Concatenated text content of the user message.
+	pub text:  Str,
+}
+
 
 /// Failure while projecting, submitting, recovering, journaling, or executing
 /// tools.
@@ -80,6 +93,22 @@ pub enum AgentError {
 	/// The configured absolute deadline elapsed.
 	#[error("agent turn deadline elapsed")]
 	Deadline,
+	/// The caller aborted the active submission.
+	#[error("submission interrupted by caller")]
+	Interrupted,
+}
+
+/// Cloneable out-of-band stop signal for the active submission.
+#[derive(Clone, Debug)]
+pub struct AbortHandle {
+	tx: Arc<tokio::sync::watch::Sender<u64>>,
+}
+
+impl AbortHandle {
+	/// Aborts the active submission, if any.
+	pub fn abort(&self) {
+		self.tx.send_modify(|generation| *generation = generation.wrapping_add(1));
+	}
 }
 
 /// Durable agent loop composed from transport-neutral Phase 1 foundations.
@@ -93,6 +122,8 @@ pub struct Agent<C: TurnClient> {
 	mailbox:            Mailbox,
 	jobs:               Arc<JobBoard>,
 	jobs_restored:      bool,
+	abort_tx:           Arc<tokio::sync::watch::Sender<u64>>,
+	abort_rx:           tokio::sync::watch::Receiver<u64>,
 	phase:              AgentPhase,
 	context:            Option<ContextRef>,
 	prompt_hash:        Option<crate::PromptHash>,
@@ -112,6 +143,7 @@ impl<C: TurnClient> Agent<C> {
 		let mailbox = Mailbox::new();
 		let jobs = Arc::new(JobBoard::new(env.clone(), mailbox.sender()));
 		let events = EventBus::new();
+		let (abort_tx, abort_rx) = tokio::sync::watch::channel(0_u64);
 		let mut context = None;
 		let mut prompt_hash = None;
 		let mut prompt_head_events = Vec::new();
@@ -156,6 +188,8 @@ impl<C: TurnClient> Agent<C> {
 			mailbox,
 			jobs,
 			jobs_restored: false,
+			abort_tx: Arc::new(abort_tx),
+			abort_rx,
 			phase: AgentPhase::Idle,
 			context,
 			prompt_hash,
@@ -178,6 +212,11 @@ impl<C: TurnClient> Agent<C> {
 	pub fn mailbox(&self) -> MailboxSender {
 		self.mailbox.sender()
 	}
+	/// Returns a cloneable out-of-band stop signal.
+	pub fn abort_handle(&self) -> AbortHandle {
+		AbortHandle { tx: Arc::clone(&self.abort_tx) }
+	}
+
 
 	/// Returns detached-job settlement state.
 	pub const fn jobs(&self) -> &Arc<JobBoard> {
@@ -188,6 +227,59 @@ impl<C: TurnClient> Agent<C> {
 	pub const fn journal(&self) -> &Journal {
 		&self.journal
 	}
+	/// Rewinds the durable session to a live prefix and returns the fresh projection.
+	pub fn rewind(&mut self, to: Option<u64>) -> Result<Vec<Item>, AgentError> {
+		self.journal.rewind(now_ms(), to)?;
+		self.context = None;
+		self.prompt_hash = None;
+		self.prompt_head_events.clear();
+		self.last_toolset_hash = None;
+		Ok(
+			project_journal(
+				&self.journal.load()?,
+				self.state.snapshot().registry.as_ref(),
+				&self.caps,
+			)?
+			.items,
+		)
+	}
+
+	/// Lists live user messages from oldest to newest for rewind selection.
+	pub fn rewind_targets(&self) -> Result<Vec<RewindTarget>, AgentError> {
+		let events = self.journal.live_item_events()?;
+		let items = self.journal.items_at(&events)?;
+		let mut targets = Vec::new();
+		let mut previous = None;
+		for (event, item) in events.into_iter().zip(items) {
+			let Some(thread::item::Kind::Message(message)) = item.kind.as_ref() else {
+				previous = Some(event);
+				continue;
+			};
+			if message.role != thread::Role::User as i32 {
+				previous = Some(event);
+				continue;
+			}
+			let synthetic = item.props.as_ref().is_some_and(|props| {
+				props.fields.contains_key(omp_tool::TOOL_REV_PROP)
+			});
+			let mut text = String::new();
+			for part in &message.parts {
+				if let Some(thread::part::Kind::Text(part)) = part.kind.as_ref() {
+					text.push_str(part);
+				}
+			}
+			if !synthetic && !text.starts_with("<system-injection>") {
+				targets.push(RewindTarget {
+					event,
+					keep: previous,
+					text: Str::from(text),
+				});
+			}
+			previous = Some(event);
+		}
+		Ok(targets)
+	}
+
 
 	/// Submits caller-authored canonical items and runs every tool follow-up.
 	pub async fn submit(
@@ -207,6 +299,7 @@ impl<C: TurnClient> Agent<C> {
 		items: impl IntoIterator<Item = Item>,
 		root_turn_id: TurnId,
 	) -> Result<AgentRunSummary, AgentError> {
+		self.abort_rx.mark_unchanged();
 		if !self.jobs_restored {
 			for job in self.journal.pending_jobs() {
 				self.jobs.register(job.clone());
@@ -276,6 +369,7 @@ impl<C: TurnClient> Agent<C> {
 			(pending_indexes, root_turn_id)
 		};
 		let mut committed_turns = 0_u32;
+		let mut last_outcome = None;
 		let mut empty_output_retries = if continuing_recovery {
 			u8::try_from(self.journal.trailing_aborts()).unwrap_or(u8::MAX)
 		} else {
@@ -289,6 +383,34 @@ impl<C: TurnClient> Agent<C> {
 				Ok(turn) => {
 					empty_output_retries = 0;
 					turn
+				},
+				Err(AgentError::Interrupted) => {
+					self.journal.abort_turn(
+						now_ms(),
+						turn_id.as_str(),
+						AbortDisposition::Exhausted,
+					)?;
+					self.context = None;
+					self.abort_rx.mark_unchanged();
+					let snapshot = self.state.snapshot();
+					let drained = self
+						.mailbox
+						.drain(DrainPoint::Idle, snapshot.defer_interrupts);
+					let has_producer = drained.iter().any(|interrupt| {
+						matches!(&interrupt.source, crate::InterruptSource::Producer(_))
+					});
+					let next_turn_id = follow_up_id(&turn_id, committed_turns);
+					pending_indexes = self.stage_interrupts(&next_turn_id, drained)?;
+					if has_producer {
+						turn_id = next_turn_id;
+						continue;
+					}
+					self.transition(AgentPhase::Idle);
+					return Ok(AgentRunSummary {
+						outcome: last_outcome,
+						committed_turns,
+						interrupted: true,
+					});
 				},
 				Err(AgentError::Turn(TurnError::Terminal(mut error)))
 					if pb::turn_error::Kind::try_from(error.kind)
@@ -383,6 +505,8 @@ impl<C: TurnClient> Agent<C> {
 					boundary.push(interrupt);
 				}
 				let mut deadline_elapsed = false;
+				let mut aborted = false;
+				let mut abort_rx = self.abort_rx.clone();
 				let results = {
 					let drive = ToolBatch::new(calls).drive_interruptible(
 						snapshot.registry.as_ref(),
@@ -397,6 +521,10 @@ impl<C: TurnClient> Agent<C> {
 							() = wait_deadline(snapshot.deadline), if !deadline_elapsed => {
 								deadline_elapsed = true;
 								interrupt_tx.send_replace(Some(Str::from("agent deadline elapsed")));
+							},
+							_ = abort_rx.changed(), if !aborted => {
+								aborted = true;
+								interrupt_tx.send_replace(Some(Str::new_static("user interrupt")));
 							},
 							received = self.mailbox.wait() => {
 								if received.is_err() { continue; }
@@ -423,11 +551,29 @@ impl<C: TurnClient> Agent<C> {
 				}
 				let next_turn_id = follow_up_id(&turn_id, committed_turns);
 				pending_indexes = self.append_pending(&next_turn_id, next)?;
+				let has_producer = boundary.iter().any(|interrupt| {
+					matches!(&interrupt.source, crate::InterruptSource::Producer(_))
+				});
 				pending_indexes
 					.extend(self.stage_interrupts(&next_turn_id, std::mem::take(&mut boundary))?);
 				if deadline_elapsed {
 					return Err(AgentError::Deadline);
 				}
+				if aborted {
+					self.abort_rx.mark_unchanged();
+					if has_producer {
+						last_outcome = Some(outcome);
+						turn_id = next_turn_id;
+						continue;
+					}
+					self.transition(AgentPhase::Idle);
+					return Ok(AgentRunSummary {
+						outcome: Some(outcome),
+						committed_turns,
+						interrupted: true,
+					});
+				}
+				last_outcome = Some(outcome);
 				turn_id = next_turn_id;
 				continue;
 			}
@@ -441,16 +587,22 @@ impl<C: TurnClient> Agent<C> {
 			if !boundary.is_empty() {
 				let next_turn_id = follow_up_id(&turn_id, committed_turns);
 				pending_indexes = self.stage_interrupts(&next_turn_id, boundary)?;
+				last_outcome = Some(outcome);
 				turn_id = next_turn_id;
 				continue;
 			}
 			if let Some((queued_turn, events)) = self.journal.pending_input_submission() {
 				pending_indexes = events.to_vec();
+				last_outcome = Some(outcome);
 				turn_id = TurnId::new(queued_turn.clone());
 				continue;
 			}
 			self.transition(AgentPhase::Idle);
-			return Ok(AgentRunSummary { outcome, committed_turns });
+			return Ok(AgentRunSummary {
+				outcome: Some(outcome),
+				committed_turns,
+				interrupted: false,
+			});
 		}
 	}
 
@@ -709,6 +861,7 @@ impl<C: TurnClient> Agent<C> {
 				|| matches!(&input, TurnInput::Full(_) if frozen_options.context_id.is_some());
 
 			let session_result = {
+				let mut abort_rx = self.abort_rx.clone();
 				let session = self.drive_session(
 					turn_id.clone(),
 					input,
@@ -720,6 +873,7 @@ impl<C: TurnClient> Agent<C> {
 				tokio::select! {
 					result = &mut session => result,
 					() = wait_deadline(latest.deadline) => return Err(AgentError::Deadline),
+					_ = abort_rx.changed() => return Err(AgentError::Interrupted),
 				}
 			};
 			match session_result {
@@ -1088,11 +1242,11 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-	use std::{collections::VecDeque, sync::Arc};
+	use std::{collections::{BTreeMap, VecDeque}, sync::Arc};
 
 	use bytes::Bytes;
 	use futures::stream;
-	use omp_storage::transcript::{Header, SessionId};
+	use omp_storage::transcript::{Entry, Header, Kind, SessionId};
 	use omp_tool::{Constraint, Rev, ToolSpec};
 	use parking_lot::Mutex;
 
@@ -1100,19 +1254,22 @@ mod tests {
 
 	#[derive(Clone)]
 	struct ScriptedClient {
-		outcomes: Arc<Mutex<VecDeque<Outcome>>>,
-		opened:   Arc<Mutex<Vec<(TurnId, TurnInput, crate::TurnOptions)>>>,
+		scripts: Arc<Mutex<VecDeque<Vec<Result<pb::TurnEvent, TurnError>>>>>,
+		opened:  Arc<Mutex<Vec<(TurnId, TurnInput, crate::TurnOptions)>>>,
 	}
 
 	struct ScriptedSession {
-		events: Vec<Result<pb::TurnEvent, TurnError>>,
+		events: VecDeque<Result<pb::TurnEvent, TurnError>>,
 	}
 
 	impl TurnSession for ScriptedSession {
 		fn events(
 			&mut self,
 		) -> impl futures::Stream<Item = Result<pb::TurnEvent, TurnError>> + Send + Unpin + '_ {
-			stream::iter(std::mem::take(&mut self.events))
+			stream::poll_fn(move |_| match self.events.pop_front() {
+				Some(event) => std::task::Poll::Ready(Some(event)),
+				None => std::task::Poll::Pending,
+			})
 		}
 
 		fn submit(
@@ -1133,17 +1290,158 @@ mod tests {
 			options: &'client crate::TurnOptions,
 		) -> impl Future<Output = Result<Self::Session<'client>, TurnError>> + Send + 'client {
 			self.opened.lock().push((turn_id, input, options.clone()));
-			let outcome = self
-				.outcomes
+			let events = self
+				.scripts
 				.lock()
 				.pop_front()
-				.expect("one outcome per turn");
-			std::future::ready(Ok(ScriptedSession {
-				events: vec![Ok(pb::TurnEvent {
-					event: Some(pb::turn_event::Event::Outcome(outcome)),
-				})],
-			}))
+				.expect("one script per turn");
+			std::future::ready(Ok(ScriptedSession { events: events.into() }))
 		}
+	}
+
+	fn outcome_script(outcome: Outcome) -> Vec<Result<pb::TurnEvent, TurnError>> {
+		vec![Ok(pb::TurnEvent {
+			event: Some(pb::turn_event::Event::Outcome(outcome)),
+		})]
+	}
+
+	fn pending_text_script() -> Vec<Result<pb::TurnEvent, TurnError>> {
+		vec![
+			Ok(pb::TurnEvent {
+				event: Some(pb::turn_event::Event::PartStart(pb::PartStart {
+					index:        0,
+					kind:         pb::part_start::Kind::Text as i32,
+					tool_call_id: String::new(),
+					tool_name:    String::new(),
+				})),
+			}),
+			Ok(pb::TurnEvent {
+				event: Some(pb::turn_event::Event::PartDelta(pb::PartDelta {
+					index: 0,
+					chunk: Bytes::from_static(b"partial"),
+				})),
+			}),
+		]
+	}
+	fn pending_tool_script(identity: &ToolIdentity) -> Vec<Result<pb::TurnEvent, TurnError>> {
+		let call_id = "pending-call";
+		let call = thread::ToolCall {
+			id:        call_id.to_owned(),
+			name:      identity.name.to_string(),
+			args_json: Bytes::from_static(b"{}"),
+			..thread::ToolCall::default()
+		};
+		let item = Item {
+			kind:  Some(thread::item::Kind::ToolCall(call)),
+			props: Some(pb::ValueMap {
+				fields: BTreeMap::from([(omp_tool::TOOL_REV_PROP.to_owned(), pb::Value {
+					kind: Some(pb::value::Kind::String(identity.rev.to_string())),
+				})]),
+			}),
+			..Item::default()
+		};
+		vec![
+			Ok(pb::TurnEvent {
+				event: Some(pb::turn_event::Event::PartStart(pb::PartStart {
+					index:        0,
+					kind:         pb::part_start::Kind::ToolCall as i32,
+					tool_call_id: call_id.to_owned(),
+					tool_name:    identity.name.to_string(),
+				})),
+			}),
+			Ok(pb::TurnEvent {
+				event: Some(pb::turn_event::Event::PartDelta(pb::PartDelta {
+					index: 0,
+					chunk: Bytes::from_static(b"{}"),
+				})),
+			}),
+			Ok(pb::TurnEvent {
+				event: Some(pb::turn_event::Event::PartEnd(pb::PartEnd {
+					index:     0,
+					signature: Bytes::new(),
+				})),
+			}),
+			Ok(pb::TurnEvent {
+				event: Some(pb::turn_event::Event::Outcome(Outcome {
+					output: vec![item],
+					stop: pb::StopReason::StopToolUse as i32,
+					..Outcome::default()
+				})),
+			}),
+		]
+	}
+
+
+	fn message(role: thread::Role, text: &str) -> Item {
+		Item {
+			kind: Some(thread::item::Kind::Message(thread::Message {
+				role: i32::from(role),
+				parts: vec![thread::Part {
+					kind: Some(thread::part::Kind::Text(text.to_owned())),
+				}],
+			})),
+			..Item::default()
+		}
+	}
+
+	fn end_outcome(text: &str) -> Outcome {
+		Outcome {
+			output: vec![message(thread::Role::Assistant, text)],
+			stop: pb::StopReason::StopEndTurn as i32,
+			..Outcome::default()
+		}
+	}
+
+	fn test_journal(name: &str) -> (Journal, std::path::PathBuf) {
+		let path = std::env::temp_dir().join(format!(
+			"omp-agent-loop-{name}-{}-{}.jsonl",
+			std::process::id(),
+			ulid::Ulid::generate()
+		));
+		let journal = Journal::create(&path, &Header {
+			v:       4,
+			id:      SessionId(Str::from(name)),
+			created: 1,
+			cwd:     std::env::temp_dir(),
+		})
+		.expect("create test journal");
+		(journal, path)
+	}
+
+	fn test_caps() -> PromptCaps {
+		PromptCaps { maximum_parts: 16, maximum_text_bytes: 16_384, media: false }
+	}
+
+	async fn wait_for_opened(
+		opened: &Arc<Mutex<Vec<(TurnId, TurnInput, crate::TurnOptions)>>>,
+		count: usize,
+	) {
+		for _ in 0..100 {
+			if opened.lock().len() >= count {
+				return;
+			}
+			tokio::task::yield_now().await;
+		}
+		panic!("scripted turn did not open");
+	}
+
+	fn input_contains_text(input: &TurnInput, expected: &str) -> bool {
+		let items = match input {
+			TurnInput::Full(thread) => thread.items.as_slice(),
+			TurnInput::Delta(_, delta) => delta.append.as_slice(),
+		};
+		items.iter().any(|item| {
+			matches!(
+				item.kind.as_ref(),
+				Some(thread::item::Kind::Message(message))
+					if message.parts.iter().any(|part| {
+						matches!(
+							part.kind.as_ref(),
+							Some(thread::part::Kind::Text(text)) if text == expected
+						)
+					})
+			)
+		})
 	}
 
 	fn worker(name: &str) -> ToolSpec {
@@ -1212,11 +1510,17 @@ mod tests {
 
 		let opened = Arc::new(Mutex::new(Vec::new()));
 		let client = ScriptedClient {
-			outcomes: Arc::new(Mutex::new(VecDeque::from([
-				Outcome { stop: pb::StopReason::StopEndTurn as i32, ..Outcome::default() },
-				Outcome { stop: pb::StopReason::StopEndTurn as i32, ..Outcome::default() },
+			scripts: Arc::new(Mutex::new(VecDeque::from([
+				outcome_script(Outcome {
+					stop: pb::StopReason::StopEndTurn as i32,
+					..Outcome::default()
+				}),
+				outcome_script(Outcome {
+					stop: pb::StopReason::StopEndTurn as i32,
+					..Outcome::default()
+				}),
 			]))),
-			opened:   Arc::clone(&opened),
+			opened:  Arc::clone(&opened),
 		};
 		let (env, _transport) = EnvClient::in_process(1);
 		let mut agent = Agent::new(client, env, state, journal, PromptCaps {
@@ -1252,6 +1556,271 @@ mod tests {
 			vec![Str::from("new")]
 		);
 		drop(opened);
+		drop(agent);
+		std::fs::remove_file(path).expect("remove journal");
+	}
+
+	#[tokio::test]
+	async fn caller_abort_settles_pending_stream_and_allows_follow_up() {
+		let (journal, path) = test_journal("stream-abort");
+		let opened = Arc::new(Mutex::new(Vec::new()));
+		let client = ScriptedClient {
+			scripts: Arc::new(Mutex::new(VecDeque::from([
+				pending_text_script(),
+				outcome_script(end_outcome("after abort")),
+			]))),
+			opened:  Arc::clone(&opened),
+		};
+		let (env, _transport) = EnvClient::in_process(1);
+		let mut agent = Agent::new(
+			client,
+			env,
+			AgentState::new(crate::AgentSnapshot::default()),
+			journal,
+			test_caps(),
+		);
+		let abort = agent.abort_handle();
+		let aborting = async {
+			wait_for_opened(&opened, 1).await;
+			abort.abort();
+		};
+		let (summary, ()) = tokio::join!(
+			agent.submit(
+				[message(thread::Role::User, "before abort")],
+				TurnId::new("abort-turn"),
+			),
+			aborting,
+		);
+		let summary = summary.expect("abort returns a summary");
+		assert!(summary.interrupted);
+		assert!(summary.outcome.is_none());
+		assert_eq!(summary.committed_turns, 0);
+		assert!(agent.journal().pending_turn().is_none());
+		let log = agent.journal().load().expect("load aborted journal");
+		assert!((0..u64::try_from(log.len()).expect("log length fits")).any(|index| {
+			matches!(
+				log.get(index),
+				Some(Entry::Ok(event))
+					if matches!(&event.kind, Kind::TurnAbort(abort) if !abort.recoverable)
+			)
+		}));
+
+		let follow_up = agent
+			.submit(
+				[message(thread::Role::User, "after abort")],
+				TurnId::new("post-abort-turn"),
+			)
+			.await
+			.expect("follow-up submission succeeds");
+		assert!(!follow_up.interrupted);
+		assert!(follow_up.outcome.is_some());
+		drop(agent);
+
+		let reopened = Journal::open(&path).expect("reopen exhausted abort");
+		assert!(reopened.pending_turn().is_none());
+		assert!(reopened.pending_input_submission().is_none());
+		assert!(reopened.recoverable_input_events().is_empty());
+		drop(reopened);
+		std::fs::remove_file(path).expect("remove journal");
+	}
+
+	#[tokio::test]
+	async fn caller_abort_continues_into_queued_producer_input() {
+		let (journal, path) = test_journal("abort-and-send");
+		let opened = Arc::new(Mutex::new(Vec::new()));
+		let client = ScriptedClient {
+			scripts: Arc::new(Mutex::new(VecDeque::from([
+				pending_text_script(),
+				outcome_script(end_outcome("queued answer")),
+			]))),
+			opened:  Arc::clone(&opened),
+		};
+		let (env, _transport) = EnvClient::in_process(1);
+		let mut agent = Agent::new(
+			client,
+			env,
+			AgentState::new(crate::AgentSnapshot::default()),
+			journal,
+			test_caps(),
+		);
+		let abort = agent.abort_handle();
+		let mailbox = agent.mailbox();
+		let interrupting = async {
+			wait_for_opened(&opened, 1).await;
+			mailbox
+				.try_enqueue(crate::Interrupt {
+					class:  crate::InterruptClass::Immediate,
+					item:   message(thread::Role::User, "queued user input"),
+					source: crate::InterruptSource::Producer(Str::from("user")),
+				})
+				.expect("enqueue producer input");
+			abort.abort();
+		};
+		let (summary, ()) = tokio::join!(
+			agent.submit(
+				[message(thread::Role::User, "initial user input")],
+				TurnId::new("interrupt-and-send"),
+			),
+			interrupting,
+		);
+
+		let summary = summary.expect("continued submission succeeds");
+		assert!(!summary.interrupted);
+		assert_eq!(summary.committed_turns, 1);
+		assert!(summary.outcome.is_some());
+		let opened = opened.lock();
+		assert_eq!(opened.len(), 2);
+		assert!(input_contains_text(&opened[1].1, "queued user input"));
+		drop(opened);
+		drop(agent);
+		std::fs::remove_file(path).expect("remove journal");
+	}
+	#[tokio::test]
+	async fn caller_abort_interrupts_tool_batch_and_stages_results() {
+		let (journal, path) = test_journal("batch-abort");
+		let identity = ToolIdentity {
+			name: Str::from("pending"),
+			rev:  Rev { family: Str::from("test"), n: 1 },
+		};
+		let mut registry = ToolRegistry::new();
+		registry
+			.register_worker(worker(identity.name.as_str()))
+			.expect("register pending tool");
+		let registry = Arc::new(registry);
+		let state = AgentState::new(crate::AgentSnapshot {
+			enabled_tools: Arc::from([identity.name.clone()]),
+			registry,
+			..crate::AgentSnapshot::default()
+		});
+		let opened = Arc::new(Mutex::new(Vec::new()));
+		let client = ScriptedClient {
+			scripts: Arc::new(Mutex::new(VecDeque::from([pending_tool_script(&identity)]))),
+			opened,
+		};
+		let (env, transport) = EnvClient::in_process(1);
+		let (requests, responses) = transport.into_parts();
+		let env_task = tokio::spawn(async move {
+			let _responses = responses;
+			while requests.recv_async().await.is_ok() {}
+		});
+		let mut agent = Agent::new(client, env, state, journal, test_caps());
+		let abort = agent.abort_handle();
+		let events = agent.events().subscribe_lossless();
+		let aborting = async {
+			loop {
+				let event = events.recv_async().await.expect("agent event");
+				if matches!(
+					event.as_ref(),
+					AgentEvent::PhaseChanged { to: AgentPhase::ToolBatch, .. }
+				) {
+					abort.abort();
+					break;
+				}
+			}
+		};
+		let (summary, ()) = tokio::join!(
+			agent.submit(
+				[message(thread::Role::User, "run pending tool")],
+				TurnId::new("batch-abort-turn"),
+			),
+			aborting,
+		);
+		let summary = summary.expect("batch abort returns summary");
+		assert!(summary.interrupted);
+		assert_eq!(summary.committed_turns, 1);
+		assert!(summary.outcome.is_some());
+		assert!(agent.journal().pending_turn().is_none());
+		assert!(
+			agent.journal().pending_input_submission().is_some(),
+			"interrupted tool results remain staged"
+		);
+		drop(agent);
+		env_task.abort();
+		std::fs::remove_file(path).expect("remove journal");
+	}
+
+	#[tokio::test]
+	async fn rewind_truncates_projection_and_forces_full_post_rewind_turn() {
+		let (journal, path) = test_journal("rewind");
+		let opened = Arc::new(Mutex::new(Vec::new()));
+		let client = ScriptedClient {
+			scripts: Arc::new(Mutex::new(VecDeque::from([
+				outcome_script(end_outcome("answer one")),
+				outcome_script(end_outcome("answer two")),
+				outcome_script(end_outcome("replacement answer")),
+			]))),
+			opened:  Arc::clone(&opened),
+		};
+		let (env, _transport) = EnvClient::in_process(1);
+		let mut agent = Agent::new(
+			client,
+			env,
+			AgentState::new(crate::AgentSnapshot::default()),
+			journal,
+			test_caps(),
+		);
+		agent
+			.submit(
+				[message(thread::Role::User, "turn one")],
+				TurnId::new("rewind-one"),
+			)
+			.await
+			.expect("first turn");
+		agent
+			.submit(
+				[message(thread::Role::User, "turn two")],
+				TurnId::new("rewind-two"),
+			)
+			.await
+			.expect("second turn");
+		let targets = agent.rewind_targets().expect("list rewind targets");
+		assert_eq!(
+			targets.iter().map(|target| target.text.as_str()).collect::<Vec<_>>(),
+			vec!["turn one", "turn two"]
+		);
+		let second = targets.last().expect("second rewind target").clone();
+		let projected = agent.rewind(second.keep).expect("rewind second turn");
+		assert!(projected.iter().any(|item| {
+			matches!(
+				item.kind.as_ref(),
+				Some(thread::item::Kind::Message(message))
+					if message.parts.iter().any(|part| {
+						matches!(
+							part.kind.as_ref(),
+							Some(thread::part::Kind::Text(text)) if text == "turn one"
+						)
+					})
+			)
+		}));
+		assert!(!projected.iter().any(|item| {
+			matches!(
+				item.kind.as_ref(),
+				Some(thread::item::Kind::Message(message))
+					if message.parts.iter().any(|part| {
+						matches!(
+							part.kind.as_ref(),
+							Some(thread::part::Kind::Text(text)) if text == "turn two"
+						)
+					})
+			)
+		}));
+		agent
+			.submit(
+				[message(thread::Role::User, "replacement")],
+				TurnId::new("rewind-replacement"),
+			)
+			.await
+			.expect("post-rewind turn");
+		assert!(agent.prompt_hash.is_some(), "post-rewind turn re-rendered prompt head");
+		let opened = opened.lock();
+		assert_eq!(opened.len(), 3);
+		assert!(matches!(&opened[2].1, TurnInput::Full(_)));
+		assert!(input_contains_text(&opened[2].1, "turn one"));
+		assert!(input_contains_text(&opened[2].1, "replacement"));
+		drop(opened);
+
+		let cleared = agent.rewind(None).expect("rewind to root");
+		assert!(cleared.is_empty());
 		drop(agent);
 		std::fs::remove_file(path).expect("remove journal");
 	}

@@ -38,7 +38,7 @@ use crate::{
 /// Current document protocol major version.
 pub const PROTOCOL_MAJOR: u32 = 2;
 /// Current document protocol minor version.
-pub const PROTOCOL_MINOR: u32 = 1;
+pub const PROTOCOL_MINOR: u32 = 2;
 /// Default number of completed responses and events buffered per connection.
 pub const DEFAULT_OUTBOUND_FRAMES: usize = 64;
 /// Default number of concurrently executing requests accepted per connection.

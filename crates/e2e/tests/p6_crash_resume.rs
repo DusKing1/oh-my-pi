@@ -944,7 +944,11 @@ async fn replay_child(root: &Path, create: bool, _mutated: bool) {
 			.as_slice(),
 	)
 	.expect("decode first host outcome");
-	assert_eq!(summary.outcome, expected, "RPC replay outcome changed bytes");
+	assert_eq!(
+		summary.outcome.expect("committed outcome"),
+		expected,
+		"RPC replay outcome changed bytes"
+	);
 	let mut replay_accepted = false;
 	while let Ok(event) = events.try_recv() {
 		if let AgentEvent::Turn { turn_id, event } = event.as_ref()
@@ -1075,8 +1079,9 @@ async fn batch_child(root: &Path, create: bool) {
 		panic!("hanging tool batch unexpectedly completed");
 	}
 	let summary = result.expect("recover interrupted batch and proceed");
-	assert_eq!(summary.outcome.provider, "p6-gateway");
-	assert_eq!(summary.outcome.stop(), pb::StopReason::StopEndTurn);
+	let outcome = summary.outcome.expect("committed outcome");
+	assert_eq!(outcome.provider, "p6-gateway");
+	assert_eq!(outcome.stop(), pb::StopReason::StopEndTurn);
 	server_task.abort();
 }
 

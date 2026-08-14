@@ -431,15 +431,15 @@ async fn delta_context_prompt_rewind_preserves_exact_provider_prefixes() {
 		.unwrap_or_else(|error| {
 			panic!("steady turn succeeds: {error:?}; cassette={:?}", cassette_probe.captures())
 		});
+		let outcome = summary.outcome.expect("committed outcome");
 		diagnostic_codes.push(
-			summary
-				.outcome
+			outcome
 				.diagnostics
 				.iter()
 				.map(|value| value.code.clone())
 				.collect::<Vec<_>>(),
 		);
-		revisions.push(summary.outcome.revision.expect("stateful revision"));
+		revisions.push(outcome.revision.expect("stateful revision"));
 	}
 
 	scratch
@@ -456,9 +456,9 @@ async fn delta_context_prompt_rewind_preserves_exact_provider_prefixes() {
 	.await
 	.expect("prompt rewind stays within deadline")
 	.expect("prompt rewind succeeds without conflict");
+	let outcome = fourth.outcome.expect("committed outcome");
 	assert_eq!(
-		fourth
-			.outcome
+		outcome
 			.diagnostics
 			.iter()
 			.filter(|value| value.code == "session_reseed")
@@ -468,14 +468,13 @@ async fn delta_context_prompt_rewind_preserves_exact_provider_prefixes() {
 		"prompt truncation must causally fork and reseed provider history"
 	);
 	diagnostic_codes.push(
-		fourth
-			.outcome
+		outcome
 			.diagnostics
 			.iter()
 			.map(|value| value.code.clone())
 			.collect::<Vec<_>>(),
 	);
-	revisions.push(fourth.outcome.revision.expect("prompt rewind revision"));
+	revisions.push(outcome.revision.expect("prompt rewind revision"));
 
 	let fifth = within(
 		"p5 unchanged registry",
@@ -485,15 +484,15 @@ async fn delta_context_prompt_rewind_preserves_exact_provider_prefixes() {
 	.await
 	.expect("unchanged registry stays within deadline")
 	.expect("unchanged registry turn succeeds");
+	let outcome = fifth.outcome.expect("committed outcome");
 	diagnostic_codes.push(
-		fifth
-			.outcome
+		outcome
 			.diagnostics
 			.iter()
 			.map(|value| value.code.clone())
 			.collect::<Vec<_>>(),
 	);
-	revisions.push(fifth.outcome.revision.expect("unchanged registry revision"));
+	revisions.push(outcome.revision.expect("unchanged registry revision"));
 
 	let sixth = within(
 		"p5 continued stable registry",
@@ -503,17 +502,16 @@ async fn delta_context_prompt_rewind_preserves_exact_provider_prefixes() {
 	.await
 	.expect("continued stable registry stays within deadline")
 	.expect("continued stable registry turn succeeds");
+	let outcome = sixth.outcome.expect("committed outcome");
 	diagnostic_codes.push(
-		sixth
-			.outcome
+		outcome
 			.diagnostics
 			.iter()
 			.map(|value| value.code.clone())
 			.collect::<Vec<_>>(),
 	);
 	revisions.push(
-		sixth
-			.outcome
+		outcome
 			.revision
 			.expect("continued stable registry revision"),
 	);
@@ -525,17 +523,16 @@ async fn delta_context_prompt_rewind_preserves_exact_provider_prefixes() {
 	.await
 	.expect("final stable registry stays within deadline")
 	.expect("final stable registry turn succeeds");
+	let outcome = seventh.outcome.expect("committed outcome");
 	diagnostic_codes.push(
-		seventh
-			.outcome
+		outcome
 			.diagnostics
 			.iter()
 			.map(|value| value.code.clone())
 			.collect::<Vec<_>>(),
 	);
 	revisions.push(
-		seventh
-			.outcome
+		outcome
 			.revision
 			.expect("final stable registry revision"),
 	);

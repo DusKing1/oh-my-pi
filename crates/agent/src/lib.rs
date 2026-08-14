@@ -28,7 +28,7 @@ pub use journal::{
 	AbortDisposition, Journal, JournalError, TurnInputRecord, TurnOptionsRecord, TurnReceipt,
 	TurnStart,
 };
-pub use r#loop::{Agent, AgentError, AgentRunSummary};
+pub use r#loop::{AbortHandle, Agent, AgentError, AgentRunSummary, RewindTarget};
 pub use mailbox::{DrainPoint, Interrupt, InterruptClass, InterruptSource, Mailbox, MailboxSender};
 pub use omp_llm_inference::TurnId;
 pub use omp_proto::{

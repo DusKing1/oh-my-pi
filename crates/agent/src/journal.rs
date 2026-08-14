@@ -109,6 +109,9 @@ pub enum JournalError {
 	/// Canonical recovery-result construction failed.
 	#[error(transparent)]
 	Projection(#[from] crate::ProjectionError),
+	/// Rewind was requested while a durable turn was still pending.
+	#[error("cannot rewind while a turn is pending")]
+	RewindWhilePending,
 }
 
 /// Append-only transcript owner with an in-memory terminal-turn index.
@@ -566,6 +569,16 @@ impl Journal {
 		self.aborted.insert(turn_id, (index, disposition));
 		Ok(index)
 	}
+	/// Moves the live chain point to `to`, or to the transcript root.
+	///
+	/// Rewinding is rejected while a started turn lacks a terminal receipt.
+	pub fn rewind(&mut self, ts: u64, to: Option<u64>) -> Result<u64, JournalError> {
+		if self.pending_turn().is_some() {
+			return Err(JournalError::RewindWhilePending);
+		}
+		Ok(self.writer.append(&Event { ts, kind: Kind::Rewind { to } })?)
+	}
+
 
 	/// Returns the earliest live turn start that lacks a terminal receipt.
 	pub fn pending_turn(&self) -> Option<&TurnStart> {
@@ -1921,4 +1934,39 @@ mod tests {
 		drop(reopened);
 		std::fs::remove_file(path).expect("remove journal");
 	}
+	#[test]
+	fn rewind_rejects_pending_turn() {
+		let path = path("rewind-pending");
+		let mut journal = Journal::create(&path, &header()).expect("create journal");
+		let input = journal
+			.append_turn_input(2, "pending", message("pending input"), None)
+			.expect("stage pending input");
+		journal
+			.start_turn(3, TurnStart {
+				turn_id:            Str::from("pending"),
+				item_events:        vec![input],
+				prompt_hash:        [1; 32],
+				prompt_head_events: Vec::new(),
+				toolset_hash:       [2; 32],
+				enabled_tools:      Vec::new(),
+				sequence_targets:   vec![input],
+				input:              TurnInputRecord::Full {
+					thread: thread_pb::Thread { items: vec![message("pending input")] },
+				},
+				options:            TurnOptionsRecord {
+					context_id: None,
+					params:     pb::ChatParams::default(),
+					executor:   None,
+					props:      None,
+				},
+			})
+			.expect("start pending turn");
+		assert!(matches!(
+			journal.rewind(4, None),
+			Err(JournalError::RewindWhilePending)
+		));
+		drop(journal);
+		std::fs::remove_file(path).expect("remove journal");
+	}
+
 }
