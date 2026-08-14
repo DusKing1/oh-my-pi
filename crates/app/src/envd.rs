@@ -74,33 +74,64 @@ impl ProjectEnvironment {
 		py_eval: bool,
 	) -> Result<Self, EnvdError> {
 		match EnvServer::connect_owner_uds(socket).await {
-			Ok((owner_probe, bridge)) => {
-				let owner_hello = hello(&owner_probe).await?;
-				if crate::build_id::is_stale(crate::build_id::current(), &owner_hello.server_build) {
-					let _ = owner_probe.retire().await;
-					bridge.abort();
-					let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-					loop {
-						match tokio::net::UnixStream::connect(socket).await {
-							Err(error)
-								if matches!(
-									error.kind(),
-									io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-								) =>
-							{
-								return Self::start(root, state_dir, socket, docserver_socket, py_eval)
-									.await;
-							},
-							_ if tokio::time::Instant::now() >= deadline => break,
-							_ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+			Ok((owner_probe, bridge, claim)) => {
+				match hello(&owner_probe).await {
+					Ok(owner_hello)
+						if crate::build_id::is_stale(
+							crate::build_id::current(),
+							&owner_hello.server_build,
+						) =>
+					{
+						let _ = owner_probe.retire().await;
+						bridge.abort();
+						// Give the owner a polite window to release the endpoint
+						// itself before evicting it.
+						let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+						loop {
+							match tokio::net::UnixStream::connect(socket).await {
+								Err(error)
+									if matches!(
+										error.kind(),
+										io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+									) =>
+								{
+									return Self::start(root, state_dir, socket, docserver_socket, py_eval)
+										.await;
+								},
+								_ if tokio::time::Instant::now() >= deadline => break,
+								_ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+							}
 						}
-					}
-					tracing::warn!(
-						socket = %socket.display(),
-						"stale-build environment daemon kept its socket; using an in-process environment"
-					);
-				} else {
-					bridge.abort();
+						if evict_stale_socket(socket, claim).await? {
+							return Self::start(root, state_dir, socket, docserver_socket, py_eval).await;
+						}
+						tracing::warn!(
+							socket = %socket.display(),
+							"another process took over the environment socket; using an in-process environment"
+						);
+					},
+					Ok(_) => bridge.abort(),
+					Err(EnvdError::Client(omp_env::ClientError::Protocol(error))) => {
+						// Owners from before the current schema revision reject the
+						// hello outright, so retirement is unreachable over the
+						// wire. Evict the stale endpoint and take over the path;
+						// the owner keeps its accepted connections until it drains.
+						bridge.abort();
+						tracing::warn!(
+							socket = %socket.display(),
+							code = error.code,
+							message = %error.message,
+							"environment owner rejected the handshake; evicting its stale endpoint"
+						);
+						if evict_stale_socket(socket, claim).await? {
+							return Self::start(root, state_dir, socket, docserver_socket, py_eval).await;
+						}
+						tracing::warn!(
+							socket = %socket.display(),
+							"another process took over the environment socket; using an in-process environment"
+						);
+					},
+					Err(error) => return Err(error),
 				}
 				let worker_config = worker_config(py_eval)?;
 				let server = EnvServer::open_project(
@@ -217,4 +248,100 @@ async fn hello(client: &EnvClient) -> Result<ServerHello, EnvdError> {
 			..ClientHello::default()
 		})
 		.await?)
+}
+
+/// Unlinks a stale owner's endpoint so a current-build listener can bind the
+/// path. Returns whether the path is now claimable.
+///
+/// Only a [`SocketClaim::Held`] endpoint whose device/inode still match the
+/// identity verified at probe time is unlinked: an endpoint that was replaced
+/// at any point (a same-build winner already bound the path) is left
+/// untouched. The evicted owner keeps serving its already-accepted
+/// connections, and its own cleanup compares device/inode before unlinking,
+/// so it cannot remove the successor's socket.
+async fn evict_stale_socket(socket: &Path, claim: server::SocketClaim) -> Result<bool, EnvdError> {
+	use std::os::unix::fs::MetadataExt as _;
+	let server::SocketClaim::Held { dev, ino } = claim else {
+		// Released: the path is already free. Replaced: it belongs to a
+		// concurrent successor and must not be touched.
+		return Ok(claim == server::SocketClaim::Released);
+	};
+	match tokio::fs::symlink_metadata(socket).await {
+		Ok(metadata) if (metadata.dev(), metadata.ino()) == (dev, ino) => {
+			match tokio::fs::remove_file(socket).await {
+				Ok(()) => Ok(true),
+				Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+				Err(error) => Err(error.into()),
+			}
+		},
+		Ok(_) => Ok(false),
+		Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+		Err(error) => Err(error.into()),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::os::unix::fs::MetadataExt as _;
+
+	use super::*;
+	use crate::envd::server::SocketClaim;
+
+	fn held(path: &Path) -> SocketClaim {
+		let metadata = std::fs::symlink_metadata(path).expect("socket metadata");
+		SocketClaim::Held { dev: metadata.dev(), ino: metadata.ino() }
+	}
+
+	#[tokio::test]
+	async fn eviction_unlinks_a_held_endpoint() {
+		let scratch = tempfile::tempdir().expect("scratch directory");
+		let socket = scratch.path().join("env.sock");
+		let _listener = tokio::net::UnixListener::bind(&socket).expect("bind stale endpoint");
+		let claim = held(&socket);
+
+		assert!(evict_stale_socket(&socket, claim).await.expect("evict"));
+		assert_eq!(
+			std::fs::symlink_metadata(&socket)
+				.expect_err("endpoint must be unlinked")
+				.kind(),
+			io::ErrorKind::NotFound
+		);
+	}
+
+	#[tokio::test]
+	async fn eviction_leaves_a_replaced_endpoint_untouched() {
+		let scratch = tempfile::tempdir().expect("scratch directory");
+		let socket = scratch.path().join("env.sock");
+		let stale = tokio::net::UnixListener::bind(&socket).expect("bind stale endpoint");
+		let claim = held(&socket);
+
+		// A concurrent winner replaces the endpoint after the claim was taken.
+		drop(stale);
+		std::fs::remove_file(&socket).expect("unlink stale endpoint");
+		let winner = tokio::net::UnixListener::bind(&socket).expect("bind winner endpoint");
+
+		assert!(!evict_stale_socket(&socket, claim).await.expect("evict"));
+		// The winner's endpoint still accepts connections.
+		let (connected, _) = tokio::join!(tokio::net::UnixStream::connect(&socket), winner.accept());
+		connected.expect("winner endpoint must stay reachable");
+	}
+
+	#[tokio::test]
+	async fn eviction_never_claims_a_replaced_probe() {
+		let scratch = tempfile::tempdir().expect("scratch directory");
+		let socket = scratch.path().join("env.sock");
+		let _winner = tokio::net::UnixListener::bind(&socket).expect("bind winner endpoint");
+
+		assert!(
+			!evict_stale_socket(&socket, SocketClaim::Replaced)
+				.await
+				.expect("evict")
+		);
+		assert!(std::fs::symlink_metadata(&socket).is_ok(), "winner endpoint must survive");
+		assert!(
+			evict_stale_socket(&socket, SocketClaim::Released)
+				.await
+				.expect("evict")
+		);
+	}
 }

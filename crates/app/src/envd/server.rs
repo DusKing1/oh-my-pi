@@ -121,6 +121,28 @@ pub struct ServerIdentity {
 	/// Build identity of the serving environment; empty means unknown.
 	pub server_build:   Str,
 }
+
+/// Relationship between an owner socket path and the endpoint a probe
+/// connection actually reached, verified immediately after connecting.
+///
+/// Build takeover may unlink only a [`Self::Held`] endpoint: an already
+/// replaced or released path belongs to a concurrent successor and must be
+/// left untouched.
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SocketClaim {
+	/// The path still names the connected endpoint.
+	Held {
+		/// Device number of the endpoint when the probe connected.
+		dev: u64,
+		/// Inode of the endpoint when the probe connected.
+		ino: u64,
+	},
+	/// The path was removed while connecting; it is free to bind.
+	Released,
+	/// The path was concurrently replaced by another endpoint.
+	Replaced,
+}
 #[derive(Clone)]
 struct ConnectionPolicy {
 	allow_eval: bool,
@@ -321,10 +343,15 @@ impl EnvServer {
 	}
 
 	/// Connects an `EnvClient` transport to an owner-only environment socket.
+	///
+	/// The returned [`SocketClaim`] records whether the path still named the
+	/// connected endpoint once the connection was established; only a
+	/// [`SocketClaim::Held`] endpoint may later be evicted by build takeover.
 	#[cfg(unix)]
 	pub async fn connect_owner_uds(
 		path: &Path,
-	) -> Result<(EnvClient, tokio::task::JoinHandle<Result<(), EnvdError>>), EnvdError> {
+	) -> Result<(EnvClient, tokio::task::JoinHandle<Result<(), EnvdError>>, SocketClaim), EnvdError>
+	{
 		use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 
 		let metadata = tokio::fs::symlink_metadata(path).await?;
@@ -340,7 +367,16 @@ impl EnvServer {
 				.into(),
 			);
 		}
+		let expected = (metadata.dev(), metadata.ino());
 		let stream = tokio::net::UnixStream::connect(path).await?;
+		let claim = match tokio::fs::symlink_metadata(path).await {
+			Ok(current) if (current.dev(), current.ino()) == expected => {
+				SocketClaim::Held { dev: expected.0, ino: expected.1 }
+			},
+			Ok(_) => SocketClaim::Replaced,
+			Err(error) if error.kind() == io::ErrorKind::NotFound => SocketClaim::Released,
+			Err(error) => return Err(error.into()),
+		};
 		let (client, transport) = EnvClient::in_process(64);
 		let (requests, responses) = transport.into_parts();
 		let task = tokio::spawn(async move {
@@ -377,7 +413,7 @@ impl EnvServer {
 			write_result?;
 			Ok(())
 		});
-		Ok((client, task))
+		Ok((client, task, claim))
 	}
 
 	/// Returns the exact registry shared by this server's dispatch paths.

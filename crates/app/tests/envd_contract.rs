@@ -1145,9 +1145,13 @@ async fn uds_clients_cannot_invoke_session_local_eval_but_retain_ordinary_tools(
 	})
 	.await
 	.expect("UDS environment socket did not become ready");
-	let (remote, bridge_task) = EnvServer::connect_owner_uds(&socket)
+	let (remote, bridge_task, claim) = EnvServer::connect_owner_uds(&socket)
 		.await
 		.expect("connect owner UDS client");
+	assert!(
+		matches!(claim, omp_app::envd::server::SocketClaim::Held { .. }),
+		"an undisturbed owner socket must be held"
+	);
 	remote
 		.hello(ClientHello {
 			client: "envd-contract-uds".into(),
@@ -2196,7 +2200,7 @@ async fn uds_retire_unlinks_listener_and_drains_existing_clients() {
 	.await
 	.expect("UDS environment socket did not become ready");
 
-	let (retiring, retiring_bridge) = EnvServer::connect_owner_uds(&socket)
+	let (retiring, retiring_bridge, _claim) = EnvServer::connect_owner_uds(&socket)
 		.await
 		.expect("connect retiring client");
 	let retiring_hello = retiring
@@ -2207,7 +2211,7 @@ async fn uds_retire_unlinks_listener_and_drains_existing_clients() {
 		})
 		.await
 		.expect("retiring client hello");
-	let (remaining, remaining_bridge) = EnvServer::connect_owner_uds(&socket)
+	let (remaining, remaining_bridge, _claim) = EnvServer::connect_owner_uds(&socket)
 		.await
 		.expect("connect remaining client");
 	let remaining_hello = remaining
