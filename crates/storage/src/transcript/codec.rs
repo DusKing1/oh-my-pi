@@ -11,8 +11,8 @@ use thiserror::Error as ThisError;
 use super::{
 	event::{
 		Event, ItemRecord, JobRegistered, JobSettled, Kind, PromptRewriteCommit, PromptRewriteIntent,
-		PromptRewriteStage, ToolBatchAuthorized, TurnInputItem, TurnInputRecord, TurnOptionsRecord,
-		TurnReceipt, TurnStart,
+		PromptRewriteStage, ToolBatchAuthorized, TurnAbort, TurnInputItem, TurnInputRecord,
+		TurnOptionsRecord, TurnReceipt, TurnStart,
 	},
 	msg::{Content, Msg},
 	patch::Patch,
@@ -260,6 +260,10 @@ pub fn write_line(event: &Event, out: &mut impl BufMut) -> Result<(), Error> {
 			object.field("input", &start.input)?;
 			object.field("options", &start.options)?;
 		},
+		Kind::TurnAbort(abort) => {
+			object.field("k", "turn_abort")?;
+			object.field("turn_id", &abort.turn_id)?;
+		},
 		Kind::TurnReceipt(receipt) => {
 			object.field("k", "turn_receipt")?;
 			object.field("turn_id", &receipt.turn_id)?;
@@ -423,6 +427,7 @@ payload!(ToolBatchAuthorizedPayload {
 	turn_id: Str,
 	call_ids: Vec<Str>,
 });
+payload!(TurnAbortPayload { turn_id: Str });
 payload!(TurnReceiptPayload {
 	turn_id: Str,
 	prompt_hash: [u8; 32],
@@ -598,6 +603,10 @@ pub fn read_line(line: &[u8]) -> Result<Event, Error> {
 				input:              payload.input,
 				options:            payload.options,
 			})
+		},
+		"turn_abort" => {
+			let payload: TurnAbortPayload = serde_json::from_slice(line)?;
+			Kind::TurnAbort(TurnAbort { turn_id: payload.turn_id })
 		},
 		"turn_receipt" => {
 			let payload: TurnReceiptPayload = serde_json::from_slice(line)?;

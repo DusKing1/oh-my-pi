@@ -117,6 +117,12 @@ pub struct TurnStart {
 	/// Exact frozen opening options used for every retry and crash replay.
 	pub options:            TurnOptionsRecord,
 }
+/// Durable settlement for a logical turn that failed without a gateway outcome.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TurnAbort {
+	/// Gateway turn identifier that must not be resumed.
+	pub turn_id: Str,
+}
 
 /// Durable intent for an atomic system-prompt head replacement.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -310,6 +316,8 @@ pub enum Kind {
 	ToolBatchAuthorized(ToolBatchAuthorized),
 	/// Fix one logical gateway submission before opening its transport.
 	TurnStart(TurnStart),
+	/// Settle a started turn that failed without an authoritative outcome.
+	TurnAbort(TurnAbort),
 
 	/// Record completion of a gateway turn after all of its items were appended.
 	TurnReceipt(TurnReceipt),
@@ -429,6 +437,7 @@ impl PartialEq for Kind {
 			(Self::JobSettled(a), Self::JobSettled(b)) => a == b,
 			(Self::ToolBatchAuthorized(a), Self::ToolBatchAuthorized(b)) => a == b,
 			(Self::TurnStart(a), Self::TurnStart(b)) => a == b,
+			(Self::TurnAbort(a), Self::TurnAbort(b)) => a == b,
 			(Self::TurnReceipt(a), Self::TurnReceipt(b)) => a == b,
 			(
 				Self::Label { target: a_target, label: a_label },
