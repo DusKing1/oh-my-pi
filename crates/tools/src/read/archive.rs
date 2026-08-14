@@ -334,23 +334,25 @@ pub fn open_archive_bytes(
 	Ok(ArchiveReader { archive })
 }
 
-/// Reads one root, directory, or member target from an archive path.
+/// Reads one complete root, directory, or member target from an archive path.
+///
+/// Exact member resolution happens before a selector-shaped suffix is
+/// interpreted as a selector.
 pub fn read_archive_path(
 	path: impl AsRef<Path>,
 	target: &str,
-	selector: ParsedSelector,
 ) -> Result<ArchiveRead, ArchiveError> {
-	open_archive_path(path)?.read_target(target, selector)
+	open_archive_path(path)?.read_target(target)
 }
 
-/// Reads one root, directory, or member target from format-tagged bytes.
+/// Reads one complete root, directory, or member target from format-tagged
+/// bytes. Exact member resolution happens before selector fallback.
 pub fn read_archive_bytes(
 	bytes: Bytes,
 	format: ArchiveFormat,
 	target: &str,
-	selector: ParsedSelector,
 ) -> Result<ArchiveRead, ArchiveError> {
-	open_archive_bytes(bytes, format)?.read_target(target, selector)
+	open_archive_bytes(bytes, format)?.read_target(target)
 }
 
 impl<R: Read + Seek> ArchiveReader<R> {
@@ -441,28 +443,31 @@ impl<R: Read + Seek> ArchiveReader<R> {
 	/// Resolves member-name precedence, composes an embedded selector when
 	/// needed, then returns a directory listing or classified text/binary
 	/// member.
-	pub fn read_target(
-		&mut self,
-		target: &str,
-		mut selector: ParsedSelector,
-	) -> Result<ArchiveRead, ArchiveError> {
-		let mut member_path = target;
-		if self.node(member_path).is_none() && matches!(selector, ParsedSelector::None) {
+	pub fn read_target(&mut self, target: &str) -> Result<ArchiveRead, ArchiveError> {
+		let mut selector = ParsedSelector::None;
+		let (member_path, node) = if let Some(node) = self.node(target) {
+			(target, node)
+		} else {
 			let split = split_path_and_selector(target);
-			if split.selector.is_some() && self.node(split.path).is_some() {
-				member_path = split.path;
-				selector = parse_selector(split.selector)?;
-			} else if let parsed @ (ParsedSelector::Raw
-			| ParsedSelector::Conflicts
-			| ParsedSelector::Lines { .. }) = parse_selector(Some(target))?
+			if let Some(selector_text) = split.selector
+				&& let Some(node) = self.node(split.path)
 			{
-				member_path = "";
-				selector = parsed;
+				selector = parse_selector(Some(selector_text))?;
+				(split.path, node)
+			} else {
+				match parse_selector(Some(target))? {
+					parsed @ (ParsedSelector::Raw
+					| ParsedSelector::Conflicts
+					| ParsedSelector::Lines { .. }) => {
+						selector = parsed;
+						("", root_node())
+					},
+					ParsedSelector::None => {
+						return Err(ArchiveError::NotFound { path: target.to_owned() });
+					},
+				}
 			}
-		}
-		let node = self
-			.node(member_path)
-			.ok_or_else(|| ArchiveError::NotFound { path: target.to_owned() })?;
+		};
 		let content = if node.is_directory {
 			if selector.is_multi_range() {
 				return Err(ArchiveError::DirectoryMultiRange);

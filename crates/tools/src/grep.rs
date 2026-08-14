@@ -7,13 +7,15 @@ use std::{
 };
 
 use async_stream::stream;
+use bytes::Bytes;
 use futures::{FutureExt, Stream, pin_mut, select_biased};
 use omp_core::Str;
 use omp_hashline::format_hashline_header;
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, BlobRef, CommitError, Constraint, Ev, IncomingParams,
-	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolParam, ToolSpec,
+	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -27,7 +29,7 @@ use crate::{
 	render::{
 		TextProjection,
 		paths::{GroupedTreeEventKind, PathTreeInput, build_path_tree, walk_path_tree},
-		truncate::{DEFAULT_MAX_COLUMN, spill_truncated_text},
+		truncate::{DEFAULT_MAX_COLUMN, TruncationOptions, spill_truncated_text, truncate_head},
 	},
 };
 
@@ -39,23 +41,33 @@ const NATIVE_GREP_MAX_FILE_BYTES: u32 = 4 * 1024 * 1024;
 const SEARCH_GREP_TIMEOUT_MS: u32 = 30_000;
 
 /// Model arguments for `grep@1`.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToolParam)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[schemars(description = "")]
 #[serde(deny_unknown_fields)]
 pub struct Params {
 	/// regex pattern
+	#[schemars(with = "String")]
 	pub pattern:   Str,
 	/// file, directory, glob, internal URL, or "<file>:<lines>" selector to
 	/// search; pass several as a semicolon-delimited list ("src; tests").
 	/// Omitted -> searches the workspace root (".")
+	#[schemars(description = "file, directory, glob, internal URL, or \"<file>:<lines>\" \
+	                          selector to search; pass several as a semicolon-delimited list \
+	                          (\"src; tests\"). Omitted -> searches the workspace root (\".\")")]
+	#[schemars(default, skip_serializing_if = "Option::is_none", with = "String")]
 	pub path:      Option<Str>,
 	/// case-sensitive search
 	#[serde(rename = "case")]
+	#[schemars(default, skip_serializing_if = "Option::is_none", with = "bool")]
 	pub case:      Option<bool>,
 	/// respect gitignore
+	#[schemars(default, skip_serializing_if = "Option::is_none", with = "bool")]
 	pub gitignore: Option<bool>,
-	/// files to skip before collecting results — use to paginate when the
-	/// prior call hit the file limit
-	#[param(nullable)]
+	/// files to skip before collecting results — use to paginate when the prior
+	/// call hit the file limit
+	#[schemars(description = "files to skip before collecting results — use to paginate when the \
+	                          prior call hit the file limit")]
+	#[schemars(with = "Option<serde_json::Number>")]
 	pub skip:      Option<f64>,
 }
 
@@ -147,11 +159,37 @@ pub struct SearchMatch {
 	pub snapshot_tag:   Option<Str>,
 }
 
+/// Revision-pinned file bytes retained until final grep visibility is known.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SearchSnapshot {
+	/// Stable canonical identity shared with matching rows.
+	pub source_key: Str,
+	/// Exact revision identity for the retained bytes.
+	pub revision:   Bytes,
+	/// Complete bytes used to compute the model-facing snapshot tag.
+	pub bytes:      Bytes,
+}
+
+/// One snapshot whose exact model-visible source lines are ready to record.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SnapshotRecord {
+	/// Stable canonical identity shared with matching rows.
+	pub source_key: Str,
+	/// Exact revision identity for the retained bytes.
+	pub revision:   Bytes,
+	/// Complete bytes used to compute the model-facing snapshot tag.
+	pub bytes:      Bytes,
+	/// One-based source lines retained by final output projection.
+	pub seen_lines: Vec<usize>,
+}
+
 /// Structured resource result returned to the executor.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SearchResult {
 	/// Matches in deterministic traversal order.
 	pub matches:            Vec<SearchMatch>,
+	/// Revision-pinned editable files awaiting final visibility accounting.
+	pub snapshots:          Vec<SearchSnapshot>,
 	/// Whether the resolved scope can contain multiple files.
 	pub multi_scope:        bool,
 	/// Whether the native global match ceiling prevented a complete scan.
@@ -186,6 +224,8 @@ pub struct FileMatch {
 pub struct FileGroup {
 	/// Workspace-relative display path.
 	pub path:         Str,
+	/// Stable canonical identity used to record final line visibility.
+	pub source_key:   Str,
 	/// Whole-file hashline snapshot tag when editable.
 	pub snapshot_tag: Option<Str>,
 	/// Retained matches in source order.
@@ -302,13 +342,16 @@ impl std::error::Error for Fault {}
 
 /// Zero-box workspace traversal boundary shared by `grep@1` and `glob@1`.
 pub trait WorkspaceSearch: Send + Sync + 'static {
-	/// Execute a native regex search and mint snapshot tags for editable
-	/// matches.
+	/// Execute a native regex search and return revision-pinned snapshot
+	/// candidates without authorizing any source lines.
 	fn search(
 		&self,
 		request: SearchRequest,
 	) -> impl Future<Output = Result<SearchResult, Fault>> + Send + '_;
 
+	/// Records only source lines retained by final grep filtering and output
+	/// truncation.
+	fn record_snapshots(&self, records: Vec<SnapshotRecord>) -> Result<(), Fault>;
 	/// Match paths in deterministic workspace traversal order.
 	fn glob(
 		&self,
@@ -413,7 +456,7 @@ impl<W: WorkspaceSearch, B: ReadBlobs> Tool for Grep<W, B> {
 			};
 			let operation = async {
 				let result = self.workspace.search(request).await?;
-				prepare_payload(result, &roots, skip, &self.blobs).await
+				prepare_payload(result, &roots, skip, &self.workspace, &self.blobs).await
 			}.fuse();
 			let interruption = params.next_interrupt().fuse();
 			pin_mut!(operation, interruption);
@@ -589,6 +632,7 @@ fn make_payload(result: SearchResult, roots: &[SearchRoot], requested_skip: u64)
 			group_by_path.insert(matched.path.clone(), index);
 			groups.push(FileGroup {
 				path:         matched.path.clone(),
+				source_key:   matched.source_key.clone(),
 				snapshot_tag: matched.snapshot_tag.clone(),
 				matches:      Vec::new(),
 			});
@@ -668,16 +712,46 @@ fn make_payload(result: SearchResult, roots: &[SearchRoot], requested_skip: u64)
 	}
 }
 
-async fn prepare_payload<B: ReadBlobs>(
-	result: SearchResult,
+async fn prepare_payload<W: WorkspaceSearch, B: ReadBlobs>(
+	mut result: SearchResult,
 	roots: &[SearchRoot],
 	requested_skip: u64,
+	workspace: &W,
 	blobs: &B,
 ) -> Result<Payload, Fault> {
+	let snapshots = std::mem::take(&mut result.snapshots);
 	let mut payload = make_payload(result, roots, requested_skip);
-	let output = spill_truncated_text(render_payload(&payload), blobs)
+	let (rendered, source_rows) = render_payload(&payload);
+	let retained_bytes = truncate_head(&rendered, TruncationOptions::default())
+		.content
+		.len();
+	let mut visible = HashMap::<Str, Vec<usize>>::new();
+	for row in source_rows {
+		if row.end_byte <= retained_bytes {
+			visible
+				.entry(row.source_key)
+				.or_default()
+				.push(row.line_number);
+		}
+	}
+	let output = spill_truncated_text(rendered, blobs)
 		.await
 		.map_err(|fault| Fault::Blob { message: fault.message().clone() })?;
+	let records = snapshots
+		.into_iter()
+		.filter_map(|snapshot| {
+			let mut seen_lines = visible.remove(&snapshot.source_key)?;
+			seen_lines.sort_unstable();
+			seen_lines.dedup();
+			Some(SnapshotRecord {
+				source_key: snapshot.source_key,
+				revision: snapshot.revision,
+				bytes: snapshot.bytes,
+				seen_lines,
+			})
+		})
+		.collect();
+	workspace.record_snapshots(records)?;
 	payload.projected_text = output.content;
 	payload.output_blob = output.blob;
 	payload.output_shown_lines = output.shown_lines;
@@ -685,8 +759,16 @@ async fn prepare_payload<B: ReadBlobs>(
 	Ok(payload)
 }
 
-fn render_payload(payload: &Payload) -> String {
+#[derive(Debug)]
+struct RenderedSourceLine {
+	source_key:  Str,
+	line_number: usize,
+	end_byte:    usize,
+}
+
+fn render_payload(payload: &Payload) -> (String, Vec<RenderedSourceLine>) {
 	let mut output = String::new();
+	let mut source_rows = Vec::new();
 	if payload.files.is_empty() {
 		if payload.multi_scope
 			&& payload.skip > 0
@@ -707,11 +789,11 @@ fn render_payload(payload: &Payload) -> String {
 			output.push_str("No matches found");
 		}
 		append_notes(&mut output, &payload.notes);
-		return output;
+		return (output, source_rows);
 	}
 
 	if payload.multi_scope {
-		render_grouped_files(&mut output, &payload.files);
+		render_grouped_files(&mut output, &mut source_rows, &payload.files);
 	} else {
 		for (index, file) in payload.files.iter().enumerate() {
 			if index > 0 {
@@ -720,7 +802,7 @@ fn render_payload(payload: &Payload) -> String {
 			if let Some(tag) = &file.snapshot_tag {
 				let _ = writeln!(output, "{}", format_hashline_header(&file.path, tag));
 			}
-			render_file_matches(&mut output, &file.matches);
+			render_file_matches(&mut output, &mut source_rows, file);
 		}
 	}
 	if payload.file_limit_reached {
@@ -743,10 +825,14 @@ fn render_payload(payload: &Payload) -> String {
 		);
 	}
 	append_notes(&mut output, &payload.notes);
-	output
+	(output, source_rows)
 }
 
-fn render_grouped_files(output: &mut String, files: &[FileGroup]) {
+fn render_grouped_files(
+	output: &mut String,
+	source_rows: &mut Vec<RenderedSourceLine>,
+	files: &[FileGroup],
+) {
 	let tree = build_path_tree(
 		files
 			.iter()
@@ -780,21 +866,49 @@ fn render_grouped_files(output: &mut String, files: &[FileGroup]) {
 					output.push_str(tag);
 				}
 				output.push('\n');
-				render_file_matches(output, &file.matches);
+				render_file_matches(output, source_rows, file);
 			},
 		}
 	}
 }
 
-fn render_file_matches(output: &mut String, matches: &[FileMatch]) {
+fn render_file_matches(
+	output: &mut String,
+	source_rows: &mut Vec<RenderedSourceLine>,
+	file: &FileGroup,
+) {
 	let mut last_emitted = None;
-	for matched in matches {
+	for matched in &file.matches {
 		for context in &matched.context_before {
-			push_match_line(output, &mut last_emitted, context.line_number, &context.line, false);
+			push_match_line(
+				output,
+				source_rows,
+				&file.source_key,
+				&mut last_emitted,
+				context.line_number,
+				&context.line,
+				false,
+			);
 		}
-		push_match_line(output, &mut last_emitted, matched.line_number, &matched.line, true);
+		push_match_line(
+			output,
+			source_rows,
+			&file.source_key,
+			&mut last_emitted,
+			matched.line_number,
+			&matched.line,
+			true,
+		);
 		for context in &matched.context_after {
-			push_match_line(output, &mut last_emitted, context.line_number, &context.line, false);
+			push_match_line(
+				output,
+				source_rows,
+				&file.source_key,
+				&mut last_emitted,
+				context.line_number,
+				&context.line,
+				false,
+			);
 		}
 	}
 	if output.ends_with('\n') {
@@ -804,6 +918,8 @@ fn render_file_matches(output: &mut String, matches: &[FileMatch]) {
 
 fn push_match_line(
 	output: &mut String,
+	source_rows: &mut Vec<RenderedSourceLine>,
+	source_key: &Str,
 	last: &mut Option<u32>,
 	number: u32,
 	line: &str,
@@ -814,6 +930,13 @@ fn push_match_line(
 	}
 	let marker = if matched { '*' } else { ' ' };
 	let _ = writeln!(output, "{marker}{number}:{line}");
+	if let Ok(line_number) = usize::try_from(number) {
+		source_rows.push(RenderedSourceLine {
+			source_key: source_key.clone(),
+			line_number,
+			end_byte: output.len().saturating_sub(1),
+		});
+	}
 	*last = Some(number);
 }
 

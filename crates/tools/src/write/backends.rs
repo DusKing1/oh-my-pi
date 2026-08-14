@@ -532,6 +532,26 @@ mod tests {
 	}
 
 	#[test]
+	fn zip_rewrite_accepts_directory_entries_from_the_read_fixture() {
+		let source = include_bytes!("../../tests/fixtures/special-sources/archives/bundle.zip");
+		let mut original = Archive::from_bytes(source).unwrap();
+		assert!(original.entry("dir/member.txt").is_some());
+		let root = original.read("root.txt").unwrap();
+		let mut changed = Cursor::new(Vec::new());
+		rewrite_zip_member(
+			Cursor::new(source.as_slice()),
+			&mut changed,
+			"dir/member.txt",
+			b"changed",
+		)
+		.unwrap();
+		let changed = changed.into_inner();
+		let mut archive = Archive::from_bytes(&changed).unwrap();
+		assert_eq!(archive.read("dir/member.txt").unwrap(), b"changed");
+		assert_eq!(archive.read("root.txt").unwrap(), root);
+	}
+
+	#[test]
 	fn tar_rewrite_preserves_other_member_content() {
 		let mut source = Vec::new();
 		create_tar_member(&mut source, "keep.txt", b"keep").unwrap();

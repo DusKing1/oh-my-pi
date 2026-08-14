@@ -3,6 +3,10 @@
 use std::{
 	fmt::{self, Write as _},
 	future::Future,
+	sync::{
+		Arc,
+		atomic::{AtomicU8, Ordering},
+	},
 };
 
 use async_stream::stream;
@@ -12,9 +16,11 @@ use omp_core::Str;
 use omp_hashline::format_hashline_header;
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, CommitError, Constraint, Ev, IncomingParams, InterruptWaitError,
-	Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolParam, ToolSpec,
+	Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 use crate::{read::selector::LiteralPathProbe, render::TextProjection};
 
@@ -35,12 +41,15 @@ const STRIPPED_NOTICE: &str =
 	"Note: auto-stripped hashline display prefixes from content before writing.";
 
 /// Model arguments for `write@1`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToolParam)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(description = "")]
 #[serde(deny_unknown_fields)]
 pub struct Params {
 	/// file path
+	#[schemars(description = "file path", with = "String")]
 	pub path:    Str,
 	/// file content
+	#[schemars(description = "file content", with = "String")]
 	pub content: Str,
 }
 
@@ -216,6 +225,92 @@ pub enum WriteCommitError {
 	},
 }
 
+const SPECIAL_WRITE_PENDING: u8 = 0;
+const SPECIAL_WRITE_STARTED: u8 = 1;
+const SPECIAL_WRITE_CANCELLED: u8 = 2;
+
+/// Effect truth observed when a special write is interrupted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SpecialWriteCancellation {
+	/// Cancellation won before the resource began any externally visible
+	/// mutation.
+	BeforeEffects,
+	/// The resource had begun a mutation, so its durable outcome is not yet
+	/// known.
+	EffectsUnknown,
+}
+
+/// Cancellation and effect-phase handshake for an archive or SQLite write.
+///
+/// The tool owns cancellation. The resource must call [`Self::begin_effects`]
+/// immediately before its first externally visible mutation. The atomic
+/// transition makes cancellation truthful even when the blocking worker and
+/// invocation interrupt race.
+#[derive(Clone, Debug)]
+pub struct SpecialWriteControl {
+	state:  Arc<AtomicU8>,
+	cancel: CancellationToken,
+}
+
+impl SpecialWriteControl {
+	/// Creates a pending special-write control.
+	#[must_use]
+	pub fn new() -> Self {
+		Self {
+			state:  Arc::new(AtomicU8::new(SPECIAL_WRITE_PENDING)),
+			cancel: CancellationToken::new(),
+		}
+	}
+
+	/// Requests cancellation and reports whether mutation had already begun.
+	pub fn cancel(&self) -> SpecialWriteCancellation {
+		let phase = match self.state.compare_exchange(
+			SPECIAL_WRITE_PENDING,
+			SPECIAL_WRITE_CANCELLED,
+			Ordering::AcqRel,
+			Ordering::Acquire,
+		) {
+			Ok(_) | Err(SPECIAL_WRITE_CANCELLED) => SpecialWriteCancellation::BeforeEffects,
+			Err(_) => SpecialWriteCancellation::EffectsUnknown,
+		};
+		self.cancel.cancel();
+		phase
+	}
+
+	/// Marks the exact boundary before the first external mutation.
+	///
+	/// Returns `false` when cancellation won the race, in which case the
+	/// resource must return without mutating anything.
+	pub fn begin_effects(&self) -> bool {
+		self
+			.state
+			.compare_exchange(
+				SPECIAL_WRITE_PENDING,
+				SPECIAL_WRITE_STARTED,
+				Ordering::AcqRel,
+				Ordering::Acquire,
+			)
+			.is_ok()
+	}
+
+	/// Returns whether cancellation has been requested.
+	#[must_use]
+	pub fn is_cancelled(&self) -> bool {
+		self.cancel.is_cancelled()
+	}
+
+	/// Waits until cancellation is requested.
+	pub async fn cancelled(&self) {
+		self.cancel.cancelled().await;
+	}
+}
+
+impl Default for SpecialWriteControl {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 /// Session document boundary used by `write@1`.
 ///
 /// Implementations MUST use the same transaction coordinator and hashline
@@ -238,21 +333,28 @@ pub trait WriteDocuments: Send + Sync + 'static {
 		request: PlainWriteRequest,
 	) -> impl Future<Output = Result<PlainWriteResult, WriteCommitError>> + Send + '_;
 
-	/// Attempts an archive-member write after commitment.
+	/// Attempts an archive-member write after commitment. Implementations MUST
+	/// honor `control` and call [`SpecialWriteControl::begin_effects`] before
+	/// creating directories, temporary files, or replacing the archive.
 	fn write_archive_member(
 		&self,
 		_display_path: Str,
 		_content: Bytes,
+		_control: SpecialWriteControl,
 	) -> impl Future<Output = Result<Option<backends::ResultPayload>, backends::Fault>> + Send + '_
 	{
 		std::future::ready(Ok(None))
 	}
 
-	/// Attempts a SQLite-row mutation after archive dispatch.
+	/// Attempts a SQLite-row mutation after archive dispatch. Implementations
+	/// MUST honor `control`, publish any available database interrupt handle,
+	/// and call [`SpecialWriteControl::begin_effects`] before opening the
+	/// database read-write or starting a transaction.
 	fn write_sqlite_row(
 		&self,
 		_display_path: Str,
 		_content: Str,
+		_control: SpecialWriteControl,
 	) -> impl Future<Output = Result<Option<backends::ResultPayload>, backends::Fault>> + Send + '_
 	{
 		std::future::ready(Ok(None))
@@ -319,9 +421,11 @@ impl<D: WriteDocuments> Tool for WriteTool<D> {
 			}
 
 			let archive_result = {
+				let control = SpecialWriteControl::new();
 				let operation = self.documents.write_archive_member(
 					path.clone(),
 					Bytes::copy_from_slice(stripped.text.as_bytes()),
+					control.clone(),
 				).fuse();
 				let interruption = params.next_interrupt().fuse();
 				pin_mut!(operation, interruption);
@@ -334,7 +438,9 @@ impl<D: WriteDocuments> Tool for WriteTool<D> {
 						},
 					},
 					interrupt = interruption => {
-						yield interrupt_event(interrupt, true);
+						let effects_started =
+							control.cancel() == SpecialWriteCancellation::EffectsUnknown;
+						yield interrupt_event(interrupt, effects_started);
 						return;
 					},
 				}
@@ -345,9 +451,11 @@ impl<D: WriteDocuments> Tool for WriteTool<D> {
 			}
 
 			let sqlite_result = {
+				let control = SpecialWriteControl::new();
 				let operation = self.documents.write_sqlite_row(
 					path.clone(),
 					stripped.text.clone(),
+					control.clone(),
 				).fuse();
 				let interruption = params.next_interrupt().fuse();
 				pin_mut!(operation, interruption);
@@ -360,7 +468,9 @@ impl<D: WriteDocuments> Tool for WriteTool<D> {
 						},
 					},
 					interrupt = interruption => {
-						yield interrupt_event(interrupt, true);
+						let effects_started =
+							control.cancel() == SpecialWriteCancellation::EffectsUnknown;
+						yield interrupt_event(interrupt, effects_started);
 						return;
 					},
 				}

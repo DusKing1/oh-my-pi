@@ -171,6 +171,36 @@ pub(super) fn local_name(name: &[u8]) -> &[u8] {
 	name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
 }
 
+/// Formats a Markdown link destination without allowing structural injection.
+pub(super) fn format_url(url: &str) -> String {
+	const HEX: &[u8; 16] = b"0123456789ABCDEF";
+	let mut escaped = String::with_capacity(url.len());
+	for character in url.chars() {
+		match character {
+			'<' => escaped.push_str("%3C"),
+			'>' => escaped.push_str("%3E"),
+			'|' => escaped.push_str("%7C"),
+			character if character.is_control() => {
+				let mut bytes = [0; 4];
+				for byte in character.encode_utf8(&mut bytes).bytes() {
+					escaped.push('%');
+					escaped.push(HEX[(byte >> 4) as usize] as char);
+					escaped.push(HEX[(byte & 0x0f) as usize] as char);
+				}
+			},
+			character => escaped.push(character),
+		}
+	}
+	if escaped
+		.chars()
+		.any(|character| character.is_whitespace() || matches!(character, '(' | ')'))
+	{
+		format!("<{escaped}>")
+	} else {
+		escaped
+	}
+}
+
 pub(super) fn render_markdown_table(mut rows: Vec<Vec<String>>) -> String {
 	let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
 	for row in &mut rows {

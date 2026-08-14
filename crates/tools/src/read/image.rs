@@ -209,7 +209,7 @@ pub fn process_image(input: Bytes) -> Result<Option<ProcessedImage>, ImageFault>
 		)));
 	}
 
-	let Some(encoded) = resize_and_encode(&image, exclude_webp) else {
+	let Some(encoded) = resize_and_encode(&image, exclude_webp, was_animated) else {
 		return Ok(Some(unchanged_decoded_image(
 			input,
 			metadata.kind,
@@ -233,18 +233,21 @@ pub fn process_image(input: Bytes) -> Result<Option<ProcessedImage>, ImageFault>
 		original_height: Some(original_height),
 		width: Some(encoded.width),
 		height: Some(encoded.height),
-		was_resized: true,
-		was_animated,
-		animation_preserved: false,
+		was_resized: encoded.was_resized,
+		was_animated: encoded.was_animated,
+		animation_preserved: encoded.animation_preserved,
 		description,
 	}))
 }
 
 struct EncodedImage {
-	data:   Vec<u8>,
-	kind:   ImageKind,
-	width:  u32,
-	height: u32,
+	data:                Vec<u8>,
+	kind:                ImageKind,
+	width:               u32,
+	height:              u32,
+	was_resized:         bool,
+	was_animated:        bool,
+	animation_preserved: bool,
 }
 
 fn unchanged_image(input: Bytes, metadata: ImageMetadata, was_animated: bool) -> ProcessedImage {
@@ -315,53 +318,70 @@ fn decode_image(input: &[u8], kind: ImageKind) -> image::ImageResult<(DynamicIma
 	}
 }
 
-fn resize_and_encode(image: &DynamicImage, exclude_webp: bool) -> Option<EncodedImage> {
+fn resize_and_encode(
+	image: &DynamicImage,
+	exclude_webp: bool,
+	was_animated: bool,
+) -> Option<EncodedImage> {
+	resize_and_encode_to_limit(image, exclude_webp, was_animated, MAX_IMAGE_OUTPUT_BYTES)
+}
+
+fn resize_and_encode_to_limit(
+	image: &DynamicImage,
+	exclude_webp: bool,
+	was_animated: bool,
+	max_output_bytes: usize,
+) -> Option<EncodedImage> {
 	let (target_width, target_height) = target_dimensions(image.width(), image.height());
 	let resized = image.resize_exact(target_width, target_height, FilterType::Lanczos3);
-	let mut best = encode_smallest(&resized, JPEG_QUALITY, exclude_webp)?;
-	if best.0.len() <= MAX_IMAGE_OUTPUT_BYTES {
-		return Some(EncodedImage {
-			data:   best.0,
-			kind:   best.1,
-			width:  target_width,
-			height: target_height,
-		});
+	let (data, kind) = encode_smallest(&resized, JPEG_QUALITY, exclude_webp)?;
+	let mut best = encoded_image(data, kind, target_width, target_height, was_animated);
+	if best.data.len() <= max_output_bytes {
+		return Some(best);
 	}
 
 	for quality in QUALITY_STEPS {
-		best = encode_lossy_smallest(&resized, quality, exclude_webp)?;
-		if best.0.len() <= MAX_IMAGE_OUTPUT_BYTES {
-			return Some(EncodedImage {
-				data:   best.0,
-				kind:   best.1,
-				width:  target_width,
-				height: target_height,
-			});
+		let (data, kind) = encode_lossy_smallest(&resized, quality, exclude_webp)?;
+		best = encoded_image(data, kind, target_width, target_height, was_animated);
+		if best.data.len() <= max_output_bytes {
+			return Some(best);
 		}
 	}
 
-	let mut final_width = target_width;
-	let mut final_height = target_height;
 	for scale in SCALE_STEPS {
-		final_width = ((target_width as f64) * scale).round() as u32;
-		final_height = ((target_height as f64) * scale).round() as u32;
-		if final_width < 100 || final_height < 100 {
+		let width = ((target_width as f64) * scale).round() as u32;
+		let height = ((target_height as f64) * scale).round() as u32;
+		if width < 100 || height < 100 {
 			break;
 		}
-		let scaled = image.resize_exact(final_width, final_height, FilterType::Lanczos3);
+		let scaled = image.resize_exact(width, height, FilterType::Lanczos3);
 		for quality in QUALITY_STEPS {
-			best = encode_lossy_smallest(&scaled, quality, exclude_webp)?;
-			if best.0.len() <= MAX_IMAGE_OUTPUT_BYTES {
-				return Some(EncodedImage {
-					data:   best.0,
-					kind:   best.1,
-					width:  final_width,
-					height: final_height,
-				});
+			let (data, kind) = encode_lossy_smallest(&scaled, quality, exclude_webp)?;
+			best = encoded_image(data, kind, width, height, was_animated);
+			if best.data.len() <= max_output_bytes {
+				return Some(best);
 			}
 		}
 	}
-	Some(EncodedImage { data: best.0, kind: best.1, width: final_width, height: final_height })
+	Some(best)
+}
+
+fn encoded_image(
+	data: Vec<u8>,
+	kind: ImageKind,
+	width: u32,
+	height: u32,
+	was_animated: bool,
+) -> EncodedImage {
+	EncodedImage {
+		data,
+		kind,
+		width,
+		height,
+		was_resized: true,
+		was_animated,
+		animation_preserved: false,
+	}
 }
 
 fn target_dimensions(original_width: u32, original_height: u32) -> (u32, u32) {
@@ -618,5 +638,46 @@ fn format_bytes(bytes: usize) -> String {
 		format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
 	} else {
 		format!("{:.1}GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn assert_reported_dimensions_match_bytes(encoded: &EncodedImage) {
+		let (decoded, animated) =
+			decode_image(&encoded.data, encoded.kind).expect("encoded candidate must decode");
+		assert_eq!((encoded.width, encoded.height), (decoded.width(), decoded.height()));
+		assert!(!animated, "resize output contains only the decoded first frame");
+	}
+
+	#[test]
+	fn ordinary_small_resize_keeps_webp_and_reports_its_decoded_dimensions() {
+		let source = DynamicImage::new_rgba8(1, 1);
+		let encoded = resize_and_encode_to_limit(&source, false, false, usize::MAX)
+			.expect("small image must encode");
+
+		assert_eq!(encoded.kind, ImageKind::WebP);
+		assert_eq!((encoded.width, encoded.height), (200, 200));
+		assert!(encoded.was_resized);
+		assert!(!encoded.was_animated);
+		assert!(!encoded.animation_preserved);
+		assert_reported_dimensions_match_bytes(&encoded);
+	}
+
+	#[test]
+	fn rejected_sub_100_edge_does_not_replace_last_encoded_candidate_dimensions() {
+		let source = DynamicImage::new_rgba8(4_000, 400);
+		let encoded = resize_and_encode_to_limit(&source, false, true, 0)
+			.expect("the last accepted-size candidate is returned above an impossible byte limit");
+
+		// The next ladder step is 549x70 and is rejected before encoding. The
+		// returned bytes and metadata must therefore both remain at 784x100.
+		assert_eq!((encoded.width, encoded.height), (784, 100));
+		assert!(encoded.was_resized);
+		assert!(encoded.was_animated);
+		assert!(!encoded.animation_preserved);
+		assert_reported_dimensions_match_bytes(&encoded);
 	}
 }

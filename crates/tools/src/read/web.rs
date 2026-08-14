@@ -711,14 +711,23 @@ fn synthetic_path(extension: &str) -> std::path::PathBuf {
 }
 
 fn document_extension<'a>(mime: &str, extension: &'a str) -> Option<&'a str> {
-	if matches!(extension, ".pdf" | ".docx" | ".xlsx" | ".pptx" | ".epub") {
+	if markit::supports_extension(extension) {
 		return Some(extension);
 	}
 	Some(match mime {
 		"application/pdf" => ".pdf",
+		"application/msword" => ".doc",
+		"application/vnd.ms-word.document.macroenabled.12" => ".docm",
 		"application/vnd.openxmlformats-officedocument.wordprocessingml.document" => ".docx",
+		"application/vnd.ms-excel" => ".xls",
+		"application/vnd.ms-excel.sheet.macroenabled.12" => ".xlsm",
 		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => ".xlsx",
+		"application/vnd.oasis.opendocument.text" => ".odt",
+		"application/vnd.oasis.opendocument.spreadsheet" => ".ods",
+		"application/vnd.oasis.opendocument.presentation" => ".odp",
+		"application/vnd.ms-powerpoint" => ".ppt",
 		"application/vnd.openxmlformats-officedocument.presentationml.presentation" => ".pptx",
+		"application/rtf" | "application/x-rtf" | "text/rtf" => ".rtf",
 		"application/epub+zip" => ".epub",
 		_ => return None,
 	})

@@ -1,4 +1,10 @@
-use std::future::Future;
+use std::{
+	future::Future,
+	sync::{
+		Arc,
+		atomic::{AtomicU64, Ordering},
+	},
+};
 
 use async_stream::stream;
 use bytes::Bytes;
@@ -8,40 +14,61 @@ use omp_proto::inference::v1::{InvokeInput, invoke_input};
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, ArtifactLifetime, BlobRef, CommitError, Constraint, Ev,
 	ExpectedArtifact, IncomingParams, InterruptWaitError, JobOwner, JobRef, Outcome, ParamError,
-	Part, PromptCaps, Rev, Tool, ToolParam, ToolSpec,
+	Part, PromptCaps, Rev, Tool, ToolSpec,
 };
+use parking_lot::Mutex;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tokio::sync::OnceCell;
+use smallvec::SmallVec;
+use tokio::sync::{Notify, OnceCell};
 
 use crate::render::TextProjection;
 
 const TRANSCRIPT_LIMIT: usize = 64 * 1024;
 
+fn omit_schema_format(schema: &mut schemars::Schema) {
+	schema.remove("format");
+}
+
 /// Complete arguments for `shell@1`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToolParam)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(description = "")]
 #[serde(deny_unknown_fields)]
-#[param(extend({
-	"allOf": [{
+#[schemars(extend(
+	"allOf" = [{
 		"if": {
 			"properties": { "detach": { "const": true } },
 			"required": ["detach"]
 		},
 		"then": { "required": ["name"] }
 	}]
-}))]
+))]
 pub struct Params {
 	/// Shell script to execute.
-	#[param(min_length = 1)]
+	#[schemars(with = "String", length(min = 1), description = "Shell script to execute.")]
 	pub command:    Str,
 	/// Host-enforced execution timeout in milliseconds.
-	#[param(minimum = 1)]
+	#[schemars(
+		default,
+		skip_serializing_if = "Option::is_none",
+		with = "u64",
+		range(min = 1),
+		transform = omit_schema_format,
+		description = "Host-enforced execution timeout in milliseconds."
+	)]
 	pub timeout_ms: Option<u64>,
 	/// Run as a persistent named process.
 	#[serde(default)]
-	#[param(default = false)]
+	#[schemars(description = "Run as a persistent named process.")]
 	pub detach:     bool,
 	/// Required stable process name when detach is true.
-	#[param(min_length = 1)]
+	#[schemars(
+		default,
+		skip_serializing_if = "Option::is_none",
+		with = "String",
+		length(min = 1),
+		description = "Required stable process name when detach is true."
+	)]
 	pub name:       Option<Str>,
 }
 
@@ -230,10 +257,68 @@ pub trait ShellExec: Clone + Send + Sync + 'static {
 	) -> impl Future<Output = Result<DetachedJob, Fault>> + Send + '_;
 }
 
+#[derive(Default)]
+struct RunQueue {
+	next:    AtomicU64,
+	waiting: Mutex<SmallVec<u64, 8>>,
+	changed: Notify,
+}
+
+impl RunQueue {
+	fn reserve(self: &Arc<Self>) -> RunTicket {
+		let id = self.next.fetch_add(1, Ordering::Relaxed);
+		self.waiting.lock().push(id);
+		RunTicket { queue: Arc::clone(self), id }
+	}
+
+	async fn ready(&self, id: u64) {
+		loop {
+			let changed = self.changed.notified();
+			tokio::pin!(changed);
+			changed.as_mut().enable();
+			if self.waiting.lock().first().copied() == Some(id) {
+				return;
+			}
+			changed.await;
+		}
+	}
+
+	fn release(&self, id: u64) {
+		let mut waiting = self.waiting.lock();
+		let Some(position) = waiting.iter().position(|queued| *queued == id) else {
+			return;
+		};
+		waiting.remove(position);
+		let front_changed = position == 0;
+		drop(waiting);
+		if front_changed {
+			self.changed.notify_waiters();
+		}
+	}
+}
+
+struct RunTicket {
+	queue: Arc<RunQueue>,
+	id:    u64,
+}
+
+impl RunTicket {
+	async fn ready(&self) {
+		self.queue.ready(self.id).await;
+	}
+}
+
+impl Drop for RunTicket {
+	fn drop(&mut self) {
+		self.queue.release(self.id);
+	}
+}
+
 /// Generic `shell@1` implementation retaining one lazy persistent session.
 pub struct ShellTool<E: ShellExec> {
 	exec:             E,
 	session:          OnceCell<Session>,
+	run_queue:        Arc<RunQueue>,
 	spec:             ToolSpec,
 	transcript_limit: usize,
 }
@@ -243,6 +328,7 @@ pub fn shell<E: ShellExec>(exec: E) -> ShellTool<E> {
 	ShellTool {
 		exec,
 		session: OnceCell::new(),
+		run_queue: Arc::new(RunQueue::default()),
 		spec: ToolSpec {
 			name:        Str::from("shell"),
 			rev:         Rev { family: Str::default(), n: 1 },
@@ -280,6 +366,7 @@ impl<E: ShellExec> Tool for ShellTool<E> {
 		&'c self,
 		mut params: IncomingParams<'c>,
 	) -> impl Stream<Item = Ev<Self::Update, Self::Payload, Self::Fault>> + Send + 'c {
+		let ticket = self.run_queue.reserve();
 		stream! {
 			let args = match params.whole::<Params>().await {
 				Ok(args) => args,
@@ -294,6 +381,7 @@ impl<E: ShellExec> Tool for ShellTool<E> {
 			}
 
 			if args.detach {
+				drop(ticket);
 				let Some(name) = args.name else {
 					yield Ev::Done(Outcome::Done { result: Err(Fault::DetachNameRequired), useless: false });
 					return;
@@ -336,9 +424,29 @@ impl<E: ShellExec> Tool for ShellTool<E> {
 				return;
 			}
 
+			{
+				let ready = ticket.ready();
+				let interrupt = params.next_interrupt();
+				tokio::pin!(ready, interrupt);
+				tokio::select! {
+					biased;
+					interrupt = &mut interrupt => {
+						let reason = match interrupt {
+							Ok(interrupt) => interrupt.reason,
+							Err(InterruptWaitError::Closed) => Str::from("invocation owner disappeared before execution"),
+							Err(InterruptWaitError::Protocol(reason)) => reason,
+						};
+						yield Ev::Aborted(Abort::Skipped { reason });
+						return;
+					},
+					() = &mut ready => {},
+				}
+			}
+			let run_ticket = ticket;
 			let session = match self.session.get_or_try_init(|| self.exec.open_session()).await {
 				Ok(session) => session.clone(),
 				Err(fault) => {
+					drop(run_ticket);
 					yield Ev::Done(Outcome::Done { result: Err(fault), useless: false });
 					return;
 				},
@@ -351,12 +459,14 @@ impl<E: ShellExec> Tool for ShellTool<E> {
 			}).await {
 				Ok(run) => run,
 				Err(fault) => {
+					drop(run_ticket);
 					yield Ev::Done(Outcome::Done { result: Err(fault), useless: false });
 					return;
 				},
 			};
 
 			let mut exec_id = Bytes::new();
+			let mut started = false;
 			let mut transcript = Vec::new();
 			let mut retained = 0usize;
 			let mut transcript_truncated = false;
@@ -383,6 +493,7 @@ impl<E: ShellExec> Tool for ShellTool<E> {
 								Err(InterruptWaitError::Protocol(reason)) => reason,
 							};
 							if run.cancel().await.is_err() {
+								drop(run_ticket);
 								yield Ev::Aborted(Abort::EffectsUnknown { reason });
 								return;
 							}
@@ -393,7 +504,10 @@ impl<E: ShellExec> Tool for ShellTool<E> {
 				};
 
 				match event {
-					Ok(Some(RunEvent::Started { exec_id: id })) => exec_id = id,
+					Ok(Some(RunEvent::Started { exec_id: id })) => {
+						exec_id = id;
+						started = true;
+					},
 					Ok(Some(RunEvent::Output(update))) => {
 						let next_len = retained.saturating_add(update.data.len());
 						if next_len <= self.transcript_limit {
@@ -408,7 +522,20 @@ impl<E: ShellExec> Tool for ShellTool<E> {
 						}
 						yield Ev::Update(update);
 					},
+					Ok(Some(RunEvent::Exit(status)))
+						if !started
+							&& status.outcome == ExecOutcome::Cancelled
+							&& !status.effects_unknown
+							&& cancellation_reason.is_some() =>
+					{
+						drop(run_ticket);
+						yield Ev::Aborted(Abort::Skipped {
+							reason: cancellation_reason.take().expect("guarded by is_some"),
+						});
+						return;
+					},
 					Ok(Some(RunEvent::Exit(status))) => {
+						drop(run_ticket);
 						yield Ev::Done(Outcome::Done {
 							result: Ok(Payload {
 								session_id,
@@ -423,12 +550,14 @@ impl<E: ShellExec> Tool for ShellTool<E> {
 						return;
 					},
 					Ok(None) => {
+						drop(run_ticket);
 						yield Ev::Aborted(Abort::EffectsUnknown {
 							reason: cancellation_reason.unwrap_or_else(|| Str::from("exec event stream ended before terminal status")),
 						});
 						return;
 					},
 					Err(fault) => {
+						drop(run_ticket);
 						let reason = match fault {
 							Fault::Resource { operation, message } => Str::from(format!("{operation}: {message}")),
 							Fault::DetachNameRequired => Str::from("unexpected detach fault during foreground execution"),

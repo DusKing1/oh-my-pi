@@ -3,13 +3,41 @@
 use std::{fmt, path::Path};
 
 use omp_core::Str;
+use strum::EnumString;
 
+mod doc;
 mod docx;
 mod epub;
+mod odf;
+mod odp;
+mod ods;
+mod odt;
 mod ooxml;
 mod pdf;
+mod ppt;
 mod pptx;
+mod rtf;
+mod xls;
 mod xlsx;
+
+#[derive(Clone, Copy, EnumString)]
+#[strum(ascii_case_insensitive, serialize_all = "lowercase")]
+enum Format {
+	Pdf,
+	Doc,
+	#[strum(serialize = "docx", serialize = "docm")]
+	Docx,
+	Xls,
+	#[strum(serialize = "xlsx", serialize = "xlsm")]
+	Xlsx,
+	Odt,
+	Ods,
+	Odp,
+	Ppt,
+	Pptx,
+	Rtf,
+	Epub,
+}
 
 /// Markdown produced from a supported document.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,6 +51,12 @@ pub struct Conversion {
 	/// Metadata stays separate from `text`, preserving the converter's source
 	/// order and model-facing Markdown.
 	pub title: Option<Str>,
+}
+
+impl Conversion {
+	fn plain(text: Str) -> Self {
+		Self { text, note: None, title: None }
+	}
 }
 
 /// A typed document conversion failure.
@@ -66,27 +100,66 @@ impl fmt::Display for MarkitError {
 
 impl std::error::Error for MarkitError {}
 
+fn convert_with_anydoc(
+	bytes: &[u8],
+	format: anydoc::Format,
+	format_name: &'static str,
+) -> Result<Str, MarkitError> {
+	anydoc::to_markdown_bytes(bytes, format)
+		.map(Str::from)
+		.map_err(|error| MarkitError::conversion(format_name, error.to_string()))
+}
+
+fn format_from_extension(extension: &str) -> Option<Format> {
+	extension.trim_start_matches('.').parse().ok()
+}
+
+/// Whether a path names a supported in-memory document format.
+pub(crate) fn supports_path(path: &Path) -> bool {
+	path
+		.extension()
+		.and_then(|extension| extension.to_str())
+		.and_then(format_from_extension)
+		.is_some()
+}
+
+/// Whether an extension names a supported in-memory document format.
+///
+/// Both `docx` and `.docx` forms are accepted.
+pub(crate) fn supports_extension(extension: &str) -> bool {
+	format_from_extension(extension).is_some()
+}
+
 /// Convert one of the approved document formats to Markdown.
 ///
 /// Unsupported extensions return `Ok(None)`. Once an extension is recognized,
 /// converter failures remain typed so the caller can truthfully render the
 /// original binary size rather than treating the bytes as text.
 pub fn convert(path: &Path, bytes: &[u8]) -> Result<Option<Conversion>, MarkitError> {
-	let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
+	let Some(format) = path
+		.extension()
+		.and_then(|extension| extension.to_str())
+		.and_then(format_from_extension)
+	else {
 		return Ok(None);
 	};
-	let extension = extension.to_ascii_lowercase();
 
-	let conversion = match extension.as_str() {
-		"pdf" => pdf::convert(bytes)?,
-		"docx" => Conversion { text: docx::convert(bytes)?, note: None, title: None },
-		"xlsx" => Conversion { text: xlsx::convert(bytes)?, note: None, title: None },
-		"pptx" => Conversion { text: pptx::convert(bytes)?, note: None, title: None },
-		"epub" => {
+	let conversion = match format {
+		Format::Pdf => pdf::convert(bytes)?,
+		Format::Doc => Conversion::plain(doc::convert(bytes)?),
+		Format::Docx => Conversion::plain(docx::convert(bytes)?),
+		Format::Xls => Conversion::plain(xls::convert(bytes)?),
+		Format::Xlsx => Conversion::plain(xlsx::convert(bytes)?),
+		Format::Odt => Conversion::plain(odt::convert(bytes)?),
+		Format::Ods => Conversion::plain(ods::convert(bytes)?),
+		Format::Odp => Conversion::plain(odp::convert(bytes)?),
+		Format::Ppt => Conversion::plain(ppt::convert(bytes)?),
+		Format::Pptx => Conversion::plain(pptx::convert(bytes)?),
+		Format::Rtf => Conversion::plain(rtf::convert(bytes)?),
+		Format::Epub => {
 			let (text, title) = epub::convert(bytes)?;
 			Conversion { text, note: None, title }
 		},
-		_ => return Ok(None),
 	};
 
 	Ok(Some(conversion))

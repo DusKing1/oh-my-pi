@@ -7,8 +7,9 @@ use futures::{FutureExt, Stream, pin_mut, select_biased};
 use omp_core::Str;
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, BlobRef, CommitError, Constraint, Ev, IncomingParams,
-	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolParam, ToolSpec,
+	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -28,21 +29,33 @@ const fn default_true() -> bool {
 	true
 }
 
+const fn is_true(value: &bool) -> bool {
+	*value
+}
+
 /// Model arguments for `glob@1`.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToolParam)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[schemars(description = "")]
 #[serde(deny_unknown_fields)]
 pub struct Params {
 	/// glob, file, or directory to search — a single path or a
 	/// semicolon-delimited list ("src/**/*.ts; test/**/*.ts"). Omitted ->
 	/// searches the workspace root (".")
+	#[schemars(description = "glob, file, or directory to search — a single path or a \
+	                          semicolon-delimited list (\"src/**/*.ts; test/**/*.ts\"). Omitted \
+	                          -> searches the workspace root (\".\")")]
+	#[schemars(default, skip_serializing_if = "Option::is_none", with = "String")]
 	pub path:      Option<Str>,
 	/// include hidden files
 	#[serde(default = "default_true")]
+	#[schemars(skip_serializing_if = "is_true", with = "bool")]
 	pub hidden:    bool,
 	/// respect gitignore
 	#[serde(default = "default_true")]
+	#[schemars(skip_serializing_if = "is_true", with = "bool")]
 	pub gitignore: bool,
 	/// max results
+	#[schemars(default, skip_serializing_if = "Option::is_none", with = "serde_json::Number")]
 	pub limit:     Option<f64>,
 }
 

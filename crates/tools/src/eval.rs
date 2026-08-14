@@ -1,11 +1,12 @@
 //! Python-only, persistent-session evaluation tool.
 //!
-//! The tool is a protocol boundary. [`kernel::EmbeddedPython`] is the
-//! production in-process resource: it gives every opened session a dedicated
-//! worker and persistent Python namespace while sharing OMP's single embedded
-//! CPython runtime.
+//! This crate defines the protocol boundary and the child-local embedded
+//! kernel. Production composition owns one killable Python child process per
+//! eval session, so interpreter globals, imported modules, environment changes,
+//! and cancellation are contained by that session's process.
 
 use std::{
+	borrow::Cow,
 	collections::HashMap,
 	fmt::Write as _,
 	future::Future,
@@ -23,9 +24,10 @@ use omp_core::{CowBytes, Str};
 use omp_proto::inference::v1::{InvokeInput, invoke_input};
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, BlobRef, CommitError, Constraint, Ev, IncomingParams,
-	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolParam, ToolSpec,
+	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
 };
 use parking_lot::Mutex;
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::OnceCell;
@@ -81,15 +83,33 @@ Prior top-level names survive into the next cell — reuse; NEVER re-import/re-d
 const MAX_DISPLAY_TEXT_BYTES: usize = 8_000;
 
 /// Runtime accepted by this build of `eval@1`.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToolParam)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
 	/// OMP's embedded `CPython` runtime.
 	Py,
 }
 
+impl JsonSchema for Language {
+	fn inline_schema() -> bool {
+		true
+	}
+
+	fn schema_name() -> Cow<'static, str> {
+		"Language".into()
+	}
+
+	fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+		json_schema!({
+			"type": "string",
+			"enum": ["py"]
+		})
+	}
+}
+
 /// Complete arguments for one Python cell.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToolParam)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[schemars(description = "")]
 #[serde(deny_unknown_fields)]
 pub struct Params {
 	/// runtime: "py" for the IPython kernel
@@ -97,15 +117,38 @@ pub struct Params {
 		clippy::doc_markdown,
 		reason = "doc comment is the verbatim model-facing description; backticks would leak"
 	)]
+	#[schemars(description = "runtime: \"py\" for the IPython kernel")]
 	pub language: Language,
 	/// code to run in this eval call, verbatim. Use top-level await freely.
+	#[schemars(
+		with = "String",
+		description = "code to run in this eval call, verbatim. Use top-level await freely."
+	)]
 	pub code:     Str,
 	/// short label shown in transcript (e.g. "imports", "load config")
+	#[schemars(
+		default,
+		skip_serializing_if = "Option::is_none",
+		with = "String",
+		description = "short label shown in transcript (e.g. \"imports\", \"load config\")"
+	)]
 	pub title:    Option<Str>,
 	/// timeout for this eval call in seconds; 0 disables the cell timeout
+	#[schemars(
+		default,
+		skip_serializing_if = "Option::is_none",
+		with = "serde_json::Number",
+		description = "timeout for this eval call in seconds; 0 disables the cell timeout"
+	)]
 	pub timeout:  Option<f64>,
 	/// wipe this language's kernel before running. Other languages are
 	/// untouched.
+	#[schemars(
+		default,
+		skip_serializing_if = "Option::is_none",
+		with = "bool",
+		description = "wipe this language's kernel before running. Other languages are untouched."
+	)]
 	pub reset:    Option<bool>,
 }
 
@@ -365,6 +408,9 @@ fn format_display_json(outputs: &[DisplayOutput]) -> String {
 			}
 			let elided = text.len() - end;
 			text.truncate(end);
+			if !text.ends_with('\n') {
+				text.push('\n');
+			}
 			let _ = writeln!(text, "[…{elided}ch elided…]");
 		}
 		rendered.push(format!("display[{index}]:\n{text}"));

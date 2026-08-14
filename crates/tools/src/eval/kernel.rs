@@ -1,8 +1,8 @@
-//! Persistent embedded-CPython implementation of [`super::EvalExec`].
+//! Child-local embedded-CPython implementation of [`super::EvalExec`].
 //!
-//! Each opened session owns a dedicated worker thread and Python globals
-//! dictionary. Cells are serialized by that worker, so names persist in source
-//! order; resetting atomically replaces the dictionary before the next cell.
+//! Production starts this kernel in a dedicated process owned by one eval
+//! session. Within that process a worker preserves cell order and interpreter
+//! state; replacing the process provides full session reset and containment.
 //!
 //! Output routing rides a `contextvars.ContextVar`: each cell publishes its
 //! sink in the worker's context and inside the session's asyncio runner, so
@@ -183,10 +183,11 @@ def _omp_run_cell(source, ns, timeout_control, sink):
 "#
 );
 
-/// Cloneable embedded Python resource shared by one or more eval tool values.
+/// Cloneable embedded Python kernel used inside an eval child process.
 ///
-/// The caller owns OMP's process-wide [`Engine`] and must initialize it exactly
-/// once. `EmbeddedPython` only creates isolated persistent session workers.
+/// The caller owns the child-local [`Engine`] and must initialize it exactly
+/// once. Production creates one child process and one kernel session per eval
+/// session; multiple workers remain available for focused kernel tests.
 #[derive(Clone)]
 pub struct EmbeddedPython {
 	inner: Arc<Inner>,

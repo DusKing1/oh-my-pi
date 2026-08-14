@@ -8,8 +8,9 @@ use futures::{FutureExt as _, Stream, pin_mut, select_biased};
 use omp_core::Str;
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, BlobRef, CommitError, Constraint, Ev, IncomingParams, Outcome,
-	ParamError, Part, PromptCaps, Rev, Tool, ToolParam, ToolSpec,
+	ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::render::{
@@ -62,11 +63,17 @@ const MAX_SUMMARY_LINES: usize = 20_000;
 pub const SNAPSHOT_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// Arguments accepted by `read@1`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToolParam)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(description = "")]
 #[serde(deny_unknown_fields)]
 pub struct Params {
 	/// Local path, internal URI (e.g. skill://), or URL. Inline selectors are
 	/// supported.
+	#[schemars(
+		description = "Local path, internal URI (e.g. skill://), or URL. Inline selectors are \
+		               supported.",
+		with = "String"
+	)]
 	pub path: Str,
 }
 
@@ -450,7 +457,7 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 				Err(fault) => return Err(fault),
 			}
 		}
-		Ok(Payload { parts })
+		self.finalize_text_parts(parts).await
 	}
 
 	async fn split_targets(&self, authored: &str) -> Result<Vec<Str>, Fault> {
@@ -486,11 +493,8 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 		} else {
 			parsed_split
 		};
-		let parsed = selector::parse_selector(split.selector)
-			.map_err(|error| Fault::Invalid { message: Str::from(error.to_string()) })?;
-
 		if !literal_wins {
-			for candidate in archive::parse_archive_path_candidates(split.path) {
+			for candidate in archive::parse_archive_path_candidates(authored) {
 				let archive_path = candidate.archive_path.as_str();
 				let (stat, suffix_from) = match self.sources.stat(Str::from(archive_path)).await {
 					Ok(stat) => (Some(stat), None),
@@ -500,10 +504,16 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 				};
 				if let Some(stat) = stat {
 					return self
-						.read_archive(archive_path, &candidate.sub_path, &parsed, &stat, suffix_from)
+						.read_archive(archive_path, &candidate.sub_path, &stat, suffix_from)
 						.await;
 				}
 			}
+		}
+
+		let parsed = selector::parse_selector(split.selector)
+			.map_err(|error| Fault::Invalid { message: Str::from(error.to_string()) })?;
+
+		if !literal_wins {
 			for candidate in sqlite::parse_path_candidates(authored) {
 				let database = candidate.sqlite_path.to_string_lossy();
 				let (stat, suffix_from) = match self.sources.stat(Str::from(database.as_ref())).await {
@@ -630,7 +640,7 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 				)
 				.await;
 		}
-		if is_document_path(path) {
+		if markit::supports_path(path) {
 			let bytes = self.sources.read_bytes(stat.canonical_path.clone()).await?;
 			match markit::convert(path, &bytes) {
 				Ok(Some(converted)) => {
@@ -721,9 +731,9 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 			&target.selector,
 			selector::ParsedSelector::None | selector::ParsedSelector::Raw
 		) {
-			self.truncate_text(framed).await?
+			vec![PayloadPart::Text { text: Str::from(framed) }]
 		} else {
-			self.virtual_text_parts(&framed, &target.selector).await?
+			self.virtual_text_parts(&framed, &target.selector)
 		};
 		if let Some(image) = fetched.image {
 			let blob = self.blobs.store(image.data, image.media_type).await?;
@@ -787,8 +797,7 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 	async fn read_archive(
 		&self,
 		archive_path: &str,
-		member: &str,
-		parsed: &selector::ParsedSelector,
+		target: &str,
 		stat: &SourceStat,
 		suffix_from: Option<&str>,
 	) -> Result<Vec<PayloadPart>, Fault> {
@@ -796,7 +805,7 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 		let archive_format = archive::archive_format_from_path(archive_path)
 			.or_else(|| archive::sniff_archive_format(&bytes))
 			.ok_or_else(|| Fault::source(format!("Unsupported archive format: {archive_path}")))?;
-		let result = archive::read_archive_bytes(bytes, archive_format, member, parsed.clone())
+		let result = archive::read_archive_bytes(bytes, archive_format, target)
 			.map_err(|error| Fault::Source { message: Str::from(error.to_string()) })?;
 		match result.content {
 			archive::ArchiveContent::Directory(listing) => {
@@ -919,7 +928,7 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 			let remove_end = end + usize::from(summary.text.as_bytes().get(end) == Some(&b'\n'));
 			summary.text.replace_range(header_at..remove_end, "");
 		}
-		self.truncate_text(summary.text).await
+		Ok(vec![PayloadPart::Text { text: Str::from(summary.text) }])
 	}
 
 	async fn text_parts(
@@ -961,24 +970,35 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 				1,
 			);
 		}
-		self.truncate_text(projection).await
+		Ok(vec![PayloadPart::Text { text: Str::from(projection) }])
 	}
 
-	async fn virtual_text_parts(
-		&self,
-		text: &str,
-		parsed: &selector::ParsedSelector,
-	) -> Result<Vec<PayloadPart>, Fault> {
+	fn virtual_text_parts(&self, text: &str, parsed: &selector::ParsedSelector) -> Vec<PayloadPart> {
 		let formatted =
 			format::format_text(text, parsed, format::TextFormatOptions::new("URL output"));
 		let (projection, _) = formatted.into_projection();
-		self.truncate_text(projection).await
+		vec![PayloadPart::Text { text: Str::from(projection) }]
 	}
 
-	async fn truncate_text(&self, text: String) -> Result<Vec<PayloadPart>, Fault> {
+	async fn finalize_text_parts(&self, parts: Vec<PayloadPart>) -> Result<Payload, Fault> {
+		let mut finalized = Vec::with_capacity(parts.len());
+		for part in parts {
+			match part {
+				PayloadPart::Text { text } => {
+					finalized.push(PayloadPart::Text { text: self.truncate_text(text).await? });
+				},
+				PayloadPart::Blob { blob, alt } => {
+					finalized.push(PayloadPart::Blob { blob, alt: self.truncate_text(alt).await? });
+				},
+			}
+		}
+		Ok(Payload { parts: finalized })
+	}
+
+	async fn truncate_text(&self, text: Str) -> Result<Str, Fault> {
 		let truncated = truncate_head(&text, TruncationOptions::default());
 		if !truncated.truncated {
-			return Ok(vec![PayloadPart::Text { text: Str::from(text) }]);
+			return Ok(text);
 		}
 		let blob = self
 			.blobs
@@ -989,7 +1009,7 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 			.await?;
 		let mut visible = truncated.content.to_owned();
 		append_blob_truncation_notice(&mut visible, &truncated, &blob.hash);
-		Ok(vec![PayloadPart::Text { text: Str::from(visible) }])
+		Ok(Str::from(visible))
 	}
 }
 fn format_read_projection<'a>(
@@ -1105,18 +1125,6 @@ fn pdf_image_member(input: &str) -> Option<&str> {
 		.iter()
 		.any(|extension| member.ends_with(extension))
 		.then_some(&input[..index + 4])
-}
-
-fn is_document_path(path: &Path) -> bool {
-	path
-		.extension()
-		.and_then(|value| value.to_str())
-		.is_some_and(|extension| {
-			matches!(
-				extension.to_ascii_lowercase().as_str(),
-				"pdf" | "docx" | "xlsx" | "pptx" | "epub"
-			)
-		})
 }
 
 fn binary_notice(stat: &SourceStat) -> String {

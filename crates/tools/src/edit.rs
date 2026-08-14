@@ -18,8 +18,9 @@ use omp_hashline::{
 };
 use omp_tool::{
 	Abort, ArgIssue, ArgIssueKind, ArgPath, CommitError, Constraint, Ev, IncomingParams,
-	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolParam, ToolSpec,
+	InterruptWaitError, Outcome, ParamError, Part, PromptCaps, Rev, Tool, ToolSpec,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::render::TextProjection;
@@ -27,11 +28,12 @@ use crate::render::TextProjection;
 const DESCRIPTION: &str = include_str!("edit_prompt.txt");
 
 /// Streaming arguments for `edit@hl.1`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToolParam)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(description = "")]
 #[serde(deny_unknown_fields)]
 pub struct Params {
 	/// Complete hashline input, including every `[PATH#TAG]` section header.
-	#[param(description = "")]
+	#[schemars(description = "", with = "String")]
 	pub input: Str,
 }
 
@@ -377,12 +379,8 @@ impl<D: EditDocuments> Tool for EditTool<D> {
 		mut params: IncomingParams<'c>,
 	) -> impl Stream<Item = Ev<EditUpdate, Payload, Fault>> + Send + 'c {
 		stream! {
-			let input = match params.pull(|mut doc| async move {
-				let mut object = doc.json().object();
-				let input = object.key("input").string().finish().await?;
-				Ok(input)
-			}).await {
-				Ok(input) => input,
+			let Params { input } = match params.whole::<Params>().await {
+				Ok(params) => params,
 				Err(error) => { yield param_event(error); return; },
 			};
 
@@ -498,6 +496,38 @@ impl<D: EditDocuments> Tool for EditTool<D> {
 				});
 			}
 
+			let mut preview = String::new();
+			let mut added_lines = 0;
+			let mut removed_lines = 0;
+			for (work, projection) in parsed_sections.iter().zip(&projections) {
+				let Ok(diff) = numbered_diff(
+					work.prepared.base_bytes(),
+					&projection.after,
+					Some(std::path::Path::new(work.section_path.as_str())),
+				) else {
+					continue;
+				};
+				let compact =
+					build_compact_diff_preview(diff.text.as_str(), CompactDiffOptions::default());
+				if !preview.is_empty() && !compact.preview.is_empty() {
+					preview.push('\n');
+				}
+				preview.push_str(compact.preview.as_str());
+				added_lines += compact.added_lines;
+				removed_lines += compact.removed_lines;
+			}
+			yield Ev::Update(EditUpdate {
+				applied_ops: projections.iter().map(|projection| projection.applied_ops.len()).sum(),
+				preview: preview.into(),
+				added_lines,
+				removed_lines,
+			});
+
+			match params.committed().await {
+				Ok(_) => {},
+				Err(error) => { yield commit_event(error); return; },
+			}
+
 			let noop_index = parsed_sections.iter().zip(&projections).position(|(work, projection)| {
 				work.parsed.file_op.is_none() && work.prepared.base_bytes() == &projection.after
 			});
@@ -525,10 +555,6 @@ impl<D: EditDocuments> Tool for EditTool<D> {
 				return;
 			}
 
-			match params.committed().await {
-				Ok(_) => {},
-				Err(error) => { yield commit_event(error); return; },
-			}
 			let result = {
 				let prepared =
 					parsed_sections.iter_mut().map(|work| &mut work.prepared).collect();
