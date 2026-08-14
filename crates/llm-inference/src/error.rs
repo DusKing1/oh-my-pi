@@ -35,6 +35,9 @@ pub enum ErrorKind {
 	StreamCorruption,
 	/// Credential was absent, expired, or rejected.
 	Authentication,
+	/// Durable credentials could not be encrypted because the configured
+	/// operating-system credential facility is unavailable.
+	CredentialStorageUnavailable,
 	/// Principal lacks permission for the operation.
 	Authorization,
 	/// Account was disabled or rejected.

@@ -20,8 +20,8 @@ use secrecy::{ExposeSecret as _, SecretBox, SecretString};
 use serde::{Deserialize, Serialize};
 
 use super::{
-	AuthLoginEngine, CredentialOrigin, CredentialStore, CredentialWrite, OAuthHttpClient,
-	OAuthHttpRequest, default_login_channels,
+	AuthLoginEngine, CredentialOrigin, CredentialStore, CredentialWrite, KeyError, OAuthHttpClient,
+	OAuthHttpRequest, StoreError, default_login_channels,
 	shape::{ProviderShapeFuture, ShapedCredential},
 };
 use crate::{
@@ -246,6 +246,9 @@ pub enum AlibabaTokenPlanLoginError {
 		/// Console host whose usage request supplies the cookie.
 		host: &'static str,
 	},
+	/// The configured OS credential facility cannot encrypt persistent state.
+	#[error("Alibaba Token Plan credential storage is unavailable")]
+	CredentialStorageUnavailable,
 	/// Persistent credential or account state could not be updated.
 	#[error("Alibaba Token Plan credential storage failed")]
 	Store,
@@ -418,7 +421,7 @@ async fn run_login_inner(
 			now_ms:              unix_millis(SystemTime::now())?,
 			expected_generation: None,
 		})
-		.map_err(|_| AlibabaTokenPlanLoginError::Store)?;
+		.map_err(credential_store_error)?;
 	accounts
 		.upsert(AccountRecord {
 			account: account.clone(),
@@ -526,6 +529,17 @@ fn unix_millis(now: SystemTime) -> Result<u64, AlibabaTokenPlanLoginError> {
 		.map_err(|_| AlibabaTokenPlanLoginError::Store)
 }
 
+fn credential_store_error(error: StoreError) -> AlibabaTokenPlanLoginError {
+	if matches!(
+		error,
+		StoreError::Key(KeyError::Unavailable | KeyError::OsCredential)
+	) {
+		AlibabaTokenPlanLoginError::CredentialStorageUnavailable
+	} else {
+		AlibabaTokenPlanLoginError::Store
+	}
+}
+
 fn login_error(error: AlibabaTokenPlanLoginError) -> Error {
 	let message = Str::from(error.to_string());
 	Error::new(
@@ -533,6 +547,9 @@ fn login_error(error: AlibabaTokenPlanLoginError) -> Error {
 			AlibabaTokenPlanLoginError::ValidationStatus(_)
 			| AlibabaTokenPlanLoginError::ValidationTransport
 			| AlibabaTokenPlanLoginError::ApiKeyRequired => ErrorKind::Authentication,
+			AlibabaTokenPlanLoginError::CredentialStorageUnavailable => {
+				ErrorKind::CredentialStorageUnavailable
+			},
 			AlibabaTokenPlanLoginError::Store => ErrorKind::InternalInvariant,
 			_ => ErrorKind::InvalidRequest,
 		},
@@ -550,6 +567,14 @@ mod tests {
 	use secrecy::SecretString;
 
 	use super::*;
+
+	#[test]
+	fn unavailable_credential_key_has_distinct_login_error() {
+		assert_eq!(
+			credential_store_error(StoreError::Key(KeyError::Unavailable)),
+			AlibabaTokenPlanLoginError::CredentialStorageUnavailable
+		);
+	}
 
 	#[test]
 	fn parse_rejects_malformed_json_and_non_token_material() {

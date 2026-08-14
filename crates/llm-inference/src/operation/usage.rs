@@ -361,7 +361,7 @@ where
 			};
 			let mut response = pending.await?;
 			normalize_report(&mut response.output, &request.payload, config)?;
-			Ok(response.into_answer(AnswerBody::Usage))
+			Ok(response.into_answer(|report| AnswerBody::Usage(Box::new(report))))
 		}
 	}
 }

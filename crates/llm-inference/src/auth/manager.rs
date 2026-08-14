@@ -22,9 +22,9 @@ use secrecy::{ExposeSecret as _, SecretBox};
 
 use super::{
 	AuthSpec, CredentialBroker, CredentialError, CredentialNeed, CredentialOrigin, CredentialSource,
-	CredentialStore, CredentialWrite, LoginChannelError, OAuthClientSpec, OAuthClock,
+	CredentialStore, CredentialWrite, KeyError, LoginChannelError, OAuthClientSpec, OAuthClock,
 	OAuthCredentialManagerError, OAuthCustomDispatchError, OAuthCustomDispatcher, OAuthCustomSpec,
-	OAuthEngine, OAuthError, OAuthHttpClient, default_login_channels,
+	OAuthEngine, OAuthError, OAuthHttpClient, StoreError, default_login_channels,
 };
 use crate::{
 	account::{AccountPool, AccountRecord, CredentialFreshness, RefreshCoordinator, RefreshRequest},
@@ -170,7 +170,7 @@ impl AuthLoginEngine for SecretLoginEngine {
 							now_ms:              unix_millis(SystemTime::now())?,
 							expected_generation: None,
 						})
-						.map_err(|_| auth_store_failure())?;
+						.map_err(auth_store_error)?;
 					accounts
 						.upsert(AccountRecord {
 							account: account.clone(),
@@ -771,16 +771,8 @@ impl AuthManager {
 			.catalog
 			.provider(&request.provider)
 			.ok_or_else(auth_not_found)?;
-		let mut selected = None;
-		for id in &provider.auth {
-			let spec = self.catalog.auth_spec(id).ok_or_else(auth_not_found)?;
-			let method = auth_method(&self.catalog, spec)?;
-			if request.method.is_none_or(|requested| requested == method) {
-				selected = Some((id.clone(), method));
-				break;
-			}
-		}
-		let (spec, method) = selected.ok_or_else(auth_not_found)?;
+		let (spec, method) = select_auth_spec(&self.catalog, &provider.auth, request.method)?
+			.ok_or_else(auth_not_found)?;
 		let engines = self
 			.login
 			.get(&AuthMethodKey::from(method))
@@ -827,6 +819,29 @@ impl From<AuthMethod> for AuthMethodKey {
 			AuthMethod::SessionToken => Self::SessionToken,
 		}
 	}
+}
+
+fn select_auth_spec(
+	catalog: &Catalog,
+	auth: &[AuthSpecId],
+	requested: Option<AuthMethod>,
+) -> Result<Option<(AuthSpecId, AuthMethod)>, Error> {
+	let mut fallback = None;
+	for id in auth {
+		let spec = catalog.auth_spec(id).ok_or_else(auth_not_found)?;
+		let method = auth_method(catalog, spec)?;
+		if let Some(requested) = requested {
+			if requested == method {
+				return Ok(Some((id.clone(), method)));
+			}
+		} else {
+			fallback.get_or_insert_with(|| (id.clone(), method));
+			if matches!(method, AuthMethod::OAuthPkce | AuthMethod::OAuthDevice) {
+				return Ok(Some((id.clone(), method)));
+			}
+		}
+	}
+	Ok(fallback)
 }
 
 impl From<AuthMethodKey> for AuthMethod {
@@ -918,6 +933,22 @@ fn auth_store_failure() -> Error {
 		RetryAction::Never,
 		ExecutionReceipt::default(),
 	)
+}
+
+fn auth_store_error(error: StoreError) -> Error {
+	if matches!(
+		error,
+		StoreError::Key(KeyError::Unavailable | KeyError::OsCredential)
+	) {
+		Error::new(
+			ErrorKind::CredentialStorageUnavailable,
+			ErrorPhase::Authentication,
+			RetryAction::Never,
+			ExecutionReceipt::default(),
+		)
+	} else {
+		auth_store_failure()
+	}
 }
 
 static LOGIN_SESSION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -1018,9 +1049,8 @@ fn oauth_manager_error(error: OAuthCredentialManagerError) -> Error {
 			RetryAction::RefreshCredential,
 			ExecutionReceipt::default(),
 		),
-		OAuthCredentialManagerError::Store(_) | OAuthCredentialManagerError::InvalidTime => {
-			auth_store_failure()
-		},
+		OAuthCredentialManagerError::Store(error) => auth_store_error(*error),
+		OAuthCredentialManagerError::InvalidTime => auth_store_failure(),
 	}
 }
 
@@ -1044,7 +1074,6 @@ fn credential_error(error: CredentialError) -> Error {
 		| CredentialError::SourceFailure => auth_unavailable(),
 	}
 }
-
 #[cfg(test)]
 mod tests {
 	use std::{
@@ -1059,17 +1088,27 @@ mod tests {
 	use parking_lot::Mutex;
 	use secrecy::{ExposeSecret as _, SecretString};
 
-	use super::{AuthLoginEngine, OAuthLoginEngine, auth_method, select_login_engine};
+	use super::{
+		AuthLoginEngine, OAuthLoginEngine, auth_method, auth_store_error, select_auth_spec,
+		select_login_engine,
+	};
 	use crate::{
 		account::AccountPool,
 		answer::AuthEvent,
 		auth::{
-			AlibabaTokenPlanLoginEngine, CredentialStore, HeadlessKeySource, KeyId, OAuthClock,
-			OAuthCustomDispatcher, OAuthHttpClient, OAuthHttpRequest, OAuthHttpResponse,
-			OAuthTransportError, SecretLoginEngine,
+			AlibabaTokenPlanLoginEngine, CredentialStore, HeadlessKeySource, KeyError, KeyId,
+			OAuthClock, OAuthCustomDispatcher, OAuthHttpClient, OAuthHttpRequest, OAuthHttpResponse,
+			OAuthTransportError, SecretLoginEngine, StoreError,
 		},
 		call::{AuthMethod, LoginRequest},
+		error::ErrorKind,
 	};
+
+	#[test]
+	fn unavailable_credential_key_has_distinct_error_kind() {
+		let error = auth_store_error(StoreError::Key(KeyError::Unavailable));
+		assert_eq!(error.kind, ErrorKind::CredentialStorageUnavailable);
+	}
 
 	struct ImmediateClock(SystemTime);
 
@@ -1081,6 +1120,39 @@ mod tests {
 		fn sleep(&self, _duration: Duration) -> BoxFuture<'_, ()> {
 			async {}.boxed()
 		}
+	}
+
+	#[test]
+	fn embedded_copilot_bearer_then_device_prefers_interactive_login() {
+		let catalog = Catalog::embedded();
+		let provider = catalog
+			.provider(&ProviderId::from("github-copilot"))
+			.expect("GitHub Copilot provider");
+		let spec_for = |method| {
+			provider
+				.auth
+				.iter()
+				.find(|id| {
+					catalog.auth_spec(id).is_some_and(|spec| {
+						auth_method(catalog, spec).is_ok_and(|actual| actual == method)
+					})
+				})
+				.cloned()
+				.expect("Copilot auth method")
+		};
+		let bearer = spec_for(AuthMethod::ApiKey);
+		let device = spec_for(AuthMethod::OAuthDevice);
+		let auth = [bearer.clone(), device.clone()];
+
+		let default = select_auth_spec(catalog, &auth, None)
+			.expect("valid Copilot auth specs")
+			.expect("default Copilot auth spec");
+		assert_eq!(default, (device, AuthMethod::OAuthDevice));
+
+		let api_key = select_auth_spec(catalog, &auth, Some(AuthMethod::ApiKey))
+			.expect("valid Copilot auth specs")
+			.expect("Copilot bearer auth spec");
+		assert_eq!(api_key, (bearer, AuthMethod::ApiKey));
 	}
 
 	#[test]

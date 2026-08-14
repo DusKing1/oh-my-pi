@@ -473,7 +473,7 @@ impl FakeAnswer {
 			Self::Transcript(items) => AnswerBody::Transcript(Box::pin(stream::iter(items))),
 			Self::Realtime(value) => AnswerBody::Realtime(value),
 			Self::Search(value) => AnswerBody::Search(value),
-			Self::Usage(value) => AnswerBody::Usage(value),
+			Self::Usage(value) => AnswerBody::Usage(Box::new(value)),
 			Self::Models(value) => AnswerBody::Models(value),
 			Self::Auth(value) => AnswerBody::Auth(value),
 			Self::Native(value) => AnswerBody::Native(value),

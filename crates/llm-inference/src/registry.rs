@@ -407,7 +407,7 @@ async fn dispatch_preplanned(
 				created_at:          SystemTime::now(),
 			},
 			receipt: layered.context.receipt(),
-			body:    AnswerBody::Usage(body),
+			body:    AnswerBody::Usage(Box::new(body)),
 		});
 	}
 	let candidates = plan.fallbacks.iter().cloned().collect::<Vec<_>>();

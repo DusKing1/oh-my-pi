@@ -84,7 +84,7 @@ impl_operation!(SpeechRequest, Speak, Speak, Speech, AudioStream);
 impl_operation!(TranscriptionRequest, Transcribe, Transcribe, Transcript, TranscriptStream);
 impl_operation!(RealtimeRequest, Realtime, Realtime, Realtime, RealtimeSession);
 impl_operation!(SearchRequest, Search, Search, Search, SearchResults);
-impl_operation!(UsageRequest, Usage, Usage, Usage, UsageReport);
+impl_operation!(UsageRequest, Usage, Usage, Usage, Box<UsageReport>);
 impl_operation!(DiscoveryRequest, DiscoverModels, DiscoverModels, Models, ModelDiscoveryPage);
 impl_operation!(AuthRequest, Auth, Auth, Auth, AuthAnswer);
 impl_operation!(NativeRequest, Native, Native, Native, NativeResponse);
