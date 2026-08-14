@@ -314,6 +314,13 @@ impl<C: TurnClient> Agent<C> {
 					turn_id = next_turn_id;
 					continue;
 				},
+				Err(error @ AgentError::Turn(TurnError::Terminal(_))) => {
+					self
+						.journal
+						.abort_turn(now_ms(), turn_id.as_str(), AbortDisposition::Exhausted)?;
+					self.context = None;
+					return Err(error);
+				},
 				Err(error) => return Err(error),
 			};
 			committed_turns = committed_turns.saturating_add(1);

@@ -143,11 +143,18 @@ impl fmt::Display for Error {
 		match self {
 			Self::Conflict(_) => formatter.write_str("turn context conflict"),
 			Self::NeedFull(_) => formatter.write_str("turn context requires a full reseed"),
-			Self::Terminal(error) => write!(
-				formatter,
-				"terminal turn error ({:?})",
-				pb::turn_error::Kind::try_from(error.kind).unwrap_or(pb::turn_error::Kind::Unspecified)
-			),
+			Self::Terminal(error) => {
+				write!(
+					formatter,
+					"terminal turn error ({:?})",
+					pb::turn_error::Kind::try_from(error.kind)
+						.unwrap_or(pb::turn_error::Kind::Unspecified)
+				)?;
+				if !error.detail.is_empty() {
+					write!(formatter, ": {}", error.detail)?;
+				}
+				Ok(())
+			},
 			Self::Rpc(status) => write!(formatter, "turn RPC failed ({:?})", status.code()),
 			Self::Connect(_) => formatter.write_str("turn RPC connection failed"),
 			Self::Protocol(message) => write!(formatter, "turn protocol error: {message}"),

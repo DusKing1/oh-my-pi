@@ -660,19 +660,27 @@ async fn crash_replay_reseeds_original_input_and_preserves_retry_count() {
 
 #[tokio::test]
 async fn other_terminal_error_fails_without_reminder() {
-	let (mut agent, opened, path) = agent(vec![terminal(pb::turn_error::Kind::Upstream)]);
+	let (mut agent, opened, path) =
+		agent(vec![terminal(pb::turn_error::Kind::Upstream), Ok(success())]);
 	let error = agent
 		.submit([user_text("original")], TurnId::new("root"))
 		.await
 		.expect_err("upstream error must fail immediately");
-	assert!(matches!(error, AgentError::Turn(Error::Terminal(_))));
+	assert!(matches!(&error, AgentError::Turn(Error::Terminal(_))));
+	assert!(error.to_string().contains("provider detail"));
+	assert!(agent.journal().pending_turn().is_none());
+	agent
+		.submit([user_text("fresh")], TurnId::new("next"))
+		.await
+		.expect("terminally failed turn must not block later caller input");
 	let opened = opened.lock();
-	assert_eq!(opened.len(), 1);
+	assert_eq!(opened.len(), 2);
 	assert!(
 		!input_texts(&opened[0])
 			.iter()
 			.any(|text| text.contains("Stopped without actionable output"))
 	);
+	assert!(input_texts(&opened[1]).contains(&"fresh"));
 	drop(opened);
 	drop(agent);
 	std::fs::remove_file(path).expect("remove journal");
