@@ -121,7 +121,7 @@ impl Registry {
 		let plan = call.execution.as_ref().ok_or_else(|| {
 			Error::planning(
 				ErrorKind::InvalidRequest,
-				ErrorDetail::Target { selector: Str::from("call-has-no-execution-plan") },
+				ErrorDetail::target(Str::from("call-has-no-execution-plan")),
 				ExecutionReceipt::default(),
 			)
 		})?;
@@ -129,10 +129,10 @@ impl Registry {
 		if call.operation.kind() != plan.operation {
 			return Err(Error::planning(
 				ErrorKind::ProviderContractMismatch,
-				ErrorDetail::Capability {
-					feature: Str::from(call.operation.kind().to_string()),
-					reason:  ReasonId(Str::from("planned-operation-mismatch")),
-				},
+				ErrorDetail::capability(
+					Str::from(call.operation.kind().to_string()),
+					ReasonId(Str::from("planned-operation-mismatch")),
+				),
 				ExecutionReceipt::default(),
 			));
 		}
@@ -240,10 +240,10 @@ impl RegistryBuilder {
 			if !self.bindings.contains_key(&route.id) {
 				return Err(Error::planning(
 					ErrorKind::RouteUnavailable,
-					ErrorDetail::Capability {
-						feature: Str::from(route.id.as_str()),
-						reason:  ReasonId(Str::from("route-has-no-service-or-unavailability-evidence")),
-					},
+					ErrorDetail::capability(
+						Str::from(route.id.as_str()),
+						ReasonId(Str::from("route-has-no-service-or-unavailability-evidence")),
+					),
 					ExecutionReceipt::default(),
 				));
 			}
@@ -257,10 +257,10 @@ impl RegistryBuilder {
 		{
 			return Err(Error::planning(
 				ErrorKind::RouteUnavailable,
-				ErrorDetail::Capability {
-					feature: Str::from(OperationKind::Auth.to_string()),
-					reason:  ReasonId(Str::from("auth-manager-not-constructed")),
-				},
+				ErrorDetail::capability(
+					Str::from(OperationKind::Auth.to_string()),
+					ReasonId(Str::from("auth-manager-not-constructed")),
+				),
 				ExecutionReceipt::default(),
 			));
 		}
@@ -319,10 +319,10 @@ async fn dispatch_preplanned(
 		let manager = registry.inner.auth_manager.as_ref().ok_or_else(|| {
 			Error::planning(
 				ErrorKind::RouteUnavailable,
-				ErrorDetail::Capability {
-					feature: Str::from(OperationKind::Auth.to_string()),
-					reason:  ReasonId(Str::from("auth-manager-not-constructed")),
-				},
+				ErrorDetail::capability(
+					Str::from(OperationKind::Auth.to_string()),
+					ReasonId(Str::from("auth-manager-not-constructed")),
+				),
 				layered.context.receipt(),
 			)
 		})?;
@@ -383,7 +383,7 @@ async fn dispatch_preplanned(
 			Err(mut error) => {
 				let has_next = index < candidates.len();
 				if fallback_is_safe(&error, has_next) {
-					layered.context.merge_receipt(&error.receipt);
+					layered.context.merge_receipt(error.receipt());
 					hide_attempts_since(&layered.context, attempt_start);
 					continue;
 				}
@@ -399,7 +399,7 @@ fn fallback_is_safe(error: &Error, has_next: bool) -> bool {
 	has_next
 		&& !error.committed
 		&& error.action == RetryAction::ReselectRoute
-		&& error.receipt.attempts.last().is_some_and(|attempt| {
+		&& error.receipt().attempts.last().is_some_and(|attempt| {
 			attempt.outcome != AttemptOutcome::FailedCommitted
 				&& attempt.body.retry_decision == RetryDecision::Allow
 		})
@@ -419,19 +419,18 @@ fn route_unavailable_error(evidence: &RouteUnavailable, operation: OperationKind
 	} else {
 		ReasonId(Str::from("route-operation-not-constructed"))
 	};
-	let mut error = Error::planning(
+	Error::planning(
 		ErrorKind::RouteUnavailable,
-		ErrorDetail::Capability { feature: Str::from(operation.to_string()), reason },
+		ErrorDetail::capability(Str::from(operation.to_string()), reason),
 		ExecutionReceipt::default(),
-	);
-	error.route = Some(evidence.route.clone());
-	error
+	)
+	.route(evidence.route.clone())
 }
 
 fn target_error(selector: &str) -> Error {
 	Error::planning(
 		ErrorKind::TargetNotFound,
-		ErrorDetail::Target { selector: Str::from(selector) },
+		ErrorDetail::target(Str::from(selector)),
 		ExecutionReceipt::default(),
 	)
 }
@@ -439,10 +438,10 @@ fn target_error(selector: &str) -> Error {
 fn duplicate_route_error(route: &RouteId) -> Error {
 	Error::planning(
 		ErrorKind::ProviderContractMismatch,
-		ErrorDetail::Capability {
-			feature: Str::from(route.as_str()),
-			reason:  ReasonId(Str::from("duplicate-route-registration")),
-		},
+		ErrorDetail::capability(
+			Str::from(route.as_str()),
+			ReasonId(Str::from("duplicate-route-registration")),
+		),
 		ExecutionReceipt::default(),
 	)
 }
@@ -602,11 +601,10 @@ mod tests {
 		assert!(!fallback_is_safe(&route_error(Some(RetryDecision::Suppress)), true));
 		assert!(!fallback_is_safe(&route_error(None), true));
 		assert!(!fallback_is_safe(&route_error(Some(RetryDecision::Allow)), false));
-		let mut committed = route_error(Some(RetryDecision::Allow));
-		committed.committed = true;
+		let committed = route_error(Some(RetryDecision::Allow)).committed(true);
 		assert!(!fallback_is_safe(&committed, true));
 		let mut committed_attempt = route_error(Some(RetryDecision::Allow));
-		committed_attempt.receipt.attempts[0].outcome = AttemptOutcome::FailedCommitted;
+		committed_attempt.receipt_mut().attempts[0].outcome = AttemptOutcome::FailedCommitted;
 		assert!(!fallback_is_safe(&committed_attempt, true));
 	}
 

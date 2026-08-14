@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use bytes::{Bytes, BytesMut};
-use omp_core::{Str, encoding::base64};
+use omp_core::{IntoStr, Str, encoding::base64};
 use omp_llm_catalog::{
 	OperationKind, ReasoningEffort, ServiceTier, ThinkingEffort,
 	policy::{
@@ -486,12 +486,18 @@ fn join_uri(base: &str, path: &str) -> String {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
+/// Role vocabulary serialized in Chat Completions messages.
 pub enum WireRole {
+	/// System instruction message.
 	#[default]
 	System,
+	/// Developer instruction message.
 	Developer,
+	/// End-user input message.
 	User,
+	/// Assistant response message.
 	Assistant,
+	/// Tool result message.
 	Tool,
 }
 
@@ -826,7 +832,7 @@ fn lower_messages(
 						if !profile.reasoning_proofs {
 							return Err(capability_error());
 						}
-						details.push(proof_detail(&proof.value, None)?);
+						details.push(proof_detail(&proof.value, None));
 					}
 					ordinary.push(ContentPart::Text { text: text.clone(), proof: None });
 				},
@@ -835,7 +841,7 @@ fn lower_messages(
 						if !profile.reasoning_proofs {
 							return Err(capability_error());
 						}
-						details.push(proof_detail(&proof.value, None)?);
+						details.push(proof_detail(&proof.value, None));
 					}
 					reasoning.push_str(text.as_str());
 				},
@@ -847,7 +853,7 @@ fn lower_messages(
 						if !profile.reasoning_proofs {
 							return Err(capability_error());
 						}
-						details.push(proof_detail(&proof.value, Some(wire_id.clone()))?);
+						details.push(proof_detail(&proof.value, Some(wire_id.clone())));
 					}
 					calls.push(WireAssistantToolCall {
 						id:       wire_id,
@@ -978,36 +984,14 @@ const fn canonical_thinking_effort(effort: ReasoningEffort) -> ThinkingEffort {
 		ReasoningEffort::Max => ThinkingEffort::Max,
 	}
 }
-fn validate_proof_scope(
-	request: &ChatRequest,
-	provider: &omp_llm_catalog::ProviderId,
-	codec: &omp_llm_catalog::CodecId,
-) -> Result<(), Error> {
-	for message in request.messages.iter() {
-		for part in message.content.iter() {
-			let proof = match part {
-				ContentPart::Text { proof, .. }
-				| ContentPart::Reasoning { proof, .. }
-				| ContentPart::ToolCall { proof, .. } => proof.as_ref(),
-				_ => None,
-			};
-			if let Some(proof) = proof
-				&& (&proof.provider != provider || &proof.codec != codec)
-			{
-				return Err(capability_error());
-			}
-		}
-	}
-	Ok(())
-}
 
-fn proof_detail(value: &[u8], id: Option<Str>) -> Result<WireReasoningReplay, Error> {
+fn proof_detail(value: &[u8], id: Option<Str>) -> WireReasoningReplay {
 	if let Ok(raw) = serde_json::from_slice::<Box<serde_json::value::RawValue>>(value) {
-		return Ok(WireReasoningReplay::Opaque(raw));
+		return WireReasoningReplay::Opaque(raw);
 	}
 	let data = std::str::from_utf8(value)
 		.map_or_else(|_| base64::encode(value).into_string(), str::to_owned);
-	Ok(WireReasoningReplay::Encrypted { kind: ReasoningEncryptedTag::Encrypted, id, data })
+	WireReasoningReplay::Encrypted { kind: ReasoningEncryptedTag::Encrypted, id, data }
 }
 
 fn project_call_id(profile: ToolIdWireProfile, value: &str) -> Str {
@@ -1151,26 +1135,24 @@ fn lower_hosted_tools(
 	if profile.hosted_tools == HostedToolWireFormat::Unsupported {
 		return Err(capability_error());
 	}
-	tools
+	Ok(tools
 		.iter()
-		.map(|tool| {
-			Ok(match tool {
-				HostedTool::WebSearch { allowed_domains, blocked_domains, recency_days } => {
-					WireTool::WebSearch {
-						web_search: Some(WebSearchOptions {
-							allowed_domains: allowed_domains.to_vec(),
-							blocked_domains: blocked_domains.to_vec(),
-							recency_days:    *recency_days,
-						}),
-					}
-				},
-				HostedTool::CodeExecution => WireTool::CodeInterpreter,
-				HostedTool::Retrieval { stores } => WireTool::FileSearch {
-					file_search: FileSearchOptions { vector_store_ids: stores.to_vec() },
-				},
-			})
+		.map(|tool| match tool {
+			HostedTool::WebSearch { allowed_domains, blocked_domains, recency_days } => {
+				WireTool::WebSearch {
+					web_search: Some(WebSearchOptions {
+						allowed_domains: allowed_domains.to_vec(),
+						blocked_domains: blocked_domains.to_vec(),
+						recency_days:    *recency_days,
+					}),
+				}
+			},
+			HostedTool::CodeExecution => WireTool::CodeInterpreter,
+			HostedTool::Retrieval { stores } => WireTool::FileSearch {
+				file_search: FileSearchOptions { vector_store_ids: stores.to_vec() },
+			},
 		})
-		.collect()
+		.collect())
 }
 
 fn lower_tool_choice(
@@ -1437,7 +1419,7 @@ impl OpenAiChatDecoder {
 		let index = choice.index;
 		let mut state = self.choices.remove(&index).unwrap_or_default();
 		if let Some(reason) = choice.finish_reason {
-			state.finish = Some(reason.normalize()?);
+			state.finish = Some(reason.normalize());
 		}
 		let payload = choice.delta.or(choice.message).unwrap_or_default();
 		if let Some(error) = payload.error {
@@ -1459,7 +1441,7 @@ impl OpenAiChatDecoder {
 		if let Some(content) = payload
 			.content
 			.map(WireDeltaContent::into_text)
-			.or(payload._text)
+			.or(payload.text)
 			&& !content.is_empty()
 		{
 			let block = *state
@@ -1598,7 +1580,7 @@ impl OpenAiChatDecoder {
 	}
 
 	fn decode_error(&self, code: Option<Str>) -> Error {
-		let mut error = Error::new(
+		Error::new(
 			ErrorKind::Protocol,
 			if self.committed {
 				ErrorPhase::Streaming
@@ -1607,10 +1589,9 @@ impl OpenAiChatDecoder {
 			},
 			RetryAction::Never,
 			ExecutionReceipt::default(),
-		);
-		error.code = code;
-		error.committed = self.committed;
-		error
+		)
+		.optional_code(code)
+		.committed(self.committed)
 	}
 }
 
@@ -1640,7 +1621,7 @@ struct WirePayload {
 	#[serde(default)]
 	content:           Option<WireDeltaContent>,
 	#[serde(default, rename = "text")]
-	_text:             Option<Str>,
+	text:              Option<Str>,
 	#[serde(default)]
 	reasoning_content: Option<Str>,
 	#[serde(default)]
@@ -1794,13 +1775,13 @@ enum WireFinishReason {
 }
 
 impl WireFinishReason {
-	const fn normalize(self) -> Result<FinishReason, Error> {
-		Ok(match self {
+	const fn normalize(self) -> FinishReason {
+		match self {
 			Self::Stop | Self::End | Self::EndTurn => FinishReason::Stop,
 			Self::ToolCalls | Self::FunctionCall | Self::ToolUse => FinishReason::ToolCalls,
 			Self::Length | Self::MaxTokens | Self::MaxOutputTokens => FinishReason::Length,
 			Self::ContentFilter | Self::Safety => FinishReason::ContentFilter,
-		})
+		}
 	}
 }
 
@@ -1827,7 +1808,7 @@ impl ErrorCode {
 	fn text(&self) -> Str {
 		match self {
 			Self::Text(value) => value.clone(),
-			Self::Number(value) => Str::from(value.to_string()),
+			Self::Number(value) => value.to_str(),
 		}
 	}
 }
@@ -1865,7 +1846,7 @@ fn classify_error(error: WireError, committed: bool) -> Error {
 	} else {
 		ErrorKind::ProviderContractMismatch
 	};
-	let mut classified = Error::new(
+	Error::new(
 		kind,
 		if committed {
 			ErrorPhase::Streaming
@@ -1874,14 +1855,13 @@ fn classify_error(error: WireError, committed: bool) -> Error {
 		},
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	classified.status = status;
-	classified.code = error.metadata.and_then(|metadata| metadata.raw).or(code);
-	classified.committed = committed;
-	classified
+	)
+	.status(status)
+	.optional_code(error.metadata.and_then(|metadata| metadata.raw).or(code))
+	.committed(committed)
 }
 fn protocol_error(committed: bool, code: Option<Str>) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::Protocol,
 		if committed {
 			ErrorPhase::Streaming
@@ -1890,10 +1870,9 @@ fn protocol_error(committed: bool, code: Option<Str>) -> Error {
 		},
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.code = code;
-	error.committed = committed;
-	error
+	)
+	.optional_code(code)
+	.committed(committed)
 }
 
 const fn merge_usage(current: &mut Usage, update: Usage) {
@@ -1942,9 +1921,7 @@ fn capability_error() -> Error {
 }
 
 fn tool_capability_error(reason: &'static str) -> Error {
-	let mut error = capability_error();
-	error.code = Some(Str::new_static(reason));
-	error
+	capability_error().code(Str::new_static(reason))
 }
 
 fn encoding_error(kind: ErrorKind) -> Error {
@@ -1958,7 +1935,7 @@ mod tests {
 	use bytes::Bytes;
 	use serde::Deserialize;
 
-	use super::{OpenAiChatCodec, OpenAiChatDecoder, OpenAiChatProfile};
+	use super::{OpenAiChatCodec, OpenAiChatDecoder};
 	use crate::{
 		call::{
 			ChatRequest, ContentPart, Message, NegotiationPolicy, OpaqueJson, Role, Sampling, Setting,
@@ -1967,7 +1944,7 @@ mod tests {
 		codec::{Decoder, RawEvent},
 		error::ErrorKind,
 		event::{ChatEvent, FinishReason},
-		transport::{Frame, IncrementalFramer, SseDecoder},
+		transport::{Frame, SseDecoder},
 	};
 
 	fn request(messages: Arc<[Message]>) -> ChatRequest {
@@ -2147,6 +2124,11 @@ mod tests {
 					.as_slice(),
 				ErrorKind::ProviderContractMismatch,
 				"MALFORMED_FUNCTION_CALL",
+			),
+			(
+				br#"{"error":{"code":429,"message":"rate limited"}}"#.as_slice(),
+				ErrorKind::RateLimited,
+				"429",
 			),
 		] {
 			let mut decoder = OpenAiChatDecoder::default();

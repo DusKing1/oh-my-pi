@@ -1,3 +1,4 @@
+//! Verifies catalog vendor schemas retain their expected structure.
 #[path = "support/descriptors.rs"]
 mod descriptors;
 

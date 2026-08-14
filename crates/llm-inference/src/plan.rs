@@ -63,14 +63,32 @@ pub enum CapabilityAvailability {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NegotiationDecision {
 	/// The selected route provides the feature natively.
-	Native { feature: FeatureId },
+	Native {
+		/// Requested feature.
+		feature: FeatureId,
+	},
 	/// The selected route provides the feature through an allowed emulation.
-	Emulated { feature: FeatureId, method: Emulation },
+	Emulated {
+		/// Requested feature.
+		feature: FeatureId,
+		/// Authorized emulation method.
+		method:  Emulation,
+	},
 	/// An unknown preferred feature was accepted under explicit best-effort
 	/// policy.
-	UnknownAccepted { feature: FeatureId, reason: ReasonId },
+	UnknownAccepted {
+		/// Requested feature.
+		feature: FeatureId,
+		/// Evidence reason for accepting unknown support.
+		reason:  ReasonId,
+	},
 	/// A preferred feature was dropped with receipt evidence.
-	Dropped { feature: FeatureId, reason: ReasonId },
+	Dropped {
+		/// Requested feature.
+		feature: FeatureId,
+		/// Evidence reason for dropping the feature.
+		reason:  ReasonId,
+	},
 }
 
 /// Caller policy governing native, emulated, unknown, and dropped behavior.
@@ -129,7 +147,10 @@ pub enum ReplayPlan {
 	/// Exactly one attempt is permitted and automatic fallback is suppressed.
 	OneShotSingleAttempt,
 	/// Explicit secure staging must complete before the first attempt.
-	SecureStaging { maximum_bytes: u64 },
+	SecureStaging {
+		/// Maximum bytes eligible for secure staging.
+		maximum_bytes: u64,
+	},
 }
 
 /// Health evidence for one concrete route service.
@@ -280,16 +301,16 @@ impl ExecutionPlan {
 
 		Err(Error::planning(
 			ErrorKind::StalePlan,
-			ErrorDetail::StalePlan {
-				planned_revision: Str::from(self.catalog_revision.as_str()),
-				current_revision: if now > self.expires_at {
+			ErrorDetail::stale_plan(
+				Str::from(self.catalog_revision.as_str()),
+				if now > self.expires_at {
 					Str::from("expired")
 				} else if &self.catalog_revision != catalog_revision {
 					Str::from(catalog_revision.as_str())
 				} else {
 					Str::from("registry-state-changed")
 				},
-			},
+			),
 			ExecutionReceipt::default(),
 		))
 	}
@@ -394,10 +415,10 @@ pub fn negotiate_native_option(
 	}
 	Err(Error::planning(
 		ErrorKind::CodecMismatch,
-		ErrorDetail::Capability {
-			feature: Str::from(requirement.feature.0.as_str()),
-			reason:  ReasonId(Str::from("native-option-codec-mismatch")),
-		},
+		ErrorDetail::capability(
+			Str::from(requirement.feature.0.as_str()),
+			ReasonId(Str::from("native-option-codec-mismatch")),
+		),
 		ExecutionReceipt::default(),
 	))
 }
@@ -439,7 +460,7 @@ fn capability_error(
 ) -> Error {
 	Error::planning(
 		kind,
-		ErrorDetail::Capability { feature: Str::from(requirement.feature.0.as_str()), reason },
+		ErrorDetail::capability(Str::from(requirement.feature.0.as_str()), reason),
 		ExecutionReceipt::default(),
 	)
 }
@@ -447,7 +468,7 @@ fn capability_error(
 fn replay_error(kind: ErrorKind, reason: &'static str) -> Error {
 	Error::planning(
 		kind,
-		ErrorDetail::Replay { reason: ReasonId(Str::from(reason)) },
+		ErrorDetail::replay(ReasonId(Str::from(reason))),
 		ExecutionReceipt::default(),
 	)
 }
@@ -534,7 +555,7 @@ mod tests {
 		assert_eq!(
 			negotiate(
 				&[requirement(RequirementStrength::Required)],
-				&[emulated.clone()],
+				std::slice::from_ref(&emulated),
 				PlanningPolicy::default()
 			)
 			.expect_err("emulation defaults forbidden")

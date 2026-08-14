@@ -878,7 +878,7 @@ fn compile_with_oauth(
 		.iter()
 		.map(|(provider, source)| (provider.clone(), source.facets.clone()))
 		.collect::<BTreeMap<_, _>>();
-	inherit_source_references(&mut model_sources)?;
+	inherit_source_references(&mut model_sources);
 	let raw_models = model_sources.values().map(BTreeMap::len).sum();
 	let active_transports = provider_sources
 		.values()
@@ -956,6 +956,19 @@ struct ExactSourceReference {
 	rationale:          &'static str,
 	provenance:         &'static str,
 	expires_at_ms:      Option<u64>,
+}
+
+const fn review_metadata_is_valid(
+	rationale: &str,
+	provenance: &str,
+	expires_at_ms: Option<u64>,
+) -> bool {
+	!rationale.is_empty()
+		&& !provenance.is_empty()
+		&& match expires_at_ms {
+			Some(expiry) => expiry > 0,
+			None => true,
+		}
 }
 
 const fn reviewed_source_reference(
@@ -2334,9 +2347,7 @@ const EXACT_INHERITANCE_POLICIES: &[ExactInheritancePolicy] = &[
 		"The reviewed route explicitly preserves zero cache-write pricing.",
 	),
 ];
-fn inherit_source_references(
-	models: &mut BTreeMap<Str, BTreeMap<Str, SourceModelRecord>>,
-) -> Result<(), CompileError> {
+fn inherit_source_references(models: &mut BTreeMap<Str, BTreeMap<Str, SourceModelRecord>>) {
 	let snapshot = models.clone();
 	let mut exact: BTreeMap<Str, (Str, Str)> = BTreeMap::new();
 	for (provider, rows) in &snapshot {
@@ -2345,7 +2356,11 @@ fn inherit_source_references(
 				.iter()
 				.find(|policy| policy.provider == provider.as_str());
 			if candidate_policy.is_some_and(|policy| {
-				let _review_evidence = (policy.rationale, policy.provenance, policy.expires_at_ms);
+				debug_assert!(review_metadata_is_valid(
+					policy.rationale,
+					policy.provenance,
+					policy.expires_at_ms,
+				));
 				policy.exclude_zero_prices && source_cost_is_zero(&row.cost)
 			}) {
 				continue;
@@ -2393,16 +2408,17 @@ fn inherit_source_references(
 			let max_hops = SOURCE_INHERITANCE_OVERRIDES
 				.iter()
 				.find(|override_| {
+					debug_assert!(review_metadata_is_valid(
+						override_.rationale,
+						override_.provenance,
+						override_.expires_at_ms,
+					));
 					override_
 						.provider
 						.is_none_or(|candidate| candidate == provider)
 						&& override_.model == model
 				})
-				.map_or(1, |override_| {
-					let _review_evidence =
-						(override_.rationale, override_.provenance, override_.expires_at_ms);
-					override_.max_hops
-				});
+				.map_or(1, |override_| override_.max_hops);
 			if max_hops == 0 {
 				continue;
 			}
@@ -2415,8 +2431,11 @@ fn inherit_source_references(
 			while let Some(reference) = exact_reference
 				.filter(|_| visited.is_empty())
 				.map(|reference| {
-					let _review_evidence =
-						(reference.rationale, reference.provenance, reference.expires_at_ms);
+					debug_assert!(review_metadata_is_valid(
+						reference.rationale,
+						reference.provenance,
+						reference.expires_at_ms,
+					));
 					(Str::from(reference.reference_provider), Str::from(reference.reference_model))
 				})
 				.or_else(|| select_reference(&current.1, &current.0, &current.1, &exact, &suffix))
@@ -2426,12 +2445,15 @@ fn inherit_source_references(
 				}
 				let reference_row = &snapshot[&reference.0][&reference.1];
 				let inheritance_policy = EXACT_INHERITANCE_POLICIES.iter().find(|policy| {
+					debug_assert!(review_metadata_is_valid(
+						policy.rationale,
+						policy.provenance,
+						policy.expires_at_ms,
+					));
 					policy.provider == provider.as_str() && policy.model == model.as_str()
 				});
 				let (inherit_limits, preserve_zero_cache_read, preserve_zero_cache_write) =
 					inheritance_policy.map_or((true, false, false), |policy| {
-						let _review_evidence =
-							(policy.rationale, policy.provenance, policy.expires_at_ms);
 						(
 							policy.inherit_limits,
 							policy.preserve_zero_cache_read,
@@ -2454,7 +2476,6 @@ fn inherit_source_references(
 			}
 		}
 	}
-	Ok(())
 }
 
 fn source_inheritance_override(
@@ -2462,6 +2483,11 @@ fn source_inheritance_override(
 	model: &str,
 ) -> Option<&'static SourceInheritanceOverride> {
 	SOURCE_INHERITANCE_OVERRIDES.iter().find(|override_| {
+		debug_assert!(review_metadata_is_valid(
+			override_.rationale,
+			override_.provenance,
+			override_.expires_at_ms,
+		));
 		override_
 			.provider
 			.is_none_or(|candidate| candidate == provider)
@@ -2477,10 +2503,14 @@ fn select_reference(
 	suffix: &BTreeMap<Str, (Str, Str)>,
 ) -> Option<(Str, Str)> {
 	if let Some(override_) = EXACT_SOURCE_REFERENCES.iter().find(|override_| {
+		debug_assert!(review_metadata_is_valid(
+			override_.rationale,
+			override_.provenance,
+			override_.expires_at_ms,
+		));
 		(override_.provider == "*" || override_.provider == provider)
 			&& override_.model.eq_ignore_ascii_case(model)
 	}) {
-		let _review_evidence = (override_.rationale, override_.provenance, override_.expires_at_ms);
 		return Some((Str::from(override_.reference_provider), Str::from(override_.reference_model)));
 	}
 	let mut candidates = reference_keys(model);
@@ -4122,11 +4152,14 @@ fn compile_pricing(
 ) -> Result<Pricing, CompileError> {
 	let mut components =
 		price_components(&cost.input, &cost.output, &cost.cache_read, &cost.cache_write)?;
-	if let Some(policy) = COMPLETE_ZERO_PRICING_POLICIES
-		.iter()
-		.find(|policy| policy.provider == provider && policy.model == model)
-	{
-		let _review_evidence = (policy.rationale, policy.provenance, policy.expires_at_ms);
+	if COMPLETE_ZERO_PRICING_POLICIES.iter().any(|policy| {
+		debug_assert!(review_metadata_is_valid(
+			policy.rationale,
+			policy.provenance,
+			policy.expires_at_ms,
+		));
+		policy.provider == provider && policy.model == model
+	}) {
 		for unit in [
 			PriceUnit::MtokInput,
 			PriceUnit::MtokOutput,
@@ -4656,8 +4689,8 @@ pending_facets = ["image_generation"]
 				override_.provider,
 				override_.model
 			);
-			assert!(!override_.rationale.is_empty());
-			assert!(!override_.provenance.is_empty());
+			assert_ne!(override_.rationale, "");
+			assert_ne!(override_.provenance, "");
 		}
 		assert_eq!(
 			exact_capability_override("aimlapi", "voyage-2").map(|override_| override_.correction),

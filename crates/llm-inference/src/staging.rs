@@ -397,7 +397,7 @@ pub async fn stage_body(
 			Err(BodyOpenError::Factory(mut error)) => {
 				let evidence = staging_evidence(0, started, StagingStorage::Memory, None, false, false);
 				receipt.staging.push(evidence);
-				error.receipt = receipt.clone();
+				error.replace_receipt(receipt.clone());
 				return Err(error);
 			},
 			Err(error) => {
@@ -428,33 +428,32 @@ pub async fn stage_body(
 	let mut disk: Option<DiskBuilder> = None;
 
 	loop {
-		let next = match cancellable(cancellation, input.next()).await {
-			Ok(next) => next,
-			Err(()) => {
-				return Err(finish_failure(
+		let next = cancellable(cancellation, input.next())
+			.await
+			.map_err(|()| {
+				finish_failure(
 					receipt,
 					failed_evidence(total, started, disk.as_ref(), true),
 					staging_error(ErrorKind::Cancelled, "staging_cancelled", None),
-				));
-			},
-		};
+				)
+			})?;
 		let Some(next) = next else { break };
 		let bytes = match next {
 			Ok(bytes) => bytes,
 			Err(mut error) => {
 				let evidence = failed_evidence(total, started, disk.as_ref(), false);
 				receipt.staging.push(evidence);
-				error.receipt = receipt.clone();
+				error.replace_receipt(receipt.clone());
 				return Err(error);
 			},
 		};
 		let observed = total.saturating_add(bytes.len() as u64);
 		if observed > effective_limit {
-			let detail = ErrorDetail::Budget {
-				dimension: Str::from("staging_bytes"),
-				limit:     effective_limit as u128,
-				observed:  observed as u128,
-			};
+			let detail = ErrorDetail::budget(
+				Str::from("staging_bytes"),
+				effective_limit as u128,
+				observed as u128,
+			);
 			return Err(finish_failure(
 				receipt,
 				failed_evidence(total, started, disk.as_ref(), false),
@@ -470,20 +469,13 @@ pub async fn stage_body(
 					staging_error(ErrorKind::ResourceExhausted, "secure_staging_key_unavailable", None),
 				));
 			};
-			let (key, key_source) = match provider.load() {
-				Ok(loaded) => loaded,
-				Err(_) => {
-					return Err(finish_failure(
-						receipt,
-						failed_evidence(total, started, None, false),
-						staging_error(
-							ErrorKind::ResourceExhausted,
-							"secure_staging_key_unavailable",
-							None,
-						),
-					));
-				},
-			};
+			let (key, key_source) = provider.load().map_err(|_| {
+				finish_failure(
+					receipt,
+					failed_evidence(total, started, None, false),
+					staging_error(ErrorKind::ResourceExhausted, "secure_staging_key_unavailable", None),
+				)
+			})?;
 			let mut builder = match DiskBuilder::create(policy, key, key_source, cancellation).await {
 				Ok(builder) => builder,
 				Err(error) => {
@@ -618,16 +610,18 @@ fn finish_failure(
 	mut error: Error,
 ) -> Error {
 	receipt.staging.push(evidence);
-	error.receipt = receipt.clone();
+	error.replace_receipt(receipt.clone());
 	error
 }
 
 fn staging_error(kind: ErrorKind, code: &'static str, detail: Option<ErrorDetail>) -> Error {
-	let mut error =
-		Error::new(kind, ErrorPhase::Artifact, RetryAction::Never, ExecutionReceipt::default());
-	error.code = Some(Str::from(code));
-	error.detail = detail;
-	error
+	let error =
+		Error::new(kind, ErrorPhase::Artifact, RetryAction::Never, ExecutionReceipt::default())
+			.code(Str::from(code));
+	match detail {
+		Some(detail) => error.detail(detail),
+		None => error,
+	}
 }
 
 fn body_open_error(error: BodyOpenError) -> Error {
@@ -810,7 +804,7 @@ impl StagedState {
 		if error.kind == ErrorKind::Cancelled {
 			evidence.cancelled = true;
 		}
-		error.receipt.staging.push(evidence);
+		error.receipt_mut().staging.push(evidence);
 		error
 	}
 
@@ -1040,19 +1034,15 @@ fn aad(index: u64, plain_len: u32) -> [u8; 20] {
 }
 
 fn tamper_error() -> Error {
-	let detail =
-		ErrorDetail::Protocol { reason: ReasonId(Str::from("staged_chunk_authentication_failed")) };
+	let detail = ErrorDetail::protocol(ReasonId(Str::from("staged_chunk_authentication_failed")));
 	staging_error(ErrorKind::StreamCorruption, "staged_chunk_authentication_failed", Some(detail))
 }
 
 #[cfg(test)]
 mod tests {
-	use std::{
-		io::{self, Read as _, Write as _},
-		sync::atomic::{AtomicUsize, Ordering},
-	};
+	use std::sync::atomic::{AtomicUsize, Ordering};
 
-	use futures::{StreamExt as _, stream};
+	use futures::stream;
 
 	use super::*;
 
@@ -1063,7 +1053,7 @@ mod tests {
 	fn body(chunks: &[&'static [u8]]) -> BodySource {
 		let chunks = chunks
 			.iter()
-			.map(|chunk| Ok(Bytes::from_static(chunk)))
+			.map(|chunk| Ok::<_, Error>(Bytes::from_static(chunk)))
 			.collect::<Vec<_>>();
 		BodySource::OneShot(Arc::new(crate::body::OneShotBody::new(Box::pin(stream::iter(chunks)))))
 	}
@@ -1115,8 +1105,9 @@ mod tests {
 			.expect_err("overflow must fail");
 			assert_eq!(error.kind, ErrorKind::BudgetExhausted);
 			assert!(matches!(
-				error.detail,
-				Some(ErrorDetail::Budget { limit, observed: 6, .. }) if limit == expected
+				error.detail_ref(),
+				Some(ErrorDetail::Budget { limit, observed, .. })
+					if *limit == expected && *observed == 6
 			));
 			assert!(!receipt.staging[0].completed);
 		}
@@ -1146,7 +1137,10 @@ mod tests {
 		.await
 		.expect_err("remaining staging budget is only two bytes");
 		assert_eq!(error.kind, ErrorKind::BudgetExhausted);
-		assert!(matches!(error.detail, Some(ErrorDetail::Budget { limit: 2, observed: 3, .. })));
+		assert!(matches!(
+			error.detail_ref(),
+			Some(ErrorDetail::Budget { limit: 2, observed: 3, .. })
+		));
 	}
 
 	#[tokio::test]
@@ -1261,9 +1255,8 @@ mod tests {
 		};
 		cancellation.cancel();
 		assert!(!path.exists());
-		let error = match staged.open().await {
-			Ok(_) => panic!("cancelled staged body must not open"),
-			Err(error) => error,
+		let Err(error) = staged.open().await else {
+			panic!("cancelled staged body must not open");
 		};
 		assert_eq!(error.kind, ErrorKind::Cancelled);
 	}
@@ -1563,9 +1556,9 @@ struct GateSpoolState {
 }
 
 struct GateSpoolStorage {
-	file: StdFile,
-	path: TempPath,
-	key:  StagingKey,
+	file:  StdFile,
+	_path: TempPath,
+	key:   StagingKey,
 }
 
 impl fmt::Debug for GateSpoolStorage {
@@ -1608,26 +1601,15 @@ impl SecureTemporaryGateSpool {
 		}
 		.map_err(|_| gate_unavailable("secure_gate_spool_create_failed"))?;
 		let path = named.into_temp_path();
-		let file = if let Ok(file) = StdOpenOptions::new()
+		let file = StdOpenOptions::new()
 			.read(true)
 			.write(true)
 			.truncate(true)
 			.open(&path)
-		{
-			file
-		} else {
-			drop(path);
-			return Err(gate_unavailable("secure_gate_spool_open_failed"));
-		};
-		let key = match derive_ephemeral_key(key) {
-			Ok(key) => key,
-			Err(error) => {
-				drop(path);
-				return Err(error);
-			},
-		};
+			.map_err(|_| gate_unavailable("secure_gate_spool_open_failed"))?;
+		let key = derive_ephemeral_key(key)?;
 		let state = Arc::new(GateSpoolState {
-			storage:   Mutex::new(Some(GateSpoolStorage { file, path, key })),
+			storage:   Mutex::new(Some(GateSpoolStorage { file, _path: path, key })),
 			cancelled: AtomicBool::new(false),
 		});
 		cancellation.register_gate_spool(&state);
@@ -1656,7 +1638,7 @@ impl SecureTemporaryGateSpool {
 			.storage
 			.lock()
 			.as_ref()
-			.map(|storage| storage.path.to_path_buf())
+			.map(|storage| storage._path.to_path_buf())
 	}
 }
 
@@ -1967,9 +1949,9 @@ fn decode_chat_event(input: &[u8]) -> Result<ChatEvent, GateSpoolError> {
 			let reason = cursor.finish_reason()?;
 			let blocks = cursor.u32()?;
 			let usage = cursor.usage()?;
-			let receipt = postcard::from_bytes(cursor.bytes()?)
+			let receipt: ExecutionReceipt = postcard::from_bytes(cursor.bytes()?)
 				.map_err(|_| gate_corrupt("secure_gate_receipt_corrupt"))?;
-			ChatEvent::Completed(Completion { reason, blocks, usage, receipt })
+			ChatEvent::Completed(Completion { reason, blocks, usage, receipt: receipt.into() })
 		},
 		_ => return Err(gate_corrupt("secure_gate_event_tag_corrupt")),
 	};

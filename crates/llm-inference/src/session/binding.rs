@@ -113,12 +113,46 @@ impl PendingServerStateBinding {
 /// binding.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum StoredProviderStateEvent {
-	Continuation { handle: Str },
-	ReasoningSignature { index: u32, signature: Bytes },
-	ToolCallProof { index: u32, value: Bytes },
-	HistoryBlock { index: u32, data: Bytes },
-	OutputItem { index: u32, id: Str },
-	Checkpoint { id: Option<Str>, data: Bytes },
+	/// Opaque continuation handle for a subsequent provider request.
+	Continuation {
+		/// Provider-issued continuation handle.
+		handle: Str,
+	},
+	/// Provider-issued signature that validates a reasoning item.
+	ReasoningSignature {
+		/// Position of the reasoning item in the provider transcript.
+		index:     u32,
+		/// Opaque provider signature.
+		signature: Bytes,
+	},
+	/// Provider proof attached to a tool-call item.
+	ToolCallProof {
+		/// Position of the tool-call item in the provider transcript.
+		index: u32,
+		/// Opaque provider proof.
+		value: Bytes,
+	},
+	/// Provider-specific serialized history item.
+	HistoryBlock {
+		/// Position of the history item in the provider transcript.
+		index: u32,
+		/// Opaque serialized history item.
+		data:  Bytes,
+	},
+	/// Provider identifier for an output item.
+	OutputItem {
+		/// Position of the output item in the provider transcript.
+		index: u32,
+		/// Provider-issued output-item identifier.
+		id:    Str,
+	},
+	/// Opaque provider checkpoint that may have an identifier.
+	Checkpoint {
+		/// Provider-issued checkpoint identifier, when supplied.
+		id:   Option<Str>,
+		/// Opaque checkpoint data.
+		data: Bytes,
+	},
 }
 
 impl From<crate::codec::ProviderStateEvent> for StoredProviderStateEvent {

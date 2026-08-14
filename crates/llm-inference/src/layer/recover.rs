@@ -167,7 +167,7 @@ where
 					match item {
 						Err(mut error) => {
 							output_context.finalize_error(&mut error);
-							error.committed = output_context.is_committed();
+							let error = error.committed(output_context.is_committed());
 							yield Err(error);
 							return;
 						}
@@ -196,7 +196,7 @@ where
 						Ok(RawEvent::Telemetry(telemetry)) => output_context.observe_provider_telemetry(telemetry),
 						Ok(RawEvent::Failure(mut error)) => {
 							output_context.finalize_error(&mut error);
-							error.committed = output_context.is_committed();
+							let error = error.committed(output_context.is_committed());
 							yield Err(error);
 							return;
 						}
@@ -216,7 +216,7 @@ where
 							};
 							if let Some(stage) = json.as_mut() {
 								structured_index.get_or_insert(index);
-								if let Err(_) = stage.push(bytes::Bytes::copy_from_slice(text.as_bytes()), &mut |_| {}) {
+								if stage.push(bytes::Bytes::copy_from_slice(text.as_bytes()), &mut |_| {}).is_err() {
 									yield Err(structured_error("structured-output.repair-input", &output_context));
 									return;
 								}
@@ -337,16 +337,16 @@ fn observe_reasoning(
 			.recoveries
 			.push(recovery_record(context.attempts().saturating_sub(1), &signal));
 	});
-	let mut error = Error::new(
-		ErrorKind::RepeatedReasoning,
-		ErrorPhase::Recovery,
-		RetryAction::SemanticRetry,
-		context.receipt(),
-	);
-	error.committed = context.is_committed();
-	error.detail =
-		Some(ErrorDetail::Protocol { reason: ReasonId("reasoning.loop-detected".into()) });
-	Err(error)
+	Err(
+		Error::new(
+			ErrorKind::RepeatedReasoning,
+			ErrorPhase::Recovery,
+			RetryAction::SemanticRetry,
+			context.receipt(),
+		)
+		.committed(context.is_committed())
+		.detail(ErrorDetail::protocol(ReasonId("reasoning.loop-detected".into()))),
+	)
 }
 
 fn observe_empty(
@@ -359,10 +359,10 @@ fn observe_empty(
 	};
 	let mut output = None;
 	stage
-		.push(EmptyInput::Event(event), &mut |event| output = Some(event))
+		.push(EmptyInput::Event(Box::new(event)), &mut |event| output = Some(event))
 		.map_err(|_| recovery_error("empty-completion.observer", context))?;
 	match output {
-		Some(EmptyEvent::Event(event)) => Ok(event),
+		Some(EmptyEvent::Event(event)) => Ok(*event),
 		Some(EmptyEvent::Empty(_)) | None => {
 			Err(recovery_error("empty-completion.invalid-observer-output", context))
 		},
@@ -401,10 +401,11 @@ fn finish_empty(
 			(ErrorKind::EmptyCompletion, RetryAction::SemanticRetry, "empty-completion.classified")
 		},
 	};
-	let mut error = Error::new(kind, ErrorPhase::Recovery, action, context.receipt());
-	error.committed = context.is_committed();
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(reason.into()) });
-	Err(error)
+	Err(
+		Error::new(kind, ErrorPhase::Recovery, action, context.receipt())
+			.committed(context.is_committed())
+			.detail(ErrorDetail::protocol(ReasonId(reason.into()))),
+	)
 }
 
 fn finish_json(
@@ -450,15 +451,14 @@ fn validate_structured_output(
 }
 
 fn structured_error(reason: &'static str, context: &crate::layer::ExecutionContext) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::StructuredOutputFailure,
 		ErrorPhase::Recovery,
 		RetryAction::SemanticRetry,
 		context.receipt(),
-	);
-	error.committed = context.is_committed();
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(reason.into()) });
-	error
+	)
+	.committed(context.is_committed())
+	.detail(ErrorDetail::protocol(ReasonId(reason.into())))
 }
 fn finalize_completion(
 	terminal: RawCompletion,
@@ -551,7 +551,7 @@ fn finalize_completion(
 		reason: terminal.reason,
 		blocks: terminal.blocks,
 		usage,
-		receipt,
+		receipt: receipt.into(),
 	}))
 }
 
@@ -606,15 +606,14 @@ fn recover_tool(
 }
 
 fn recovery_error(reason: &'static str, context: &crate::layer::ExecutionContext) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::MalformedModelOutput,
 		ErrorPhase::Recovery,
 		RetryAction::SemanticRetry,
 		context.receipt(),
-	);
-	error.committed = context.is_committed();
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(reason.into()) });
-	error
+	)
+	.committed(context.is_committed())
+	.detail(ErrorDetail::protocol(ReasonId(reason.into())))
 }
 
 #[cfg(test)]
@@ -676,7 +675,7 @@ mod tests {
 		assert_eq!(error.kind, ErrorKind::EmptyOutput);
 		assert_eq!(error.action, RetryAction::Never);
 		assert!(matches!(
-			error.detail,
+			error.detail_ref(),
 			Some(ErrorDetail::Protocol { reason })
 				if reason.0.as_str() == "empty-completion.thought-only"
 		));
@@ -689,7 +688,7 @@ mod tests {
 		assert_eq!(error.kind, ErrorKind::EmptyCompletion);
 		assert_eq!(error.action, RetryAction::SemanticRetry);
 		assert!(matches!(
-			error.detail,
+			error.detail_ref(),
 			Some(ErrorDetail::Protocol { reason })
 				if reason.0.as_str() == "empty-completion.classified"
 		));

@@ -328,24 +328,23 @@ pub fn normalize_page(
 }
 
 fn wrong_operation(call: &crate::call::Call) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::InternalInvariant,
 		ErrorPhase::Internal,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.request_id = Some(call.id.clone());
-	error.detail = Some(ErrorDetail::Capability {
-		feature: Str::from(OperationKind::DiscoverModels.to_string()),
-		reason:  ReasonId(Str::from("operation_service_mismatch")),
-	});
-	error
+	)
+	.detail(ErrorDetail::capability(
+		Str::from(OperationKind::DiscoverModels.to_string()),
+		ReasonId(Str::from("operation_service_mismatch")),
+	))
+	.request_id(call.id.clone())
 }
 
 fn request_error(feature: &'static str, reason: &'static str) -> Error {
 	Error::planning(
 		ErrorKind::InvalidRequest,
-		ErrorDetail::Capability { feature: Str::from(feature), reason: ReasonId(Str::from(reason)) },
+		ErrorDetail::capability(Str::from(feature), ReasonId(Str::from(reason))),
 		ExecutionReceipt::default(),
 	)
 }
@@ -353,20 +352,19 @@ fn request_error(feature: &'static str, reason: &'static str) -> Error {
 fn capability_error(feature: &'static str, reason: &'static str) -> Error {
 	Error::planning(
 		ErrorKind::CapabilityMismatch,
-		ErrorDetail::Capability { feature: Str::from(feature), reason: ReasonId(Str::from(reason)) },
+		ErrorDetail::capability(Str::from(feature), ReasonId(Str::from(reason))),
 		ExecutionReceipt::default(),
 	)
 }
 
 fn protocol_error(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::ProviderContractMismatch,
 		ErrorPhase::Discovery,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 #[cfg(test)]

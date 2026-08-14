@@ -26,6 +26,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use strum::IntoStaticStr;
 use url::Url;
 use zeroize::Zeroizing;
 
@@ -528,7 +529,7 @@ where
 				return token_response(response, None);
 			}
 			match provider_code(&response.body) {
-				OAuthProviderCode::AuthorizationPending => continue,
+				OAuthProviderCode::AuthorizationPending => {},
 				OAuthProviderCode::SlowDown => {
 					pending.interval = pending
 						.interval
@@ -773,7 +774,7 @@ where
 				}
 			})
 			.await
-			.map_err(OAuthCredentialManagerError::Refresh)
+			.map_err(|error| OAuthCredentialManagerError::Refresh(Box::new(error)))
 	}
 }
 
@@ -1027,7 +1028,12 @@ impl std::fmt::Debug for OAuthTokenSet {
 }
 
 /// Closed, sanitized OAuth provider error vocabulary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+	missing_docs,
+	reason = "strum generates the public const string-conversion method from documented variants"
+)]
+#[derive(Clone, Copy, Debug, Eq, IntoStaticStr, PartialEq)]
+#[strum(serialize_all = "snake_case", const_into_str)]
 pub enum OAuthProviderCode {
 	/// Device authorization remains pending.
 	AuthorizationPending,
@@ -1054,22 +1060,10 @@ pub enum OAuthProviderCode {
 }
 
 impl OAuthProviderCode {
-	/// Stable, secret-free code suitable for rejection evidence.
+	/// Stable machine-readable string representation of this error code.
 	#[must_use]
 	pub const fn as_str(self) -> &'static str {
-		match self {
-			Self::AuthorizationPending => "authorization_pending",
-			Self::SlowDown => "slow_down",
-			Self::AccessDenied => "access_denied",
-			Self::ExpiredToken => "expired_token",
-			Self::InvalidGrant => "invalid_grant",
-			Self::InvalidClient => "invalid_client",
-			Self::InvalidRequest => "invalid_request",
-			Self::InvalidScope => "invalid_scope",
-			Self::ServerError => "server_error",
-			Self::TemporarilyUnavailable => "temporarily_unavailable",
-			Self::Unknown => "unknown",
-		}
+		self.into_str()
 	}
 }
 
@@ -1099,7 +1093,14 @@ pub enum OAuthError {
 
 	/// Provider returned sanitized protocol evidence.
 	#[error("OAuth provider rejected the request")]
-	Provider { status: u16, code: OAuthProviderCode, retryable: bool },
+	Provider {
+		/// HTTP status supplied by the provider.
+		status:    u16,
+		/// Sanitized provider protocol code.
+		code:      OAuthProviderCode,
+		/// Whether the provider identified the rejection as retryable.
+		retryable: bool,
+	},
 	/// Refresh grant rejection must reach credential-source rejection policy.
 	#[error("OAuth refresh grant was rejected")]
 	RefreshRejected(AuthRejection),
@@ -1114,7 +1115,10 @@ pub enum OAuthError {
 	Cancelled,
 	/// Device polling reached its catalog or expiry bound.
 	#[error("OAuth device polling exhausted its bound")]
-	PollingExhausted { polls: u16 },
+	PollingExhausted {
+		/// Number of token endpoint polls performed.
+		polls: u16,
+	},
 	/// Cryptographic random generation failed.
 	#[error("OAuth cryptographic entropy is unavailable")]
 	Entropy,
@@ -1177,19 +1181,31 @@ pub(crate) fn lease_stored_bundle(
 pub enum OAuthCredentialManagerError {
 	/// OAuth protocol or bundle processing failed.
 	#[error(transparent)]
-	OAuth(#[from] OAuthError),
+	OAuth(Box<OAuthError>),
 	/// Encrypted credential store failed.
 	#[error(transparent)]
-	Store(#[from] StoreError),
+	Store(Box<StoreError>),
 	/// Shared refresh coordination failed.
 	#[error(transparent)]
-	Refresh(RefreshError),
+	Refresh(Box<RefreshError>),
 	/// Persisted access token is expired and requires coordinated refresh.
 	#[error("persisted OAuth access token is expired")]
 	Expired,
 	/// Wall-clock timestamp cannot be represented as Unix milliseconds.
 	#[error("OAuth credential timestamp is invalid")]
 	InvalidTime,
+}
+
+impl From<OAuthError> for OAuthCredentialManagerError {
+	fn from(error: OAuthError) -> Self {
+		Self::OAuth(Box::new(error))
+	}
+}
+
+impl From<StoreError> for OAuthCredentialManagerError {
+	fn from(error: StoreError) -> Self {
+		Self::Store(Box::new(error))
+	}
 }
 
 fn unix_millis(time: SystemTime) -> Result<u64, OAuthCredentialManagerError> {

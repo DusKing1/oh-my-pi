@@ -302,17 +302,45 @@ pub struct UnvalidatedToolCall {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProviderStateEvent {
 	/// An authoritative continuation handle was observed.
-	Continuation { handle: Str },
+	Continuation {
+		/// Authoritative continuation handle.
+		handle: Str,
+	},
 	/// Opaque encrypted reasoning material associated with a content block.
-	ReasoningSignature { index: u32, signature: Bytes },
+	ReasoningSignature {
+		/// Content-block index.
+		index:     u32,
+		/// Opaque reasoning signature.
+		signature: Bytes,
+	},
 	/// Provider-scoped proof required to replay a canonicalized tool call.
-	ToolCallProof { index: u32, value: Bytes },
+	ToolCallProof {
+		/// Tool-call index.
+		index: u32,
+		/// Opaque replay proof.
+		value: Bytes,
+	},
 	/// Codec-scoped opaque canonical-history proof for hosted server blocks.
-	HistoryBlock { index: u32, data: Bytes },
+	HistoryBlock {
+		/// Hosted server-block index.
+		index: u32,
+		/// Opaque history proof.
+		data:  Bytes,
+	},
 	/// Stable server output-item identity used by continuation protocols.
-	OutputItem { index: u32, id: Str },
+	OutputItem {
+		/// Output-item index.
+		index: u32,
+		/// Stable provider output-item identity.
+		id:    Str,
+	},
 	/// Provider checkpoint identity and its authoritative opaque state bytes.
-	Checkpoint { id: Option<Str>, data: Bytes },
+	Checkpoint {
+		/// Optional provider checkpoint identity.
+		id:   Option<Str>,
+		/// Opaque checkpoint state.
+		data: Bytes,
+	},
 }
 /// Provider response metadata that is neither session state nor accounting
 /// telemetry.
@@ -321,16 +349,43 @@ pub enum ProviderMetadataEvent {
 	/// Stable response identity.
 	ResponseId(Str),
 	/// Candidate grounding metadata.
-	Grounding { candidate: u32, data: Bytes },
+	Grounding {
+		/// Candidate index.
+		candidate: u32,
+		/// Opaque grounding metadata.
+		data:      Bytes,
+	},
 	/// Candidate citation metadata.
-	Citations { candidate: u32, data: Bytes },
+	Citations {
+		/// Candidate index.
+		candidate: u32,
+		/// Opaque citation metadata.
+		data:      Bytes,
+	},
 	/// Candidate safety ratings.
-	SafetyRatings { candidate: u32, data: Bytes },
+	SafetyRatings {
+		/// Candidate index.
+		candidate: u32,
+		/// Opaque safety-rating metadata.
+		data:      Bytes,
+	},
 	/// Provider finish explanation.
-	FinishMessage { candidate: u32, message: Str },
+	FinishMessage {
+		/// Candidate index.
+		candidate: u32,
+		/// Provider finish explanation.
+		message:   Str,
+	},
 	/// Typed auxiliary candidate part whose provider kind is preserved without
 	/// interpretation.
-	AuxiliaryPart { index: u32, kind: Str, label: Option<Str> },
+	AuxiliaryPart {
+		/// Part index.
+		index: u32,
+		/// Provider-defined part kind.
+		kind:  Str,
+		/// Optional provider-defined part label.
+		label: Option<Str>,
+	},
 }
 
 /// Normalized provider safety action.
@@ -445,27 +500,76 @@ pub enum ProviderControlEvent {
 		streaming:  bool,
 	},
 	/// Provider requests a correlated interactive answer.
-	InteractionQuery { id: u32, kind: Str, payload: Bytes },
+	InteractionQuery {
+		/// Provider interaction identity.
+		id:      u32,
+		/// Provider-defined interaction kind.
+		kind:    Str,
+		/// Opaque interaction payload.
+		payload: Bytes,
+	},
 	/// Provider cancels an outstanding tool or control call.
-	Cancel { call: ToolCallId },
+	Cancel {
+		/// Canonical call identity.
+		call: ToolCallId,
+	},
 	/// Provider acknowledges incremental session state.
-	StateAccepted { sequence: u64 },
+	StateAccepted {
+		/// Accepted session sequence.
+		sequence: u64,
+	},
 	/// Provider asks the client to replay from a sequence boundary.
-	ReplayFrom { sequence: u64 },
+	ReplayFrom {
+		/// Requested replay sequence.
+		sequence: u64,
+	},
 	/// Provider reports an optimistic-concurrency conflict.
-	Conflict { expected: u64, actual: u64 },
+	Conflict {
+		/// Expected sequence.
+		expected: u64,
+		/// Actual sequence.
+		actual:   u64,
+	},
 	/// Provider rolls back uncommitted incremental state.
-	Rollback { sequence: u64 },
+	Rollback {
+		/// Rollback sequence.
+		sequence: u64,
+	},
 	/// Provider requests an externally executed workflow action.
-	WorkflowAction { request_id: Str, name: Str, arguments: Bytes, timeout_ms: Option<u64> },
+	WorkflowAction {
+		/// Provider workflow request identity.
+		request_id: Str,
+		/// Provider workflow action name.
+		name:       Str,
+		/// Opaque action arguments.
+		arguments:  Bytes,
+		/// Optional provider deadline.
+		timeout_ms: Option<u64>,
+	},
 	/// Provider supplies a reconnect/resume cursor for a workflow.
-	WorkflowResume { workflow_id: Str, session_id: Str, last_event_id: Option<Str> },
+	WorkflowResume {
+		/// Provider workflow identity.
+		workflow_id:   Str,
+		/// Provider session identity.
+		session_id:    Str,
+		/// Optional last observed provider event identity.
+		last_event_id: Option<Str>,
+	},
 	/// Internal envelope accepted a request and reports whether it is replayed.
-	Accepted { replay: bool },
+	Accepted {
+		/// Whether the accepted request is replayed.
+		replay: bool,
+	},
 	/// Internal envelope reports an opaque revision conflict.
-	RevisionConflict { actual_revision: Str },
+	RevisionConflict {
+		/// Current opaque revision.
+		actual_revision: Str,
+	},
 	/// Internal envelope rolled back to an opaque revision.
-	RolledBack { revision: Option<Str> },
+	RolledBack {
+		/// Optional opaque rollback revision.
+		revision: Option<Str>,
+	},
 	/// Internal envelope confirms cancellation.
 	Cancelled,
 }
@@ -493,7 +597,12 @@ pub enum RawEvent {
 	Completion(RawCompletion),
 	/// Syntactically complete tool input that recovery must validate before
 	/// authorization.
-	ToolCallComplete { index: u32, call: UnvalidatedToolCall },
+	ToolCallComplete {
+		/// Provider tool-call index.
+		index: u32,
+		/// Complete unvalidated tool call.
+		call:  UnvalidatedToolCall,
+	},
 	/// Typed unary or operation-specific output.
 	Answer(AnswerBody),
 	/// Provider-side state evidence consumed by session middleware.
@@ -515,7 +624,12 @@ pub enum RawEvent {
 	/// Typed provider telemetry consumed by receipt and observation layers.
 	Telemetry(ProviderTelemetryEvent),
 	/// Conservative runtime discovery rows awaiting catalog normalization.
-	DiscoveredModels { rows: Vec<DiscoveredModel>, next_cursor: Option<Str> },
+	DiscoveredModels {
+		/// Normalized discovery rows.
+		rows:        Vec<DiscoveredModel>,
+		/// Optional provider pagination cursor.
+		next_cursor: Option<Str>,
+	},
 	/// Structured provider failure. No raw secret-bearing source text is
 	/// retained.
 	Failure(Error),

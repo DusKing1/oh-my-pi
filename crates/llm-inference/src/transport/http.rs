@@ -427,9 +427,8 @@ async fn execute(
 		match event_stream.next().await {
 			Some(Ok(event)) if is_commit_candidate(&event) => break event,
 			Some(Ok(event)) => preamble.push_back(event),
-			Some(Err(mut error)) => {
-				error.status = Some(status);
-				error.committed = false;
+			Some(Err(error)) => {
+				let mut error = error.status(Some(status)).committed(false);
 				error.phase = ErrorPhase::Handshake;
 				return Err(error);
 			},
@@ -713,11 +712,23 @@ fn decode_stream(
 				guard.disarm();
 				break;
 			};
-			let body_frame = if let Ok(frame) = next { frame } else {
-						let error = connectivity(if emitted { ErrorPhase::Streaming } else { ErrorPhase::Handshake }, emitted, "http-response-body");
-						yield Err(record_failure(error, &attempt, &evidence, Some(status), provider_request_id.as_ref(), started, emitted));
-						break;
-					};
+			let Ok(body_frame) = next else {
+				let error = connectivity(
+					if emitted { ErrorPhase::Streaming } else { ErrorPhase::Handshake },
+					emitted,
+					"http-response-body",
+				);
+				yield Err(record_failure(
+					error,
+					&attempt,
+					&evidence,
+					Some(status),
+					provider_request_id.as_ref(),
+					started,
+					emitted,
+				));
+				break;
+			};
 			let Ok(chunk) = body_frame.into_data() else { continue };
 			response_bytes = response_bytes.saturating_add(chunk.len() as u64);
 			if response_bytes > response_limit {
@@ -817,9 +828,12 @@ impl ResponseFramer {
 			Self::Connect(framer) => framer
 				.push(chunk)
 				.map(|frames| frames.into_iter().map(Frame::Connect).collect()),
-			Self::EventStream(framer) => framer
-				.push(chunk)
-				.map(|frames| frames.into_iter().map(Frame::EventStream).collect()),
+			Self::EventStream(framer) => framer.push(chunk).map(|frames| {
+				frames
+					.into_iter()
+					.map(|frame| Frame::EventStream(Box::new(frame)))
+					.collect()
+			}),
 		}
 	}
 
@@ -842,9 +856,12 @@ impl ResponseFramer {
 			Self::Connect(framer) => framer
 				.finish()
 				.map(|frames| frames.into_iter().map(Frame::Connect).collect()),
-			Self::EventStream(framer) => framer
-				.finish()
-				.map(|frames| frames.into_iter().map(Frame::EventStream).collect()),
+			Self::EventStream(framer) => framer.finish().map(|frames| {
+				frames
+					.into_iter()
+					.map(|frame| Frame::EventStream(Box::new(frame)))
+					.collect()
+			}),
 		}
 	}
 }
@@ -909,8 +926,7 @@ fn framing_error(error: FramingError, committed: bool) -> Error {
 	} else {
 		ErrorPhase::Handshake
 	};
-	let mut error = structured_error(kind, phase, committed, reason);
-	error.code = Some(Str::from(reason));
+	let mut error = structured_error(kind, phase, committed, reason).code(Str::from(reason));
 	if !committed && error.kind != ErrorKind::Cancelled {
 		error.action = RetryAction::SameRoute { after: std::time::Duration::ZERO };
 	}
@@ -918,7 +934,7 @@ fn framing_error(error: FramingError, committed: bool) -> Error {
 }
 
 pub(crate) fn record_failure(
-	mut error: Error,
+	error: Error,
 	attempt: &TransportAttempt,
 	evidence: &AttemptEvidenceHandle,
 	status: Option<u16>,
@@ -926,16 +942,16 @@ pub(crate) fn record_failure(
 	started: Instant,
 	committed: bool,
 ) -> Error {
-	error.committed = committed;
+	let status = error.status.or(status);
+	let mut error = error
+		.provider(attempt.provider.clone())
+		.route(attempt.route.clone())
+		.request_id(attempt.request_id.clone())
+		.status(status)
+		.committed(committed);
 	if committed {
 		error.phase = ErrorPhase::Streaming;
 		error.action = RetryAction::Never;
-	}
-	error.provider = Some(attempt.provider.clone());
-	error.route = Some(attempt.route.clone());
-	error.request_id = Some(attempt.request_id.clone());
-	if error.status.is_none() {
-		error.status = status;
 	}
 	let outcome = if error.kind == ErrorKind::Cancelled {
 		AttemptOutcome::Cancelled
@@ -944,7 +960,13 @@ pub(crate) fn record_failure(
 	} else {
 		AttemptOutcome::FailedPreCommit
 	};
-	error.receipt.record_attempt(AttemptReceipt {
+	let provider_evidence = ProviderEvidence {
+		request_id: provider_request_id.cloned(),
+		status:     error.status,
+		code:       error.code.clone(),
+		summary:    None,
+	};
+	error.receipt_mut().record_attempt(AttemptReceipt {
 		index: attempt.index,
 		hidden: attempt.provisional,
 		provider: Some(attempt.provider.clone()),
@@ -955,19 +977,14 @@ pub(crate) fn record_failure(
 		outcome,
 		usage: Usage::default(),
 		cost: Cost::default(),
-		provider_evidence: ProviderEvidence {
-			request_id: provider_request_id.cloned(),
-			status:     error.status,
-			code:       error.code.clone(),
-			summary:    None,
-		},
+		provider_evidence,
 		elapsed: started.elapsed(),
 	});
 	error
 }
 
 fn deadline_exceeded(committed: bool) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::DeadlineExceeded,
 		if committed {
 			ErrorPhase::Streaming
@@ -976,13 +993,12 @@ fn deadline_exceeded(committed: bool) -> Error {
 		},
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.committed = committed;
-	error
+	)
+	.committed(committed)
 }
 
 fn cancelled(committed: bool) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::Cancelled,
 		if committed {
 			ErrorPhase::Streaming
@@ -991,9 +1007,8 @@ fn cancelled(committed: bool) -> Error {
 		},
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.committed = committed;
-	error
+	)
+	.committed(committed)
 }
 
 fn authentication_error(reason: &'static str) -> Error {
@@ -1018,10 +1033,9 @@ fn structured_error(
 	committed: bool,
 	reason: &'static str,
 ) -> Error {
-	let mut error = Error::new(kind, phase, RetryAction::Never, ExecutionReceipt::default());
-	error.committed = committed;
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	Error::new(kind, phase, RetryAction::Never, ExecutionReceipt::default())
+		.committed(committed)
+		.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 #[cfg(test)]
@@ -1095,19 +1109,18 @@ mod tests {
 
 	#[test]
 	fn factory_open_error_preserves_typed_failure() {
-		let mut inner = Error::new(
+		let inner = Error::new(
 			ErrorKind::RateLimited,
 			ErrorPhase::Admission,
 			RetryAction::SameRoute { after: std::time::Duration::from_secs(3) },
 			ExecutionReceipt::default(),
-		);
-		inner.detail =
-			Some(ErrorDetail::Protocol { reason: ReasonId(Str::new_static("factory-rate-window")) });
+		)
+		.detail(ErrorDetail::protocol(ReasonId(Str::new_static("factory-rate-window"))));
 		let mapped = map_body_open_error(BodyOpenError::Factory(inner.clone()));
 		assert_eq!(mapped.kind, inner.kind);
 		assert_eq!(mapped.phase, inner.phase);
 		assert_eq!(mapped.action, inner.action);
-		assert_eq!(mapped.detail, inner.detail);
-		assert_eq!(mapped.receipt, inner.receipt);
+		assert_eq!(mapped.detail_ref(), inner.detail_ref());
+		assert_eq!(mapped.receipt(), inner.receipt());
 	}
 }

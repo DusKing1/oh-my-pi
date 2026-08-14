@@ -178,7 +178,7 @@ pub enum TaxonomyError {
 	#[error("ambiguous class for `{model}`: `{first}` and `{second}` tie")]
 	AmbiguousClass {
 		/// Model being classified.
-		model:  Str,
+		model:  Box<Str>,
 		/// First tied class.
 		first:  ClassId,
 		/// Second tied class.
@@ -188,7 +188,7 @@ pub enum TaxonomyError {
 	#[error("ambiguous family for `{model}` in class `{class}`: `{first}` and `{second}` tie")]
 	AmbiguousFamily {
 		/// Model being classified.
-		model:  Str,
+		model:  Box<Str>,
 		/// Selected class.
 		class:  ClassId,
 		/// First tied family.
@@ -358,7 +358,7 @@ impl Taxonomy {
 		}
 		if let Some((first, second)) = tied_class {
 			return Err(TaxonomyError::AmbiguousClass {
-				model:  lower.to_str(),
+				model:  Box::new(lower.to_str()),
 				first:  first.id.clone(),
 				second: second.id.clone(),
 			});
@@ -721,7 +721,7 @@ fn classify_family(
 	}
 	if let Some((first, second)) = tied_family {
 		return Err(TaxonomyError::AmbiguousFamily {
-			model:  model.to_str(),
+			model:  Box::new(model.to_str()),
 			class:  class.id.clone(),
 			first:  first.id.clone(),
 			second: second.id.clone(),

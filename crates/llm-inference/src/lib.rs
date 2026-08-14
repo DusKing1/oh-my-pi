@@ -1,4 +1,5 @@
 #![feature(impl_trait_in_assoc_type)]
+#![feature(duration_constructors)]
 //! Typed, capability-complete inference contracts over one Tower service spine.
 //!
 //! Public callers retain operation-specific request and output types. Provider

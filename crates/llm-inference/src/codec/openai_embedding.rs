@@ -587,18 +587,10 @@ fn provider_error(error: WireError) -> Error {
 		_ => (ErrorKind::ProviderContractMismatch, "openai_embedding_provider_error"),
 	};
 	let _ = (error.message, error.param);
-	let mut classified = Error::new(
-		error_kind,
-		ErrorPhase::Handshake,
-		RetryAction::Never,
-		ExecutionReceipt::default(),
-	);
-	classified.status = status;
-	classified.code = Some(Str::from(stable_code));
-	classified.detail = Some(ErrorDetail::Provider {
-		sanitized_message: Str::from("OpenAI embeddings request failed"),
-	});
-	classified
+	Error::new(error_kind, ErrorPhase::Handshake, RetryAction::Never, ExecutionReceipt::default())
+		.status(status)
+		.code(Str::from(stable_code))
+		.detail(ErrorDetail::provider(Str::from("OpenAI embeddings request failed")))
 }
 
 fn join_uri(base: &str, path: &str) -> String {
@@ -628,9 +620,8 @@ fn protocol_error(reason: &'static str) -> Error {
 }
 
 fn structured_error(kind: ErrorKind, phase: ErrorPhase, reason: &'static str) -> Error {
-	let mut error = Error::new(kind, phase, RetryAction::Never, ExecutionReceipt::default());
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	Error::new(kind, phase, RetryAction::Never, ExecutionReceipt::default())
+		.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 #[cfg(test)]
@@ -784,7 +775,7 @@ mod tests {
 		let text_only = capabilities(EmbeddingInputBits::TEXT);
 		assert!(encode(&codec, "model", &text_only, &limits, &tokens).is_err());
 
-		let mut bounded_capabilities = supported.clone();
+		let mut bounded_capabilities = supported;
 		bounded_capabilities.maximum_batch = Some(1);
 		let bounded_limits = ModelLimits { maximum_input_tokens: Some(2), ..ModelLimits::default() };
 		let oversized_batch = request(
@@ -834,7 +825,7 @@ mod tests {
 				Ok(_) => panic!("invalid response accepted"),
 				Err(error) => error,
 			};
-			assert!(matches!(error.detail, Some(ErrorDetail::Protocol { reason: actual }) if actual.0 == reason));
+			assert!(matches!(error.detail_ref(), Some(ErrorDetail::Protocol { reason: actual }) if actual.0 == reason));
 		}
 		for fixture in [
 			br#"{"data":[{"index":0,"embedding":[1e400]}],"usage":{"prompt_tokens":1,"total_tokens":1}}"#.as_slice(),
@@ -855,7 +846,7 @@ mod tests {
 			Err(error) => error,
 		};
 		assert!(matches!(
-			error.detail,
+			error.detail_ref(),
 			Some(ErrorDetail::Protocol { reason }) if reason.0 == "openai_embedding_requested_dimensions_mismatch"
 		));
 	}

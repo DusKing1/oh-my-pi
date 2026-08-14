@@ -279,11 +279,11 @@ fn cascade_resolves_every_catalog_model_to_oracle_plus_census_overlay() {
 
 		// Wire: oracle-pinned axes exact; additions only from the census overlay.
 		let mut expected = wire_oracle.get(&model.id).cloned().unwrap_or_default();
-		if !expected.contains_key("thinking_format") {
-			if let Some(format) = census_thinking_format(&model.provider, class) {
-				expected.insert("thinking_format".into(), Value::from(format));
-				overlay_applied += 1;
-			}
+		if !expected.contains_key("thinking_format")
+			&& let Some(format) = census_thinking_format(&model.provider, class)
+		{
+			expected.insert("thinking_format".into(), Value::from(format));
+			overlay_applied += 1;
 		}
 		let resolved_wire: BTreeMap<String, Value> = resolved
 			.wire
@@ -443,9 +443,10 @@ fn run_policy_case(cascade: &CompatCascade, case: &Case) {
 		.as_str()
 		.expect("policy input model_id");
 	let explicit_class = case.input.get("class");
-	let class = explicit_class
-		.map(|class| class.as_str().expect("policy input class"))
-		.unwrap_or_else(|| case.input["family"].as_str().unwrap_or("unknown"));
+	let class = explicit_class.map_or_else(
+		|| case.input["family"].as_str().unwrap_or("unknown"),
+		|class| class.as_str().expect("policy input class"),
+	);
 	let family = explicit_class.and_then(|_| {
 		case
 			.input

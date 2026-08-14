@@ -2902,12 +2902,11 @@ impl GoogleCodecError {
 				_ => RetryAction::Never,
 			}
 		};
-		let mut error = Error::new(kind, phase, action, ExecutionReceipt::default());
-		error.committed = committed;
-		error.status = self.status;
-		error.code = self.code;
-		error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(self.detail) });
-		error
+		Error::new(kind, phase, action, ExecutionReceipt::default())
+			.status(self.status)
+			.optional_code(self.code)
+			.committed(committed)
+			.detail(ErrorDetail::protocol(ReasonId(self.detail)))
 	}
 }
 
@@ -3715,7 +3714,7 @@ mod tests {
 		{
 			decoder
 				.push(Frame::Raw(Bytes::copy_from_slice(data.as_bytes())), &mut |event| {
-					events.push(event)
+					events.push(event);
 				})
 				.expect("recorded Google frame decodes");
 		}
@@ -3983,7 +3982,7 @@ mod tests {
 			let status = input.status.expect("wire error status");
 			let message = input.message.expect("wire error message");
 			let body =
-				format!(r#"{{"error":{{"code":{code},"status":"{status}","message":"{message}"}}}}"#,);
+				format!(r#"{{"error":{{"code":{code},"status":"{status}","message":"{message}"}}}}"#);
 			let mut decoder = GeminiDecoder::default();
 			let events = decoder
 				.push_json(body.as_bytes())
@@ -4188,7 +4187,7 @@ mod tests {
 			let mut events = Vec::new();
 			decoder
 				.push(Frame::Raw(Bytes::copy_from_slice(fixture.response.as_bytes())), &mut |event| {
-					events.push(event)
+					events.push(event);
 				})
 				.unwrap_or_else(|error| panic!("{} outer response decodes: {error}", fixture.name));
 			assert!(

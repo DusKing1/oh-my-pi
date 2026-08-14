@@ -661,7 +661,7 @@ fn encoding_error(kind: ErrorKind) -> Error {
 	Error::new(kind, ErrorPhase::Encoding, RetryAction::Never, ExecutionReceipt::default())
 }
 fn protocol_error(committed: bool) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::Protocol,
 		if committed {
 			ErrorPhase::Streaming
@@ -670,9 +670,8 @@ fn protocol_error(committed: bool) -> Error {
 		},
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.committed = committed;
-	error
+	)
+	.committed(committed)
 }
 
 #[cfg(test)]

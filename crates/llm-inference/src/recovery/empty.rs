@@ -39,7 +39,7 @@ pub struct EmptyCompletion {
 #[derive(Debug)]
 pub enum EmptyInput {
 	/// One non-terminal canonical event.
-	Event(ChatEvent),
+	Event(Box<ChatEvent>),
 	/// The provider attempt ended successfully; the response layer may now build
 	/// its terminal.
 	Completed,
@@ -49,7 +49,7 @@ pub enum EmptyInput {
 #[derive(Debug)]
 pub enum EmptyEvent {
 	/// Original event forwarded unchanged.
-	Event(ChatEvent),
+	Event(Box<ChatEvent>),
 	/// Terminal empty-completion classification.
 	Empty(EmptyCompletion),
 }
@@ -146,7 +146,7 @@ impl Stage<EmptyInput, EmptyEvent> for EmptyCompletionStage {
 				}
 			},
 			EmptyInput::Event(event) => {
-				if matches!(event, ChatEvent::Completed(_)) {
+				if matches!(*event, ChatEvent::Completed(_)) {
 					return Err(RecoveryError::InvalidInput {
 						stage:  "empty-completion",
 						reason: Str::new_static(
@@ -155,7 +155,7 @@ impl Stage<EmptyInput, EmptyEvent> for EmptyCompletionStage {
 					});
 				}
 				self.committed |= event.commits_output();
-				match &event {
+				match event.as_ref() {
 					ChatEvent::BlockStarted { kind, .. } => {
 						self.saw_block = true;
 						if *kind == BlockKind::Thinking {
@@ -231,7 +231,10 @@ mod tests {
 		let mut output = Vec::new();
 		stage
 			.push(
-				EmptyInput::Event(ChatEvent::TextDelta { index: 0, text: Str::new_static("answer") }),
+				EmptyInput::Event(Box::new(ChatEvent::TextDelta {
+					index: 0,
+					text:  Str::new_static("answer"),
+				})),
 				&mut |event| output.push(event),
 			)
 			.unwrap();

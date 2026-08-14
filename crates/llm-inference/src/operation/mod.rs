@@ -153,51 +153,48 @@ pub(crate) fn merge_receipts(target: &mut ExecutionReceipt, mut later: Execution
 }
 
 pub(crate) fn wrong_operation(call: &Call, expected: OperationKind) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::InternalInvariant,
 		ErrorPhase::Internal,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.request_id = Some(call.id.clone());
-	error.detail = Some(ErrorDetail::Capability {
-		feature: omp_core::Str::from(expected.to_string()),
-		reason:  ReasonId(omp_core::Str::from("operation_service_mismatch")),
-	});
-	error
+	)
+	.detail(ErrorDetail::capability(
+		omp_core::Str::from(expected.to_string()),
+		ReasonId(omp_core::Str::from("operation_service_mismatch")),
+	))
+	.request_id(call.id.clone())
 }
 
 pub(crate) fn media_validation_error(
 	operation: OperationKind,
 	reason: impl Into<omp_core::Str>,
 ) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::InvalidRequest,
 		ErrorPhase::Planning,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Capability {
-		feature: omp_core::Str::from(operation.to_string()),
-		reason:  ReasonId(reason.into()),
-	});
-	error
+	)
+	.detail(ErrorDetail::capability(
+		omp_core::Str::from(operation.to_string()),
+		ReasonId(reason.into()),
+	))
 }
 
 pub(crate) fn media_protocol_error(
 	operation: OperationKind,
 	reason: impl Into<omp_core::Str>,
 ) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::ProviderContractMismatch,
 		ErrorPhase::Streaming,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Capability {
-		feature: omp_core::Str::from(operation.to_string()),
-		reason:  ReasonId(reason.into()),
-	});
-	error.committed = true;
-	error
+	)
+	.committed(true)
+	.detail(ErrorDetail::capability(
+		omp_core::Str::from(operation.to_string()),
+		ReasonId(reason.into()),
+	))
 }

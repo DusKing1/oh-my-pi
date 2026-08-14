@@ -1,3 +1,5 @@
+//! Contract tests for catalog policy compilation and pricing behavior.
+
 use std::collections::BTreeMap;
 
 use omp_core::Str;

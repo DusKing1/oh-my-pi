@@ -78,7 +78,7 @@ pub enum ContextPlan<I> {
 	/// Send an opaque compatible handle and only items after its committed base.
 	ServerState {
 		/// Valid provider-state binding scoped to this conversation and route.
-		binding: ServerStateBinding,
+		binding: Box<ServerStateBinding>,
 		/// Canonical messages committed after the binding's base revision.
 		delta:   HistoryDelta<I>,
 	},
@@ -128,7 +128,7 @@ where
 			};
 			match binding.validity(&scoped, ancestor) {
 				BindingValidity::Compatible => Ok(ContextPlan::ServerState {
-					binding: binding.clone(),
+					binding: Box::new(binding.clone()),
 					delta:   store.delta(Some(&binding.key.base_revision), head)?,
 				}),
 				BindingValidity::Reseed(reason) if policy.allow_reseed => Ok(ContextPlan::Replay {
@@ -551,7 +551,7 @@ impl ConversationSessionPlanner {
 			},
 			ContextPlan::PrefixCache { history, .. } => (history, SessionAction::Replay, None),
 			ContextPlan::ServerState { binding, delta } => {
-				(delta, SessionAction::Reuse, Some(binding))
+				(delta, SessionAction::Reuse, Some(*binding))
 			},
 		};
 		let mut messages = history
@@ -632,16 +632,13 @@ impl SessionPlanner for ConversationSessionPlanner {
 		let Some(prepared) = self.prepared.lock().remove(&call.id) else {
 			return Ok(None);
 		};
-		let draft = match self.store.begin(
+		let Ok(draft) = self.store.begin(
 			&prepared.session.conversation,
 			&prepared.session.revision,
 			prepared.session.turn.clone(),
 			prepared.input.clone(),
-		) {
-			Ok(draft) => draft,
-			Err(_) => {
-				return Err(session_error(context, ErrorKind::SessionConflict, RetryAction::Never));
-			},
+		) else {
+			return Err(session_error(context, ErrorKind::SessionConflict, RetryAction::Never));
 		};
 		Ok(Some(Arc::new(DurableCompletion {
 			draft: Mutex::new(Some(draft)),
@@ -843,7 +840,8 @@ impl SessionCompletion for DurableCompletion {
 			self.draft.lock().take().ok_or_else(|| {
 				session_error(context, ErrorKind::SessionConflict, RetryAction::Never)
 			})?;
-		if let Some(replay) = self.replays.lock().get(&self.prepared.request).cloned() {
+		let replay = { self.replays.lock().get(&self.prepared.request).cloned() };
+		if let Some(replay) = replay {
 			let completion = self.completion.lock().clone().ok_or_else(|| {
 				session_error(context, ErrorKind::SessionConflict, RetryAction::Never)
 			})?;
@@ -1334,7 +1332,7 @@ mod tests {
 				.unwrap();
 		match plan {
 			ContextPlan::ServerState { delta, .. } => {
-				assert_eq!(delta.items().copied().collect::<Vec<_>>(), vec![3])
+				assert_eq!(delta.items().copied().collect::<Vec<_>>(), vec![3]);
 			},
 			other => panic!("expected compatible delta, got {other:?}"),
 		}
@@ -1483,7 +1481,7 @@ mod tests {
 		let scope = context(&conversation, &route, &model, &principal, &domain, now);
 		assert_eq!(binding.validity(&scope, true), BindingValidity::Compatible);
 
-		let mut generation_bound = binding.clone();
+		let mut generation_bound = binding;
 		generation_bound.key.credential_policy =
 			CredentialGenerationPolicy::CredentialGenerationBound;
 		assert_eq!(

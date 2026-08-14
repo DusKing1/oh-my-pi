@@ -151,15 +151,13 @@ struct FailDecoder;
 
 impl Decoder for FailDecoder {
 	fn push(&mut self, _frame: Frame, _emit: &mut dyn FnMut(RawEvent)) -> Result<(), Error> {
-		let mut error = Error::new(
+		Err(Error::new(
 			ErrorKind::Protocol,
 			ErrorPhase::Handshake,
 			RetryAction::Never,
 			ExecutionReceipt::default(),
-		);
-		error.detail =
-			Some(ErrorDetail::Protocol { reason: ReasonId(Str::from("fixture-first-frame")) });
-		Err(error)
+		)
+		.detail(ErrorDetail::protocol(ReasonId(Str::from("fixture-first-frame")))))
 	}
 
 	fn finish(&mut self, _emit: &mut dyn FnMut(RawEvent)) -> Result<(), Error> {
@@ -238,7 +236,7 @@ async fn first_frame_error_remains_precommit_with_exact_body_evidence() {
 		.expect("first frame fails handshake");
 	assert!(!error.committed);
 	assert_eq!(error.phase, ErrorPhase::Handshake);
-	let receipt = error.receipt.attempts.last().expect("attempt receipt");
+	let receipt = error.receipt().attempts.last().expect("attempt receipt");
 	assert_eq!(receipt.outcome, AttemptOutcome::FailedPreCommit);
 	assert!(receipt.body.opened && receipt.body.consumed);
 }
@@ -261,14 +259,13 @@ async fn disconnect_after_first_event_is_a_committed_partial_error() {
 		.expect("handshake");
 	let mut events = response.events.expect("ordinary event stream");
 	assert!(events.next().await.expect("first event").is_ok());
-	let error = match events.next().await.expect("partial error") {
-		Err(error) => error,
-		Ok(_) => panic!("disconnect must surface as an error"),
+	let Err(error) = events.next().await.expect("partial error") else {
+		panic!("disconnect must surface as an error");
 	};
 	assert!(error.committed);
 	assert_eq!(
 		error
-			.receipt
+			.receipt()
 			.attempts
 			.last()
 			.expect("attempt receipt")
@@ -552,15 +549,13 @@ fn lifecycle_and_retry_fixtures_bind_the_service_contract() {
 #[tokio::test]
 async fn factory_error_is_preserved_and_captured_with_exact_evidence() {
 	let expected = {
-		let mut error = Error::new(
+		Error::new(
 			ErrorKind::InvalidRequest,
 			ErrorPhase::Encoding,
 			RetryAction::Never,
 			ExecutionReceipt::default(),
-		);
-		error.detail =
-			Some(ErrorDetail::Protocol { reason: ReasonId(Str::from("factory-terminal")) });
-		error
+		)
+		.detail(ErrorDetail::protocol(ReasonId(Str::from("factory-terminal"))))
 	};
 	let factory = BodyFactoryHandle::new(move || {
 		let error = expected.clone();
@@ -581,7 +576,7 @@ async fn factory_error_is_preserved_and_captured_with_exact_evidence() {
 	assert_eq!(error.kind, ErrorKind::InvalidRequest);
 	assert_eq!(error.action, RetryAction::Never);
 	assert_eq!(error.phase, ErrorPhase::Encoding);
-	assert!(matches!(error.detail, Some(ErrorDetail::Protocol { .. })));
+	assert!(matches!(error.detail_ref(), Some(ErrorDetail::Protocol { .. })));
 	let captures = service.captures();
 	assert_eq!(captures.len(), 1);
 	assert!(!captures[0].body.opened);
@@ -745,7 +740,7 @@ async fn consumed_one_shot_preamble_failure_suppresses_retry_evidence() {
 		.await
 		.err()
 		.expect("metadata then disconnect");
-	let body = error.receipt.attempts.last().expect("attempt receipt").body;
+	let body = error.receipt().attempts.last().expect("attempt receipt").body;
 	assert_eq!(body.retry_decision, RetryDecision::Suppress);
 	assert_eq!(body.reason, RetryDecisionReason::ConsumedOneShot);
 }
@@ -807,9 +802,8 @@ async fn postcommit_stall_times_out_as_partial() {
 	let response = service.call(call).await.expect("visible event commits");
 	let mut events = response.events.expect("ordinary event stream");
 	assert!(matches!(events.next().await, Some(Ok(RawEvent::Chat(_)))));
-	let error = match events.next().await.expect("deadline error") {
-		Err(error) => error,
-		Ok(_) => panic!("stalled committed stream must time out"),
+	let Err(error) = events.next().await.expect("deadline error") else {
+		panic!("stalled committed stream must time out");
 	};
 	assert_eq!(error.kind, ErrorKind::DeadlineExceeded);
 	assert!(error.committed);
@@ -828,7 +822,7 @@ async fn stalled_body_preserves_factory_replay_and_suppresses_consumed_one_shot(
 	let mut call = request(BodySource::Factory(factory), EmitDecoder, Cancellation::default());
 	call.attempt.timeout = std::time::Duration::from_millis(5);
 	let error = replayable.call(call).await.err().expect("body timeout");
-	let body = error.receipt.attempts.last().expect("attempt receipt").body;
+	let body = error.receipt().attempts.last().expect("attempt receipt").body;
 	assert_eq!(body.retry_decision, RetryDecision::Allow);
 
 	let one_shot = Arc::new(OneShotBody::new(Box::pin(stream::pending())));
@@ -842,7 +836,7 @@ async fn stalled_body_preserves_factory_replay_and_suppresses_consumed_one_shot(
 	let mut call = request(BodySource::OneShot(one_shot), EmitDecoder, Cancellation::default());
 	call.attempt.timeout = std::time::Duration::from_millis(5);
 	let error = consumed.call(call).await.err().expect("body timeout");
-	let body = error.receipt.attempts.last().expect("attempt receipt").body;
+	let body = error.receipt().attempts.last().expect("attempt receipt").body;
 	assert_eq!(body.retry_decision, RetryDecision::Suppress);
 	assert_eq!(body.reason, RetryDecisionReason::ConsumedOneShot);
 	assert_eq!(
@@ -1039,7 +1033,7 @@ async fn stalled_http_connect_or_headers_honors_attempt_timeout() {
 	let error = service.call(call).await.err().expect("headers timeout");
 	assert_eq!(error.kind, ErrorKind::DeadlineExceeded);
 	assert!(!error.committed);
-	assert_eq!(error.receipt.attempts.len(), 1);
+	assert_eq!(error.receipt().attempts.len(), 1);
 	server.abort();
 }
 
@@ -1076,6 +1070,6 @@ async fn stalled_http_headers_honor_in_flight_cancellation() {
 		.expect("cancelled request");
 	assert_eq!(error.kind, ErrorKind::Cancelled);
 	assert!(!error.committed);
-	assert_eq!(error.receipt.attempts.len(), 1);
+	assert_eq!(error.receipt().attempts.len(), 1);
 	server.abort();
 }

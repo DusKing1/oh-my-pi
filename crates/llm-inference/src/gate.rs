@@ -17,7 +17,10 @@ pub enum GateCondition {
 	/// Commit on the first ordinary canonical event.
 	FirstValidEvent,
 	/// Commit only on a schema-validated ready call to the named tool.
-	ToolCallReady { tool: Str },
+	ToolCallReady {
+		/// Name of the tool whose ready call commits output.
+		tool: Str,
+	},
 	/// Commit only after the structured-output validator explicitly reports
 	/// success.
 	ValidStructuredOutput,
@@ -46,7 +49,10 @@ pub enum GateProgress {
 	/// The event remains private.
 	Provisional,
 	/// The condition committed and this many events were flushed in order.
-	Committed { flushed: usize },
+	Committed {
+		/// Number of provisional events flushed in order.
+		flushed: usize,
+	},
 	/// The already-committed event was forwarded directly.
 	PassThrough,
 	/// A schema-valid ready call named a different tool, so the attempt was
@@ -60,7 +66,10 @@ pub enum GateFinish {
 	/// The gate had already committed before end-of-stream.
 	AlreadyCommitted,
 	/// Whole-attempt validation committed and flushed the buffered events.
-	Committed { flushed: usize },
+	Committed {
+		/// Number of provisional events flushed in order.
+		flushed: usize,
+	},
 	/// The condition remained unsatisfied and every provisional event was
 	/// discarded.
 	Unsatisfied(GateCondition),
@@ -70,11 +79,22 @@ pub enum GateFinish {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GateSpoolError {
 	/// The spool's explicit byte capacity was exceeded.
-	Capacity { limit: u64, observed: u64 },
+	Capacity {
+		/// Spool byte capacity.
+		limit:    u64,
+		/// Bytes observed before rejecting the append.
+		observed: u64,
+	},
 	/// The encrypted store was unavailable.
-	Unavailable { reason: ReasonId },
+	Unavailable {
+		/// Secret-free unavailability reason.
+		reason: ReasonId,
+	},
 	/// Authenticated spool contents failed validation while being read.
-	Corrupt { reason: ReasonId },
+	Corrupt {
+		/// Secret-free corruption reason.
+		reason: ReasonId,
+	},
 }
 
 /// Explicit secure storage for provisional canonical events.
@@ -277,15 +297,15 @@ impl OutputGate {
 
 	/// Handles an upstream failure, discarding private output and setting exact
 	/// commit evidence.
-	pub fn fail(&mut self, mut error: Error) -> Error {
+	pub fn fail(&mut self, error: Error) -> Error {
 		let committed = self.is_committed();
 		if !committed && let Err(spool_error) = self.discard_private() {
 			self.phase = GatePhase::Failed;
 			return self.spool_error(spool_error);
 		}
 		self.phase = GatePhase::Failed;
-		error.committed = committed;
-		error.receipt = self.receipt.clone();
+		let mut error = error.committed(committed);
+		error.replace_receipt(self.receipt.clone());
 		error
 	}
 
@@ -298,14 +318,13 @@ impl OutputGate {
 			return self.spool_error(spool_error);
 		}
 		self.phase = GatePhase::Cancelled;
-		let mut error = Error::new(
+		Error::new(
 			ErrorKind::Cancelled,
 			ErrorPhase::Streaming,
 			RetryAction::Never,
 			self.receipt.clone(),
-		);
-		error.committed = committed;
-		error
+		)
+		.committed(committed)
 	}
 
 	fn event_satisfies(&self, event: &ChatEvent) -> bool {
@@ -465,18 +484,17 @@ impl OutputGate {
 		if let Err(error) = cleanup {
 			return self.spool_error(error);
 		}
-		let mut error = Error::new(
+		Error::new(
 			ErrorKind::PolicyBufferExceeded,
 			ErrorPhase::Streaming,
 			RetryAction::Never,
 			self.receipt.clone(),
-		);
-		error.detail = Some(ErrorDetail::Budget {
-			dimension: Str::from("provisional_bytes"),
-			limit:     u128::from(limit),
-			observed:  u128::from(observed),
-		});
-		error
+		)
+		.detail(ErrorDetail::budget(
+			Str::from("provisional_bytes"),
+			u128::from(limit),
+			u128::from(observed),
+		))
 	}
 
 	fn abort_spool(&mut self, cause: GateSpoolError) -> Error {
@@ -490,21 +508,18 @@ impl OutputGate {
 
 	fn spool_error(&self, error: GateSpoolError) -> Error {
 		match error {
-			GateSpoolError::Capacity { limit, observed } => {
-				let mut failure = Error::new(
-					ErrorKind::PolicyBufferExceeded,
-					ErrorPhase::Streaming,
-					RetryAction::Never,
-					self.receipt.clone(),
-				);
-				failure.committed = self.is_committed();
-				failure.detail = Some(ErrorDetail::Budget {
-					dimension: Str::from("provisional_spool_bytes"),
-					limit:     u128::from(limit),
-					observed:  u128::from(observed),
-				});
-				failure
-			},
+			GateSpoolError::Capacity { limit, observed } => Error::new(
+				ErrorKind::PolicyBufferExceeded,
+				ErrorPhase::Streaming,
+				RetryAction::Never,
+				self.receipt.clone(),
+			)
+			.committed(self.is_committed())
+			.detail(ErrorDetail::budget(
+				Str::from("provisional_spool_bytes"),
+				u128::from(limit),
+				u128::from(observed),
+			)),
 			GateSpoolError::Unavailable { reason } => {
 				self.spool_protocol_error(ErrorKind::ResourceExhausted, reason)
 			},
@@ -515,37 +530,30 @@ impl OutputGate {
 	}
 
 	fn spool_protocol_error(&self, kind: ErrorKind, reason: ReasonId) -> Error {
-		let mut error =
-			Error::new(kind, ErrorPhase::Streaming, RetryAction::Never, self.receipt.clone());
-		error.committed = self.is_committed();
-		error.detail = Some(ErrorDetail::Protocol { reason });
-		error
+		Error::new(kind, ErrorPhase::Streaming, RetryAction::Never, self.receipt.clone())
+			.committed(self.is_committed())
+			.detail(ErrorDetail::protocol(reason))
 	}
 
 	fn inactive_error(&self) -> Error {
-		let mut error = Error::new(
+		Error::new(
 			ErrorKind::InternalInvariant,
 			ErrorPhase::Internal,
 			RetryAction::Never,
 			self.receipt.clone(),
-		);
-		error.committed = self.is_committed();
-		error.detail =
-			Some(ErrorDetail::Protocol { reason: ReasonId(Str::from("output_gate_not_active")) });
-		error
+		)
+		.committed(self.is_committed())
+		.detail(ErrorDetail::protocol(ReasonId(Str::from("output_gate_not_active"))))
 	}
 
 	fn condition_evidence_error(&self) -> Error {
-		let mut error = Error::new(
+		Error::new(
 			ErrorKind::InternalInvariant,
 			ErrorPhase::Recovery,
 			RetryAction::Never,
 			self.receipt.clone(),
-		);
-		error.detail = Some(ErrorDetail::Protocol {
-			reason: ReasonId(Str::from("gate_evidence_condition_mismatch")),
-		});
-		error
+		)
+		.detail(ErrorDetail::protocol(ReasonId(Str::from("gate_evidence_condition_mismatch"))))
 	}
 }
 

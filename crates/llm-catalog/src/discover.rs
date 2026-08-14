@@ -72,68 +72,68 @@ pub enum DiscoveryError {
 	/// Extended context evidence lacked a pre-interned extended lowering policy.
 	MissingExtendedContextPolicy {
 		/// Provider whose discovery row declared extended context.
-		provider: ProviderId,
+		provider: Box<ProviderId>,
 		/// Opaque wire model whose extended lowering policy was missing.
-		model:    WireModelId,
+		model:    Box<WireModelId>,
 	},
 	/// A discovered row was not emitted by the projector's bound provider and
 	/// route.
 	RowScopeMismatch {
 		/// Expected provider.
-		expected_provider: ProviderId,
+		expected_provider: Box<ProviderId>,
 		/// Expected route.
-		expected_route:    RouteId,
+		expected_route:    Box<RouteId>,
 		/// Provider carried by the row.
-		actual_provider:   ProviderId,
+		actual_provider:   Box<ProviderId>,
 		/// Route carried by the row.
-		actual_route:      RouteId,
+		actual_route:      Box<RouteId>,
 	},
 	/// The route is not configured for discovery.
-	RouteDiscoveryMissing(RouteId),
+	RouteDiscoveryMissing(Box<RouteId>),
 	/// The supplied discovery specification is not the one bound to the route.
 	RouteDiscoveryMismatch {
 		/// Route being projected.
-		route:    RouteId,
+		route:    Box<RouteId>,
 		/// Discovery specification bound to the route.
-		expected: DiscoverySpecId,
+		expected: Box<DiscoverySpecId>,
 		/// Supplied discovery specification.
-		actual:   DiscoverySpecId,
+		actual:   Box<DiscoverySpecId>,
 	},
 	/// The route belongs to a different provider.
 	RouteProviderMismatch {
 		/// Route being projected.
-		route:    RouteId,
+		route:    Box<RouteId>,
 		/// Provider expected by the projector.
-		expected: ProviderId,
+		expected: Box<ProviderId>,
 		/// Provider declared by the route.
-		actual:   ProviderId,
+		actual:   Box<ProviderId>,
 	},
 	/// The supplied provider defaults use a different wire policy.
 	ProviderPolicyMismatch {
 		/// Provider being projected.
-		provider: ProviderId,
+		provider: Box<ProviderId>,
 		/// Provider-default wire policy.
-		expected: WirePolicyId,
+		expected: Box<WirePolicyId>,
 		/// Supplied default wire policy.
-		actual:   WirePolicyId,
+		actual:   Box<WirePolicyId>,
 	},
 	/// A single-page discovery endpoint returned a continuation cursor.
-	UnexpectedContinuation(DiscoverySpecId),
+	UnexpectedContinuation(Box<DiscoverySpecId>),
 	/// A page-number continuation was not canonical decimal text.
 	InvalidPageNumber {
 		/// Discovery specification that rejected the value.
-		spec:  DiscoverySpecId,
+		spec:  Box<DiscoverySpecId>,
 		/// Rejected continuation value.
-		value: Str,
+		value: Box<Str>,
 	},
 	/// Two discovered models declared the same alias for different targets.
 	AliasConflict {
 		/// Conflicting alias.
-		alias:  Str,
+		alias:  Box<Str>,
 		/// First canonical target.
-		first:  ModelKey,
+		first:  Box<ModelKey>,
 		/// Second canonical target.
-		second: ModelKey,
+		second: Box<ModelKey>,
 	},
 }
 
@@ -208,27 +208,27 @@ impl RouteDiscoveryProjector {
 	) -> Result<Self, DiscoveryError> {
 		if route.provider != provider.id {
 			return Err(DiscoveryError::RouteProviderMismatch {
-				route:    route.id.clone(),
-				expected: provider.id.clone(),
-				actual:   route.provider.clone(),
+				route:    route.id.clone().into(),
+				expected: provider.id.clone().into(),
+				actual:   route.provider.clone().into(),
 			});
 		}
 		let expected = route
 			.discovery
 			.clone()
-			.ok_or_else(|| DiscoveryError::RouteDiscoveryMissing(route.id.clone()))?;
+			.ok_or_else(|| DiscoveryError::RouteDiscoveryMissing(route.id.clone().into()))?;
 		if expected != spec.id {
 			return Err(DiscoveryError::RouteDiscoveryMismatch {
-				route: route.id.clone(),
-				expected,
-				actual: spec.id.clone(),
+				route:    route.id.clone().into(),
+				expected: expected.into(),
+				actual:   spec.id.clone().into(),
 			});
 		}
 		if defaults.wire_policy != provider.wire_policy {
 			return Err(DiscoveryError::ProviderPolicyMismatch {
-				provider: provider.id.clone(),
-				expected: provider.wire_policy.clone(),
-				actual:   defaults.wire_policy,
+				provider: provider.id.clone().into(),
+				expected: provider.wire_policy.clone().into(),
+				actual:   defaults.wire_policy.into(),
 			});
 		}
 		Ok(Self {
@@ -266,10 +266,10 @@ impl RouteDiscoveryProjector {
 		for row in rows {
 			if row.provider != self.config.provider || row.route != self.config.route {
 				return Err(DiscoveryError::RowScopeMismatch {
-					expected_provider: self.config.provider.clone(),
-					expected_route:    self.config.route.clone(),
-					actual_provider:   row.provider.clone(),
-					actual_route:      row.route.clone(),
+					expected_provider: self.config.provider.clone().into(),
+					expected_route:    self.config.route.clone().into(),
+					actual_provider:   row.provider.clone().into(),
+					actual_route:      row.route.clone().into(),
 				});
 			}
 		}
@@ -281,9 +281,9 @@ impl RouteDiscoveryProjector {
 				if let Some(existing) = aliases.get(definition.alias.as_str()) {
 					if existing.definition.target != definition.target {
 						return Err(DiscoveryError::AliasConflict {
-							alias:  definition.alias,
-							first:  existing.definition.target.clone(),
-							second: definition.target,
+							alias:  definition.alias.into(),
+							first:  existing.definition.target.clone().into(),
+							second: definition.target.into(),
 						});
 					}
 					continue;
@@ -394,8 +394,8 @@ impl DiscoveryNormalizer {
 			Some(ExtendedContextMode::Extended) => {
 				self.defaults.extended_wire_policy.clone().ok_or_else(|| {
 					DiscoveryError::MissingExtendedContextPolicy {
-						provider: row.provider.clone(),
-						model:    row.wire_model.clone(),
+						provider: row.provider.clone().into(),
+						model:    row.wire_model.clone().into(),
 					}
 				})?
 			},
@@ -508,7 +508,7 @@ fn continuation(
 	};
 	match &spec.pagination {
 		DiscoveryPagination::SinglePage => {
-			Err(DiscoveryError::UnexpectedContinuation(spec.id.clone()))
+			Err(DiscoveryError::UnexpectedContinuation(spec.id.clone().into()))
 		},
 		DiscoveryPagination::Cursor { query_parameter } => {
 			Ok(DiscoveryContinuation::Cursor { query_parameter: query_parameter.clone(), value })
@@ -525,7 +525,10 @@ fn continuation(
 					query_parameter: query_parameter.clone(),
 					page,
 				})
-				.ok_or(DiscoveryError::InvalidPageNumber { spec: spec.id.clone(), value })
+				.ok_or(DiscoveryError::InvalidPageNumber {
+					spec:  spec.id.clone().into(),
+					value: value.into(),
+				})
 		},
 	}
 }
@@ -821,7 +824,7 @@ mod tests {
 		let single = projector(DiscoveryPagination::SinglePage);
 		assert_eq!(
 			single.project(&[], Some("unexpected".into())),
-			Err(DiscoveryError::UnexpectedContinuation(DiscoverySpecId::from("models")))
+			Err(DiscoveryError::UnexpectedContinuation(Box::new(DiscoverySpecId::from("models"))))
 		);
 
 		let numbered = projector(DiscoveryPagination::PageNumber {
@@ -859,8 +862,8 @@ mod tests {
 		assert_eq!(
 			DiscoveryNormalizer::new(defaults()).normalize(&discovered),
 			Err(DiscoveryError::MissingExtendedContextPolicy {
-				provider: ProviderId::from("provider"),
-				model:    WireModelId::from("extended"),
+				provider: Box::new(ProviderId::from("provider")),
+				model:    Box::new(WireModelId::from("extended")),
 			})
 		);
 		let mut configured = defaults();

@@ -973,10 +973,9 @@ struct CcaDiscoveryDecoder {
 
 impl CcaDiscoveryDecoder {
 	fn error(&self, code: &'static str) -> Error {
-		let mut error = cca_discovery_error(ErrorKind::Protocol, ErrorPhase::Discovery, code);
-		error.provider = Some(self.provider.clone());
-		error.route = Some(self.route.clone());
-		error
+		cca_discovery_error(ErrorKind::Protocol, ErrorPhase::Discovery, code)
+			.provider(self.provider.clone())
+			.route(self.route.clone())
 	}
 }
 
@@ -1228,9 +1227,7 @@ impl CcaVisibleTextFilter {
 }
 
 fn cca_discovery_error(kind: ErrorKind, phase: ErrorPhase, code: &'static str) -> Error {
-	let mut error = Error::new(kind, phase, RetryAction::Never, ExecutionReceipt::default());
-	error.code = Some(code.into());
-	error
+	Error::new(kind, phase, RetryAction::Never, ExecutionReceipt::default()).code(Str::from(code))
 }
 
 fn longest_suffix_prefix(value: &str, marker: &str) -> usize {
@@ -1612,20 +1609,20 @@ mod tests {
 		}));
 		let mut unsupported = request.clone();
 		unsupported.operation = Some(OperationKind::Embed);
-		let error =
-			match codec.encode_discovery("https://daily-cloudcode-pa.googleapis.com", &unsupported) {
-				Ok(_) => panic!("CCA discovery accepted a non-chat capability filter"),
-				Err(error) => error,
-			};
+		let Err(error) =
+			codec.encode_discovery("https://daily-cloudcode-pa.googleapis.com", &unsupported)
+		else {
+			panic!("CCA discovery accepted a non-chat capability filter");
+		};
 		assert_eq!(error.kind, ErrorKind::CapabilityMismatch);
 		assert_eq!(error.phase, ErrorPhase::Encoding);
 		let mut continued = request;
 		continued.cursor = Some("not-supported".into());
-		let error =
-			match codec.encode_discovery("https://daily-cloudcode-pa.googleapis.com", &continued) {
-				Ok(_) => panic!("CCA discovery accepted an unsupported cursor"),
-				Err(error) => error,
-			};
+		let Err(error) =
+			codec.encode_discovery("https://daily-cloudcode-pa.googleapis.com", &continued)
+		else {
+			panic!("CCA discovery accepted an unsupported cursor");
+		};
 		assert_eq!(error.kind, ErrorKind::InvalidRequest);
 		assert_eq!(error.phase, ErrorPhase::Encoding);
 	}
@@ -1633,7 +1630,7 @@ mod tests {
 	#[test]
 	fn discovery_decoder_rejects_missing_map_wrong_types_and_extra_frames() {
 		for malformed in [
-			br#"{}"#.as_slice(),
+			br"{}".as_slice(),
 			br#"{"models":[]}"#.as_slice(),
 			br#"{"models":{"model":{"supportsThinking":"yes"}}}"#.as_slice(),
 		] {
@@ -1647,8 +1644,8 @@ mod tests {
 				.expect_err("malformed CCA discovery body is rejected");
 			assert_eq!(error.kind, ErrorKind::Protocol);
 			assert_eq!(error.phase, ErrorPhase::Discovery);
-			assert_eq!(error.provider.as_ref().map(ProviderId::as_str), Some("google-cca"));
-			assert_eq!(error.route.as_ref().map(RouteId::as_str), Some("google-cca-primary"));
+			assert_eq!(error.provider.as_deref().map(ProviderId::as_str), Some("google-cca"));
+			assert_eq!(error.route.as_deref().map(RouteId::as_str), Some("google-cca-primary"));
 			assert_eq!(error.code.as_ref().map(Str::as_str), Some("cca_discovery_invalid_payload"));
 		}
 		let mut decoder = CcaDiscoveryDecoder {
@@ -1712,7 +1709,7 @@ mod tests {
 		{
 			decoder
 				.push(Frame::Raw(Bytes::copy_from_slice(data.as_bytes())), &mut |event| {
-					events.push(event)
+					events.push(event);
 				})
 				.expect("recorded CCA frame decodes");
 		}

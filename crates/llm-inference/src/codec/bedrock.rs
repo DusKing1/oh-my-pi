@@ -1,6 +1,10 @@
 //! Amazon Bedrock `ConverseStream` request lowering and event projection.
 
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+	collections::{BTreeMap, BTreeSet},
+	sync::Arc,
+	time::Duration,
+};
 
 use bytes::Bytes;
 use omp_core::{Str, encoding::base64};
@@ -1112,13 +1116,16 @@ fn converse_stream_uri(base: &str, model: &str) -> String {
 	uri
 }
 
+const REGION_PLACEHOLDER: &str = "{region}";
+const LOCATION_PLACEHOLDER: &str = "{location}";
+
 fn bedrock_discovery_uri(context: &EncodeContext<'_>) -> Result<Str, Error> {
 	let base = context.route.endpoint.base_url.as_str();
 	let region = context
 		.account
 		.and_then(|account| account.region.as_ref())
 		.map(|region| region.as_str())
-		.or(context.route.endpoint.region.as_ref().map(Str::as_str))
+		.or_else(|| context.route.endpoint.region.as_deref())
 		.or_else(|| bedrock_endpoint_region(base))
 		.unwrap_or("us-east-1");
 	bedrock_discovery_endpoint(base, region)
@@ -1126,8 +1133,8 @@ fn bedrock_discovery_uri(context: &EncodeContext<'_>) -> Result<Str, Error> {
 
 fn bedrock_discovery_endpoint(base: &str, region: &str) -> Result<Str, Error> {
 	let expanded = base
-		.replace("{region}", region)
-		.replace("{location}", region);
+		.replace(REGION_PLACEHOLDER, region)
+		.replace(LOCATION_PLACEHOLDER, region);
 	let mut uri = url::Url::parse(&expanded).map_err(|_| {
 		encoding_error(ErrorKind::InvalidRequest, "bedrock.discovery.endpoint_invalid")
 	})?;
@@ -1342,7 +1349,7 @@ impl FoundationModelSummary {
 #[derive(Default)]
 struct BedrockDecoder {
 	parts:         BTreeMap<u32, DecodedPart>,
-	ignored:       BTreeMap<u32, ()>,
+	ignored:       BTreeSet<u32>,
 	usage:         Option<Usage>,
 	stop:          Option<FinishReason>,
 	blocks:        u32,
@@ -1435,8 +1442,7 @@ impl BedrockDecoder {
 		let status = exception
 			.original_status_code
 			.and_then(|status| u16::try_from(status).ok());
-		let mut error = aws_exception_error(code, message, status, self.committed);
-		error.committed = self.committed;
+		let error = aws_exception_error(code, message, status, self.committed);
 		self.terminal = true;
 		emit(RawEvent::Failure(error));
 	}
@@ -1459,7 +1465,7 @@ impl BedrockDecoder {
 		if let (Some(index), Some(start)) = (event.content_block_index, event.start) {
 			if let Some(tool) = start.tool_use {
 				if tool.name == NO_TOOLS_SENTINEL_NAME {
-					self.ignored.insert(index, ());
+					self.ignored.insert(index);
 					self.sentinel_seen = true;
 					return Ok(());
 				}
@@ -1487,7 +1493,7 @@ impl BedrockDecoder {
 			return Ok(());
 		}
 		if let (Some(index), Some(delta)) = (event.content_block_index, event.delta) {
-			if self.ignored.contains_key(&index) {
+			if self.ignored.contains(&index) {
 				return Ok(());
 			}
 			if let Some(text) = delta.text {
@@ -1533,7 +1539,7 @@ impl BedrockDecoder {
 			return Ok(());
 		}
 		if let Some(index) = event.content_block_index {
-			if self.ignored.remove(&index).is_some() {
+			if self.ignored.remove(&index) {
 				return Ok(());
 			}
 			if let Some(part) = self.parts.remove(&index) {
@@ -1661,7 +1667,7 @@ impl BedrockDecoder {
 impl Decoder for BedrockDecoder {
 	fn push(&mut self, frame: Frame, emit: &mut dyn FnMut(RawEvent)) -> Result<(), Error> {
 		match frame {
-			Frame::EventStream(message) => self.decode_message(message, emit),
+			Frame::EventStream(message) => self.decode_message(*message, emit),
 			_ => Err(stream_error(ErrorKind::Protocol, "bedrock.frame.wrong_framing", self.committed)),
 		}
 	}
@@ -1770,29 +1776,30 @@ struct WireReasoningDelta {
 #[serde(rename_all = "camelCase")]
 struct WireUsage {
 	#[serde(default)]
-	input_tokens:             u64,
-	#[serde(default)]
-	output_tokens:            u64,
-	#[serde(default)]
-	total_tokens:             u64,
-	#[serde(default)]
-	cache_read_input_tokens:  u64,
-	#[serde(default)]
-	cache_write_input_tokens: u64,
+	#[serde(rename = "inputTokens")]
+	input:       u64,
+	#[serde(default, rename = "outputTokens")]
+	output:      u64,
+	#[serde(default, rename = "totalTokens")]
+	total:       u64,
+	#[serde(default, rename = "cacheReadInputTokens")]
+	cache_read:  u64,
+	#[serde(default, rename = "cacheWriteInputTokens")]
+	cache_write: u64,
 }
 
 impl WireUsage {
 	fn into_usage(self) -> Usage {
-		let _total = if self.total_tokens == 0 {
-			self.input_tokens.saturating_add(self.output_tokens)
+		let _total = if self.total == 0 {
+			self.input.saturating_add(self.output)
 		} else {
-			self.total_tokens
+			self.total
 		};
 		Usage {
-			input_tokens: self.input_tokens,
-			output_tokens: self.output_tokens,
-			cache_read_tokens: self.cache_read_input_tokens,
-			cache_write_tokens: self.cache_write_input_tokens,
+			input_tokens: self.input,
+			output_tokens: self.output,
+			cache_read_tokens: self.cache_read,
+			cache_write_tokens: self.cache_write,
 			source: UsageSource::Measured,
 			..Usage::default()
 		}
@@ -1861,16 +1868,21 @@ struct WireGuardrailMetrics {
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WireAssessment {
-	content_policy:               Option<WireContentPolicy>,
-	topic_policy:                 Option<WireTopicPolicy>,
-	word_policy:                  Option<WireWordPolicy>,
-	sensitive_information_policy: Option<WireSensitivePolicy>,
-	contextual_grounding_policy:  Option<WireGroundingPolicy>,
+	#[serde(rename = "contentPolicy")]
+	content:   Option<WireContentPolicy>,
+	#[serde(rename = "topicPolicy")]
+	topic:     Option<WireTopicPolicy>,
+	#[serde(rename = "wordPolicy")]
+	word:      Option<WireWordPolicy>,
+	#[serde(rename = "sensitiveInformationPolicy")]
+	sensitive: Option<WireSensitivePolicy>,
+	#[serde(rename = "contextualGroundingPolicy")]
+	grounding: Option<WireGroundingPolicy>,
 }
 
 impl WireAssessment {
 	fn append_findings(self, policy: Option<Str>, findings: &mut Vec<SafetyFinding>) {
-		if let Some(content) = self.content_policy {
+		if let Some(content) = self.content {
 			for filter in content.filters {
 				findings.push(SafetyFinding {
 					kind:                 SafetyFindingKind::Content,
@@ -1886,7 +1898,7 @@ impl WireAssessment {
 				});
 			}
 		}
-		if let Some(topic) = self.topic_policy {
+		if let Some(topic) = self.topic {
 			for topic in topic.topics {
 				findings.push(SafetyFinding {
 					kind:                 SafetyFindingKind::Topic,
@@ -1902,7 +1914,7 @@ impl WireAssessment {
 				});
 			}
 		}
-		if let Some(word) = self.word_policy {
+		if let Some(word) = self.word {
 			for finding in word.custom_words.into_iter().chain(word.managed_word_lists) {
 				findings.push(SafetyFinding {
 					kind:                 SafetyFindingKind::Word,
@@ -1918,7 +1930,7 @@ impl WireAssessment {
 				});
 			}
 		}
-		if let Some(sensitive) = self.sensitive_information_policy {
+		if let Some(sensitive) = self.sensitive {
 			for finding in sensitive.pii_entities.into_iter().chain(sensitive.regexes) {
 				findings.push(SafetyFinding {
 					kind:                 SafetyFindingKind::SensitiveInformation,
@@ -1937,7 +1949,7 @@ impl WireAssessment {
 				});
 			}
 		}
-		if let Some(grounding) = self.contextual_grounding_policy {
+		if let Some(grounding) = self.grounding {
 			for filter in grounding.filters {
 				findings.push(SafetyFinding {
 					kind:                 SafetyFindingKind::ContextualGrounding,
@@ -2137,12 +2149,11 @@ fn aws_exception_error(code: &str, message: Str, status: Option<u16>, committed:
 	} else {
 		action
 	};
-	let mut error = Error::new(kind, ErrorPhase::Streaming, action, ExecutionReceipt::default());
-	error.code = Some(Str::from(code));
-	error.status = status;
-	error.committed = committed;
-	error.detail = Some(ErrorDetail::Provider { sanitized_message: bounded_message(message) });
-	error
+	Error::new(kind, ErrorPhase::Streaming, action, ExecutionReceipt::default())
+		.status(status)
+		.code(Str::from(code))
+		.committed(committed)
+		.detail(ErrorDetail::provider(bounded_message(message)))
 }
 
 fn bounded_message(message: Str) -> Str {
@@ -2158,18 +2169,14 @@ fn bounded_message(message: Str) -> Str {
 }
 
 fn encoding_error(kind: ErrorKind, reason: &'static str) -> Error {
-	let mut error =
-		Error::new(kind, ErrorPhase::Encoding, RetryAction::Never, ExecutionReceipt::default());
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::new_static(reason)) });
-	error
+	Error::new(kind, ErrorPhase::Encoding, RetryAction::Never, ExecutionReceipt::default())
+		.detail(ErrorDetail::protocol(ReasonId(Str::new_static(reason))))
 }
 
 fn stream_error(kind: ErrorKind, reason: &'static str, committed: bool) -> Error {
-	let mut error =
-		Error::new(kind, ErrorPhase::Streaming, RetryAction::Never, ExecutionReceipt::default());
-	error.committed = committed;
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::new_static(reason)) });
-	error
+	Error::new(kind, ErrorPhase::Streaming, RetryAction::Never, ExecutionReceipt::default())
+		.committed(committed)
+		.detail(ErrorDetail::protocol(ReasonId(Str::new_static(reason))))
 }
 
 #[cfg(test)]
@@ -2230,10 +2237,10 @@ mod tests {
 			.as_ref()
 			.and_then(|id| catalog.thinking_policy(id))
 			.cloned();
-		if setting_value(&request.reasoning).is_some() {
-			if let Some(thinking) = &mut explicit_thinking_policy {
-				thinking.supports_display = Some(true);
-			}
+		if setting_value(&request.reasoning).is_some()
+			&& let Some(thinking) = &mut explicit_thinking_policy
+		{
+			thinking.supports_display = Some(true);
 		}
 		let thinking_policy = explicit_thinking_policy.as_ref();
 		let thinking_selection = setting_value(&request.reasoning).map(|reasoning| {
@@ -2498,7 +2505,7 @@ mod tests {
 				.expect("valid EventStream frame")
 			{
 				decoder
-					.push(Frame::EventStream(message), &mut |event| events.push(event))
+					.push(Frame::EventStream(Box::new(message)), &mut |event| events.push(event))
 					.expect("valid Converse event");
 			}
 			offset = end;
@@ -2608,7 +2615,7 @@ mod tests {
 			assert_eq!(error.kind, *expected_kind);
 			assert!(!error.committed);
 			assert!(matches!(
-				&error.detail,
+				error.detail_ref(),
 				Some(ErrorDetail::Provider { sanitized_message }) if sanitized_message == expected_message
 			));
 		}

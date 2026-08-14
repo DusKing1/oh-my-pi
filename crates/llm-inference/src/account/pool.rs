@@ -55,6 +55,10 @@ impl AccountRecord {
 }
 
 /// Why an account was placed in cooldown.
+#[allow(
+	missing_docs,
+	reason = "strum generates the public string-conversion method from documented variants"
+)]
 #[derive(Clone, Copy, Debug, Display, EnumString, Eq, IntoStaticStr, PartialEq)]
 #[strum(serialize_all = "snake_case", const_into_str)]
 pub enum CooldownReason {
@@ -76,13 +80,27 @@ pub enum Eligibility {
 	/// Account does not support the requested route.
 	RouteIneligible,
 	/// The current credential generation has been rejected as stale.
-	CredentialRejected { rejected_generation: u64 },
+	CredentialRejected {
+		/// Credential generation rejected as stale.
+		rejected_generation: u64,
+	},
 	/// Account is in a non-rate, non-quota cooldown.
-	Cooldown { until: SystemTime, reason: CooldownReason },
+	Cooldown {
+		/// When the cooldown expires.
+		until:  SystemTime,
+		/// Evidence that imposed the cooldown.
+		reason: CooldownReason,
+	},
 	/// Request-rate state delays another attempt.
-	RateLimited { until: Option<SystemTime> },
+	RateLimited {
+		/// Known rate-limit reset time, if supplied by the provider.
+		until: Option<SystemTime>,
+	},
 	/// Quota state prohibits another attempt.
-	QuotaExhausted { reset_at: Option<SystemTime> },
+	QuotaExhausted {
+		/// Known quota reset time, if supplied by the provider.
+		reset_at: Option<SystemTime>,
+	},
 	/// Rotation policy forbids leaving the previous account.
 	RotationForbidden,
 	/// Rotation policy requires the previous principal.
@@ -273,6 +291,7 @@ struct PoolState {
 	affinities: BTreeMap<AffinityScope, AccountAffinity>,
 }
 
+/// Concurrent, durable-aware account metadata and eligibility state.
 #[derive(Clone, Default)]
 pub struct AccountPool {
 	state: Arc<RwLock<PoolState>>,

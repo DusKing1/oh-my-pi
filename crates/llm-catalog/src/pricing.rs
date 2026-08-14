@@ -4,7 +4,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use strum::{Display, EnumString, IntoStaticStr};
+use strum::{Display, EnumString};
 
 /// Number of nano-US dollars, where one US dollar is one billion units.
 #[derive(
@@ -54,15 +54,13 @@ impl fmt::Display for NanoUsd {
 	EnumString,
 	Eq,
 	Hash,
-	IntoStaticStr,
 	Ord,
 	PartialEq,
 	PartialOrd,
 	Serialize,
 	Deserialize,
 )]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive)]
 pub enum PriceUnit {
 	/// One million uncached input tokens.
 	MtokInput,

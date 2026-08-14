@@ -30,7 +30,7 @@ pub trait SemanticPolicy<R>: Clone + Send + 'static {
 	///
 	/// Returning `None` keeps the gate memory-only; the gate never creates or
 	/// discovers a spool.
-	fn secure_spool(&self, _request: &R) -> Result<Option<Box<dyn SecureGateSpool>>, Error> {
+	fn secure_spool(&self, _request: &R) -> Result<Option<Box<dyn SecureGateSpool>>, Box<Error>> {
 		Ok(None)
 	}
 }
@@ -103,7 +103,10 @@ where
 					));
 				};
 				let receipt = request.context.receipt();
-				let mut gate = match policy.secure_spool(&request.payload)? {
+				let mut gate = match policy
+					.secure_spool(&request.payload)
+					.map_err(|error| *error)?
+				{
 					Some(spool) => OutputGate::with_secure_spool(
 						condition.clone(),
 						request.context.budget().max_provisional_bytes,
@@ -169,7 +172,7 @@ where
 						},
 						Err(error) => {
 							request.context.set_body_evidence(response.body.evidence());
-							if let Some(attempt) = error.receipt.attempts.last() {
+							if let Some(attempt) = error.receipt().attempts.last() {
 								request.context.set_body_evidence(attempt.body);
 							}
 							failure = Some(gate.fail(error));
@@ -204,15 +207,16 @@ where
 					}
 				});
 				request.context.set_body_evidence(response.body.evidence());
-				let mut error = failure.unwrap_or_else(|| {
-					Error::new(
-						ErrorKind::ToolNonCompliance,
-						ErrorPhase::Recovery,
-						RetryAction::SemanticRetry,
-						gate.receipt().clone(),
-					)
-				});
-				error.committed = false;
+				let mut error = failure
+					.unwrap_or_else(|| {
+						Error::new(
+							ErrorKind::ToolNonCompliance,
+							ErrorPhase::Recovery,
+							RetryAction::SemanticRetry,
+							gate.receipt().clone(),
+						)
+					})
+					.committed(false);
 				let replay_safe = request
 					.context
 					.body_evidence()
@@ -376,12 +380,11 @@ mod tests {
 		futures::future::poll_fn(|cx| service.poll_ready(cx))
 			.await
 			.unwrap();
-		let error = match service
+		let Err(error) = service
 			.call(LayerCall { payload: (), context: context() })
 			.await
-		{
-			Ok(_) => panic!("semantic exhaustion must fail"),
-			Err(error) => error,
+		else {
+			panic!("semantic exhaustion must fail");
 		};
 		(error, calls.load(Ordering::SeqCst))
 	}
@@ -393,7 +396,7 @@ mod tests {
 		assert_eq!(error.action, RetryAction::ReselectRoute);
 		assert!(!error.committed);
 		assert_eq!(calls, 2, "{error:?}");
-		assert!(error.receipt.attempts.last().is_some_and(|attempt| {
+		assert!(error.receipt().attempts.last().is_some_and(|attempt| {
 			attempt.outcome != AttemptOutcome::FailedCommitted
 				&& attempt.body.retry_decision == RetryDecision::Allow
 		}));
@@ -402,7 +405,7 @@ mod tests {
 			has_next
 				&& !error.committed
 				&& error.action == RetryAction::ReselectRoute
-				&& error.receipt.attempts.last().is_some_and(|attempt| {
+				&& error.receipt().attempts.last().is_some_and(|attempt| {
 					attempt.outcome != AttemptOutcome::FailedCommitted
 						&& attempt.body.retry_decision == RetryDecision::Allow
 				})
@@ -419,13 +422,13 @@ mod tests {
 
 	#[test]
 	fn committed_empty_completion_exhaustion_stays_terminal() {
-		let mut error = Error::new(
+		let error = Error::new(
 			ErrorKind::EmptyCompletion,
 			ErrorPhase::Recovery,
 			RetryAction::SemanticRetry,
 			receipt(),
-		);
-		error.committed = true;
+		)
+		.committed(true);
 
 		assert_eq!(exhausted_action(&error, true, true, true), RetryAction::Never);
 	}

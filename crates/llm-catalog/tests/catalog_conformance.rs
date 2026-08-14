@@ -714,7 +714,7 @@ fn openai_revisions_match_alias_canonical_and_adversarial_cases() {
 	let fixture: RevisionCases =
 		serde_json::from_str(VERSION_CASES).expect("revision fixture is valid");
 	assert_eq!(fixture.schema_version, 1);
-	assert!(!fixture.alias_provenance.is_empty());
+	assert_ne!(fixture.alias_provenance, "");
 	assert_eq!(fixture.cases.len(), 16);
 
 	for case in fixture.cases {
@@ -764,7 +764,7 @@ fn compile_frozen_oracle() -> CompiledCatalog {
 	compile_oracle(PROVIDERS, MODELS_ZSTD, OAUTH).expect("frozen catalog oracle compiles")
 }
 
-fn all_operations() -> [OperationKind; 15] {
+const fn all_operations() -> [OperationKind; 15] {
 	[
 		OperationKind::Chat,
 		OperationKind::CountTokens,
@@ -1109,11 +1109,11 @@ fn compiled_catalog_matches_the_complete_frozen_census() {
 		String::from("provider"),
 		String::from("model")
 	]);
-	assert!(!expected.curated_provider_catalog.source.is_empty());
-	assert!(!expected.normalized_catalog.source.is_empty());
-	assert!(!expected.raw_catalog.source.is_empty());
-	assert!(!expected.transports.source.is_empty());
-	assert!(!expected.urls.source.is_empty());
+	assert_ne!(expected.curated_provider_catalog.source, "");
+	assert_ne!(expected.normalized_catalog.source, "");
+	assert_ne!(expected.raw_catalog.source, "");
+	assert_ne!(expected.transports.source, "");
+	assert_ne!(expected.urls.source, "");
 	assert_eq!(expected.urls.curated_provider_distinct_count, 90);
 	assert_eq!(expected.urls.normalized_model_distinct_count, 90);
 	assert_eq!(expected.urls.intersection_count, 72);
@@ -1218,10 +1218,10 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 		if let Some(chat) = &actual.capabilities.chat {
 			match behavior.supports_tools {
 				Some(true) => {
-					assert!(chat.tools.constraints().is_some(), "{} tool support", expected.id)
+					assert!(chat.tools.constraints().is_some(), "{} tool support", expected.id);
 				},
 				Some(false) => {
-					assert!(chat.tools.is_unsupported(), "{} explicit tool rejection", expected.id)
+					assert!(chat.tools.is_unsupported(), "{} explicit tool rejection", expected.id);
 				},
 				None => assert!(chat.tools.is_unknown(), "{} absent tool evidence", expected.id),
 			}
@@ -1302,6 +1302,39 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 				expected.id
 			);
 		}
+		let actual_thinking = actual.thinking.as_ref().map(|id| {
+			compiled
+				.thinking_policies
+				.iter()
+				.find(|policy| policy.content_id() == id.clone())
+				.expect("model thinking policy is interned")
+		});
+		assert_eq!(
+			actual_thinking.map_or(&[][..], |policy| policy.efforts.as_slice()),
+			expected
+				.efforts
+				.iter()
+				.copied()
+				.map(Into::into)
+				.collect::<Vec<_>>(),
+			"{} thinking efforts",
+			expected.id
+		);
+		assert_eq!(
+			actual
+				.thinking_routing
+				.effort_routing
+				.iter()
+				.map(|(effort, wire)| (*effort, wire.as_str()))
+				.collect::<BTreeMap<_, _>>(),
+			expected
+				.effort_routing
+				.iter()
+				.map(|(effort, wire)| ((*effort).into(), wire.as_str()))
+				.collect(),
+			"{} thinking effort routing",
+			expected.id
+		);
 		if expected_embed {
 			let embeddings = actual
 				.capabilities
@@ -1530,7 +1563,7 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 				expected.id
 			);
 		}
-		assert!(!expected.behavior.get().is_empty());
+		assert_ne!(expected.behavior.get(), "");
 
 		if let Some(raw_model) = raw
 			.get(&expected.provider)
@@ -1736,7 +1769,7 @@ fn exact_override_rows_and_qwen_collapses_remain_present_and_auditable() {
 	let compiled = compile_frozen_oracle();
 	assert_eq!(exact.schema_version, 1);
 	assert_eq!(exact.cases.len(), 9);
-	assert!(!exact.source_assertions.is_empty());
+	assert_ne!(exact.source_assertions, "");
 	for case in exact.cases {
 		let model = compiled
 			.models
@@ -1960,7 +1993,7 @@ fn exact_override_rows_and_qwen_collapses_remain_present_and_auditable() {
 	assert_eq!(qwen.cases.len(), 2);
 	for case in qwen.cases {
 		assert_eq!(case.inputs.len(), 2);
-		assert!(!case.rationale.is_empty());
+		assert_ne!(case.rationale, "");
 		let logical = case.expected_logical.model.as_str();
 		assert_eq!(case.expected_logical.efforts.len(), 4);
 		assert_eq!(case.expected_logical.effort_routing.len(), 5);
@@ -2137,7 +2170,7 @@ fn every_thinking_profile_is_interned_and_attached_to_its_exact_model_set() {
 	assert_eq!(fixture.schema_version, 1);
 	assert_eq!(fixture.profile_count, 43);
 	assert_eq!(fixture.profiles.len(), fixture.profile_count);
-	assert!(!fixture.normalization.is_empty());
+	assert_ne!(fixture.normalization, "");
 
 	let mut fixture_labels = BTreeSet::new();
 	let mut expected_ids = BTreeSet::new();
@@ -2230,7 +2263,7 @@ fn every_sparse_wire_profile_has_a_stable_distinct_content_id() {
 	assert_eq!(fixture.schema_version, 1);
 	assert_eq!(fixture.profile_count, 35);
 	assert_eq!(fixture.profiles.len(), fixture.profile_count);
-	assert!(!fixture.normalization.is_empty());
+	assert_ne!(fixture.normalization, "");
 
 	let mut fixture_labels = BTreeSet::new();
 	let mut expected_ids = BTreeSet::new();

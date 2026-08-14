@@ -168,11 +168,22 @@ impl CacheTtl {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MediaSource {
 	/// Base64-encoded immutable media bytes.
-	Base64 { media_type: Str, data: Str },
+	Base64 {
+		/// Media MIME type.
+		media_type: Str,
+		/// Base64-encoded payload.
+		data:       Str,
+	},
 	/// Anthropic Files API object.
-	File { file_id: Str },
+	File {
+		/// File identifier.
+		file_id: Str,
+	},
 	/// URL-backed media when enabled by route policy.
-	Url { url: Str },
+	Url {
+		/// Media URL.
+		url: Str,
+	},
 }
 /// A typed Anthropic Messages content block.
 #[derive(Debug, Deserialize, Serialize)]
@@ -180,63 +191,119 @@ pub enum MediaSource {
 pub enum ContentBlock {
 	/// Plain text.
 	Text {
+		/// Text body.
 		text:          Str,
+		/// Ephemeral prompt cache control.
 		#[serde(skip_serializing_if = "Option::is_none")]
 		cache_control: Option<CacheControl>,
 	},
 	/// Signed reasoning history.
-	Thinking { thinking: Str, signature: Str },
+	Thinking {
+		/// Thought text.
+		thinking:  Str,
+		/// Provider-issued cryptographic signature.
+		signature: Str,
+	},
 	/// Opaque redacted reasoning history.
-	RedactedThinking { data: Str },
+	RedactedThinking {
+		/// Redacted thought blob.
+		data: Str,
+	},
 	/// Image input.
 	Image {
+		/// Media source description.
 		source:        MediaSource,
+		/// Ephemeral prompt cache control.
 		#[serde(skip_serializing_if = "Option::is_none")]
 		cache_control: Option<CacheControl>,
 	},
 	/// Document input.
 	Document {
+		/// Document media source.
 		source:        MediaSource,
+		/// Ephemeral prompt cache control.
 		#[serde(skip_serializing_if = "Option::is_none")]
 		cache_control: Option<CacheControl>,
 	},
 	/// Caller-executable tool invocation in assistant history.
 	ToolUse {
+		/// Tool call identifier.
 		id:            Str,
+		/// Tool name.
 		name:          Str,
+		/// Input JSON payload.
 		input:         Value,
+		/// Ephemeral prompt cache control.
 		#[serde(skip_serializing_if = "Option::is_none")]
 		cache_control: Option<CacheControl>,
 	},
 	/// Result of a caller-executable tool invocation.
 	ToolResult {
+		/// Matching tool invocation identifier.
 		tool_use_id:   Str,
+		/// Optional tool result identifier.
 		#[serde(skip_serializing_if = "Option::is_none")]
 		id:            Option<Str>,
+		/// Whether tool execution produced an error.
 		is_error:      bool,
+		/// Nested result content blocks.
 		content:       Vec<Self>,
+		/// Ephemeral prompt cache control.
 		#[serde(skip_serializing_if = "Option::is_none")]
 		cache_control: Option<CacheControl>,
 	},
 	/// Provider-hosted tool invocation retained in replay history.
 	ServerToolUse {
+		/// Tool call identifier.
 		id:    Str,
+		/// Tool name.
 		name:  Str,
+		/// Input JSON payload.
 		#[serde(skip_serializing_if = "Option::is_none")]
 		input: Option<Value>,
 	},
 	/// Hosted web-search result retained in replay history.
-	WebSearchToolResult { tool_use_id: Str, content: Value },
+	WebSearchToolResult {
+		/// Tool use identifier.
+		tool_use_id: Str,
+		/// Result content.
+		content:     Value,
+	},
 	/// Hosted web-fetch result retained in replay history.
-	WebFetchToolResult { tool_use_id: Str, content: Value },
+	WebFetchToolResult {
+		/// Tool use identifier.
+		tool_use_id: Str,
+		/// Result content.
+		content:     Value,
+	},
 	/// Hosted code-execution result retained in replay history.
-	CodeExecutionToolResult { tool_use_id: Str, content: Value },
+	CodeExecutionToolResult {
+		/// Tool use identifier.
+		tool_use_id: Str,
+		/// Result content.
+		content:     Value,
+	},
 	/// Hosted bash execution result retained in replay history.
-	BashCodeExecutionToolResult { tool_use_id: Str, content: Value },
+	BashCodeExecutionToolResult {
+		/// Tool use identifier.
+		tool_use_id: Str,
+		/// Result content.
+		content:     Value,
+	},
 	/// Hosted text-editor execution result retained in replay history.
-	TextEditorCodeExecutionToolResult { tool_use_id: Str, content: Value },
+	TextEditorCodeExecutionToolResult {
+		/// Tool use identifier.
+		tool_use_id: Str,
+		/// Result content.
+		content:     Value,
+	},
 	/// Provider-recorded model fallback retained as assistant history.
-	Fallback { from: Value, to: Value },
+	Fallback {
+		/// Original requested model.
+		from: Value,
+		/// Fallback model selected.
+		to:   Value,
+	},
 }
 
 /// One Anthropic message.
@@ -317,7 +384,9 @@ pub enum Tool {
 pub enum Thinking {
 	/// Budgeted extended thinking.
 	Enabled {
+		/// Maximum reasoning-token budget.
 		budget_tokens: u64,
+		/// Optional provider display mode.
 		#[serde(skip_serializing_if = "Option::is_none")]
 		display:       Option<Str>,
 	},
@@ -325,6 +394,7 @@ pub enum Thinking {
 	Disabled,
 	/// Adaptive thinking.
 	Adaptive {
+		/// Optional provider display mode.
 		#[serde(skip_serializing_if = "Option::is_none")]
 		display: Option<Str>,
 	},
@@ -354,7 +424,10 @@ pub struct ContextManagement {
 pub enum ContextEdit {
 	/// Clears retained thinking according to a typed keep selector.
 	#[serde(rename = "clear_thinking_20251015")]
-	ClearThinking20251015 { keep: Str },
+	ClearThinking20251015 {
+		/// Selector for the retained thinking blocks.
+		keep: Str,
+	},
 }
 
 /// Anthropic output controls.
@@ -377,17 +450,21 @@ pub struct OutputConfig {
 pub enum WireToolChoice {
 	/// Model decides automatically.
 	Auto {
+		/// Optional parallel-tool-call restriction.
 		#[serde(skip_serializing_if = "Option::is_none")]
 		disable_parallel_tool_use: Option<bool>,
 	},
 	/// Model must call any available tool.
 	Any {
+		/// Optional parallel-tool-call restriction.
 		#[serde(skip_serializing_if = "Option::is_none")]
 		disable_parallel_tool_use: Option<bool>,
 	},
 	/// Model must call the specified tool.
 	Tool {
+		/// Required tool name.
 		name: Str,
+		/// Optional parallel-tool-call restriction.
 		#[serde(skip_serializing_if = "Option::is_none")]
 		disable_parallel_tool_use: Option<bool>,
 	},
@@ -402,7 +479,10 @@ pub enum Container {
 	/// Existing container identifier.
 	Id(Str),
 	/// Structured container selector.
-	State { id: Str },
+	State {
+		/// Existing container identifier.
+		id: Str,
+	},
 }
 
 /// Fully typed Anthropic Messages body, including cloud envelope fields.
@@ -459,7 +539,7 @@ pub struct MessagesRequest {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub container:          Option<Container>,
 	/// Streaming response request; stripped by cloud adapters.
-	#[serde(default, skip_serializing_if = "is_false")]
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub stream:             bool,
 	/// Vertex/Bedrock embedded protocol version.
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -467,10 +547,6 @@ pub struct MessagesRequest {
 	/// Vertex/Bedrock embedded stable-deduplicated beta list.
 	#[serde(skip_serializing_if = "Vec::is_empty", default)]
 	pub anthropic_beta:     Vec<Str>,
-}
-
-const fn is_false(value: &bool) -> bool {
-	!*value
 }
 
 /// Root fallback chain that Anthropic Messages cannot encode.
@@ -1333,61 +1409,56 @@ impl Decoder for AnthropicWireDecoder {
 			},
 			_ => return Err(protocol_error("anthropic.frame.kind", false)),
 		};
-		match self.inner.push_data(&data) {
-			Ok(events) => {
-				for event in events {
-					emit_anthropic_event(event, emit)?;
-				}
-				while let Some((index, signature)) =
-					self.inner.outcome.signatures.get(self.signature_cursor)
-				{
-					emit(RawEvent::ProviderState(super::ProviderStateEvent::ReasoningSignature {
-						index:     *index,
-						signature: Bytes::copy_from_slice(signature.as_bytes()),
-					}));
-					self.signature_cursor += 1;
-				}
-				while let Some(citation) = self.inner.outcome.citations.get(self.citation_cursor) {
-					let data = serde_json::to_vec(citation)
-						.map(Bytes::from)
-						.map_err(|_| protocol_error("anthropic.citation.serialize", true))?;
-					emit(RawEvent::Metadata(ProviderMetadataEvent::Citations { candidate: 0, data }));
-					self.citation_cursor += 1;
-				}
-				while let Some((index, block)) =
-					self.inner.outcome.server_blocks.get(self.history_cursor)
-				{
-					let data = serde_json::to_vec(block)
-						.map(Bytes::from)
-						.map_err(|_| protocol_error("anthropic.history.serialize", true))?;
-					emit(RawEvent::ProviderState(super::ProviderStateEvent::HistoryBlock {
-						index: *index,
-						data,
-					}));
-					self.history_cursor += 1;
-				}
-				Ok(())
-			},
+		let events = match self.inner.push_data(&data) {
+			Ok(events) => events,
 			Err(error) => {
 				emit(RawEvent::Failure(error));
-				Ok(())
+				return Ok(());
 			},
+		};
+		for event in events {
+			emit_anthropic_event(event, emit)?;
 		}
+		while let Some((index, signature)) = self.inner.outcome.signatures.get(self.signature_cursor)
+		{
+			emit(RawEvent::ProviderState(super::ProviderStateEvent::ReasoningSignature {
+				index:     *index,
+				signature: Bytes::copy_from_slice(signature.as_bytes()),
+			}));
+			self.signature_cursor += 1;
+		}
+		while let Some(citation) = self.inner.outcome.citations.get(self.citation_cursor) {
+			let data = serde_json::to_vec(citation)
+				.map(Bytes::from)
+				.map_err(|_| protocol_error("anthropic.citation.serialize", true))?;
+			emit(RawEvent::Metadata(ProviderMetadataEvent::Citations { candidate: 0, data }));
+			self.citation_cursor += 1;
+		}
+		while let Some((index, block)) = self.inner.outcome.server_blocks.get(self.history_cursor) {
+			let data = serde_json::to_vec(block)
+				.map(Bytes::from)
+				.map_err(|_| protocol_error("anthropic.history.serialize", true))?;
+			emit(RawEvent::ProviderState(super::ProviderStateEvent::HistoryBlock {
+				index: *index,
+				data,
+			}));
+			self.history_cursor += 1;
+		}
+		Ok(())
 	}
 
 	fn finish(&mut self, emit: &mut dyn FnMut(RawEvent)) -> Result<(), Error> {
-		match self.inner.finish() {
-			Ok(events) => {
-				for event in events {
-					emit_anthropic_event(event, emit)?;
-				}
-				Ok(())
-			},
+		let events = match self.inner.finish() {
+			Ok(events) => events,
 			Err(error) => {
 				emit(RawEvent::Failure(error));
-				Ok(())
+				return Ok(());
 			},
+		};
+		for event in events {
+			emit_anthropic_event(event, emit)?;
 		}
+		Ok(())
 	}
 }
 
@@ -1396,7 +1467,7 @@ fn emit_anthropic_event(
 	emit: &mut dyn FnMut(RawEvent),
 ) -> Result<(), Error> {
 	match event {
-		AnthropicEvent::Completion(completion) => emit(RawEvent::Completion(completion)),
+		AnthropicEvent::Completion(completion) => emit(RawEvent::Completion(*completion)),
 		AnthropicEvent::Chat(ChatEvent::ToolCallReady { index, call }) => {
 			let arguments = serde_json::to_vec(call.arguments.as_value())
 				.map(Bytes::from)
@@ -1493,7 +1564,7 @@ pub struct AnthropicOutcome {
 #[derive(Debug)]
 pub(crate) enum AnthropicEvent {
 	Chat(ChatEvent),
-	Completion(RawCompletion),
+	Completion(Box<RawCompletion>),
 }
 
 impl From<ChatEvent> for AnthropicEvent {
@@ -1504,7 +1575,7 @@ impl From<ChatEvent> for AnthropicEvent {
 
 impl From<RawCompletion> for AnthropicEvent {
 	fn from(completion: RawCompletion) -> Self {
-		Self::Completion(completion)
+		Self::Completion(Box::new(completion))
 	}
 }
 
@@ -1542,6 +1613,7 @@ impl AnthropicDecoder {
 	}
 
 	/// Borrows provider metadata accumulated during decoding.
+	#[cfg(test)]
 	pub(crate) const fn outcome(&self) -> &AnthropicOutcome {
 		&self.outcome
 	}
@@ -1562,7 +1634,7 @@ impl AnthropicDecoder {
 	}
 
 	/// Finishes the stream, rejecting a response that omitted `message_stop`.
-	pub(crate) fn finish(&mut self) -> Result<Vec<AnthropicEvent>, Error> {
+	pub(crate) fn finish(&self) -> Result<Vec<AnthropicEvent>, Error> {
 		if self.completed {
 			Ok(Vec::new())
 		} else {
@@ -1695,11 +1767,11 @@ impl AnthropicDecoder {
 				}
 			},
 			Incoming::ContentBlockDelta { index, delta } => match delta {
-				IncomingDelta::TextDelta { text } => events.push(ChatEvent::TextDelta { index, text }),
-				IncomingDelta::ThinkingDelta { thinking } => {
+				IncomingDelta::Text { text } => events.push(ChatEvent::TextDelta { index, text }),
+				IncomingDelta::Thinking { thinking } => {
 					events.push(ChatEvent::ThinkingDelta { index, text: thinking });
 				},
-				IncomingDelta::SignatureDelta { signature } => {
+				IncomingDelta::Signature { signature } => {
 					if let Some(Some(BlockState::Thinking { signature: target })) =
 						self.blocks.get_mut(index as usize)
 					{
@@ -1708,7 +1780,7 @@ impl AnthropicDecoder {
 						return Err(protocol_error("anthropic.signature.block", true));
 					}
 				},
-				IncomingDelta::InputJsonDelta { partial_json } => {
+				IncomingDelta::InputJson { partial_json } => {
 					let bytes = Bytes::copy_from_slice(partial_json.as_bytes());
 					if let Some(Some(BlockState::Tool { arguments, .. })) =
 						self.blocks.get_mut(index as usize)
@@ -1719,7 +1791,7 @@ impl AnthropicDecoder {
 					}
 					events.push(ChatEvent::ToolArgumentsDelta { index, bytes });
 				},
-				IncomingDelta::CitationDelta { citation } => self.outcome.citations.push(citation),
+				IncomingDelta::Citation { citation } => self.outcome.citations.push(citation),
 			},
 			Incoming::ContentBlockStop { index } => {
 				let state = self
@@ -1902,11 +1974,11 @@ enum IncomingBlock {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum IncomingDelta {
-	TextDelta { text: Str },
-	ThinkingDelta { thinking: Str },
-	SignatureDelta { signature: Str },
-	InputJsonDelta { partial_json: Str },
-	CitationDelta { citation: Value },
+	Text { text: Str },
+	Thinking { thinking: Str },
+	Signature { signature: Str },
+	InputJson { partial_json: Str },
+	Citation { citation: Value },
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1979,10 +2051,10 @@ fn finish_reason(reason: Option<&str>) -> FinishReason {
 fn unsupported_fallbacks() -> Error {
 	Error::planning(
 		ErrorKind::CapabilityMismatch,
-		ErrorDetail::Capability {
-			feature: Str::new_static("request.fallbacks"),
-			reason:  ReasonId(Str::new_static("anthropic.messages.root_fallbacks_unrepresentable")),
-		},
+		ErrorDetail::capability(
+			Str::new_static("request.fallbacks"),
+			ReasonId(Str::new_static("anthropic.messages.root_fallbacks_unrepresentable")),
+		),
 		ExecutionReceipt::default(),
 	)
 }
@@ -1990,35 +2062,30 @@ fn unsupported_fallbacks() -> Error {
 fn capability_error(reason: &'static str) -> Error {
 	Error::planning(
 		ErrorKind::CapabilityMismatch,
-		ErrorDetail::Capability {
-			feature: Str::new_static(reason),
-			reason:  ReasonId(Str::new_static(reason)),
-		},
+		ErrorDetail::capability(Str::new_static(reason), ReasonId(Str::new_static(reason))),
 		ExecutionReceipt::default(),
 	)
 }
 
 fn encoding_error(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::InvalidRequest,
 		ErrorPhase::Encoding,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::new_static(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::new_static(reason))))
 }
 
 fn protocol_error(reason: &'static str, committed: bool) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::StreamCorruption,
 		ErrorPhase::Streaming,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.committed = committed;
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::new_static(reason)) });
-	error
+	)
+	.committed(committed)
+	.detail(ErrorDetail::protocol(ReasonId(Str::new_static(reason))))
 }
 
 fn provider_error(kind: Str, _message: Str, committed: bool) -> Error {
@@ -2030,16 +2097,10 @@ fn provider_error(kind: Str, _message: Str, committed: bool) -> Error {
 		"invalid_request_error" => (ErrorKind::InvalidRequest, Some(400)),
 		_ => (ErrorKind::Protocol, None),
 	};
-	let mut error = Error::new(
-		error_kind,
-		ErrorPhase::Streaming,
-		RetryAction::Never,
-		ExecutionReceipt::default(),
-	);
-	error.code = Some(kind);
-	error.status = status;
-	error.committed = committed;
-	error
+	Error::new(error_kind, ErrorPhase::Streaming, RetryAction::Never, ExecutionReceipt::default())
+		.status(status)
+		.code(kind)
+		.committed(committed)
 }
 
 /// Classifies a non-success direct Anthropic HTTP response without retaining
@@ -2050,13 +2111,9 @@ pub fn classify_http_error(status: u16, body: &[u8]) -> Error {
 		error: IncomingError,
 	}
 	if let Ok(envelope) = serde_json::from_slice::<Envelope>(body) {
-		let mut error = provider_error(envelope.error.kind, envelope.error.message, false);
-		error.status = Some(status);
-		error
+		provider_error(envelope.error.kind, envelope.error.message, false).status(Some(status))
 	} else {
-		let mut error = protocol_error("anthropic.http.error_envelope", false);
-		error.status = Some(status);
-		error
+		protocol_error("anthropic.http.error_envelope", false).status(Some(status))
 	}
 }
 
@@ -2097,11 +2154,9 @@ pub fn classify_vertex_error(status: u16, body: &[u8]) -> Error {
 			},
 		}
 	};
-	let mut error =
-		Error::new(kind, ErrorPhase::Handshake, RetryAction::Never, ExecutionReceipt::default());
-	error.status = Some(status);
-	error.code = (!rpc.is_empty()).then(|| Str::new(rpc));
-	error
+	Error::new(kind, ErrorPhase::Handshake, RetryAction::Never, ExecutionReceipt::default())
+		.status(Some(status))
+		.optional_code((!rpc.is_empty()).then(|| Str::new(rpc)))
 }
 fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
 	haystack.windows(needle.len()).any(|window| {
@@ -2355,7 +2410,7 @@ mod tests {
 		.unwrap_err();
 		assert_eq!(error.kind, ErrorKind::CapabilityMismatch);
 		assert!(matches!(
-			error.detail,
+			error.detail_ref(),
 			Some(ErrorDetail::Capability { feature, .. }) if feature == "request.fallbacks"
 		));
 	}
@@ -2508,7 +2563,7 @@ mod tests {
 		let mut events = Vec::new();
 		decoder
 			.push(Frame::Raw(Bytes::from_static(br#"{"input_tokens":42}"#)), &mut |event| {
-				events.push(event)
+				events.push(event);
 			})
 			.unwrap();
 		assert_eq!(events.len(), 1);

@@ -67,7 +67,8 @@ impl DevinSealedBody {
 					.map_err(|_| CredentialApplyError::InvalidSealedBody)?;
 				let metadata = request.metadata.get_or_insert_with(Metadata::default);
 				metadata.api_key = api_key;
-				metadata.user_jwt = token.to_owned();
+				metadata.user_jwt.clear();
+				metadata.user_jwt.push_str(token);
 				connect_gzip_message(&request.encode_to_vec())
 					.map_err(|_| CredentialApplyError::InvalidSealedBody)
 			},
@@ -304,6 +305,7 @@ impl DevinCodec {
 		)
 	}
 
+	#[cfg(test)]
 	pub(crate) fn sealed_discovery_request(&self) -> SealedBodyTemplate {
 		SealedBodyTemplate::Devin(DevinSealedBody::Discovery(self.discovery_request()))
 	}
@@ -637,9 +639,11 @@ fn message_prompt(
 					if !signature.is_empty() {
 						return Err(invalid_request("devin.reasoning.multiple_proofs"));
 					}
-					signature = std::str::from_utf8(&proof.value)
-						.map_err(|_| invalid_request("devin.reasoning.proof_utf8"))?
-						.to_owned();
+					signature.clear();
+					signature.push_str(
+						std::str::from_utf8(&proof.value)
+							.map_err(|_| invalid_request("devin.reasoning.proof_utf8"))?,
+					);
 				}
 			},
 			ContentPart::Image(MediaInput::Bytes { media_type, data }) => images.push(ImageData {
@@ -963,20 +967,16 @@ impl CascadeDecoder {
 		self.completed = true;
 	}
 
-	fn push_end_stream(
-		&mut self,
-		payload: &[u8],
-		emit: &mut dyn FnMut(RawEvent),
-	) -> Result<(), Error> {
+	fn push_end_stream(&self, payload: &[u8], emit: &mut dyn FnMut(RawEvent)) -> Result<(), Error> {
 		if payload.is_empty() {
 			return Ok(());
 		}
 		let trailer: ConnectEndStream = serde_json::from_slice(payload)
 			.map_err(|_| protocol_error(ErrorPhase::Streaming, "devin.connect.end_stream"))?;
 		if let Some(error) = trailer.error {
-			let mut failure = protocol_error(ErrorPhase::Streaming, "devin.connect.provider_status");
-			failure.code = Some(error.code);
-			failure.committed = self.next_index != 0;
+			let failure = protocol_error(ErrorPhase::Streaming, "devin.connect.provider_status")
+				.code(error.code)
+				.committed(self.next_index != 0);
 			emit(RawEvent::Failure(failure));
 		}
 		Ok(())
@@ -1001,23 +1001,18 @@ struct ConnectStatus {
 #[must_use]
 pub fn classify_cascade_error(code: &str, evidence: CascadeRequestEvidence) -> Error {
 	let context_overflow = code == "invalid_argument" && evidence.cumulative_large_read_output;
-	let mut error = if context_overflow {
-		let mut error = Error::new(
+	let error = if context_overflow {
+		Error::new(
 			ErrorKind::ContextOverflow,
 			ErrorPhase::Streaming,
 			RetryAction::Never,
 			ExecutionReceipt::default(),
-		);
-		error.detail = Some(ErrorDetail::Context {
-			limit:    DEFAULT_CONTEXT_WINDOW,
-			observed: evidence.estimated_chars,
-		});
-		error
+		)
+		.detail(ErrorDetail::context(DEFAULT_CONTEXT_WINDOW, evidence.estimated_chars))
 	} else {
 		protocol_error(ErrorPhase::Streaming, "devin.connect.status")
 	};
-	error.code = Some(Str::from(code));
-	error
+	error.code(Str::from(code))
 }
 
 fn connect_gzip_message(payload: &[u8]) -> Result<Bytes, Error> {
@@ -1073,9 +1068,8 @@ fn protocol_error(phase: ErrorPhase, reason: &'static str) -> Error {
 }
 
 fn protocol_error_with_kind(kind: ErrorKind, phase: ErrorPhase, reason: &'static str) -> Error {
-	let mut error = Error::new(kind, phase, RetryAction::Never, ExecutionReceipt::default());
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::new_static(reason)) });
-	error
+	Error::new(kind, phase, RetryAction::Never, ExecutionReceipt::default())
+		.detail(ErrorDetail::protocol(ReasonId(Str::new_static(reason))))
 }
 
 /// RPC path used by credential middleware for model discovery.
@@ -1112,9 +1106,9 @@ mod tests {
 	#[derive(Deserialize)]
 	#[serde(rename_all = "camelCase")]
 	struct FixtureUsage {
-		input_tokens:        String,
-		output_tokens:       String,
-		cached_input_tokens: String,
+		input:        String,
+		output:       String,
+		cached_input: String,
 	}
 
 	#[test]
@@ -1128,9 +1122,9 @@ mod tests {
 		for line in fixture.lines() {
 			let row: FixtureResponse = serde_json::from_str(line).expect("typed fixture row");
 			let usage = row.usage.map(|usage| ModelUsageStats {
-				input_tokens: usage.input_tokens.parse().expect("input tokens"),
-				output_tokens: usage.output_tokens.parse().expect("output tokens"),
-				cache_read_tokens: usage.cached_input_tokens.parse().expect("cache tokens"),
+				input_tokens: usage.input.parse().expect("input tokens"),
+				output_tokens: usage.output.parse().expect("output tokens"),
+				cache_read_tokens: usage.cached_input.parse().expect("cache tokens"),
 				..ModelUsageStats::default()
 			});
 			let response = GetChatMessageResponse {

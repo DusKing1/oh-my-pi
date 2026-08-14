@@ -136,16 +136,22 @@ pub enum RefreshLeaseAcquire {
 	/// This process owns the refresh lease.
 	Acquired(PersistentRefreshLease),
 	/// Another process owns the lease until the supplied instant.
-	HeldByPeer { expires_at: SystemTime },
+	HeldByPeer {
+		/// Expiry at which another process's lease ceases to fence refresh work.
+		expires_at: SystemTime,
+	},
 }
 
 /// Result of waiting for another process to publish or abandon refresh work.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RefreshLeaseWait {
 	/// The peer published its exact non-secret refresh result.
-	Published(RefreshResult),
+	Published(Box<RefreshResult>),
 	/// No result was published before the lease expired.
-	LeaseExpired { observed_at: SystemTime },
+	LeaseExpired {
+		/// Time at which the lease expiry was observed.
+		observed_at: SystemTime,
+	},
 }
 
 /// Sanitized persistent-store coordination failure.
@@ -240,24 +246,45 @@ pub enum RefreshStep {
 	/// This caller created the process-wide flight.
 	ProcessLeader,
 	/// A persistent lease was acquired.
-	PersistentLeaseAcquired { expires_at: SystemTime },
+	PersistentLeaseAcquired {
+		/// Expiry of the lease this process acquired.
+		expires_at: SystemTime,
+	},
 	/// Another process held the persistent lease.
-	PersistentLeaseObserved { expires_at: SystemTime },
+	PersistentLeaseObserved {
+		/// Expiry of the lease held by another process.
+		expires_at: SystemTime,
+	},
 	/// The peer lease expired without a result.
-	PersistentLeaseExpired { observed_at: SystemTime },
+	PersistentLeaseExpired {
+		/// Time at which the peer lease expiry was observed.
+		observed_at: SystemTime,
+	},
 	/// A running refresh renewed its persistent lease.
-	PersistentLeaseRenewed { expires_at: SystemTime },
+	PersistentLeaseRenewed {
+		/// Updated expiry of the renewed lease.
+		expires_at: SystemTime,
+	},
 	/// Credential exchange and persistence completed.
-	CredentialPersisted { generation: u64 },
+	CredentialPersisted {
+		/// Fresh credential generation that was persisted.
+		generation: u64,
+	},
 	/// Result metadata was published for peer processes.
 	ResultPublished,
 	/// Persistent lease release completed.
 	LeaseReleased,
 	/// Lease release failed after publication; expiry remains the recovery
 	/// boundary.
-	LeaseReleaseDeferred { expires_at: SystemTime },
+	LeaseReleaseDeferred {
+		/// Expiry at which the unreleased lease becomes recoverable.
+		expires_at: SystemTime,
+	},
 	/// A peer process published the shared result.
-	PeerResultObserved { generation: u64 },
+	PeerResultObserved {
+		/// Fresh credential generation observed from the peer.
+		generation: u64,
+	},
 }
 
 /// Secret-free, partial-preserving refresh timeline.
@@ -326,11 +353,20 @@ pub enum RefreshErrorKind {
 	/// Credential refresh operation failed.
 	Operation(RefreshOperationError),
 	/// Refresh attempted to bind the account to another principal.
-	PrincipalChanged { actual: PrincipalId },
+	PrincipalChanged {
+		/// Principal returned by the refresh operation.
+		actual: PrincipalId,
+	},
 	/// Published credentials were not newer than the rejected generation.
-	StaleGeneration { actual: u64 },
+	StaleGeneration {
+		/// Credential generation returned by the refresh operation.
+		actual: u64,
+	},
 	/// Refresh operation returned metadata for another account.
-	AccountChanged { actual: AccountId },
+	AccountChanged {
+		/// Account returned by the refresh operation.
+		actual: AccountId,
+	},
 	/// The persistent fencing lease was lost while refresh was still running.
 	LeaseLost,
 	/// Persistent peer leases repeatedly expired without publishing.
@@ -345,7 +381,7 @@ pub struct RefreshError {
 	/// Failure classification.
 	pub kind:    RefreshErrorKind,
 	/// Partial coordination timeline.
-	pub receipt: RefreshReceipt,
+	pub receipt: Box<RefreshReceipt>,
 }
 
 impl fmt::Display for RefreshError {
@@ -398,7 +434,8 @@ impl FlightGuard {
 	fn finish(mut self, result: SharedResult) {
 		self.finished = true;
 		remove_flight(&self.account, &self.flight);
-		for waiter in std::mem::take(&mut *self.flight.waiters.lock()) {
+		let waiters = std::mem::take(&mut *self.flight.waiters.lock());
+		for waiter in waiters {
 			let _ = waiter.send(result.clone());
 		}
 	}
@@ -412,9 +449,10 @@ impl Drop for FlightGuard {
 		remove_flight(&self.account, &self.flight);
 		let error = RefreshError {
 			kind:    RefreshErrorKind::LeaderCancelled,
-			receipt: self.fallback.lock().clone(),
+			receipt: Box::new(self.fallback.lock().clone()),
 		};
-		for waiter in std::mem::take(&mut *self.flight.waiters.lock()) {
+		let waiters = std::mem::take(&mut *self.flight.waiters.lock());
+		for waiter in waiters {
 			let _ = waiter.send(Err(error.clone()));
 		}
 	}
@@ -482,7 +520,7 @@ impl RefreshCoordinator {
 			let result = receiver.await.unwrap_or_else(|_| {
 				Err(RefreshError {
 					kind:    RefreshErrorKind::LeaderCancelled,
-					receipt: RefreshReceipt::new(&request),
+					receipt: Box::new(RefreshReceipt::new(&request)),
 				})
 			})?;
 			validate_result(
@@ -538,7 +576,7 @@ impl RefreshCoordinator {
 				.await
 				.map_err(|error| RefreshError {
 					kind:    RefreshErrorKind::Store(error),
-					receipt: receipt.clone(),
+					receipt: Box::new(receipt.clone()),
 				})?;
 			match acquired {
 				RefreshLeaseAcquire::HeldByPeer { expires_at } => {
@@ -551,7 +589,7 @@ impl RefreshCoordinator {
 						.await
 						.map_err(|error| RefreshError {
 							kind:    RefreshErrorKind::Store(error),
-							receipt: receipt.clone(),
+							receipt: Box::new(receipt.clone()),
 						})? {
 						RefreshLeaseWait::Published(result) => {
 							validate_result(
@@ -561,7 +599,7 @@ impl RefreshCoordinator {
 								&result.freshness,
 								receipt,
 							)?;
-							return Ok(result);
+							return Ok(*result);
 						},
 						RefreshLeaseWait::LeaseExpired { observed_at } => {
 							receipt
@@ -582,7 +620,7 @@ impl RefreshCoordinator {
 						guard.update_receipt(receipt);
 						return Err(RefreshError {
 							kind:    RefreshErrorKind::CoordinationExhausted,
-							receipt: receipt.clone(),
+							receipt: Box::new(receipt.clone()),
 						});
 					};
 					let refresh_future = refresh(lease.clone());
@@ -606,7 +644,7 @@ impl RefreshCoordinator {
 					) {
 						record_release(store, &lease, receipt).await;
 						guard.update_receipt(receipt);
-						return Err(RefreshError { receipt: receipt.clone(), ..error });
+						return Err(RefreshError { receipt: Box::new(receipt.clone()), ..error });
 					}
 					receipt.resulting_generation = Some(refreshed.freshness.generation);
 					receipt.steps.push(RefreshStep::CredentialPersisted {
@@ -624,7 +662,7 @@ impl RefreshCoordinator {
 						guard.update_receipt(receipt);
 						return Err(RefreshError {
 							kind:    RefreshErrorKind::Store(error),
-							receipt: receipt.clone(),
+							receipt: Box::new(receipt.clone()),
 						});
 					}
 					receipt.steps.push(RefreshStep::ResultPublished);
@@ -637,7 +675,7 @@ impl RefreshCoordinator {
 		}
 		Err(RefreshError {
 			kind:    RefreshErrorKind::CoordinationExhausted,
-			receipt: receipt.clone(),
+			receipt: Box::new(receipt.clone()),
 		})
 	}
 
@@ -662,19 +700,19 @@ impl RefreshCoordinator {
 				result = &mut future => {
 					return result.map_err(|error| RefreshError {
 						kind: RefreshErrorKind::Operation(error),
-						receipt: receipt.clone(),
+						receipt: Box::new(receipt.clone()),
 					});
 				},
 				() = &mut sleep => {
 					let renewed = store.renew(lease, SystemTime::now(), self.policy.lease_ttl).await
 						.map_err(|error| RefreshError {
 							kind: RefreshErrorKind::Store(error),
-							receipt: receipt.clone(),
+							receipt: Box::new(receipt.clone()),
 						})?;
 					if !renewed {
 						return Err(RefreshError {
 							kind: RefreshErrorKind::LeaseLost,
-							receipt: receipt.clone(),
+							receipt: Box::new(receipt.clone()),
 						});
 					}
 					receipt.steps.push(RefreshStep::PersistentLeaseRenewed {
@@ -710,19 +748,19 @@ fn validate_result(
 	if account != &request.account {
 		return Err(RefreshError {
 			kind:    RefreshErrorKind::AccountChanged { actual: account.clone() },
-			receipt: receipt.clone(),
+			receipt: Box::new(receipt.clone()),
 		});
 	}
 	if principal != &request.principal {
 		return Err(RefreshError {
 			kind:    RefreshErrorKind::PrincipalChanged { actual: principal.clone() },
-			receipt: receipt.clone(),
+			receipt: Box::new(receipt.clone()),
 		});
 	}
 	if !freshness.is_newer_than(&request.rejected) {
 		return Err(RefreshError {
 			kind:    RefreshErrorKind::StaleGeneration { actual: freshness.generation },
-			receipt: receipt.clone(),
+			receipt: Box::new(receipt.clone()),
 		});
 	}
 	Ok(())

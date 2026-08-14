@@ -28,7 +28,7 @@ use crate::{
 	Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive)]
 pub enum TransportKind {
 	/// HTTP request and response streaming.
 	Http,
@@ -60,7 +60,7 @@ pub enum TransportKind {
 	Deserialize,
 )]
 #[serde(rename_all = "kebab-case")]
-#[strum(serialize_all = "kebab-case", ascii_case_insensitive, const_into_str)]
+#[strum(serialize_all = "kebab-case", ascii_case_insensitive)]
 pub enum CodecProfile {
 	/// Conventional constructor for the selected codec.
 	#[default]
@@ -88,7 +88,7 @@ pub enum CodecProfile {
 	Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive)]
 pub enum AuthSpecKind {
 	/// No credentials are required.
 	None,
@@ -125,7 +125,7 @@ pub enum AuthSpecKind {
 	Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive)]
 pub enum AccountScope {
 	/// Credentials are shared across the whole provider.
 	Provider,
@@ -275,7 +275,7 @@ pub struct OAuthParameter {
 	Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive)]
 pub enum OAuthCompletion {
 	/// Receives a loopback callback URL and validates its state.
 	CallbackUrl,
@@ -300,7 +300,7 @@ pub enum OAuthCompletion {
 	Deserialize,
 )]
 #[serde(rename_all = "kebab-case")]
-#[strum(serialize_all = "kebab-case", ascii_case_insensitive, const_into_str)]
+#[strum(serialize_all = "kebab-case", ascii_case_insensitive)]
 pub enum OAuthExchangeKind {
 	/// Extracts account claims from the `OpenAI` Codex token response.
 	OpenAiCodexClaims,
@@ -497,7 +497,7 @@ pub struct EndpointSpec {
 	Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive)]
 pub enum RedirectTrust {
 	/// Redirects are rejected.
 	Deny,
@@ -551,7 +551,7 @@ pub struct HeaderProfile {
 	Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive)]
 pub enum DiscoveryKind {
 	/// OpenAI-compatible model listing.
 	OpenAiModels,
@@ -696,7 +696,7 @@ pub struct RouteRestrictions {
 	Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive)]
 pub enum CodexTransportPreference {
 	/// Use HTTP only.
 	HttpOnly,

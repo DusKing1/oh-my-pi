@@ -31,7 +31,7 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt};
 use omp_core::Str;
-use strum::Display;
+use strum::{Display, EnumString, IntoStaticStr};
 use tokio::task::JoinError;
 use tokio_util::sync::CancellationToken;
 use tower::Service;
@@ -100,8 +100,12 @@ static APPLE_ADMISSION: LazyLock<Arc<AdmissionControl>> =
 	LazyLock::new(|| Arc::new(AdmissionControl::new(1).expect("one is a valid admission limit")));
 
 /// Stable category attached to an [`AppleFmError`].
-#[derive(Clone, Copy, Debug, Display, Eq, Hash, PartialEq)]
-#[strum(serialize_all = "snake_case")]
+#[allow(
+	missing_docs,
+	reason = "strum generates the public string-conversion method from documented variants"
+)]
+#[derive(Clone, Copy, Debug, Display, EnumString, Eq, Hash, IntoStaticStr, PartialEq)]
+#[strum(serialize_all = "snake_case", const_into_str)]
 pub enum AppleFmErrorCode {
 	/// The caller supplied an invalid request option.
 	InvalidInput,
@@ -132,8 +136,16 @@ pub enum AppleFmErrorCode {
 	/// Another process-local request is already active.
 	ConcurrentRequests,
 	/// The Foundation Models or Swift runtime failed unexpectedly.
-	#[strum(to_string = "runtime_error")]
+	#[strum(serialize = "runtime_error", serialize = "runtime")]
 	Runtime,
+}
+
+impl AppleFmErrorCode {
+	/// Stable machine-readable string representation of this error code.
+	#[must_use]
+	pub const fn as_str(&self) -> &'static str {
+		(*self).into_str()
+	}
 }
 
 /// Error returned by Apple Foundation Models availability checks or generation.
@@ -370,7 +382,7 @@ impl AppleFm {
 		let state = if availability.available {
 			AppleFmSupportState::Available
 		} else {
-			classify_support(detail.as_deref())
+			classify_support(detail.as_ref().map(Str::as_str))
 		};
 		Ok(AppleFmAvailabilityEvidence {
 			state,
@@ -684,14 +696,15 @@ impl Service<TransportRequest> for AppleFmTransport {
 			match APPLE_ADMISSION.try_acquire() {
 				Ok(permit) => self.ready = Some(permit),
 				Err(error) => {
-					let mut mapped = Error::new(
-						ErrorKind::ResourceExhausted,
-						ErrorPhase::Admission,
-						RetryAction::Never,
-						ExecutionReceipt::default(),
-					);
-					mapped.code = Some(error.message);
-					return Poll::Ready(Err(mapped));
+					return Poll::Ready(Err(
+						Error::new(
+							ErrorKind::ResourceExhausted,
+							ErrorPhase::Admission,
+							RetryAction::Never,
+							ExecutionReceipt::default(),
+						)
+						.code(error.message),
+					));
 				},
 			}
 		}
@@ -864,14 +877,14 @@ async fn execute_transport(
 					NativePoll::Cancelled => {
 						native.cancel();
 						reap_stream(&mut native).await;
-						let mut error = transport_attempt_error(
+						let error = transport_attempt_error(
 							ErrorKind::Cancelled,
 							ErrorPhase::Streaming,
 							"local Apple request was cancelled",
 							&attempt,
 							block_started,
-						);
-						error.committed = block_started;
+						)
+						.committed(block_started);
 						Err(error)?;
 					},
 					NativePoll::Event(event) => {
@@ -983,8 +996,8 @@ fn append_native_attempt(
 			Ok(true)
 		},
 		Err(error) => {
-			let mut mapped = native_attempt_error(attempt, &error, *block_started);
-			mapped.committed = *block_started;
+			let mapped =
+				native_attempt_error(attempt, &error, *block_started).committed(*block_started);
 			Err(mapped)
 		},
 	}
@@ -1144,7 +1157,7 @@ fn availability_evidence_sync() -> AppleFmAvailabilityEvidence {
 	let state = if availability.available {
 		AppleFmSupportState::Available
 	} else {
-		classify_support(detail.as_deref())
+		classify_support(detail.as_ref().map(Str::as_str))
 	};
 	AppleFmAvailabilityEvidence {
 		state,
@@ -1180,16 +1193,11 @@ fn codec_route_error(
 	provider: &ProviderId,
 	route: &RouteId,
 ) -> Error {
-	let mut error =
-		Error::new(kind, ErrorPhase::Encoding, RetryAction::Never, ExecutionReceipt::default());
-	error.provider = Some(provider.clone());
-	error.route = Some(route.clone());
-	error.request_id = Some(request_id.clone());
-	error.detail = Some(ErrorDetail::Capability {
-		feature: "apple-foundation-models".into(),
-		reason:  ReasonId(message.into()),
-	});
-	error
+	Error::new(kind, ErrorPhase::Encoding, RetryAction::Never, ExecutionReceipt::default())
+		.provider(provider.clone())
+		.route(route.clone())
+		.request_id(request_id.clone())
+		.detail(ErrorDetail::capability("apple-foundation-models".into(), ReasonId(message.into())))
 }
 
 fn transport_error(
@@ -1209,13 +1217,12 @@ fn transport_attempt_error(
 	attempt: &crate::codec::TransportAttempt,
 	committed: bool,
 ) -> Error {
-	let mut error = Error::new(kind, phase, RetryAction::Never, ExecutionReceipt::default());
-	error.provider = Some(attempt.provider.clone());
-	error.route = Some(attempt.route.clone());
-	error.request_id = Some(attempt.request_id.clone());
-	error.committed = committed;
-	error.detail = Some(ErrorDetail::Provider { sanitized_message: message.into() });
-	error
+	Error::new(kind, phase, RetryAction::Never, ExecutionReceipt::default())
+		.provider(attempt.provider.clone())
+		.route(attempt.route.clone())
+		.request_id(attempt.request_id.clone())
+		.committed(committed)
+		.detail(ErrorDetail::provider(message.into()))
 }
 
 fn native_transport_error(
@@ -1223,9 +1230,7 @@ fn native_transport_error(
 	error: &AppleFmError,
 	committed: bool,
 ) -> Error {
-	let mut mapped = native_attempt_error(&request.attempt, error, committed);
-	mapped.committed = committed;
-	mapped
+	native_attempt_error(&request.attempt, error, committed)
 }
 
 fn native_attempt_error(
@@ -1234,9 +1239,8 @@ fn native_attempt_error(
 	committed: bool,
 ) -> Error {
 	let (kind, phase) = apple_native_error(error.code(), committed);
-	let mut mapped = transport_attempt_error(kind, phase, error.message(), attempt, committed);
-	mapped.code = Some(error.code().to_string().into());
-	mapped
+	transport_attempt_error(kind, phase, error.message(), attempt, committed)
+		.code(Str::new_static(error.code().as_str()))
 }
 
 fn apple_native_error(code: AppleFmErrorCode, committed: bool) -> (ErrorKind, ErrorPhase) {
@@ -1388,8 +1392,8 @@ mod tests {
 
 	#[test]
 	fn error_codes_have_stable_wire_names() {
-		assert_eq!(AppleFmErrorCode::GuardrailBlocked.to_string(), "guardrail_blocked");
-		assert_eq!(AppleFmErrorCode::Runtime.to_string(), "runtime_error");
+		assert_eq!(AppleFmErrorCode::GuardrailBlocked.as_str(), "guardrail_blocked");
+		assert_eq!(AppleFmErrorCode::Runtime.as_str(), "runtime_error");
 	}
 
 	fn attempt() -> TransportAttempt {

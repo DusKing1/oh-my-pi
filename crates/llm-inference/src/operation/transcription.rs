@@ -45,7 +45,12 @@ pub enum TranscriptionError {
 	/// Input media type is not accepted.
 	MediaType(Str),
 	/// Inline immutable input exceeds its bound.
-	InputTooLarge { limit: u64, observed: u64 },
+	InputTooLarge {
+		/// Configured maximum inline byte count.
+		limit:    u64,
+		/// Actual inline byte count supplied by the request.
+		observed: u64,
+	},
 	/// Translation was required but is unsupported.
 	TranslationUnsupported,
 	/// A language hint was supplied but is unsupported.

@@ -435,39 +435,34 @@ const fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
 }
 
 fn encoding_error(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::InvalidRequest,
 		ErrorPhase::Encoding,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::new_static(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::new_static(reason))))
 }
 
 fn protocol_error(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::ProviderContractMismatch,
 		ErrorPhase::Streaming,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::new_static(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::new_static(reason))))
 }
 
 fn provider_error() -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::Protocol,
 		ErrorPhase::Streaming,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.code = Some(Str::new_static("tavily_provider_error"));
-	error.detail = Some(ErrorDetail::Provider {
-		sanitized_message: Str::new_static("Tavily rejected the search request"),
-	});
-	error
+	)
+	.code(Str::new_static("tavily_provider_error"))
+	.detail(ErrorDetail::provider(Str::new_static("Tavily rejected the search request")))
 }
 
 #[cfg(test)]
@@ -576,7 +571,7 @@ mod tests {
 			.expect_err("missing required answer");
 		assert_eq!(error.kind, ErrorKind::ProviderContractMismatch);
 		assert!(matches!(
-			error.detail,
+			error.detail_ref(),
 			Some(ErrorDetail::Protocol { reason }) if reason.0.as_str() == "required_search_answer_missing"
 		));
 	}

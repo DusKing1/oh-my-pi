@@ -105,7 +105,12 @@ pub enum TagEvent {
 	/// Bytes proven not to begin a configured block.
 	Text(Bytes),
 	/// One complete delimited block, including delimiters.
-	Block { id: DelimiterId, raw: Bytes },
+	Block {
+		/// Identifier of the matched delimiter rule.
+		id:  DelimiterId,
+		/// Complete matched bytes including both delimiters.
+		raw: Bytes,
+	},
 }
 
 #[derive(Debug)]

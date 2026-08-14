@@ -246,42 +246,37 @@ const fn window_kind_rank(kind: UsageWindowKind) -> u8 {
 }
 
 fn wrong_operation(call: &crate::call::Call) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::InternalInvariant,
 		ErrorPhase::Internal,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.request_id = Some(call.id.clone());
-	error.detail = Some(ErrorDetail::Capability {
-		feature: Str::from(OperationKind::Usage.to_string()),
-		reason:  ReasonId(Str::from("operation_service_mismatch")),
-	});
-	error
+	)
+	.detail(ErrorDetail::capability(
+		Str::from(OperationKind::Usage.to_string()),
+		ReasonId(Str::from("operation_service_mismatch")),
+	))
+	.request_id(call.id.clone())
 }
 
 fn stale_error(dimension: &str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::ProviderContractMismatch,
 		ErrorPhase::Discovery,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol {
-		reason: ReasonId(Str::from(format!("stale_usage_window:{dimension}"))),
-	});
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(format!("stale_usage_window:{dimension}")))))
 }
 
 fn protocol_error(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::ProviderContractMismatch,
 		ErrorPhase::Discovery,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 #[cfg(test)]

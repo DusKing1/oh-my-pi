@@ -693,10 +693,10 @@ impl RouteCodecSet {
 		self.operations[operation as usize].as_ref().ok_or_else(|| {
 			Error::planning(
 				ErrorKind::CapabilityMismatch,
-				ErrorDetail::Capability {
-					feature: Str::from(operation.to_string()),
-					reason:  ReasonId(Str::from("operation-not-advertised-on-route")),
-				},
+				ErrorDetail::capability(
+					Str::from(operation.to_string()),
+					ReasonId(Str::from("operation-not-advertised-on-route")),
+				),
 				ExecutionReceipt::default(),
 			)
 		})
@@ -864,7 +864,7 @@ fn merge_static_headers(
 	for header in destination.iter().chain(configured) {
 		let name = header.name.to_ascii_lowercase();
 		match values.get(&name) {
-			Some(value) if value == &header.value => continue,
+			Some(value) if value == &header.value => {},
 			Some(_) => return Err(contract_error(execution, "conflicting-public-request-header")),
 			None => {
 				values.insert(name, header.value.clone());
@@ -891,7 +891,7 @@ fn native_response(operation: &OperationCall) -> Option<NativeResponseFormat> {
 enum RouteAccount {
 	Anonymous { _account: AnonymousAccount },
 	Brokered { _account: BrokeredAccount },
-	Authenticated(AccountSelection),
+	Authenticated(Box<AccountSelection>),
 }
 #[derive(Clone, Debug)]
 struct AnonymousAccount {
@@ -942,7 +942,7 @@ impl AccountSelector<Call> for RouteAccountSelector {
 			now: SystemTime::now(),
 		};
 		match self.pool.select(&request) {
-			Ok(selection) => Ok(RouteAccount::Authenticated(selection)),
+			Ok(selection) => Ok(RouteAccount::Authenticated(Box::new(selection))),
 			Err(error) if error.receipt.candidates.is_empty() => Ok(RouteAccount::Brokered {
 				_account: BrokeredAccount {
 					_provider: self.provider.clone(),
@@ -1106,14 +1106,14 @@ impl IntentPlanner for PlannedIntent {
 		let Some(plan) = &call.execution else {
 			return Err(Error::planning(
 				ErrorKind::ProviderContractMismatch,
-				ErrorDetail::Protocol { reason: ReasonId(Str::from("execution-plan-missing")) },
+				ErrorDetail::protocol(ReasonId(Str::from("execution-plan-missing"))),
 				ExecutionReceipt::default(),
 			));
 		};
 		if plan.route != self.route {
 			return Err(Error::planning(
 				ErrorKind::ProviderContractMismatch,
-				ErrorDetail::Protocol { reason: ReasonId(Str::from("planned-route-mismatch")) },
+				ErrorDetail::protocol(ReasonId(Str::from("planned-route-mismatch"))),
 				ExecutionReceipt::default(),
 			));
 		}
@@ -1153,25 +1153,23 @@ fn unavailable(route: &RouteDef, reason: &'static str) -> RouteUnavailable {
 }
 
 fn authentication_error(context: &ExecutionContext, reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::Authentication,
 		ErrorPhase::Authentication,
 		RetryAction::Never,
 		context.receipt(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 fn contract_error(context: &ExecutionContext, reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::ProviderContractMismatch,
 		ErrorPhase::Encoding,
 		RetryAction::Never,
 		context.receipt(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 #[cfg(test)]

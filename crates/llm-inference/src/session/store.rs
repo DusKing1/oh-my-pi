@@ -182,7 +182,7 @@ impl<I: PartialEq + Send + Sync + 'static> ConversationStore<I> for InMemoryConv
 	fn create(&self) -> Result<CommittedRevision<I>, ConversationError> {
 		let mut state = self.state.lock();
 		let conversation = state.allocate_conversation();
-		let revision = state.revision_for(&conversation, None, None);
+		let revision = ConversationState::<I>::revision_for(&conversation, None, None);
 		state.revisions.insert(revision.clone(), RevisionNode {
 			conversation: conversation.clone(),
 			parent:       None,

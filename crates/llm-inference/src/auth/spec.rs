@@ -12,9 +12,21 @@ pub enum AuthSpec {
 	/// The route does not authenticate.
 	None,
 	/// An API key acquired from declared sources in exact catalog order.
-	ApiKey { sources: Vec<CredentialSourceSpec>, placement: KeyPlacement },
+	ApiKey {
+		/// Sources tried in exact catalog order.
+		sources:   Vec<CredentialSourceSpec>,
+		/// Request location for the resolved key.
+		placement: KeyPlacement,
+	},
 	/// A bearer token acquired from declared sources in exact catalog order.
-	Bearer { sources: Vec<CredentialSourceSpec>, placement: KeyPlacement, scheme: BearerScheme },
+	Bearer {
+		/// Sources tried in exact catalog order.
+		sources:   Vec<CredentialSourceSpec>,
+		/// Request location for the resolved token.
+		placement: KeyPlacement,
+		/// Non-secret protocol scheme retained in evidence.
+		scheme:    BearerScheme,
+	},
 	/// OAuth 2 authorization-code flow with PKCE.
 	OAuthPkce(OAuthPkceSpec),
 	/// OAuth 2 device authorization grant.
@@ -393,15 +405,24 @@ pub enum CatalogAuthSpecError {
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum CredentialSourceSpec {
 	/// Check the named environment variables in order; values are ephemeral.
-	Environment { variables: Vec<Str> },
+	Environment {
+		/// Names checked in exact order.
+		variables: Vec<Str>,
+	},
 	/// Ask the caller over an interactive login session.
 	Interactive,
 	/// Read an encrypted account-store record by non-secret profile label.
-	Stored { profile: Option<Str> },
+	Stored {
+		/// Optional account-store profile selector.
+		profile: Option<Str>,
+	},
 	/// Resolve the platform's application-default credential chain.
 	ApplicationDefault,
 	/// Resolve the platform's AWS credential chain.
-	AwsChain { profile: Option<Str> },
+	AwsChain {
+		/// Optional shared-credentials profile selector.
+		profile: Option<Str>,
+	},
 }
 
 /// Permitted placement of an API key or session token.
@@ -682,11 +703,24 @@ impl OAuthCustomSpec {
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum AdcSourceSpec {
 	/// An environment variable containing a short-lived access token.
-	EnvironmentAccessToken { variable: Str },
+	EnvironmentAccessToken {
+		/// Environment variable containing the access token.
+		variable: Str,
+	},
 	/// A JSON credential file selected by an optional environment override.
-	CredentialFile { path_variable: Option<Str>, default_path: Option<Str> },
+	CredentialFile {
+		/// Optional environment variable that overrides the credential-file path.
+		path_variable: Option<Str>,
+		/// Optional default credential-file path.
+		default_path:  Option<Str>,
+	},
 	/// A workload metadata endpoint returning a standard OAuth token response.
-	Metadata { url: Str, headers: Vec<PublicHeader> },
+	Metadata {
+		/// Endpoint URL.
+		url:     Str,
+		/// Public headers sent to the endpoint.
+		headers: Vec<PublicHeader>,
+	},
 }
 
 /// Application-default credential source order and token policy.

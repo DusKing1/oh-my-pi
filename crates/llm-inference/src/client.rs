@@ -164,9 +164,7 @@ where
 		if plan.operation != O::KIND {
 			return Err(Error::planning(
 				ErrorKind::InternalInvariant,
-				ErrorDetail::Protocol {
-					reason: ReasonId(omp_core::Str::from("planner-operation-mismatch")),
-				},
+				ErrorDetail::protocol(ReasonId(omp_core::Str::from("planner-operation-mismatch"))),
 				ExecutionReceipt::default(),
 			));
 		}
@@ -298,8 +296,8 @@ mod tests {
 		);
 		assert!(
 			DetokenizeRequest::extract(answer(AnswerBody::Text(DetokenizedText {
-				text:       Str::from("text"),
-				provenance: provenance.clone(),
+				text: Str::from("text"),
+				provenance,
 			})))
 			.is_ok()
 		);
@@ -380,7 +378,7 @@ mod tests {
 		.expect("mismatch");
 		assert_eq!(error.kind, ErrorKind::ProviderContractMismatch);
 		assert!(matches!(
-			error.detail,
+			error.detail_ref(),
 			Some(ErrorDetail::BodyVariantMismatch {
 				expected: OperationKind::Chat,
 				actual:   crate::answer::AnswerKind::Text,
@@ -395,7 +393,7 @@ mod tests {
 		fn plan(&self, _: &Call, _: Instant) -> Result<ExecutionPlan, Error> {
 			Err(Error::planning(
 				ErrorKind::CapabilityMismatch,
-				ErrorDetail::Protocol { reason: ReasonId(Str::from("unsupported-test-operation")) },
+				ErrorDetail::protocol(ReasonId(Str::from("unsupported-test-operation"))),
 				ExecutionReceipt::default(),
 			))
 		}

@@ -157,11 +157,11 @@ enum WireEnvelope {
 #[derive(Deserialize)]
 struct WireResponse {
 	#[serde(rename = "type", default)]
-	kind:      Option<ResultKind>,
-	search_id: Str,
-	results:   Vec<WireSearchResult>,
+	_kind:      Option<ResultKind>,
+	_search_id: Str,
+	results:    Vec<WireSearchResult>,
 	#[serde(default)]
-	usage:     Option<Vec<WireUsageItem>>,
+	usage:      Option<Vec<WireUsageItem>>,
 }
 
 #[derive(Deserialize)]
@@ -173,7 +173,7 @@ enum ResultKind {
 #[derive(Deserialize)]
 struct WireSearchResult {
 	#[serde(rename = "type", default)]
-	kind:         Option<SearchResultKind>,
+	_kind:        Option<SearchResultKind>,
 	url:          Str,
 	#[serde(default)]
 	title:        Option<Str>,
@@ -200,8 +200,8 @@ struct WireUsageItem {
 #[derive(Deserialize)]
 struct WireErrorEnvelope {
 	#[serde(rename = "type")]
-	kind:  WireErrorKind,
-	error: WireError,
+	_kind:  WireErrorKind,
+	_error: WireError,
 }
 
 #[derive(Deserialize)]
@@ -264,10 +264,10 @@ impl Decoder for ParallelSearchDecoder {
 }
 
 fn project(response: WireResponse) -> Result<SearchResults, Error> {
-	let WireResponse { kind: _, search_id: _, results: wire_results, usage } = response;
+	let WireResponse { _kind: _, _search_id: _, results: wire_results, usage } = response;
 	let mut results = Vec::with_capacity(wire_results.len());
 	for (index, result) in wire_results.into_iter().enumerate() {
-		let WireSearchResult { kind: _, url, title, excerpts, score, publish_date } = result;
+		let WireSearchResult { _kind: _, url, title, excerpts, score, publish_date } = result;
 		if url.is_empty() {
 			return Err(protocol_error("parallel_search_result_url_empty"));
 		}
@@ -340,7 +340,7 @@ fn parse_date(value: &str) -> Option<SystemTime> {
 		return None;
 	}
 	let days = days_from_civil(year, month, day)?;
-	UNIX_EPOCH.checked_add(Duration::from_secs(days.checked_mul(86_400)?))
+	UNIX_EPOCH.checked_add(Duration::from_days(days))
 }
 
 const fn days_in_month(year: i32, month: u32) -> u32 {
@@ -365,35 +365,29 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> Option<u64> {
 }
 
 fn provider_error(_error: WireErrorEnvelope) -> Error {
-	let mut result = Error::new(
+	Error::new(
 		ErrorKind::InvalidRequest,
 		ErrorPhase::Streaming,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	result.code = Some(Str::new_static("parallel_search_error"));
-	result.detail = Some(ErrorDetail::Provider {
-		sanitized_message: Str::new_static("Parallel Search request failed"),
-	});
-	result
+	)
+	.code(Str::new_static("parallel_search_error"))
+	.detail(ErrorDetail::provider(Str::new_static("Parallel Search request failed")))
 }
 
 fn encoding_error(kind: ErrorKind, reason: &'static str) -> Error {
-	let mut error =
-		Error::new(kind, ErrorPhase::Encoding, RetryAction::Never, ExecutionReceipt::default());
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::new_static(reason)) });
-	error
+	Error::new(kind, ErrorPhase::Encoding, RetryAction::Never, ExecutionReceipt::default())
+		.detail(ErrorDetail::protocol(ReasonId(Str::new_static(reason))))
 }
 
 fn protocol_error(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::Protocol,
 		ErrorPhase::Streaming,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::new_static(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::new_static(reason))))
 }
 
 #[cfg(test)]
@@ -472,10 +466,7 @@ mod tests {
 			(1, Some("first\n\nsecond"))
 		);
 		assert_eq!(answer.results[0].score, Some(0.875));
-		assert_eq!(
-			answer.results[0].published_at,
-			Some(UNIX_EPOCH + Duration::from_secs(1_709_164_800))
-		);
+		assert_eq!(answer.results[0].published_at, Some(UNIX_EPOCH + Duration::from_hours(474768)));
 		assert_eq!(answer.usage.search_calls, 1);
 		assert_eq!(answer.usage.source, UsageSource::Provider);
 	}
@@ -491,10 +482,10 @@ mod tests {
 		let RawEvent::Failure(error) = &failure[0] else {
 			panic!("failure")
 		};
-		let Some(ErrorDetail::Provider { sanitized_message }) = &error.detail else {
+		let Some(ErrorDetail::Provider { sanitized_message }) = error.detail_ref() else {
 			panic!("provider detail")
 		};
-		assert_eq!(sanitized_message, "Parallel Search request failed");
+		assert_eq!(sanitized_message.as_str(), "Parallel Search request failed");
 		let debug = format!("{error:?}");
 		assert!(!debug.contains("bad"));
 		assert!(!debug.contains("secret"));

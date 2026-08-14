@@ -52,8 +52,13 @@ pub enum SpeechError {
 	Speed(f32),
 	/// Timestamps were explicitly requested but unavailable.
 	TimestampsUnsupported,
-	/// A chunk exceeds the bounded stream frame size.
-	ChunkTooLarge { limit: usize, observed: usize },
+	/// A chunk exceeded the negotiated maximum size.
+	ChunkTooLarge {
+		/// Negotiated maximum chunk size in bytes.
+		limit:    usize,
+		/// Received chunk size in bytes.
+		observed: usize,
+	},
 	/// Timestamp interval is inverted or moved backwards.
 	InvalidTimestamp,
 	/// A non-final chunk arrived after the final chunk.

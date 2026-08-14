@@ -49,16 +49,39 @@ impl ArtifactDescriptor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ArtifactViolation {
 	/// Media type is empty or outside the allowlist.
-	MediaType { actual: Str },
+	MediaType {
+		/// Received media type.
+		actual: Str,
+	},
 	/// Declared or observed content exceeds the operation bound.
-	TooLarge { limit: u64, observed: u64 },
+	TooLarge {
+		/// Maximum accepted bytes.
+		limit:    u64,
+		/// Declared or observed bytes.
+		observed: u64,
+	},
 	/// A transport chunk exceeds the per-chunk bound.
-	ChunkTooLarge { limit: u64, observed: u64 },
+	ChunkTooLarge {
+		/// Maximum chunk bytes.
+		limit:    u64,
+		/// Received chunk bytes.
+		observed: u64,
+	},
 	/// Observed content length differs from its declaration.
-	SizeMismatch { declared: u64, observed: u64 },
+	SizeMismatch {
+		/// Declared body bytes.
+		declared: u64,
+		/// Received body bytes.
+		observed: u64,
+	},
 	/// A byte body was selected even though inline storage is forbidden at its
 	/// size.
-	InlineBodyTooLarge { limit: u64, observed: u64 },
+	InlineBodyTooLarge {
+		/// Maximum inline bytes.
+		limit:    u64,
+		/// Body bytes selected for inline storage.
+		observed: u64,
+	},
 	/// More content arrived after the body was finalized.
 	AlreadyFinished,
 }

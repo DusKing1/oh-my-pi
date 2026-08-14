@@ -298,6 +298,10 @@ pub struct AttemptReceipt {
 }
 
 /// Kind of deterministic recovery applied to canonical output.
+#[allow(
+	missing_docs,
+	reason = "`strum` generates an undocumented `IntoStaticStr::into_str` implementation method"
+)]
 #[derive(Clone, Debug, Deserialize, Eq, IntoStaticStr, PartialEq, Serialize)]
 #[strum(serialize_all = "snake_case", const_into_str)]
 pub enum RecoveryKind {

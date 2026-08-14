@@ -335,9 +335,7 @@ impl<'a> RecoveryProjector<'a> {
 			return output;
 		}
 		let hold = partial_opener_suffix(&self.pending_text);
-		let valid = if let Ok(valid) = valid_utf8_prefix(&self.pending_text) {
-			valid
-		} else {
+		let Ok(valid) = valid_utf8_prefix(&self.pending_text) else {
 			self.pending_text.clear();
 			self.stopped = true;
 			output.failure = Some(ProjectionFailure::InvalidUtf8);

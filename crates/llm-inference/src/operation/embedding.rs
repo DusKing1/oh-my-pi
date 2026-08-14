@@ -168,8 +168,8 @@ where
 					Ok(later) => later,
 					Err(mut error) => {
 						let mut receipt = aggregate.receipt;
-						merge_receipts(&mut receipt, error.receipt);
-						error.receipt = receipt;
+						merge_receipts(&mut receipt, error.take_receipt());
+						error.replace_receipt(receipt);
 						return Err(error);
 					},
 				};
@@ -434,24 +434,23 @@ pub(crate) fn normalize_vector(values: &mut [f32]) -> Result<(), Error> {
 }
 
 fn wrong_operation(call: &crate::call::Call) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::InternalInvariant,
 		ErrorPhase::Internal,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.request_id = Some(call.id.clone());
-	error.detail = Some(ErrorDetail::Capability {
-		feature: Str::from(OperationKind::Embed.to_string()),
-		reason:  ReasonId(Str::from("operation_service_mismatch")),
-	});
-	error
+	)
+	.detail(ErrorDetail::capability(
+		Str::from(OperationKind::Embed.to_string()),
+		ReasonId(Str::from("operation_service_mismatch")),
+	))
+	.request_id(call.id.clone())
 }
 
 fn request_error(feature: &'static str, reason: &'static str) -> Error {
 	Error::planning(
 		ErrorKind::InvalidRequest,
-		ErrorDetail::Capability { feature: Str::from(feature), reason: ReasonId(Str::from(reason)) },
+		ErrorDetail::capability(Str::from(feature), ReasonId(Str::from(reason))),
 		ExecutionReceipt::default(),
 	)
 }
@@ -459,20 +458,19 @@ fn request_error(feature: &'static str, reason: &'static str) -> Error {
 fn planning_error(feature: &'static str, reason: &'static str) -> Error {
 	Error::planning(
 		ErrorKind::CapabilityMismatch,
-		ErrorDetail::Capability { feature: Str::from(feature), reason: ReasonId(Str::from(reason)) },
+		ErrorDetail::capability(Str::from(feature), ReasonId(Str::from(reason))),
 		ExecutionReceipt::default(),
 	)
 }
 
 fn protocol_error(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::ProviderContractMismatch,
 		ErrorPhase::Recovery,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 #[cfg(test)]

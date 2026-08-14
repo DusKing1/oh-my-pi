@@ -975,7 +975,6 @@ pub struct NativeResponse {
 
 #[cfg(test)]
 mod tests {
-	use futures::StreamExt as _;
 
 	use super::*;
 	use crate::{

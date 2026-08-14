@@ -32,7 +32,7 @@ use crate::{
 	Deserialize,
 )]
 #[serde(rename_all = "lowercase")]
-#[strum(serialize_all = "lowercase", ascii_case_insensitive, const_into_str)]
+#[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum ThinkingEffort {
 	/// Explicitly disable reasoning.
 	Off,
@@ -52,6 +52,22 @@ pub enum ThinkingEffort {
 	Max,
 }
 
+impl ThinkingEffort {
+	/// Returns the canonical static spelling for this effort.
+	#[must_use]
+	pub const fn into_str(&self) -> &'static str {
+		match self {
+			Self::Off => "off",
+			Self::Minimal => "minimal",
+			Self::Low => "low",
+			Self::Medium => "medium",
+			Self::High => "high",
+			Self::XHigh => "xhigh",
+			Self::Max => "max",
+		}
+	}
+}
+
 /// Provider-native control used to select reasoning intensity.
 #[derive(
 	Clone,
@@ -69,7 +85,7 @@ pub enum ThinkingEffort {
 	Deserialize,
 )]
 #[serde(rename_all = "kebab-case")]
-#[strum(serialize_all = "kebab-case", ascii_case_insensitive, const_into_str)]
+#[strum(serialize_all = "kebab-case", ascii_case_insensitive)]
 pub enum ThinkingMode {
 	/// Send a named effort.
 	Effort,
@@ -81,6 +97,20 @@ pub enum ThinkingMode {
 	AnthropicAdaptive,
 	/// Use Anthropic budget thinking plus an effort.
 	AnthropicBudgetEffort,
+}
+
+impl ThinkingMode {
+	/// Returns the canonical static spelling for this control mode.
+	#[must_use]
+	pub const fn into_str(&self) -> &'static str {
+		match self {
+			Self::Effort => "effort",
+			Self::Budget => "budget",
+			Self::GoogleLevel => "google-level",
+			Self::AnthropicAdaptive => "anthropic-adaptive",
+			Self::AnthropicBudgetEffort => "anthropic-budget-effort",
+		}
+	}
 }
 
 /// Additional serving path selected independently of effort.
@@ -100,10 +130,20 @@ pub enum ThinkingMode {
 	Deserialize,
 )]
 #[serde(rename_all = "lowercase")]
-#[strum(serialize_all = "lowercase", ascii_case_insensitive, const_into_str)]
+#[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum ReasoningMode {
 	/// Use the provider's pro reasoning path.
 	Pro,
+}
+
+impl ReasoningMode {
+	/// Returns the canonical static spelling for this serving path.
+	#[must_use]
+	pub const fn into_str(&self) -> &'static str {
+		match self {
+			Self::Pro => "pro",
+		}
+	}
 }
 
 /// Structurally interned reasoning capability profile.
@@ -388,6 +428,15 @@ impl ThinkingPolicyTable {
 	#[must_use]
 	pub fn is_empty(&self) -> bool {
 		self.entries.is_empty()
+	}
+}
+
+impl<'a> IntoIterator for &'a ThinkingPolicyTable {
+	type IntoIter = btree_map::Iter<'a, ThinkingPolicyId, ThinkingPolicy>;
+	type Item = (&'a ThinkingPolicyId, &'a ThinkingPolicy);
+
+	fn into_iter(self) -> Self::IntoIter {
+		self.entries.iter()
 	}
 }
 

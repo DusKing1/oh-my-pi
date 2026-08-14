@@ -386,9 +386,7 @@ impl IncrementalFramer for WebSocketDecoder {
 						};
 						return self.terminal(error, output);
 					}
-					let len = if let Ok(len) = usize::try_from(encoded) {
-						len
-					} else {
+					let Ok(len) = usize::try_from(encoded) else {
 						let error = FramingError::LimitExceeded {
 							protocol: FramingProtocol::WebSocket,
 							limit:    self.max_message_bytes,

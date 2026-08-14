@@ -305,12 +305,10 @@ impl ExaDecoder {
 			),
 			_ => (ErrorKind::Protocol, RetryAction::Never, "api_error"),
 		};
-		let mut classified = self.error(kind, action, status, "exa.api_error");
-		classified.code = Some(Str::new_static(code));
-		classified.detail = Some(ErrorDetail::Provider {
-			sanitized_message: Str::new_static("Exa Search request failed"),
-		});
-		classified
+		self
+			.error(kind, action, status, "exa.api_error")
+			.code(Str::new_static(code))
+			.detail(ErrorDetail::provider(Str::new_static("Exa Search request failed")))
 	}
 
 	fn error(
@@ -320,13 +318,12 @@ impl ExaDecoder {
 		status: Option<u16>,
 		reason: &'static str,
 	) -> Error {
-		let mut error = Error::new(kind, ErrorPhase::Streaming, action, ExecutionReceipt::default());
-		error.provider = Some(self.provider.clone());
-		error.route = Some(self.route.clone());
-		error.request_id = Some(self.request_id.clone());
-		error.status = status;
-		error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::new_static(reason)) });
-		error
+		Error::new(kind, ErrorPhase::Streaming, action, ExecutionReceipt::default())
+			.provider(self.provider.clone())
+			.route(self.route.clone())
+			.request_id(self.request_id.clone())
+			.status(status)
+			.detail(ErrorDetail::protocol(ReasonId(Str::new_static(reason))))
 	}
 }
 
@@ -392,9 +389,8 @@ fn snippet(highlights: Vec<Str>, text: Option<Str>) -> Option<Str> {
 }
 
 fn protocol_error(kind: ErrorKind, phase: ErrorPhase, reason: &'static str) -> Error {
-	let mut error = Error::new(kind, phase, RetryAction::Never, ExecutionReceipt::default());
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::new_static(reason)) });
-	error
+	Error::new(kind, phase, RetryAction::Never, ExecutionReceipt::default())
+		.detail(ErrorDetail::protocol(ReasonId(Str::new_static(reason))))
 }
 
 #[cfg(test)]
@@ -434,7 +430,7 @@ mod tests {
 
 	#[test]
 	fn exact_request_projects_domains_recency_and_limit_without_locale() {
-		let now = UNIX_EPOCH + Duration::from_secs(1_704_067_200); // 2024-01-01T00:00:00Z
+		let now = UNIX_EPOCH + Duration::from_days(19_723); // 2024-01-01T00:00:00Z
 		let body = encode_request_at(&request(), now).expect("encode");
 		assert_eq!(
 			std::str::from_utf8(&body).expect("utf8"),
@@ -490,7 +486,7 @@ mod tests {
 			.expect("buffer");
 		let error = malformed.finish(&mut |_| {}).expect_err("malformed");
 		assert_eq!(error.kind, ErrorKind::Protocol);
-		assert_eq!(error.provider.as_ref().map(ProviderId::as_str), Some("exa"));
+		assert_eq!(error.provider.as_deref().map(ProviderId::as_str), Some("exa"));
 
 		let mut oversize = decoder();
 		let error = oversize

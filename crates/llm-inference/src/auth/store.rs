@@ -996,14 +996,14 @@ impl crate::account::RefreshLeaseStore for CredentialStore {
 							generation: metadata.generation,
 						}],
 					};
-					return Ok(crate::account::RefreshLeaseWait::Published(
+					return Ok(crate::account::RefreshLeaseWait::Published(Box::new(
 						crate::account::RefreshResult {
 							account: account.clone(),
 							principal: metadata.principal_id,
 							freshness,
 							receipt,
 						},
-					));
+					)));
 				}
 				if observed_at >= lease_expires_at {
 					return Ok(crate::account::RefreshLeaseWait::LeaseExpired { observed_at });

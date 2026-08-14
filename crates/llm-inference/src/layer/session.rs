@@ -154,7 +154,7 @@ where
 				if !matches!(&error.action, RetryAction::ReseedSession) {
 					return Err(error);
 				}
-				if let Some(attempt) = error.receipt.attempts.last() {
+				if let Some(attempt) = error.receipt().attempts.last() {
 					request.context.set_body_evidence(attempt.body);
 				}
 				let replay_safe = request
@@ -165,7 +165,7 @@ where
 					error.action = RetryAction::Never;
 					return Err(error);
 				}
-				for attempt in &error.receipt.attempts {
+				for attempt in &error.receipt().attempts {
 					request.context.with_receipt(|receipt| {
 						if !receipt
 							.attempts

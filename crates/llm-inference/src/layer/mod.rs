@@ -46,9 +46,15 @@ pub enum AttemptAction {
 	#[default]
 	Initial,
 	/// Re-enter with the same account and an explicit credential refresh.
-	RefreshCredential { previous_account: Option<crate::id::AccountId> },
+	RefreshCredential {
+		/// Account selected before credential refresh.
+		previous_account: Option<crate::id::AccountId>,
+	},
 	/// Re-enter while excluding/cooling the previous account.
-	RotateAccount { previous_account: Option<crate::id::AccountId> },
+	RotateAccount {
+		/// Account excluded from the next rotation.
+		previous_account: Option<crate::id::AccountId>,
+	},
 }
 
 /// Session binding identity that account selection must preserve or explicitly
@@ -290,7 +296,8 @@ impl ExecutionContext {
 	/// Streams one recovered canonical event into the private session message
 	/// builder.
 	pub(crate) fn record_session_event(&self, event: &crate::event::ChatEvent) -> Result<(), Error> {
-		if let Some(completion) = self.0.session_completion.lock().as_ref() {
+		let completion = self.0.session_completion.lock().clone();
+		if let Some(completion) = completion {
 			completion.record_chat_event(event, self)
 		} else {
 			Ok(())
@@ -301,7 +308,8 @@ impl ExecutionContext {
 	/// success.
 	pub(crate) fn commit_session(&self) -> Result<(), Error> {
 		let state = self.take_provider_state();
-		if let Some(completion) = self.0.session_completion.lock().take() {
+		let completion = self.0.session_completion.lock().take();
+		if let Some(completion) = completion {
 			completion.commit(state, &self.receipt(), self)
 		} else {
 			Ok(())
@@ -322,7 +330,8 @@ impl ExecutionContext {
 
 	fn abort_session_inner(&self, retain_preparation: bool) {
 		self.abort_provider_state();
-		if let Some(completion) = self.0.session_completion.lock().take() {
+		let completion = self.0.session_completion.lock().take();
+		if let Some(completion) = completion {
 			completion.abort(retain_preparation);
 		}
 	}
@@ -387,8 +396,8 @@ impl ExecutionContext {
 	/// Replaces an error's partial receipt with the deduplicated
 	/// logical-execution receipt.
 	pub fn finalize_error(&self, error: &mut Error) {
-		self.merge_receipt(&error.receipt);
-		error.receipt = self.receipt();
+		self.merge_receipt(error.receipt());
+		error.replace_receipt(self.receipt());
 	}
 
 	fn error(
@@ -399,19 +408,18 @@ impl ExecutionContext {
 		limit: u128,
 		observed: u128,
 	) -> Error {
-		let mut error = Error::new(kind, phase, RetryAction::Never, self.receipt());
-		error.committed = self.is_committed();
-		error.detail = Some(ErrorDetail::Budget { dimension: dimension.into(), limit, observed });
-		error
+		Error::new(kind, phase, RetryAction::Never, self.receipt())
+			.committed(self.is_committed())
+			.detail(ErrorDetail::budget(dimension.into(), limit, observed))
 	}
 
 	/// Checks cancellation and elapsed time at a cooperative boundary.
 	pub fn checkpoint(&self, phase: ErrorPhase) -> Result<(), Error> {
 		if self.is_cancelled() {
-			let mut error =
-				Error::new(ErrorKind::Cancelled, phase, RetryAction::Never, self.receipt());
-			error.committed = self.is_committed();
-			return Err(error);
+			return Err(
+				Error::new(ErrorKind::Cancelled, phase, RetryAction::Never, self.receipt())
+					.committed(self.is_committed()),
+			);
 		}
 		if let Some(limit) = self.0.budget.max_elapsed {
 			let observed = self.elapsed();

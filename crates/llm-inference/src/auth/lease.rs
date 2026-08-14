@@ -639,7 +639,12 @@ pub trait CredentialSource: Send + Sync {
 pub enum CredentialApplyError {
 	/// Credential kind cannot satisfy the requested operation.
 	#[error("credential kind does not match authentication operation")]
-	WrongKind { expected: CredentialKind, actual: CredentialKind },
+	WrongKind {
+		/// Required credential kind.
+		expected: CredentialKind,
+		/// Credential kind supplied by the lease.
+		actual:   CredentialKind,
+	},
 	/// Catalog header name, prefix, or secret bytes are not valid HTTP.
 	#[error("credential could not be represented as a sensitive header")]
 	InvalidHeader,
@@ -660,10 +665,18 @@ pub enum CredentialApplyError {
 	RequiresSealedBody,
 	/// The catalog body placement and codec template do not agree.
 	#[error("sealed body placement does not match the codec template")]
-	WrongBodyPlacement { expected: BodyPlacement, actual: BodyPlacement },
+	WrongBodyPlacement {
+		/// Required placement declared by the catalog.
+		expected: BodyPlacement,
+		/// Placement supplied by the sealed codec template.
+		actual:   BodyPlacement,
+	},
 	/// Sealed body construction exceeded the route's request bound.
 	#[error("sealed body exceeded its request byte bound")]
-	BodyTooLarge { limit: u64 },
+	BodyTooLarge {
+		/// Maximum number of request bytes accepted by the route.
+		limit: u64,
+	},
 	/// Cancellation won before sealed bytes were exposed to a body reader.
 	#[error("sealed body credential binding was cancelled")]
 	Cancelled,

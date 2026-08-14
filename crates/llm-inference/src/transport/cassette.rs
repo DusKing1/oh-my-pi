@@ -57,7 +57,7 @@ pub enum CassetteTerminal {
 	/// timeout.
 	Stall,
 	/// Surface a preconstructed structured transport failure.
-	Error(Error),
+	Error(Box<Error>),
 }
 
 /// One deterministic provider attempt.
@@ -443,7 +443,7 @@ async fn run_attempt(
 		))),
 		CassetteTerminal::Error(error) if !output.iter().any(is_commit_candidate) => {
 			return Err(record_failure(
-				precommit(error),
+				precommit(*error),
 				&transport_attempt,
 				&evidence,
 				attempt.status,
@@ -464,7 +464,7 @@ async fn run_attempt(
 			}
 		},
 		CassetteTerminal::Stall => stall_after_commit = true,
-		CassetteTerminal::Error(error) => output.push_back(RawEvent::Failure(committed(error))),
+		CassetteTerminal::Error(error) => output.push_back(RawEvent::Failure(committed(*error))),
 	}
 	if let Some(position) = output
 		.iter()
@@ -661,7 +661,7 @@ async fn run_realtime_attempt(
 		},
 		CassetteTerminal::Error(error) => {
 			return Err(record_failure(
-				precommit(error),
+				precommit(*error),
 				&transport_attempt,
 				&evidence,
 				attempt.status,
@@ -950,7 +950,7 @@ const fn committed(mut error: Error) -> Error {
 }
 
 fn deadline_exceeded(committed: bool) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::DeadlineExceeded,
 		if committed {
 			ErrorPhase::Streaming
@@ -959,9 +959,8 @@ fn deadline_exceeded(committed: bool) -> Error {
 		},
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.committed = committed;
-	error
+	)
+	.committed(committed)
 }
 
 fn cancelled(committed: bool) -> Error {
@@ -970,10 +969,8 @@ fn cancelled(committed: bool) -> Error {
 	} else {
 		ErrorPhase::Handshake
 	};
-	let mut error =
-		Error::new(ErrorKind::Cancelled, phase, RetryAction::Never, ExecutionReceipt::default());
-	error.committed = committed;
-	error
+	Error::new(ErrorKind::Cancelled, phase, RetryAction::Never, ExecutionReceipt::default())
+		.committed(committed)
 }
 
 fn transport_error(phase: ErrorPhase, committed: bool, reason: &'static str) -> Error {
@@ -982,10 +979,9 @@ fn transport_error(phase: ErrorPhase, committed: bool, reason: &'static str) -> 
 	} else {
 		RetryAction::SameRoute { after: std::time::Duration::ZERO }
 	};
-	let mut error = Error::new(ErrorKind::Connectivity, phase, action, ExecutionReceipt::default());
-	error.committed = committed;
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	Error::new(ErrorKind::Connectivity, phase, action, ExecutionReceipt::default())
+		.committed(committed)
+		.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 struct CassetteEventStream {

@@ -794,10 +794,10 @@ mod tests {
 		let mut stage = DialectStage::new(dialect, WirePolicyId::new("wire"), 1, 4096, 128);
 		let mut found = Vec::new();
 		let mut collect = |event| {
-			if let DialectEvent::ToolEnvelope(envelope) = event {
-				if let Some(name) = envelope.name {
-					found.push((name, serde_json::from_slice(&envelope.arguments).unwrap()));
-				}
+			if let DialectEvent::ToolEnvelope(envelope) = event
+				&& let Some(name) = envelope.name
+			{
+				found.push((name, serde_json::from_slice(&envelope.arguments).unwrap()));
 			}
 		};
 		stage

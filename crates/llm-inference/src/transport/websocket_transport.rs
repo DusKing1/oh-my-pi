@@ -799,10 +799,9 @@ fn simple_error(
 	committed: bool,
 	reason: &'static str,
 ) -> Error {
-	let mut error = Error::new(kind, phase, RetryAction::Never, ExecutionReceipt::default());
-	error.committed = committed;
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	Error::new(kind, phase, RetryAction::Never, ExecutionReceipt::default())
+		.committed(committed)
+		.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 struct WebSocketCancelOnDrop(crate::codec::Cancellation);

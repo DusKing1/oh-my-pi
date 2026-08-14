@@ -763,7 +763,7 @@ fn shell_denied(
 #[derive(Debug)]
 pub enum CursorEvent {
 	/// Canonical generative event.
-	Chat(ChatEvent),
+	Chat(Box<ChatEvent>),
 	/// Complete but not yet schema-validated tool arguments.
 	ToolCallComplete {
 		/// Canonical block index.
@@ -990,10 +990,10 @@ impl CursorDecoder {
 				{
 					let bytes = Bytes::from(partial.args_text_delta);
 					open.arguments.extend_from_slice(&bytes);
-					events.push(CursorEvent::Chat(ChatEvent::ToolArgumentsDelta {
+					events.push(CursorEvent::Chat(Box::new(ChatEvent::ToolArgumentsDelta {
 						index: open.index,
 						bytes,
-					}));
+					})));
 					self.committed = true;
 				}
 			},
@@ -1027,10 +1027,10 @@ impl CursorDecoder {
 			Some(Message::TurnEnded(_)) => {
 				self.open = None;
 				if self.saw_usage {
-					events.push(CursorEvent::Chat(ChatEvent::Usage(UsageUpdate {
+					events.push(CursorEvent::Chat(Box::new(ChatEvent::Usage(UsageUpdate {
 						usage:        self.usage,
 						final_update: true,
-					})));
+					}))));
 				}
 				events.push(CursorEvent::Completion {
 					reason: if self.saw_tool {
@@ -1066,14 +1066,14 @@ impl CursorDecoder {
 			open.index
 		} else {
 			let index = self.start_block(kind, ToolCallId::default(), Str::default());
-			events.push(CursorEvent::Chat(ChatEvent::BlockStarted {
+			events.push(CursorEvent::Chat(Box::new(ChatEvent::BlockStarted {
 				index,
 				kind: if kind == OpenKind::Text {
 					BlockKind::Text
 				} else {
 					BlockKind::Thinking
 				},
-			}));
+			})));
 			self.committed = true;
 			index
 		};
@@ -1081,11 +1081,11 @@ impl CursorDecoder {
 			return;
 		}
 		let text = Str::from(text);
-		events.push(CursorEvent::Chat(if kind == OpenKind::Text {
+		events.push(CursorEvent::Chat(Box::new(if kind == OpenKind::Text {
 			ChatEvent::TextDelta { index, text }
 		} else {
 			ChatEvent::ThinkingDelta { index, text }
-		}));
+		})));
 		self.committed = true;
 	}
 
@@ -1099,8 +1099,11 @@ impl CursorDecoder {
 		let name = tool_name(tool);
 		let index = self.start_block(OpenKind::Tool, id.clone(), name.clone());
 		self.saw_tool = true;
-		events.push(CursorEvent::Chat(ChatEvent::BlockStarted { index, kind: BlockKind::ToolCall }));
-		events.push(CursorEvent::Chat(ChatEvent::ToolCallStarted { index, id, name }));
+		events.push(CursorEvent::Chat(Box::new(ChatEvent::BlockStarted {
+			index,
+			kind: BlockKind::ToolCall,
+		})));
+		events.push(CursorEvent::Chat(Box::new(ChatEvent::ToolCallStarted { index, id, name })));
 		self.committed = true;
 	}
 
@@ -1545,16 +1548,16 @@ const fn unknown_availability<T>() -> Availability<T> {
 }
 
 impl CursorWireDecoder {
-	fn attach(&self, mut error: Error) -> Error {
-		error.provider = Some(self.provider.clone());
-		error.route = Some(self.route.clone());
+	fn attach(&self, error: Error) -> Error {
 		error
+			.provider(self.provider.clone())
+			.route(self.route.clone())
 	}
 }
 
 fn cursor_raw_event(event: CursorEvent) -> RawEvent {
 	match event {
-		CursorEvent::Chat(event) => RawEvent::Chat(event),
+		CursorEvent::Chat(event) => RawEvent::Chat(*event),
 		CursorEvent::ToolCallComplete { index, id, name, arguments } => RawEvent::ToolCallComplete {
 			index,
 			call: UnvalidatedToolCall { id, name, input_kind: ToolInputKind::Json, arguments },
@@ -1613,32 +1616,29 @@ fn inference_error(error: CursorProtocolError) -> Error {
 		CursorErrorKind::ContextOverflow => ErrorKind::ContextOverflow,
 		CursorErrorKind::Unsupported => ErrorKind::CapabilityMismatch,
 	};
-	let mut inference =
-		Error::new(kind, ErrorPhase::Streaming, RetryAction::Never, ExecutionReceipt::default());
-	inference.status = error.status;
-	inference.committed = error.committed;
-	inference.code = Some(error.reason.clone());
-	inference.detail = Some(ErrorDetail::Protocol { reason: ReasonId(error.reason) });
-	inference
+	Error::new(kind, ErrorPhase::Streaming, RetryAction::Never, ExecutionReceipt::default())
+		.status(error.status)
+		.code(error.reason.clone())
+		.committed(error.committed)
+		.detail(ErrorDetail::protocol(ReasonId(error.reason)))
 }
 
 fn encoding_error(reason: &'static str) -> Error {
 	let reason = Str::new_static(reason);
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::CapabilityMismatch,
 		ErrorPhase::Encoding,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.code = Some(reason.clone());
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(reason) });
-	error
+	)
+	.code(reason.clone())
+	.detail(ErrorDetail::protocol(ReasonId(reason)))
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::transport::{ConnectDecoder as ConnectFramer, IncrementalFramer as _};
+	use crate::transport::ConnectDecoder as ConnectFramer;
 
 	const FIXTURES: &str =
 		concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/llm-oracle/agent-protocols/cursor/");
@@ -1777,7 +1777,11 @@ mod tests {
 			.collect();
 		assert!(events.iter().any(|event| matches!(
 			event,
-			CursorEvent::Chat(ChatEvent::ThinkingDelta { text, .. }) if text == "Inspect first."
+			CursorEvent::Chat(event)
+				if matches!(
+					event.as_ref(),
+					ChatEvent::ThinkingDelta { text, .. } if text == "Inspect first."
+				)
 		)));
 		assert!(events.iter().any(|event| matches!(
 			event,
@@ -1787,9 +1791,11 @@ mod tests {
 					&& arguments.as_ref() == br#"{"path":"package.json"}"#
 		)));
 		assert!(
-			!events
-				.iter()
-				.any(|event| matches!(event, CursorEvent::Chat(ChatEvent::ToolCallReady { .. }))),
+			!events.iter().any(|event| matches!(
+				event,
+				CursorEvent::Chat(event)
+					if matches!(event.as_ref(), ChatEvent::ToolCallReady { .. })
+			)),
 			"codec completion is not schema-validation authorization"
 		);
 		assert!(events.iter().any(|event| matches!(
@@ -1834,11 +1840,13 @@ mod tests {
 			args_text: String,
 		}
 		#[derive(serde::Deserialize)]
-		#[serde(rename_all = "camelCase")]
 		struct RecordedUsage {
-			input_tokens:        u64,
-			output_tokens:       u64,
-			cached_input_tokens: u64,
+			#[serde(rename = "inputTokens")]
+			input:  u64,
+			#[serde(rename = "outputTokens")]
+			output: u64,
+			#[serde(rename = "cachedInputTokens")]
+			cached: u64,
 		}
 		#[derive(serde::Deserialize)]
 		#[serde(rename_all = "camelCase")]
@@ -1909,7 +1917,7 @@ mod tests {
 		);
 		assert_eq!(records[5].payload.text_delta.as_ref().expect("text").text, "Done.");
 		let usage = records[6].payload.usage.as_ref().expect("usage");
-		assert_eq!((usage.input_tokens, usage.output_tokens, usage.cached_input_tokens), (21, 8, 13));
+		assert_eq!((usage.input, usage.output, usage.cached), (21, 8, 13));
 		assert_eq!(records[7].payload.done.as_ref().expect("done").stop_reason, "tool_use");
 	}
 

@@ -43,9 +43,19 @@ pub enum ImageError {
 	/// Explicit style contains no non-whitespace content.
 	EmptyStyle,
 	/// Requested artifact count is zero or exceeds the bound.
-	Count { requested: u32, maximum: u32 },
+	Count {
+		/// Requested final artifact count.
+		requested: u32,
+		/// Negotiated maximum final artifact count.
+		maximum:   u32,
+	},
 	/// Reference count exceeds the bound.
-	References { requested: u32, maximum: u32 },
+	References {
+		/// Number of supplied edit references.
+		requested: u32,
+		/// Negotiated maximum edit reference count.
+		maximum:   u32,
+	},
 	/// Mask was supplied without an image to edit.
 	MaskWithoutReference,
 	/// A mask is not a supported raster type.
@@ -53,17 +63,42 @@ pub enum ImageError {
 	/// A reference is not a supported raster type.
 	InvalidReferenceType(Str),
 	/// Inline edit inputs exceed their aggregate bound.
-	InputsTooLarge { limit: u64, observed: u64 },
+	InputsTooLarge {
+		/// Maximum permitted aggregate inline input bytes.
+		limit:    u64,
+		/// Aggregate inline input bytes observed.
+		observed: u64,
+	},
 	/// Dimensions are zero or exceed the pixel bound.
-	Dimensions { width: u32, height: u32, maximum_pixels: u64 },
+	Dimensions {
+		/// Requested image width.
+		width:          u32,
+		/// Requested image height.
+		height:         u32,
+		/// Negotiated maximum requested pixel count.
+		maximum_pixels: u64,
+	},
 	/// Generation progress moved backwards or changed a known total.
 	NonMonotonicProgress,
 	/// More final artifacts arrived than requested.
-	TooManyArtifacts { requested: u32 },
+	TooManyArtifacts {
+		/// Final artifact count requested by the caller.
+		requested: u32,
+	},
 	/// A final image has invalid dimensions.
-	InvalidArtifactDimensions { width: u32, height: u32 },
+	InvalidArtifactDimensions {
+		/// Returned image width.
+		width:  u32,
+		/// Returned image height.
+		height: u32,
+	},
 	/// Completion summary disagrees with observed final artifacts.
-	CompletionMismatch { observed: u32, reported: u32 },
+	CompletionMismatch {
+		/// Final artifact count observed before completion.
+		observed: u32,
+		/// Final artifact count reported by the completion summary.
+		reported: u32,
+	},
 	/// Stream ended before a completion event.
 	MissingCompletion,
 	/// Event arrived after completion.

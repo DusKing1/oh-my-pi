@@ -34,7 +34,12 @@ pub enum ConversationError {
 	/// The supplied revision does not exist as a committed node.
 	UnknownRevision(Revision),
 	/// A draft or fork did not use the branch's current committed head.
-	RevisionConflict { expected: Revision, actual: Revision },
+	RevisionConflict {
+		/// Revision that was current when the operation began.
+		expected: Revision,
+		/// Revision that was current when the operation committed.
+		actual:   Revision,
+	},
 	/// A turn identity was reused with different atomic commit content.
 	TurnConflict(TurnId),
 	/// Stored history is corrupt or cannot be decoded.
@@ -87,7 +92,7 @@ impl fmt::Display for MessagePersistenceError {
 impl std::error::Error for MessagePersistenceError {}
 
 /// Postcard-safe canonical message persisted by durable conversation stores.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct StoredMessage {
 	/// Semantic author role.
 	pub role:    StoredRole,
@@ -116,11 +121,30 @@ pub enum StoredRole {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub enum StoredMedia {
 	/// Inline immutable bytes.
-	Bytes { media_type: Str, data: Bytes },
+	Bytes {
+		/// MIME type of the inline media.
+		media_type: Str,
+		/// Immutable media bytes.
+		data:       Bytes,
+	},
 	/// Immutable artifact-store identity and revision.
-	Artifact { store: Str, id: Str, revision: Str },
+	Artifact {
+		/// Artifact-store namespace.
+		store:    Str,
+		/// Artifact identifier.
+		id:       Str,
+		/// Immutable artifact revision.
+		revision: Str,
+	},
 	/// Remote immutable resource metadata.
-	Remote { uri: Str, media_type: Option<Str>, name: Option<Str> },
+	Remote {
+		/// Resource URI.
+		uri:        Str,
+		/// Optional MIME type.
+		media_type: Option<Str>,
+		/// Optional display name.
+		name:       Option<Str>,
+	},
 }
 
 /// Postcard-safe canonical content preserving opaque JSON and provider proofs
@@ -128,9 +152,19 @@ pub enum StoredMedia {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub enum StoredContent {
 	/// Visible text and its optional provider proof.
-	Text { text: Str, proof: Option<StoredProof> },
+	Text {
+		/// Visible text.
+		text:  Str,
+		/// Optional provider continuation proof.
+		proof: Option<StoredProof>,
+	},
 	/// Hidden reasoning text and its optional provider proof.
-	Reasoning { text: Str, proof: Option<StoredProof> },
+	Reasoning {
+		/// Hidden reasoning text.
+		text:  Str,
+		/// Optional provider continuation proof.
+		proof: Option<StoredProof>,
+	},
 	/// Image content.
 	Image(StoredMedia),
 	/// Audio content.
@@ -139,16 +173,24 @@ pub enum StoredContent {
 	Document(StoredMedia),
 	/// Validated tool invocation.
 	ToolCall {
+		/// Provider tool-call identity.
 		call:      ToolCallId,
+		/// Invoked tool name.
 		name:      Str,
+		/// Validated JSON argument bytes.
 		arguments: Bytes,
+		/// Optional provider continuation proof.
 		proof:     Option<StoredProof>,
 	},
 	/// Tool result correlated to an invocation.
 	ToolResult {
+		/// Correlated provider tool-call identity.
 		call:     ToolCallId,
+		/// Optional tool name supplied by the provider.
 		name:     Option<Str>,
+		/// Ordered durable result content.
 		content:  Arc<[StoredToolResult]>,
+		/// Whether the tool reported an error.
 		is_error: bool,
 	},
 	/// Prompt-cache boundary.
@@ -479,7 +521,6 @@ impl<I> ConversationState<I> {
 	}
 
 	pub fn revision_for(
-		&self,
 		conversation: &ConversationId,
 		parent: Option<&Revision>,
 		turn: Option<&TurnId>,
@@ -605,7 +646,11 @@ impl<I> TurnDraft<I> {
 				actual:   self.base.clone(),
 			});
 		}
-		let revision = state.revision_for(&self.conversation, Some(&self.base), Some(&self.turn));
+		let revision = ConversationState::<I>::revision_for(
+			&self.conversation,
+			Some(&self.base),
+			Some(&self.turn),
+		);
 		let items = self.items.take().ok_or(ConversationError::CorruptStore)?;
 		let node = RevisionNode {
 			conversation: self.conversation.clone(),

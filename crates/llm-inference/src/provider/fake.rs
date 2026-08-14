@@ -147,51 +147,69 @@ impl Service<crate::call::Call> for FakeProvider {
 		let route = self.route.clone();
 		match script.outcome {
 			FakeOutcome::Answer(answer) => {
+				let receipt = script.receipt;
+				let created_at = script.created_at;
 				if answer.kind() != expected_answer_kind(actual) {
-					let actual_body = answer.kind();
-					let receipt = script.receipt;
 					return Box::pin(async move {
-						let mut error = Error::body_variant_mismatch(actual, actual_body, receipt);
-						error.request_id = Some(request_id);
-						Err(error)
+						Err(
+							Error::new(
+								ErrorKind::Protocol,
+								ErrorPhase::Handshake,
+								RetryAction::Never,
+								receipt,
+							)
+							.detail(ErrorDetail::protocol(ReasonId(Str::from(
+								"fake scripted answer body mismatches operation",
+							)))),
+						)
 					});
 				}
-				let meta = ResponseMeta {
-					request_id,
-					provider,
-					route,
-					model: script.model,
-					provider_request_id: script.provider_request_id,
-					created_at: script.created_at,
-				};
-				let answer = Answer { meta, receipt: script.receipt, body: answer.into_body() };
-				Box::pin(async move { Ok(answer) })
+				let answer = *answer;
+				Box::pin(async move {
+					Ok(Answer {
+						meta: ResponseMeta {
+							request_id,
+							provider,
+							route,
+							model: None,
+							provider_request_id: None,
+							created_at,
+						},
+						receipt,
+						body: answer.into_body(),
+					})
+				})
 			},
-			FakeOutcome::Error(mut error) => {
-				error.request_id = Some(request_id);
-				if error.provider.is_none() {
-					error.provider = Some(provider);
-				}
-				if error.route.is_none() {
-					error.route = Some(route);
-				}
-				error.receipt = script.receipt;
+			FakeOutcome::Error(error) => {
+				let error = (*error).request_id(request_id);
+				let error = if error.provider.is_none() {
+					error.provider(provider)
+				} else {
+					error
+				};
+				let mut error = if error.route.is_none() {
+					error.route(route)
+				} else {
+					error
+				};
+				error.replace_receipt(script.receipt);
 				Box::pin(async move { Err(error) })
 			},
 			FakeOutcome::Cancelled(cancellation) => {
 				let receipt = script.receipt;
 				Box::pin(async move {
 					poll_fn(|context| cancellation.poll_cancelled(context)).await;
-					let mut error = Error::new(
-						ErrorKind::Cancelled,
-						ErrorPhase::Streaming,
-						RetryAction::Never,
-						receipt,
-					);
-					error.provider = Some(provider);
-					error.route = Some(route);
-					error.request_id = Some(request_id);
-					Err(error)
+					Err(
+						Error::new(
+							ErrorKind::Cancelled,
+							ErrorPhase::Streaming,
+							RetryAction::Never,
+							receipt,
+						)
+						.provider(provider)
+						.route(route)
+						.request_id(request_id),
+					)
 				})
 			},
 		}
@@ -211,8 +229,8 @@ pub struct FakeScript {
 }
 
 enum FakeOutcome {
-	Answer(FakeAnswer),
-	Error(Error),
+	Answer(Box<FakeAnswer>),
+	Error(Box<Error>),
 	Cancelled(FakeCancellation),
 }
 
@@ -223,7 +241,7 @@ impl FakeScript {
 	/// constructor is useful for tests that intentionally prove typed body
 	/// mismatch handling.
 	pub fn answer(operation: OperationKind, answer: FakeAnswer) -> Self {
-		Self::new(operation, FakeOutcome::Answer(answer))
+		Self::new(operation, FakeOutcome::Answer(Box::new(answer)))
 	}
 
 	/// Scripts canonical chat events, including exact terminal stream errors.
@@ -303,17 +321,17 @@ impl FakeScript {
 	}
 
 	/// Scripts a structured failure before ordinary output commits.
-	pub fn precommit(operation: OperationKind, mut error: Error) -> Self {
-		error.committed = false;
-		let receipt = error.receipt.clone();
-		Self { receipt, ..Self::new(operation, FakeOutcome::Error(error)) }
+	pub fn precommit(operation: OperationKind, error: Error) -> Self {
+		let error = error.committed(false);
+		let receipt = error.receipt().clone();
+		Self { receipt, ..Self::new(operation, FakeOutcome::Error(Box::new(error))) }
 	}
 
 	/// Scripts a structured failure after ordinary output commits.
-	pub fn committed(operation: OperationKind, mut error: Error) -> Self {
-		error.committed = true;
-		let receipt = error.receipt.clone();
-		Self { receipt, ..Self::new(operation, FakeOutcome::Error(error)) }
+	pub fn committed(operation: OperationKind, error: Error) -> Self {
+		let error = error.committed(true);
+		let receipt = error.receipt().clone();
+		Self { receipt, ..Self::new(operation, FakeOutcome::Error(Box::new(error))) }
 	}
 
 	/// Scripts a call that remains pending until the returned handle is
@@ -487,7 +505,7 @@ impl FakeCancellation {
 		self.state.cancelled.load(Ordering::Acquire)
 	}
 
-	fn poll_cancelled(&self, context: &mut Context<'_>) -> Poll<()> {
+	fn poll_cancelled(&self, context: &Context<'_>) -> Poll<()> {
 		if self.is_cancelled() {
 			return Poll::Ready(());
 		}
@@ -775,15 +793,14 @@ const fn expected_answer_kind(operation: OperationKind) -> AnswerKind {
 }
 
 fn contract_error(request_id: RequestId, reason: &'static str, receipt: ExecutionReceipt) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::ProviderContractMismatch,
 		ErrorPhase::Internal,
 		RetryAction::Never,
 		receipt,
-	);
-	error.request_id = Some(request_id);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.request_id(request_id)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 #[cfg(test)]
@@ -1169,8 +1186,7 @@ mod tests {
 		inbound_tx
 			.send(Ok(RealtimeEvent::Ready))
 			.expect("open inbound");
-		let mut stream_error = failure();
-		stream_error.committed = true;
+		let stream_error = failure().committed(true);
 		fake.extend([
 			FakeScript::chat(vec![
 				Ok(ChatEvent::TextDelta { index: 0, text: Str::from("delta") }),
@@ -1201,79 +1217,78 @@ mod tests {
 		]);
 		let mut service = fake;
 		let mut operations = empty_operations();
-		let mut chat = match service
+		let AnswerBody::Chat(stream) = service
 			.call(call(operations.remove(0)))
 			.await
 			.expect("chat")
 			.body
-		{
-			AnswerBody::Chat(stream) => stream,
-			_ => panic!("chat body"),
+		else {
+			panic!("chat body");
 		};
+		let mut chat = stream;
 		assert!(
 			matches!(chat.next().await, Some(Ok(ChatEvent::TextDelta { text, .. })) if text.as_str() == "delta")
 		);
 		assert!(matches!(chat.next().await, Some(Err(error)) if error.committed));
-		let mut images = match service
+		let AnswerBody::Images(stream) = service
 			.call(call(operations.remove(4)))
 			.await
 			.expect("images")
 			.body
-		{
-			AnswerBody::Images(stream) => stream,
-			_ => panic!("images body"),
+		else {
+			panic!("images body");
 		};
+		let mut images = stream;
 		assert!(matches!(
 			images.next().await,
 			Some(Ok(crate::answer::GenerationEvent::Progress { completed: 1, .. }))
 		));
-		let mut video = match service
+		let AnswerBody::Video(stream) = service
 			.call(call(operations.remove(4)))
 			.await
 			.expect("video")
 			.body
-		{
-			AnswerBody::Video(stream) => stream,
-			_ => panic!("video body"),
+		else {
+			panic!("video body");
 		};
+		let mut video = stream;
 		assert!(matches!(
 			video.next().await,
 			Some(Ok(crate::answer::GenerationEvent::Progress { completed: 2, .. }))
 		));
-		let mut speech = match service
+		let AnswerBody::Speech(stream) = service
 			.call(call(operations.remove(4)))
 			.await
 			.expect("speech")
 			.body
-		{
-			AnswerBody::Speech(stream) => stream,
-			_ => panic!("speech body"),
+		else {
+			panic!("speech body");
 		};
+		let mut speech = stream;
 		assert!(matches!(
 			speech.next().await,
 			Some(Ok(crate::answer::AudioChunk { final_chunk: true, .. }))
 		));
-		let mut transcript = match service
+		let AnswerBody::Transcript(stream) = service
 			.call(call(operations.remove(4)))
 			.await
 			.expect("transcript")
 			.body
-		{
-			AnswerBody::Transcript(stream) => stream,
-			_ => panic!("transcript body"),
+		else {
+			panic!("transcript body");
 		};
+		let mut transcript = stream;
 		assert!(matches!(
 			transcript.next().await,
 			Some(Ok(crate::answer::TranscriptEvent::Started { .. }))
 		));
-		let session = match service
+		let AnswerBody::Realtime(session) = service
 			.call(call(operations.remove(4)))
 			.await
 			.expect("realtime")
 			.body
-		{
-			AnswerBody::Realtime(session) => session,
-			_ => panic!("realtime body"),
+		else {
+			panic!("realtime body");
 		};
 		assert!(matches!(session.inbound.recv_async().await, Ok(Ok(RealtimeEvent::Ready))));
 	}

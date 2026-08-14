@@ -25,7 +25,7 @@ macro_rules! policy_enum {
 		$(#[$meta])*
 		#[derive(Clone, Copy, Debug, Display, EnumString, Eq, Hash, IntoStaticStr, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 		#[serde(rename_all = "snake_case")]
-		#[strum(serialize_all = "snake_case", ascii_case_insensitive, const_into_str)]
+		#[strum(serialize_all = "snake_case", ascii_case_insensitive)]
 		#[derive(Default)]
 		pub enum $name {
 			$(#[$first_meta])*
@@ -55,7 +55,7 @@ policy_enum!(/// Prompt-cache marker representation.
 		None,
 		/// Anthropic cache-control content parts.
 		Anthropic,
-		/// OpenAI prompt-cache controls.
+		/// `OpenAI` prompt-cache controls.
 		OpenAi,
 		/// Google cached-content resource names.
 		Google,
@@ -63,7 +63,7 @@ policy_enum!(/// Prompt-cache marker representation.
 );
 policy_enum!(/// Encoding of image inputs.
 	ImageEncodingFormat {
-		/// OpenAI image URL or data URL parts.
+		/// `OpenAI` image URL or data URL parts.
 		OpenAiUrl,
 		/// Anthropic source blocks.
 		AnthropicSource,
@@ -114,15 +114,15 @@ policy_enum!(/// Provider-native reasoning request and history representation.
 	ReasoningWireFormat {
 		/// No native reasoning fields.
 		None,
-		/// OpenAI Chat Completions fields.
+		/// `OpenAI` Chat Completions fields.
 		OpenAi,
-		/// OpenAI Responses reasoning objects.
+		/// `OpenAI` Responses reasoning objects.
 		OpenAiResponses,
 		/// Anthropic thinking blocks.
 		Anthropic,
 		/// Google thinking configuration and thought parts.
 		Google,
-		/// OpenRouter's nested reasoning object.
+		/// `OpenRouter`'s nested reasoning object.
 		OpenRouter,
 		/// Z.AI's thinking object.
 		Zai,
@@ -204,7 +204,7 @@ policy_enum!(/// Policy for healing leaked reasoning markup in ordinary text.
 		Thinking,
 		/// Heal Kimi reasoning markup.
 		Kimi,
-		/// Heal DeepSeek markup language reasoning.
+		/// Heal `DeepSeek` markup language reasoning.
 		Dsml,
 	}
 );
@@ -224,7 +224,7 @@ policy_enum!(/// Additional provider-specific thinking text representation.
 		QwenChatTemplate,
 		/// Qwen's native reasoning text.
 		Qwen,
-		/// OpenRouter reasoning text.
+		/// `OpenRouter` reasoning text.
 		#[serde(rename = "openrouter")]
 		#[strum(to_string = "openrouter", serialize = "openrouter")]
 		OpenRouter,
@@ -641,6 +641,15 @@ impl WirePolicyTable {
 	#[must_use]
 	pub fn is_empty(&self) -> bool {
 		self.entries.is_empty()
+	}
+}
+
+impl<'table> IntoIterator for &'table WirePolicyTable {
+	type IntoIter = btree_map::Iter<'table, WirePolicyId, WirePolicy>;
+	type Item = (&'table WirePolicyId, &'table WirePolicy);
+
+	fn into_iter(self) -> Self::IntoIter {
+		self.iter()
 	}
 }
 

@@ -93,7 +93,7 @@ impl Service<LayerCall<Call>> for CountingRoute {
 	}
 }
 
-pub fn supports_chat(model: &omp_llm_catalog::ModelSpec) -> bool {
+pub const fn supports_chat(model: &omp_llm_catalog::ModelSpec) -> bool {
 	model
 		.capabilities
 		.operations

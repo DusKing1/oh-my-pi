@@ -266,6 +266,7 @@ struct OllamaEmbedResponse {
 	#[serde(default)]
 	prompt_eval_count: Option<u64>,
 }
+/// Decodes a complete, bounded Ollama discovery body without network access.
 pub fn decode_tags(bytes: &[u8]) -> Result<OllamaTagsResponse, Error> {
 	serde_json::from_slice(bytes)
 		.map_err(|_| protocol_error("ollama_tags_invalid_json", ErrorPhase::Discovery))
@@ -866,14 +867,13 @@ impl Decoder for OllamaDecoder {
 }
 
 fn invalid_request(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::InvalidRequest,
 		ErrorPhase::Encoding,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 fn capability_error(reason: &'static str) -> Error {
@@ -883,22 +883,19 @@ fn capability_error(reason: &'static str) -> Error {
 }
 
 fn protocol_error(reason: &'static str, phase: ErrorPhase) -> Error {
-	let mut error =
-		Error::new(ErrorKind::Protocol, phase, RetryAction::Never, ExecutionReceipt::default());
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	Error::new(ErrorKind::Protocol, phase, RetryAction::Never, ExecutionReceipt::default())
+		.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 fn provider_error(code: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::Protocol,
 		ErrorPhase::Streaming,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.code = Some(Str::from(code));
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(code)) });
-	error
+	)
+	.code(Str::from(code))
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(code))))
 }
 
 #[cfg(test)]

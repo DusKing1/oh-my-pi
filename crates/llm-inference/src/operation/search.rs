@@ -477,7 +477,7 @@ fn matches_recency(
 		SearchRecency::Days(days) => u64::from(days),
 	};
 	now.duration_since(published_at)
-		.map_or(true, |age| age <= Duration::from_secs(days.saturating_mul(86_400)))
+		.map_or(true, |age| age <= Duration::from_days(days))
 }
 
 fn validate_domain(domain: &str) -> Result<(), Error> {
@@ -527,24 +527,23 @@ fn domain_eq(left: &str, right: &str) -> bool {
 }
 
 fn wrong_operation(call: &crate::call::Call) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::InternalInvariant,
 		ErrorPhase::Internal,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.request_id = Some(call.id.clone());
-	error.detail = Some(ErrorDetail::Capability {
-		feature: Str::from(OperationKind::Search.to_string()),
-		reason:  ReasonId(Str::from("operation_service_mismatch")),
-	});
-	error
+	)
+	.detail(ErrorDetail::capability(
+		Str::from(OperationKind::Search.to_string()),
+		ReasonId(Str::from("operation_service_mismatch")),
+	))
+	.request_id(call.id.clone())
 }
 
 fn request_error(feature: &'static str, reason: &'static str) -> Error {
 	Error::planning(
 		ErrorKind::InvalidRequest,
-		ErrorDetail::Capability { feature: Str::from(feature), reason: ReasonId(Str::from(reason)) },
+		ErrorDetail::capability(Str::from(feature), ReasonId(Str::from(reason))),
 		ExecutionReceipt::default(),
 	)
 }
@@ -552,20 +551,19 @@ fn request_error(feature: &'static str, reason: &'static str) -> Error {
 fn planning_error(feature: &'static str, reason: &'static str) -> Error {
 	Error::planning(
 		ErrorKind::CapabilityMismatch,
-		ErrorDetail::Capability { feature: Str::from(feature), reason: ReasonId(Str::from(reason)) },
+		ErrorDetail::capability(Str::from(feature), ReasonId(Str::from(reason))),
 		ExecutionReceipt::default(),
 	)
 }
 
 fn protocol_error(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::ProviderContractMismatch,
 		ErrorPhase::Recovery,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 #[cfg(test)]
@@ -591,7 +589,7 @@ mod tests {
 
 	#[test]
 	fn replay_page_is_filtered_ranked_and_measured() {
-		let now = UNIX_EPOCH + Duration::from_secs(10 * 86_400);
+		let now = UNIX_EPOCH + Duration::from_days(10);
 		let request = SearchRequest {
 			query:             "rust tower".into(),
 			include_domains:   Arc::new(["example.test".into()]),
@@ -621,7 +619,7 @@ mod tests {
 					title:        "Low".into(),
 					snippet:      None,
 					score:        Some(0.25),
-					published_at: Some(now - Duration::from_secs(86_400)),
+					published_at: Some(now - Duration::from_days(1)),
 					locale:       Some("en-US".into()),
 				},
 				SearchDocument {

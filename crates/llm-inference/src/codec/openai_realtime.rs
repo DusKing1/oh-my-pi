@@ -221,7 +221,7 @@ impl RealtimeWireCodec for OpenAiRealtimeWireCodec {
 					reason:  crate::event::FinishReason::Stop,
 					blocks:  self.next_call_index,
 					usage:   crate::receipt::Usage::default(),
-					receipt: ExecutionReceipt::default(),
+					receipt: ExecutionReceipt::default().into(),
 				}),
 			)),
 			ServerEvent::Error { error } => return Err(provider_error(error)),
@@ -561,14 +561,13 @@ const fn setting_ref<T>(setting: &Setting<T>) -> Option<&T> {
 	}
 }
 fn provider_error(error: RealtimeWireError) -> Error {
-	let mut typed = Error::new(
+	Error::new(
 		ErrorKind::Protocol,
 		ErrorPhase::Streaming,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	typed.code = error.code.or(error.message);
-	typed
+	)
+	.optional_code(error.code.or(error.message))
 }
 fn capability_error() -> Error {
 	Error::new(

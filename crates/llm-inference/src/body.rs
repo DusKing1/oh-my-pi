@@ -102,7 +102,10 @@ pub enum BodyPartKind {
 	/// A deterministic stream factory.
 	Factory,
 	/// A single-reader stream, with explicit pre-poll reacquisition evidence.
-	OneShot { safe_reacquisition: bool },
+	OneShot {
+		/// Whether an unopened reader can be reacquired from a fresh factory.
+		safe_reacquisition: bool,
+	},
 	/// A native stream whose replayability was explicitly declared.
 	Native(NativeStreamDeclaration),
 }
@@ -751,7 +754,7 @@ impl BodyAttempt {
 		}
 	}
 
-	async fn open_leaf(&mut self) -> Result<BodyReader, BodyOpenError> {
+	async fn open_leaf(&self) -> Result<BodyReader, BodyOpenError> {
 		let (stream, one_shot) = match &self.source {
 			BodySource::Bytes(bytes) => {
 				let stream: ByteStream = Box::pin(stream::once(std::future::ready(Ok(bytes.clone()))));
@@ -780,7 +783,7 @@ impl BodyAttempt {
 		Ok(BodyReader { stream, evidence: self.evidence.clone(), one_shot })
 	}
 
-	async fn open_multipart(&mut self) -> Result<BodyReader, BodyOpenError> {
+	async fn open_multipart(&self) -> Result<BodyReader, BodyOpenError> {
 		let BodySource::Multipart(parts) = &self.source else {
 			return Err(BodyOpenError::AttemptAlreadyOpened);
 		};

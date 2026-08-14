@@ -94,9 +94,19 @@ pub struct JobPolicy {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum JobUpdate<A> {
 	/// Job remains queued.
-	Queued { retry_after: Option<Duration> },
+	Queued {
+		/// Provider-requested delay before the next poll.
+		retry_after: Option<Duration>,
+	},
 	/// Job is running with monotonic progress.
-	Running { completed: u64, total: Option<u64>, retry_after: Option<Duration> },
+	Running {
+		/// Completed work units.
+		completed:   u64,
+		/// Total work units when the provider reports one.
+		total:       Option<u64>,
+		/// Provider-requested delay before the next poll.
+		retry_after: Option<Duration>,
+	},
 	/// Job produced an artifact descriptor or download locator.
 	Artifact(A),
 	/// Job completed and no more polling is allowed.
@@ -104,7 +114,12 @@ pub enum JobUpdate<A> {
 	/// Provider confirmed cancellation.
 	Cancelled,
 	/// Job failed with a sanitized typed code and message.
-	Failed { code: Str, message: Str },
+	Failed {
+		/// Sanitized provider failure code.
+		code:    Str,
+		/// Sanitized provider failure message.
+		message: Str,
+	},
 }
 
 /// Next action chosen by the polling state machine.
@@ -128,15 +143,28 @@ pub enum JobError {
 	/// Poll response reduced progress or contradicted a known total.
 	NonMonotonicProgress,
 	/// Completed work exceeds total work.
-	InvalidProgress { completed: u64, total: u64 },
+	InvalidProgress {
+		/// Completed work units reported by the provider.
+		completed: u64,
+		/// Total work units reported by the provider.
+		total:     u64,
+	},
 	/// Poll count exceeded the caller policy.
-	PollLimit { limit: u32 },
+	PollLimit {
+		/// Maximum permitted poll count.
+		limit: u32,
+	},
 	/// Job exceeded its lifetime or provider expiry.
 	Expired,
 	/// An update arrived after a terminal transition.
 	AlreadyTerminal,
 	/// Provider reported a typed job failure.
-	Provider { code: Str, message: Str },
+	Provider {
+		/// Sanitized provider failure code.
+		code:    Str,
+		/// Sanitized provider failure message.
+		message: Str,
+	},
 }
 
 /// Final cancellation evidence included in operation receipts.
@@ -500,12 +528,12 @@ mod tests {
 			job.update::<()>(JobUpdate::Queued { retry_after: None }, SystemTime::UNIX_EPOCH),
 			Ok(JobAction::Cancel)
 		));
-		assert_eq!(job.cancellation_receipt().dispatched, true);
+		assert!(job.cancellation_receipt().dispatched);
 		assert!(matches!(
 			job.update::<()>(JobUpdate::Cancelled, SystemTime::UNIX_EPOCH),
 			Ok(JobAction::Cancelled)
 		));
-		assert_eq!(job.cancellation_receipt().acknowledged, true);
+		assert!(job.cancellation_receipt().acknowledged);
 	}
 
 	#[test]

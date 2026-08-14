@@ -227,23 +227,23 @@ fn chat_stream(
 	Box::pin(async_stream::stream! {
 		let mut abort = AbortOnDrop(context.clone(), true);
 		if let Err(mut error) = context.checkpoint(ErrorPhase::Streaming) {
-			context.finalize_error(&mut error); error.committed = false; context.abort_session(); abort.disarm(); yield Err(error); return;
+			context.finalize_error(&mut error); let error = error.committed(false); context.abort_session(); abort.disarm(); yield Err(error); return;
 		}
 		yield Ok(ChatEvent::Started(meta));
 		loop {
 			let item = match next_with_deadline(&mut input, &context).await {
 				Ok(item) => item,
-				Err(mut error) => {
-					context.cancel(); context.abort_session(); abort.disarm(); error.committed = context.is_committed(); error.receipt = context.receipt();
+				Err(error) => {
+					context.cancel(); context.abort_session(); abort.disarm(); let mut error = error.committed(context.is_committed()); error.replace_receipt(context.receipt());
 					yield Err(error);
 					break;
 				},
 			};
 			match item {
 				None => {
-					let mut error = Error::new(ErrorKind::StreamCorruption, ErrorPhase::Streaming, RetryAction::Never, context.receipt());
-					error.committed = context.is_committed();
-					error.detail = Some(ErrorDetail::Protocol { reason: ReasonId("chat.missing-terminal-completion".into()) });
+					let error = Error::new(ErrorKind::StreamCorruption, ErrorPhase::Streaming, RetryAction::Never, context.receipt())
+						.committed(context.is_committed())
+						.detail(ErrorDetail::protocol(ReasonId("chat.missing-terminal-completion".into())));
 					context.abort_session(); abort.disarm();
 					yield Err(error);
 					break;
@@ -253,16 +253,16 @@ fn chat_stream(
 					let terminal = matches!(event, ChatEvent::Completed(_));
 					if let ChatEvent::Completed(completion) = &mut event {
 						context.merge_receipt(&completion.receipt);
-						completion.receipt = context.receipt();
+						completion.receipt = context.receipt().into();
 					}
 					if let Err(mut error) = context.record_session_event(&event) {
-						context.finalize_error(&mut error); error.committed = context.is_committed(); context.abort_session(); abort.disarm(); yield Err(error); break;
+						context.finalize_error(&mut error); let error = error.committed(context.is_committed()); context.abort_session(); abort.disarm(); yield Err(error); break;
 					}
 					if event.commits_output() { context.commit(); }
 					if terminal
 						&& let Err(mut error) = context.commit_session()
 					{
-						context.finalize_error(&mut error); error.committed = context.is_committed(); abort.disarm(); yield Err(error); break;
+						context.finalize_error(&mut error); let error = error.committed(context.is_committed()); abort.disarm(); yield Err(error); break;
 					}
 					yield Ok(event);
 					if terminal { abort.disarm(); break; }
@@ -313,7 +313,7 @@ fn chat_stream(
 						response_kind: WorkflowResponseKind::Invoke,
 					}));
 				},
-				Some(Err(mut error)) => { context.finalize_error(&mut error); error.committed = context.is_committed(); context.abort_session(); abort.disarm(); yield Err(error); break; },
+				Some(Err(mut error)) => { context.finalize_error(&mut error); let error = error.committed(context.is_committed()); context.abort_session(); abort.disarm(); yield Err(error); break; },
 				Some(Ok(other)) => { let error = mismatch(OperationKind::Chat, raw_kind(&other), &context); context.abort_session(); abort.disarm(); yield Err(error); break; },
 			}
 		}
@@ -435,7 +435,7 @@ fn native_stream(
 				Ok(RawEvent::Metadata(metadata)) => context.observe_provider_metadata(metadata),
 				Ok(RawEvent::Telemetry(telemetry)) => context.observe_provider_telemetry(telemetry),
 				Ok(RawEvent::ProviderState(state)) => context.stage_provider_state(state),
-				Ok(RawEvent::Failure(mut error)) | Err(mut error) => { context.finalize_error(&mut error); error.committed = context.is_committed(); context.abort_session(); abort.disarm(); yield Err(error); return; },
+				Ok(RawEvent::Failure(mut error)) | Err(mut error) => { context.finalize_error(&mut error); let error = error.committed(context.is_committed()); context.abort_session(); abort.disarm(); yield Err(error); return; },
 				Ok(other) => { let error = finalize_stream_error(mismatch(OperationKind::Native, raw_kind(&other), &context), &context); context.abort_session(); abort.disarm(); yield Err(error); return; },
 			}
 		}
@@ -570,8 +570,8 @@ const fn raw_kind(event: &RawEvent) -> AnswerKind {
 }
 fn finalize_stream_error(mut error: Error, context: &crate::layer::ExecutionContext) -> Error {
 	context.finalize_error(&mut error);
-	error.committed = context.is_committed();
-	error.receipt = context.receipt();
+	let mut error = error.committed(context.is_committed());
+	error.replace_receipt(context.receipt());
 	error
 }
 fn mismatch(
@@ -582,29 +582,23 @@ fn mismatch(
 	Error::body_variant_mismatch(expected, actual, context.receipt())
 }
 fn invariant(reason: &'static str, context: &crate::layer::ExecutionContext) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::ProviderContractMismatch,
 		ErrorPhase::Internal,
 		RetryAction::Never,
 		context.receipt(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(reason.into()) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(reason.into())))
 }
 fn limit_error(limit: u64, observed: u64, context: &crate::layer::ExecutionContext) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::PolicyBufferExceeded,
 		ErrorPhase::Streaming,
 		RetryAction::Never,
 		context.receipt(),
-	);
-	error.committed = context.is_committed();
-	error.detail = Some(ErrorDetail::Budget {
-		dimension: "native_response_bytes".into(),
-		limit:     limit as u128,
-		observed:  observed as u128,
-	});
-	error
+	)
+	.committed(context.is_committed())
+	.detail(ErrorDetail::budget("native_response_bytes".into(), limit as u128, observed as u128))
 }
 fn content_type(headers: &[crate::codec::RequestHeader]) -> Option<Str> {
 	headers

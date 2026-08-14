@@ -311,8 +311,8 @@ impl PerplexityResponse {
 				published_at: result.date.as_deref().and_then(parse_date),
 			});
 		}
-		let usage = self.usage.map_or(
-			Usage { search_calls: 1, source: UsageSource::Measured, ..Usage::default() },
+		let usage = self.usage.map_or_else(
+			|| Usage { search_calls: 1, source: UsageSource::Measured, ..Usage::default() },
 			PerplexityUsage::canonical,
 		);
 		Ok(SearchResults { results, answer, usage })
@@ -341,20 +341,20 @@ struct PerplexitySearchResult {
 
 #[derive(Debug, Deserialize)]
 struct PerplexityUsage {
-	#[serde(default)]
-	prompt_tokens:     Option<u64>,
-	#[serde(default)]
-	completion_tokens: Option<u64>,
-	#[serde(default)]
-	reasoning_tokens:  Option<u64>,
+	#[serde(default, rename = "prompt_tokens")]
+	input:     Option<u64>,
+	#[serde(default, rename = "completion_tokens")]
+	output:    Option<u64>,
+	#[serde(default, rename = "reasoning_tokens")]
+	reasoning: Option<u64>,
 }
 
 impl PerplexityUsage {
 	fn canonical(self) -> Usage {
 		Usage {
-			input_tokens: self.prompt_tokens.unwrap_or(0),
-			output_tokens: self.completion_tokens.unwrap_or(0),
-			reasoning_tokens: self.reasoning_tokens.unwrap_or(0),
+			input_tokens: self.input.unwrap_or(0),
+			output_tokens: self.output.unwrap_or(0),
+			reasoning_tokens: self.reasoning.unwrap_or(0),
 			search_calls: 1,
 			source: UsageSource::Provider,
 			..Usage::default()
@@ -391,19 +391,10 @@ struct PerplexityValidationErrorEnvelope {
 
 #[derive(Debug, Deserialize)]
 struct PerplexityValidationIssue {
-	#[serde(default)]
-	_loc:     Vec<PerplexityValidationLocation>,
 	#[serde(default, rename = "msg")]
 	_message: Option<Str>,
 	#[serde(default, rename = "type")]
 	_kind:    Option<Str>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum PerplexityValidationLocation {
-	Text(Str),
-	Index(u64),
 }
 
 fn provider_error(error: PerplexityWireError) -> Error {
@@ -439,78 +430,64 @@ fn provider_error(error: PerplexityWireError) -> Error {
 		},
 		_ => (ErrorKind::ProviderContractMismatch, "perplexity.upstream_error"),
 	};
-	let mut output = Error::new(
-		classified.0,
-		ErrorPhase::Handshake,
-		RetryAction::Never,
-		ExecutionReceipt::default(),
-	);
-	output.status = status;
-	output.code = Some(Str::from(classified.1));
-	output.detail =
-		Some(ErrorDetail::Provider { sanitized_message: Str::from("Perplexity API request failed") });
-	output
+	Error::new(classified.0, ErrorPhase::Handshake, RetryAction::Never, ExecutionReceipt::default())
+		.status(status)
+		.code(Str::from(classified.1))
+		.detail(ErrorDetail::provider(Str::from("Perplexity API request failed")))
 }
 
 fn validation_error(envelope: PerplexityValidationErrorEnvelope) -> Error {
 	if envelope.detail.is_empty() {
 		return protocol_error("perplexity_validation_error_empty");
 	}
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::InvalidRequest,
 		ErrorPhase::Handshake,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.code = Some(Str::from("perplexity.validation_error"));
-	error.detail = Some(ErrorDetail::Provider {
-		sanitized_message: Str::from("Perplexity rejected the request"),
-	});
-	error
+	)
+	.code(Str::from("perplexity.validation_error"))
+	.detail(ErrorDetail::provider(Str::from("Perplexity rejected the request")))
 }
 
 fn codec_error(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::CodecMismatch,
 		ErrorPhase::Encoding,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 fn encoding_error(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::InvalidRequest,
 		ErrorPhase::Encoding,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 fn protocol_error(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::Protocol,
 		ErrorPhase::Handshake,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 fn contract_error(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::ProviderContractMismatch,
 		ErrorPhase::Recovery,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 fn parse_date(value: &str) -> Option<SystemTime> {
@@ -717,9 +694,10 @@ mod tests {
 			.expect("response buffered");
 		let error = decoder.finish(&mut |_| {}).expect_err("answer is required");
 		assert_eq!(error.kind, ErrorKind::ProviderContractMismatch);
-		assert!(
-			matches!(error.detail, Some(ErrorDetail::Protocol { reason }) if reason.0 == "required_search_answer_missing")
-		);
+		assert!(matches!(
+			error.detail_ref(),
+			Some(ErrorDetail::Protocol { reason }) if reason.0 == "required_search_answer_missing"
+		));
 	}
 
 	#[test]

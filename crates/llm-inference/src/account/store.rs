@@ -94,7 +94,12 @@ pub enum AccountStateStoreError {
 	/// A timestamp or counter cannot be represented losslessly by SQLite.
 	OutOfRange,
 	/// A persisted enum value is not part of the current typed vocabulary.
-	InvalidVocabulary { field: &'static str, value: Str },
+	InvalidVocabulary {
+		/// Name of the persisted field containing the invalid value.
+		field: &'static str,
+		/// Unrecognized persisted vocabulary value.
+		value: Str,
+	},
 	/// Existing static ownership does not match the attempted account record.
 	IdentityConflict,
 }

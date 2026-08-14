@@ -1,3 +1,5 @@
+//! Account routing, refresh, and lease coordination contracts.
+
 use std::{
 	collections::{BTreeSet, VecDeque},
 	future::Future,
@@ -734,7 +736,7 @@ async fn peer_process_waiters_receive_the_published_result_without_refreshing() 
 	store
 		.wait_script
 		.lock()
-		.push_back(RefreshLeaseWait::Published(published.clone()));
+		.push_back(RefreshLeaseWait::Published(Box::new(published.clone())));
 	let calls = Arc::new(AtomicUsize::new(0));
 	let operation_calls = Arc::clone(&calls);
 	let outcome = RefreshCoordinator::new("process", RefreshPolicy::default())

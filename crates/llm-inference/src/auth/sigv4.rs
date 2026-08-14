@@ -242,15 +242,9 @@ fn encode_path(path: &str, double_encode_percent: bool) -> String {
 			&& hex_value(bytes[index + 1]).is_some()
 			&& hex_value(bytes[index + 2]).is_some()
 		{
-			if double_encode_percent {
-				output.push_str("%25");
-				output.push(hex_digit(hex_value(bytes[index + 1]).expect("checked")));
-				output.push(hex_digit(hex_value(bytes[index + 2]).expect("checked")));
-			} else {
-				output.push('%');
-				output.push(hex_digit(hex_value(bytes[index + 1]).expect("checked")));
-				output.push(hex_digit(hex_value(bytes[index + 2]).expect("checked")));
-			}
+			output.push_str(if double_encode_percent { "%25" } else { "%" });
+			output.push(hex_digit(hex_value(bytes[index + 1]).expect("checked")));
+			output.push(hex_digit(hex_value(bytes[index + 2]).expect("checked")));
 			index += 2;
 		} else {
 			append_uri_byte(&mut output, byte);

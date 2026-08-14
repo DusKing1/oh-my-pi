@@ -707,9 +707,19 @@ pub struct OpenAiResponsesOptions {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ResponsesAdjustment {
 	/// A requested field has no Responses wire representation.
-	Dropped { field: Str, reason: Str },
+	Dropped {
+		/// Canonical field omitted from the request.
+		field:  Str,
+		/// Reason the Responses wire format cannot represent the field.
+		reason: Str,
+	},
 	/// A native representation was safely emulated.
-	Emulated { field: Str, method: Str },
+	Emulated {
+		/// Canonical field represented through an equivalent wire feature.
+		field:  Str,
+		/// Wire mechanism used for the emulation.
+		method: Str,
+	},
 }
 
 /// An encoded Responses body and its exact adjustment evidence.
@@ -1022,7 +1032,7 @@ pub enum ResponsesStreamEventKind {
 }
 
 /// One fully typed Responses stream event.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponsesStreamEvent {
 	/// Event discriminator.
 	#[serde(rename = "type")]
@@ -1101,7 +1111,7 @@ pub enum ResponsesProjection {
 	/// Canonical chat event.
 	Canonical(ChatEvent),
 	/// Terminal chat facts awaiting authoritative receipt accounting.
-	Completion(super::RawCompletion),
+	Completion(Box<super::RawCompletion>),
 	/// A provider tool call is complete but not yet schema-validated.
 	ToolCallComplete {
 		/// Output index.
@@ -1206,9 +1216,7 @@ impl OpenAiResponsesDecoder {
 		if self.terminal {
 			return Vec::new();
 		}
-		let event = if let Ok(event) = serde_json::from_slice::<ResponsesStreamEvent>(payload) {
-			event
-		} else {
+		let Ok(event) = serde_json::from_slice::<ResponsesStreamEvent>(payload) else {
 			self.terminal = true;
 			return vec![ResponsesProjection::Error(ResponsesErrorEvidence {
 				code:         Some(Str::from("invalid_responses_event")),
@@ -1790,11 +1798,11 @@ impl OpenAiResponsesDecoder {
 			.and_then(|value| value.usage.as_ref())
 			.map_or_else(Usage::default, Usage::from);
 		usage.search_calls = u32::from(self.saw_completed_hosted_tool);
-		out.push(ResponsesProjection::Completion(super::RawCompletion {
+		out.push(ResponsesProjection::Completion(Box::new(super::RawCompletion {
 			reason,
 			blocks: self.outputs.len().try_into().unwrap_or(u32::MAX),
 			usage,
-		}));
+		})));
 	}
 }
 
@@ -1870,24 +1878,23 @@ pub fn classify_continuation_error(status: u16, body: &[u8]) -> ResponsesErrorEv
 		.message
 		.clone()
 		.unwrap_or_else(|| Str::from("Responses request failed"));
-	let kind =
-		if matches!(status, 400 | 404) && code.as_deref() == Some("previous_response_not_found") {
-			ResponsesContinuationFailure::StalePreviousResponse
-		} else if status == 404
+	let stale_previous = matches!(status, 400 | 404)
+		&& code.as_deref() == Some("previous_response_not_found")
+		|| status == 404
 			&& envelope.error.kind.as_deref() == Some("invalid_request_error")
 			&& message.starts_with("previous_response_id '")
-			&& message.ends_with("' was not found")
-		{
-			ResponsesContinuationFailure::StalePreviousResponse
-		} else if status == 404
-			&& envelope.error.kind.as_deref() == Some("invalid_request_error")
-			&& message.starts_with("Item with id '")
-			&& message.ends_with("' not found.")
-		{
-			ResponsesContinuationFailure::StaleServerItem
-		} else {
-			ResponsesContinuationFailure::NotStale
-		};
+			&& message.ends_with("' was not found");
+	let kind = if stale_previous {
+		ResponsesContinuationFailure::StalePreviousResponse
+	} else if status == 404
+		&& envelope.error.kind.as_deref() == Some("invalid_request_error")
+		&& message.starts_with("Item with id '")
+		&& message.ends_with("' not found.")
+	{
+		ResponsesContinuationFailure::StaleServerItem
+	} else {
+		ResponsesContinuationFailure::NotStale
+	};
 	ResponsesErrorEvidence { code, message, continuation: kind }
 }
 
@@ -2693,7 +2700,7 @@ impl ResponsesDecoderAdapter {
 		match projection {
 			ResponsesProjection::Canonical(event) => emit(super::RawEvent::Chat(event)),
 			ResponsesProjection::Completion(completion) => {
-				emit(super::RawEvent::Completion(completion));
+				emit(super::RawEvent::Completion(*completion));
 			},
 			ResponsesProjection::ToolCallComplete { index, id, name, arguments, custom } => {
 				emit(super::RawEvent::ToolCallComplete {
@@ -2772,13 +2779,12 @@ impl ResponsesDecoderAdapter {
 			},
 			ResponsesContinuationFailure::NotStale => (ErrorKind::Protocol, RetryAction::Never),
 		};
-		let mut error = Error::new(kind, ErrorPhase::Streaming, action, ExecutionReceipt::default());
-		error.provider = Some(self.provider.clone());
-		error.route = Some(self.route.clone());
-		error.request_id = Some(self.request_id.clone());
-		error.code = evidence.code;
-		error.committed = self.inner.committed_output();
-		error
+		Error::new(kind, ErrorPhase::Streaming, action, ExecutionReceipt::default())
+			.provider(self.provider.clone())
+			.route(self.route.clone())
+			.request_id(self.request_id.clone())
+			.optional_code(evidence.code)
+			.committed(self.inner.committed_output())
 	}
 }
 
@@ -2825,14 +2831,13 @@ fn encoding_error(code: &'static str) -> crate::error::Error {
 		error::{Error, ErrorKind, ErrorPhase, RetryAction},
 		receipt::ExecutionReceipt,
 	};
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::InvalidRequest,
 		ErrorPhase::Encoding,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.code = Some(Str::from(code));
-	error
+	)
+	.code(Str::from(code))
 }
 
 fn responses_uri(base_url: &str) -> Str {

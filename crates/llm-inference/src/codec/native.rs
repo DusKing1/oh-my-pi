@@ -296,25 +296,23 @@ fn encode_sse_event(event: SseEvent) -> Bytes {
 }
 
 fn rejected(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::NativeRequestRejected,
 		ErrorPhase::Planning,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 fn protocol_error(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::Protocol,
 		ErrorPhase::Streaming,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 #[cfg(test)]
@@ -354,7 +352,7 @@ mod tests {
 		let error = parse_native_json("POST", "/v1/unknown", b"{", NativeResponseFraming::Json, 1024)
 			.expect_err("path");
 		assert!(
-			matches!(&error.detail, Some(ErrorDetail::Protocol { reason: ReasonId(reason) }) if reason.as_str() == "native_path_not_allowlisted")
+			matches!(error.detail_ref(), Some(ErrorDetail::Protocol { reason: ReasonId(reason) }) if reason.as_str() == "native_path_not_allowlisted")
 		);
 	}
 

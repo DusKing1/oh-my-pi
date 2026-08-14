@@ -124,7 +124,10 @@ pub enum RateAvailability {
 	Available,
 	/// At least one window blocks attempts until this deterministic latest
 	/// reset.
-	Delayed { until: SystemTime },
+	Delayed {
+		/// Latest rate-window reset that permits another attempt.
+		until: SystemTime,
+	},
 	/// Capacity is exhausted and the provider supplied no reset.
 	ExhaustedUnknownReset,
 }

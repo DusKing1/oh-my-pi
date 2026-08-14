@@ -144,10 +144,10 @@ impl AuthLoginEngine for SecretLoginEngine {
 						.await
 						.map_err(login_channel_error)?;
 					let input = driver.receive().await.map_err(login_channel_error)?;
-					let secret = match (method, input) {
-						(AuthMethod::ApiKey, AuthInput::ApiKey(secret))
-						| (AuthMethod::SessionToken, AuthInput::SessionToken(secret)) => secret,
-						_ => return Err(auth_invalid_request()),
+					let ((AuthMethod::ApiKey, AuthInput::ApiKey(secret))
+					| (AuthMethod::SessionToken, AuthInput::SessionToken(secret))) = (method, input)
+					else {
+						return Err(auth_invalid_request());
 					};
 					let principal = PrincipalId::from(principal_label.clone());
 					let account = AccountId::from(format!("{provider_id}:{principal_label}"));
@@ -963,7 +963,7 @@ fn oauth_custom_error(error: OAuthCustomDispatchError) -> Error {
 
 fn oauth_manager_error(error: OAuthCredentialManagerError) -> Error {
 	match error {
-		OAuthCredentialManagerError::OAuth(error) => oauth_error(error),
+		OAuthCredentialManagerError::OAuth(error) => oauth_error(*error),
 		OAuthCredentialManagerError::Refresh(_) => auth_unavailable(),
 		OAuthCredentialManagerError::Expired => Error::new(
 			ErrorKind::Authentication,

@@ -24,6 +24,10 @@ impl QuotaWindowId {
 }
 
 /// Provenance of a quota measurement.
+#[allow(
+	missing_docs,
+	reason = "strum generates the public string-conversion method from documented variants"
+)]
 #[derive(Clone, Copy, Debug, Display, EnumString, Eq, IntoStaticStr, PartialEq)]
 #[strum(serialize_all = "snake_case", const_into_str)]
 pub enum QuotaProvenance {
@@ -133,7 +137,10 @@ pub enum QuotaAvailability {
 	/// No current window is exhausted.
 	Available,
 	/// At least one window is exhausted until this deterministic latest reset.
-	Exhausted { reset_at: SystemTime },
+	Exhausted {
+		/// Deterministic time at which the exhausted window becomes available.
+		reset_at: SystemTime,
+	},
 	/// A window is exhausted without a reported reset.
 	ExhaustedUnknownReset,
 }

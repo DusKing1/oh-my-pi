@@ -62,11 +62,20 @@ pub enum OmpTurnDisposition {
 	/// The request has not reached a terminal frame.
 	Pending,
 	/// The authoritative output committed with its resulting revision.
-	Committed { revision: Option<thread_pb::Revision> },
+	Committed {
+		/// Revision produced by the committed outcome.
+		revision: Option<thread_pb::Revision>,
+	},
 	/// The optimistic precondition failed before any mutation.
-	Conflict { actual: Option<thread_pb::Revision> },
+	Conflict {
+		/// Current revision observed by the gateway.
+		actual: Option<thread_pb::Revision>,
+	},
 	/// Every staged append and truncation was discarded.
-	RolledBack { cause: OmpRollbackCause },
+	RolledBack {
+		/// Terminal condition that caused the rollback.
+		cause: OmpRollbackCause,
+	},
 }
 
 /// Secret-free transactional receipt for one internal OMP turn.
@@ -426,9 +435,8 @@ impl OmpNativeDecoder {
 		} else {
 			emit(RawEvent::Control(ProviderControlEvent::RolledBack { revision: None }));
 		}
-		let mut error = protocol_error(code, ErrorPhase::Streaming);
+		let mut error = protocol_error(code, ErrorPhase::Streaming).code(Str::from(code));
 		error.kind = kind;
-		error.code = Some(Str::from(code));
 		emit(RawEvent::Failure(error));
 	}
 }
@@ -479,10 +487,8 @@ fn proto_usage(usage: &pb::Usage) -> Usage {
 }
 
 fn protocol_error(reason: &'static str, phase: ErrorPhase) -> Error {
-	let mut error =
-		Error::new(ErrorKind::Protocol, phase, RetryAction::Never, ExecutionReceipt::default());
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	Error::new(ErrorKind::Protocol, phase, RetryAction::Never, ExecutionReceipt::default())
+		.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 #[cfg(test)]
@@ -547,14 +553,12 @@ mod tests {
 		});
 		assert!(matches!(conflict.disposition, OmpTurnDisposition::Conflict { .. }));
 
-		let mut rollback = OmpTurnReceipt::default();
-		rollback.accepted = true;
+		let mut rollback = OmpTurnReceipt { accepted: true, ..Default::default() };
 		rollback.truncate();
 		assert_eq!(rollback.disposition, OmpTurnDisposition::RolledBack {
 			cause: OmpRollbackCause::TruncatedStream,
 		});
-		let mut cancelled = OmpTurnReceipt::default();
-		cancelled.accepted = true;
+		let mut cancelled = OmpTurnReceipt { accepted: true, ..Default::default() };
 		cancelled.cancel();
 		assert_eq!(cancelled.disposition, OmpTurnDisposition::RolledBack {
 			cause: OmpRollbackCause::ClientCancelled,

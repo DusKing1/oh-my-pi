@@ -144,7 +144,7 @@ impl NativePolicy {
 			return Err(rejected("native_response_size_exceeds_allowlist"));
 		}
 		if let Some(payload) = &request.payload {
-			let encoded_len = payload_len(payload)?;
+			let encoded_len = payload_len(payload);
 			if encoded_len.is_some_and(|length| length > rule.maximum_request_bytes) {
 				return Err(rejected("native_request_size_exceeds_allowlist"));
 			}
@@ -259,49 +259,44 @@ pub(crate) fn validate_native_response(
 	Ok(())
 }
 
-fn payload_len(payload: &NativePayload) -> Result<Option<u64>, Error> {
+fn payload_len(payload: &NativePayload) -> Option<u64> {
 	match payload {
-		NativePayload::Json(value) => Ok(Some(value.as_bytes().len() as u64)),
-		NativePayload::Bytes(bytes) => Ok(Some(bytes.len() as u64)),
-		NativePayload::Body(_) => Ok(None),
+		NativePayload::Json(value) => Some(value.as_bytes().len() as u64),
+		NativePayload::Bytes(bytes) => Some(bytes.len() as u64),
+		NativePayload::Body(_) => None,
 	}
 }
 
 fn wrong_operation(call: &crate::call::Call) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::InternalInvariant,
 		ErrorPhase::Internal,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.request_id = Some(call.id.clone());
-	error.detail = Some(ErrorDetail::Capability {
-		feature: Str::from(OperationKind::Native.to_string()),
-		reason:  ReasonId(Str::from("operation_service_mismatch")),
-	});
-	error
+	)
+	.detail(ErrorDetail::capability(
+		Str::from(OperationKind::Native.to_string()),
+		ReasonId(Str::from("operation_service_mismatch")),
+	))
+	.request_id(call.id.clone())
 }
 
 fn rejected(reason: &'static str) -> Error {
 	Error::planning(
 		ErrorKind::NativeRequestRejected,
-		ErrorDetail::Capability {
-			feature: Str::from("native"),
-			reason:  ReasonId(Str::from(reason)),
-		},
+		ErrorDetail::capability(Str::from("native"), ReasonId(Str::from(reason))),
 		ExecutionReceipt::default(),
 	)
 }
 
 fn protocol_error(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::ProviderContractMismatch,
 		ErrorPhase::Recovery,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 #[cfg(test)]

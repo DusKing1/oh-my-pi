@@ -132,7 +132,7 @@ where
 						Err(AdcRuntimeError::NotFound) if !required => continue,
 						Err(error) => return Err(error.into()),
 					};
-					return self.resolve_file(spec, meta, issued_at, &file).await;
+					return self.resolve_file(spec, meta, issued_at, file).await;
 				},
 				AdcSourceSpec::Metadata { url, headers } => {
 					if let Some(resolution) = self
@@ -152,7 +152,7 @@ where
 		spec: &AdcSpec,
 		meta: LeaseMeta,
 		issued_at: SystemTime,
-		file: &SecretString,
+		file: SecretString,
 	) -> Result<AdcResolution, AdcError> {
 		let credential: CredentialFile = serde_json::from_str(file.expose_secret())
 			.map_err(|_| AdcError::MalformedCredentialFile)?;
@@ -170,7 +170,8 @@ where
 					("client_secret", client_secret.as_str()),
 					("refresh_token", refresh_token.as_str()),
 				];
-				let response = self.post_form(token_uri, &fields).await?;
+				let request = self.form_request(token_uri, &fields)?;
+				let response = self.execute(request).await?;
 				let token = parse_token_response(response)?;
 				Ok(AdcResolution {
 					lease:         token.into_lease(meta, issued_at),
@@ -192,7 +193,8 @@ where
 					issued_at,
 				)?;
 				let fields = [("grant_type", JWT_GRANT), ("assertion", assertion.expose_secret())];
-				let response = self.post_form(token_uri, &fields).await?;
+				let request = self.form_request(token_uri, &fields)?;
+				let response = self.execute(request).await?;
 				let token = parse_token_response(response)?;
 				Ok(AdcResolution {
 					lease:         token.into_lease(meta, issued_at),
@@ -220,7 +222,8 @@ where
 					("subject_token_type", subject_token_type.as_str()),
 					("subject_token", subject.expose_secret().trim()),
 				];
-				let response = self.post_form(token_url, &fields).await?;
+				let request = self.form_request(token_url, &fields)?;
+				let response = self.execute(request).await?;
 				let token = parse_token_response(response)?;
 				Ok(AdcResolution {
 					lease:         token.into_lease(meta, issued_at),
@@ -246,11 +249,7 @@ where
 			request_headers.insert(name, value);
 		}
 		let request = OAuthHttpRequest::new(Method::GET, url, request_headers, None)?;
-		let response = self
-			.http
-			.execute(request)
-			.await
-			.map_err(|_| AdcError::Transport)?;
+		let response = self.execute(request).await?;
 		if response.status == 404 || response.status == 403 {
 			return Ok(None);
 		}
@@ -262,16 +261,19 @@ where
 		}))
 	}
 
-	async fn post_form(
+	fn form_request(
 		&self,
 		url: &str,
 		fields: &[(&str, &str)],
-	) -> Result<OAuthHttpResponse, AdcError> {
+	) -> Result<OAuthHttpRequest, AdcError> {
 		let mut serializer = url::form_urlencoded::Serializer::new(String::new());
 		for (name, value) in fields {
 			serializer.append_pair(name, value);
 		}
-		let request = OAuthHttpRequest::secret_form(url, SecretString::from(serializer.finish()))?;
+		Ok(OAuthHttpRequest::secret_form(url, SecretString::from(serializer.finish()))?)
+	}
+
+	async fn execute(&self, request: OAuthHttpRequest) -> Result<OAuthHttpResponse, AdcError> {
 		self
 			.http
 			.execute(request)
@@ -351,7 +353,10 @@ pub enum AdcError {
 	MalformedCredentialFile,
 	/// Token endpoint response is malformed or rejects the grant.
 	#[error("application-default token exchange was rejected")]
-	TokenExchangeRejected { status: u16 },
+	TokenExchangeRejected {
+		/// HTTP status returned by the token endpoint.
+		status: u16,
+	},
 	/// Credential source I/O failed.
 	#[error(transparent)]
 	Runtime(#[from] AdcRuntimeError),

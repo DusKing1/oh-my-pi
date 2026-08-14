@@ -354,9 +354,7 @@ impl Router {
 		let Some(primary) = request.selection.primary_model() else {
 			return Err(Error::planning(
 				ErrorKind::InvalidRequest,
-				ErrorDetail::Target {
-					selector: Str::from("model-less-target-requires-service-planning"),
-				},
+				ErrorDetail::target(Str::from("model-less-target-requires-service-planning")),
 				ExecutionReceipt::default(),
 			));
 		};
@@ -1116,7 +1114,7 @@ fn target_not_found(target: &Target) -> Error {
 	};
 	Error::planning(
 		ErrorKind::TargetNotFound,
-		ErrorDetail::Target { selector: Str::from(selector) },
+		ErrorDetail::target(Str::from(selector)),
 		ExecutionReceipt::default(),
 	)
 }
@@ -1124,7 +1122,7 @@ fn target_not_found(target: &Target) -> Error {
 fn target_route_not_found(route: &RouteId) -> Error {
 	Error::planning(
 		ErrorKind::TargetNotFound,
-		ErrorDetail::Target { selector: Str::from(route.as_str()) },
+		ErrorDetail::target(Str::from(route.as_str())),
 		ExecutionReceipt::default(),
 	)
 }
@@ -1132,25 +1130,18 @@ fn target_route_not_found(route: &RouteId) -> Error {
 fn capability_error(kind: ErrorKind, operation: OperationKind, reason: &'static str) -> Error {
 	Error::planning(
 		kind,
-		ErrorDetail::Capability {
-			feature: Str::from(operation.to_string()),
-			reason:  ReasonId(Str::from(reason)),
-		},
+		ErrorDetail::capability(Str::from(operation.to_string()), ReasonId(Str::from(reason))),
 		ExecutionReceipt::default(),
 	)
 }
 
 fn route_contract_error(route: &RouteId, reason: &'static str) -> Error {
-	let mut error = Error::planning(
+	Error::planning(
 		ErrorKind::RouteUnavailable,
-		ErrorDetail::Capability {
-			feature: Str::from(route.as_str()),
-			reason:  ReasonId(Str::from(reason)),
-		},
+		ErrorDetail::capability(Str::from(route.as_str()), ReasonId(Str::from(reason))),
 		ExecutionReceipt::default(),
-	);
-	error.route = Some(route.clone());
-	error
+	)
+	.route(route.clone())
 }
 
 #[cfg(test)]

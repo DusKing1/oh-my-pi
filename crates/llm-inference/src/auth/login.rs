@@ -119,12 +119,14 @@ impl LoginDriver {
 		self.check_cancelled()?;
 		loop {
 			match self.responses.try_recv() {
-				Ok(response) if response.session != self.id => continue,
-				Ok(response) if matches!(response.input, AuthInput::Cancel) => {
-					self.cancellation.cancel();
-					return Err(LoginChannelError::Cancelled);
+				Ok(response) if response.session == self.id => {
+					if matches!(response.input, AuthInput::Cancel) {
+						self.cancellation.cancel();
+						return Err(LoginChannelError::Cancelled);
+					}
+					return Ok(Some(response.input));
 				},
-				Ok(response) => return Ok(Some(response.input)),
+				Ok(_) => {},
 				Err(TryRecvError::Empty) => return Ok(None),
 				Err(TryRecvError::Disconnected) => return Err(LoginChannelError::Closed),
 			}

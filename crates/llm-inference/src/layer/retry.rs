@@ -74,8 +74,8 @@ where
 					Ok(response) => return Ok(response),
 					Err(error) => error,
 				};
-				request.context.merge_receipt(&error.receipt);
-				if let Some(attempt) = error.receipt.attempts.last() {
+				request.context.merge_receipt(error.receipt());
+				if let Some(attempt) = error.receipt().attempts.last() {
 					request.context.set_body_evidence(attempt.body);
 				}
 				let delay = match &error.action {
@@ -205,9 +205,7 @@ mod tests {
 	}
 
 	fn context() -> ExecutionContext {
-		let mut budget = ExecutionBudget::default();
-		budget.max_attempts = 3;
-		ExecutionContext::new(budget)
+		ExecutionContext::new(ExecutionBudget { max_attempts: 3, ..ExecutionBudget::default() })
 	}
 
 	#[tokio::test]
@@ -341,14 +339,14 @@ mod tests {
 			.unwrap_err();
 		assert_eq!(
 			error
-				.receipt
+				.receipt()
 				.attempts
 				.iter()
 				.map(|attempt| attempt.index)
 				.collect::<Vec<_>>(),
 			vec![0, 1]
 		);
-		assert_eq!(error.receipt.usage.input_tokens, 2);
-		assert_eq!(error.receipt.cost.micro_usd, 2);
+		assert_eq!(error.receipt().usage.input_tokens, 2);
+		assert_eq!(error.receipt().cost.micro_usd, 2);
 	}
 }

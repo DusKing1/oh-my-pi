@@ -1,3 +1,4 @@
+//! Cross-provider inference conformance tests.
 #[path = "support/auth.rs"]
 mod auth;
 #[path = "support/oracle.rs"]
@@ -126,7 +127,7 @@ fn chat_request(messages: Vec<Message>) -> ChatRequest {
 	}
 }
 
-fn replayable_evidence() -> AttemptBodyEvidence {
+const fn replayable_evidence() -> AttemptBodyEvidence {
 	AttemptBodyEvidence {
 		opened:         true,
 		consumed:       true,
@@ -359,7 +360,9 @@ fn decode_hex(value: &str) -> Vec<u8> {
 	assert_eq!(value.len() % 2, 0, "odd fixture hex length");
 	value
 		.as_bytes()
-		.chunks_exact(2)
+		.as_chunks::<2>()
+		.0
+		.iter()
 		.map(|pair| {
 			let text = std::str::from_utf8(pair).expect("hex is ASCII");
 			u8::from_str_radix(text, 16).expect("fixture hex byte")
@@ -441,7 +444,7 @@ fn forced_tool_and_structured_output_never_leak_provisional_events() {
 	let mut structured_output = Vec::new();
 	structured
 		.push(ChatEvent::TextDelta { index: 0, text: Str::from("{\"ok\":true}") }, &mut |event| {
-			structured_output.push(event)
+			structured_output.push(event);
 		})
 		.unwrap();
 	assert!(structured_output.is_empty());
@@ -461,7 +464,7 @@ fn provisional_cancellation_hides_events_but_preserves_usage_and_cost_receipts()
 	let mut output = Vec::new();
 	gate
 		.push(ChatEvent::TextDelta { index: 0, text: Str::from("private") }, &mut |event| {
-			output.push(event)
+			output.push(event);
 		})
 		.unwrap();
 	gate.record_attempt(AttemptReceipt {
@@ -550,17 +553,15 @@ async fn staging_cancellation_is_terminal_and_receipted_without_a_fake_success()
 	let source = BodySource::bytes(Bytes::from_static(b"never staged"));
 	let policy = StagingPolicy::memory_only(1024, 1024);
 	let cancellation = StagingCancellation::new();
-	cancellation.cancel();
-	let mut budget = ExecutionBudget::default();
-	budget.max_staging_bytes = 1024;
+	let mut budget = ExecutionBudget { max_staging_bytes: 1024, ..ExecutionBudget::default() };
 	let mut receipt = ExecutionReceipt::default();
 	let error = stage_body(&source, &policy, &budget, &cancellation, &mut receipt)
 		.await
 		.unwrap_err();
 	assert_eq!(error.kind, ErrorKind::Cancelled);
-	assert_eq!(error.receipt.staging.len(), 1);
-	assert!(error.receipt.staging[0].cancelled);
-	assert!(!error.receipt.staging[0].completed);
+	assert_eq!(error.receipt().staging.len(), 1);
+	assert!(error.receipt().staging[0].cancelled);
+	assert!(!error.receipt().staging[0].completed);
 }
 
 #[test]
@@ -772,8 +773,8 @@ async fn cassette_first_frame_failure_carries_last_attempt_body_evidence() {
 		.expect("first-frame error");
 	assert!(!error.committed);
 	assert_eq!(error.status, Some(502));
-	assert_eq!(error.receipt.attempts.len(), 1);
-	let receipt = &error.receipt.attempts[0];
+	assert_eq!(error.receipt().attempts.len(), 1);
+	let receipt = &error.receipt().attempts[0];
 	assert_eq!(receipt.outcome, AttemptOutcome::FailedPreCommit);
 	assert!(receipt.body.opened);
 	assert!(receipt.body.consumed);
@@ -820,17 +821,14 @@ fn signed_gemini_visible_text_proof_round_trips_and_cca_lowers_account_project()
 			proof: Some(ProviderProof {
 				provider: provider.clone(),
 				codec:    codec_id.clone(),
-				value:    signature.clone(),
+				value:    signature,
 			}),
 		}]),
 		name:    None,
 	}]);
 	let projection = GeminiCodec::cloud_code_assist(None)
 		.project(&request, &GoogleRequestOptions {
-			proof_scope: Some(GoogleProofScope {
-				provider: provider.clone(),
-				codec:    codec_id.clone(),
-			}),
+			proof_scope: Some(GoogleProofScope { provider, codec: codec_id.clone() }),
 			..GoogleRequestOptions::default()
 		})
 		.unwrap();
@@ -917,13 +915,9 @@ fn every_real_codec_constructs_fresh_attempt_decoder_state_offline() {
 	let request_id = RequestId::from("decoder-factory");
 	let provider = route_def.provider.clone();
 	let route = route_def.id.clone();
-	let codecs: Vec<(
-		&str,
-		Box<dyn Codec>,
-		FramingProtocol,
-		OperationKind,
-		Option<NativeResponseFormat>,
-	)> = vec![
+	type DecoderFixture =
+		(&'static str, Box<dyn Codec>, FramingProtocol, OperationKind, Option<NativeResponseFormat>);
+	let codecs: Vec<DecoderFixture> = vec![
 		(
 			"openai-chat",
 			Box::new(OpenAiChatCodec::default()),
@@ -1109,7 +1103,7 @@ fn representative_codec_and_operation_matrix_is_manifest_resolved() {
 		("native-facade", "operations", "operations.native.wire.facades.v1"),
 	];
 	for (codec, category, fixture) in codec_rows {
-		assert!(!codec.is_empty());
+		assert_ne!(codec, "");
 		assert!(!oracle::fixture(category, fixture).bytes.is_empty(), "{codec} fixture is empty");
 	}
 
@@ -1362,9 +1356,8 @@ async fn client_plans_without_service_effects_executes_the_exact_route_and_rejec
 	let polls_before = probe.readiness_polls.load(Ordering::SeqCst);
 	let calls_before = probe.calls.load(Ordering::SeqCst);
 	tokio::time::sleep(Duration::from_millis(1)).await;
-	let error = match stale_client.execute_plan(stale).await {
-		Ok(_) => panic!("stale plan unexpectedly executed"),
-		Err(error) => error,
+	let Err(error) = stale_client.execute_plan(stale).await else {
+		panic!("stale plan unexpectedly executed");
 	};
 	assert_eq!(error.kind, ErrorKind::StalePlan);
 	assert_eq!(probe.readiness_polls.load(Ordering::SeqCst), polls_before);

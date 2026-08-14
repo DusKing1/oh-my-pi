@@ -167,16 +167,13 @@ impl<A> CredentialApplier<A, CredentialLease> for PrepareCredentials {
 }
 
 fn credential_prepare_error(context: &ExecutionContext) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::Authentication,
 		ErrorPhase::Authentication,
 		RetryAction::Never,
 		context.receipt(),
-	);
-	error.detail = Some(ErrorDetail::Protocol {
-		reason: ReasonId(Str::new_static("credential-application-contract")),
-	});
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::new_static("credential-application-contract"))))
 }
 
 /// Adds credential application at the last boundary before wire transport.
@@ -301,7 +298,7 @@ mod tests {
 	impl AttemptEncoder<()> for Encoder {
 		fn encode(
 			&self,
-			_: &(),
+			&(): &(),
 			_: &ExecutionContext,
 			_: u32,
 			_: bool,
@@ -316,7 +313,7 @@ mod tests {
 	impl CredentialApplier<(), u8> for Applier {
 		fn apply(
 			&self,
-			_: &(),
+			&(): &(),
 			_: u8,
 			_: &mut TransportRequest,
 			_: &ExecutionContext,

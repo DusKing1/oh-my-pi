@@ -43,7 +43,7 @@ pub struct SnapshotArtifacts {
 /// Validated catalog with compact deterministic lookup indexes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Catalog {
-	catalog:                CompiledCatalog,
+	compiled:               CompiledCatalog,
 	provider_models:        Box<[(u32, u32)]>,
 	model_index:            Box<[u32]>,
 	wire_policy_ids:        Box<[WirePolicyId]>,
@@ -209,7 +209,7 @@ impl Catalog {
 		}
 		validate_policy_ids(&payload)?;
 		Ok(Self {
-			catalog: payload.catalog,
+			compiled: payload.catalog,
 			provider_models: payload.provider_models,
 			model_index: payload.model_index,
 			wire_policy_ids: payload.wire_policy_ids,
@@ -222,63 +222,63 @@ impl Catalog {
 	/// Returns the immutable catalog revision.
 	#[must_use]
 	pub const fn revision(&self) -> &crate::CatalogRevision {
-		&self.catalog.revision
+		&self.compiled.revision
 	}
 
 	/// Returns the verified compiler census.
 	#[must_use]
 	pub const fn census(&self) -> crate::compile::CompilerCensus {
-		self.catalog.census
+		self.compiled.census
 	}
 
 	/// Returns providers in stable identifier order.
 	#[must_use]
 	pub fn providers(&self) -> &[ProviderDef] {
-		&self.catalog.providers
+		&self.compiled.providers
 	}
 
 	/// Returns routes in stable identifier order.
 	#[must_use]
 	pub fn routes(&self) -> &[RouteDef] {
-		&self.catalog.routes
+		&self.compiled.routes
 	}
 
 	/// Returns models in stable key order.
 	#[must_use]
 	pub fn models(&self) -> &[ModelSpec] {
-		&self.catalog.models
+		&self.compiled.models
 	}
 
 	/// Returns interned authentication specifications in stable identifier
 	/// order.
 	#[must_use]
 	pub fn auth_specs(&self) -> &[AuthSpec] {
-		&self.catalog.auth_specs
+		&self.compiled.auth_specs
 	}
 
 	/// Returns interned public OAuth flow specifications in stable identifier
 	/// order.
 	#[must_use]
 	pub fn oauth_specs(&self) -> &[OAuthSpec] {
-		&self.catalog.oauth_specs
+		&self.compiled.oauth_specs
 	}
 
 	/// Returns interned safe header profiles in stable identifier order.
 	#[must_use]
 	pub fn header_profiles(&self) -> &[HeaderProfile] {
-		&self.catalog.header_profiles
+		&self.compiled.header_profiles
 	}
 
 	/// Returns interned discovery specifications in stable identifier order.
 	#[must_use]
 	pub fn discovery_specs(&self) -> &[DiscoverySpec] {
-		&self.catalog.discovery_specs
+		&self.compiled.discovery_specs
 	}
 
 	/// Returns aliases in stable selector order.
 	#[must_use]
 	pub fn aliases(&self) -> &[CatalogAlias] {
-		&self.catalog.aliases
+		&self.compiled.aliases
 	}
 
 	/// Returns the source-lock digest bound into this snapshot.
@@ -297,11 +297,11 @@ impl Catalog {
 	#[must_use]
 	pub fn provider(&self, id: &ProviderId) -> Option<&ProviderDef> {
 		self
-			.catalog
+			.compiled
 			.providers
 			.binary_search_by(|record| record.id.cmp(id))
 			.ok()
-			.map(|index| &self.catalog.providers[index])
+			.map(|index| &self.compiled.providers[index])
 	}
 
 	/// Returns authored conservative discovery defaults for one exact provider.
@@ -317,25 +317,25 @@ impl Catalog {
 	#[must_use]
 	pub fn route(&self, id: &RouteId) -> Option<&RouteDef> {
 		self
-			.catalog
+			.compiled
 			.routes
 			.binary_search_by(|record| record.id.cmp(id))
 			.ok()
-			.map(|index| &self.catalog.routes[index])
+			.map(|index| &self.compiled.routes[index])
 	}
 
 	/// Looks up one model by exact normalized key.
 	#[must_use]
 	pub fn model(&self, key: &ModelKey) -> Option<&ModelSpec> {
 		let index = self.model_position(key)?;
-		Some(&self.catalog.models[index])
+		Some(&self.compiled.models[index])
 	}
 
 	/// Looks up a model only when it is exposed by the requested provider.
 	#[must_use]
 	pub fn model_for_provider(&self, provider: &ProviderId, key: &ModelKey) -> Option<&ModelSpec> {
 		let provider_index = self
-			.catalog
+			.compiled
 			.providers
 			.binary_search_by(|record| record.id.cmp(provider))
 			.ok()?;
@@ -345,13 +345,13 @@ impl Catalog {
 			.provider_models
 			.binary_search(&pair)
 			.ok()
-			.map(|_| &self.catalog.models[model_index])
+			.map(|_| &self.compiled.models[model_index])
 	}
 
 	fn model_position(&self, key: &ModelKey) -> Option<usize> {
 		let position = self
 			.model_index
-			.binary_search_by(|index| self.catalog.models[*index as usize].key.cmp(key))
+			.binary_search_by(|index| self.compiled.models[*index as usize].key.cmp(key))
 			.ok()?;
 		usize::try_from(self.model_index[position]).ok()
 	}
@@ -360,69 +360,69 @@ impl Catalog {
 	#[must_use]
 	pub fn resolve_alias(&self, alias: &str) -> Option<&ModelSpec> {
 		let index = self
-			.catalog
+			.compiled
 			.aliases
 			.binary_search_by(|record| record.alias.as_str().cmp(alias))
 			.ok()?;
-		self.model(&self.catalog.aliases[index].target)
+		self.model(&self.compiled.aliases[index].target)
 	}
 
 	/// Looks up an interned authentication specification.
 	#[must_use]
 	pub fn auth_spec(&self, id: &AuthSpecId) -> Option<&AuthSpec> {
 		self
-			.catalog
+			.compiled
 			.auth_specs
 			.binary_search_by(|record| record.id.cmp(id))
 			.ok()
-			.map(|index| &self.catalog.auth_specs[index])
+			.map(|index| &self.compiled.auth_specs[index])
 	}
 
 	/// Looks up an interned public OAuth flow specification.
 	#[must_use]
 	pub fn oauth_spec(&self, id: &OAuthSpecId) -> Option<&OAuthSpec> {
 		self
-			.catalog
+			.compiled
 			.oauth_specs
 			.binary_search_by(|record| record.id.cmp(id))
 			.ok()
-			.map(|index| &self.catalog.oauth_specs[index])
+			.map(|index| &self.compiled.oauth_specs[index])
 	}
 
 	/// Looks up an interned safe header profile.
 	#[must_use]
 	pub fn header_profile(&self, id: &HeaderProfileId) -> Option<&HeaderProfile> {
 		self
-			.catalog
+			.compiled
 			.header_profiles
 			.binary_search_by(|record| record.id.cmp(id))
 			.ok()
-			.map(|index| &self.catalog.header_profiles[index])
+			.map(|index| &self.compiled.header_profiles[index])
 	}
 
 	/// Looks up an interned discovery specification.
 	#[must_use]
 	pub fn discovery_spec(&self, id: &DiscoverySpecId) -> Option<&DiscoverySpec> {
 		self
-			.catalog
+			.compiled
 			.discovery_specs
 			.binary_search_by(|record| record.id.cmp(id))
 			.ok()
-			.map(|index| &self.catalog.discovery_specs[index])
+			.map(|index| &self.compiled.discovery_specs[index])
 	}
 
 	/// Looks up an interned wire policy without re-hashing it.
 	#[must_use]
 	pub fn wire_policy(&self, id: &WirePolicyId) -> Option<&WirePolicy> {
 		let index = self.wire_policy_ids.binary_search(id).ok()?;
-		Some(&self.catalog.wire_policies[index])
+		Some(&self.compiled.wire_policies[index])
 	}
 
 	/// Looks up an interned thinking policy without re-hashing it.
 	#[must_use]
 	pub fn thinking_policy(&self, id: &ThinkingPolicyId) -> Option<&ThinkingPolicy> {
 		let index = self.thinking_policy_ids.binary_search(id).ok()?;
-		Some(&self.catalog.thinking_policies[index])
+		Some(&self.compiled.thinking_policies[index])
 	}
 }
 
@@ -613,10 +613,10 @@ mod tests {
 	#[test]
 	fn embedded_snapshot_opens_and_indexes_deterministically() {
 		let catalog = Catalog::embedded();
-		assert!(!catalog.providers().is_empty());
-		assert!(!catalog.routes().is_empty());
-		assert!(!catalog.models().is_empty());
-		assert!(!catalog.oauth_specs().is_empty());
+		assert_ne!(catalog.providers(), []);
+		assert_ne!(catalog.routes(), []);
+		assert_ne!(catalog.models(), []);
+		assert_ne!(catalog.oauth_specs(), []);
 		for oauth in catalog.oauth_specs() {
 			assert_eq!(catalog.oauth_spec(&oauth.id), Some(oauth));
 		}
@@ -666,7 +666,7 @@ mod tests {
 	#[test]
 	fn alias_and_provider_model_indexes_match_catalog_relationships() {
 		let catalog = Catalog::embedded();
-		for alias in &catalog.catalog.aliases {
+		for alias in &catalog.compiled.aliases {
 			assert_eq!(
 				catalog
 					.resolve_alias(alias.alias.as_str())

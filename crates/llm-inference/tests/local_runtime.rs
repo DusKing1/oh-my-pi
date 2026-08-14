@@ -1,3 +1,5 @@
+//! Integration coverage for the local inference runtime.
+
 #![cfg(feature = "local")]
 
 use std::{

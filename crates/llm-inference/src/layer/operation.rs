@@ -120,7 +120,7 @@ where
 			let mut answer = match first.await {
 				Ok(answer) => answer,
 				Err(mut error) => {
-					error.receipt = request.context.receipt();
+					error.replace_receipt(request.context.receipt());
 					return Err(error);
 				},
 			};
@@ -132,12 +132,12 @@ where
 				{
 					Ok(next) => next,
 					Err(mut error) => {
-						error.receipt = request.context.receipt();
+						error.replace_receipt(request.context.receipt());
 						return Err(error);
 					},
 				};
 				if let Err(mut error) = merge_embedding_answer(&mut answer, next) {
-					error.receipt = request.context.receipt();
+					error.replace_receipt(request.context.receipt());
 					return Err(error);
 				}
 			}
@@ -593,8 +593,7 @@ mod tests {
 	#[test]
 	fn two_embedding_pages_keep_body_usage_but_not_cumulative_receipts() {
 		fn attempt(index: u32) -> AttemptReceipt {
-			let mut usage = Usage::default();
-			usage.input_tokens = 1;
+			let usage = Usage { input_tokens: 1, ..Usage::default() };
 			AttemptReceipt {
 				index,
 				hidden: false,
@@ -617,10 +616,8 @@ mod tests {
 			}
 		}
 		fn answer(index: u32, attempts: Vec<AttemptReceipt>) -> Answer {
-			let mut usage = Usage::default();
-			usage.input_tokens = 1;
-			let mut receipt = ExecutionReceipt::default();
-			receipt.attempts = attempts;
+			let usage = Usage { input_tokens: 1, ..Usage::default() };
+			let receipt = ExecutionReceipt { attempts, ..ExecutionReceipt::default() };
 			Answer {
 				meta: ResponseMeta {
 					request_id:          crate::id::RequestId::from("request"),

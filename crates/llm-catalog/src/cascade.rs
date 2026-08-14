@@ -9,7 +9,7 @@
 //! - **providers** — deployment hosts (`on "a" "b"` inside a class block, or
 //!   the enclosing `provider` block),
 //! - **family** — the classified product family within a class,
-//! - **revision** — a conjunction of SemVer comparisons,
+//! - **revision** — a conjunction of `SemVer` comparisons,
 //! - **models** — exact or `*`-glob, ASCII-case-insensitive, matched against
 //!   the provider-relative model identifier.
 //!
@@ -779,10 +779,9 @@ fn parse_revision_constraint(expression: &str) -> Option<RevisionConstraint> {
 			(RevisionOp::Greater, version)
 		} else if let Some(version) = term.strip_prefix('<') {
 			(RevisionOp::Less, version)
-		} else if let Some(version) = term.strip_prefix('=') {
-			(RevisionOp::Equal, version)
 		} else {
-			return None;
+			let version = term.strip_prefix('=')?;
+			(RevisionOp::Equal, version)
 		};
 		terms.push((op, parse_semver(version)?));
 	}

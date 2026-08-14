@@ -340,49 +340,44 @@ fn trimmed(value: Str) -> Option<Str> {
 }
 
 fn codec_mismatch(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::CodecMismatch,
 		ErrorPhase::Encoding,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 fn encoding_error(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::InvalidRequest,
 		ErrorPhase::Encoding,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 fn protocol_error(reason: &'static str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::Protocol,
 		ErrorPhase::Streaming,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	)
+	.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 fn api_error(_provider_code: &str) -> Error {
-	let mut error = Error::new(
+	Error::new(
 		ErrorKind::InvalidRequest,
 		ErrorPhase::Streaming,
 		RetryAction::Never,
 		ExecutionReceipt::default(),
-	);
-	error.code = Some(Str::from("kagi_api_error"));
-	error.detail =
-		Some(ErrorDetail::Provider { sanitized_message: Str::from("Kagi Search request failed") });
-	error
+	)
+	.code(Str::from("kagi_api_error"))
+	.detail(ErrorDetail::provider(Str::from("Kagi Search request failed")))
 }
 
 #[cfg(test)]
@@ -506,7 +501,7 @@ mod tests {
 		assert_eq!(error.kind, ErrorKind::InvalidRequest);
 		assert_eq!(error.code.as_deref(), Some("kagi_api_error"));
 		assert!(matches!(
-			&error.detail,
+			error.detail_ref(),
 			Some(ErrorDetail::Provider { sanitized_message }) if sanitized_message.as_str() == "Kagi Search request failed"
 		));
 		assert!(!format!("{error:?}").contains("secret-must-not-survive"));
@@ -534,7 +529,7 @@ mod tests {
 			.push(Frame::Raw(bytes), &mut |_| {})
 			.expect_err("oversize");
 		assert!(matches!(
-			&error.detail,
+			error.detail_ref(),
 			Some(ErrorDetail::Protocol { reason }) if reason.0.as_str() == "kagi_search_response_too_large"
 		));
 	}

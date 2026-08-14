@@ -1,10 +1,7 @@
 //! Typed `ChatGPT` Codex Responses Lite, WebSocket, continuation, and
-//! attestation shapes.
-
-use std::{fmt, sync::Arc};
+//! discovery shapes.
 
 use omp_core::Str;
-use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
 
 use super::openai_responses::{
@@ -26,57 +23,6 @@ pub enum CodexWireTransport {
 	Http,
 	/// Reused WebSocket carrying `response.create` frames.
 	WebSocket,
-}
-
-/// Opaque `DeviceCheck` attestation envelope.
-#[derive(Clone)]
-pub struct CodexAttestation(Arc<SecretString>);
-
-impl CodexAttestation {
-	/// Validates and stores a nonempty opaque JSON envelope string.
-	pub fn new(envelope: String) -> Result<Self, CodexAttestationError> {
-		if envelope.trim().is_empty() {
-			return Err(CodexAttestationError::Empty);
-		}
-		#[derive(Deserialize)]
-		#[serde(deny_unknown_fields)]
-		struct EnvelopeShape {
-			v: u8,
-			s: u8,
-			t: serde::de::IgnoredAny,
-		}
-		let parsed = serde_json::from_str::<EnvelopeShape>(&envelope)
-			.map_err(|_| CodexAttestationError::Malformed)?;
-		if parsed.v != 1 {
-			return Err(CodexAttestationError::Malformed);
-		}
-		let _ = (parsed.s, parsed.t);
-		Ok(Self(Arc::new(SecretString::from(envelope))))
-	}
-
-	/// Exposes the envelope only for immediate innermost credential/header
-	/// application.
-	pub(crate) fn expose_for_header(&self) -> &str {
-		self.0.expose_secret()
-	}
-}
-
-impl fmt::Debug for CodexAttestation {
-	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		formatter
-			.debug_tuple("CodexAttestation")
-			.field(&"[REDACTED]")
-			.finish()
-	}
-}
-
-/// Attestation shape error.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CodexAttestationError {
-	/// Envelope was empty.
-	Empty,
-	/// Envelope was not a JSON object.
-	Malformed,
 }
 
 /// Stable session and turn identity supplied outside the codec.
@@ -471,19 +417,19 @@ const fn is_terminal(kind: ResponsesStreamEventKind) -> bool {
 /// response.
 #[derive(Clone, Debug)]
 pub struct CodexContinuationState {
-	previous_request:        ResponsesRequest,
-	previous_response_id:    Str,
-	previous_response_items: Vec<ResponsesOutputItem>,
+	request:        ResponsesRequest,
+	response_id:    Str,
+	response_items: Vec<ResponsesOutputItem>,
 }
 
 impl CodexContinuationState {
 	/// Captures authoritative successful state.
 	pub const fn new(
-		previous_request: ResponsesRequest,
-		previous_response_id: Str,
-		previous_response_items: Vec<ResponsesOutputItem>,
+		request: ResponsesRequest,
+		response_id: Str,
+		response_items: Vec<ResponsesOutputItem>,
 	) -> Self {
-		Self { previous_request, previous_response_id, previous_response_items }
+		Self { request, response_id, response_items }
 	}
 
 	/// Builds a strict delta-only `response.create` frame.
@@ -491,9 +437,9 @@ impl CodexContinuationState {
 		&self,
 		current: &ResponsesRequest,
 	) -> Result<CodexResponseCreate, CodexRequestError> {
-		let previous_len = self.previous_request.input.len();
-		let replayed_len = self.previous_response_items.len();
-		let mut previous_shape = self.previous_request.clone();
+		let previous_len = self.request.input.len();
+		let replayed_len = self.response_items.len();
+		let mut previous_shape = self.request.clone();
 		previous_shape.input.clear();
 		previous_shape.client_metadata = None;
 		let mut current_shape = current.clone();
@@ -504,10 +450,10 @@ impl CodexContinuationState {
 		{
 			return Err(CodexRequestError::StaleContinuation);
 		}
-		if current.input[..previous_len] != self.previous_request.input[..] {
+		if current.input[..previous_len] != self.request.input[..] {
 			return Err(CodexRequestError::StaleContinuation);
 		}
-		for (position, output) in self.previous_response_items.iter().enumerate() {
+		for (position, output) in self.response_items.iter().enumerate() {
 			let Some(current_item) = current.input.get(previous_len + position) else {
 				return Err(CodexRequestError::StaleContinuation);
 			};
@@ -517,7 +463,7 @@ impl CodexContinuationState {
 		}
 		let mut request = current.clone();
 		request.input = current.input[previous_len + replayed_len..].to_vec();
-		request.previous_response_id = Some(self.previous_response_id.clone());
+		request.previous_response_id = Some(self.response_id.clone());
 		Ok(CodexResponseCreate { kind: CodexResponseCreateKind::ResponseCreate, request })
 	}
 }
@@ -715,16 +661,15 @@ impl CodexModelsDecoder {
 			error::{Error, ErrorKind, ErrorPhase, RetryAction},
 			receipt::ExecutionReceipt,
 		};
-		let mut error = Error::new(
+		Error::new(
 			ErrorKind::Protocol,
 			ErrorPhase::Discovery,
 			RetryAction::Never,
 			ExecutionReceipt::default(),
-		);
-		error.provider = Some(self.provider.clone());
-		error.route = Some(self.route.clone());
-		error.code = Some(Str::from(code));
-		error
+		)
+		.provider(self.provider.clone())
+		.route(self.route.clone())
+		.code(Str::from(code))
 	}
 
 	fn capabilities(row: &CodexModelRow) -> crate::catalog::ModelCapabilities {
@@ -850,7 +795,7 @@ impl super::Decoder for CodexModelsDecoder {
 			let Some(wire_model) = raw
 				.slug
 				.clone()
-				.or(raw.id.clone())
+				.or_else(|| raw.id.clone())
 				.filter(|id| !id.is_empty())
 			else {
 				continue;
@@ -913,14 +858,13 @@ impl super::Codec for OpenAiCodexCodec {
 			transport::FramingProtocol,
 		};
 		let fail = |code: &'static str| {
-			let mut error = Error::new(
+			Error::new(
 				ErrorKind::InvalidRequest,
 				ErrorPhase::Encoding,
 				RetryAction::Never,
 				ExecutionReceipt::default(),
-			);
-			error.code = Some(Str::from(code));
-			error
+			)
+			.code(Str::from(code))
 		};
 		if let crate::call::OperationCall::DiscoverModels(request) = operation {
 			if request.cursor.is_some() {
@@ -1099,10 +1043,9 @@ mod tests {
 	use serde::Deserialize;
 
 	use super::{
-		CodexAttestation, CodexContinuationState, CodexFallbackEvidence, CodexFrameDisposition,
-		CodexFrameRouter, CodexModelsDecoder, CodexReplaySafety, CodexResponseCreate,
-		CodexWebSocketFailure, CodexWebSocketProtocolError, classify_codex_fallback,
-		transform_codex_request,
+		CodexContinuationState, CodexFallbackEvidence, CodexFrameDisposition, CodexFrameRouter,
+		CodexModelsDecoder, CodexReplaySafety, CodexResponseCreate, CodexWebSocketFailure,
+		CodexWebSocketProtocolError, classify_codex_fallback, transform_codex_request,
 	};
 	use crate::codec::openai_responses::{
 		ResponsesOutputItem, ResponsesRequest, ResponsesStreamEvent,
@@ -1204,23 +1147,6 @@ mod tests {
 			classify_codex_fallback(CodexWebSocketFailure::ConnectionFatal, committed, 0, 5),
 			CodexFallbackEvidence::Surface,
 		);
-	}
-
-	#[test]
-	fn attestation_fixture_is_opaque_and_debug_redacted() {
-		#[derive(Deserialize)]
-		struct Fixture {
-			expected: String,
-		}
-		let fixture: Fixture = serde_json::from_str(include_str!(
-			"../../../../fixtures/llm-oracle/openai/codex/attestation.devicecheck.json"
-		))
-		.expect("attestation fixture");
-		let attestation = CodexAttestation::new(fixture.expected.clone()).expect("opaque envelope");
-		assert_eq!(attestation.expose_for_header(), fixture.expected);
-		let debug = format!("{attestation:?}");
-		assert!(debug.contains("[REDACTED]"));
-		assert!(!debug.contains("token"));
 	}
 
 	#[test]

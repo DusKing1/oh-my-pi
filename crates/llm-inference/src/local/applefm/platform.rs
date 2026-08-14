@@ -786,21 +786,7 @@ fn failure_result(failure: BridgeFailure) -> AppleFmError {
 }
 
 fn error_code(code: &str) -> AppleFmErrorCode {
-	match code {
-		"cancelled" => AppleFmErrorCode::Cancelled,
-		"device_not_eligible" => AppleFmErrorCode::DeviceNotEligible,
-		"apple_intelligence_not_enabled" => AppleFmErrorCode::AppleIntelligenceNotEnabled,
-		"model_not_ready" => AppleFmErrorCode::ModelNotReady,
-		"model_unavailable" => AppleFmErrorCode::ModelUnavailable,
-		"context_overflow" => AppleFmErrorCode::ContextOverflow,
-		"guardrail_blocked" => AppleFmErrorCode::GuardrailBlocked,
-		"unsupported_guide" => AppleFmErrorCode::UnsupportedGuide,
-		"unsupported_locale" => AppleFmErrorCode::UnsupportedLocale,
-		"decoding_failure" => AppleFmErrorCode::DecodingFailure,
-		"rate_limited" => AppleFmErrorCode::RateLimited,
-		"concurrent_requests" => AppleFmErrorCode::ConcurrentRequests,
-		_ => AppleFmErrorCode::Runtime,
-	}
+	code.parse().unwrap_or(AppleFmErrorCode::Runtime)
 }
 
 fn token_estimate(text: &str) -> u32 {

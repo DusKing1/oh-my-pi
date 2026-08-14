@@ -18,7 +18,8 @@ struct Fixture<'a> {
 struct Model<'a> {
 	id:       &'a str,
 	provider: &'a str,
-	model:    &'a str,
+	#[serde(rename = "model")]
+	name:     &'a str,
 	behavior: Behavior,
 }
 
@@ -37,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		let identity = classify(ClassificationInput {
 			phase:          ClassificationPhase::CatalogCompiler,
 			provider:       model.provider,
-			model:          model.model,
+			model:          model.name,
 			observed_at_ms: None,
 		});
 		write!(output, "{}\t{}\t{}\t", model.id, model.provider, identity.class)?;

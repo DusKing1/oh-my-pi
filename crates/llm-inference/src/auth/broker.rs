@@ -273,9 +273,8 @@ impl CredentialSource for CredentialBroker {
 						None => Err(CredentialError::Unavailable),
 					},
 				};
-				match result {
-					Err(CredentialError::Unavailable) => continue,
-					result => return result,
+				if !matches!(&result, Err(CredentialError::Unavailable)) {
+					return result;
 				}
 			}
 			Err(CredentialError::Unavailable)

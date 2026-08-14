@@ -181,7 +181,7 @@ pub enum Frame {
 	/// Connect protocol envelope.
 	Connect(ConnectEnvelope),
 	/// AWS `EventStream` message.
-	EventStream(EventStreamMessage),
+	EventStream(Box<EventStreamMessage>),
 }
 
 /// Common lifecycle contract for bounded incremental byte framers.

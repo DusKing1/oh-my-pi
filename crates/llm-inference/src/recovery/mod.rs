@@ -81,9 +81,19 @@ impl fmt::Debug for DiagnosticContext {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RecoveryError {
 	/// A deterministic resource bound was exceeded.
-	LimitExceeded { stage: &'static str, limit: usize },
+	LimitExceeded {
+		/// Recovery stage which exceeded its resource bound.
+		stage: &'static str,
+		/// Enforced resource bound.
+		limit: usize,
+	},
 	/// Input was complete but invalid for the stage contract.
-	InvalidInput { stage: &'static str, reason: Str },
+	InvalidInput {
+		/// Recovery stage which rejected the input.
+		stage:  &'static str,
+		/// Secret-safe structural reason.
+		reason: Str,
+	},
 	/// Invalid input with an explicitly bounded byte diagnostic.
 	InvalidDocument {
 		/// Recovery stage which rejected the document.
@@ -94,9 +104,17 @@ pub enum RecoveryError {
 		diagnostic: DiagnosticContext,
 	},
 	/// End of input arrived while a required construct remained incomplete.
-	Incomplete { stage: &'static str },
+	Incomplete {
+		/// Recovery stage with incomplete terminal input.
+		stage: &'static str,
+	},
 	/// Recovery was available but forbidden by strict enforcement.
-	RepairRejected { stage: &'static str, diagnostic: DiagnosticContext },
+	RepairRejected {
+		/// Recovery stage whose repair was rejected.
+		stage:      &'static str,
+		/// Bounded context whose `Debug` output hides its bytes.
+		diagnostic: DiagnosticContext,
+	},
 }
 
 impl fmt::Display for RecoveryError {

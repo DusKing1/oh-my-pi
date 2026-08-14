@@ -70,8 +70,9 @@ pub struct Completion {
 	/// Final attempt usage.
 	pub usage:   Usage,
 	/// Authoritative final accounting after every attempt, recovery, adjustment,
-	/// and telemetry merge.
-	pub receipt: ExecutionReceipt,
+	/// and telemetry merge. Boxed because the accounting record is much larger
+	/// than every other completion field.
+	pub receipt: Box<ExecutionReceipt>,
 }
 
 /// Wire response vocabulary expected by a provider workflow action.
@@ -114,14 +115,18 @@ pub struct WorkflowResume {
 /// Provider-native response to one workflow action.
 #[derive(Clone, Debug)]
 pub struct WorkflowActionResponse {
+	/// Provider correlation identity for this action.
 	pub invocation: Str,
+	/// Provider-native action response payload.
 	pub response:   Bytes,
+	/// Whether the provider should treat the response as an error.
 	pub is_error:   bool,
 }
 
 /// Incremental input for one live invocation.
 #[derive(Clone, Debug)]
 pub struct InvokeInput {
+	/// Provider correlation identity for this invocation.
 	pub invocation: Str,
 	/// Lossless canonical invocation payload.
 	pub payload:    Bytes,
@@ -130,6 +135,7 @@ pub struct InvokeInput {
 /// Terminal completion for one live invocation.
 #[derive(Clone, Debug)]
 pub struct InvokeComplete {
+	/// Provider correlation identity for this completed invocation.
 	pub invocation: Str,
 	/// Lossless canonical completion payload.
 	pub payload:    Bytes,

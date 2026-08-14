@@ -1,3 +1,5 @@
+#![allow(missing_docs, reason = "strum IntoStaticStr emits undocumented inherent methods")]
+
 //! Typed operation and capability vocabulary.
 
 use omp_core::Str;
@@ -144,6 +146,7 @@ impl OperationBits {
 }
 
 /// Declares how a supported behavior is reproduced without native wire support.
+#[allow(missing_docs, reason = "strum IntoStaticStr generates undocumented as_str")]
 #[derive(
 	Clone,
 	Copy,
@@ -265,6 +268,7 @@ impl TextVerbosityBits {
 }
 
 /// Named reasoning effort vocabulary.
+#[allow(missing_docs, reason = "strum IntoStaticStr generates undocumented as_str")]
 #[derive(
 	Clone,
 	Copy,
@@ -300,6 +304,7 @@ pub enum ReasoningEffort {
 }
 
 /// A serving mode that modifies a model's reasoning behavior.
+#[allow(missing_docs, reason = "strum IntoStaticStr generates undocumented as_str")]
 #[derive(
 	Clone,
 	Copy,

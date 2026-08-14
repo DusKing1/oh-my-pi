@@ -731,7 +731,7 @@ fn validate_node(
 
 fn unicode_scalar_count(text: &str) -> usize {
 	let mut reader = Cursor::new(text.as_bytes());
-	reader.chars().filter(Result::is_ok).count()
+	reader.chars().filter_map(Result::ok).count()
 }
 
 fn decode_utf8(bytes: &[u8]) -> Option<String> {
@@ -1058,7 +1058,7 @@ mod tests {
 			WirePolicyId::from("test-wire"),
 			1,
 		);
-		let malformed = Bytes::from_static(br#"{'query': {'text': 'rust',"#);
+		let malformed = Bytes::from_static(br"{'query': {'text': 'rust',");
 		let mut documents = Vec::new();
 		Stage::push(&mut repair, malformed, &mut |_| {}).expect("bounded fragment accepted");
 		Stage::finish(&mut repair, &mut |document| documents.push(document))
@@ -1092,7 +1092,7 @@ mod tests {
 			1,
 		);
 		let mut documents = Vec::new();
-		Stage::push(&mut repair, Bytes::from_static(br#"{'query':'rust',}"#), &mut |_| {})
+		Stage::push(&mut repair, Bytes::from_static(br"{'query':'rust',}"), &mut |_| {})
 			.expect("bounded fragment accepted");
 		Stage::finish(&mut repair, &mut |document| documents.push(document))
 			.expect("repair succeeds");
@@ -1129,7 +1129,7 @@ mod tests {
 			1,
 		);
 		let mut documents = Vec::new();
-		Stage::push(&mut strict, Bytes::from_static(br#"{'query': {'text': 'rust',"#), &mut |_| {})
+		Stage::push(&mut strict, Bytes::from_static(br"{'query': {'text': 'rust',"), &mut |_| {})
 			.expect("bounded fragment accepted");
 		assert!(Stage::finish(&mut strict, &mut |document| documents.push(document)).is_err());
 		assert!(documents.is_empty());

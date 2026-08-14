@@ -58,7 +58,7 @@ where
 					Ok(response) => return Ok(response),
 					Err(error) => error,
 				};
-				if let Some(attempt) = error.receipt.attempts.last() {
+				if let Some(attempt) = error.receipt().attempts.last() {
 					request.context.set_body_evidence(attempt.body);
 				}
 				let replay_safe = request
@@ -71,7 +71,7 @@ where
 					return Err(error);
 				}
 				let previous_account = error
-					.receipt
+					.receipt()
 					.attempts
 					.last()
 					.and_then(|attempt| attempt.account.clone());
@@ -89,7 +89,7 @@ where
 						return Err(error);
 					},
 				};
-				let mut hidden_receipt = error.receipt.clone();
+				let mut hidden_receipt = error.receipt().clone();
 				for attempt in &mut hidden_receipt.attempts {
 					attempt.hidden = true;
 				}
@@ -268,14 +268,14 @@ mod tests {
 		assert_eq!(calls.load(Ordering::SeqCst), 2);
 		assert_eq!(
 			error
-				.receipt
+				.receipt()
 				.attempts
 				.iter()
 				.map(|attempt| attempt.index)
 				.collect::<Vec<_>>(),
 			vec![0, 1]
 		);
-		assert_eq!(error.receipt.usage.input_tokens, 2);
-		assert_eq!(error.receipt.cost.micro_usd, 2);
+		assert_eq!(error.receipt().usage.input_tokens, 2);
+		assert_eq!(error.receipt().cost.micro_usd, 2);
 	}
 }

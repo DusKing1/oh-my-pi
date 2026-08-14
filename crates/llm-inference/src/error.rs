@@ -1,6 +1,6 @@
 //! Cloneable structured failures with explicit retry scope.
 
-use std::{fmt, time::Duration};
+use std::{fmt, mem, time::Duration};
 
 use omp_core::Str;
 
@@ -222,6 +222,61 @@ pub enum ErrorDetail {
 	},
 }
 
+impl ErrorDetail {
+	/// Records an exhausted budget dimension and its observed value.
+	pub fn budget(dimension: Str, limit: u128, observed: u128) -> Self {
+		Self::Budget { dimension, limit, observed }
+	}
+
+	/// Records context size evidence.
+	pub const fn context(limit: u64, observed: u64) -> Self {
+		Self::Context { limit, observed }
+	}
+
+	/// Records an unsatisfied capability and its typed reason.
+	pub fn capability(feature: Str, reason: ReasonId) -> Self {
+		Self::Capability { feature, reason }
+	}
+
+	/// Records a sanitized selector that did not resolve.
+	pub fn target(selector: Str) -> Self {
+		Self::Target { selector }
+	}
+
+	/// Records the planned and current revisions for a stale plan.
+	pub fn stale_plan(planned_revision: Str, current_revision: Str) -> Self {
+		Self::StalePlan { planned_revision, current_revision }
+	}
+
+	/// Records why replay or staging is required.
+	pub fn replay(reason: ReasonId) -> Self {
+		Self::Replay { reason }
+	}
+
+	/// Records a sanitized protocol reason.
+	pub fn protocol(reason: ReasonId) -> Self {
+		Self::Protocol { reason }
+	}
+
+	/// Records a sanitized provider message.
+	pub fn provider(sanitized_message: Str) -> Self {
+		Self::Provider { sanitized_message }
+	}
+
+	/// Records why a local backend is unavailable.
+	pub fn local_unavailable(reason: ReasonId) -> Self {
+		Self::LocalUnavailable { reason }
+	}
+}
+
+/// Bulky diagnostics share the receipt's mandatory allocation so [`Error`]
+/// remains cheap to return.
+#[derive(Clone)]
+struct ErrorEvidence {
+	receipt: ExecutionReceipt,
+	detail:  Option<ErrorDetail>,
+}
+
 /// Concrete, cloneable, secret-free inference error.
 #[derive(Clone)]
 pub struct Error {
@@ -232,26 +287,23 @@ pub struct Error {
 	/// Explicit policy action.
 	pub action:     RetryAction,
 	/// Provider involved, if selection had completed.
-	pub provider:   Option<ProviderId>,
+	pub provider:   Option<Box<ProviderId>>,
 	/// Route involved, if selection had completed.
-	pub route:      Option<RouteId>,
+	pub route:      Option<Box<RouteId>>,
 	/// Logical request identity.
-	pub request_id: Option<RequestId>,
+	pub request_id: Option<Box<RequestId>>,
 	/// HTTP-like status when structurally available.
 	pub status:     Option<u16>,
 	/// Structured provider or runtime error code.
 	pub code:       Option<Str>,
 	/// Whether ordinary output had become visible.
 	pub committed:  bool,
-	/// Partial accounting through the failure point.
-	pub receipt:    ExecutionReceipt,
-	/// Typed supplemental evidence.
-	pub detail:     Option<ErrorDetail>,
+	evidence:       Box<ErrorEvidence>,
 }
 
 impl fmt::Debug for Error {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		let detail_kind = self.detail.as_ref().map(|detail| match detail {
+		let detail_kind = self.detail_ref().map(|detail| match detail {
 			ErrorDetail::BodyVariantMismatch { .. } => "BodyVariantMismatch",
 			ErrorDetail::Budget { .. } => "Budget",
 			ErrorDetail::Context { .. } => "Context",
@@ -282,7 +334,7 @@ impl fmt::Debug for Error {
 
 impl Error {
 	/// Constructs a structured error with no provider-specific evidence.
-	pub const fn new(
+	pub fn new(
 		kind: ErrorKind,
 		phase: ErrorPhase,
 		action: RetryAction,
@@ -298,16 +350,94 @@ impl Error {
 			status: None,
 			code: None,
 			committed: false,
-			receipt,
-			detail: None,
+			evidence: Box::new(ErrorEvidence { receipt, detail: None }),
 		}
+	}
+
+	/// Borrows partial accounting through the failure point.
+	pub fn receipt(&self) -> &ExecutionReceipt {
+		&self.evidence.receipt
+	}
+
+	/// Mutably borrows partial accounting through the failure point.
+	pub fn receipt_mut(&mut self) -> &mut ExecutionReceipt {
+		&mut self.evidence.receipt
+	}
+
+	/// Replaces partial accounting through the failure point.
+	pub fn replace_receipt(&mut self, receipt: ExecutionReceipt) {
+		self.evidence.receipt = receipt;
+	}
+
+	/// Takes partial accounting, leaving an empty receipt.
+	pub fn take_receipt(&mut self) -> ExecutionReceipt {
+		mem::take(&mut self.evidence.receipt)
+	}
+
+	/// Borrows typed supplemental evidence.
+	pub fn detail_ref(&self) -> Option<&ErrorDetail> {
+		self.evidence.detail.as_ref()
+	}
+
+	/// Attaches the provider involved in the failed execution.
+	#[must_use]
+	pub fn provider(mut self, provider: ProviderId) -> Self {
+		self.provider = Some(Box::new(provider));
+		self
+	}
+
+	/// Attaches the route involved in the failed execution.
+	#[must_use]
+	pub fn route(mut self, route: RouteId) -> Self {
+		self.route = Some(Box::new(route));
+		self
+	}
+
+	/// Attaches the logical request identity.
+	#[must_use]
+	pub fn request_id(mut self, request_id: RequestId) -> Self {
+		self.request_id = Some(Box::new(request_id));
+		self
+	}
+
+	/// Attaches an HTTP-like status when available.
+	#[must_use]
+	pub fn status(mut self, status: Option<u16>) -> Self {
+		self.status = status;
+		self
+	}
+
+	/// Attaches a structured provider or runtime error code.
+	#[must_use]
+	pub fn code(mut self, code: Str) -> Self {
+		self.code = Some(code);
+		self
+	}
+
+	/// Attaches an optional structured provider or runtime error code.
+	#[must_use]
+	pub fn optional_code(mut self, code: Option<Str>) -> Self {
+		self.code = code;
+		self
+	}
+
+	/// Marks whether ordinary output had become visible.
+	#[must_use]
+	pub fn committed(mut self, committed: bool) -> Self {
+		self.committed = committed;
+		self
+	}
+
+	/// Attaches typed supplemental evidence.
+	#[must_use]
+	pub fn detail(mut self, detail: ErrorDetail) -> Self {
+		self.evidence.detail = Some(detail);
+		self
 	}
 
 	/// Constructs a terminal planning error with typed evidence.
 	pub fn planning(kind: ErrorKind, detail: ErrorDetail, receipt: ExecutionReceipt) -> Self {
-		let mut error = Self::new(kind, ErrorPhase::Planning, RetryAction::Never, receipt);
-		error.detail = Some(detail);
-		error
+		Self::new(kind, ErrorPhase::Planning, RetryAction::Never, receipt).detail(detail)
 	}
 
 	/// Constructs the internal protocol error returned for a typed answer
@@ -317,14 +447,13 @@ impl Error {
 		actual: AnswerKind,
 		receipt: ExecutionReceipt,
 	) -> Self {
-		let mut error = Self::new(
+		Self::new(
 			ErrorKind::ProviderContractMismatch,
 			ErrorPhase::Internal,
 			RetryAction::Never,
 			receipt,
-		);
-		error.detail = Some(ErrorDetail::BodyVariantMismatch { expected, actual });
-		error
+		)
+		.detail(ErrorDetail::BodyVariantMismatch { expected, actual })
 	}
 }
 
@@ -342,6 +471,8 @@ impl std::error::Error for Error {}
 
 #[cfg(test)]
 mod tests {
+	use std::mem::size_of;
+
 	use omp_core::Str;
 
 	use super::{Error, ErrorKind, ErrorPhase, RetryAction};
@@ -349,16 +480,21 @@ mod tests {
 
 	#[test]
 	fn structured_error_debug_contains_no_external_source_text() {
-		let mut error = Error::new(
+		let error = Error::new(
 			ErrorKind::Authentication,
 			ErrorPhase::Authentication,
 			RetryAction::Never,
 			ExecutionReceipt::default(),
-		);
-		error.code = Some(Str::from("invalid_credential"));
+		)
+		.code(Str::from("invalid_credential"));
 		let debug = format!("{error:?}");
 		assert!(debug.contains("invalid_credential"));
 		assert!(!debug.contains("Authorization:"));
 		assert!(!debug.contains("source"));
+	}
+
+	#[test]
+	fn structured_errors_fit_the_inline_result_budget() {
+		assert!(size_of::<Error>() <= 128);
 	}
 }

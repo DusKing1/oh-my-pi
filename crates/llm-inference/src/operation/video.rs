@@ -49,15 +49,37 @@ pub enum VideoError {
 	/// Prompt contains no non-whitespace content.
 	EmptyPrompt,
 	/// Duration is zero or exceeds the capability bound.
-	Duration { requested_ms: u64, maximum_ms: u64 },
+	Duration {
+		/// Requested duration.
+		requested_ms: u64,
+		/// Capability duration limit.
+		maximum_ms:   u64,
+	},
 	/// Dimensions are zero or exceed the capability bound.
-	Dimensions { width: u32, height: u32, maximum_pixels: u64 },
+	Dimensions {
+		/// Requested frame width.
+		width:          u32,
+		/// Requested frame height.
+		height:         u32,
+		/// Capability pixel limit.
+		maximum_pixels: u64,
+	},
 	/// Frame rate is zero or exceeds the capability bound.
-	FrameRate { requested: u32, maximum: u32 },
+	FrameRate {
+		/// Requested frames per second.
+		requested: u32,
+		/// Capability frame-rate limit.
+		maximum:   u32,
+	},
 	/// Reference image media type is unsupported.
 	ReferenceType(Str),
 	/// Inline reference image exceeds the request bound.
-	ReferenceTooLarge { limit: u64, observed: u64 },
+	ReferenceTooLarge {
+		/// Inline reference size limit.
+		limit:    u64,
+		/// Observed inline reference size.
+		observed: u64,
+	},
 	/// Artifact metadata or streaming representation is invalid.
 	Artifact(ArtifactViolation),
 	/// Returned duration is zero.

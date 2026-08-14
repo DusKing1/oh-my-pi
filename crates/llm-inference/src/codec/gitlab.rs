@@ -235,7 +235,7 @@ impl GitLabDirectAccessGrant {
 	}
 
 	/// Transfers the secret into credential-lease storage without cloning it.
-	pub(crate) fn into_token(self) -> SecretString {
+	pub fn into_token(self) -> SecretString {
 		self.token
 	}
 }
@@ -258,7 +258,7 @@ pub enum GitLabDelegatingCodec {
 	/// Delegate request/stream behavior to the shared `OpenAI` Responses codec.
 	OpenAiResponses(OpenAiResponsesCodec),
 	/// Delegate request/stream behavior to the shared Anthropic codec.
-	AnthropicMessages(AnthropicCodec),
+	AnthropicMessages(Box<AnthropicCodec>),
 }
 
 impl GitLabDelegatingCodec {
@@ -272,7 +272,7 @@ impl GitLabDelegatingCodec {
 				Self::OpenAiResponses(OpenAiResponsesCodec::default())
 			},
 			GitLabDelegationTarget::AnthropicMessages => {
-				Self::AnthropicMessages(AnthropicCodec::direct())
+				Self::AnthropicMessages(Box::new(AnthropicCodec::direct()))
 			},
 		}
 	}
@@ -338,9 +338,9 @@ impl WorkflowSession {
 		self.reconnects = self.reconnects.saturating_add(1);
 		serde_json::to_vec(&ResumeFrame {
 			resume_request: ResumeRequest {
-				workflow_id: self.workflow_id.clone(),
-				session_id: self.session_id.clone(),
-				last_event_id,
+				workflow:   self.workflow_id.clone(),
+				session:    self.session_id.clone(),
+				last_event: last_event_id,
 			},
 		})
 		.map(Bytes::from)
@@ -850,11 +850,11 @@ struct ResumeFrame {
 #[derive(Serialize)]
 struct ResumeRequest {
 	#[serde(rename = "workflowID")]
-	workflow_id:   Str,
+	workflow:   Str,
 	#[serde(rename = "sessionID")]
-	session_id:    Str,
+	session:    Str,
 	#[serde(rename = "lastEventID")]
-	last_event_id: Str,
+	last_event: Str,
 }
 
 #[derive(Serialize)]
@@ -1082,9 +1082,9 @@ impl WorkflowDecoder {
 				let mut failure = protocol_error_dynamic(
 					ErrorPhase::Streaming,
 					format!("GitLab Duo Workflow {status:?}: {detail}"),
-				);
-				failure.code = status.clone();
-				failure.committed = self.next_index != 0;
+				)
+				.committed(self.next_index != 0);
+				failure.code.clone_from(&status);
 				emit(RawEvent::Failure(failure));
 				self.completed = true;
 			},
@@ -1340,9 +1340,8 @@ fn select_usage(usage: &BTreeMap<String, ContextUsage>) -> Option<&ContextUsage>
 }
 
 fn malformed_action(action: &str, detail: &str) -> Error {
-	let mut error = protocol_error(ErrorPhase::Streaming, "gitlab.malformed_action");
-	error.code = Some(Str::from(format!("{action}: {detail}")));
-	error
+	protocol_error(ErrorPhase::Streaming, "gitlab.malformed_action")
+		.code(Str::from(format!("{action}: {detail}")))
 }
 
 fn invalid_request(reason: &'static str) -> Error {
@@ -1358,17 +1357,13 @@ fn capability_error(reason: &'static str) -> Error {
 }
 
 fn protocol_error_dynamic(phase: ErrorPhase, reason: String) -> Error {
-	let mut error =
-		Error::new(ErrorKind::Protocol, phase, RetryAction::Never, ExecutionReceipt::default());
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::from(reason)) });
-	error
+	Error::new(ErrorKind::Protocol, phase, RetryAction::Never, ExecutionReceipt::default())
+		.detail(ErrorDetail::protocol(ReasonId(Str::from(reason))))
 }
 
 fn protocol_error(phase: ErrorPhase, reason: &'static str) -> Error {
-	let mut error =
-		Error::new(ErrorKind::Protocol, phase, RetryAction::Never, ExecutionReceipt::default());
-	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(Str::new_static(reason)) });
-	error
+	Error::new(ErrorKind::Protocol, phase, RetryAction::Never, ExecutionReceipt::default())
+		.detail(ErrorDetail::protocol(ReasonId(Str::new_static(reason))))
 }
 
 /// Default action invocation timeout carried by workflow orchestration.
@@ -1913,15 +1908,14 @@ mod tests {
 			safety:            Arc::from([]),
 			negotiation:       NegotiationPolicy::default(),
 		};
-		let error =
-			match build_start_request(&request, &context, WorkflowSession::new("workflow", "session"))
-			{
-				Ok(_) => panic!("GitLab Workflow must reject custom tool grammars"),
-				Err(error) => error,
-			};
+		let Err(error) =
+			build_start_request(&request, &context, WorkflowSession::new("workflow", "session"))
+		else {
+			panic!("GitLab Workflow must reject custom tool grammars");
+		};
 		assert_eq!(error.kind, ErrorKind::CapabilityMismatch);
 		assert!(matches!(
-			error.detail,
+			error.detail_ref(),
 			Some(ErrorDetail::Protocol { reason })
 				if reason.0.as_str() == "gitlab.workflow.tool_grammar.unsupported"
 		));
