@@ -46,6 +46,7 @@ command-fds = "0.3"
 crc32fast = "1.5"
 dashmap = "6"
 dns-lookup = "3"
+encoding_rs = "0.8"
 etagere = "0.3"
 faccess = "0.2"
 fancy-regex = "0.17"
@@ -71,12 +72,14 @@ hmac = "0.12"
 hf-hub = { version = "1.0.0", default-features = false, features = ["rustls-tls"] }
 hifijson = "0.2"
 hostname = "0.4"
+html-to-markdown-rs = { version = "3.9.2", default-features = false }
 http = "1.5"
 http-body-util = "0.1"
 hyper = { version = "1.11", features = ["client", "http1", "http2", "server"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "ring", "webpki-tokio"] }
 hyper-util = "0.1"
 ignore = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 indicatif = "0.18"
 indenter = "0.3"
 inherent = "1"
@@ -110,6 +113,7 @@ omp-ast = { path = "crates/ast", version = "0.1.0" }
 omp-core = { path = "crates/core", version = "0.1.0" }
 omp-docserver = { path = "crates/docserver", version = "0.1.0" }
 omp-env = { path = "crates/env", version = "0.1.0" }
+omp-grep = { path = "crates/grep", version = "0.1.0" }
 omp-gui = { path = "crates/gui", version = "0.1.0" }
 omp-hashline = { path = "crates/hashline", version = "0.1.0" }
 omp-llm-catalog = { path = "crates/llm-catalog", version = "0.1.0" }
@@ -141,6 +145,7 @@ parking_lot = "0.12"
 parking_lot_core = "0.9.12"
 parse_datetime = "0.14"
 peg = "0.8"
+pdf-inspector = "1"
 pin-project-lite = "0.2"
 platform-info = "2"
 png = "0.18"
@@ -154,11 +159,13 @@ prost-build = "0.14.4"
 prost-types = "0.14.4"
 protox = "0.9.1"
 pyo3 = "0.29.2"
+quick-xml = "0.41"
 quote = "1"
 rand = { version = "0.10", features = ["std_rng"] }
 raw-window-handle = "0.6"
 rayon = "1.10"
 regex = "1.11"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "stream"] }
 rlimit = "0.11"
 rustc-hash = "2"
 rustix = { version = "1.1", features = ["fs", "process", "time"] }
@@ -181,6 +188,7 @@ strum = { version = "0.28", features = ["derive"] }
 syn = { version = "2", features = ["full"] }
 syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "regex-fancy", "yaml-load"] }
 swash = "0.2"
+tar = "0.4"
 tempfile = "3"
 terminfo = "0.9"
 thiserror = "2.0.20"
@@ -266,11 +274,21 @@ whisper-rs = { version = "0.16", default-features = false }
 wgpu = "30"
 winit = "0.30"
 windows-sys = { version = "0.61", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_WindowsAndMessaging"] }
+wreq = { version = "=6.0.0-rc.29", default-features = false, features = ["prefix-symbols", "stream", "tokio-rt", "webpki-roots"] }
+zip = { version = "6", default-features = false, features = ["deflate"] }
 zerocopy = { version = "0.8", features = ["derive"] }
 zeroize = "1.9"
 zstd = "0.13"
 xutf = "1.1"
 xxhash-rust = { version = "0.8", features = ["xxh32"] }
+
+[patch.crates-io]
+# btls-sys 0.5.6 rewrites archive symbols with objcopy, which does not rewrite
+# Mach-O archives. This pinned upstream fix uses BoringSSL's native source-level
+# prefixing and is covered by upstream macOS + openssl-sys CI. Prefix generation
+# requires Go 1.22+ and clang in PATH.
+# Upstream: https://github.com/0x676e67/btls/pull/184
+btls-sys = { git = "https://github.com/0x676e67/btls.git", rev = "462222413b5aecc44b3bb4db06563f25da1f0ea7" }
 
 [workspace.lints.rust]
 # ──────────────────────────────────────────────────────────────────────────────

@@ -32,16 +32,18 @@ async-trait.workspace = true
 blake3.workspace = true
 bytes.workspace = true
 clap.workspace = true
+encoding_rs = { workspace = true }
 flume.workspace = true
 futures.workspace = true
+flate2.workspace = true
 http.workspace = true
-http-body-util.workspace = true
-hyper.workspace = true
 libc.workspace = true
 omp-agent.workspace = true
+omp-ar = { workspace = true }
 omp-core.workspace = true
 omp-docserver.workspace = true
 omp-env.workspace = true
+omp-grep.workspace = true
 omp-hashline.workspace = true
 omp-llm-catalog.workspace = true
 omp-llm-inference.workspace = true
@@ -59,6 +61,8 @@ omp-walker.workspace = true
 nix.workspace = true
 parking_lot.workspace = true
 pyo3.workspace = true
+rusqlite.workspace = true
+wreq.workspace = true
 secrecy.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -78,6 +82,9 @@ windows-sys.workspace = true
 
 [dev-dependencies]
 flume = { workspace = true }
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util = { workspace = true, features = ["tokio"] }
 omp-llm-inference = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 tonic-health.workspace = true
