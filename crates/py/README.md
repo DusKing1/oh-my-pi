@@ -7,7 +7,7 @@
 - `src/lib.rs` exposes `Engine` and `Builder`, installs the frozen-module tables, boots CPython in isolated mode, and provides the default site-packages location.
 - `build.rs` links the vendored interpreter's native dependencies and packs project modules and bundled packages into frozen-module blobs without network access.
 - `python/` contains repository-provided Python modules, including `omp_remote`; `requirements.txt` pins bundled pure-Python packages.
-- `scripts/fetch-python.sh` fetches the python-build-standalone archive and generates the derived build inputs (`stdlib.bin`, `pyo3-config.txt`, bundled packages); `scripts/pack-pymodules.py` and `scripts/ld64.lld` support the build.
+- `scripts/fetch-python.sh` fetches python-build-standalone archives (dev `python/` + release `python-release/`) and generates derived build inputs (`stdlib.bin`, `pyo3-config.txt`, bundled packages); `scripts/pack-pymodules.py` and `scripts/ld64.lld` support the build.
 - `src/bin/demo.rs` is the crate's `omp-demo` binary.
 - `THIRD-PARTY-NOTICES.txt` records notices for bundled Python packages and is also exposed through `THIRD_PARTY_LICENSES`.
 

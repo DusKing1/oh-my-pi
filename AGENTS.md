@@ -533,11 +533,12 @@ omp is a Rust rewrite of pi. When porting any subsystem:
   commit the notices. omp-py's build script only validates the stamp and
   packs; native wheels are rejected at fetch time — those go into
   site-packages.
-- pyo3 is configured via `PYO3_CONFIG_FILE` in `.cargo/config.toml`. The
-  pgo+lto pbs variant is LLVM-22 LTO bitcode: it links through Homebrew
-  LLD 22 (`brew install lld`, routed via `crates/py/scripts/ld64.lld`) — Xcode's ld64
-  is too old for it and rustc's rust-lld (LLVM 23) mis-resolves symbols.
-  Two things never propagate to consumers and are their explicit contract,
+- pyo3 is configured via `PYO3_CONFIG_FILE` in `.cargo/config.toml` (defaults to
+  `vendor/python/pyo3-config.txt` for fast dev links). Release builds link
+  the `vendor/python-release` tree (`PYO3_CONFIG_FILE="$PWD/vendor/python-release/pyo3-config.txt" cargo build --release`):
+  its pgo+lto pbs variant is LLVM-22 LTO bitcode and automatically routes
+  through Homebrew LLD 22 (`brew install lld`, via `crates/py/scripts/ld64.lld`)
+  because of the `needs-lld` marker in that tree.
   enforced loudly by omp-py's build script:
   1. `PYO3_CONFIG_FILE` must point at `vendor/python/pyo3-config.txt` before
      cargo runs (this repo's `.cargo/config.toml` covers workspace members;

@@ -72,7 +72,9 @@ jobs:
         id: python-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: vendor/python
+          path: |
+            vendor/python
+            vendor/python-release
           key: python-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/py/scripts/fetch-python.sh', 'crates/py/scripts/pack-pymodules.py', 'crates/py/scripts/gen-py-notices.py', 'crates/py/requirements.txt') }}
 
       - name: Prepare embedded Python

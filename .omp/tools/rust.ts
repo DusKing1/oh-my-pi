@@ -474,11 +474,11 @@ const factory = (omp: ToolHost) => {
 					const libDir = config.match(/^lib_dir=(.+)$/m)?.[1];
 					if (!libDir) throw new Error(`missing lib_dir in ${configPath}`);
 					env.PYO3_CONFIG_FILE = configPath;
-					argv.push(
-						`-Lnative=${libDir}`,
-						`-Clink-arg=--ld-path=${join(root, "crates/py/scripts/ld64.lld")}`,
-						"-Clink-arg=-Wl,-export_dynamic",
-					);
+					const needsLld = existsSync(join(root, "vendor/python/needs-lld"));
+					if (needsLld) {
+						argv.push(`-Clink-arg=--ld-path=${join(root, "crates/py/scripts/ld64.lld")}`);
+					}
+					argv.push(`-Lnative=${libDir}`, "-Clink-arg=-Wl,-export_dynamic");
 				}
 				argv.push(sourcePath, "-o", binaryPath);
 

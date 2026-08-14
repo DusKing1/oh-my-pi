@@ -2,8 +2,12 @@
 # CPython (see crates/py/scripts/fetch-python.sh). The config file tells pyo3 to link
 # libpython statically instead of introspecting an installed interpreter.
 #
-# The linker shim for the vendored LTO bitcode is emitted by crates/py's
-# build script, which can derive its path from CARGO_MANIFEST_DIR.
+# On macOS, dev builds use vendor/python (freethreaded+debug, fast native link);
+# release builds override PYO3_CONFIG_FILE=vendor/python-release/pyo3-config.txt
+# (freethreaded+pgo+lto, linked with Homebrew lld via crates/py/scripts/ld64.lld).
 
 [env]
 PYO3_CONFIG_FILE = { value = "vendor/python/pyo3-config.txt", relative = true }
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-no_compact_unwind"]
