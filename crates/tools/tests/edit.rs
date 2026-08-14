@@ -1,3 +1,5 @@
+//! Behavioral contracts for speculative and committed document edits.
+
 use std::{
 	future::{Future, pending},
 	sync::{

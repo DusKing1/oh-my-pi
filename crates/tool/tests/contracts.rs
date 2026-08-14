@@ -3,7 +3,7 @@
 
 use std::{
 	convert::Infallible,
-	future::{Ready, ready},
+	future::{Future, ready},
 	sync::{
 		Arc,
 		atomic::{AtomicUsize, Ordering},
@@ -169,7 +169,7 @@ impl Tool for PullingTool {
 		stream! {
 			let error = params
 				.pull(|mut doc| async move {
-					let mut root = doc.json();
+					let root = doc.json();
 					let mut object = root.object();
 					let mut value = object.key("wanted");
 					value.number().await
@@ -555,7 +555,7 @@ fn pull_validates_only_the_requested_value_and_ignores_unknown_malformed_json() 
 	feed.args_committed(Str::from(raw)).unwrap();
 
 	let wanted = block_on(params.pull(|mut doc| async move {
-		let mut root = doc.json();
+		let root = doc.json();
 		let mut object = root.object();
 		let mut value = object.key("wanted");
 		value.number().await
@@ -572,7 +572,7 @@ fn pulled_type_failure_is_a_structured_argument_issue() {
 	feed.args_committed(Str::from(raw)).unwrap();
 
 	let error = block_on(params.pull(|mut doc| async move {
-		let mut root = doc.json();
+		let root = doc.json();
 		let mut object = root.object();
 		let mut value = object.key("wanted");
 		value.number().await
@@ -706,7 +706,7 @@ impl RecordingSpill {
 impl VerdictSpill for RecordingSpill {
 	type Error = Infallible;
 
-	fn spill(&self, json: Bytes) -> Ready<Result<BlobRef, Self::Error>> {
+	fn spill(&self, json: Bytes) -> impl Future<Output = Result<BlobRef, Self::Error>> + Send + '_ {
 		self
 			.tx
 			.send(json.clone())

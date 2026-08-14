@@ -1,3 +1,5 @@
+//! Behavioral contracts for revision-anchored document reads.
+
 use std::{
 	sync::{
 		Arc,
