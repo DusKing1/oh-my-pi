@@ -1,3 +1,5 @@
+//! End-to-end contracts for correlated environment client streams.
+
 use std::{
 	future::Future,
 	sync::Arc,

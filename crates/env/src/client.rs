@@ -93,7 +93,7 @@ pub struct Invocation {
 	client: EnvClient,
 	id:     Str,
 	stream: RequestStream,
-	guard:         Option<RunGuard>,
+	guard:  Option<RunGuard>,
 }
 
 /// A typed event on a tool invocation stream.
@@ -217,13 +217,13 @@ impl EnvClient {
 	/// Performs the request-id-zero protocol handshake.
 	pub async fn hello(&self, hello: ClientHello) -> Result<ServerHello, ClientError> {
 		let (sender, receiver) = flume::bounded(1);
-	{
-		let mut slot = self.inner.hello.lock();
-		if slot.is_some() {
-			return Err(ClientError::UnexpectedResponse { expected: "a single in-flight hello" });
+		{
+			let mut slot = self.inner.hello.lock();
+			if slot.is_some() {
+				return Err(ClientError::UnexpectedResponse { expected: "a single in-flight hello" });
+			}
+			*slot = Some(sender);
 		}
-		*slot = Some(sender);
-	}
 		let send = self
 			.inner
 			.outgoing
