@@ -115,6 +115,7 @@ struct Frame {
 fn parse_nitter(html: &str) -> Option<TweetPage> {
 	let mut reader = Reader::from_str(html);
 	reader.config_mut().trim_text(false);
+	reader.config_mut().check_end_names = false;
 	let mut stack: Vec<Frame> = Vec::with_capacity(24);
 	let mut page = TweetPage::default();
 
