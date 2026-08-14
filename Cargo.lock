@@ -5540,6 +5540,7 @@ name = "omp-tools"
 version = "0.1.0"
 dependencies = [
  "async-stream",
+ "bytecount",
  "bytes",
  "encoding_rs",
  "flate2",

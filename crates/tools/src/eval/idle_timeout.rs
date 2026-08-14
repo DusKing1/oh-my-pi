@@ -34,7 +34,7 @@ impl TimeoutHandle {
 	/// Creates a watchdog. `None` disables timeout accounting.
 	#[must_use]
 	pub fn new(window: Option<Duration>) -> Self {
-		let window = normalize_window(window);
+		let window = window.map(normalize_window);
 		Self {
 			inner: Arc::new(Inner {
 				state:   Mutex::new(State {
@@ -57,7 +57,7 @@ impl TimeoutHandle {
 		let mut state = self.inner.state.lock();
 		state.generation = state.generation.wrapping_add(1);
 		state.expired_generation = None;
-		state.window = normalize_window(window);
+		state.window = window.map(normalize_window);
 		state.deadline = state.window.map(|window| Instant::now() + window);
 		state.pause_depth = 0;
 		state.disposed = false;
@@ -194,8 +194,8 @@ impl Drop for TimeoutPause {
 	}
 }
 
-fn normalize_window(window: Option<Duration>) -> Option<Duration> {
-	window.map(|window| window.max(Duration::from_millis(1)))
+fn normalize_window(window: Duration) -> Duration {
+	window.max(Duration::from_millis(1))
 }
 
 #[cfg(test)]

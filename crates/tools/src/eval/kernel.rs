@@ -3,6 +3,21 @@
 //! Each opened session owns a dedicated worker thread and Python globals
 //! dictionary. Cells are serialized by that worker, so names persist in source
 //! order; resetting atomically replaces the dictionary before the next cell.
+//!
+//! Output routing rides a `contextvars.ContextVar`: each cell publishes its
+//! sink in the worker's context and inside the session's asyncio runner, so
+//! threads and tasks started by a cell inherit it (free-threaded 3.14 copies
+//! the caller's context into new threads). A write whose context sink is
+//! sealed may only move to the *same session's* currently open cell; a write
+//! with no context sink at all falls back to the sole open cell
+//! process-wide. Anything else is discarded rather than leaked across
+//! sessions. A cell's sink is sealed before its terminal event is sent, so
+//! `Completed` is always the last event on the channel.
+//!
+//! Timeouts are enforced solely by a Tokio watchdog task that raises
+//! `KeyboardInterrupt` in the worker via `PyThreadState_SetAsyncExc`;
+//! Python-side line tracing is deliberately absent because it deoptimizes
+//! the whole cell without covering anything the async interrupt cannot.
 
 use std::{
 	collections::HashMap,
@@ -41,6 +56,7 @@ const BOOTSTRAP: &std::ffi::CStr = c_str!(
 	r#"
 import ast as _omp_ast
 import asyncio as _omp_asyncio
+import contextvars as _omp_contextvars
 import inspect as _omp_inspect
 import json as _omp_json
 import sys as _omp_sys
@@ -50,7 +66,9 @@ import time as _omp_time
 import traceback as _omp_traceback
 
 _OMP_TLA = getattr(_omp_ast, "PyCF_ALLOW_TOP_LEVEL_AWAIT", 0x2000)
-_OMP_TIMEOUT_MESSAGE = "OMP eval cell timed out"
+
+# _OMP_SINK (a contextvars.ContextVar) is injected by the host after import;
+# it carries the active cell's output sink into threads and asyncio tasks.
 
 if not hasattr(_omp_sys, "__omp_thread_streams__"):
     _omp_sys.__omp_thread_streams__ = _omp_threading.local()
@@ -104,7 +122,8 @@ def _omp_compile(source):
                 compile(expr, "<cell>", "eval", flags=_OMP_TLA))
     return compile(module, "<cell>", "exec", flags=_OMP_TLA), None
 
-async def _omp_run_async(code, ns, want_value):
+async def _omp_run_async(code, ns, want_value, sink):
+    _OMP_SINK.set(sink)
     if code.co_flags & _omp_inspect.CO_COROUTINE:
         value = await eval(code, ns)
         return value if want_value else None
@@ -113,44 +132,16 @@ async def _omp_run_async(code, ns, want_value):
     exec(code, ns)
     return None
 
-def _omp_run(code, ns, want_value):
+def _omp_run(code, ns, want_value, sink):
     if code is None:
         return None
-    return ns["__omp_async_runner"].run(_omp_run_async(code, ns, want_value))
+    return ns["__omp_async_runner"].run(_omp_run_async(code, ns, want_value, sink))
 
-def _omp_run_cell(source, ns, timeout_seconds, timeout_control):
+def _omp_run_cell(source, ns, timeout_control, sink):
     started = _omp_time.perf_counter()
-    deadline = None if timeout_seconds is None else started + timeout_seconds
-    pause_depth = 0
-    timeout_lock = _omp_threading.RLock()
-    previous_trace = _omp_sys.gettrace()
-
-    def timeout_pause():
-        nonlocal deadline, pause_depth
-        with timeout_lock:
-            pause_depth += 1
-            deadline = None
-            timeout_control.pause()
-
-    def timeout_resume():
-        nonlocal deadline, pause_depth
-        with timeout_lock:
-            if pause_depth == 0:
-                return
-            pause_depth -= 1
-            if pause_depth == 0:
-                deadline = None if timeout_seconds is None else _omp_time.perf_counter() + timeout_seconds
-            timeout_control.resume()
-
-    def timeout_trace(frame, event, arg):
-        with timeout_lock:
-            expired = deadline is not None and _omp_time.perf_counter() >= deadline
-        if expired:
-            raise TimeoutError(_OMP_TIMEOUT_MESSAGE)
-        return timeout_trace
-
-    ns["__omp_timeout_pause__"] = timeout_pause
-    ns["__omp_timeout_resume__"] = timeout_resume
+    token = _OMP_SINK.set(sink)
+    ns["__omp_timeout_pause__"] = timeout_control.pause
+    ns["__omp_timeout_resume__"] = timeout_control.resume
 
     outcome = "complete"
     result_text = None
@@ -159,12 +150,10 @@ def _omp_run_cell(source, ns, timeout_seconds, timeout_control):
     error_message = None
     error_traceback = []
     try:
-        if deadline is not None:
-            _omp_sys.settrace(timeout_trace)
         body, expr = _omp_compile(source)
-        _omp_run(body, ns, False)
+        _omp_run(body, ns, False, sink)
         if expr is not None:
-            value = _omp_run(expr, ns, True)
+            value = _omp_run(expr, ns, True, sink)
             if value is not None:
                 result_text = repr(value)
                 try:
@@ -172,17 +161,12 @@ def _omp_run_cell(source, ns, timeout_seconds, timeout_control):
                 except (TypeError, ValueError, OverflowError):
                     result_json = None
     except BaseException as exc:
-        if isinstance(exc, KeyboardInterrupt):
-            outcome = "cancelled"
-        elif isinstance(exc, TimeoutError) and str(exc) == _OMP_TIMEOUT_MESSAGE:
-            outcome = "timeout"
-        else:
-            outcome = "error"
+        outcome = "cancelled" if isinstance(exc, KeyboardInterrupt) else "error"
         error_name = type(exc).__name__
         error_message = str(exc)
         error_traceback = _omp_traceback.format_exception(type(exc), exc, exc.__traceback__)
     finally:
-        _omp_sys.settrace(previous_trace)
+        _OMP_SINK.reset(token)
         timeout_control.clear()
         ns.pop("__omp_timeout_pause__", None)
         ns.pop("__omp_timeout_resume__", None)
@@ -209,11 +193,10 @@ pub struct EmbeddedPython {
 }
 
 struct Inner {
-	engine:       Arc<Engine>,
-	next_session: AtomicU64,
-	next_cell:    AtomicU64,
-	installer:    Arc<dyn NamespaceInstaller>,
-	workers:      Mutex<HashMap<Bytes, Arc<Worker>>>,
+	engine:    Arc<Engine>,
+	next_cell: AtomicU64,
+	installer: Arc<dyn NamespaceInstaller>,
+	workers:   Mutex<HashMap<Bytes, Arc<Worker>>>,
 }
 
 struct Worker {
@@ -238,6 +221,7 @@ struct ActiveCell {
 
 struct Command {
 	cell_id:   Bytes,
+	session:   Bytes,
 	request:   RunRequest,
 	events:    Sender<Result<RunEvent, Fault>>,
 	cancelled: Arc<AtomicBool>,
@@ -311,136 +295,237 @@ impl Drop for Worker {
 	}
 }
 
-const STDOUT_ROUTER_ATTR: &str = "__omp_stdout_router__";
-const STDERR_ROUTER_ATTR: &str = "__omp_stderr_router__";
 static OUTPUT_ROUTER_OBJECTS: PyOnceLock<(Py<OutputRouter>, Py<OutputRouter>)> = PyOnceLock::new();
-static OUTPUT_ROUTERS: LazyLock<OutputRouters> = LazyLock::new(|| OutputRouters {
-	stdout: Arc::new(OutputRouterState::new(OutputChannel::Stdout)),
-	stderr: Arc::new(OutputRouterState::new(OutputChannel::Stderr)),
-});
+/// Routing context variable holding the active cell's [`CellSink`]; created
+/// once and injected into the bootstrap module as `_OMP_SINK`.
+static SINK_VAR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+/// Registry of sinks for currently-executing cells, backing the
+/// single-open-cell fallback route.
+static OPEN_SINKS: LazyLock<Arc<SinkRegistry>> =
+	LazyLock::new(|| Arc::new(SinkRegistry::default()));
 
-struct CaptureSink {
-	events:   Sender<Result<RunEvent, Fault>>,
-	sequence: Arc<AtomicU64>,
-	buffer:   Mutex<Vec<u8>>,
+/// Byte and line accounting for one output channel of a cell.
+#[derive(Default)]
+struct ChannelTally {
+	bytes:             usize,
+	newlines:          usize,
+	ends_with_newline: bool,
 }
 
-impl CaptureSink {
-	const fn new(events: Sender<Result<RunEvent, Fault>>, sequence: Arc<AtomicU64>) -> Self {
-		Self { events, sequence, buffer: Mutex::new(Vec::new()) }
+impl ChannelTally {
+	fn record(&mut self, data: &[u8]) {
+		self.bytes += data.len();
+		self.newlines += bytecount::count(data, b'\n');
+		self.ends_with_newline = data.last() == Some(&b'\n');
 	}
 
-	fn write(&self, channel: OutputChannel, text: &str) -> usize {
-		if text.is_empty() {
-			return 0;
+	/// Line count equal to `split_inclusive('\n')` over the concatenated
+	/// stream.
+	fn lines(&self) -> usize {
+		self.newlines + usize::from(self.bytes > 0 && !self.ends_with_newline)
+	}
+}
+
+struct SinkState {
+	open:     bool,
+	sequence: u64,
+	stdout:   ChannelTally,
+	stderr:   ChannelTally,
+}
+
+/// Gated per-cell event sink shared by the router, the worker, and Python.
+struct SinkShared {
+	session: Bytes,
+	events:  Sender<Result<RunEvent, Fault>>,
+	state:   Mutex<SinkState>,
+}
+
+impl SinkShared {
+	fn new(session: Bytes, events: Sender<Result<RunEvent, Fault>>) -> Self {
+		Self {
+			session,
+			events,
+			state: Mutex::new(SinkState {
+				open:     true,
+				sequence: 0,
+				stdout:   ChannelTally::default(),
+				stderr:   ChannelTally::default(),
+			}),
 		}
-		self.buffer.lock().extend_from_slice(text.as_bytes());
-		let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
+	}
+
+	/// Emits one ordered output event, or `None` once the cell is sealed.
+	///
+	/// The sequence increment and channel send share one critical section with
+	/// [`Self::close`], so no output can trail the terminal `Completed` event
+	/// the worker sends after sealing.
+	fn write(&self, channel: OutputChannel, text: &str) -> Option<usize> {
+		let mut state = self.state.lock();
+		if !state.open {
+			return None;
+		}
+		match channel {
+			OutputChannel::Stdout => state.stdout.record(text.as_bytes()),
+			OutputChannel::Stderr => state.stderr.record(text.as_bytes()),
+		}
+		let sequence = state.sequence;
+		state.sequence += 1;
 		let _ = self.events.send(Ok(RunEvent::Output(Update {
 			channel,
 			data: CowBytes::owned(Bytes::copy_from_slice(text.as_bytes())),
 			sequence,
 		})));
-		text.chars().count()
+		Some(text.chars().count())
 	}
 
-	fn snapshot(&self) -> Vec<u8> {
-		self.buffer.lock().clone()
+	/// Seals the sink and returns `(total_lines, total_bytes)`. Idempotent.
+	fn close(&self) -> (usize, usize) {
+		let mut state = self.state.lock();
+		state.open = false;
+		(state.stdout.lines() + state.stderr.lines(), state.stdout.bytes + state.stderr.bytes)
 	}
 }
 
-struct OutputRouterState {
-	channel: OutputChannel,
-	active:  Mutex<HashMap<c_ulong, Arc<CaptureSink>>>,
+/// Sinks of currently-executing cells, consulted when a write arrives from a
+/// context that predates the running cell (pre-existing thread pools, threads
+/// or tasks surviving their cell).
+#[derive(Default)]
+struct SinkRegistry {
+	open: Mutex<Vec<Arc<SinkShared>>>,
 }
 
-impl OutputRouterState {
-	fn new(channel: OutputChannel) -> Self {
-		Self { channel, active: Mutex::new(HashMap::new()) }
-	}
-
-	fn bind(&self, thread_id: c_ulong, sink: Arc<CaptureSink>) {
-		self.active.lock().insert(thread_id, sink);
-	}
-
-	fn unbind(&self, thread_id: c_ulong, sink: &Arc<CaptureSink>) {
-		let mut active = self.active.lock();
-		if active
-			.get(&thread_id)
-			.is_some_and(|current| Arc::ptr_eq(current, sink))
-		{
-			active.remove(&thread_id);
+impl SinkRegistry {
+	/// Returns the sole open sink, or `None` when zero or several cells run.
+	///
+	/// Attributing context-less output is safe only when exactly one cell
+	/// could own it; otherwise it is dropped rather than leaked across
+	/// sessions.
+	fn sole_open(&self) -> Option<Arc<SinkShared>> {
+		match self.open.lock().as_slice() {
+			[sink] => Some(Arc::clone(sink)),
+			_ => None,
 		}
 	}
 
-	fn write(&self, text: &str) -> usize {
-		// SAFETY: this callback runs on a Python-attached thread; CPython exposes
-		// its current thread identifier without additional preconditions.
-		let thread_id = unsafe { PyThread_get_thread_ident() };
-		let sink = {
-			let active = self.active.lock();
-			active.get(&thread_id).cloned().or_else(|| {
-				// Thread pools do not inherit the worker thread's binding. Routing
-				// an unknown thread is safe only when there is exactly one possible
-				// owning cell; otherwise drop it rather than leak across sessions.
-				(active.len() == 1).then(|| active.values().next().expect("one active sink").clone())
-			})
-		};
-		sink.map_or_else(|| text.chars().count(), |sink| sink.write(self.channel, text))
+	/// Returns the open sink belonging to `session`, if that session is
+	/// currently running a cell.
+	///
+	/// This is the only legal target for output whose context names a sealed
+	/// sink: the sealed sink proves the writer's session, so redirecting
+	/// anywhere else would leak output across sessions.
+	fn open_for(&self, session: &Bytes) -> Option<Arc<SinkShared>> {
+		self
+			.open
+			.lock()
+			.iter()
+			.find(|sink| sink.session == *session)
+			.map(Arc::clone)
 	}
 }
 
+/// RAII registration of one cell's sink. Closing (or dropping) seals the gate
+/// and removes the fallback route before the worker emits the terminal event.
+struct SinkGuard {
+	registry: Arc<SinkRegistry>,
+	shared:   Arc<SinkShared>,
+}
+
+impl SinkGuard {
+	fn open(
+		registry: Arc<SinkRegistry>,
+		session: Bytes,
+		events: Sender<Result<RunEvent, Fault>>,
+	) -> Self {
+		let shared = Arc::new(SinkShared::new(session, events));
+		registry.open.lock().push(Arc::clone(&shared));
+		Self { registry, shared }
+	}
+
+	/// Seals the sink and returns `(total_lines, total_bytes)`. Idempotent.
+	fn close(&self) -> (usize, usize) {
+		self
+			.registry
+			.open
+			.lock()
+			.retain(|sink| !Arc::ptr_eq(sink, &self.shared));
+		self.shared.close()
+	}
+}
+
+impl Drop for SinkGuard {
+	fn drop(&mut self) {
+		self.close();
+	}
+}
+
+/// Per-cell output sink carried by the routing context variable.
+#[pyclass(frozen)]
+struct CellSink {
+	shared: Arc<SinkShared>,
+}
+
+/// `sys.stdout`/`sys.stderr` replacement routing writes to the owning cell.
+///
+/// Resolution order: the context sink (inherited by threads and asyncio tasks
+/// started inside a cell); if that sink is sealed, the same session's
+/// currently open cell; with no context sink at all, the registry's sole open
+/// cell; then deliberate discard.
 #[pyclass(frozen)]
 struct OutputRouter {
-	state: Arc<OutputRouterState>,
+	channel:  OutputChannel,
+	registry: Arc<SinkRegistry>,
 }
 
 #[pymethods]
 impl OutputRouter {
-	fn write(&self, text: &str) -> usize {
-		self.state.write(text)
+	fn write(&self, py: Python<'_>, text: &str) -> usize {
+		if text.is_empty() {
+			return 0;
+		}
+		if let Some(sink) = context_sink(py) {
+			if let Some(written) = sink.write(self.channel, text) {
+				return written;
+			}
+			// The sealed sink names the writer's session: redirect only to that
+			// session's open cell, never across sessions.
+			return self
+				.registry
+				.open_for(&sink.session)
+				.and_then(|next| next.write(self.channel, text))
+				.unwrap_or_else(|| text.chars().count());
+		}
+		self
+			.registry
+			.sole_open()
+			.and_then(|sink| sink.write(self.channel, text))
+			.unwrap_or_else(|| text.chars().count())
 	}
 
 	#[staticmethod]
 	const fn flush() {}
 }
 
-#[derive(Clone)]
-struct OutputRouters {
-	stdout: Arc<OutputRouterState>,
-	stderr: Arc<OutputRouterState>,
+/// Returns the process-wide routing context variable, creating it on first
+/// use.
+fn sink_var(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+	SINK_VAR
+		.get_or_try_init(py, || {
+			Ok::<_, PyErr>(
+				PyModule::import(py, "contextvars")?
+					.getattr("ContextVar")?
+					.call1(("omp_eval_cell_sink",))?
+					.unbind(),
+			)
+		})
+		.map(|var| var.bind(py))
 }
 
-impl OutputRouters {
-	fn bind(&self, thread_id: c_ulong, events: Sender<Result<RunEvent, Fault>>) -> OutputBinding {
-		let sequence = Arc::new(AtomicU64::new(0));
-		let stdout = Arc::new(CaptureSink::new(events.clone(), Arc::clone(&sequence)));
-		let stderr = Arc::new(CaptureSink::new(events, sequence));
-		self.stdout.bind(thread_id, Arc::clone(&stdout));
-		self.stderr.bind(thread_id, Arc::clone(&stderr));
-		OutputBinding {
-			thread_id,
-			stdout_router: Arc::clone(&self.stdout),
-			stderr_router: Arc::clone(&self.stderr),
-			stdout,
-			stderr,
-		}
-	}
-}
-
-struct OutputBinding {
-	thread_id:     c_ulong,
-	stdout_router: Arc<OutputRouterState>,
-	stderr_router: Arc<OutputRouterState>,
-	stdout:        Arc<CaptureSink>,
-	stderr:        Arc<CaptureSink>,
-}
-
-impl Drop for OutputBinding {
-	fn drop(&mut self) {
-		self.stdout_router.unbind(self.thread_id, &self.stdout);
-		self.stderr_router.unbind(self.thread_id, &self.stderr);
-	}
+/// Resolves the [`CellSink`] stored in the calling thread or task context.
+fn context_sink(py: Python<'_>) -> Option<Arc<SinkShared>> {
+	let var = SINK_VAR.get(py)?;
+	let value = var.bind(py).call_method1("get", (py.None(),)).ok()?;
+	let sink = value.cast::<CellSink>().ok()?;
+	Some(Arc::clone(&sink.get().shared))
 }
 
 #[pyclass]
@@ -608,7 +693,6 @@ impl EmbeddedPython {
 			inner: Arc::new(Inner {
 				engine,
 				installer,
-				next_session: AtomicU64::new(1),
 				next_cell: AtomicU64::new(1),
 				workers: Mutex::new(HashMap::new()),
 			}),
@@ -659,7 +743,10 @@ impl EvalExec for EmbeddedPython {
 	type Run = EmbeddedRun;
 
 	fn open_session(&self) -> impl Future<Output = Result<Session, Fault>> + Send + '_ {
-		let number = self.inner.next_session.fetch_add(1, Ordering::Relaxed);
+		// Process-global numbering: session ids key `OPEN_SINKS` routing, so two
+		// `EmbeddedPython` values in one process must never mint the same id.
+		static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+		let number = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
 		let id = Bytes::from(format!("py-{number}"));
 		match self.spawn_worker(&number.to_string()) {
 			Ok(worker) => {
@@ -676,6 +763,13 @@ impl EvalExec for EmbeddedPython {
 		request: RunRequest,
 	) -> Result<Self::Run, Fault> {
 		let reset = request.reset;
+		let runtime = Handle::try_current().ok();
+		if runtime.is_none() && request.timeout.is_some() {
+			return Err(Fault::Resource {
+				operation: Str::from("run"),
+				message:   Str::from("cell timeout enforcement requires a Tokio runtime context"),
+			});
+		}
 		let worker = self.worker(session)?;
 		let _enqueue = worker.enqueue.lock().await;
 		let epoch = if request.reset {
@@ -696,11 +790,12 @@ impl EvalExec for EmbeddedPython {
 		let cancelled = Arc::new(AtomicBool::new(false));
 		let command = Command {
 			cell_id,
+			session: session.id.clone(),
 			request,
 			events,
 			cancelled: Arc::clone(&cancelled),
 			timed_out: Arc::new(AtomicBool::new(false)),
-			runtime: Handle::try_current().ok(),
+			runtime,
 			epoch,
 		};
 		worker
@@ -907,23 +1002,28 @@ fn timed_out_completion(mut completion: RunCompletion) -> RunCompletion {
 fn prepare_python(py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
 	ensure_output_routers(py)?;
 	let module = PyModule::from_code(py, BOOTSTRAP, c_str!("<omp-eval>"), c_str!("_omp_eval"))?;
+	module.setattr("_OMP_SINK", sink_var(py)?)?;
 	Ok((module.getattr("_omp_run_cell")?.unbind(), module.getattr("_omp_new_namespace")?.unbind()))
 }
 
-fn ensure_output_routers(py: Python<'_>) -> PyResult<OutputRouters> {
-	let outputs = (*OUTPUT_ROUTERS).clone();
+fn ensure_output_routers(py: Python<'_>) -> PyResult<()> {
+	sink_var(py)?;
 	let (stdout, stderr) = OUTPUT_ROUTER_OBJECTS.get_or_try_init(py, || {
 		Ok::<_, PyErr>((
-			Py::new(py, OutputRouter { state: Arc::clone(&outputs.stdout) })?,
-			Py::new(py, OutputRouter { state: Arc::clone(&outputs.stderr) })?,
+			Py::new(py, OutputRouter {
+				channel:  OutputChannel::Stdout,
+				registry: Arc::clone(&OPEN_SINKS),
+			})?,
+			Py::new(py, OutputRouter {
+				channel:  OutputChannel::Stderr,
+				registry: Arc::clone(&OPEN_SINKS),
+			})?,
 		))
 	})?;
 	let sys = PyModule::import(py, "sys")?;
-	sys.setattr(STDOUT_ROUTER_ATTR, stdout.bind(py))?;
-	sys.setattr(STDERR_ROUTER_ATTR, stderr.bind(py))?;
 	sys.setattr("stdout", stdout.bind(py))?;
 	sys.setattr("stderr", stderr.bind(py))?;
-	Ok(outputs)
+	Ok(())
 }
 
 fn new_namespace(
@@ -1000,7 +1100,6 @@ fn execute_cell(
 ) -> PyResult<RunCompletion> {
 	let request = &command.request;
 	let cell_id = &command.cell_id;
-	let timeout = request.timeout.map(|duration| duration.as_secs_f64());
 	let display = namespace
 		.bind(py)
 		.get_item("__omp_display")?
@@ -1009,22 +1108,22 @@ fn execute_cell(
 		})?
 		.extract::<Py<DisplayCollector>>()?;
 	display.borrow(py).clear();
-	let outputs = ensure_output_routers(py)?;
-	// SAFETY: `execute_cell` runs within `Engine::attach`, so CPython has
-	// registered the current thread.
-	let thread_id = unsafe { PyThread_get_thread_ident() };
-	let capture = outputs.bind(thread_id, command.events.clone());
+	ensure_output_routers(py)?;
 	let watchdog = installer.begin_cell(py, namespace.bind(py), cell_id, request.timeout)?;
 	let watchdog_task = spawn_watchdog(&watchdog, command, state);
 	let timeout_control = Py::new(py, TimeoutControl::new(watchdog.clone()))?;
+	let capture =
+		SinkGuard::open(Arc::clone(&OPEN_SINKS), command.session.clone(), command.events.clone());
+	let sink = Py::new(py, CellSink { shared: Arc::clone(&capture.shared) })?;
 	let execution =
 		runner
 			.bind(py)
-			.call1((request.code.as_str(), namespace.bind(py), timeout, timeout_control));
+			.call1((request.code.as_str(), namespace.bind(py), timeout_control, sink));
 	watchdog.dispose();
 	if let Some(task) = watchdog_task {
 		task.abort();
 	}
+	let (total_lines, total_bytes) = capture.close();
 	let ended = installer.end_cell(py, namespace.bind(py), cell_id);
 	let value = match (execution, ended) {
 		(Err(error), _) => return Err(error),
@@ -1036,7 +1135,6 @@ fn execute_cell(
 	let outcome = match outcome_name.as_str() {
 		"complete" => CellOutcome::Complete,
 		"error" => CellOutcome::Error,
-		"timeout" => CellOutcome::Timeout,
 		"cancelled" => CellOutcome::Cancelled,
 		other => {
 			return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
@@ -1069,10 +1167,6 @@ fn execute_cell(
 		.ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("duration_ms"))?
 		.extract::<u64>()?;
 
-	let stdout_bytes = capture.stdout.snapshot();
-	let stderr_bytes = capture.stderr.snapshot();
-	let total_bytes = stdout_bytes.len() + stderr_bytes.len();
-	let total_lines = count_lines(&stdout_bytes) + count_lines(&stderr_bytes);
 	let display_outputs = display.borrow(py).drain(py)?;
 	Ok(RunCompletion {
 		status: CellStatus {
@@ -1126,10 +1220,6 @@ fn python_to_json(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Option<V
 		.map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
 }
 
-fn count_lines(bytes: &[u8]) -> usize {
-	bytes.split_inclusive(|byte| *byte == b'\n').count()
-}
-
 fn fail_worker(commands: &Receiver<Command>, message: Str) {
 	while let Ok(command) = commands.try_recv() {
 		let _ = command.events.send(Err(Fault::Resource {
@@ -1162,6 +1252,21 @@ mod tests {
 
 	fn runtime() -> EmbeddedPython {
 		EmbeddedPython::new(Arc::clone(&ENGINE))
+	}
+
+	#[tokio::test]
+	async fn probe_seed_frames() {
+		let runtime = runtime();
+		let session = runtime.open_session().await.expect("session opens");
+		let (updates, done) = run_to_completion(
+			&runtime,
+			&session,
+			"import threading\ndef _leaked():\n    while True:\n        pass\nthreading.\
+			 Thread(target=_leaked, daemon=False).start()\nprint('seeded')",
+			false,
+		)
+		.await;
+		panic!("updates: {updates:?} outcome: {:?}", done.status.outcome);
 	}
 
 	async fn run_to_completion(
@@ -1254,32 +1359,38 @@ mod tests {
 	}
 
 	#[test]
-	fn pool_thread_print_routes_only_to_an_unambiguous_capture_sink() {
-		let state = Arc::new(OutputRouterState::new(OutputChannel::Stdout));
-		let router_state = Arc::clone(&state);
-		let (events, received) = flume::unbounded();
-		let sink = Arc::new(CaptureSink::new(events, Arc::new(AtomicU64::new(0))));
-		state.bind(c_ulong::MAX, Arc::clone(&sink));
-
-		ENGINE
-			.attach(|py| -> PyResult<()> {
-				let locals = PyDict::new(py);
-				locals.set_item("router", Py::new(py, OutputRouter { state: router_state })?)?;
-				py.run(
-					c_str!(
-						r#"
+	fn pool_thread_print_routes_only_to_an_unambiguous_cell_sink() {
+		let registry = Arc::new(SinkRegistry::default());
+		let run_pool_print = |registry: &Arc<SinkRegistry>| {
+			ENGINE
+				.attach(|py| -> PyResult<()> {
+					let locals = PyDict::new(py);
+					locals.set_item(
+						"router",
+						Py::new(py, OutputRouter {
+							channel:  OutputChannel::Stdout,
+							registry: Arc::clone(registry),
+						})?,
+					)?;
+					py.run(
+						c_str!(
+							r#"
 from concurrent.futures import ThreadPoolExecutor
 with ThreadPoolExecutor(max_workers=1) as pool:
     pool.submit(print, "parallel", file=router).result()
 "#
-					),
-					None,
-					Some(&locals),
-				)
-			})
-			.expect("pool print completes");
-		state.unbind(c_ulong::MAX, &sink);
+						),
+						None,
+						Some(&locals),
+					)
+				})
+				.expect("pool print completes");
+		};
 
+		let (events, received) = flume::unbounded();
+		let sole = SinkGuard::open(Arc::clone(&registry), Bytes::from_static(b"py-a"), events);
+		run_pool_print(&registry);
+		sole.close();
 		let captured = received
 			.try_iter()
 			.filter_map(|event| match event.expect("capture event") {
@@ -1291,33 +1402,50 @@ with ThreadPoolExecutor(max_workers=1) as pool:
 		assert_eq!(captured, b"parallel\n");
 
 		let (left_events, left_received) = flume::unbounded();
-		let left = Arc::new(CaptureSink::new(left_events, Arc::new(AtomicU64::new(0))));
 		let (right_events, right_received) = flume::unbounded();
-		let right = Arc::new(CaptureSink::new(right_events, Arc::new(AtomicU64::new(0))));
-		state.bind(c_ulong::MAX, Arc::clone(&left));
-		state.bind(c_ulong::MAX - 1, Arc::clone(&right));
-
-		ENGINE
-			.attach(|py| -> PyResult<()> {
-				let locals = PyDict::new(py);
-				locals.set_item("router", Py::new(py, OutputRouter { state: Arc::clone(&state) })?)?;
-				py.run(
-					c_str!(
-						r#"
-from concurrent.futures import ThreadPoolExecutor
-with ThreadPoolExecutor(max_workers=1) as pool:
-    pool.submit(print, "ambiguous", file=router).result()
-"#
-					),
-					None,
-					Some(&locals),
-				)
-			})
-			.expect("ambiguous pool print completes");
-		state.unbind(c_ulong::MAX, &left);
-		state.unbind(c_ulong::MAX - 1, &right);
+		let left = SinkGuard::open(Arc::clone(&registry), Bytes::from_static(b"py-a"), left_events);
+		let right = SinkGuard::open(Arc::clone(&registry), Bytes::from_static(b"py-b"), right_events);
+		run_pool_print(&registry);
+		left.close();
+		right.close();
 		assert!(left_received.try_recv().is_err());
 		assert!(right_received.try_recv().is_err());
+	}
+
+	#[test]
+	fn sealed_sink_refuses_late_writes_and_redirects_only_within_its_session() {
+		let registry = Arc::new(SinkRegistry::default());
+		let session = Bytes::from_static(b"py-a");
+		let (events, received) = flume::unbounded();
+		let guard = SinkGuard::open(Arc::clone(&registry), session.clone(), events);
+		assert_eq!(guard.shared.write(OutputChannel::Stdout, "before\n"), Some(7));
+		assert_eq!(guard.shared.write(OutputChannel::Stderr, "partial"), Some(7));
+		assert_eq!(guard.close(), (2, 14));
+
+		// Writes after sealing are refused, so nothing can trail the terminal
+		// event, and the fallback route is gone.
+		assert_eq!(guard.shared.write(OutputChannel::Stdout, "late\n"), None);
+		assert!(registry.sole_open().is_none());
+		let outputs = received
+			.try_iter()
+			.filter_map(|event| match event.expect("capture event") {
+				RunEvent::Output(update) => Some(update.data.to_vec()),
+				RunEvent::Started { .. } | RunEvent::Completed(_) => None,
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(outputs, vec![b"before\n".to_vec(), b"partial".to_vec()]);
+
+		// A sealed sink's session redirects only to that session's open cell:
+		// another session's sole open cell is not a legal target.
+		let (other_events, _other_received) = flume::unbounded();
+		let other = SinkGuard::open(Arc::clone(&registry), Bytes::from_static(b"py-b"), other_events);
+		assert!(registry.open_for(&session).is_none());
+		let (next_events, _next_received) = flume::unbounded();
+		let next = SinkGuard::open(Arc::clone(&registry), session.clone(), next_events);
+		let redirected = registry.open_for(&session).expect("same-session open sink");
+		assert!(Arc::ptr_eq(&redirected, &next.shared));
+		next.close();
+		other.close();
 	}
 
 	#[tokio::test]
@@ -1362,8 +1490,8 @@ print("right")"#
 				.flat_map(|update| update.data.to_vec())
 				.collect::<Vec<_>>()
 		};
-		assert_eq!(stdout(left_updates), b"left\n");
-		assert_eq!(stdout(right_updates), b"right\n");
+		assert_eq!(stdout(left_updates), b"left-background\nleft\n");
+		assert_eq!(stdout(right_updates), b"right-background\nright\n");
 	}
 
 	#[tokio::test]
