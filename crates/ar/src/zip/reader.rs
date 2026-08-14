@@ -431,7 +431,6 @@ fn find_zip64_record<R: Read + Seek>(
 ) -> Result<Option<(DirectoryInfo, u64)>> {
 	let lower_bound = locator_offset.saturating_sub(search_limit);
 	let mut end = locator_offset;
-	let mut best = None;
 	let scratch_len =
 		usize::try_from(cmp::min(end.saturating_sub(lower_bound), IO_CHUNK_SIZE as u64))
 			.expect("scratch length is bounded by IO_CHUNK_SIZE");
@@ -445,7 +444,7 @@ fn find_zip64_record<R: Read + Seek>(
 			if scratch[index..index + 4] == ZIP64_EOCD_SIGNATURE.to_le_bytes() {
 				let offset = start + index as u64;
 				if let Some(info) = zip64_record_at(source, offset, locator_offset)? {
-					best = Some((info, offset));
+					return Ok(Some((info, offset)));
 				}
 			}
 		}
@@ -454,13 +453,13 @@ fn find_zip64_record<R: Read + Seek>(
 		}
 		end = start + 3;
 	}
-	if best.is_none() && declared_offset < lower_bound {
+	if declared_offset < lower_bound {
 		return Err(Error::IndexTooLarge {
 			actual: locator_offset - declared_offset,
 			limit:  search_limit,
 		});
 	}
-	Ok(best)
+	Ok(None)
 }
 
 fn zip64_record_at<R: Read + Seek>(

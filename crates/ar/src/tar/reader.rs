@@ -1017,7 +1017,7 @@ fn parse_pax<R: Read + Seek>(
 				state.sparse_name =
 					Some(read_pax_text(&mut input, &mut consumed, value_len, limits.path_size)?);
 			},
-			Some(b"GNU.sparse.realsize") => {
+			Some(b"GNU.sparse.realsize") | Some(b"GNU.sparse.size") => {
 				state.sparse_real_size = Some(read_pax_decimal(&mut input, &mut consumed, value_len)?);
 			},
 			_ => skip_exact(&mut input, value_len, &mut consumed)?,

@@ -432,6 +432,34 @@ fn sparse_pax_uses_real_name_and_logical_size_but_rejects_reads() {
 }
 
 #[test]
+fn sparse_pax_v0_size_sets_logical_size_and_enforces_the_member_limit() {
+	for minor in ["0", "1"] {
+		let records = [
+			("GNU.sparse.major", "0"),
+			("GNU.sparse.minor", minor),
+			("GNU.sparse.size", "1048576"),
+			("GNU.sparse.numblocks", "1"),
+			("GNU.sparse.offset", "0"),
+			("GNU.sparse.numbytes", "11"),
+			("size", "11"),
+		];
+		let bytes = pax_fixture(&records, TarMember::file("sparse.bin", b"sparse-map\n"));
+		let mut archive = Archive::from_bytes(&bytes).unwrap();
+
+		let entry = archive.entry("sparse.bin").unwrap();
+		assert_eq!(entry.size(), 1_048_576);
+		assert_eq!(entry.compressed_size(), 11);
+		assert_error_contains(archive.read("sparse.bin"), "sparse");
+
+		let limits = Limits::DEFAULT.with_max_member_size(1_000_000);
+		assert!(matches!(
+			Archive::from_bytes_with_limits(&bytes, limits),
+			Err(Error::MemberTooLarge { actual: 1_048_576, limit: 1_000_000, .. })
+		));
+	}
+}
+
+#[test]
 fn truncated_payloads_fail_while_clean_boundary_eof_and_one_zero_block_terminate() {
 	let complete = fixture(&[TarMember::file("big.txt", &vec![b'A'; 2048])]);
 	assert_error_contains(Archive::from_bytes(&complete[..512 + 256]), "truncated");

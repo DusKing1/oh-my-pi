@@ -52,6 +52,28 @@ fn prepended_data_offsets_are_applied_to_zip32_and_zip64_records() {
 }
 
 #[test]
+fn zip64_prefers_the_nearest_valid_end_record_in_prepended_data() {
+	let bytes = zip64_fixture(b"nearest.txt", b"nearest");
+	let record = bytes
+		.windows(4)
+		.position(|bytes| bytes == b"PK\x06\x06")
+		.unwrap();
+	let record_size = u64::from_le_bytes(bytes[record + 4..record + 12].try_into().unwrap());
+	let record_end = record + usize::try_from(record_size).unwrap() + 12;
+	let mut prefixed = bytes[record..record_end].to_vec();
+	prefixed.extend_from_slice(&bytes);
+	let locator = prefixed
+		.windows(4)
+		.rposition(|bytes| bytes == b"PK\x06\x07")
+		.unwrap();
+	let fake_size = u64::try_from(locator - 12).unwrap();
+	prefixed[4..12].copy_from_slice(&fake_size.to_le_bytes());
+
+	let mut archive = Archive::from_bytes(&prefixed).unwrap();
+	assert_eq!(archive.read("nearest.txt").unwrap(), b"nearest");
+}
+
+#[test]
 fn valid_infozip_unicode_path_extra_field_overrides_the_legacy_name() {
 	let raw_name = b"resume.txt";
 	let unicode_name = "résumé.txt";
