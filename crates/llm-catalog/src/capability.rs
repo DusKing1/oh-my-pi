@@ -71,6 +71,7 @@ macro_rules! bitset {
 }
 
 /// Closed operation vocabulary shared by catalog and request layers.
+#[allow(missing_docs, reason = "strum IntoStaticStr generates undocumented as_str")]
 #[derive(
 	Clone,
 	Copy,

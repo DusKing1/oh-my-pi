@@ -75,6 +75,8 @@ impl FallbackChain {
 		Self { primary: ModelSelector::Exact(primary), fallbacks: Box::new([]) }
 	}
 
+	/// Returns an iterator yielding the primary selector followed by any
+	/// fallbacks.
 	pub fn iter(&self) -> impl DoubleEndedIterator<Item = &ModelSelector> + '_ {
 		std::iter::once(&self.primary).chain(self.fallbacks.iter())
 	}
@@ -326,7 +328,14 @@ pub enum ConstraintFailure {
 	/// The operation lacks positive support evidence.
 	OperationUnknown(OperationKind),
 	/// The model or route has an insufficient declared limit.
-	Limit { field: Str, required: u64, available: Option<u64> },
+	Limit {
+		/// Name of the constrained limit field.
+		field:     Str,
+		/// Required minimum capacity.
+		required:  u64,
+		/// Available capacity if known.
+		available: Option<u64>,
+	},
 	/// A required capability is explicitly unsupported.
 	Unsupported(CapabilityConstraint),
 	/// A required capability lacks positive evidence.
@@ -362,7 +371,12 @@ pub struct ResolvedModel {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ResolveError {
 	/// An overlay source was supplied to the wrong precedence tier.
-	WrongOverlayKind { expected: ProvenanceKind, actual: ProvenanceKind },
+	WrongOverlayKind {
+		/// Expected provenance kind for this tier.
+		expected: ProvenanceKind,
+		/// Actual provenance kind supplied.
+		actual:   ProvenanceKind,
+	},
 	/// A configured endpoint or trust-domain change lacked explicit authority.
 	UnsafeEndpointChange(RouteId),
 	/// A configured authentication change lacked explicit authority.
@@ -380,7 +394,12 @@ pub enum ResolveError {
 	/// A provider-scoped alias was not declared exactly.
 	AliasNotFound(AliasSelector),
 	/// The exact selector failed typed constraints.
-	Constraints { selector: ExactSelector, failures: Box<[ConstraintFailure]> },
+	Constraints {
+		/// Exact selector that failed.
+		selector: ExactSelector,
+		/// Specific constraint failures encountered.
+		failures: Box<[ConstraintFailure]>,
+	},
 	/// Every explicitly named selector failed.
 	FallbacksExhausted(Box<[Self]>),
 }
