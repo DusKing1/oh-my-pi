@@ -1445,6 +1445,7 @@ fn inference_turn_error(error: Error) -> pb::TurnEvent {
 		| ErrorKind::PaymentRequired => pb::turn_error::Kind::Auth,
 		ErrorKind::RateLimited | ErrorKind::QuotaExhausted => pb::turn_error::Kind::RateLimited,
 		ErrorKind::BudgetExhausted | ErrorKind::ResourceExhausted => pb::turn_error::Kind::Overloaded,
+		ErrorKind::EmptyOutput => pb::turn_error::Kind::EmptyOutput,
 		_ => pb::turn_error::Kind::Upstream,
 	};
 	let retry_after_ms = match error.action {
@@ -2909,6 +2910,7 @@ fn system_time_ms(time: SystemTime) -> u64 {
 mod tests {
 	use omp_llm_inference::{
 		RouteId,
+		error::{ErrorPhase, RetryAction},
 		receipt::{ExecutionReceipt, ReasonId, RecoveryKind, RecoveryRecord},
 	};
 
@@ -2997,6 +2999,33 @@ mod tests {
 		assert_eq!(outcome.diagnostics.len(), 1);
 		assert_eq!(outcome.diagnostics[0].code, "session_reseed");
 		assert_eq!(outcome.diagnostics[0].detail, "Fork");
+	}
+
+	#[test]
+	fn empty_output_projects_dedicated_turn_error_kind() {
+		let thought_only = Error::new(
+			ErrorKind::EmptyOutput,
+			ErrorPhase::Recovery,
+			RetryAction::Never,
+			ExecutionReceipt::default(),
+		);
+		let no_content = Error::new(
+			ErrorKind::EmptyCompletion,
+			ErrorPhase::Recovery,
+			RetryAction::SemanticRetry,
+			ExecutionReceipt::default(),
+		);
+
+		assert!(matches!(
+			inference_turn_error(thought_only).event,
+			Some(pb::turn_event::Event::Error(pb::TurnError { kind, .. }))
+				if kind == pb::turn_error::Kind::EmptyOutput as i32
+		));
+		assert!(matches!(
+			inference_turn_error(no_content).event,
+			Some(pb::turn_event::Event::Error(pb::TurnError { kind, .. }))
+				if kind == pb::turn_error::Kind::Upstream as i32
+		));
 	}
 
 	#[test]

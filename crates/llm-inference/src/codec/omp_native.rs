@@ -412,6 +412,7 @@ impl OmpNativeDecoder {
 			pb::turn_error::Kind::InvokeTimeout => {
 				(ErrorKind::DeadlineExceeded, "omp_turn_invoke_timeout")
 			},
+			pb::turn_error::Kind::EmptyOutput => (ErrorKind::EmptyOutput, "omp_turn_empty_output"),
 			pb::turn_error::Kind::Upstream | pb::turn_error::Kind::Unspecified => {
 				(ErrorKind::Protocol, "omp_turn_upstream")
 			},
@@ -558,6 +559,21 @@ mod tests {
 		assert_eq!(cancelled.disposition, OmpTurnDisposition::RolledBack {
 			cause: OmpRollbackCause::ClientCancelled,
 		});
+	}
+
+	#[test]
+	fn empty_output_failure_preserves_machine_readable_identity() {
+		let mut decoder = OmpNativeDecoder::new();
+		let mut events = Vec::new();
+		decoder.failure(
+			pb::TurnError { kind: pb::turn_error::Kind::EmptyOutput as i32, ..Default::default() },
+			&mut |event| events.push(event),
+		);
+
+		assert!(events.into_iter().any(|event| matches!(
+			event,
+			RawEvent::Failure(Error { kind: ErrorKind::EmptyOutput, .. })
+		)));
 	}
 
 	#[test]

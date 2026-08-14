@@ -38,8 +38,8 @@ pub mod wire {
 		missing_docs,
 		clippy::pedantic,
 		clippy::nursery,
-		reason = "prost output is machine-generated and cannot follow handwritten documentation \
-		          and style conventions"
+		reason = "prost output is machine-generated and cannot follow handwritten documentation and \
+		          style conventions"
 	)]
 	#![allow(
 		clippy::allow_attributes_without_reason,
