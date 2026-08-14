@@ -21,7 +21,7 @@ use crate::{
 	receipt::{AttemptOutcome, AttemptReceipt, Cost, ProviderEvidence, ReasonId},
 	recovery::{
 		Stage,
-		empty::{EmptyCompletionStage, EmptyEvent, EmptyInput},
+		empty::{EmptyCompletionKind, EmptyCompletionStage, EmptyEvent, EmptyInput},
 		json::{JsonEnforcement, JsonRepairLimits, JsonRepairStage},
 		reasoning::{ReasoningLimits, ReasoningObservation, ReasoningStallGuard},
 		repetition::{OutputVisibility, recovery_record},
@@ -391,15 +391,19 @@ fn finish_empty(
 		return Ok(());
 	};
 	context.with_receipt(|receipt| receipt.recoveries.push(classification.recovery));
-	let mut error = Error::new(
-		ErrorKind::EmptyCompletion,
-		ErrorPhase::Recovery,
-		RetryAction::SemanticRetry,
-		context.receipt(),
-	);
+	let (kind, action, reason) = match classification.kind {
+		EmptyCompletionKind::ThinkingOnly => {
+			(ErrorKind::EmptyOutput, RetryAction::Never, "empty-completion.thought-only")
+		},
+		EmptyCompletionKind::NoContent
+		| EmptyCompletionKind::WhitespaceOnly
+		| EmptyCompletionKind::EmptyBlocks => {
+			(ErrorKind::EmptyCompletion, RetryAction::SemanticRetry, "empty-completion.classified")
+		},
+	};
+	let mut error = Error::new(kind, ErrorPhase::Recovery, action, context.receipt());
 	error.committed = context.is_committed();
-	error.detail =
-		Some(ErrorDetail::Protocol { reason: ReasonId("empty-completion.classified".into()) });
+	error.detail = Some(ErrorDetail::Protocol { reason: ReasonId(reason.into()) });
 	Err(error)
 }
 
@@ -652,6 +656,43 @@ mod tests {
 			page_size: 10,
 			operation: None,
 		}
+	}
+
+	fn finish_empty_error(event: Option<ChatEvent>) -> Error {
+		let context = ExecutionContext::new(ExecutionBudget::default());
+		let mut stage =
+			Some(EmptyCompletionStage::new(omp_llm_catalog::id::WirePolicyId::new("wire"), 0));
+		if let Some(event) = event {
+			observe_empty(&mut stage, event, &context).expect("empty observer accepts chat event");
+		}
+		finish_empty(&mut stage, &context).expect_err("empty completion must fail recovery")
+	}
+
+	#[test]
+	fn thought_only_completion_requires_session_continuation_without_replay() {
+		let error =
+			finish_empty_error(Some(ChatEvent::ThinkingDelta { index: 0, text: "reasoning".into() }));
+
+		assert_eq!(error.kind, ErrorKind::EmptyOutput);
+		assert_eq!(error.action, RetryAction::Never);
+		assert!(matches!(
+			error.detail,
+			Some(ErrorDetail::Protocol { reason })
+				if reason.0.as_str() == "empty-completion.thought-only"
+		));
+	}
+
+	#[test]
+	fn eventless_completion_remains_semantically_retryable() {
+		let error = finish_empty_error(None);
+
+		assert_eq!(error.kind, ErrorKind::EmptyCompletion);
+		assert_eq!(error.action, RetryAction::SemanticRetry);
+		assert!(matches!(
+			error.detail,
+			Some(ErrorDetail::Protocol { reason })
+				if reason.0.as_str() == "empty-completion.classified"
+		));
 	}
 
 	#[test]

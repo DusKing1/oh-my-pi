@@ -83,6 +83,9 @@ pub enum ErrorKind {
 	RepeatedToolCall,
 	/// Model produced no usable completion.
 	EmptyCompletion,
+	/// Provider completed without actionable output, requiring session-level
+	/// continuation.
+	EmptyOutput,
 	/// Provider-side session state expired.
 	SessionExpired,
 	/// Conversation or provider-state revision conflicted.

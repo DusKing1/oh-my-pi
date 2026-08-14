@@ -245,10 +245,11 @@ fn exhausted_action(
 		&& !error.committed
 		&& error.kind == ErrorKind::EmptyCompletion
 	{
-		// Thinking-only silence is specific to endpoints such as Antigravity's
-		// daily endpoint. Reselecting an uncommitted route mirrors pi's
-		// `!emittedVisibleContent` guard (#8480); `registry::fallback_is_safe`
-		// still requires replay permission before advancing to the sibling route.
+		// Eventless silence may fail over while the route remains uncommitted,
+		// mirroring pi #8493's `!started` gate. Thought-only completions are
+		// terminal `EmptyOutput` errors and therefore never reach this branch;
+		// `registry::fallback_is_safe` still requires replay permission before
+		// advancing to a sibling route.
 		RetryAction::ReselectRoute
 	} else {
 		RetryAction::Never
