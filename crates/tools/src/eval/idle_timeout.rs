@@ -22,11 +22,12 @@ struct Inner {
 
 #[derive(Debug)]
 struct State {
-	window:      Option<Duration>,
-	deadline:    Option<Instant>,
-	pause_depth: usize,
-	disposed:    bool,
-	generation:  u64,
+	window:             Option<Duration>,
+	deadline:           Option<Instant>,
+	pause_depth:        usize,
+	disposed:           bool,
+	expired_generation: Option<u64>,
+	generation:         u64,
 }
 
 impl TimeoutHandle {
@@ -42,6 +43,7 @@ impl TimeoutHandle {
 					pause_depth: 0,
 					disposed: false,
 					generation: 0,
+					expired_generation: None,
 				}),
 				changed: Notify::new(),
 			}),
@@ -54,11 +56,24 @@ impl TimeoutHandle {
 	pub fn restart(&self, window: Option<Duration>) {
 		let mut state = self.inner.state.lock();
 		state.generation = state.generation.wrapping_add(1);
+		state.expired_generation = None;
 		state.window = normalize_window(window);
 		state.deadline = state.window.map(|window| Instant::now() + window);
 		state.pause_depth = 0;
 		state.disposed = false;
 		self.inner.changed.notify_waiters();
+	}
+
+	/// Returns the active cell generation for timeout-escalation guards.
+	#[must_use]
+	pub fn generation(&self) -> u64 {
+		self.inner.state.lock().generation
+	}
+
+	/// Reports whether `generation` still names the active or expired cell.
+	#[must_use]
+	pub fn is_current(&self, generation: u64) -> bool {
+		self.inner.state.lock().generation == generation
 	}
 
 	/// Pauses timeout accounting until the returned guard is dropped.
@@ -88,14 +103,23 @@ impl TimeoutHandle {
 	/// Stops the watchdog. Safe to call more than once.
 	pub fn dispose(&self) {
 		let mut state = self.inner.state.lock();
-		if state.disposed {
-			return;
-		}
-		state.disposed = true;
-		state.deadline = None;
-		state.pause_depth = 0;
 		state.generation = state.generation.wrapping_add(1);
+		state.expired_generation = None;
+		if !state.disposed {
+			state.disposed = true;
+			state.deadline = None;
+			state.pause_depth = 0;
+		}
 		self.inner.changed.notify_waiters();
+	}
+
+	/// Waits through an expiration grace period and reports whether the same
+	/// cell is still active.
+	pub async fn expiration_survives(&self, grace: Duration) -> bool {
+		let generation = self.inner.state.lock().generation;
+		self.expired().await;
+		tokio::time::sleep(grace).await;
+		self.inner.state.lock().generation == generation
 	}
 
 	/// Resolves when the active timeout window expires. A disabled or disposed
@@ -107,13 +131,15 @@ impl TimeoutHandle {
 			let changed = self.inner.changed.notified();
 			let deadline = {
 				let state = self.inner.state.lock();
+				if state.expired_generation == Some(state.generation) {
+					return;
+				}
 				if state.disposed || state.window.is_none() {
 					None
 				} else {
 					state.deadline
 				}
 			};
-
 			let Some(deadline) = deadline else {
 				changed.await;
 				continue;
@@ -128,6 +154,8 @@ impl TimeoutHandle {
 					if !state.disposed && state.pause_depth == 0 && state.deadline.is_some_and(|current| current <= Instant::now()) {
 						state.disposed = true;
 						state.deadline = None;
+						state.expired_generation = Some(state.generation);
+						self.inner.changed.notify_waiters();
 						return;
 					}
 				},
@@ -167,10 +195,7 @@ impl Drop for TimeoutPause {
 }
 
 fn normalize_window(window: Option<Duration>) -> Option<Duration> {
-	match window {
-		Some(window) => Some(window.max(Duration::from_millis(1))),
-		None => None,
-	}
+	window.map(|window| window.max(Duration::from_millis(1)))
 }
 
 #[cfg(test)]
@@ -295,5 +320,30 @@ mod tests {
 				.await
 				.is_ok()
 		);
+	}
+
+	#[tokio::test]
+	async fn expiration_wakes_all_waiters_and_disposal_cancels_escalation() {
+		let timeout = TimeoutHandle::new(Some(Duration::from_millis(10)));
+		let generation = timeout.generation();
+		let left = timeout.expired();
+		let right = timeout.expired();
+		tokio::time::timeout(Duration::from_millis(80), async {
+			tokio::join!(left, right);
+		})
+		.await
+		.expect("every expiration waiter wakes");
+		assert!(timeout.is_current(generation));
+		timeout.dispose();
+		assert!(!timeout.is_current(generation));
+
+		let timeout = TimeoutHandle::new(Some(Duration::from_millis(5)));
+		let escalation = {
+			let timeout = timeout.clone();
+			tokio::spawn(async move { timeout.expiration_survives(Duration::from_millis(30)).await })
+		};
+		tokio::time::sleep(Duration::from_millis(15)).await;
+		timeout.dispose();
+		assert!(!escalation.await.expect("escalation task joins"));
 	}
 }

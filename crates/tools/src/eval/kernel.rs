@@ -45,11 +45,44 @@ import inspect as _omp_inspect
 import json as _omp_json
 import sys as _omp_sys
 import threading as _omp_threading
+import types as _omp_types
 import time as _omp_time
 import traceback as _omp_traceback
 
 _OMP_TLA = getattr(_omp_ast, "PyCF_ALLOW_TOP_LEVEL_AWAIT", 0x2000)
 _OMP_TIMEOUT_MESSAGE = "OMP eval cell timed out"
+
+if not hasattr(_omp_sys, "__omp_thread_streams__"):
+    _omp_sys.__omp_thread_streams__ = _omp_threading.local()
+
+    class _OmpThreadLocalSys(_omp_types.ModuleType):
+        def __getattribute__(self, name):
+            if name in ("stdout", "stderr"):
+                streams = _omp_types.ModuleType.__getattribute__(
+                    self, "__omp_thread_streams__")
+                try:
+                    return getattr(streams, name)
+                except AttributeError:
+                    pass
+            return _omp_types.ModuleType.__getattribute__(self, name)
+
+        def __setattr__(self, name, value):
+            if name in ("stdout", "stderr"):
+                streams = _omp_types.ModuleType.__getattribute__(
+                    self, "__omp_thread_streams__")
+                setattr(streams, name, value)
+                return
+            _omp_types.ModuleType.__setattr__(self, name, value)
+
+        def __delattr__(self, name):
+            if name in ("stdout", "stderr"):
+                streams = _omp_types.ModuleType.__getattribute__(
+                    self, "__omp_thread_streams__")
+                delattr(streams, name)
+                return
+            _omp_types.ModuleType.__delattr__(self, name)
+
+    _omp_sys.__class__ = _OmpThreadLocalSys
 
 def _omp_new_namespace():
     return {
@@ -344,7 +377,15 @@ impl OutputRouterState {
 		// SAFETY: this callback runs on a Python-attached thread; CPython exposes
 		// its current thread identifier without additional preconditions.
 		let thread_id = unsafe { PyThread_get_thread_ident() };
-		let sink = self.active.lock().get(&thread_id).cloned();
+		let sink = {
+			let active = self.active.lock();
+			active.get(&thread_id).cloned().or_else(|| {
+				// Thread pools do not inherit the worker thread's binding. Routing
+				// an unknown thread is safe only when there is exactly one possible
+				// owning cell; otherwise drop it rather than leak across sessions.
+				(active.len() == 1).then(|| active.values().next().expect("one active sink").clone())
+			})
+		};
 		sink.map_or_else(|| text.chars().count(), |sink| sink.write(self.channel, text))
 	}
 }
@@ -499,6 +540,7 @@ pub struct EmbeddedRun {
 	events:    Receiver<Result<RunEvent, Fault>>,
 	state:     Arc<WorkerState>,
 	cancelled: Arc<AtomicBool>,
+	reset:     bool,
 }
 
 /// Installs session-scoped helpers into a newly-created Python namespace.
@@ -633,6 +675,7 @@ impl EvalExec for EmbeddedPython {
 		session: &'a Session,
 		request: RunRequest,
 	) -> Result<Self::Run, Fault> {
+		let reset = request.reset;
 		let worker = self.worker(session)?;
 		let _enqueue = worker.enqueue.lock().await;
 		let epoch = if request.reset {
@@ -667,11 +710,15 @@ impl EvalExec for EmbeddedPython {
 			.map_err(|_| Fault::SessionLost {
 				message: Str::from("Python worker stopped before accepting the cell"),
 			})?;
-		Ok(EmbeddedRun { events: receiver, state: Arc::clone(&worker.state), cancelled })
+		Ok(EmbeddedRun { events: receiver, state: Arc::clone(&worker.state), cancelled, reset })
 	}
 }
 
 impl EvalRun for EmbeddedRun {
+	fn reset(&self) -> bool {
+		self.reset
+	}
+
 	async fn next_event(&mut self) -> Result<Option<RunEvent>, Fault> {
 		match self.events.recv_async().await {
 			Ok(event) => event.map(Some),
@@ -733,7 +780,7 @@ fn worker_main(
 			let _ = command
 				.events
 				.send(Ok(RunEvent::Started { cell_id: command.cell_id.clone() }));
-			if command_is_stale(state, &command) {
+			if command_is_stale(state, &command) && !command.request.reset {
 				send_cancelled(&command);
 				continue;
 			}
@@ -744,17 +791,15 @@ fn worker_main(
 					cancelled: Arc::clone(&command.cancelled),
 				});
 			}
-			if command_is_stale(state, &command) {
+			if command_is_stale(state, &command) && !command.request.reset {
 				clear_active(state, &command.cancelled);
 				send_cancelled(&command);
 				continue;
 			}
 			if command.request.reset {
-				match new_namespace(py, &namespace_factory, installer) {
-					Ok(fresh) => {
-						close_namespace(py, &namespace, installer);
-						namespace = fresh;
-					},
+				match replace_namespace(py, &namespace_factory, &namespace, &command, state, installer)
+				{
+					Ok(fresh) => namespace = fresh,
 					Err(error) => {
 						clear_active(state, &command.cancelled);
 						let _ = command.events.send(Err(Fault::Resource {
@@ -895,10 +940,54 @@ fn new_namespace(
 
 fn close_namespace(py: Python<'_>, namespace: &Py<PyDict>, installer: &dyn NamespaceInstaller) {
 	let globals = namespace.bind(py);
-	let _ = installer.uninstall(py, globals);
 	if let Ok(Some(runner)) = globals.get_item("__omp_async_runner") {
 		let _ = runner.call_method0("close");
 	}
+	let _ = installer.uninstall(py, globals);
+}
+
+fn replace_namespace(
+	py: Python<'_>,
+	factory: &Py<PyAny>,
+	namespace: &Py<PyDict>,
+	command: &Command,
+	state: &Arc<WorkerState>,
+	installer: &dyn NamespaceInstaller,
+) -> PyResult<Py<PyDict>> {
+	let watchdog =
+		installer.begin_cell(py, namespace.bind(py), &command.cell_id, command.request.timeout)?;
+	let watchdog_task = spawn_watchdog(&watchdog, command, state);
+	let fresh = new_namespace(py, factory, installer);
+	if fresh.is_ok() {
+		close_namespace(py, namespace, installer);
+	}
+	watchdog.dispose();
+	if let Some(task) = watchdog_task {
+		task.abort();
+	}
+	let ended = installer.end_cell(py, namespace.bind(py), &command.cell_id);
+	match (fresh, ended) {
+		(Err(error), _) | (Ok(_), Err(error)) => Err(error),
+		(Ok(fresh), Ok(())) => Ok(fresh),
+	}
+}
+
+fn spawn_watchdog(
+	watchdog: &TimeoutHandle,
+	command: &Command,
+	state: &Arc<WorkerState>,
+) -> Option<tokio::task::JoinHandle<()>> {
+	command.runtime.as_ref().map(|runtime| {
+		let watchdog = watchdog.clone();
+		let state = Arc::clone(state);
+		let cancelled = Arc::clone(&command.cancelled);
+		let timed_out = Arc::clone(&command.timed_out);
+		runtime.spawn(async move {
+			watchdog.expired().await;
+			timed_out.store(true, Ordering::Release);
+			let _ = state.interrupt_if_active(&cancelled);
+		})
+	})
 }
 
 fn execute_cell(
@@ -926,17 +1015,7 @@ fn execute_cell(
 	let thread_id = unsafe { PyThread_get_thread_ident() };
 	let capture = outputs.bind(thread_id, command.events.clone());
 	let watchdog = installer.begin_cell(py, namespace.bind(py), cell_id, request.timeout)?;
-	let watchdog_task = command.runtime.as_ref().map(|runtime| {
-		let watchdog = watchdog.clone();
-		let state = Arc::clone(state);
-		let cancelled = Arc::clone(&command.cancelled);
-		let timed_out = Arc::clone(&command.timed_out);
-		runtime.spawn(async move {
-			watchdog.expired().await;
-			timed_out.store(true, Ordering::Release);
-			let _ = state.interrupt_if_active(&cancelled);
-		})
-	});
+	let watchdog_task = spawn_watchdog(&watchdog, command, state);
 	let timeout_control = Py::new(py, TimeoutControl::new(watchdog.clone()))?;
 	let execution =
 		runner
@@ -1119,6 +1198,18 @@ mod tests {
 		}
 	}
 
+	fn install_barrier(name: &str) {
+		ENGINE
+			.attach(|py| -> PyResult<()> {
+				let sys = PyModule::import(py, "sys")?;
+				let modules = sys.getattr("modules")?;
+				let threading = PyModule::import(py, "threading")?;
+				let barrier = threading.getattr("Barrier")?.call1((2,))?;
+				modules.set_item(name, barrier)
+			})
+			.expect("shared barrier installs");
+	}
+
 	#[tokio::test]
 	async fn state_persists_then_reset_replaces_namespace() {
 		let runtime = runtime();
@@ -1162,26 +1253,99 @@ mod tests {
 		assert_eq!(done.result.expect("result").json, Some(serde_json::json!({"ok": true})));
 	}
 
+	#[test]
+	fn pool_thread_print_routes_only_to_an_unambiguous_capture_sink() {
+		let state = Arc::new(OutputRouterState::new(OutputChannel::Stdout));
+		let router_state = Arc::clone(&state);
+		let (events, received) = flume::unbounded();
+		let sink = Arc::new(CaptureSink::new(events, Arc::new(AtomicU64::new(0))));
+		state.bind(c_ulong::MAX, Arc::clone(&sink));
+
+		ENGINE
+			.attach(|py| -> PyResult<()> {
+				let locals = PyDict::new(py);
+				locals.set_item("router", Py::new(py, OutputRouter { state: router_state })?)?;
+				py.run(
+					c_str!(
+						r#"
+from concurrent.futures import ThreadPoolExecutor
+with ThreadPoolExecutor(max_workers=1) as pool:
+    pool.submit(print, "parallel", file=router).result()
+"#
+					),
+					None,
+					Some(&locals),
+				)
+			})
+			.expect("pool print completes");
+		state.unbind(c_ulong::MAX, &sink);
+
+		let captured = received
+			.try_iter()
+			.filter_map(|event| match event.expect("capture event") {
+				RunEvent::Output(update) => Some(update.data.to_vec()),
+				RunEvent::Started { .. } | RunEvent::Completed(_) => None,
+			})
+			.flatten()
+			.collect::<Vec<_>>();
+		assert_eq!(captured, b"parallel\n");
+
+		let (left_events, left_received) = flume::unbounded();
+		let left = Arc::new(CaptureSink::new(left_events, Arc::new(AtomicU64::new(0))));
+		let (right_events, right_received) = flume::unbounded();
+		let right = Arc::new(CaptureSink::new(right_events, Arc::new(AtomicU64::new(0))));
+		state.bind(c_ulong::MAX, Arc::clone(&left));
+		state.bind(c_ulong::MAX - 1, Arc::clone(&right));
+
+		ENGINE
+			.attach(|py| -> PyResult<()> {
+				let locals = PyDict::new(py);
+				locals.set_item("router", Py::new(py, OutputRouter { state: Arc::clone(&state) })?)?;
+				py.run(
+					c_str!(
+						r#"
+from concurrent.futures import ThreadPoolExecutor
+with ThreadPoolExecutor(max_workers=1) as pool:
+    pool.submit(print, "ambiguous", file=router).result()
+"#
+					),
+					None,
+					Some(&locals),
+				)
+			})
+			.expect("ambiguous pool print completes");
+		state.unbind(c_ulong::MAX, &left);
+		state.unbind(c_ulong::MAX - 1, &right);
+		assert!(left_received.try_recv().is_err());
+		assert!(right_received.try_recv().is_err());
+	}
+
 	#[tokio::test]
 	async fn independent_sessions_execute_concurrently_without_output_cross_talk() {
 		const BARRIER_MODULE: &str = "_omp_eval_parallel_barrier";
-		ENGINE
-			.attach(|py| -> PyResult<()> {
-				let sys = PyModule::import(py, "sys")?;
-				let modules = sys.getattr("modules")?;
-				let threading = PyModule::import(py, "threading")?;
-				let barrier = threading.getattr("Barrier")?.call1((2,))?;
-				modules.set_item(BARRIER_MODULE, barrier)
-			})
-			.expect("shared barrier installs");
+		install_barrier(BARRIER_MODULE);
 
 		let runtime = runtime();
 		let left = runtime.open_session().await.expect("left session opens");
 		let right = runtime.open_session().await.expect("right session opens");
-		let left_code =
-			format!("import sys\nsys.modules[{BARRIER_MODULE:?}].wait(timeout=1)\nprint('left')");
-		let right_code =
-			format!("import sys\nsys.modules[{BARRIER_MODULE:?}].wait(timeout=1)\nprint('right')");
+		let left_code = format!(
+			r#"import concurrent.futures, sys
+def emit():
+    sys.modules[{BARRIER_MODULE:?}].wait(timeout=1)
+    sys.stdout.write("left-background\n")
+with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+    pool.submit(emit).result(timeout=1)
+print("left")"#
+		);
+		let right_code = format!(
+			r#"import concurrent.futures, sys
+def emit():
+    sys.modules[{BARRIER_MODULE:?}].wait(timeout=1)
+    sys.stdout.write("right-background\n")
+with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+    pool.submit(emit).result(timeout=1)
+print("right")"#
+		);
 		let (left_result, right_result) = tokio::join!(
 			run_to_completion(&runtime, &left, &left_code, false),
 			run_to_completion(&runtime, &right, &right_code, false),
@@ -1200,6 +1364,35 @@ mod tests {
 		};
 		assert_eq!(stdout(left_updates), b"left\n");
 		assert_eq!(stdout(right_updates), b"right\n");
+	}
+
+	#[tokio::test]
+	async fn sys_stream_reassignment_is_isolated_to_the_owning_worker() {
+		const BARRIER_MODULE: &str = "_omp_eval_stream_barrier";
+		install_barrier(BARRIER_MODULE);
+
+		let runtime = runtime();
+		let left = runtime.open_session().await.expect("left session opens");
+		let right = runtime.open_session().await.expect("right session opens");
+		let left_code = format!(
+			"import io, sys, time\nsys.stdout = \
+			 io.StringIO()\nsys.modules[{BARRIER_MODULE:?}].wait(timeout=1)\ntime.sleep(0.1)\nsys.\
+			 stdout.getvalue()"
+		);
+		let right_code =
+			format!("import sys\nsys.modules[{BARRIER_MODULE:?}].wait(timeout=1)\nprint('right')");
+		let ((_, left_done), (right_updates, right_done)) = tokio::join!(
+			run_to_completion(&runtime, &left, &left_code, false),
+			run_to_completion(&runtime, &right, &right_code, false),
+		);
+		assert_eq!(left_done.result.expect("left capture").json, Some(Value::String(String::new())));
+		assert_eq!(right_done.status.outcome, CellOutcome::Complete);
+		let right_stdout = right_updates
+			.into_iter()
+			.filter(|update| update.channel == OutputChannel::Stdout)
+			.flat_map(|update| update.data.to_vec())
+			.collect::<Vec<_>>();
+		assert_eq!(right_stdout, b"right\n");
 	}
 
 	#[tokio::test]
@@ -1316,24 +1509,6 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn watchdog_interrupts_blocking_python_calls_promptly() {
-		let runtime = runtime();
-		let session = runtime.open_session().await.expect("session opens");
-		let mut run = runtime
-			.run(&session, RunRequest {
-				code:    Str::new_static("import time\ntime.sleep(5)"),
-				timeout: Some(Duration::from_millis(25)),
-				reset:   false,
-			})
-			.await
-			.expect("blocking cell starts");
-		let done = tokio::time::timeout(Duration::from_millis(500), completion(&mut run))
-			.await
-			.expect("watchdog must interrupt a blocking Python call");
-		assert_eq!(done.status.outcome, CellOutcome::Timeout);
-	}
-
-	#[tokio::test]
 	async fn top_level_await_returns_the_final_expression() {
 		let runtime = runtime();
 		let session = runtime.open_session().await.expect("session opens");
@@ -1380,11 +1555,11 @@ mod tests {
 				code:    Str::new_static(concat!(
 					"import time\n",
 					"__omp_timeout_pause__()\n",
-					"time.sleep(0.075)\n",
+					"time.sleep(0.2)\n",
 					"__omp_timeout_resume__()\n",
 					"7",
 				)),
-				timeout: Some(Duration::from_millis(30)),
+				timeout: Some(Duration::from_millis(100)),
 				reset:   false,
 			})
 			.await

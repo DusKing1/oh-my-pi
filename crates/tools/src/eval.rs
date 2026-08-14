@@ -93,6 +93,10 @@ pub enum Language {
 #[serde(deny_unknown_fields)]
 pub struct Params {
 	/// runtime: "py" for the IPython kernel
+	#[expect(
+		clippy::doc_markdown,
+		reason = "doc comment is the verbatim model-facing description; backticks would leak"
+	)]
 	pub language: Language,
 	/// code to run in this eval call, verbatim. Use top-level await freely.
 	pub code:     Str,
@@ -320,6 +324,8 @@ pub enum RunEvent {
 
 /// Request-scoped active Python cell.
 pub trait EvalRun: Send {
+	/// Reports whether this run started from a fresh persistent namespace.
+	fn reset(&self) -> bool;
 	/// Waits for the next ordered event.
 	fn next_event(&mut self) -> impl Future<Output = Result<Option<RunEvent>, Fault>> + Send + '_;
 
@@ -485,6 +491,7 @@ impl<E: EvalExec> Tool for EvalTool<E> {
 					return;
 				},
 			};
+			let reset = run.reset();
 
 			let mut cell_id = Bytes::new();
 			let mut frames = Vec::new();

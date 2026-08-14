@@ -21,6 +21,10 @@ struct UnusedExec;
 struct UnusedRun;
 
 impl EvalRun for UnusedRun {
+	fn reset(&self) -> bool {
+		false
+	}
+
 	fn next_event(&mut self) -> impl Future<Output = Result<Option<RunEvent>, Fault>> + Send + '_ {
 		ready(Ok(None))
 	}
