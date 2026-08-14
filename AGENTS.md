@@ -1,6 +1,108 @@
-# Workspace Conventions
+# Repository Guidelines
 
-## Dependencies
+## Project Overview
+
+`omp` is the pre-release Rust implementation of Oh My Pi's coding-agent and
+inference runtime. The `omp` binary composes durable agent turns, model routing,
+project-scoped tools and authorities, terminal/native presentation, telemetry,
+and an embedded free-threaded Python runtime. This is a Rust rewrite of `pi`:
+port observable behavior, not TypeScript implementation shape.
+
+## Architecture & Data Flow
+
+- **Application boundary:** `crates/app` owns process startup, CLI dispatch, and
+  production composition. Domain crates provide implementations; the app wires
+  them together instead of duplicating them.
+- **Foundations:** `crates/core`, `storage`, `proto`, and `telemetry` provide
+  allocation-aware types, append-only transcript/blob persistence, RPC schemas,
+  and observability.
+- **Agent and inference:** `crates/agent` owns durable turn state, interrupts,
+  event projection, and tool batching. `crates/llm-catalog` supplies model data;
+  `crates/llm-inference` routes typed requests through concrete Tower services
+  and streams `ChatEvent`s.
+- **Project execution:** `crates/tool` defines revisioned tool contracts;
+  `crates/tools` implements them. `crates/env`, `docserver`, `shell*`, `ast`,
+  `walker`, and `hashline` own project processes, documents, shell execution,
+  parsing, and search.
+- **Presentation:** `crates/tui` renders a retained declarative DOM; `crates/gui`
+  provides native presentation. Neither owns agent or provider policy.
+
+A chat turn flows through these boundaries:
+
+1. `crates/app/src/main.rs` handles the worker entry path, initializes telemetry,
+   then dispatches `OmpCli` through `omp_app::run`.
+2. `crates/app/src/chat.rs` starts or connects project authorities, opens the
+   transcript journal, restores pending state, and builds the tool registry and
+   `AgentSnapshot`.
+3. `crates/agent/src/loop.rs` receives input and interrupts through mailboxes,
+   calls a `TurnClient`, executes typed tool batches through the environment
+   boundary, and projects durable `AgentEvent`s.
+4. Inference requests pass through `crates/llm-inference`; streamed model/tool
+   events update storage and reach `crates/app/src/chat_ui.rs`.
+5. The TUI consumes those events, updates its retained component tree, and
+   materializes terminal output once at the final renderer.
+
+## Key Directories
+
+- `crates/app`, `agent`: executable composition and durable agent runtime.
+- `crates/llm-catalog`, `llm-inference`: model data, transports, routing, and
+  recovery middleware.
+- `crates/tool`, `tools`, `env`: tool contracts, implementations, and isolated
+  project execution.
+- `crates/docserver`, `ast`, `walker`, `hashline`: document authority, syntax,
+  filesystem discovery, and anchored edits.
+- `crates/shell`, `shell-engine`, `shell-builtins`: shell facade, parser/runtime,
+  and built-in commands.
+- `crates/core`, `storage`, `proto`, `rpc`, `telemetry`: shared primitives,
+  persistence, wire contracts, RPC support, and observability.
+- `crates/tui`, `tui-macros`, `gui`: terminal and native UI systems.
+- `crates/e2e/tests`: authoritative joined-system proofs P1-P8.
+- `fixtures`, `quirks`, `docs/plan`: conformance data, recorded incompatibilities,
+  and architectural contracts. Do not treat scratch `.plans`/`.research` notes
+  as stronger than production code and tests.
+- `.omp/tools`, `scripts`, `crates/*/scripts`: repository-local agent tooling,
+  release generation, and subsystem setup scripts.
+
+## Development Commands
+
+Use targeted package commands while iterating; broaden only after the changed
+contract passes. Commands that link `omp-py` need its one-time vendored runtime
+setup first:
+
+```sh
+crates/py/scripts/fetch-python.sh
+
+cargo check -p omp-agent --locked
+cargo test -p omp-agent --locked
+cargo check --workspace --locked
+cargo build -p omp-app --bin omp --locked
+cargo test --workspace --locked
+
+cargo fmt --all -- --check
+cargo fmt --all
+cargo clippy --workspace --all-targets --locked
+
+cargo run -p omp-app --bin omp -- --help
+cargo run -p omp-tui --example gallery
+```
+
+The joined-system suite is intentionally separate and expensive:
+
+```sh
+cargo test -p omp-e2e --tests --no-run --locked
+cargo test -p omp-e2e --test p1_doc_race --locked
+TERM=xterm-256color cargo test -p omp-e2e --test p7_tui --locked
+cargo test -p omp-e2e --test p8_baselines --locked
+cargo run -p omp-e2e --bin baseline --locked -- \
+  --artifact target/e2e-artifacts/p8-baselines.json
+```
+
+CI's exact Rust, E2E, Bun, release, and platform matrix lives in
+`.github/workflows/ci.yml`; reproduce the smallest failing job locally.
+
+## Code Conventions & Common Patterns
+
+### Workspace Dependencies
 All dependencies MUST be declared in `[workspace.dependencies]` in the root
 `Cargo.toml`. Member crates reference them with `{ workspace = true }` and
 never pin their own versions:
@@ -22,7 +124,7 @@ Feature additions on top of the workspace entry are fine:
 (preserve order, defer parsing of passthrough payloads); `crates/slopjson`
 (broken/partial/streaming JSON) mirrors the same surface.
 
-### Naming & environment
+#### Naming & environment
 - Environment variables are `OMP_*` prefixed, never `PI_*`. Ported code MUST
   have its upstream (`pi`, `uu`, …) env vars, context objects, and branding
   stripped, not aliased.
@@ -30,7 +132,7 @@ Feature additions on top of the workspace entry are fine:
   restructuring. Compat shims, old names, and deprecated aliases are
   PROHIBITED; update every callsite in the same change.
 
-### Unicode and terminal-text utilities
+#### Unicode and terminal-text utilities
 Use `xutf` for every workspace-owned Unicode/UTF-8/UTF-16/UTF-32, grapheme,
 display-width, normalization, and ANSI/VT operation. `unicode-normalization` is
 expressly banned. MUST NOT add or import a separate utility crate for any of
@@ -38,7 +140,7 @@ these concerns—including `unicode-*`, `utf8-*`, `unicode-segmentation`,
 `unicode-width`, `ansi_*`, or `strip-ansi-escapes`. Use `xutf` directly; remove
 redundant direct dependencies rather than wrapping or duplicating them.
 
-## Crates
+### Crates
 - Members live under `crates/*` (virtual workspace, resolver 3); directory
   names are unprefixed (`crates/demo`).
 - Package names MUST be `omp-` prefixed (`name = "omp-demo"`).
@@ -58,20 +160,19 @@ Every member also fills `[package]` metadata (`license`/`authors`/`homepage`/
 `repository` from workspace, plus a real `description`) and ships a README
 saying what it is and its structural philosophy.
 
-### Taxonomy
-- Related crates share a domain prefix after `omp-` (e.g. the inference
-  family: `llm` facade re-exporting `llm-types`, `llm-catalog`, `llm-egress`,
-  `llm-tower`, `llm-error`, `llm-broker`, `llm-gateway`, `llm-local`, `llm-fm`,
-  and one crate per genuinely unique transport: `llm-openai`, `llm-anthropic`,
-  `llm-google`, `llm-cursor`, `llm-devin`). `llm-openai` holds ALL of OpenAI's
-  wire shapes (regular, responses, responses-lite, websocket, codex).
+#### Taxonomy
+- Related crates share a domain prefix after `omp-`; current examples are
+  `omp-llm-catalog`/`omp-llm-inference` and
+  `omp-shell`/`omp-shell-engine`/`omp-shell-builtins`.
 - Vocabulary is load-bearing: a **transport** is a provider's wire protocol; a
   **dialect** is how the thread is rendered to the LLM. NEVER call a transport
   a dialect.
-- Providers are data entries, not code; only a transport with real wire
-  differences earns a crate.
+- Providers are catalog data entries. Add code only for genuinely distinct wire
+  behavior, and keep provider routing in the inference subsystem.
+- `omp-tool` defines contracts; `omp-tools` contains implementations. Do not
+  invert that dependency.
 - Daemons are subcommands of the app crate, never standalone `*-d` crates.
-## Toolchain & Style
+### Toolchain & Style
 - Pinned nightly via `rust-toolchain.toml`; edition 2024.
 - Lint policy lives in `[workspace.lints.*]` in the root `Cargo.toml`;
   `#[allow]` requires a `reason`.
@@ -88,7 +189,28 @@ saying what it is and its structural philosophy.
   a local `macro_rules!` that emits both directions from a single
   variant→string table (see `vocab!` in `crates/telemetry/src/semconv.rs`).
 
-## Allocation Discipline (CRITICAL)
+### Composition, errors, and state
+
+- `crates/app` is the dependency-injection boundary. Compose registries,
+  concrete Tower services, `TurnClient`s, and authorities there; library crates
+  must not build a second production stack.
+- Libraries expose typed domain errors with `thiserror`. Application
+  orchestration uses `AppError`/`anyhow` and classifies or redacts untrusted
+  provider diagnostics before the top-level error reaches stderr.
+- Durable state belongs in the append-only transcript journal and blob store.
+  Build turn state from `AgentSnapshot` plus journal projection; do not create a
+  parallel mutable source of truth.
+- State/event loops use one `flume` mailbox; priority lifecycle state uses
+  `tokio::watch`. Keep ownership and cancellation explicit.
+- Every public symbol is documented. `missing_docs` is workspace-warned; every
+  `#[allow]` needs a reason.
+- The repository is pre-release: make clean cutovers, update every caller, and
+  remove obsolete aliases, compatibility shims, exports, and tests.
+
+The following performance sections are load-bearing and intentionally detailed.
+Do not weaken, summarize away, or bypass them during refactors.
+
+### Allocation Discipline (CRITICAL)
 Prefer references (`&T`, `&str`, `&[T]`) and borrows over owned types whenever data lifetime permits — agents should not be afraid of using refs and borrows.
 Think twice before reaching for `String` or `Vec` — both are growable,
 heap-backed general-purpose defaults. `omp-core` ships replacements; each
@@ -131,7 +253,7 @@ other.
   hex/base64 crate. This one has no exception: external encoding crates
   are banned outright.
 
-## Async, Iterator & Codegen Discipline (CRITICAL)
+### Async, Iterator & Codegen Discipline (CRITICAL)
 House rules, proven in a sibling codebase (tetra). Not suggestions.
 
 - **Nightly features are the point of the pinned toolchain.** A crate MUST
@@ -265,7 +387,7 @@ House rules, proven in a sibling codebase (tetra). Not suggestions.
   Actor/messagebox loops take a single flume mailbox; priority signals
   (resize, shutdown) ride `tokio::watch` + `select!`, not a second queue.
 
-## TUI Rendering Doctrine (crates/tui, CRITICAL)
+### TUI Rendering Doctrine (crates/tui, CRITICAL)
 The port exists because pi's `string[]` + ANSI + `render()` contract was a
 per-frame heap-grooming machine. These rules are the fix — they are not
 negotiable:
@@ -317,7 +439,7 @@ negotiable:
   dispatch tables. Keyboard input instantly clears mouse-hover state; there is
   only ever one visible cursor/focus.
 
-## Porting Subsystems
+### Porting Subsystems
 omp is a Rust rewrite of pi. When porting any subsystem:
 
 1. **Read pi's implementation in extreme detail first** — including
@@ -338,7 +460,7 @@ omp is a Rust rewrite of pi. When porting any subsystem:
 5. **Close the gaps pi left** (missing builtins, slash-arg completion, …)
    while you're in the area.
 
-## Working Style
+### Working Style
 - **Orchestrate in parallel.** One agent per crate/util/provider/category;
   `sonic` agents for mechanical moves and renames (use `sd`/bash for bulk
   renames, never hand edits); scouts only when the affected files are
@@ -351,7 +473,47 @@ omp is a Rust rewrite of pi. When porting any subsystem:
 - **Never revert or `git checkout` user edits.** The user edits and renames
   in flight while agents work — adapt to the tree as it is.
 
-## Embedded Python (omp-py)
+## Important Files
+
+- `Cargo.toml`: workspace members, shared dependencies, lints, and release
+  profile.
+- `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`,
+  `rust-analyzer.toml`: compiler and enforced style/concurrency policy.
+- `.cargo/config.toml`: vendored `PYO3_CONFIG_FILE`; required before Cargo
+  resolves `pyo3`.
+- `crates/app/src/main.rs`, `lib.rs`, `cli.rs`: process entry and public command
+  tree. `chat.rs`/`chat_ui.rs` own interactive composition.
+- `crates/agent/src/loop.rs`: durable agent loop, interrupts, and tool batching.
+- `crates/llm-inference/src/lib.rs`: inference facade and Tower routing spine;
+  `crates/llm-catalog/data` is provider/model data.
+- `crates/core/src/lib.rs`, `crates/storage/src/lib.rs`: shared performance
+  primitives and durable transcript/blob state.
+- `crates/proto/proto`, `crates/proto/build.rs`: protobuf sources and pure-Rust
+  code generation.
+- `crates/tui/README.md`, `crates/tui/icons.tsv`: TUI architecture, debug
+  protocol, and charset-aware icon source.
+- `crates/e2e/README.md`, `crates/e2e/tests/p*.rs`: acceptance harness contract
+  and authoritative cross-crate proofs.
+- `crates/py/README.md`, `crates/py/build.rs`,
+  `crates/py/scripts/fetch-python.sh`: embedded Python linkage and generated
+  inputs.
+- `.github/workflows/ci.yml`: authoritative platform and release QA matrix.
+
+## Runtime/Tooling Preferences
+
+- Rust is pinned to `nightly-2026-08-08` with `rustfmt`, `clippy`, and
+  `rust-analyzer`; do not redesign nightly-dependent APIs around stable Rust.
+- Cargo is the Rust package manager. Use Bun for repository JS/TS tools and
+  scripts, never Node/npm/pnpm/yarn; use `uv`, never pip, for Python dependency
+  operations.
+- Protobuf builds use `protox`; no system `protoc` is required.
+- Workspace-owned environment variables are `OMP_*` only:
+  `OMP_TUI_DEBUG`, `OMP_TTY`, and `OMP_PY_SITE`. `PYO3_CONFIG_FILE` is the
+  required upstream pyo3 exception.
+- The release profile is deliberate: `opt-level = 2`, thin LTO, one codegen
+  unit, stripped symbols, unwind panics. Change it only with measured evidence.
+
+### Embedded Python (omp-py)
 - `omp-py` (`crates/py`) is a library that statically links CPython 3.14t
   (free-threaded) and boots it in-process: `Engine::builder().init()`, then
   `engine.attach(|py| ...)`. Native modules register with
@@ -379,8 +541,8 @@ omp is a Rust rewrite of pi. When porting any subsystem:
      external crates set it in their own `[env]` or environment) — otherwise
      pyo3 silently links a host Python.
   2. Final-link flags: consumer bin crates replicate `--ld-path=<shim>` and
-     `-Wl,-export_dynamic` in their own build script — `crates/py-smoke`
-     (`omp-py-smoke`) is the working example and doubles as the smoke test.
+     `-Wl,-export_dynamic` in their own build script. `crates/app/build.rs` and
+     `crates/e2e/build.rs` are the working examples.
 - The stdlib is embedded as marshalled bytecode and served from memory; the
   only real search path is `$OMP_PY_SITE` (default
   `~/.local/share/omp-py/site-packages`). End users install wheels with any
@@ -391,7 +553,7 @@ omp is a Rust rewrite of pi. When porting any subsystem:
       --target "${OMP_PY_SITE:-$HOME/.local/share/omp-py/site-packages}" numpy
   ```
 
-## Debugging the TUI (`tui` tool, `OMP_TUI_DEBUG`, `OMP_TTY`)
+### Debugging the TUI (`tui` tool, `OMP_TUI_DEBUG`, `OMP_TTY`)
 Prefer the project-local `tui` agent tool (`.omp/tools/tui.ts`): it runs an
 example or bin on a Bun-native PTY — a real controlling terminal, so
 SIGWINCH resizes and immediate-mode hosts behave as in production — and
@@ -431,3 +593,26 @@ reaches the controlling terminal, so live resizes don't propagate); the
 capability probe waits for replies — answer DA1 (`\x1b[?62c`) or let it time
 out. Feed the master stream to a VT emulator (e.g. `pyte`) for screen
 assertions.
+
+## Testing & QA
+
+- Unit tests are colocated in `src` where private behavior matters; public
+  contracts and cross-module behavior live in `crates/*/tests`.
+- `insta` snapshots protect shell parser/tokenizer behavior. `proptest` covers
+  encoding, zero-copy slicing, transcript replay, and other round-trip
+  invariants. Review snapshots; never accept them blindly.
+- `crates/app/tests` exercises production registry, RPC, daemon, document, and
+  CLI composition. Prefer these seams over mocks of production authority.
+- `crates/e2e/tests/p1_doc_race.rs` through `p8_baselines.rs` are authoritative
+  for concurrency, cancellation, detached jobs, schema isolation, prefix
+  stability, crash/replay, real-PTY lifecycle, and recorded performance data.
+  The harness uses bounded waits and RAII-owned processes; preserve both.
+- P8 is a non-gating recorder. It validates metric math/schema and records p95
+  frame time and token-loop throughput; do not turn noisy host measurements
+  into an unreviewed hard gate.
+- TUI changes MUST be exercised on a real PTY with `.omp/tools/tui.ts` (or the
+  hooks above), including input, resize, and clean quit restoration.
+- No numeric line-coverage target is defined. Coverage means changed observable
+  behavior is defended: branch edges, precedence, state transitions, malformed
+  input, cancellation, and recovery. Run the narrow test first, then the
+  affected crate and relevant E2E proof.
