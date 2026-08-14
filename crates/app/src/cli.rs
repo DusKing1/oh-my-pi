@@ -32,11 +32,11 @@ use crate::{
 
 /// Top-level parser for the production `omp` executable.
 #[derive(Clone, Debug, Parser)]
-#[command(name = "omp", version, about = "OMP inference and credential management")]
+#[command(name = "omp", version, about = "OMP coding agent and inference runtime")]
 pub struct OmpCli {
-	/// Operation to run.
+	/// Operation to run. Defaults to interactive project chat.
 	#[command(subcommand)]
-	pub command: Command,
+	pub command: Option<Command>,
 }
 
 /// Production application commands.
@@ -99,7 +99,7 @@ pub struct EnvdArgs {
 pub struct ChatArgs {
 	/// Catalog model key, alias, or role.
 	#[arg(long)]
-	pub model:   Str,
+	pub model:   Option<Str>,
 	/// Project root whose environment and durable sessions are used.
 	#[arg(long, value_name = "PATH", default_value = ".")]
 	pub project: PathBuf,
@@ -112,6 +112,14 @@ pub struct ChatArgs {
 	/// Enable the environment-owned Python expression-evaluation tool.
 	#[arg(long)]
 	pub py_eval: bool,
+}
+
+impl ChatArgs {
+	/// Returns the default options for an interactive project chat.
+	#[must_use]
+	pub fn default_interactive() -> Self {
+		Self { model: None, project: ".".into(), gateway: None, resume: None, py_eval: false }
+	}
 }
 
 /// Direct typed inference options.
@@ -230,17 +238,19 @@ enum DispatchTarget {
 }
 
 #[cfg(test)]
-const fn dispatch_target(command: &Command) -> DispatchTarget {
+const fn dispatch_target(command: Option<&Command>) -> DispatchTarget {
 	match command {
-		Command::Serve(_) => DispatchTarget::Serve,
-		Command::Envd(_) => DispatchTarget::Envd,
-		Command::Chat(_) => DispatchTarget::Chat,
-		Command::Infer(_) => DispatchTarget::Infer,
-		Command::Auth(_) => DispatchTarget::Auth,
-		Command::Catalog(CatalogArgs { command: CatalogCommand::Import(_) }) => {
+		None | Some(Command::Chat(_)) => DispatchTarget::Chat,
+		Some(Command::Serve(_)) => DispatchTarget::Serve,
+		Some(Command::Envd(_)) => DispatchTarget::Envd,
+		Some(Command::Infer(_)) => DispatchTarget::Infer,
+		Some(Command::Auth(_)) => DispatchTarget::Auth,
+		Some(Command::Catalog(CatalogArgs { command: CatalogCommand::Import(_) })) => {
 			DispatchTarget::CatalogImport
 		},
-		Command::Local(LocalArgs { command: LocalCommand::Infer(_) }) => DispatchTarget::LocalInfer,
+		Some(Command::Local(LocalArgs { command: LocalCommand::Infer(_) })) => {
+			DispatchTarget::LocalInfer
+		},
 	}
 }
 
@@ -250,7 +260,10 @@ const fn dispatch_target(command: &Command) -> DispatchTarget {
 	reason = "chat dispatch preserves the thread-confined omp_tui::App future"
 )]
 pub async fn dispatch(cli: OmpCli) -> miette::Result<()> {
-	match cli.command {
+	match cli
+		.command
+		.unwrap_or_else(|| Command::Chat(ChatArgs::default_interactive()))
+	{
 		Command::Serve(args) => serve(args).await,
 		Command::Envd(args) => crate::envd::run(args).await,
 		Command::Chat(args) => Box::pin(crate::chat::run(args)).await,
@@ -438,6 +451,28 @@ mod tests {
 	const TEST_ENDPOINT: &str = r"\\.\pipe\omp-cli-test";
 
 	#[test]
+	fn bare_command_defaults_to_interactive_chat() {
+		let cli = parse(&["omp"]);
+		assert!(cli.command.is_none());
+		assert_eq!(dispatch_target(cli.command.as_ref()), DispatchTarget::Chat);
+
+		let args = ChatArgs::default_interactive();
+		assert!(args.model.is_none());
+		assert_eq!(args.project, PathBuf::from("."));
+		assert!(args.gateway.is_none());
+		assert!(args.resume.is_none());
+		assert!(!args.py_eval);
+	}
+
+	#[test]
+	fn parses_chat_without_model() {
+		let Some(Command::Chat(args)) = parse(&["omp", "chat"]).command else {
+			panic!("chat command");
+		};
+		assert!(args.model.is_none());
+	}
+
+	#[test]
 	fn parses_every_dispatch_branch() {
 		let cases = [
 			(&["omp", "serve", "--endpoint", TEST_ENDPOINT][..], DispatchTarget::Serve),
@@ -470,12 +505,12 @@ mod tests {
 			(&["omp", "local", "infer", "--prompt", "hello"][..], DispatchTarget::LocalInfer),
 		];
 		for (arguments, expected) in cases {
-			assert_eq!(dispatch_target(&parse(arguments).command), expected);
+			assert_eq!(dispatch_target(parse(arguments).command.as_ref()), expected);
 		}
 	}
 	#[test]
 	fn parses_chat_composition_options() {
-		let Command::Chat(args) = parse(&[
+		let Some(Command::Chat(args)) = parse(&[
 			"omp",
 			"chat",
 			"--model",
@@ -492,7 +527,7 @@ mod tests {
 		else {
 			panic!("chat command");
 		};
-		assert_eq!(args.model, Str::from("provider/model"));
+		assert_eq!(args.model, Some(Str::from("provider/model")));
 		assert_eq!(args.project, PathBuf::from("workspace"));
 		assert_eq!(args.gateway.as_ref().map(LocalEndpoint::as_path), Some(Path::new(TEST_ENDPOINT)));
 		assert_eq!(args.resume, Some(Str::from("01ARZ3NDEKTSV4RRFFQ69G5FAV")));
@@ -503,19 +538,19 @@ mod tests {
 	fn parses_every_auth_branch() {
 		assert!(matches!(
 			parse(&["omp", "auth", "login", "provider"]).command,
-			Command::Auth(AuthArgs { command: AuthCommand::Login { .. }, .. })
+			Some(Command::Auth(AuthArgs { command: AuthCommand::Login { .. }, .. }))
 		));
 		assert!(matches!(
 			parse(&["omp", "auth", "list", "--provider", "provider"]).command,
-			Command::Auth(AuthArgs { command: AuthCommand::List { provider: Some(_) }, .. })
+			Some(Command::Auth(AuthArgs { command: AuthCommand::List { provider: Some(_) }, .. }))
 		));
 		assert!(matches!(
 			parse(&["omp", "auth", "refresh", "account"]).command,
-			Command::Auth(AuthArgs { command: AuthCommand::Refresh { .. }, .. })
+			Some(Command::Auth(AuthArgs { command: AuthCommand::Refresh { .. }, .. }))
 		));
 		assert!(matches!(
 			parse(&["omp", "auth", "logout", "account"]).command,
-			Command::Auth(AuthArgs { command: AuthCommand::Logout { .. }, .. })
+			Some(Command::Auth(AuthArgs { command: AuthCommand::Logout { .. }, .. }))
 		));
 	}
 
@@ -523,7 +558,7 @@ mod tests {
 	fn rejects_incomplete_commands() {
 		for arguments in [
 			&["omp", "serve"][..],
-			&["omp", "chat"][..],
+			&["omp", "chat", "--gateway"][..],
 			&["omp", "infer", "--model", "provider/model"][..],
 			&["omp", "local", "infer"][..],
 			&["omp", "catalog", "import", "--providers", "providers.toml", "--oauth", "oauth.toml"][..],

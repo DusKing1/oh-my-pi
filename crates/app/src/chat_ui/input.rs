@@ -1,11 +1,26 @@
 use omp_core::Str;
 use omp_proto::thread::v1::{Item, Message, Part, Role, item, part};
+use omp_tui::Command;
 
 use super::now_ms;
+
+/// Slash commands offered by the chat composer's completion palette.
+pub(crate) fn commands() -> Vec<Command> {
+	vec![
+		Command::new("help", "Show commands and keyboard controls", &[]),
+		Command::new("login", "Authenticate a provider", &[]).with_hint("[provider]"),
+		Command::new("model", "Change the selected model", &[]).with_hint("<model>"),
+		Command::new("models", "Browse available models", &[]),
+		Command::new("resume", "Open another project session", &[]),
+		Command::new("quit", "Exit the application", &[]),
+	]
+}
 
 /// Actions parsed from user input in the chat shell.
 #[derive(Debug, PartialEq)]
 pub enum ChatCommand {
+	/// Ignore an empty composer submission.
+	Nothing,
 	/// Show the commands implemented by this chat shell.
 	Help,
 	/// Start provider authentication, defaulting to the selected model's
@@ -13,6 +28,8 @@ pub enum ChatCommand {
 	Login(Option<Str>),
 	/// Update the session model targeting the given identifier.
 	Model(Str),
+	/// Open the catalog model picker.
+	ModelPicker,
 	/// Open the project-local durable-session picker.
 	Resume,
 	/// Exit the application cleanly.
@@ -24,8 +41,6 @@ pub enum ChatCommand {
 /// Structured parsing failure for interactive input.
 #[derive(Debug, PartialEq, Eq)]
 pub enum InputError {
-	/// The `/model` command was provided without an argument.
-	EmptyModel,
 	/// An unrecognized slash command was entered.
 	UnknownCommand(Str),
 }
@@ -33,7 +48,6 @@ pub enum InputError {
 impl std::fmt::Display for InputError {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
-			Self::EmptyModel => write!(f, "missing model name for /model command"),
 			Self::UnknownCommand(cmd) => write!(f, "unknown slash command: {cmd}"),
 		}
 	}
@@ -42,17 +56,20 @@ impl std::error::Error for InputError {}
 
 /// Parses raw text from the composer buffer into an actionable command.
 pub fn parse_input(text: &str) -> Result<ChatCommand, InputError> {
+	if text.trim().is_empty() {
+		return Ok(ChatCommand::Nothing);
+	}
+
 	if text.starts_with('/') {
 		let text = text.trim();
 		if let Some(rest) = text.strip_prefix("/model ") {
 			let model = rest.trim();
-			if model.is_empty() {
-				return Err(InputError::EmptyModel);
+			if !model.is_empty() {
+				return Ok(ChatCommand::Model(Str::from(model)));
 			}
-			return Ok(ChatCommand::Model(Str::from(model)));
 		}
-		if text == "/model" {
-			return Err(InputError::EmptyModel);
+		if text == "/model" || text == "/models" || text.starts_with("/model ") {
+			return Ok(ChatCommand::ModelPicker);
 		}
 		if text == "/help" {
 			return Ok(ChatCommand::Help);
@@ -93,6 +110,9 @@ mod tests {
 	#[test]
 	fn test_slash_commands() {
 		assert_eq!(parse_input("/model smol"), Ok(ChatCommand::Model(Str::from("smol"))));
+		assert_eq!(parse_input("/model"), Ok(ChatCommand::ModelPicker));
+		assert_eq!(parse_input("/model  "), Ok(ChatCommand::ModelPicker));
+		assert_eq!(parse_input("/models"), Ok(ChatCommand::ModelPicker));
 		assert_eq!(parse_input("/help"), Ok(ChatCommand::Help));
 		assert_eq!(parse_input("/login"), Ok(ChatCommand::Login(None)));
 		assert_eq!(
@@ -105,12 +125,16 @@ mod tests {
 
 	#[test]
 	fn test_invalid_slash_commands() {
-		assert_eq!(parse_input("/model  "), Err(InputError::EmptyModel));
-		assert_eq!(parse_input("/model"), Err(InputError::EmptyModel));
 		assert_eq!(
 			parse_input("/unknown arg"),
 			Err(InputError::UnknownCommand(Str::from("/unknown")))
 		);
+	}
+
+	#[test]
+	fn blank_input_is_nothing() {
+		assert_eq!(parse_input(""), Ok(ChatCommand::Nothing));
+		assert_eq!(parse_input(" \t\n"), Ok(ChatCommand::Nothing));
 	}
 
 	#[test]

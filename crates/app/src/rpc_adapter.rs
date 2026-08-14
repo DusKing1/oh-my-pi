@@ -1671,13 +1671,17 @@ fn tool_definition(tool: &pb::ToolDef) -> Result<ToolDefinition, Status> {
 	})
 }
 
+/// Lowers proto chat parameters into a canonical [`ChatRequest`].
+///
+/// `params.tools` is the explicit tool selection: named tools resolve to their
+/// live registry definitions, and an empty list advertises no tools at all —
+/// callers such as tool-incapable models and the eval completion bridge rely
+/// on an empty list meaning "none", never "everything".
 fn chat_request(
 	messages: Vec<Message>,
 	params: &pb::ChatParams,
 	tool_registry: &ToolRegistry,
 ) -> Result<omp_llm_inference::call::ChatRequest, Status> {
-	let advertised = tool_registry
-		.advertise(LoweringCaps { strict_schema: false, grammar: GrammarBits::empty() });
 	if let Some(tool) = params
 		.tools
 		.iter()
@@ -1688,17 +1692,21 @@ fn chat_request(
 			tool.name
 		)));
 	}
-	let tools: Vec<ToolDefinition> = advertised
-		.into_iter()
-		.filter(|tool| {
-			params.tools.is_empty()
-				|| params
+	let tools: Vec<ToolDefinition> = if params.tools.is_empty() {
+		Vec::new()
+	} else {
+		tool_registry
+			.advertise(LoweringCaps { strict_schema: false, grammar: GrammarBits::empty() })
+			.into_iter()
+			.filter(|tool| {
+				params
 					.tools
 					.iter()
 					.any(|requested| requested.name == tool.identity.name.as_str())
-		})
-		.map(|tool| tool.definition)
-		.collect();
+			})
+			.map(|tool| tool.definition)
+			.collect()
+	};
 	let tool_choice = params
 		.tool_choice
 		.as_ref()

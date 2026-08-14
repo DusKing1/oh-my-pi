@@ -21,8 +21,8 @@ use omp_core::{Str, fmts};
 use omp_llm_catalog::GrammarBits;
 use omp_llm_inference::{
 	Client, Registry as InferenceRegistry, ToolInputConstraint,
-	answer::{AuthAnswer, AuthEvent},
-	call::{AuthRequest, CallMeta, LoginRequest, Target},
+	answer::{AuthAnswer, AuthEvent, AuthPromptKind as InferenceAuthPromptKind, AuthResponse},
+	call::{AuthInput, AuthRequest, CallMeta, LoginRequest, Target},
 	error::ErrorDetail,
 	id::RequestId,
 	receipt::ExecutionBudget,
@@ -41,7 +41,9 @@ use thiserror::Error;
 use xutf::IntoAnsiStripped as _;
 
 use crate::{
-	chat_ui::{self, ChatAuth, ChatAuthEvent, ChatUiExit, ChatUiSession, ResumeChoice},
+	chat_ui::{
+		self, AuthPromptKind, ChatAuth, ChatAuthEvent, ChatUiExit, ChatUiSession, ResumeChoice,
+	},
 	cli::ChatArgs,
 };
 
@@ -161,13 +163,14 @@ struct ChatAuthWorker {
 impl ChatAuthWorker {
 	fn start(registry: InferenceRegistry) -> Self {
 		let (request_tx, request_rx) = flume::bounded(1);
+		let (answer_tx, answer_rx) = flume::bounded(1);
 		let (event_tx, event_rx) = flume::unbounded();
 		let active = Arc::new(AtomicBool::new(false));
 		let worker_active = Arc::clone(&active);
 		let task = tokio::spawn(async move {
 			while let Ok(provider) = request_rx.recv_async().await {
 				let reset = AuthActivity(Arc::clone(&worker_active));
-				let result = run_chat_login(&registry, provider, &event_tx).await;
+				let result = run_chat_login(&registry, provider, &event_tx, &answer_rx).await;
 				drop(reset);
 				let event = match result {
 					Ok(message) => ChatAuthEvent::Complete(message),
@@ -176,7 +179,7 @@ impl ChatAuthWorker {
 				let _ = event_tx.send(event);
 			}
 		});
-		Self { ui: ChatAuth::new(request_tx, event_rx, active), task: Some(task) }
+		Self { ui: ChatAuth::new(request_tx, answer_tx, event_rx, active), task: Some(task) }
 	}
 
 	async fn shutdown(mut self) {
@@ -223,6 +226,7 @@ async fn run_chat_login(
 	registry: &InferenceRegistry,
 	provider: Str,
 	events: &flume::Sender<ChatAuthEvent>,
+	answers: &flume::Receiver<AuthInput>,
 ) -> Result<Str, Str> {
 	let provider = omp_llm_catalog::ProviderId::from(provider);
 	let planner = Router::new(registry.clone(), Duration::from_secs(30));
@@ -241,37 +245,51 @@ async fn run_chat_login(
 	let AuthAnswer::Session(session) = answer else {
 		return Err(fmts!("provider `{provider}` did not start an interactive login"));
 	};
-	let mut waiting = false;
 	while let Ok(event) = session.events.recv_async().await {
 		let event = event.map_err(|error| auth_error_message(&error))?;
-		let message = match event {
+		match event {
 			AuthEvent::OpenUrl(url) => {
-				fmts!("Open {url} to continue authentication.")
+				events
+					.send(ChatAuthEvent::Url(url))
+					.map_err(|_| Str::new_static("chat authentication view closed"))?;
 			},
 			AuthEvent::ShowDeviceCode { code, verification_url } => {
-				fmts!("Open {verification_url} and enter device code `{}`.", code.expose_secret())
+				events
+					.send(ChatAuthEvent::DeviceCode {
+						code: Str::from(code.expose_secret()),
+						url:  verification_url,
+					})
+					.map_err(|_| Str::new_static("chat authentication view closed"))?;
 			},
 			AuthEvent::Prompt(prompt) => {
+				let kind = match prompt.input {
+					InferenceAuthPromptKind::ApiKey => AuthPromptKind::ApiKey,
+					InferenceAuthPromptKind::AuthorizationCode => AuthPromptKind::AuthorizationCode,
+					InferenceAuthPromptKind::SessionToken => AuthPromptKind::SessionToken,
+					InferenceAuthPromptKind::Confirmation => AuthPromptKind::Confirmation,
+				};
 				events
-					.send(ChatAuthEvent::Notice(fmts!("Provider requested input: {}", prompt.message)))
+					.send(ChatAuthEvent::Prompt { message: prompt.message, kind })
 					.map_err(|_| Str::new_static("chat authentication view closed"))?;
-				return Err(fmts!(
-					"This login requires private input; run `omp auth login {provider}` in another \
-					 terminal."
-				));
+				let input = answers
+					.recv_async()
+					.await
+					.map_err(|_| Str::new_static("chat authentication view closed"))?;
+				session
+					.responses
+					.send_async(AuthResponse { session: session.id.clone(), input })
+					.await
+					.map_err(|_| Str::new_static("authentication provider stopped accepting input"))?;
 			},
-			AuthEvent::Waiting if waiting => continue,
 			AuthEvent::Waiting => {
-				waiting = true;
-				Str::new_static("Waiting for provider authorization…")
+				events
+					.send(ChatAuthEvent::Notice(Str::new_static("Waiting for provider authorization…")))
+					.map_err(|_| Str::new_static("chat authentication view closed"))?;
 			},
 			AuthEvent::Complete(account) => {
 				return Ok(fmts!("Authenticated `{}` for `{}`.", account.account, account.provider));
 			},
-		};
-		events
-			.send(ChatAuthEvent::Notice(message))
-			.map_err(|_| Str::new_static("chat authentication view closed"))?;
+		}
 	}
 	Err(fmts!("authentication for `{provider}` ended without completing"))
 }
@@ -471,7 +489,10 @@ impl<C: TurnClient + Clone + 'static> crate::envd::eval::ParentSessionHost for C
 			)
 			.await
 			.map_err(|error| crate::envd::eval::BridgeHostError::message(error.to_string()))?;
-		let text = bridge_outcome_text(&summary.outcome);
+		let text = summary
+			.outcome
+			.as_ref()
+			.map_or_else(|| "(interrupted)".to_owned(), bridge_outcome_text);
 		let artifact_dir = context.sessions_dir.join(context.session_id.as_str());
 		std::fs::create_dir_all(&artifact_dir)
 			.map_err(|error| crate::envd::eval::BridgeHostError::message(error.to_string()))?;
@@ -516,6 +537,15 @@ pub async fn run(args: ChatArgs) -> miette::Result<()> {
 	use miette::{Context as _, IntoDiagnostic as _};
 	let root = canonical_project(&args.project).into_diagnostic()?;
 	let data_dir = crate::cli::data_dir(None)?;
+	let model = args
+		.model
+		.clone()
+		.or_else(|| {
+			crate::settings::Settings::load(&data_dir)
+				.default_model
+				.map(Str::from)
+		})
+		.ok_or_else(|| miette::miette!("no model configured — run `omp` again to finish setup"))?;
 	let state_dir = crate::project_state::directory(&data_dir, &root).into_diagnostic()?;
 	let sessions_dir = state_dir.join("sessions");
 	ensure_state_directory(&state_dir).into_diagnostic()?;
@@ -540,7 +570,7 @@ pub async fn run(args: ChatArgs) -> miette::Result<()> {
 	let session = open_session(&root, &sessions_dir, args.resume.as_ref(), registry.as_ref())
 		.into_diagnostic()?;
 	let snapshot =
-		agent_snapshot(args.model.as_str(), catalog, &root, &session.id, Arc::clone(&registry))
+		agent_snapshot(model.as_str(), catalog, &root, &session.id, Arc::clone(&registry))
 			.into_diagnostic()?;
 	let state = AgentState::new(snapshot);
 
@@ -557,6 +587,7 @@ pub async fn run(args: ChatArgs) -> miette::Result<()> {
 			Arc::clone(&eval_bridge),
 			eval_control.clone(),
 			None,
+			data_dir.clone(),
 			ChatScope { catalog, root: &root, sessions_dir: &sessions_dir, registry },
 		)
 		.await
@@ -578,6 +609,7 @@ pub async fn run(args: ChatArgs) -> miette::Result<()> {
 			eval_bridge,
 			eval_control,
 			Some(inference_registry),
+			data_dir,
 			ChatScope { catalog, root: &root, sessions_dir: &sessions_dir, registry },
 		)
 		.await
@@ -610,6 +642,7 @@ async fn run_ui<C: TurnClient + Clone + 'static>(
 	eval_bridge: Arc<crate::envd::eval::SessionBridgeHost>,
 	eval_control: omp_tools::eval::EvalSessionControl,
 	auth_registry: Option<InferenceRegistry>,
+	data_dir: PathBuf,
 	scope: ChatScope<'_>,
 ) -> Result<(), ChatError> {
 	let parent = Arc::new(ChatParentHost::new(
@@ -655,6 +688,7 @@ async fn run_ui<C: TurnClient + Clone + 'static>(
 			agent,
 			ChatUiSession { session_id: id, initial_items, context_window },
 			auth.as_ref().map(|worker| &worker.ui),
+			data_dir.clone(),
 			|| {
 				resume_choices(scope.sessions_dir, scope.root, &current_id).map_err(anyhow::Error::from)
 			},
