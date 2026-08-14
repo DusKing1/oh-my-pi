@@ -95,6 +95,7 @@ libc = "0.2"
 llama-cpp-2 = { version = "0.1.154", default-features = false }
 lscolors = { version = "0.21", default-features = false, features = ["gnu_legacy"] }
 memchr = "2"
+miette = { version = "7.6.0", features = ["fancy"] }
 memmap2 = "0.9"
 mermaid-text = "0.57"
 multer = "3.1"
@@ -118,6 +119,7 @@ omp-gui = { path = "crates/gui", version = "0.1.0" }
 omp-hashline = { path = "crates/hashline", version = "0.1.0" }
 omp-llm-catalog = { path = "crates/llm-catalog", version = "0.1.0" }
 omp-llm-inference = { path = "crates/llm-inference", version = "0.1.0" }
+omp-macros = { path = "crates/macros", version = "0.1.0" }
 omp-proto = { path = "crates/proto", version = "0.1.0" }
 omp-py = { path = "crates/py", version = "0.1.0" }
 omp-rpc = { path = "crates/rpc", version = "0.1.0" }
@@ -130,7 +132,6 @@ omp-telemetry = { path = "crates/telemetry", version = "0.1.0" }
 omp-tool = { path = "crates/tool", version = "0.1.0" }
 omp-tools = { path = "crates/tools", version = "0.1.0" }
 omp-tui = { path = "crates/tui", version = "0.1.0" }
-omp-tui-macros = { path = "crates/tui-macros", version = "0.1.0" }
 omp-voice-kokoro = { path = "crates/voice-kokoro", version = "0.1.0" }
 omp-walker = { path = "crates/walker", version = "0.1.0" }
 onig = { version = "6", default-features = false }
@@ -172,7 +173,6 @@ rustix = { version = "1.1", features = ["fs", "process", "time"] }
 rusqlite = { version = "0.40", features = ["bundled", "fallible_uint"] }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-schemars = "1.2.2"
 secrecy = "0.10"
 security-framework = "3.7"
 rustybuzz = "0.20"

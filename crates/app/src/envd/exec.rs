@@ -643,7 +643,7 @@ async fn run_session_command(shell: &mut Shell, command: SessionCommand) {
 				command.control.spawns.terminate(request.grace).await;
 				RunTerminal::Cancelled
 			},
-			_ = &mut timeout => {
+			() = &mut timeout => {
 				command.control.spawns.terminate(CANCEL_GRACE).await;
 				RunTerminal::Timeout
 			},

@@ -19,7 +19,7 @@ use super::exec::{ExecError, ExecEvent, ExecHost, ExecRun};
 
 /// Shell resource adapter backed by the app-owned execution host.
 #[derive(Clone)]
-pub(crate) struct ShellExecHost {
+pub struct ShellExecHost {
 	host:    ExecHost,
 	cwd_uri: Str,
 }
@@ -27,28 +27,26 @@ pub(crate) struct ShellExecHost {
 impl ShellExecHost {
 	/// Binds shell execution to the workspace root URI used for sessions and
 	/// detached processes.
-	pub(crate) fn new(host: ExecHost, cwd_uri: Str) -> Self {
+	pub(crate) const fn new(host: ExecHost, cwd_uri: Str) -> Self {
 		Self { host, cwd_uri }
 	}
 }
 
 /// Foreground shell run retaining the concrete host's process-tree guard.
-pub(crate) struct HostShellRun {
+pub struct HostShellRun {
 	started: Option<bytes::Bytes>,
 	run:     ExecRun,
 }
 
 impl ShellRun for HostShellRun {
-	fn next_event(&mut self) -> impl Future<Output = Result<Option<RunEvent>, Fault>> + Send + '_ {
-		async move {
-			if let Some(exec_id) = self.started.take() {
-				return Ok(Some(RunEvent::Started { exec_id }));
-			}
-			let Some(event) = self.run.next_event().await else {
-				return Ok(None);
-			};
-			map_event(event).map(Some)
+	async fn next_event(&mut self) -> Result<Option<RunEvent>, Fault> {
+		if let Some(exec_id) = self.started.take() {
+			return Ok(Some(RunEvent::Started { exec_id }));
 		}
+		let Some(event) = self.run.next_event().await else {
+			return Ok(None);
+		};
+		map_event(event).map(Some)
 	}
 
 	fn cancel(&self) -> impl Future<Output = Result<(), Fault>> + Send + '_ {
@@ -60,74 +58,65 @@ impl ShellRun for HostShellRun {
 impl ShellExec for ShellExecHost {
 	type Run = HostShellRun;
 
-	fn open_session(&self) -> impl Future<Output = Result<Session, Fault>> + Send + '_ {
-		async move {
-			let opened = self
-				.host
-				.open_session(OpenSessionRequest {
-					cwd_uri: self.cwd_uri.to_string(),
-					pty: None,
-					..Default::default()
-				})
-				.await
-				.map_err(|error| resource_fault("open_session", error))?;
-			Ok(Session { id: opened.session })
-		}
+	async fn open_session(&self) -> Result<Session, Fault> {
+		let opened = self
+			.host
+			.open_session(OpenSessionRequest {
+				cwd_uri: self.cwd_uri.to_string(),
+				pty: None,
+				..Default::default()
+			})
+			.await
+			.map_err(|error| resource_fault("open_session", error))?;
+		Ok(Session { id: opened.session })
 	}
 
-	fn run<'a>(
+	async fn run<'a>(
 		&'a self,
 		session: &'a Session,
 		request: RunRequest,
-	) -> impl Future<Output = Result<Self::Run, Fault>> + Send + 'a {
-		async move {
-			let (started, run) = self
-				.host
-				.exec(
-					ExecRequest {
-						session: session.id.clone(),
-						source: Some(Script { text: request.command.to_string(), ..Default::default() }),
-						..Default::default()
-					},
-					request.timeout_ms.map(Duration::from_millis),
-				)
-				.await
-				.map_err(|error| resource_fault("run", error))?;
-			Ok(HostShellRun { started: Some(started.exec), run })
-		}
+	) -> Result<Self::Run, Fault> {
+		let (started, run) = self
+			.host
+			.exec(
+				ExecRequest {
+					session: session.id.clone(),
+					source: Some(Script { text: request.command.to_string(), ..Default::default() }),
+					..Default::default()
+				},
+				request.timeout_ms.map(Duration::from_millis),
+			)
+			.await
+			.map_err(|error| resource_fault("run", error))?;
+		Ok(HostShellRun { started: Some(started.exec), run })
 	}
 
-	fn detach(
-		&self,
-		request: DetachRequest,
-	) -> impl Future<Output = Result<DetachedJob, Fault>> + Send + '_ {
-		async move {
-			let started = self
-				.host
-				.start_process(StartProcess {
-					name: request.name.to_string(),
-					spec: Some(ProcessSpec {
-						source: Some(Script { text: request.command.to_string(), ..Default::default() }),
-						cwd_uri: self.cwd_uri.to_string(),
-						restart: Some(RestartSpec {
-							policy: RestartPolicy::Never as i32,
-							..Default::default()
-						}),
+	async fn detach(&self, request: DetachRequest) -> Result<DetachedJob, Fault> {
+		let started = self
+			.host
+			.start_process(StartProcess {
+				name: request.name.to_string(),
+				spec: Some(ProcessSpec {
+					source: Some(Script { text: request.command.to_string(), ..Default::default() }),
+					cwd_uri: self.cwd_uri.to_string(),
+					restart: Some(RestartSpec {
+						policy: RestartPolicy::Never as i32,
 						..Default::default()
 					}),
 					..Default::default()
-				})
-				.await
-				.map_err(|error| resource_fault("detach", error))?;
-			let id = fmts!("{}#{}", started.name, started.generation);
-			Ok(DetachedJob {
-				id,
-				owner: JobOwner::NamedProcess {
-					name:       Str::from(started.name),
-					generation: started.generation,
-				},
+				}),
+				..Default::default()
 			})
-		}
+			.await
+			.map_err(|error| resource_fault("detach", error))?;
+		let id = fmts!("{}#{}", started.name, started.generation);
+		Ok(DetachedJob {
+			id,
+			owner: JobOwner::NamedProcess {
+				name:       Str::from(started.name),
+				generation: started.generation,
+			},
+		})
 	}
 }
 

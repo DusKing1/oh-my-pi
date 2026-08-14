@@ -6,7 +6,7 @@ use std::{
 	path::Path,
 	sync::{
 		Arc,
-		atomic::{AtomicU8, Ordering},
+		atomic::{AtomicU8, AtomicU64, Ordering},
 	},
 	time::Duration,
 };
@@ -45,6 +45,7 @@ const DEFAULT_TOOL_DEADLINE: Duration = Duration::from_secs(300);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const NATIVE_CANCEL_GRACE: Duration = Duration::from_millis(250);
 const INVOCATION_RESPONSE_SEND_GRACE: Duration = Duration::from_millis(250);
+static NEXT_CONNECTION_OWNER: AtomicU64 = AtomicU64::new(1);
 
 /// Environment-daemon assembly or serving failure.
 #[derive(Debug, Error)]
@@ -524,7 +525,7 @@ impl EnvServer {
 		loop {
 			let next = tokio::select! {
 				result = requests.recv_async() => match result {
-					Ok(frame) => Some(LoopEvent::Frame(frame)),
+					Ok(frame) => Some(LoopEvent::Frame(Box::new(frame))),
 					Err(_) => None,
 				},
 				result = finished.recv_async() => match result {
@@ -540,7 +541,7 @@ impl EnvServer {
 						connection.finish(done);
 					}
 					self
-						.dispatch(frame, &responses, &finished_tx, &mut connection, allow_eval)
+						.dispatch(*frame, &responses, &finished_tx, &mut connection, allow_eval)
 						.await;
 				},
 			}
@@ -727,7 +728,7 @@ impl EnvServer {
 							pb::ProtocolErrorCode::PreconditionFailed,
 							"ArgText cannot follow ArgsCommitted",
 						)
-						.await
+						.await;
 					},
 					Err((code, message)) => send_error(responses, frame.request_id, code, message).await,
 				}
@@ -753,7 +754,7 @@ impl EnvServer {
 							frame.request_id,
 							server_frame::Body::SessionOpened(response),
 						)
-						.await
+						.await;
 					},
 					Err(error) => send_exec_error(responses, frame.request_id, &error).await,
 				}
@@ -766,7 +767,7 @@ impl EnvServer {
 							frame.request_id,
 							server_frame::Body::SessionClosed(response),
 						)
-						.await
+						.await;
 					},
 					Err(error) => send_exec_error(responses, frame.request_id, &error).await,
 				}
@@ -840,7 +841,7 @@ impl EnvServer {
 							frame.request_id,
 							server_frame::Body::ProcessStarted(response),
 						)
-						.await
+						.await;
 					},
 					Err(error) => send_exec_error(responses, frame.request_id, &error).await,
 				}
@@ -923,7 +924,7 @@ impl EnvServer {
 							frame.request_id,
 							server_frame::Body::ProcessCommandAccepted(response),
 						)
-						.await
+						.await;
 					},
 					Err(error) => send_exec_error(responses, frame.request_id, &error).await,
 				}
@@ -936,7 +937,7 @@ impl EnvServer {
 							frame.request_id,
 							server_frame::Body::ProcessCommandAccepted(response),
 						)
-						.await
+						.await;
 					},
 					Err(error) => send_exec_error(responses, frame.request_id, &error).await,
 				}
@@ -952,14 +953,14 @@ impl EnvServer {
 							frame.request_id,
 							server_frame::Body::ProcessCommandAccepted(response),
 						)
-						.await
+						.await;
 					},
 					Err(error) => send_exec_error(responses, frame.request_id, &error).await,
 				}
 			},
 			client_frame::Body::BlobStat(request) => match self.blobs.stat(&request.hash) {
 				Ok(response) => {
-					send_body(responses, frame.request_id, server_frame::Body::BlobStat(response)).await
+					send_body(responses, frame.request_id, server_frame::Body::BlobStat(response)).await;
 				},
 				Err(error) => send_blob_error(responses, frame.request_id, &error).await,
 			},
@@ -997,7 +998,7 @@ impl EnvServer {
 			client_frame::Body::BlobDelete(request) => match self.blobs.delete(&request.hash) {
 				Ok(response) => {
 					send_body(responses, frame.request_id, server_frame::Body::BlobDeleted(response))
-						.await
+						.await;
 				},
 				Err(error) => send_blob_error(responses, frame.request_id, &error).await,
 			},
@@ -1063,7 +1064,7 @@ impl EnvServer {
 			.expect("a live registry identity always has an execution route");
 		let cancel = CancellationToken::new();
 		if route == ToolRoute::Native {
-			let (feed, params) = IncomingParams::channel();
+			let (feed, params) = IncomingParams::owned_channel(connection.owner.clone());
 			let lifecycle = Arc::new(NativeLifecycle::default());
 			let name = Str::from(request.name);
 			let deadline = if request.deadline_ms == 0 {
@@ -1144,7 +1145,6 @@ impl EnvServer {
 				"tool name and revision are not registered",
 			)
 			.await;
-			return;
 		}
 	}
 
@@ -1284,11 +1284,10 @@ impl EnvServer {
 		responses: &flume::Sender<pb::ServerFrame>,
 		connection: &mut ConnectionState,
 	) {
-		if !connection.requests.contains_key(&request_id) {
-			connection
-				.requests
-				.insert(request_id, RequestState::BlobPut(BlobUpload::default()));
-		}
+		connection
+			.requests
+			.entry(request_id)
+			.or_insert_with(|| RequestState::BlobPut(BlobUpload::default()));
 		let Some(RequestState::BlobPut(upload)) = connection.requests.get_mut(&request_id) else {
 			send_error(
 				responses,
@@ -1352,7 +1351,7 @@ impl EnvServer {
 						size: id.size,
 					}),
 				)
-				.await
+				.await;
 			},
 			Err(error) => send_blob_error(responses, request_id, &error).await,
 		}
@@ -1360,6 +1359,7 @@ impl EnvServer {
 }
 
 struct ConnectionState {
+	owner:          Str,
 	requests:       HashMap<u64, RequestState>,
 	invocation_ids: HashMap<Str, u64>,
 	exec_host:      ExecHost,
@@ -1462,13 +1462,19 @@ struct Finished {
 }
 
 enum LoopEvent {
-	Frame(pb::ClientFrame),
+	Frame(Box<pb::ClientFrame>),
 	Finished(Finished),
 }
 
 impl ConnectionState {
 	fn new(exec_host: ExecHost) -> Self {
-		Self { requests: HashMap::new(), invocation_ids: HashMap::new(), exec_host }
+		let number = NEXT_CONNECTION_OWNER.fetch_add(1, Ordering::Relaxed);
+		Self {
+			owner: Str::from(format!("env-connection-{number}")),
+			requests: HashMap::new(),
+			invocation_ids: HashMap::new(),
+			exec_host,
+		}
 	}
 
 	fn invocation_mut(
@@ -1715,7 +1721,7 @@ impl ConnectionState {
 					cancel.cancel();
 				},
 				RequestState::ProcessAttach { cancel } | RequestState::BlobGet { cancel } => {
-					cancel.cancel()
+					cancel.cancel();
 				},
 				RequestState::BlobPut(_) => {},
 			}
@@ -2064,22 +2070,17 @@ fn spawn_worker_invocation(
 				},
 				Some(WorkerEvent::Complete(complete)) => {
 					let is_error = complete.is_error;
-					let json = match worker_verdict_json(complete.details_json, is_error) {
-						Ok(json) => json,
-						Err(_) => {
-							send_abort_verdict(
-								&responses,
-								request_id,
-								&invocation_id,
-								omp_tool::Abort::EffectsUnknown {
-									reason: Str::new_static(
-										"worker returned invalid structured result JSON",
-									),
-								},
-							)
-							.await;
-							break;
-						},
+					let Ok(json) = worker_verdict_json(complete.details_json, is_error) else {
+						send_abort_verdict(
+							&responses,
+							request_id,
+							&invocation_id,
+							omp_tool::Abort::EffectsUnknown {
+								reason: Str::new_static("worker returned invalid structured result JSON"),
+							},
+						)
+						.await;
+						break;
 					};
 					send_invocation_terminal_body(
 						&responses,
@@ -2207,7 +2208,7 @@ fn spawn_exec(
 			};
 			match event {
 				Some(ExecEvent::Output(output)) => {
-					send_body(&responses, request_id, server_frame::Body::Output(output)).await
+					send_body(&responses, request_id, server_frame::Body::Output(output)).await;
 				},
 				Some(ExecEvent::Exit(exit)) => {
 					terminal = true;
@@ -2493,14 +2494,14 @@ async fn send_invocation_terminal_body(
 ) {
 	let frame = checked_server_frame(request_id, body);
 	let retry = frame.clone();
-	match tokio::time::timeout(INVOCATION_RESPONSE_SEND_GRACE, responses.send_async(frame)).await {
-		Ok(_) => {},
-		Err(_) => {
-			let responses = responses.clone();
-			tokio::spawn(async move {
-				let _ = responses.send_async(retry).await;
-			});
-		},
+	if tokio::time::timeout(INVOCATION_RESPONSE_SEND_GRACE, responses.send_async(frame))
+		.await
+		.is_err()
+	{
+		let responses = responses.clone();
+		tokio::spawn(async move {
+			let _ = responses.send_async(retry).await;
+		});
 	}
 }
 
@@ -2655,19 +2656,20 @@ pub async fn run(args: EnvdArgs) -> Result<(), EnvdError> {
 pub async fn run_with_registry(args: EnvdArgs, registry: Registry) -> Result<(), EnvdError> {
 	let workspace = WorkspaceHost::open(&args.root)?;
 	let root = workspace.root().to_path_buf();
-	let state_dir = match args.state_dir {
-		Some(path) => path,
-		None => {
-			let data_dir = crate::cli::data_dir(None)
-				.map_err(|error| io::Error::new(io::ErrorKind::NotFound, error.to_string()))?;
-			crate::project_state::directory(&data_dir, &root)?
-		},
+	let state_dir = if let Some(path) = args.state_dir {
+		path
+	} else {
+		let data_dir = crate::cli::data_dir(None)
+			.map_err(|error| io::Error::new(io::ErrorKind::NotFound, error.to_string()))?;
+		crate::project_state::directory(&data_dir, &root)?
 	};
 	ensure_directory(&state_dir)?;
-	let socket = args.socket.unwrap_or_else(|| state_dir.join("env.sock"));
+	let socket = args
+		.socket
+		.unwrap_or_else(|| crate::project_state::environment_socket(&state_dir));
 	let docserver_socket = args
 		.docserver_socket
-		.unwrap_or_else(|| state_dir.join("docserver.sock"));
+		.unwrap_or_else(|| crate::project_state::document_socket(&state_dir));
 	let mut worker_config = ToolWorkerConfig::current()?;
 	if args.py_eval {
 		worker_config

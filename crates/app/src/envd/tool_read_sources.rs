@@ -2,7 +2,6 @@
 
 use std::{
 	borrow::Cow,
-	future::Future,
 	io,
 	path::{Component, Path, PathBuf},
 	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -77,7 +76,7 @@ impl SystemHttpClient {
 				let response = match self
 					.inner
 					.get(authored_url.as_str())
-					.headers(request_headers(*user_agent, &caller_headers))
+					.headers(request_headers(user_agent, &caller_headers))
 					.send()
 					.await
 				{
@@ -130,11 +129,8 @@ impl Default for SystemHttpClient {
 }
 
 impl HttpClient for SystemHttpClient {
-	fn get(
-		&self,
-		request: HttpRequest,
-	) -> impl Future<Output = Result<HttpResponse, WebError>> + Send + '_ {
-		async move { self.request(request).await }
+	async fn get(&self, request: HttpRequest) -> Result<HttpResponse, WebError> {
+		self.request(request).await
 	}
 }
 
@@ -394,7 +390,7 @@ fn days_from_civil(mut year: i64, month: u32, day: u32) -> i64 {
 /// App-owned source adapter joining document leases and canonical workspace
 /// I/O.
 #[derive(Clone, Debug)]
-pub(crate) struct ReadSourceAdapter {
+pub struct ReadSourceAdapter {
 	documents: DocumentHost,
 	workspace: WorkspaceHost,
 	http:      SystemHttpClient,
@@ -437,17 +433,14 @@ impl ReadSourceAdapter {
 }
 
 impl HttpClient for ReadSourceAdapter {
-	fn get(
-		&self,
-		request: HttpRequest,
-	) -> impl Future<Output = Result<HttpResponse, WebError>> + Send + '_ {
-		async move { self.http.get(request).await }
+	async fn get(&self, request: HttpRequest) -> Result<HttpResponse, WebError> {
+		self.http.get(request).await
 	}
 }
 
 /// One app-owned lease whose bytes remain stable until drop.
 #[derive(Debug)]
-pub(crate) struct ReadDocumentLease {
+pub struct ReadDocumentLease {
 	backing:        ReadLeaseBacking,
 	revision:       Str,
 	canonical_path: Str,
@@ -468,14 +461,12 @@ impl ReadLease for ReadDocumentLease {
 		&self.canonical_path
 	}
 
-	fn read_all(&self) -> impl Future<Output = Result<Bytes, Fault>> + Send + '_ {
-		async move {
-			match &self.backing {
-				ReadLeaseBacking::Document { host, lease } => read_whole(host, lease)
-					.await
-					.map_err(|error| Fault::source(error.to_string())),
-				ReadLeaseBacking::File(bytes) => Ok(bytes.clone()),
-			}
+	async fn read_all(&self) -> Result<Bytes, Fault> {
+		match &self.backing {
+			ReadLeaseBacking::Document { host, lease } => read_whole(host, lease)
+				.await
+				.map_err(|error| Fault::source(error.to_string())),
+			ReadLeaseBacking::File(bytes) => Ok(bytes.clone()),
 		}
 	}
 }
@@ -492,154 +483,132 @@ async fn open_filesystem_lease(canonical_path: Str) -> Result<ReadDocumentLease,
 impl ReadSources for ReadSourceAdapter {
 	type Lease = ReadDocumentLease;
 
-	fn stat(&self, path: Str) -> impl Future<Output = Result<SourceStat, Fault>> + Send + '_ {
-		async move { self.stat_path(&path).await }
+	async fn stat(&self, path: Str) -> Result<SourceStat, Fault> {
+		self.stat_path(&path).await
 	}
 
-	fn resolve_suffix(
-		&self,
-		path: Str,
-	) -> impl Future<Output = Result<Option<SourceStat>, Fault>> + Send + '_ {
-		async move {
-			let Some(suffix) = normalized_suffix(&path) else {
-				return Ok(None);
-			};
-			let request = self
-				.workspace
-				.request()
-				.hidden(true)
-				.gitignore(true)
-				.skip_git(true)
-				.skip_node_modules(true)
-				.detail(WalkDetail::Minimal)
-				.order(WalkOrder::Path)
-				.depth(1, usize::MAX);
-			let deadline = Instant::now() + Duration::from_secs(5);
-			let outcome = match request.collect_with_heartbeat(|| {
-				(Instant::now() < deadline)
-					.then_some(())
-					.ok_or("suffix resolution timed out")
-			}) {
-				Ok(outcome) => outcome,
-				Err(_) => return Ok(None),
-			};
-			let mut matched = None;
-			for entry in outcome.entries {
-				if path_has_suffix(&entry.path, &suffix) {
-					if matched.is_some() {
-						return Ok(None);
-					}
-					matched = Some(entry.path);
+	async fn resolve_suffix(&self, path: Str) -> Result<Option<SourceStat>, Fault> {
+		let Some(suffix) = normalized_suffix(&path) else {
+			return Ok(None);
+		};
+		let request = self
+			.workspace
+			.request()
+			.hidden(true)
+			.gitignore(true)
+			.skip_git(true)
+			.skip_node_modules(true)
+			.detail(WalkDetail::Minimal)
+			.order(WalkOrder::Path)
+			.depth(1, usize::MAX);
+		let deadline = Instant::now() + Duration::from_secs(5);
+		let Ok(outcome) = request.collect_with_heartbeat(|| {
+			(Instant::now() < deadline)
+				.then_some(())
+				.ok_or("suffix resolution timed out")
+		}) else {
+			return Ok(None);
+		};
+		let mut matched = None;
+		for entry in outcome.entries {
+			if path_has_suffix(&entry.path, &suffix) {
+				if matched.is_some() {
+					return Ok(None);
 				}
+				matched = Some(entry.path);
 			}
-			let Some(relative) = matched else {
-				return Ok(None);
-			};
-			let absolute = self.workspace.root().join(&relative);
-			let absolute = utf8_path(&absolute)?;
-			let Ok(mut stat) = self.stat_path(&absolute).await else {
-				return Ok(None);
-			};
-			stat.display_path = Str::from(relative);
-			Ok(Some(stat))
 		}
+		let Some(relative) = matched else {
+			return Ok(None);
+		};
+		let absolute = self.workspace.root().join(&relative);
+		let absolute = utf8_path(&absolute)?;
+		let Ok(mut stat) = self.stat_path(&absolute).await else {
+			return Ok(None);
+		};
+		stat.display_path = Str::from(relative);
+		Ok(Some(stat))
 	}
 
-	fn open(&self, path: Str) -> impl Future<Output = Result<Self::Lease, Fault>> + Send + '_ {
-		async move {
-			let stat = self.stat_path(&path).await?;
-			if !Path::new(stat.canonical_path.as_str()).starts_with(self.workspace.root()) {
-				return open_filesystem_lease(stat.canonical_path).await;
-			}
-			let resolved =
-				resolve_read_document(&self.documents, &stat.canonical_path).map_err(Fault::source)?;
-			let cancel = CancellationToken::new();
-			let lease = DocumentHost::open(&self.documents, resolved.uri, None, &cancel)
-				.await
-				.map_err(|error| Fault::source(error.to_string()))?;
-			let (revision, canonical_path) =
-				read_document_metadata(lease.head()).map_err(Fault::source)?;
-			Ok(ReadDocumentLease {
-				backing: ReadLeaseBacking::Document { host: self.documents.clone(), lease },
-				revision,
-				canonical_path,
+	async fn open(&self, path: Str) -> Result<Self::Lease, Fault> {
+		let stat = self.stat_path(&path).await?;
+		if !Path::new(stat.canonical_path.as_str()).starts_with(self.workspace.root()) {
+			return open_filesystem_lease(stat.canonical_path).await;
+		}
+		let resolved =
+			resolve_read_document(&self.documents, &stat.canonical_path).map_err(Fault::source)?;
+		let cancel = CancellationToken::new();
+		let lease = DocumentHost::open(&self.documents, resolved.uri, None, &cancel)
+			.await
+			.map_err(|error| Fault::source(error.to_string()))?;
+		let (revision, canonical_path) =
+			read_document_metadata(lease.head()).map_err(Fault::source)?;
+		Ok(ReadDocumentLease {
+			backing: ReadLeaseBacking::Document { host: self.documents.clone(), lease },
+			revision,
+			canonical_path,
+		})
+	}
+
+	async fn read_bytes(&self, path: Str) -> Result<Bytes, Fault> {
+		tokio::fs::read(path.as_str())
+			.await
+			.map(Bytes::from)
+			.map_err(|error| source_io("read", &path, error))
+	}
+
+	async fn read_prefix(&self, path: Str, max_bytes: usize) -> Result<Bytes, Fault> {
+		if max_bytes == 0 {
+			return Ok(Bytes::new());
+		}
+		let file = tokio::fs::File::open(path.as_str())
+			.await
+			.map_err(|error| source_io("read", &path, error))?;
+		let mut prefix = Vec::with_capacity(max_bytes);
+		file
+			.take(u64::try_from(max_bytes).unwrap_or(u64::MAX))
+			.read_to_end(&mut prefix)
+			.await
+			.map_err(|error| source_io("read", &path, error))?;
+		Ok(Bytes::from(prefix))
+	}
+
+	async fn list_directory(&self, path: Str, max_depth: usize) -> Result<DirectorySource, Fault> {
+		let root = PathBuf::from(path.as_str());
+		let request = WalkRequest::new(root.clone())
+			.hidden(true)
+			.gitignore(false)
+			.skip_git(true)
+			.skip_node_modules(true)
+			.detail(WalkDetail::Full)
+			.order(WalkOrder::Path)
+			.emit_root(false)
+			.depth(1, max_depth);
+		let outcome = if root.starts_with(self.workspace.root()) {
+			self
+				.workspace
+				.walk(&request, &CancellationToken::new())
+				.map_err(|error| Fault::source(format!("Cannot read directory: {error}")))?
+		} else {
+			request
+				.collect()
+				.map_err(|error| Fault::source(format!("Cannot read directory: {error}")))?
+		};
+		let entries = outcome
+			.entries
+			.into_iter()
+			.map(|entry| DirectoryEntry {
+				path:        Str::from(entry.path),
+				kind:        walker_kind(entry.file_type),
+				byte_len:    entry.size.map_or(0, float_to_u64),
+				modified_ms: entry.mtime.map(float_to_u64),
 			})
-		}
-	}
-
-	fn read_bytes(&self, path: Str) -> impl Future<Output = Result<Bytes, Fault>> + Send + '_ {
-		async move {
-			tokio::fs::read(path.as_str())
-				.await
-				.map(Bytes::from)
-				.map_err(|error| source_io("read", &path, error))
-		}
-	}
-
-	fn read_prefix(
-		&self,
-		path: Str,
-		max_bytes: usize,
-	) -> impl Future<Output = Result<Bytes, Fault>> + Send + '_ {
-		async move {
-			if max_bytes == 0 {
-				return Ok(Bytes::new());
-			}
-			let file = tokio::fs::File::open(path.as_str())
-				.await
-				.map_err(|error| source_io("read", &path, error))?;
-			let mut prefix = Vec::with_capacity(max_bytes);
-			file
-				.take(u64::try_from(max_bytes).unwrap_or(u64::MAX))
-				.read_to_end(&mut prefix)
-				.await
-				.map_err(|error| source_io("read", &path, error))?;
-			Ok(Bytes::from(prefix))
-		}
-	}
-
-	fn list_directory(
-		&self,
-		path: Str,
-		max_depth: usize,
-	) -> impl Future<Output = Result<DirectorySource, Fault>> + Send + '_ {
-		async move {
-			let root = PathBuf::from(path.as_str());
-			let request = WalkRequest::new(root.clone())
-				.hidden(true)
-				.gitignore(false)
-				.skip_git(true)
-				.skip_node_modules(true)
-				.detail(WalkDetail::Full)
-				.order(WalkOrder::Path)
-				.emit_root(false)
-				.depth(1, max_depth);
-			let outcome = if root.starts_with(self.workspace.root()) {
-				self
-					.workspace
-					.walk(&request, &CancellationToken::new())
-					.map_err(|error| Fault::source(format!("Cannot read directory: {error}")))?
-			} else {
-				request
-					.collect()
-					.map_err(|error| Fault::source(format!("Cannot read directory: {error}")))?
-			};
-			let entries = outcome
-				.entries
-				.into_iter()
-				.map(|entry| DirectoryEntry {
-					path:        Str::from(entry.path),
-					kind:        walker_kind(entry.file_type),
-					byte_len:    entry.size.map_or(0, float_to_u64),
-					modified_ms: entry.mtime.map(float_to_u64),
-				})
-				.collect();
-			Ok(DirectorySource {
-				root: utf8_path(&root)?,
-				entries,
-				truncated: outcome.stats.limited_entries != 0,
-			})
-		}
+			.collect();
+		Ok(DirectorySource {
+			root: utf8_path(&root)?,
+			entries,
+			truncated: outcome.stats.limited_entries != 0,
+		})
 	}
 
 	fn record_snapshot(&self, record: SnapshotRecord) -> Result<Option<Str>, Fault> {
@@ -692,7 +661,7 @@ fn display_path(root: &Path, canonical: &Path) -> Result<Str, Fault> {
 		return Ok(if suffix.is_empty() {
 			Str::new_static("~")
 		} else {
-			Str::from(format!("~/{}", suffix))
+			Str::from(format!("~/{suffix}"))
 		});
 	}
 	utf8_path(canonical)
@@ -750,7 +719,7 @@ fn modified_ms(metadata: &std::fs::Metadata) -> Option<u64> {
 		.and_then(|duration| u64::try_from(duration.as_millis()).ok())
 }
 
-fn walker_kind(kind: FileType) -> SourceKind {
+const fn walker_kind(kind: FileType) -> SourceKind {
 	match kind {
 		FileType::File => SourceKind::File,
 		FileType::Dir => SourceKind::Directory,

@@ -51,12 +51,12 @@ pub struct DocumentLease {
 
 impl DocumentLease {
 	/// Returns the opaque connection-owned lease identity.
-	pub fn id(&self) -> &Bytes {
+	pub const fn id(&self) -> &Bytes {
 		&self.lease_id
 	}
 
 	/// Returns the immutable head to which reads and edits are pinned.
-	pub fn head(&self) -> &pb::DocumentHead {
+	pub const fn head(&self) -> &pb::DocumentHead {
 		&self.head
 	}
 
@@ -217,7 +217,7 @@ impl DocumentHost {
 		tokio::spawn(async move {
 			loop {
 				let frame = tokio::select! {
-					_ = reader_shutdown.cancelled() => break,
+					() = reader_shutdown.cancelled() => break,
 					result = wire::read_server_frame(&mut reader, config, &mut read_scratch) => {
 						match result {
 							Ok(Some(frame)) => frame,
@@ -228,7 +228,8 @@ impl DocumentHost {
 				if frame.request_id == 0 {
 					continue;
 				}
-				if let Some(waiter) = reader_pending.lock().remove(&frame.request_id) {
+				let waiter = reader_pending.lock().remove(&frame.request_id);
+				if let Some(waiter) = waiter {
 					let _ = waiter.send(frame);
 				}
 			}
@@ -488,8 +489,8 @@ impl DocumentHost {
 			.await
 			.map_err(|_| DocumentError::Disconnected)?;
 		let frame = tokio::select! {
-			_ = cancel.cancelled() => return Err(DocumentError::Cancelled),
-			_ = self.inner.shutdown.cancelled() => return Err(DocumentError::Disconnected),
+			() = cancel.cancelled() => return Err(DocumentError::Cancelled),
+			() = self.inner.shutdown.cancelled() => return Err(DocumentError::Disconnected),
 			result = response_rx.recv_async() => result.map_err(|_| DocumentError::Disconnected)?,
 		};
 		pending.armed = false;

@@ -113,85 +113,77 @@ impl EditPrepared for PreparedDocument {
 impl EditDocuments for DocumentHost {
 	type Prepared = PreparedDocument;
 
-	fn prepare(
-		&self,
-		request: PrepareRequest,
-	) -> impl Future<Output = Result<Self::Prepared, EditFault>> + Send + '_ {
-		async move {
-			let tag = request.file_hash.clone().ok_or_else(|| {
-				edit_invalid(format!(
-					"Missing hashline snapshot tag for {}; use `[{}#tag]` from your latest read/search \
-					 output. To create a new file, use the write tool.",
-					request.path, request.path
-				))
-			})?;
-			let (resolved, warnings, display_path) = match resolve_document(self, &request.path) {
-				Ok(resolved) => (resolved, Vec::new(), request.path.clone()),
-				Err(error) => match recover_edit_path(self, &request.path, &tag) {
-					Some(recovered) => recovered,
-					None => return Err(edit_invalid(error)),
-				},
-			};
-			let lease = DocumentHost::open(self, resolved.uri, None, &CancellationToken::new())
-				.await
-				.map_err(|error| edit_invalid(error.to_string()))?;
-			if pb::DocumentKind::try_from(lease.head().kind) != Ok(pb::DocumentKind::Text) {
-				return Err(edit_invalid("hashline edits require a text document"));
-			}
-			let base_revision = revision_identity(lease.head()).map_err(edit_invalid)?;
-			let canonical_path = document_path(lease.head()).map_err(edit_invalid)?;
-			let raw_base_bytes = read_whole(self, &lease)
-				.await
-				.map_err(|error| edit_invalid(error.to_string()))?;
-			let notebook = canonical_path.ends_with(".ipynb");
-			let base_bytes = if notebook {
-				let rendered = omp_tools::read::notebook::render(&raw_base_bytes, &request.path)
-					.map_err(|error| edit_invalid(error.to_string()))?;
-				Bytes::from(rendered.text)
-			} else {
-				raw_base_bytes.clone()
-			};
-			let authored_bytes = {
-				let mut snapshots = self.snapshot_store().lock();
-				let snapshot = match snapshots.resolve(&canonical_path, &tag, None) {
-					Ok(snapshot) => snapshot,
-					Err(_) => {
-						let lines = String::from_utf8_lossy(&base_bytes)
-							.lines()
-							.map(Str::from)
-							.collect();
-						let message = MismatchError::new(MismatchDetails {
-							path:               Some(request.path.clone()),
-							expected_file_hash: tag.clone(),
-							actual_file_hash:   compute_snapshot_tag(&base_bytes),
-							file_lines:         lines,
-							anchor_lines:       request.anchor_lines.clone(),
-							hash_recognized:    false,
-						});
-						return Err(edit_stale(message.to_string()));
-					},
-				};
-				validate_seen_lines(
-					&mut snapshots,
-					&snapshot,
-					&request.path,
-					&tag,
-					&request.anchor_lines,
-				)?;
-				snapshot.bytes().clone()
-			};
-			Ok(PreparedDocument {
-				lease,
-				path: canonical_path,
-				display_path,
-				base_revision,
-				base_bytes,
-				authored_bytes,
-				raw_base_bytes,
-				notebook,
-				warnings,
-			})
+	async fn prepare(&self, request: PrepareRequest) -> Result<Self::Prepared, EditFault> {
+		let tag = request.file_hash.clone().ok_or_else(|| {
+			edit_invalid(format!(
+				"Missing hashline snapshot tag for {}; use `[{}#tag]` from your latest read/search \
+				 output. To create a new file, use the write tool.",
+				request.path, request.path
+			))
+		})?;
+		let (resolved, warnings, display_path) = match resolve_document(self, &request.path) {
+			Ok(resolved) => (resolved, Vec::new(), request.path.clone()),
+			Err(error) => match recover_edit_path(self, &request.path, &tag) {
+				Some(recovered) => recovered,
+				None => return Err(edit_invalid(error)),
+			},
+		};
+		let lease = Self::open(self, resolved.uri, None, &CancellationToken::new())
+			.await
+			.map_err(|error| edit_invalid(error.to_string()))?;
+		if pb::DocumentKind::try_from(lease.head().kind) != Ok(pb::DocumentKind::Text) {
+			return Err(edit_invalid("hashline edits require a text document"));
 		}
+		let base_revision = revision_identity(lease.head()).map_err(edit_invalid)?;
+		let canonical_path = document_path(lease.head()).map_err(edit_invalid)?;
+		let raw_base_bytes = read_whole(self, &lease)
+			.await
+			.map_err(|error| edit_invalid(error.to_string()))?;
+		let notebook = canonical_path.ends_with(".ipynb");
+		let base_bytes = if notebook {
+			let rendered = omp_tools::read::notebook::render(&raw_base_bytes, &request.path)
+				.map_err(|error| edit_invalid(error.to_string()))?;
+			Bytes::from(rendered.text)
+		} else {
+			raw_base_bytes.clone()
+		};
+		let authored_bytes = {
+			let mut snapshots = self.snapshot_store().lock();
+			let Ok(snapshot) = snapshots.resolve(&canonical_path, &tag, None) else {
+				let lines = String::from_utf8_lossy(&base_bytes)
+					.lines()
+					.map(Str::from)
+					.collect();
+				let message = MismatchError::new(MismatchDetails {
+					path:               Some(request.path.clone()),
+					expected_file_hash: tag.clone(),
+					actual_file_hash:   compute_snapshot_tag(&base_bytes),
+					file_lines:         lines,
+					anchor_lines:       request.anchor_lines.clone(),
+					hash_recognized:    false,
+				});
+				return Err(edit_stale(message.to_string()));
+			};
+			validate_seen_lines(
+				&mut snapshots,
+				&snapshot,
+				&request.path,
+				&tag,
+				&request.anchor_lines,
+			)?;
+			snapshot.bytes().clone()
+		};
+		Ok(PreparedDocument {
+			lease,
+			path: canonical_path,
+			display_path,
+			base_revision,
+			base_bytes,
+			authored_bytes,
+			raw_base_bytes,
+			notebook,
+			warnings,
+		})
 	}
 
 	fn start_clipboard_batch(&self) -> Clipboard {
@@ -211,214 +203,190 @@ impl EditDocuments for DocumentHost {
 		self.noop_loop_guard().lock().reset(canonical_path);
 	}
 
-	fn commit<'a>(
+	async fn commit<'a>(
 		&'a self,
 		prepared: Vec<&'a mut Self::Prepared>,
 		proposals: Vec<EditProposal>,
 		clipboard: Clipboard,
-	) -> impl Future<Output = Result<CommitResult, EditCommitError>> + Send + 'a {
-		async move {
-			if prepared.len() != proposals.len() {
-				return Err(edit_unknown("prepared section and proposal counts differ"));
+	) -> Result<CommitResult, EditCommitError> {
+		if prepared.len() != proposals.len() {
+			return Err(edit_unknown("prepared section and proposal counts differ"));
+		}
+		let mut operations = Vec::with_capacity(proposals.len().saturating_mul(2));
+		let mut operation_roles = Vec::with_capacity(proposals.len().saturating_mul(2));
+		let mut terminal_indices = Vec::with_capacity(proposals.len());
+		let mut persisted = Vec::with_capacity(proposals.len());
+		let mut move_paths = Vec::with_capacity(proposals.len());
+		for (section_index, (prepared, proposal)) in prepared.iter().zip(&proposals).enumerate() {
+			if proposal.base_revision != prepared.base_revision {
+				return Err(EditCommitError::Rejected(edit_stale(
+					"prepared edit revision changed before commit",
+				)));
 			}
-			let mut operations = Vec::with_capacity(proposals.len().saturating_mul(2));
-			let mut operation_roles = Vec::with_capacity(proposals.len().saturating_mul(2));
-			let mut terminal_indices = Vec::with_capacity(proposals.len());
-			let mut persisted = Vec::with_capacity(proposals.len());
-			let mut move_paths = Vec::with_capacity(proposals.len());
-			for (section_index, (prepared, proposal)) in prepared.iter().zip(&proposals).enumerate() {
-				if proposal.base_revision != prepared.base_revision {
-					return Err(EditCommitError::Rejected(edit_stale(
-						"prepared edit revision changed before commit",
-					)));
-				}
-				let revision = prepared
-					.lease
-					.head()
-					.revision
-					.clone()
-					.ok_or_else(|| edit_unknown("document head omitted its revision"))?;
-				let target = lease_target(&prepared.lease);
-				match &proposal.action {
-					EditAction::Write { content } => {
-						let raw = persisted_edit_bytes(prepared, content)?;
-						operations.push(pb::DocumentMutation {
-							document:  Some(target),
-							operation: Some(pb::document_mutation::Operation::Text(
-								proposed_text_mutation(
-									raw.clone(),
-									revision.clone(),
-									proposal.stale_policy,
-									proposal.format_policy,
-								),
-							)),
-						});
-						operation_roles.push(BatchOperationRole::Write(section_index));
-						terminal_indices.push(operations.len() - 1);
-						persisted.push(Some(content.clone()));
-						move_paths.push(None);
-					},
-					EditAction::Delete => {
-						operations.push(pb::DocumentMutation {
-							document:  Some(target),
-							operation: Some(pb::document_mutation::Operation::Delete(
-								pb::DeleteMutation { base_revision: Some(revision) },
-							)),
-						});
-						operation_roles.push(BatchOperationRole::Delete(section_index));
-						terminal_indices.push(operations.len() - 1);
-						persisted.push(None);
-						move_paths.push(None);
-					},
-					EditAction::Move { destination, content } => {
-						let raw = persisted_edit_bytes(prepared, content)?;
-						if raw != prepared.raw_base_bytes {
-							operations.push(pb::DocumentMutation {
-								document:  Some(target.clone()),
-								operation: Some(pb::document_mutation::Operation::Text(
-									proposed_text_mutation(
-										raw,
-										revision.clone(),
-										proposal.stale_policy,
-										proposal.format_policy,
-									),
-								)),
-							});
-							operation_roles.push(BatchOperationRole::Write(section_index));
-						}
-						let destination_uri =
-							resolve_move_destination(self, destination).map_err(edit_invalid_commit)?;
-						operations.push(pb::DocumentMutation {
-							document:  Some(target),
-							operation: Some(pb::document_mutation::Operation::Move(pb::MoveMutation {
-								base_revision:            Some(revision),
-								destination_uri:          destination_uri.uri.to_string(),
-								destination_precondition: Some(
-									pb::move_mutation::DestinationPrecondition::DestinationMustNotExist(
-										true,
-									),
-								),
-							})),
-						});
-						operation_roles.push(BatchOperationRole::Move(section_index));
-						terminal_indices.push(operations.len() - 1);
-						persisted.push(Some(content.clone()));
-						move_paths.push(Some(destination_uri.path));
-					},
-				}
+			let revision = prepared
+				.lease
+				.head()
+				.revision
+				.clone()
+				.ok_or_else(|| edit_unknown("document head omitted its revision"))?;
+			let target = lease_target(&prepared.lease);
+			match &proposal.action {
+				EditAction::Write { content } => {
+					let raw = persisted_edit_bytes(prepared, content)?;
+					operations.push(pb::DocumentMutation {
+						document:  Some(target),
+						operation: Some(pb::document_mutation::Operation::Text(proposed_text_mutation(
+							raw.clone(),
+							revision.clone(),
+							proposal.stale_policy,
+							proposal.format_policy,
+						))),
+					});
+					operation_roles.push(BatchOperationRole::Write(section_index));
+					terminal_indices.push(operations.len() - 1);
+					persisted.push(Some(content.clone()));
+					move_paths.push(None);
+				},
+				EditAction::Delete => {
+					operations.push(pb::DocumentMutation {
+						document:  Some(target),
+						operation: Some(pb::document_mutation::Operation::Delete(pb::DeleteMutation {
+							base_revision: Some(revision),
+						})),
+					});
+					operation_roles.push(BatchOperationRole::Delete(section_index));
+					terminal_indices.push(operations.len() - 1);
+					persisted.push(None);
+					move_paths.push(None);
+				},
+				EditAction::Move { destination, content } => {
+					let raw = persisted_edit_bytes(prepared, content)?;
+					let destination_uri =
+						resolve_move_destination(self, destination).map_err(edit_invalid_commit)?;
+					let operation = proposed_move_mutation(
+						raw,
+						&prepared.raw_base_bytes,
+						revision,
+						destination_uri.uri.to_string(),
+						proposal.format_policy,
+					);
+					operations.push(pb::DocumentMutation {
+						document:  Some(target),
+						operation: Some(operation),
+					});
+					operation_roles.push(BatchOperationRole::Move(section_index));
+					terminal_indices.push(operations.len() - 1);
+					persisted.push(Some(content.clone()));
+					move_paths.push(Some(destination_uri.path));
+				},
 			}
+		}
 
-			let transaction_id = transaction_id(self.hello().server_epoch.as_ref());
-			let response = self
-				.commit_transaction(transaction_id.clone(), operations, &CancellationToken::new())
-				.await
-				.map_err(|error| edit_unknown(error.to_string()))?;
-			let committed = match response.outcome {
-				Some(pb::commit_transaction_response::Outcome::Committed(committed))
-					if committed.transaction_id == transaction_id =>
-				{
-					committed
-				},
-				Some(pb::commit_transaction_response::Outcome::Rejected(rejected))
-					if rejected.transaction_id == transaction_id =>
-				{
-					let base = prepared
-						.first()
-						.map_or_else(Bytes::new, |prepared| prepared.base_bytes.clone());
-					return Err(EditCommitError::Rejected(map_rejection(&rejected, &base)));
-				},
-				Some(pb::commit_transaction_response::Outcome::PartiallyCommitted(partial))
-					if partial.transaction_id == transaction_id =>
-				{
-					let base = prepared
-						.first()
-						.map_or_else(Bytes::new, |prepared| prepared.base_bytes.clone());
-					let original_fault = map_partial_rejection(&partial, &base);
-					match rollback_partial_commit(self, &prepared, &operation_roles, &partial).await {
-						Ok(()) => return Err(EditCommitError::Rejected(original_fault)),
-						Err(reason) => return Err(EditCommitError::EffectsUnknown { reason }),
+		let transaction_id = transaction_id(self.hello().server_epoch.as_ref());
+		let response = self
+			.commit_transaction(transaction_id.clone(), operations, &CancellationToken::new())
+			.await
+			.map_err(|error| edit_unknown(error.to_string()))?;
+		let committed = match response.outcome {
+			Some(pb::commit_transaction_response::Outcome::Committed(committed))
+				if committed.transaction_id == transaction_id =>
+			{
+				committed
+			},
+			Some(pb::commit_transaction_response::Outcome::Rejected(rejected))
+				if rejected.transaction_id == transaction_id =>
+			{
+				let base = prepared
+					.first()
+					.map_or_else(Bytes::new, |prepared| prepared.base_bytes.clone());
+				return Err(EditCommitError::Rejected(map_rejection(&rejected, &base)));
+			},
+			Some(pb::commit_transaction_response::Outcome::PartiallyCommitted(partial))
+				if partial.transaction_id == transaction_id =>
+			{
+				let base = prepared
+					.first()
+					.map_or_else(Bytes::new, |prepared| prepared.base_bytes.clone());
+				let original_fault = map_partial_rejection(&partial, &base);
+				match rollback_partial_commit(self, &prepared, &operation_roles, &partial).await {
+					Ok(()) => return Err(EditCommitError::Rejected(original_fault)),
+					Err(reason) => return Err(EditCommitError::EffectsUnknown { reason }),
+				}
+			},
+			Some(_) => return Err(edit_unknown("document transaction identity did not match")),
+			None => return Err(edit_unknown("document transaction omitted its outcome")),
+		};
+
+		let section_operation_indices = terminal_indices.clone();
+		let mut sections = Vec::with_capacity(prepared.len());
+		for (section_index, operation_index) in terminal_indices.into_iter().enumerate() {
+			let operation = committed
+				.operations
+				.iter()
+				.find(|operation| operation.operation_index as usize == operation_index)
+				.ok_or_else(|| edit_unknown("document transaction omitted a section result"))?;
+			let deleted = matches!(&proposals[section_index].action, EditAction::Delete);
+			let (new_revision, content) = if deleted {
+				(None, None)
+			} else {
+				let head = operation
+					.head
+					.as_ref()
+					.ok_or_else(|| edit_unknown("committed operation omitted its document head"))?;
+				let revision = revision_identity(head).map_err(edit_unknown)?;
+				let content = read_committed_view(
+					self,
+					head,
+					prepared[section_index].notebook,
+					&prepared[section_index].path,
+				)
+				.await?;
+				persisted[section_index] = Some(content.clone());
+				(Some(revision), Some(content))
+			};
+			sections.push(CommittedSection { new_revision, rebased: operation.rebased, content });
+		}
+
+		let mut snapshots = self.snapshot_store().lock();
+		for (index, proposal) in proposals.iter().enumerate() {
+			match &proposal.action {
+				EditAction::Delete => snapshots.invalidate(&prepared[index].path),
+				EditAction::Move { .. } => {
+					let destination = move_paths[index]
+						.as_ref()
+						.expect("move proposals retain a canonical destination");
+					snapshots
+						.relocate(&prepared[index].path, destination.clone())
+						.map_err(|error| edit_unknown(error.to_string()))?;
+					if let (Some(bytes), Some(operation)) = (
+						persisted[index].clone(),
+						committed.operations.iter().find(|operation| {
+							operation.operation_index as usize == section_operation_indices[index]
+						}),
+					) {
+						record_committed_snapshot(&mut snapshots, destination.clone(), operation, bytes)?;
 					}
 				},
-				Some(_) => return Err(edit_unknown("document transaction identity did not match")),
-				None => return Err(edit_unknown("document transaction omitted its outcome")),
-			};
-
-			let section_operation_indices = terminal_indices.clone();
-			let mut sections = Vec::with_capacity(prepared.len());
-			for (section_index, operation_index) in terminal_indices.into_iter().enumerate() {
-				let operation = committed
-					.operations
-					.iter()
-					.find(|operation| operation.operation_index as usize == operation_index)
-					.ok_or_else(|| edit_unknown("document transaction omitted a section result"))?;
-				let deleted = matches!(&proposals[section_index].action, EditAction::Delete);
-				let (new_revision, content) = if deleted {
-					(None, None)
-				} else {
-					let head = operation
-						.head
-						.as_ref()
-						.ok_or_else(|| edit_unknown("committed operation omitted its document head"))?;
-					let revision = revision_identity(head).map_err(edit_unknown)?;
-					let content = read_committed_view(
-						self,
-						head,
-						prepared[section_index].notebook,
-						&prepared[section_index].path,
-					)
-					.await?;
-					persisted[section_index] = Some(content.clone());
-					(Some(revision), Some(content))
-				};
-				sections.push(CommittedSection { new_revision, rebased: operation.rebased, content });
+				EditAction::Write { .. } => {
+					if let (Some(bytes), Some(operation)) = (
+						persisted[index].clone(),
+						committed.operations.iter().find(|operation| {
+							operation.operation_index as usize == section_operation_indices[index]
+						}),
+					) {
+						record_committed_snapshot(
+							&mut snapshots,
+							prepared[index].path.clone(),
+							operation,
+							bytes,
+						)?;
+					}
+				},
 			}
-
-			let mut snapshots = self.snapshot_store().lock();
-			for (index, proposal) in proposals.iter().enumerate() {
-				match &proposal.action {
-					EditAction::Delete => snapshots.invalidate(&prepared[index].path),
-					EditAction::Move { .. } => {
-						let destination = move_paths[index]
-							.as_ref()
-							.expect("move proposals retain a canonical destination");
-						snapshots
-							.relocate(&prepared[index].path, destination.clone())
-							.map_err(|error| edit_unknown(error.to_string()))?;
-						if let (Some(bytes), Some(operation)) = (
-							persisted[index].clone(),
-							committed.operations.iter().find(|operation| {
-								operation.operation_index as usize == section_operation_indices[index]
-							}),
-						) {
-							record_committed_snapshot(
-								&mut snapshots,
-								destination.clone(),
-								operation,
-								bytes,
-							)?;
-						}
-					},
-					EditAction::Write { .. } => {
-						if let (Some(bytes), Some(operation)) = (
-							persisted[index].clone(),
-							committed.operations.iter().find(|operation| {
-								operation.operation_index as usize == section_operation_indices[index]
-							}),
-						) {
-							record_committed_snapshot(
-								&mut snapshots,
-								prepared[index].path.clone(),
-								operation,
-								bytes,
-							)?;
-						}
-					},
-				}
-			}
-			drop(snapshots);
-			self.clipboard().lock().commit_named_from(&clipboard);
-			Ok(CommitResult { sections })
 		}
+		drop(snapshots);
+		self.clipboard().lock().commit_named_from(&clipboard);
+		Ok(CommitResult { sections })
 	}
 }
 
@@ -583,11 +551,11 @@ async fn rollback_partial_commit(
 	}
 }
 
-fn uri_target(uri: String) -> pb::DocumentTarget {
+const fn uri_target(uri: String) -> pb::DocumentTarget {
 	pb::DocumentTarget { target: Some(pb::document_target::Target::Uri(uri)) }
 }
 
-fn restore_text_mutation(content: Bytes, revision: pb::Revision) -> pb::TextMutation {
+const fn restore_text_mutation(content: Bytes, revision: pb::Revision) -> pb::TextMutation {
 	pb::TextMutation {
 		base_revision: Some(revision),
 		change:        Some(pb::text_mutation::Change::ProposedContent(content)),
@@ -670,20 +638,17 @@ fn resolve_document(host: &DocumentHost, input: &str) -> Result<ResolvedDocument
 		.map_err(|()| "document workspace root is not a local file URI".to_owned())?;
 	let root_path = normalize_absolute(&root_path)?;
 	let parsed = Url::parse(input).ok();
-	let (candidate, preserve_uri) = match parsed {
-		Some(uri) => {
-			if uri.scheme() != "file" || uri.query().is_some() || uri.fragment().is_some() {
-				return Err("document URI must be a query-free file URI inside the workspace".into());
-			}
-			let path = uri
-				.to_file_path()
-				.map_err(|()| "document URI is not a local file URI".to_owned())?;
-			(normalize_absolute(&path)?, Some(uri))
-		},
-		None => {
-			let relative = normalize_relative(Path::new(input))?;
-			(root_path.join(relative), None)
-		},
+	let (candidate, preserve_uri) = if let Some(uri) = parsed {
+		if uri.scheme() != "file" || uri.query().is_some() || uri.fragment().is_some() {
+			return Err("document URI must be a query-free file URI inside the workspace".into());
+		}
+		let path = uri
+			.to_file_path()
+			.map_err(|()| "document URI is not a local file URI".to_owned())?;
+		(normalize_absolute(&path)?, Some(uri))
+	} else {
+		let relative = normalize_relative(Path::new(input))?;
+		(root_path.join(relative), None)
 	};
 	if candidate == root_path || !candidate.starts_with(&root_path) {
 		return Err("document path escapes or names the workspace root".into());
@@ -876,7 +841,7 @@ pub(super) fn read_document_metadata(head: &pb::DocumentHead) -> Result<(Str, St
 	Ok((revision_identity(head)?, document_path(head)?))
 }
 
-fn proposed_text_mutation(
+const fn proposed_text_mutation(
 	content: Bytes,
 	base_revision: pb::Revision,
 	stale_policy: StalePolicy,
@@ -888,9 +853,41 @@ fn proposed_text_mutation(
 		stale_policy:  match stale_policy {
 			StalePolicy::RebaseNonOverlapping => pb::StalePolicy::RebaseNonOverlapping as i32,
 		},
-		format_policy: match format_policy {
-			FormatPolicy::Configured => pb::FormatPolicy::BestEffort as i32,
-		},
+		format_policy: protocol_format_policy(format_policy),
+	}
+}
+
+const fn protocol_format_policy(format_policy: FormatPolicy) -> i32 {
+	match format_policy {
+		FormatPolicy::Configured => pb::FormatPolicy::BestEffort as i32,
+	}
+}
+
+fn proposed_move_mutation(
+	content: Bytes,
+	base_content: &[u8],
+	base_revision: pb::Revision,
+	destination_uri: String,
+	format_policy: FormatPolicy,
+) -> pb::document_mutation::Operation {
+	if content.as_ref() == base_content {
+		pb::document_mutation::Operation::Move(pb::MoveMutation {
+			base_revision: Some(base_revision),
+			destination_uri,
+			destination_precondition: Some(
+				pb::move_mutation::DestinationPrecondition::DestinationMustNotExist(true),
+			),
+		})
+	} else {
+		pb::document_mutation::Operation::MoveWithContent(pb::MoveWithContentMutation {
+			base_revision: Some(base_revision),
+			destination_uri,
+			destination_precondition: Some(
+				pb::move_with_content_mutation::DestinationPrecondition::DestinationMustNotExist(true),
+			),
+			content,
+			format_policy: protocol_format_policy(format_policy),
+		})
 	}
 }
 
@@ -970,10 +967,12 @@ fn serialize_notebook_edit(
 	Ok(Bytes::from(serializer.into_inner()))
 }
 
+type NotebookCell<'a> = (&'a str, Option<usize>, String);
+
 fn parse_notebook_cells<'a>(
 	editable: &'a str,
 	display_path: &str,
-) -> Result<Vec<(&'a str, Option<usize>, String)>, String> {
+) -> Result<Vec<NotebookCell<'a>>, String> {
 	let mut cells: Vec<(&str, Option<usize>, Vec<String>)> = Vec::new();
 	for line in if editable.is_empty() {
 		Vec::new()
@@ -1046,11 +1045,7 @@ fn record_committed_snapshot(
 		.as_ref()
 		.and_then(|head| head.revision.as_ref())
 		.ok_or_else(|| edit_unknown("committed operation omitted its revision"))?;
-	let seen_lines = 1..=bytes
-		.iter()
-		.filter(|byte| **byte == b'\n')
-		.count()
-		.saturating_add(1);
+	let seen_lines = 1..=bytecount::count(&bytes, b'\n').saturating_add(1);
 	store
 		.record(path, RevisionToken::new(revision.content_hash.as_ref()), bytes, seen_lines)
 		.map_err(|error| edit_unknown(error.to_string()))?;
@@ -1179,11 +1174,11 @@ fn transaction_id(server_epoch: &[u8]) -> Bytes {
 fn map_rejection(rejected: &pb::TransactionRejected, base: &[u8]) -> EditFault {
 	let reason = match pb::TransactionRejectReason::try_from(rejected.reason) {
 		Ok(pb::TransactionRejectReason::OverlappingChange) => RejectionReason::Conflict,
-		Ok(pb::TransactionRejectReason::StaleBase)
-		| Ok(pb::TransactionRejectReason::ExternalModification)
-		| Ok(pb::TransactionRejectReason::RevisionExpired) => {
-			RejectionReason::StaleUnrecoverable { message: Str::from(rejected.message.as_str()) }
-		},
+		Ok(
+			pb::TransactionRejectReason::StaleBase
+			| pb::TransactionRejectReason::ExternalModification
+			| pb::TransactionRejectReason::RevisionExpired,
+		) => RejectionReason::StaleUnrecoverable { message: Str::from(rejected.message.as_str()) },
 		Ok(pb::TransactionRejectReason::FormatFailed) => {
 			RejectionReason::Format { message: Str::from(rejected.message.as_str()) }
 		},
@@ -1220,11 +1215,7 @@ fn line_at_offset(bytes: &[u8], offset: u64) -> usize {
 	let offset = usize::try_from(offset)
 		.unwrap_or(usize::MAX)
 		.min(bytes.len());
-	bytes[..offset]
-		.iter()
-		.filter(|&&byte| byte == b'\n')
-		.count()
-		.saturating_add(1)
+	bytecount::count(&bytes[..offset], b'\n').saturating_add(1)
 }
 
 fn edit_invalid(message: impl Into<String>) -> EditFault {
@@ -1258,159 +1249,62 @@ struct ResolvedPlainWrite {
 }
 
 impl WriteDocuments for DocumentHost {
-	fn probe_literal(
+	async fn probe_literal(
 		&self,
 		path: Str,
-	) -> impl Future<Output = Result<omp_tools::read::selector::LiteralPathProbe, WriteFault>> + Send + '_
-	{
-		async move {
-			use omp_tools::read::selector::LiteralPathProbe;
-			let resolved = resolve_plain_write(self, &path)
-				.map_err(|message| WriteFault::Document { message: Str::from(message) })?;
-			Ok(match std::fs::symlink_metadata(resolved.path) {
-				Ok(_) => LiteralPathProbe::Exists,
-				Err(error)
-					if matches!(
-						error.kind(),
-						std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-					) =>
-				{
-					LiteralPathProbe::Missing
-				},
-				Err(_) => LiteralPathProbe::Unknown,
-			})
-		}
+	) -> Result<omp_tools::read::selector::LiteralPathProbe, WriteFault> {
+		use omp_tools::read::selector::LiteralPathProbe;
+		let resolved = resolve_plain_write(self, &path)
+			.map_err(|message| WriteFault::Document { message: Str::from(message) })?;
+		Ok(match std::fs::symlink_metadata(resolved.path) {
+			Ok(_) => LiteralPathProbe::Exists,
+			Err(error)
+				if matches!(
+					error.kind(),
+					std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+				) =>
+			{
+				LiteralPathProbe::Missing
+			},
+			Err(_) => LiteralPathProbe::Unknown,
+		})
 	}
 
-	fn write_plain(
+	async fn write_plain(
 		&self,
 		request: PlainWriteRequest,
-	) -> impl Future<Output = Result<PlainWriteResult, WriteCommitError>> + Send + '_ {
-		async move {
-			let resolved = resolve_plain_write(self, &request.path).map_err(write_rejected)?;
-			let existed = match std::fs::symlink_metadata(&resolved.path) {
-				Ok(_) => true,
-				Err(error)
-					if matches!(
-						error.kind(),
-						std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-					) =>
-				{
-					false
-				},
-				Err(error) => return Err(write_rejected(error.to_string())),
-			};
-			let parent = resolved
-				.path
-				.parent()
-				.ok_or_else(|| write_rejected("document path has no parent directory"))?;
-			tokio::fs::create_dir_all(parent)
-				.await
-				.map_err(|error| write_rejected(error.to_string()))?;
+	) -> Result<PlainWriteResult, WriteCommitError> {
+		let resolved = resolve_plain_write(self, &request.path).map_err(write_rejected)?;
+		let existed = match std::fs::symlink_metadata(&resolved.path) {
+			Ok(_) => true,
+			Err(error)
+				if matches!(
+					error.kind(),
+					std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+				) =>
+			{
+				false
+			},
+			Err(error) => return Err(write_rejected(error.to_string())),
+		};
+		let parent = resolved
+			.path
+			.parent()
+			.ok_or_else(|| write_rejected("document path has no parent directory"))?;
+		tokio::fs::create_dir_all(parent)
+			.await
+			.map_err(|error| write_rejected(error.to_string()))?;
 
-			let content = Bytes::copy_from_slice(request.content.as_bytes());
-			if !resolved.use_document_host {
-				atomic_write_plain(&resolved.path, &content).map_err(write_rejected)?;
-				let resolved_path = Str::from(resolved.path.to_string_lossy().into_owned());
-				let made_executable =
-					mark_executable_for_shebang(&resolved.path, request.content.as_bytes());
-				let revision = RevisionToken::new(blake3::hash(&content).as_bytes());
-				let snapshot_tag =
-					record_write_snapshot(self, resolved_path.clone(), revision, content.clone());
-				return Ok(PlainWriteResult {
-					resolved_path,
-					display_path: resolved.display_path,
-					byte_len: u64::try_from(content.len()).unwrap_or(u64::MAX),
-					disposition: if existed {
-						WriteDisposition::Overwrote
-					} else {
-						WriteDisposition::Created
-					},
-					made_executable,
-					snapshot_tag,
-				});
-			}
-			let transaction_id = transaction_id(self.hello().server_epoch.as_ref());
-			let response = self
-				.commit_transaction(
-					transaction_id.clone(),
-					vec![pb::DocumentMutation {
-						document:  Some(pb::DocumentTarget {
-							target: Some(pb::document_target::Target::Uri(resolved.uri.clone().into())),
-						}),
-						operation: Some(pb::document_mutation::Operation::Create(pb::CreateMutation {
-							content:           content.clone(),
-							existing_document: pb::ExistingDocumentPolicy::ReplaceExisting as i32,
-							format_policy:     pb::FormatPolicy::Disabled as i32,
-						})),
-					}],
-					&CancellationToken::new(),
-				)
-				.await
-				.map_err(|error| WriteCommitError::EffectsUnknown {
-					reason: Str::from(error.to_string()),
-				})?;
-			let committed = match response.outcome {
-				Some(pb::commit_transaction_response::Outcome::Committed(committed))
-					if committed.transaction_id == transaction_id =>
-				{
-					committed
-				},
-				Some(pb::commit_transaction_response::Outcome::Rejected(rejected))
-					if rejected.transaction_id == transaction_id =>
-				{
-					return Err(write_rejected(rejected.message));
-				},
-				Some(pb::commit_transaction_response::Outcome::PartiallyCommitted(partial))
-					if partial.transaction_id == transaction_id =>
-				{
-					return Err(WriteCommitError::EffectsUnknown {
-						reason: fmts!(
-							"document transaction partially committed before operation {}: {}",
-							partial.failed_operation_index,
-							partial.message
-						),
-					});
-				},
-				Some(_) => {
-					return Err(WriteCommitError::EffectsUnknown {
-						reason: "document transaction identity did not match".into(),
-					});
-				},
-				None => {
-					return Err(WriteCommitError::EffectsUnknown {
-						reason: "document transaction omitted its outcome".into(),
-					});
-				},
-			};
-			let operation = committed
-				.operations
-				.first()
-				.filter(|operation| committed.operations.len() == 1 && operation.operation_index == 0)
-				.ok_or_else(|| WriteCommitError::EffectsUnknown {
-					reason: "document transaction did not return exactly operation 0".into(),
-				})?;
-			let head = operation
-				.head
-				.as_ref()
-				.ok_or_else(|| WriteCommitError::EffectsUnknown {
-					reason: "committed operation omitted its document head".into(),
-				})?;
-			let revision = revision_identity(head)
-				.map_err(|message| WriteCommitError::EffectsUnknown { reason: Str::from(message) })?;
-			let resolved_path = document_path(head)
-				.map_err(|message| WriteCommitError::EffectsUnknown { reason: Str::from(message) })?;
-			let made_executable = mark_executable_for_shebang(
-				Path::new(resolved_path.as_str()),
-				request.content.as_bytes(),
-			);
-			let snapshot_tag = record_write_snapshot(
-				self,
-				resolved_path.clone(),
-				RevisionToken::new(revision.as_bytes()),
-				content.clone(),
-			);
-			Ok(PlainWriteResult {
+		let content = Bytes::copy_from_slice(request.content.as_bytes());
+		if !resolved.use_document_host {
+			atomic_write_plain(&resolved.path, &content).map_err(write_rejected)?;
+			let resolved_path = Str::from(resolved.path.to_string_lossy().into_owned());
+			let made_executable =
+				mark_executable_for_shebang(&resolved.path, request.content.as_bytes());
+			let revision = RevisionToken::new(blake3::hash(&content).as_bytes());
+			let snapshot_tag =
+				record_write_snapshot(self, resolved_path.clone(), revision, content.clone());
+			return Ok(PlainWriteResult {
 				resolved_path,
 				display_path: resolved.display_path,
 				byte_len: u64::try_from(content.len()).unwrap_or(u64::MAX),
@@ -1421,8 +1315,98 @@ impl WriteDocuments for DocumentHost {
 				},
 				made_executable,
 				snapshot_tag,
-			})
+			});
 		}
+		let transaction_id = transaction_id(self.hello().server_epoch.as_ref());
+		let response = self
+			.commit_transaction(
+				transaction_id.clone(),
+				vec![pb::DocumentMutation {
+					document:  Some(pb::DocumentTarget {
+						target: Some(pb::document_target::Target::Uri(resolved.uri.clone().into())),
+					}),
+					operation: Some(pb::document_mutation::Operation::Create(pb::CreateMutation {
+						content:           content.clone(),
+						existing_document: pb::ExistingDocumentPolicy::ReplaceExisting as i32,
+						format_policy:     pb::FormatPolicy::Disabled as i32,
+					})),
+				}],
+				&CancellationToken::new(),
+			)
+			.await
+			.map_err(|error| WriteCommitError::EffectsUnknown {
+				reason: Str::from(error.to_string()),
+			})?;
+		let committed = match response.outcome {
+			Some(pb::commit_transaction_response::Outcome::Committed(committed))
+				if committed.transaction_id == transaction_id =>
+			{
+				committed
+			},
+			Some(pb::commit_transaction_response::Outcome::Rejected(rejected))
+				if rejected.transaction_id == transaction_id =>
+			{
+				return Err(write_rejected(rejected.message));
+			},
+			Some(pb::commit_transaction_response::Outcome::PartiallyCommitted(partial))
+				if partial.transaction_id == transaction_id =>
+			{
+				return Err(WriteCommitError::EffectsUnknown {
+					reason: fmts!(
+						"document transaction partially committed before operation {}: {}",
+						partial.failed_operation_index,
+						partial.message
+					),
+				});
+			},
+			Some(_) => {
+				return Err(WriteCommitError::EffectsUnknown {
+					reason: "document transaction identity did not match".into(),
+				});
+			},
+			None => {
+				return Err(WriteCommitError::EffectsUnknown {
+					reason: "document transaction omitted its outcome".into(),
+				});
+			},
+		};
+		let operation = committed
+			.operations
+			.first()
+			.filter(|operation| committed.operations.len() == 1 && operation.operation_index == 0)
+			.ok_or_else(|| WriteCommitError::EffectsUnknown {
+				reason: "document transaction did not return exactly operation 0".into(),
+			})?;
+		let head = operation
+			.head
+			.as_ref()
+			.ok_or_else(|| WriteCommitError::EffectsUnknown {
+				reason: "committed operation omitted its document head".into(),
+			})?;
+		let revision = revision_identity(head)
+			.map_err(|message| WriteCommitError::EffectsUnknown { reason: Str::from(message) })?;
+		let resolved_path = document_path(head)
+			.map_err(|message| WriteCommitError::EffectsUnknown { reason: Str::from(message) })?;
+		let made_executable =
+			mark_executable_for_shebang(Path::new(resolved_path.as_str()), request.content.as_bytes());
+		let snapshot_tag = record_write_snapshot(
+			self,
+			resolved_path.clone(),
+			RevisionToken::new(revision.as_bytes()),
+			content.clone(),
+		);
+		Ok(PlainWriteResult {
+			resolved_path,
+			display_path: resolved.display_path,
+			byte_len: u64::try_from(content.len()).unwrap_or(u64::MAX),
+			disposition: if existed {
+				WriteDisposition::Overwrote
+			} else {
+				WriteDisposition::Created
+			},
+			made_executable,
+			snapshot_tag,
+		})
 	}
 
 	fn write_archive_member(
@@ -1583,7 +1567,7 @@ fn record_write_snapshot(
 	let line_count = if content.is_empty() {
 		0
 	} else {
-		content.iter().filter(|&&byte| byte == b'\n').count() + 1
+		bytecount::count(&content, b'\n') + 1
 	};
 	host
 		.snapshot_store()
@@ -1680,6 +1664,33 @@ mod tests {
 		assert_eq!(content, payload);
 		assert_eq!(mutation.base_revision, Some(revision));
 		assert_eq!(mutation.format_policy, pb::FormatPolicy::BestEffort as i32);
+	}
+
+	#[test]
+	fn changed_move_uses_one_revision_bound_move_with_content_mutation() {
+		let content = Bytes::from_static(b"edited");
+		let revision =
+			pb::Revision { sequence: 9, content_hash: Bytes::from_static(&[0xcd; 32]) };
+		let operation = proposed_move_mutation(
+			content.clone(),
+			b"original",
+			revision.clone(),
+			"file:///workspace/destination.txt".to_owned(),
+			FormatPolicy::Configured,
+		);
+		let pb::document_mutation::Operation::MoveWithContent(movement) = operation else {
+			panic!("changed move must be one atomic move-with-content mutation");
+		};
+		assert_eq!(movement.base_revision, Some(revision));
+		assert_eq!(movement.destination_uri, "file:///workspace/destination.txt");
+		assert_eq!(movement.content, content);
+		assert_eq!(movement.format_policy, pb::FormatPolicy::BestEffort as i32);
+		assert!(matches!(
+			movement.destination_precondition,
+			Some(pb::move_with_content_mutation::DestinationPrecondition::DestinationMustNotExist(
+				true
+			))
+		));
 	}
 
 	#[test]
@@ -2028,17 +2039,17 @@ fn write_archive_member(
 	let mut resolved = Vec::with_capacity(candidates.len());
 	for candidate in candidates {
 		let absolute = resolve_special_write_path(host, &candidate.archive_path)?;
-		let metadata = std::fs::metadata(&absolute);
-		if metadata.as_ref().is_ok_and(|metadata| metadata.is_file()) {
-			resolved.push((candidate, absolute, true));
-			break;
+		match std::fs::metadata(&absolute) {
+			Ok(metadata) if metadata.is_file() => {
+				resolved.push((candidate, absolute, true));
+				break;
+			},
+			Ok(_) => resolved.push((candidate, absolute, false)),
+			Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+				resolved.push((candidate, absolute, false));
+			},
+			Err(error) => return Err(special_fault(error.to_string())),
 		}
-		if metadata.is_err()
-			&& !matches!(&metadata, Err(error) if error.kind() == std::io::ErrorKind::NotFound)
-		{
-			return Err(special_fault(metadata.unwrap_err().to_string()));
-		}
-		resolved.push((candidate, absolute, false));
 	}
 	let (target, authored_path, exists) = resolved
 		.iter()
@@ -2049,7 +2060,7 @@ fn write_archive_member(
 	let final_path = if exists {
 		std::fs::canonicalize(&authored_path).unwrap_or_else(|_| authored_path.clone())
 	} else {
-		authored_path.clone()
+		authored_path
 	};
 	let member_existed = if exists {
 		archive_member_exists(&final_path, format_for_path(&final_path), &target.member_path)?

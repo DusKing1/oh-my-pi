@@ -35,8 +35,7 @@ parking_lot = { workspace = true }
 pdf-inspector = { workspace = true }
 pyo3 = { workspace = true }
 quick-xml = { workspace = true }
-rusqlite = { workspace = true, features = ["serialize"] }
-schemars = { workspace = true }
+rusqlite = { workspace = true, features = ["hooks", "serialize"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 smallvec = { workspace = true }

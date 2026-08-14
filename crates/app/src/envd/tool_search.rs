@@ -30,7 +30,7 @@ const SNAPSHOT_MAX_BYTES: u64 = 4 * 1024 * 1024;
 /// Cloneable bridge from generic search tools to the app-owned workspace and
 /// session document state.
 #[derive(Clone, Debug)]
-pub(crate) struct WorkspaceSearchAdapter {
+pub struct WorkspaceSearchAdapter {
 	host:         WorkspaceHost,
 	documents:    DocumentHost,
 	read_sources: ReadSourceAdapter,
@@ -318,10 +318,10 @@ fn search_blocking(
 				);
 			},
 			SearchRootKind::Filesystem => {
-				let literal_original = if root.original != root.path {
-					resolve_literal_grep_target(host, root.original.as_str())?
-				} else {
+				let literal_original = if root.original == root.path {
 					None
+				} else {
+					resolve_literal_grep_target(host, root.original.as_str())?
 				};
 				let literal_won = literal_original.is_some();
 				match literal_original.or(resolve_grep_target(host, root.path.as_str())?) {
@@ -335,7 +335,7 @@ fn search_blocking(
 							path,
 							glob,
 							is_file,
-						})
+						});
 					},
 					Some(GrepTarget::Memory(_)) => unreachable!("filesystem resolver returned memory"),
 					None => missing_paths.push(root.original.clone()),
@@ -474,7 +474,7 @@ fn search_blocking(
 	let snapshot_tags: HashMap<_, _> = pending_snapshots
 		.into_iter()
 		.map(|(source_key, pending)| {
-			let tag = record_grep_snapshot(documents, &pending.path, pending.seen_lines.into_iter());
+			let tag = record_grep_snapshot(documents, &pending.path, pending.seen_lines);
 			(source_key, tag)
 		})
 		.collect();
@@ -1170,7 +1170,7 @@ mod tests {
 
 		assert_eq!(result.matches.len(), 1);
 		assert_eq!(
-			workspace_relative(&host.root(), &path).expect("display path"),
+			workspace_relative(host.root(), &path).expect("display path"),
 			Str::from(path.to_string_lossy().replace('\\', "/")),
 		);
 	}
@@ -1294,21 +1294,18 @@ mod tests {
 	struct CannedHttpClient;
 
 	impl web::types::HttpClient for CannedHttpClient {
-		fn get(
+		async fn get(
 			&self,
 			request: web::types::HttpRequest,
-		) -> impl Future<Output = Result<web::types::HttpResponse, web::types::WebError>> + Send + '_
-		{
-			async move {
-				assert_eq!(request.url, "https://example.test/data.txt");
-				Ok(web::types::HttpResponse {
-					final_url:    request.url,
-					status:       200,
-					content_type: Some(Str::from("text/plain")),
-					headers:      Default::default(),
-					body:         Bytes::from_static(b"alpha\nneedle\nomega\n"),
-				})
-			}
+		) -> Result<web::types::HttpResponse, web::types::WebError> {
+			assert_eq!(request.url, "https://example.test/data.txt");
+			Ok(web::types::HttpResponse {
+				final_url:    request.url,
+				status:       200,
+				content_type: Some(Str::from("text/plain")),
+				headers:      Default::default(),
+				body:         Bytes::from_static(b"alpha\nneedle\nomega\n"),
+			})
 		}
 	}
 
@@ -1396,7 +1393,7 @@ mod tests {
 			assert_eq!(result.matches[0].line_number, 2);
 			assert_eq!(result.matches[0].line, "needle");
 			assert_eq!(result.matches[0].snapshot_tag, None);
-			assert!(result.archive_unreadable.is_empty());
+			assert_eq!(result.archive_unreadable, [] as [omp_core::Str; 0]);
 		}
 	}
 
@@ -1530,7 +1527,7 @@ mod tests {
 		)
 		.expect("glob returns partial timeout metadata");
 		assert!(timed_out.timed_out);
-		assert!(timed_out.matches.is_empty());
+		assert_eq!(timed_out.matches, [] as [omp_tools::glob::WalkMatch; 0]);
 	}
 
 	fn stored_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {

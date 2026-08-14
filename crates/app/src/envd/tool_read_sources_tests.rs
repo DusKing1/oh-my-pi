@@ -2,7 +2,7 @@ use std::{
 	convert::Infallible,
 	pin::Pin,
 	sync::{
-		Arc, Mutex,
+		Arc,
 		atomic::{AtomicUsize, Ordering},
 	},
 	task::{Context, Poll},
@@ -21,6 +21,7 @@ use hyper::{
 	service::service_fn,
 };
 use hyper_util::rt::TokioIo;
+use parking_lot::Mutex;
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};
 
 use super::*;
@@ -69,10 +70,7 @@ async fn follows_redirects_and_reports_the_final_url() {
 	let paths = Arc::new(Mutex::new(Vec::new()));
 	let seen_paths = Arc::clone(&paths);
 	let server = serve(move |request| {
-		seen_paths
-			.lock()
-			.expect("record redirect path")
-			.push(request.uri().to_string());
+		seen_paths.lock().push(request.uri().to_string());
 		assert_eq!(
 			request
 				.headers()
@@ -109,7 +107,7 @@ async fn follows_redirects_and_reports_the_final_url() {
 	assert_eq!(response.final_url.as_str(), format!("{}/final?done=1", server.base));
 	assert_eq!(response.status, 200);
 	assert_eq!(response.body, Bytes::from_static(b"redirected"));
-	assert_eq!(*paths.lock().expect("read redirect paths"), [
+	assert_eq!(*paths.lock(), [
 		"/start".to_owned(),
 		"/nested/step?from=start".to_owned(),
 		"/final?done=1".to_owned(),
@@ -151,19 +149,13 @@ async fn retries_one_rate_limit_with_the_same_user_agent_and_retry_after_delay()
 	let handler_agents = Arc::clone(&agents);
 	let handler_times = Arc::clone(&times);
 	let server = serve(move |request| {
-		handler_agents
-			.lock()
-			.expect("record rate-limit agent")
-			.push(
-				request.headers()[USER_AGENT]
-					.to_str()
-					.expect("text user agent")
-					.to_owned(),
-			);
-		handler_times
-			.lock()
-			.expect("record request time")
-			.push(Instant::now());
+		handler_agents.lock().push(
+			request.headers()[USER_AGENT]
+				.to_str()
+				.expect("text user agent")
+				.to_owned(),
+		);
+		handler_times.lock().push(Instant::now());
 		let attempt = handler_calls.fetch_add(1, Ordering::SeqCst);
 		Response::builder()
 			.status(StatusCode::TOO_MANY_REQUESTS)
@@ -184,11 +176,8 @@ async fn retries_one_rate_limit_with_the_same_user_agent_and_retry_after_delay()
 		.expect("HTTP status remains response truth");
 
 	assert_eq!(calls.load(Ordering::SeqCst), 2, "only one 429 retry is allowed");
-	assert_eq!(*agents.lock().expect("read rate-limit agents"), [
-		USER_AGENTS[0].to_owned(),
-		USER_AGENTS[0].to_owned(),
-	]);
-	let times = times.lock().expect("read request times");
+	assert_eq!(*agents.lock(), [USER_AGENTS[0].to_owned(), USER_AGENTS[0].to_owned(),]);
+	let times = times.lock();
 	assert!(times[1].duration_since(times[0]) >= Duration::from_millis(20));
 	assert_eq!(response.status, 429);
 	assert_eq!(response.header("x-attempt"), Some("1"));
@@ -240,7 +229,7 @@ async fn rotates_the_exact_three_user_agents_and_returns_the_last_bot_block() {
 	let handler_calls = Arc::clone(&calls);
 	let handler_agents = Arc::clone(&agents);
 	let server = serve(move |request| {
-		handler_agents.lock().expect("record bot-block agent").push(
+		handler_agents.lock().push(
 			request.headers()[USER_AGENT]
 				.to_str()
 				.expect("text user agent")
@@ -262,7 +251,7 @@ async fn rotates_the_exact_three_user_agents_and_returns_the_last_bot_block() {
 		.expect("final bot block is response truth");
 
 	assert_eq!(calls.load(Ordering::SeqCst), USER_AGENTS.len());
-	assert_eq!(*agents.lock().expect("read bot-block agents"), USER_AGENTS.map(str::to_owned));
+	assert_eq!(*agents.lock(), USER_AGENTS.map(str::to_owned));
 	assert_eq!(response.status, 503);
 	assert_eq!(response.header("x-bot-attempt"), Some("2"));
 	assert_eq!(response.body, Bytes::from_static(b"<p>Cloudflare challenge 2</p>"));
@@ -405,7 +394,6 @@ async fn dropping_the_get_future_cancels_an_in_flight_stream() {
 		let service = service_fn(move |_| {
 			let (polled, dropped) = server_signals
 				.lock()
-				.expect("take cancellation signals")
 				.take()
 				.expect("one cancellation request");
 			async move {

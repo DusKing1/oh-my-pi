@@ -31,6 +31,7 @@ async-stream.workspace = true
 async-trait.workspace = true
 blake3.workspace = true
 bytes.workspace = true
+bytecount.workspace = true
 clap.workspace = true
 encoding_rs = { workspace = true }
 flume.workspace = true
@@ -38,6 +39,7 @@ futures.workspace = true
 flate2.workspace = true
 http.workspace = true
 libc.workspace = true
+miette = { workspace = true }
 omp-agent.workspace = true
 omp-ar = { workspace = true }
 omp-core.workspace = true

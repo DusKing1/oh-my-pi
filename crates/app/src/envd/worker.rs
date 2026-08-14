@@ -82,7 +82,7 @@ pub struct ToolWorkerConfig {
 impl ToolWorkerConfig {
 	/// Builds the production configuration for `executable`.
 	#[must_use]
-	pub fn new(executable: PathBuf) -> Self {
+	pub const fn new(executable: PathBuf) -> Self {
 		Self {
 			executable,
 			python_site: None,
@@ -387,7 +387,9 @@ impl WorkerProcess {
 		if let Some(site) = &config.python_site {
 			command.env("OMP_PY_SITE", site);
 		}
-		if !config.modules.is_empty() {
+		if config.modules.is_empty() {
+			command.env_remove("OMP_PY_MODULES");
+		} else {
 			let modules = config
 				.modules
 				.iter()
@@ -395,8 +397,6 @@ impl WorkerProcess {
 				.collect::<Vec<_>>()
 				.join(",");
 			command.env("OMP_PY_MODULES", modules);
-		} else {
-			command.env_remove("OMP_PY_MODULES");
 		}
 		#[cfg(unix)]
 		{
@@ -483,7 +483,7 @@ impl WorkerProcess {
 			.await
 	}
 
-	fn courtesy_interrupt(&mut self) {
+	fn courtesy_interrupt(&self) {
 		let pid = self.child.id();
 		#[cfg(unix)]
 		if let Some(pid) = pid {
@@ -717,7 +717,7 @@ async fn run_invocation(
 				},
 				Ok(SupervisorCommand::Shutdown) | Err(_) => return InvocationAction::Shutdown,
 			},
-			_ = tokio::time::sleep_until(deadline) => {
+			() = tokio::time::sleep_until(deadline) => {
 				cancel_worker(process, config, request_id, &call_id, "worker invocation timed out").await;
 				send_abort(&invocation, WorkerAbortKind::TimedOut, "worker invocation timed out");
 				return InvocationAction::ReplaceWorker;
@@ -1306,7 +1306,7 @@ fn write_update<W: Write>(
 	)
 }
 
-fn text_part(text: String) -> Part {
+const fn text_part(text: String) -> Part {
 	Part { kind: Some(part::Kind::Text(text)) }
 }
 
@@ -1464,7 +1464,7 @@ fn read_sync_length<R: Read>(reader: &mut R) -> Result<Option<usize>, WorkerErro
 	Err(WorkerError::InvalidLength)
 }
 
-fn check_length(length: usize, limit: NonZeroUsize) -> Result<(), WorkerError> {
+const fn check_length(length: usize, limit: NonZeroUsize) -> Result<(), WorkerError> {
 	if length > limit.get() {
 		Err(WorkerError::FrameTooLarge { actual: length, limit: limit.get() })
 	} else {

@@ -25,7 +25,7 @@ use super::{
 /// Resource adapters are cloned into their typed executors. Worker declarations
 /// occupy explicit worker routes: they are advertised by the registry but can
 /// only be invoked by the environment's worker supervisor.
-pub(crate) fn production_registry(
+pub fn production_registry(
 	documents: &DocumentHost,
 	blobs: &BlobHost,
 	exec: &ExecHost,
@@ -157,6 +157,6 @@ fn constraint_priority(priority: u32) -> Result<u8, EnvdError> {
 		.map_err(|_| worker_declaration_error("worker constraint priority exceeds u8"))
 }
 
-fn worker_declaration_error(message: &'static str) -> EnvdError {
+const fn worker_declaration_error(message: &'static str) -> EnvdError {
 	EnvdError::WorkerDeclaration(Str::new_static(message))
 }

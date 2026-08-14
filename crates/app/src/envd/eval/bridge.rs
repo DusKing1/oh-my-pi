@@ -39,7 +39,7 @@ const BUDGET: &str = "__budget__";
 /// Capabilities granted to one eval cell. Tool names are explicit: possessing a
 /// bridge grant never implies access to every tool registered in the session.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct BridgeCapabilities {
+pub struct BridgeCapabilities {
 	tools:       BTreeSet<Str>,
 	completion:  bool,
 	agent:       bool,
@@ -52,22 +52,22 @@ impl BridgeCapabilities {
 		Self { tools: tools.into_iter().collect(), ..Self::default() }
 	}
 
-	pub(crate) fn with_completion(mut self) -> Self {
+	pub(crate) const fn with_completion(mut self) -> Self {
 		self.completion = true;
 		self
 	}
 
-	pub(crate) fn with_agent(mut self) -> Self {
+	pub(crate) const fn with_agent(mut self) -> Self {
 		self.agent = true;
 		self
 	}
 
-	pub(crate) fn with_concurrency(mut self) -> Self {
+	pub(crate) const fn with_concurrency(mut self) -> Self {
 		self.concurrency = true;
 		self
 	}
 
-	pub(crate) fn with_budget(mut self) -> Self {
+	pub(crate) const fn with_budget(mut self) -> Self {
 		self.budget = true;
 		self
 	}
@@ -84,7 +84,7 @@ impl BridgeCapabilities {
 }
 
 #[derive(Clone)]
-pub(crate) struct BridgeGrant {
+pub struct BridgeGrant {
 	session:    Str,
 	run:        Str,
 	token:      SecretString,
@@ -104,7 +104,7 @@ impl fmt::Debug for BridgeGrant {
 }
 
 #[derive(Debug, Error)]
-pub(crate) enum BridgeHostError {
+pub enum BridgeHostError {
 	#[error("{0}")]
 	Message(Str),
 }
@@ -119,7 +119,7 @@ impl BridgeHostError {
 /// completion/agent/budget operations. Implementations receive only calls that
 /// passed grant authentication and capability checks.
 #[async_trait]
-pub(crate) trait BridgeHost: Send + Sync {
+pub trait BridgeHost: Send + Sync {
 	async fn call(&self, name: &str, args: Value) -> Result<Value, BridgeHostError>;
 }
 
@@ -135,7 +135,7 @@ struct DispatcherInner {
 }
 
 #[derive(Clone)]
-pub(crate) struct BridgeDispatcher {
+pub struct BridgeDispatcher {
 	inner: Arc<DispatcherInner>,
 }
 
@@ -227,7 +227,7 @@ impl Drop for RegistrationLease {
 	}
 }
 
-pub(crate) struct BridgeRegistration {
+pub struct BridgeRegistration {
 	lease: Arc<RegistrationLease>,
 }
 
@@ -249,11 +249,11 @@ struct CellAbort {
 
 impl CellAbort {
 	fn begin(&self, cell_id: &Bytes) {
-		if let Some((_, stale)) = self
+		let stale = self
 			.active
 			.lock()
-			.replace((cell_id.clone(), CancellationToken::new()))
-		{
+			.replace((cell_id.clone(), CancellationToken::new()));
+		if let Some((_, stale)) = stale {
 			stale.cancel();
 		}
 	}
@@ -280,13 +280,19 @@ impl CellAbort {
 		}
 	}
 
+	fn cancel_active(&self) {
+		if let Some((_, token)) = self.active.lock().take() {
+			token.cancel();
+		}
+	}
+
 	fn token(&self) -> Option<CancellationToken> {
 		self.active.lock().as_ref().map(|(_, token)| token.clone())
 	}
 }
 
 #[derive(Clone)]
-pub(crate) struct BridgeClient {
+pub struct BridgeClient {
 	dispatcher: BridgeDispatcher,
 	grant:      BridgeGrant,
 	abort:      Option<Arc<CellAbort>>,
@@ -313,10 +319,14 @@ impl BridgeClient {
 	fn session(&self) -> &str {
 		self.grant.session.as_str()
 	}
+
+	fn revoke(&self) {
+		self.dispatcher.unregister(&self.grant);
+	}
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
-pub(crate) enum BridgeCallError {
+pub enum BridgeCallError {
 	#[error("eval bridge registration requires non-empty session and run ids")]
 	InvalidRegistration,
 	#[error("eval bridge session is already registered: {session}:{run}")]
@@ -338,12 +348,12 @@ pub(crate) enum BridgeCallError {
 /// Adapter for the native tools in the exact environment registry. Privileged
 /// names such as `__agent__` remain separate host capabilities and are never
 /// silently translated into ordinary registry tools.
-pub(crate) struct RegistryBridgeHost {
+pub struct RegistryBridgeHost {
 	registry: Arc<Registry>,
 }
 
 impl RegistryBridgeHost {
-	pub(crate) fn new(registry: Arc<Registry>) -> Self {
+	pub(crate) const fn new(registry: Arc<Registry>) -> Self {
 		Self { registry }
 	}
 }
@@ -427,7 +437,7 @@ fn bridge_envelope(value: Value, updates: Vec<Value>) -> Value {
 /// that can perform them supplies this authenticated callback; otherwise the
 /// corresponding bridge names are omitted from the grant.
 #[async_trait]
-pub(crate) trait ParentSessionHost: Send + Sync {
+pub trait ParentSessionHost: Send + Sync {
 	async fn completion(&self, args: Value) -> Result<Value, BridgeHostError>;
 	async fn agent(&self, args: Value) -> Result<Value, BridgeHostError>;
 	async fn concurrency(&self, args: Value) -> Result<Value, BridgeHostError>;
@@ -435,7 +445,7 @@ pub(crate) trait ParentSessionHost: Send + Sync {
 }
 
 #[derive(Clone)]
-pub(crate) struct EvalSessionConfig {
+pub struct EvalSessionConfig {
 	pub(crate) local_roots_json: Str,
 	pub(crate) artifacts_dir:    Str,
 	pub(crate) session_file:     Str,
@@ -445,7 +455,7 @@ pub(crate) struct EvalSessionConfig {
 ///
 /// Binding is one-shot: the namespace installer cannot be redirected to a
 /// different project registry after a grant has been minted.
-pub(crate) struct SessionBridgeHost {
+pub struct SessionBridgeHost {
 	registry: OnceLock<Arc<Registry>>,
 	parent:   OnceLock<Arc<dyn ParentSessionHost>>,
 	config:   Mutex<Option<EvalSessionConfig>>,
@@ -486,10 +496,12 @@ impl SessionBridgeHost {
 			.registry
 			.get()
 			.ok_or_else(|| BridgeHostError::message("eval bridge registry is not bound"))?;
-		let tools = registry.live_identities().filter_map(|(name, _)| {
-			(name.as_str() != "eval" && registry.route(name.as_str()).ok() == Some(ToolRoute::Native))
-				.then(|| name.clone())
-		});
+		let tools = registry
+			.live_identities()
+			.filter(|&(name, _)| {
+				name.as_str() != "eval" && registry.route(name.as_str()).ok() == Some(ToolRoute::Native)
+			})
+			.map(|(name, _)| name.clone());
 		let capabilities = BridgeCapabilities::new(tools);
 		Ok(if self.parent.get().is_some() {
 			capabilities
@@ -558,16 +570,22 @@ impl BridgeHost for SessionBridgeHost {
 	}
 }
 
+struct NamespaceBridge {
+	abort:    Arc<CellAbort>,
+	client:   BridgeClient,
+	watchdog: TimeoutHandle,
+}
+
 /// Installs namespace-local bridge grants and tracks cancellation per active
 /// cell.
-pub(crate) struct BridgeNamespaceInstaller {
-	dispatcher:       BridgeDispatcher,
-	host:             Arc<SessionBridgeHost>,
-	runtime:          Handle,
-	session:          Str,
-	next_run:         AtomicU64,
-	namespace_aborts: Mutex<BTreeMap<usize, Arc<CellAbort>>>,
-	cells:            Mutex<BTreeMap<Bytes, Arc<CellAbort>>>,
+pub struct BridgeNamespaceInstaller {
+	dispatcher: BridgeDispatcher,
+	host:       Arc<SessionBridgeHost>,
+	runtime:    Handle,
+	session:    Str,
+	next_run:   AtomicU64,
+	namespaces: Mutex<BTreeMap<usize, NamespaceBridge>>,
+	cells:      Mutex<BTreeMap<Bytes, Arc<CellAbort>>>,
 }
 
 impl BridgeNamespaceInstaller {
@@ -578,7 +596,7 @@ impl BridgeNamespaceInstaller {
 			runtime,
 			session: Str::from(format!("envd-eval-{}", Ulid::generate())),
 			next_run: AtomicU64::new(1),
-			namespace_aborts: Mutex::new(BTreeMap::new()),
+			namespaces: Mutex::new(BTreeMap::new()),
 			cells: Mutex::new(BTreeMap::new()),
 		}
 	}
@@ -601,23 +619,34 @@ impl NamespaceInstaller for BridgeNamespaceInstaller {
 			.capabilities()
 			.map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
 		let host: Arc<dyn BridgeHost> = self.host.clone();
+		let watchdog = TimeoutHandle::new(None);
 		let registration = self
 			.dispatcher
-			.register(self.session.clone(), run, capabilities, host, TimeoutHandle::new(None))
+			.register(self.session.clone(), run, capabilities, host, watchdog.clone())
 			.map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
 		let abort = Arc::new(CellAbort::default());
+		let client = registration.client().with_abort(Arc::clone(&abort));
 		self.inject_config(globals)?;
-		install_python_bridge(
-			py,
-			globals,
-			registration.client().with_abort(Arc::clone(&abort)),
-			self.runtime.clone(),
-		)?;
+		install_python_bridge(py, globals, client.clone(), self.runtime.clone())?;
 		install_python_prelude(py, globals)?;
 		self
-			.namespace_aborts
+			.namespaces
 			.lock()
-			.insert(globals.as_ptr() as usize, abort);
+			.insert(globals.as_ptr() as usize, NamespaceBridge { abort, client, watchdog });
+		Ok(())
+	}
+
+	fn uninstall(&self, _py: Python<'_>, globals: &Bound<'_, PyDict>) -> PyResult<()> {
+		let Some(namespace) = self.namespaces.lock().remove(&(globals.as_ptr() as usize)) else {
+			return Ok(());
+		};
+		namespace.abort.cancel_active();
+		namespace.watchdog.dispose();
+		self
+			.cells
+			.lock()
+			.retain(|_, abort| !Arc::ptr_eq(abort, &namespace.abort));
+		namespace.client.revoke();
 		Ok(())
 	}
 
@@ -626,26 +655,26 @@ impl NamespaceInstaller for BridgeNamespaceInstaller {
 		_py: Python<'_>,
 		globals: &Bound<'_, PyDict>,
 		cell_id: &Bytes,
-		_timeout: Option<std::time::Duration>,
-	) -> PyResult<()> {
+		timeout: Option<std::time::Duration>,
+	) -> PyResult<TimeoutHandle> {
 		self.inject_config(globals)?;
-		let abort = self
-			.namespace_aborts
-			.lock()
-			.get(&(globals.as_ptr() as usize))
-			.cloned()
-			.ok_or_else(|| {
-				PyRuntimeError::new_err("eval namespace has no bridge cancellation scope")
-			})?;
+		let state = self.namespaces.lock();
+		let namespace = state.get(&(globals.as_ptr() as usize)).ok_or_else(|| {
+			PyRuntimeError::new_err("eval namespace has no bridge cancellation scope")
+		})?;
+		let abort = Arc::clone(&namespace.abort);
+		let watchdog = namespace.watchdog.clone();
+		drop(state);
+		watchdog.restart(timeout);
 		abort.begin(cell_id);
-		if let Some(stale) = self
+		let stale = self
 			.cells
 			.lock()
-			.insert(cell_id.clone(), Arc::clone(&abort))
-		{
+			.insert(cell_id.clone(), Arc::clone(&abort));
+		if let Some(stale) = stale {
 			stale.cancel(cell_id);
 		}
-		Ok(())
+		Ok(watchdog)
 	}
 
 	fn end_cell(
@@ -654,14 +683,16 @@ impl NamespaceInstaller for BridgeNamespaceInstaller {
 		_globals: &Bound<'_, PyDict>,
 		cell_id: &Bytes,
 	) -> PyResult<()> {
-		if let Some(abort) = self.cells.lock().remove(cell_id) {
+		let abort = self.cells.lock().remove(cell_id);
+		if let Some(abort) = abort {
 			abort.end(cell_id);
 		}
 		Ok(())
 	}
 
 	fn cancel_cell(&self, cell_id: &Bytes) {
-		if let Some(abort) = self.cells.lock().get(cell_id).cloned() {
+		let abort = self.cells.lock().get(cell_id).cloned();
+		if let Some(abort) = abort {
 			abort.cancel(cell_id);
 		}
 	}
@@ -681,7 +712,7 @@ fn projected_parts(parts: Vec<Part>) -> Result<Value, BridgeHostError> {
 			Part::Json { json } => {
 				json_parts.push(serde_json::from_slice(&json).map_err(|error| {
 					BridgeHostError::message(format!("tool returned invalid JSON: {error}"))
-				})?)
+				})?);
 			},
 			Part::Blob { blob, alt } => blobs.push(json!({ "blob": blob, "alt": alt })),
 		}
@@ -723,7 +754,7 @@ impl PythonBridgeCallable {
 /// Installs the authenticated direct bridge callable in one persistent Python
 /// namespace. The callable owns a single session/run grant; Python code cannot
 /// supply or swap credentials.
-pub(crate) fn install_python_bridge(
+pub fn install_python_bridge(
 	py: Python<'_>,
 	globals: &Bound<'_, PyDict>,
 	client: BridgeClient,
@@ -734,7 +765,7 @@ pub(crate) fn install_python_bridge(
 }
 
 /// Loads the normative helper prelude once into a persistent namespace.
-pub(crate) fn install_python_prelude(py: Python<'_>, globals: &Bound<'_, PyDict>) -> PyResult<()> {
+pub fn install_python_prelude(py: Python<'_>, globals: &Bound<'_, PyDict>) -> PyResult<()> {
 	let source = CString::new(PYTHON_PRELUDE)
 		.map_err(|_| PyRuntimeError::new_err("embedded Python prelude contains a NUL byte"))?;
 	py.run(source.as_c_str(), Some(globals), Some(globals))

@@ -1,11 +1,9 @@
-use std::{
-	ffi::CString,
-	sync::{Arc, Mutex as StdMutex},
-};
+use std::{ffi::CString, sync::Arc};
 
 use async_trait::async_trait;
 use omp_core::Str;
 use omp_tools::eval::idle_timeout::TimeoutHandle;
+use parking_lot::Mutex;
 use pyo3::{
 	prelude::*,
 	types::{PyDict, PyModule},
@@ -16,7 +14,7 @@ use tokio::runtime::Runtime;
 
 use super::*;
 
-static PYTHON_TEST: StdMutex<()> = StdMutex::new(());
+static PYTHON_TEST: Mutex<()> = Mutex::new(());
 
 #[derive(Default)]
 struct PreludeHost {
@@ -66,7 +64,7 @@ fn run(py: Python<'_>, globals: &Bound<'_, PyDict>, source: String) -> PyResult<
 
 #[test]
 fn complete_prelude_persists_and_bridges_host_helpers() {
-	let _serial = PYTHON_TEST.lock().expect("serialize embedded Python tests");
+	let _serial = PYTHON_TEST.lock();
 	let root = tempdir().expect("temp root");
 	let artifacts = root.path().join("artifacts");
 	let local = root.path().join("local");
