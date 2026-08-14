@@ -1,0 +1,497 @@
+//! In-memory document conversion contracts for `read`.
+
+use std::{
+	future::{Future, ready},
+	io::Write as _,
+	path::Path,
+	sync::Arc,
+};
+
+use bytes::Bytes;
+use futures::StreamExt as _;
+use omp_ar::zip::Writer;
+use omp_core::Str;
+use omp_tool::{BlobRef, Ev, IncomingParams, Outcome, Part, PromptCaps, Tool};
+use omp_tools::read::{
+	self, DirectorySource, Fault, ReadBlobs, ReadLease, ReadSources, SnapshotRecord, SourceKind,
+	SourceStat, markit,
+	web::types::{HttpClient, HttpRequest, HttpResponse, WebError},
+};
+use parking_lot::Mutex;
+use serde_json::json;
+
+fn zip(entries: &[(&str, &str)]) -> Vec<u8> {
+	let mut writer = Writer::new(Vec::new());
+	for (path, content) in entries {
+		writer
+			.add_file(path, content.as_bytes())
+			.expect("fixture member adds");
+	}
+	writer.finish().expect("fixture archive finishes")
+}
+
+#[derive(Clone)]
+struct DocumentSources {
+	path:  Str,
+	bytes: Bytes,
+}
+
+#[derive(Clone)]
+struct DocumentLease {
+	canonical_path: Str,
+	revision:       Str,
+	bytes:          Bytes,
+}
+
+impl ReadLease for DocumentLease {
+	fn revision(&self) -> &Str {
+		&self.revision
+	}
+
+	fn canonical_path(&self) -> &Str {
+		&self.canonical_path
+	}
+
+	fn read_all(&self) -> impl Future<Output = Result<Bytes, Fault>> + Send + '_ {
+		ready(Ok(self.bytes.clone()))
+	}
+}
+
+impl HttpClient for DocumentSources {
+	fn get(
+		&self,
+		_request: HttpRequest,
+	) -> impl Future<Output = Result<HttpResponse, WebError>> + Send + '_ {
+		ready(Err(WebError::request("document fixtures must not use HTTP")))
+	}
+}
+
+impl ReadSources for DocumentSources {
+	type Lease = DocumentLease;
+
+	fn stat(&self, path: Str) -> impl Future<Output = Result<SourceStat, Fault>> + Send + '_ {
+		let result = if path == self.path {
+			Ok(SourceStat {
+				canonical_path: self.path.clone(),
+				display_path:   self.path.clone(),
+				kind:           SourceKind::File,
+				byte_len:       self.bytes.len() as u64,
+				modified_ms:    None,
+			})
+		} else {
+			Err(Fault::source(format!("fixture path not found: {path}")))
+		};
+		ready(result)
+	}
+
+	fn resolve_suffix(
+		&self,
+		_path: Str,
+	) -> impl Future<Output = Result<Option<SourceStat>, Fault>> + Send + '_ {
+		ready(Ok(None))
+	}
+
+	fn open(&self, path: Str) -> impl Future<Output = Result<Self::Lease, Fault>> + Send + '_ {
+		let result = if path == self.path {
+			Ok(DocumentLease {
+				canonical_path: self.path.clone(),
+				revision:       Str::new_static("document-revision"),
+				bytes:          self.bytes.clone(),
+			})
+		} else {
+			Err(Fault::source(format!("fixture path not found: {path}")))
+		};
+		ready(result)
+	}
+
+	fn read_bytes(&self, path: Str) -> impl Future<Output = Result<Bytes, Fault>> + Send + '_ {
+		let result = if path == self.path {
+			Ok(self.bytes.clone())
+		} else {
+			Err(Fault::source(format!("fixture path not found: {path}")))
+		};
+		ready(result)
+	}
+
+	fn list_directory(
+		&self,
+		_path: Str,
+		_max_depth: usize,
+	) -> impl Future<Output = Result<DirectorySource, Fault>> + Send + '_ {
+		ready(Err(Fault::source("document fixture has no directories")))
+	}
+
+	fn record_snapshot(&self, _record: SnapshotRecord) -> Result<Option<Str>, Fault> {
+		Ok(Some(Str::new_static("A1B2")))
+	}
+}
+
+#[derive(Clone)]
+struct NoBlobs;
+
+impl ReadBlobs for NoBlobs {
+	fn store(
+		&self,
+		_bytes: Bytes,
+		_media_type: Str,
+	) -> impl Future<Output = Result<BlobRef, Fault>> + Send + '_ {
+		ready(Err(Fault::source("small document fixtures must not spill to blobs")))
+	}
+}
+
+#[derive(Clone, Default)]
+struct RecordingBlobs {
+	stored: Arc<Mutex<Vec<(Bytes, Str)>>>,
+}
+
+impl ReadBlobs for RecordingBlobs {
+	fn store(
+		&self,
+		bytes: Bytes,
+		media_type: Str,
+	) -> impl Future<Output = Result<BlobRef, Fault>> + Send + '_ {
+		self.stored.lock().push((bytes.clone(), media_type.clone()));
+		ready(Ok(BlobRef {
+			hash: Str::new_static("document-blob"),
+			media_type,
+			byte_len: bytes.len() as u64,
+		}))
+	}
+}
+
+async fn read_document_tool_text_with_blobs<B: ReadBlobs>(
+	path: &str,
+	document_path: &str,
+	bytes: Vec<u8>,
+	blobs: B,
+) -> String {
+	let tool = read::tool(
+		DocumentSources { path: Str::from(document_path), bytes: Bytes::from(bytes) },
+		blobs,
+	);
+	let (feed, params) = IncomingParams::channel();
+	feed
+		.args_committed(Str::from(json!({ "path": path }).to_string()))
+		.expect("read invocation remains live");
+	let events = tool.call(params).collect::<Vec<_>>().await;
+	let [Ev::Done(Outcome::Done { result, .. })] = events.as_slice() else {
+		panic!("expected one terminal document read event: {events:?}");
+	};
+	let parts = tool.prompt(result.as_ref(), &PromptCaps {
+		maximum_parts:      8,
+		maximum_text_bytes: u32::MAX,
+		media:              false,
+	});
+	let [Part::Text { text }] = parts.as_slice() else {
+		panic!("expected one model-facing document text part: {parts:?}");
+	};
+	text.to_string()
+}
+
+async fn read_document_tool_text(path: &str, document_path: &str, bytes: Vec<u8>) -> String {
+	read_document_tool_text_with_blobs(path, document_path, bytes, NoBlobs).await
+}
+
+#[test]
+fn docx_headings_lists_paragraphs_and_tables_become_markdown() {
+	let bytes = zip(&[
+		(
+			"word/styles.xml",
+			r#"<w:styles xmlns:w="w"><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="Heading 1"/></w:style></w:styles>"#,
+		),
+		(
+			"word/numbering.xml",
+			r#"<w:numbering xmlns:w="w"><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>"#,
+		),
+		(
+			"word/document.xml",
+			r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Quarterly Report</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Plain paragraph.</w:t></w:r></w:p>
+    <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>First item</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr><w:tc><w:p><w:r><w:t>Name</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Value</w:t></w:r></w:p></w:tc></w:tr>
+      <w:tr><w:tc><w:p><w:r><w:t>alpha</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>7</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>"#,
+		),
+	]);
+
+	let conversion = markit::convert(Path::new("report.docx"), &bytes)
+		.expect("DOCX conversion succeeds")
+		.expect("DOCX is supported");
+	assert_eq!(
+		conversion.text.as_str(),
+		"# Quarterly Report\n\nPlain paragraph.\n\n- First item\n\n| Name | Value |\n| --- | --- \
+		 |\n| alpha | 7 |"
+	);
+	assert_eq!(conversion.note, None);
+}
+
+fn selector_fixture_docx() -> Vec<u8> {
+	zip(&[
+		(
+			"word/styles.xml",
+			r#"<w:styles xmlns:w="w"><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="Heading 1"/></w:style></w:styles>"#,
+		),
+		(
+			"word/document.xml",
+			r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Range Fixture</w:t></w:r></w:p>
+<w:p><w:r><w:t>alpha</w:t></w:r></w:p>
+<w:p><w:r><w:t>beta</w:t></w:r></w:p>
+<w:p><w:r><w:t>gamma</w:t></w:r></w:p>
+<w:p><w:r><w:t>delta</w:t></w:r></w:p>
+</w:body></w:document>"#,
+		),
+	])
+}
+
+#[tokio::test]
+async fn read_tool_dispatches_docx_bytes_and_applies_line_selectors_to_converted_text() {
+	let output =
+		read_document_tool_text("fixture.docx:3-3", "fixture.docx", selector_fixture_docx()).await;
+	assert_eq!(
+		output,
+		"[fixture.docx#A1B2]\n2:\n3:alpha\n4:\n5:beta\n6:\n\n[3 more lines in file. Use :7 to \
+		 continue]"
+	);
+}
+
+#[tokio::test]
+async fn raw_document_reads_bypass_numbering_but_not_document_conversion() {
+	let output =
+		read_document_tool_text("fixture.docx:raw", "fixture.docx", selector_fixture_docx()).await;
+	assert_eq!(output, "# Range Fixture\n\nalpha\n\nbeta\n\ngamma\n\ndelta");
+}
+
+#[tokio::test]
+async fn converted_document_truncation_spills_the_complete_numbered_markdown() {
+	let mut document = String::from(
+		r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>"#,
+	);
+	for line in 1..=3200 {
+		document.push_str(&format!("<w:p><w:r><w:t>Converted line {line}</w:t></w:r></w:p>"));
+	}
+	document.push_str("</w:body></w:document>");
+	let bytes = zip(&[("word/document.xml", &document)]);
+	let converted = markit::convert(Path::new("large.docx"), &bytes)
+		.expect("large DOCX conversion succeeds")
+		.expect("DOCX is supported");
+	let numbered = converted
+		.text
+		.split("\n")
+		.enumerate()
+		.map(|(index, line)| format!("{}:{line}", index + 1))
+		.collect::<Vec<_>>()
+		.join("\n");
+	let full = format!("[large.docx#A1B2]\n{numbered}");
+	let total_lines = full.lines().count();
+	let blobs = RecordingBlobs::default();
+
+	let output =
+		read_document_tool_text_with_blobs("large.docx", "large.docx", bytes, blobs.clone()).await;
+	assert!(
+		output
+			.ends_with(&format!(" of {total_lines} lines shown; full output in blob document-blob]")),
+		"{output}"
+	);
+	let visible = output
+		.split_once("\n\n[truncated: ")
+		.expect("converted output has the shared blob truncation footer")
+		.0;
+	assert_eq!(visible, &full[..visible.len()]);
+
+	let stored = blobs.stored.lock();
+	let [(stored_text, media_type)] = stored.as_slice() else {
+		panic!("converted output must spill exactly one blob: {stored:?}");
+	};
+	assert_eq!(stored_text.as_ref(), full.as_bytes());
+	assert_eq!(media_type.as_str(), "text/plain; charset=utf-8");
+}
+
+#[tokio::test]
+async fn docx_missing_document_member_has_exact_error_and_binary_projection() {
+	let bytes = zip(&[]);
+	let error = markit::convert(Path::new("broken.docx"), &bytes)
+		.expect_err("missing DOCX document member fails");
+	assert_eq!(error.to_string(), "docx conversion failed: Invalid DOCX: missing word/document.xml");
+	let output = read_document_tool_text("broken.docx", "broken.docx", bytes).await;
+	assert_eq!(
+		output,
+		"[Cannot read binary file 'broken.docx' (22B); not valid UTF-8 text. Use ':raw' to read \
+		 bytes verbatim.]"
+	);
+}
+
+#[test]
+fn xlsx_preserves_sheet_order_shared_strings_inline_strings_numbers_and_booleans() {
+	let bytes = zip(&[
+		(
+			"xl/workbook.xml",
+			r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Summary" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+		),
+		(
+			"xl/_rels/workbook.xml.rels",
+			r#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>"#,
+		),
+		(
+			"xl/sharedStrings.xml",
+			r#"<sst><si><t>Name</t></si><si><r><t>Val</t></r><r><t>ue</t></r></si><si><t>alpha</t></si></sst>"#,
+		),
+		(
+			"xl/worksheets/sheet1.xml",
+			r#"<worksheet><sheetData>
+<row><c t="s"><v>0</v></c><c t="s"><v>1</v></c><c t="inlineStr"><is><t>Enabled</t></is></c></row>
+<row><c t="s"><v>2</v></c><c><v>7</v></c><c t="b"><v>1</v></c></row>
+</sheetData></worksheet>"#,
+		),
+	]);
+
+	let conversion = markit::convert(Path::new("book.xlsx"), &bytes)
+		.expect("XLSX conversion succeeds")
+		.expect("XLSX is supported");
+	assert_eq!(
+		conversion.text.as_str(),
+		"## Summary\n\n| Name | Value | Enabled |\n| --- | --- | --- |\n| alpha | 7 | TRUE |"
+	);
+	assert_eq!(conversion.note, None);
+}
+
+#[test]
+fn pptx_preserves_slide_order_and_promotes_the_first_shape_to_a_title() {
+	let bytes = zip(&[
+		(
+			"ppt/presentation.xml",
+			r#"<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst><p:sldId r:id="rId1"/></p:sldIdLst></p:presentation>"#,
+		),
+		(
+			"ppt/_rels/presentation.xml.rels",
+			r#"<Relationships><Relationship Id="rId1" Target="slides/slide1.xml"/></Relationships>"#,
+		),
+		(
+			"ppt/slides/slide1.xml",
+			r#"<p:sld xmlns:p="p" xmlns:a="a"><p:cSld><p:spTree>
+<p:sp><p:txBody><a:p><a:r><a:t>Hello</a:t></a:r></a:p></p:txBody></p:sp>
+<p:sp><p:txBody><a:p><a:r><a:t>First</a:t></a:r></a:p><a:p><a:r><a:t>Second</a:t></a:r></a:p></p:txBody></p:sp>
+</p:spTree></p:cSld></p:sld>"#,
+		),
+	]);
+
+	let conversion = markit::convert(Path::new("deck.pptx"), &bytes)
+		.expect("PPTX conversion succeeds")
+		.expect("PPTX is supported");
+	assert_eq!(conversion.text.as_str(), "<!-- Slide 1 -->\n# Hello\nFirst\nSecond");
+	assert_eq!(conversion.note, None);
+}
+
+#[test]
+fn epub_preserves_metadata_title_spine_navigation_and_body_formatting() {
+	let bytes = zip(&[
+		(
+			"META-INF/container.xml",
+			r#"<container><rootfiles><rootfile full-path="OPS/content.opf"/></rootfiles></container>"#,
+		),
+		(
+			"OPS/content.opf",
+			r#"<package xmlns:dc="dc"><metadata><dc:title>Tiny &amp; Book</dc:title><dc:creator>Ada</dc:creator><dc:creator>Grace</dc:creator><dc:language>en</dc:language><dc:publisher>Example Press</dc:publisher><dc:date>2026</dc:date><dc:description>A compact fixture.</dc:description></metadata><manifest><item id="two" href="two.xhtml"/><item id="nav" href="nav.xhtml" properties="nav"/><item id="one" href="one.xhtml"/></manifest><spine><itemref idref="one"/><itemref idref="nav"/><itemref idref="two"/></spine></package>"#,
+		),
+		("OPS/one.xhtml", "<html><body><h1>One</h1><p>First chapter.</p></body></html>"),
+		(
+			"OPS/nav.xhtml",
+			"<html><head><style>nav { display: none \
+			 }</style></head><body><nav><h2>Contents</h2><ol><li><a \
+			 href=\"one.xhtml\">One</a></li><li><a href=\"two.xhtml\">Two &amp; \
+			 More</a></li></ol></nav><script>ignored()</script></body></html>",
+		),
+		(
+			"OPS/two.xhtml",
+			"<html><body><h1>Two</h1><p>Second <strong>chapter</strong>.<br/>Next \
+			 line.</p></body></html>",
+		),
+	]);
+
+	let conversion = markit::convert(Path::new("book.epub"), &bytes)
+		.expect("EPUB conversion succeeds")
+		.expect("EPUB is supported");
+	assert_eq!(
+		conversion.text.as_str(),
+		"**Title:** Tiny & Book\n**Authors:** Ada, Grace\n**Language:** en\n**Publisher:** Example \
+		 Press\n**Date:** 2026\n**Description:** A compact fixture.\n\n# One\n\nFirst \
+		 chapter.\n\n## Contents\n\n1. [One](one.xhtml)\n2. [Two & More](two.xhtml)\n\n# \
+		 Two\n\nSecond **chapter**.  \nNext line."
+	);
+	assert_eq!(conversion.note, None);
+	assert_eq!(conversion.title.as_deref(), Some("Tiny & Book"));
+}
+
+#[tokio::test]
+async fn epub_missing_container_member_has_exact_error_and_binary_projection() {
+	let bytes = zip(&[]);
+	let error = markit::convert(Path::new("broken.epub"), &bytes)
+		.expect_err("missing EPUB container member fails");
+	assert_eq!(error.to_string(), "epub conversion failed: Invalid EPUB: missing container.xml");
+	let output = read_document_tool_text("broken.epub", "broken.epub", bytes).await;
+	assert_eq!(
+		output,
+		"[Cannot read binary file 'broken.epub' (22B); not valid UTF-8 text. Use ':raw' to read \
+		 bytes verbatim.]"
+	);
+}
+
+fn minimal_text_pdf(text: &str) -> Vec<u8> {
+	let escaped = text
+		.replace('\\', "\\\\")
+		.replace('(', "\\(")
+		.replace(')', "\\)");
+	let stream = format!("BT /F1 18 Tf 72 720 Td ({escaped}) Tj ET");
+	let objects = [
+		"<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> \
+		 >> /Contents 4 0 R >>"
+			.to_owned(),
+		format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()),
+		"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+	];
+	let mut pdf = b"%PDF-1.4\n".to_vec();
+	let mut offsets = Vec::new();
+	for (index, object) in objects.iter().enumerate() {
+		offsets.push(pdf.len());
+		write!(&mut pdf, "{} 0 obj\n{}\nendobj\n", index + 1, object).expect("writes PDF object");
+	}
+	let xref = pdf.len();
+	write!(&mut pdf, "xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1)
+		.expect("writes xref header");
+	for offset in offsets {
+		writeln!(&mut pdf, "{offset:010} 00000 n ").expect("writes xref row");
+	}
+	write!(
+		&mut pdf,
+		"trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+		objects.len() + 1
+	)
+	.expect("writes PDF trailer");
+	pdf
+}
+
+#[test]
+fn pdf_text_layer_is_converted_in_memory() {
+	let bytes = minimal_text_pdf("Hello PDF");
+	let conversion = markit::convert(Path::new("hello.pdf"), &bytes)
+		.expect("PDF conversion succeeds")
+		.expect("PDF is supported");
+	assert!(conversion.text.contains("Hello PDF"), "{}", conversion.text);
+	assert_eq!(conversion.note, None);
+}
+
+#[test]
+fn unsupported_extension_is_not_misclassified_as_a_document() {
+	assert_eq!(
+		markit::convert(Path::new("notes.txt"), b"plain text").expect("dispatch succeeds"),
+		None
+	);
+}

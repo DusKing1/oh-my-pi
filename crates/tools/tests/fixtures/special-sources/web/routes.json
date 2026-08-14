@@ -1,0 +1,9 @@
+{
+  "routes": [
+    {"path": "/page", "status": 200, "content_type": "text/html; charset=utf-8", "body": "page.html"},
+    {"path": "/data", "status": 200, "content_type": "application/json", "body": "data.json"},
+    {"path": "/redirect", "status": 302, "location": "/page"},
+    {"path": "/limited", "sequence": [{"status": 429, "retry_after": "0"}, {"status": 200, "content_type": "text/html; charset=utf-8", "body": "page.html"}]},
+    {"path": "/blocked", "sequence": [{"status": 403, "content_type": "text/html", "inline": "Cloudflare challenge"}, {"status": 200, "content_type": "text/html; charset=utf-8", "body": "page.html"}]}
+  ]
+}

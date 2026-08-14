@@ -1,61 +1,55 @@
-//! Behavioral contracts for speculative and committed document edits.
+//! Exact pi-facing contracts for hashline edit execution and projection.
 
-use std::{
-	future::{Future, pending},
-	sync::{
-		Arc,
-		atomic::{AtomicBool, Ordering},
-	},
-};
+use std::{collections::HashMap, future::Future, sync::Arc};
 
 use bytes::Bytes;
-use futures::{StreamExt, pin_mut};
+use futures::StreamExt;
 use omp_core::Str;
-use omp_tool::{Ev, IncomingParams, Interrupt, Outcome, Part, PromptCaps, Tool};
+use omp_hashline::{
+	Clipboard, MismatchDetails, MismatchError, compute_snapshot_tag, loop_guard::NoopLoopGuard,
+};
+use omp_tool::{Ev, IncomingParams, Outcome, Part, PromptCaps, Tool};
 use omp_tools::edit::{
-	AppliedOp, CommitResult, EditCommitError, EditDocuments, EditPrepared, EditProposal, Fault,
-	FormatPolicy, RejectionReason, tool,
+	CommitResult, CommittedSection, Conflict, EditAction, EditCommitError, EditDocuments,
+	EditPrepared, EditProposal, Fault, FormatPolicy, NoopResult, PrepareRequest, RejectionReason,
+	tool,
 };
 use parking_lot::Mutex;
 
-#[derive(Clone)]
-struct Fake {
-	state:         Arc<Mutex<State>>,
-	result:        Result<CommitResult, EditCommitError>,
-	prepare_fault: Option<Fault>,
-}
-
 #[derive(Default)]
 struct State {
-	prepared:      Vec<Str>,
-	commits:       Vec<EditProposal>,
-	committed_ids: Vec<u64>,
+	prepared:   Vec<PrepareRequest>,
+	noop_guard: NoopLoopGuard,
+	commits:    Vec<EditProposal>,
+}
+
+#[derive(Clone)]
+struct Fake {
+	files: Arc<HashMap<Str, Bytes>>,
+	state: Arc<Mutex<State>>,
+	fault: Option<Fault>,
 }
 
 impl Fake {
-	fn success() -> Self {
+	fn with_files(files: &[(&str, &'static [u8])]) -> Self {
 		Self {
-			state:         Arc::default(),
-			result:        Ok(CommitResult {
-				new_revision: "r2".into(),
-				applied_ops:  vec![AppliedOp {
-					kind:       "insert".into(),
-					patch_line: 1,
-					index:      0,
-				}],
-				rebased:      false,
-				diff:         "-1|old\n+1|new".into(),
-			}),
-			prepare_fault: None,
+			files: Arc::new(
+				files
+					.iter()
+					.map(|(path, bytes)| (Str::from(*path), Bytes::from_static(bytes)))
+					.collect(),
+			),
+			state: Arc::default(),
+			fault: None,
 		}
 	}
 }
 
 struct Lease {
-	id:            u64,
-	path:          Str,
-	base_revision: Str,
-	base_bytes:    Bytes,
+	path:     Str,
+	revision: Str,
+	base:     Bytes,
+	authored: Bytes,
 }
 
 impl EditPrepared for Lease {
@@ -64,386 +58,297 @@ impl EditPrepared for Lease {
 	}
 
 	fn base_revision(&self) -> &Str {
-		&self.base_revision
+		&self.revision
 	}
 
 	fn base_bytes(&self) -> &Bytes {
-		&self.base_bytes
+		&self.base
+	}
+
+	fn authored_bytes(&self) -> &Bytes {
+		&self.authored
 	}
 }
 
 impl EditDocuments for Fake {
 	type Prepared = Lease;
 
-	fn prepare(&self, path: Str) -> impl Future<Output = Result<Lease, Fault>> + Send + '_ {
+	fn prepare(
+		&self,
+		request: PrepareRequest,
+	) -> impl Future<Output = Result<Self::Prepared, Fault>> + Send + '_ {
 		async move {
-			self.state.lock().prepared.push(path.clone());
-			if let Some(fault) = &self.prepare_fault {
+			self.state.lock().prepared.push(request.clone());
+			if let Some(fault) = &self.fault {
 				return Err(fault.clone());
 			}
-			let path = if path == "relative.txt" {
-				"/workspace/relative.txt".into()
-			} else {
-				path
+			let Some(content) = self.files.get(&request.path).cloned() else {
+				return Err(Fault {
+					reason:    RejectionReason::InvalidPatch { message: "file not found".into() },
+					conflicts: Vec::new(),
+				});
 			};
 			Ok(Lease {
-				id: 7,
-				path,
-				base_revision: "r1".into(),
-				base_bytes: Bytes::from_static(b"old\n"),
+				path:     request.path,
+				revision: "r1".into(),
+				base:     content.clone(),
+				authored: content,
 			})
 		}
 	}
 
-	fn commit(
-		&self,
-		prepared: Lease,
-		proposal: EditProposal,
-	) -> impl Future<Output = Result<CommitResult, EditCommitError>> + Send + '_ {
+	fn record_noop(&self, canonical_path: &str, display_path: &str, input: Bytes) -> NoopResult {
+		let record =
+			self
+				.state
+				.lock()
+				.noop_guard
+				.record_noop_for(canonical_path, display_path, input);
+		NoopResult { diagnostic: record.diagnostic().into(), escalate: record.should_escalate() }
+	}
+
+	fn reset_noop(&self, canonical_path: &str) {
+		self.state.lock().noop_guard.reset(canonical_path);
+	}
+
+	fn start_clipboard_batch(&self) -> Clipboard {
+		Clipboard::default()
+	}
+
+	fn commit<'a>(
+		&'a self,
+		_prepared: Vec<&'a mut Self::Prepared>,
+		proposals: Vec<EditProposal>,
+		_clipboard: Clipboard,
+	) -> impl Future<Output = Result<CommitResult, EditCommitError>> + Send + 'a {
 		async move {
-			assert_eq!(prepared.base_revision, "r1");
-			let mut state = self.state.lock();
-			state.committed_ids.push(prepared.id);
-			state.commits.push(proposal);
-			drop(state);
-			self.result.clone()
+			let sections = proposals
+				.iter()
+				.map(|proposal| CommittedSection {
+					new_revision: (!matches!(proposal.action, EditAction::Delete)).then(|| "r2".into()),
+					rebased:      false,
+					content:      match &proposal.action {
+						EditAction::Write { content } | EditAction::Move { content, .. } => {
+							Some(content.clone())
+						},
+						EditAction::Delete => None,
+					},
+				})
+				.collect();
+			self.state.lock().commits.extend(proposals);
+			Ok(CommitResult { sections })
 		}
 	}
 }
 
-#[derive(Clone)]
-struct CancelFake {
-	head_changed: Arc<AtomicBool>,
+fn caps() -> PromptCaps {
+	PromptCaps { maximum_parts: 1, maximum_text_bytes: 16 * 1024, media: false }
 }
 
-impl EditDocuments for CancelFake {
-	type Prepared = Lease;
+async fn invoke(fake: Fake, input: &str) -> (omp_tools::edit::Payload, Vec<Part>) {
+	let edit = tool(fake, FormatPolicy::Configured);
+	let raw = serde_json::json!({ "input": input }).to_string();
+	let (feed, incoming) = IncomingParams::channel();
+	feed.arg_text(raw.clone().into()).unwrap();
+	feed.args_committed(raw.into()).unwrap();
+	let events = edit.call(incoming).collect::<Vec<_>>().await;
+	let payload = events
+		.into_iter()
+		.find_map(|event| match event {
+			Ev::Done(Outcome::Done { result: Ok(payload), .. }) => Some(payload),
+			_ => None,
+		})
+		.expect("successful edit payload");
+	let parts = edit.prompt(Ok(&payload), &caps());
+	(payload, parts)
+}
 
-	fn prepare(&self, path: Str) -> impl Future<Output = Result<Lease, Fault>> + Send + '_ {
-		async move {
-			Ok(Lease {
-				id: 9,
-				path,
-				base_revision: "r1".into(),
-				base_bytes: Bytes::from_static(b"old\n"),
-			})
-		}
-	}
-
-	fn commit(
-		&self,
-		_prepared: Lease,
-		_proposal: EditProposal,
-	) -> impl Future<Output = Result<CommitResult, EditCommitError>> + Send + '_ {
-		async move {
-			pending::<()>().await;
-			self.head_changed.store(true, Ordering::SeqCst);
-			unreachable!()
-		}
+fn text(parts: &[Part]) -> &str {
+	match parts {
+		[Part::Text { text }] => text,
+		_ => panic!("expected one text part"),
 	}
 }
 
 #[tokio::test]
-async fn pins_early_previews_progressively_and_waits_for_commit_gate() {
-	let fake = Fake::success();
-	let state = Arc::clone(&fake.state);
-	let edit = tool(fake, FormatPolicy::Configured);
-	let (feed, incoming) = IncomingParams::channel();
-	let stream = edit.call(incoming);
-	pin_mut!(stream);
-
-	let prefix = r#"{"path":"src/a.rs","patch":"PUT 1.=1:\n+new"#;
-	feed.arg_text(prefix.into()).unwrap();
-	let update = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
-		.await
-		.unwrap()
-		.unwrap();
-	assert!(matches!(
-		&update,
-		Ev::Update(value)
-			if value.preview.contains("new")
-				&& value.added_lines == 1
-				&& value.removed_lines == 1
-	));
-	assert_eq!(state.lock().prepared.as_slice(), ["src/a.rs"]);
-	assert!(state.lock().commits.is_empty(), "preview must not cross the effect gate");
-
-	let suffix = "\"}";
-	feed.arg_text(suffix.into()).unwrap();
-	let raw = format!("{prefix}{suffix}");
-	feed.args_committed(raw.into()).unwrap();
-	let done = stream.next().await.unwrap();
-	let Ev::Done(Outcome::Done { result: Ok(payload), .. }) = done else {
-		panic!("expected success")
-	};
-	assert_eq!(payload.old_revision, "r1");
-	assert_eq!(payload.new_revision, "r2");
-	assert_eq!(payload.diff, "-1|old\n+1|new");
-	assert_eq!(state.lock().commits[0].format, "omp.hashline");
-	let tag = omp_hashline::compute_snapshot_tag(b"old\n");
-	assert_eq!(state.lock().commits[0].payload, format!("[src/a.rs#{tag}]\nPUT 1.=1:\n+new"));
-	assert!(!state.lock().commits[0].applied_ops.is_empty());
-	assert_eq!(state.lock().committed_ids, [7]);
-}
-
-#[tokio::test]
-async fn relative_input_commits_and_reports_the_canonical_prepared_path() {
-	let fake = Fake::success();
-	let state = Arc::clone(&fake.state);
-	let edit = tool(fake, FormatPolicy::Configured);
-	let (feed, incoming) = IncomingParams::channel();
-	let raw = r#"{"path":"relative.txt","patch":"PUT 1.=1:\n+new"}"#;
-	feed.arg_text(raw.into()).unwrap();
-	feed.args_committed(raw.into()).unwrap();
-	let stream = edit.call(incoming);
-	pin_mut!(stream);
-	let mut payload = None;
-	while let Some(event) = stream.next().await {
-		if let Ev::Done(Outcome::Done { result: Ok(value), .. }) = event {
-			payload = Some(value);
-			break;
-		}
-	}
-	assert_eq!(payload.unwrap().path, "/workspace/relative.txt");
-	let tag = omp_hashline::compute_snapshot_tag(b"old\n");
+async fn put_and_cut_render_exact_post_edit_headers_and_previews() {
+	let fake = Fake::with_files(&[("a.txt", b"one\ntwo\nthree\n"), ("b.txt", b"alpha\nbeta\n")]);
+	let a_tag = compute_snapshot_tag(b"one\ntwo\nthree\n");
+	let b_tag = compute_snapshot_tag(b"alpha\nbeta\n");
+	let input = format!("[a.txt#{a_tag}]\nPUT 2.=2:\n+TWO\n[b.txt#{b_tag}]\nCUT 1.=1");
+	let (payload, parts) = invoke(fake.clone(), &input).await;
+	let a_after = b"one\nTWO\nthree\n";
+	let b_after = b"beta\n";
 	assert_eq!(
-		state.lock().commits[0].payload,
-		format!("[/workspace/relative.txt#{tag}]\nPUT 1.=1:\n+new")
+		text(&parts),
+		format!(
+			"[a.txt#{}]\n1:one\n2:TWO\n3:three\n\n[b.txt#{}]\n1:beta",
+			compute_snapshot_tag(a_after),
+			compute_snapshot_tag(b_after)
+		)
+	);
+	assert_eq!(payload.sections.len(), 2);
+	let state = fake.state.lock();
+	let commits = &state.commits;
+	assert!(
+		matches!(&commits[0].action, EditAction::Write { content } if content.as_ref() == a_after)
+	);
+	assert!(
+		matches!(&commits[1].action, EditAction::Write { content } if content.as_ref() == b_after)
 	);
 }
 
 #[tokio::test]
-async fn malformed_pulled_path_lowers_to_args_without_commit() {
-	let fake = Fake::success();
-	let state = Arc::clone(&fake.state);
-	let edit = tool(fake, FormatPolicy::Configured);
-	let (feed, incoming) = IncomingParams::channel();
-	let raw = r#"{"path":42,"patch":"PUT 1.=1:\n+x"}"#;
-	feed.arg_text(raw.into()).unwrap();
-	feed.args_committed(raw.into()).unwrap();
-	let stream = edit.call(incoming);
-	pin_mut!(stream);
-	assert!(matches!(stream.next().await, Some(Ev::Args(_))));
-	assert!(state.lock().commits.is_empty());
+async fn rem_and_mv_render_exact_file_operation_text() {
+	let fake = Fake::with_files(&[("old.txt", b"one\ntwo\n"), ("gone.txt", b"bye\n")]);
+	let old_tag = compute_snapshot_tag(b"one\ntwo\n");
+	let gone_tag = compute_snapshot_tag(b"bye\n");
+	let input = format!("[old.txt#{old_tag}]\nMV new.txt\n[gone.txt#{gone_tag}]\nREM");
+	let (_, parts) = invoke(fake.clone(), &input).await;
+	assert_eq!(
+		text(&parts),
+		format!(
+			"[new.txt#{}]\nMoved to new.txt\n\nDeleted gone.txt",
+			compute_snapshot_tag(b"one\ntwo\n")
+		)
+	);
+	let state = fake.state.lock();
+	let commits = &state.commits;
+	assert!(
+		matches!(&commits[0].action, EditAction::Move { destination, content } if destination == "new.txt" && content.as_ref() == b"one\ntwo\n")
+	);
+	assert!(matches!(&commits[1].action, EditAction::Delete));
 }
 
 #[tokio::test]
-async fn typed_rejection_is_preserved() {
-	let fault = Fault {
-		reason:    RejectionReason::Format { message: "formatter failed".into() },
+async fn byte_identical_put_escalates_from_exact_soft_diagnostic_to_loop_guard_failure() {
+	let fake = Fake::with_files(&[("a.txt", b"same\n")]);
+	let tag = compute_snapshot_tag(b"same\n");
+	let input = format!("[a.txt#{tag}]\nPUT 1.=1:\n+same");
+	for _ in 0..2 {
+		let (_, parts) = invoke(fake.clone(), &input).await;
+		assert_eq!(
+			text(&parts),
+			"Edits to a.txt parsed and applied cleanly, but produced no change: your body row(s) are \
+			 byte-identical to the file at the targeted lines. The bug is somewhere else — re-read \
+			 the file before issuing another edit. Do NOT widen the payload or add lines; verify the \
+			 anchor first."
+		);
+	}
+
+	let edit = tool(fake.clone(), FormatPolicy::Configured);
+	let raw = serde_json::json!({ "input": input }).to_string();
+	let (feed, incoming) = IncomingParams::channel();
+	feed.arg_text(raw.clone().into()).unwrap();
+	feed.args_committed(raw.into()).unwrap();
+	let events = edit.call(incoming).collect::<Vec<_>>().await;
+	let fault = events
+		.into_iter()
+		.find_map(|event| match event {
+			Ev::Done(Outcome::Done { result: Err(fault), .. }) => Some(fault),
+			_ => None,
+		})
+		.expect("third identical no-op must fail");
+	assert_eq!(
+		text(&edit.prompt(Err(&fault), &caps())),
+		"STOP. Edits to a.txt have been a byte-identical no-op 3 times in a row — the patch body \
+		 matches the file at the targeted lines and the soft hint did not break the cycle. Cease \
+		 re-issuing this payload. Either the intended change is already on disk (move on), or your \
+		 anchor is wrong (re-read the file with `read` to observe the current line numbers and tag, \
+		 then author a different edit). This exact payload will keep being rejected until it \
+		 changes."
+	);
+	assert!(fake.state.lock().commits.is_empty());
+}
+
+#[tokio::test]
+async fn stale_tag_and_transaction_conflict_messages_are_projected_verbatim() {
+	let mismatch = MismatchError::new(MismatchDetails {
+		path:               Some("a.txt".into()),
+		expected_file_hash: "1A2B".into(),
+		actual_file_hash:   "C3D4".into(),
+		file_lines:         vec!["one".into(), "two".into(), "three".into()],
+		anchor_lines:       vec![2],
+		hash_recognized:    true,
+	});
+	let stale = Fault {
+		reason:    RejectionReason::StaleUnrecoverable { message: mismatch.to_string().into() },
 		conflicts: Vec::new(),
 	};
-	let fake = Fake {
-		state:         Arc::default(),
-		result:        Err(EditCommitError::Rejected(fault.clone())),
-		prepare_fault: None,
-	};
-	let edit = tool(fake, FormatPolicy::Configured);
-	let (feed, incoming) = IncomingParams::channel();
-	let raw = r#"{"path":"a","patch":"PUT 1.=1:\n+x"}"#;
-	feed.arg_text(raw.into()).unwrap();
-	feed.args_committed(raw.into()).unwrap();
-	let stream = edit.call(incoming);
-	pin_mut!(stream);
-	let mut terminal = None;
-	while let Some(event) = stream.next().await {
-		if matches!(event, Ev::Done(_)) {
-			terminal = Some(event);
-			break;
-		}
-	}
-	assert!(
-		matches!(terminal, Some(Ev::Done(Outcome::Done { result: Err(value), .. })) if value == fault)
-	);
-}
+	let edit = tool(Fake::with_files(&[]), FormatPolicy::Configured);
+	assert_eq!(text(&edit.prompt(Err(&stale), &caps())), mismatch.display_message());
 
-#[tokio::test]
-async fn disjoint_stale_rebase_truth_is_preserved() {
-	let fake = Fake {
-		state:         Arc::default(),
-		result:        Ok(CommitResult {
-			new_revision: "r3".into(),
-			applied_ops:  vec![AppliedOp {
-				kind:       "insert".into(),
-				patch_line: 1,
-				index:      0,
-			}],
-			rebased:      true,
-			diff:         " 1|other\n-2|old\n+2|new".into(),
-		}),
-		prepare_fault: None,
-	};
-	let edit = tool(fake, FormatPolicy::Configured);
-	let (feed, incoming) = IncomingParams::channel();
-	let raw = r#"{"path":"a","patch":"PUT 1.=1:\n+x"}"#;
-	feed.arg_text(raw.into()).unwrap();
-	feed.args_committed(raw.into()).unwrap();
-	let stream = edit.call(incoming);
-	pin_mut!(stream);
-	let mut payload = None;
-	while let Some(event) = stream.next().await {
-		if let Ev::Done(Outcome::Done { result: Ok(value), .. }) = event {
-			payload = Some(value);
-			break;
-		}
-	}
-	assert!(payload.is_some_and(|value| value.rebased && value.new_revision == "r3"));
-}
-
-#[tokio::test]
-async fn overlapping_rejection_preserves_typed_conflicts() {
-	let fault = Fault {
+	let conflict = Fault {
 		reason:    RejectionReason::Conflict,
-		conflicts: vec![omp_tools::edit::Conflict {
-			start_line: 1,
-			end_line:   1,
+		conflicts: vec![Conflict {
+			start_line: 4,
+			end_line:   6,
 			message:    "overlapping concurrent edit".into(),
 		}],
 	};
-	let fake = Fake {
-		state:         Arc::default(),
-		result:        Err(EditCommitError::Rejected(fault.clone())),
-		prepare_fault: None,
-	};
-	let edit = tool(fake, FormatPolicy::Configured);
-	let (feed, incoming) = IncomingParams::channel();
-	let raw = r#"{"path":"a","patch":"PUT 1.=1:\n+x"}"#;
-	feed.arg_text(raw.into()).unwrap();
-	feed.args_committed(raw.into()).unwrap();
-	let stream = edit.call(incoming);
-	pin_mut!(stream);
-	let mut terminal = None;
-	while let Some(event) = stream.next().await {
-		if matches!(event, Ev::Done(_)) {
-			terminal = Some(event);
-			break;
-		}
+	assert_eq!(
+		text(&edit.prompt(Err(&conflict), &caps())),
+		"Edit rejected: conflict (1 overlapping range(s))\n4-6: overlapping concurrent edit"
+	);
+}
+
+#[tokio::test]
+async fn malformed_and_headerless_input_never_commit_and_preserve_parser_diagnostics() {
+	let fake = Fake::with_files(&[("a.txt", b"one\n")]);
+	let edit = tool(fake.clone(), FormatPolicy::Configured);
+	for (input, expected) in [
+		("", "No hashline sections found in input."),
+		(
+			"@@ -1,1 +1,1 @@\n-old\n+new",
+			"unified-diff hunk header is not valid in hashline. File sections start with \
+			 `[path#HASH]`; use `PUT`, `CUT`, `REM`, or `MV`.",
+		),
+		(
+			"[a.txt#1A2B]\nPUT 1.=:\n+x",
+			"line 1: payload line has no preceding hunk header. Use `PUT N.=M:`, `CUT N.=M`, or `PUT \
+			 <N:`/`PUT >N:` above the body. Got \"PUT 1.=:\".",
+		),
+		(
+			"[a.txt#1A2B]\nPUT 1.=2:\n+X\nPUT 2.=3:\n+Y",
+			"line 3: anchor line 2 is already targeted by another hunk on line 1. Issue ONE hunk per \
+			 range; payload is only the final desired content, never a before/after pair.",
+		),
+	] {
+		let raw = serde_json::json!({ "input": input }).to_string();
+		let (feed, incoming) = IncomingParams::channel();
+		feed.arg_text(raw.clone().into()).unwrap();
+		feed.args_committed(raw.into()).unwrap();
+		let events = edit.call(incoming).collect::<Vec<_>>().await;
+		let rendered = events
+			.iter()
+			.find_map(|event| match event {
+				Ev::Done(Outcome::Done { result: Err(fault), .. }) => {
+					Some(text(&edit.prompt(Err(fault), &caps())).to_owned())
+				},
+				Ev::Args(issue) => issue.found.as_deref().map(str::to_owned),
+				_ => None,
+			})
+			.expect("diagnostic event");
+		assert_eq!(rendered, expected);
 	}
-	let parts = edit.prompt(Err(&fault), &PromptCaps {
-		maximum_parts:      1,
-		maximum_text_bytes: 1024,
-		media:              false,
-	});
-	assert!(matches!(
-		parts.as_slice(),
-		[Part::Text { text }] if text.contains("1-1: overlapping concurrent edit")
-	));
-	assert!(matches!(
-		terminal,
-		Some(Ev::Done(Outcome::Done { result: Err(value), .. })) if value == fault
-	));
+	assert!(fake.state.lock().commits.is_empty());
 }
 
 #[tokio::test]
-async fn uncertain_resource_commit_is_not_misreported_as_rejection() {
-	let fake = Fake {
-		state:         Arc::default(),
-		result:        Err(EditCommitError::EffectsUnknown { reason: "partially committed".into() }),
-		prepare_fault: None,
-	};
-	let edit = tool(fake, FormatPolicy::Configured);
-	let (feed, incoming) = IncomingParams::channel();
-	let raw = r#"{"path":"a","patch":"PUT 1.=1:\n+x"}"#;
-	feed.arg_text(raw.into()).unwrap();
-	feed.args_committed(raw.into()).unwrap();
-	let stream = edit.call(incoming);
-	pin_mut!(stream);
-	let mut terminal = None;
-	while let Some(event) = stream.next().await {
-		if matches!(event, Ev::Aborted(_)) {
-			terminal = Some(event);
-			break;
-		}
-	}
-	assert!(matches!(terminal, Some(Ev::Aborted(omp_tool::Abort::EffectsUnknown { .. }))));
-}
-
-#[tokio::test]
-async fn prepare_failure_is_a_typed_fault() {
-	let fault = Fault { reason: RejectionReason::StaleUnrecoverable, conflicts: Vec::new() };
-	let fake = Fake {
-		state:         Arc::default(),
-		result:        Ok(CommitResult {
-			new_revision: "unused".into(),
-			applied_ops:  Vec::new(),
-			rebased:      false,
-			diff:         Str::default(),
-		}),
-		prepare_fault: Some(fault.clone()),
-	};
-	let state = Arc::clone(&fake.state);
-	let edit = tool(fake, FormatPolicy::Configured);
-	let (feed, incoming) = IncomingParams::channel();
-	let raw = r#"{"path":"a","patch":"PUT 1.=1:\n+x"}"#;
-	feed.arg_text(raw.into()).unwrap();
-	feed.args_committed(raw.into()).unwrap();
-	let stream = edit.call(incoming);
-	pin_mut!(stream);
-	assert!(matches!(
-		stream.next().await,
-		Some(Ev::Done(Outcome::Done { result: Err(value), .. })) if value == fault
-	));
-	assert!(state.lock().committed_ids.is_empty());
-}
-
-#[tokio::test]
-async fn malformed_complete_hashline_patch_never_crosses_commit_gate() {
-	let fake = Fake::success();
-	let state = Arc::clone(&fake.state);
-	let edit = tool(fake, FormatPolicy::Configured);
-	let (feed, incoming) = IncomingParams::channel();
-	let raw = r#"{"path":"a","patch":"PUT 1.=:"}"#;
-	feed.arg_text(raw.into()).unwrap();
-	feed.args_committed(raw.into()).unwrap();
-	let stream = edit.call(incoming);
-	pin_mut!(stream);
-	assert!(matches!(stream.next().await, Some(Ev::Args(_))));
-	assert!(state.lock().committed_ids.is_empty());
-}
-
-#[tokio::test]
-async fn precommit_cancellation_never_reaches_adapter_head() {
-	let fake = Fake::success();
-	let state = Arc::clone(&fake.state);
-	let edit = tool(fake, FormatPolicy::Configured);
-	let (feed, incoming) = IncomingParams::channel();
-	let prefix = r#"{"path":"a","patch":"PUT 1.=1:\n+x"#;
-	feed.arg_text(prefix.into()).unwrap();
-	feed
-		.interrupt(Interrupt { class: "immediate".into(), reason: "stop".into() })
-		.unwrap();
-	drop(feed);
-	let stream = edit.call(incoming);
-	pin_mut!(stream);
-	while let Some(event) = stream.next().await {
-		if matches!(event, Ev::Aborted(_)) {
-			break;
-		}
-	}
-	assert!(state.lock().commits.is_empty());
-}
-
-#[tokio::test]
-async fn postcommit_interrupt_drops_transaction_without_touching_adapter_head() {
-	let head_changed = Arc::new(AtomicBool::new(false));
-	let edit =
-		tool(CancelFake { head_changed: Arc::clone(&head_changed) }, FormatPolicy::Configured);
-	let (feed, incoming) = IncomingParams::channel();
-	let raw = r#"{"path":"a","patch":"PUT 1.=1:\n+x"}"#;
-	feed.arg_text(raw.into()).unwrap();
-	feed.args_committed(raw.into()).unwrap();
-	feed
-		.interrupt(Interrupt { class: "immediate".into(), reason: "stop".into() })
-		.unwrap();
-	let stream = edit.call(incoming);
-	pin_mut!(stream);
-	let mut terminal = None;
-	while let Some(event) = stream.next().await {
-		if matches!(event, Ev::Aborted(_)) {
-			terminal = Some(event);
-			break;
-		}
-	}
-	assert!(matches!(terminal, Some(Ev::Aborted(omp_tool::Abort::EffectsUnknown { .. }))));
-	assert!(!head_changed.load(Ordering::SeqCst));
+async fn copied_read_elision_is_ignored_but_reported_as_a_warning() {
+	let fake = Fake::with_files(&[("a.txt", b"one\ntwo\n")]);
+	let tag = compute_snapshot_tag(b"one\ntwo\n");
+	let input = format!(
+		"[a.txt#{tag}]\nPUT 1.=1:\n+ONE\n[…8ln elided; re-read needed ranges with |, e.g. \
+		 a.txt:10-17]"
+	);
+	let (_, parts) = invoke(fake, &input).await;
+	let output = text(&parts);
+	assert!(
+		output.ends_with(
+			"\n\nWarnings:\nIgnored copied read-output elision row(s). Re-read elided ranges before \
+			 editing them."
+		),
+		"{output:?}"
+	);
 }

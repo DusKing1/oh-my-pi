@@ -1,37 +1,22 @@
-//! Registry-level contracts for deterministic, cancellable workspace path
-//! matching.
+//! Pi-equivalent `glob@1` schema, traversal, and model-facing output contracts.
 
-use std::{
-	future::{Future, pending},
-	sync::{
-		Arc,
-		atomic::{AtomicBool, Ordering},
-	},
-};
+use std::{future::Future, sync::Arc};
 
+use bytes::Bytes;
 use futures::{StreamExt, executor::block_on};
 use omp_core::Str;
-use omp_tool::{
-	ArgIssueKind, ErasedEv, ErasedOutcome, IncomingParams, Interrupt, Part, PromptCaps, Registry,
-	Tool, Verdict,
+use omp_tool::{BlobRef, Ev, IncomingParams, Outcome, Part, PromptCaps, Tool};
+use omp_tools::{
+	glob, grep,
+	read::{Fault as ReadFault, ReadBlobs},
 };
-use omp_tools::{glob, grep};
 use parking_lot::Mutex;
+use serde_json::json;
 
 #[derive(Clone)]
 struct FakeWorkspace {
-	result:  Result<glob::WalkResult, glob::Fault>,
-	seen:    Arc<Mutex<Vec<glob::WalkRequest>>>,
-	pending: bool,
-	dropped: Arc<AtomicBool>,
-}
-
-struct ActiveGuard(Arc<AtomicBool>);
-
-impl Drop for ActiveGuard {
-	fn drop(&mut self) {
-		self.0.store(true, Ordering::SeqCst);
-	}
+	result: Result<glob::WalkResult, glob::Fault>,
+	seen:   Arc<Mutex<Vec<glob::WalkRequest>>>,
 }
 
 impl grep::WorkspaceSearch for FakeWorkspace {
@@ -48,192 +33,321 @@ impl grep::WorkspaceSearch for FakeWorkspace {
 	) -> impl Future<Output = Result<glob::WalkResult, glob::Fault>> + Send + '_ {
 		let result = self.result.clone();
 		let seen = Arc::clone(&self.seen);
-		let dropped = Arc::clone(&self.dropped);
-		let remains_pending = self.pending;
 		async move {
 			seen.lock().push(request);
-			let _guard = remains_pending.then(|| ActiveGuard(dropped));
-			if remains_pending {
-				pending::<()>().await;
-			}
 			result
 		}
 	}
 }
 
-fn fake(result: Result<glob::WalkResult, glob::Fault>) -> FakeWorkspace {
-	FakeWorkspace {
-		result,
-		seen: Arc::new(Mutex::new(Vec::new())),
-		pending: false,
-		dropped: Arc::new(AtomicBool::new(false)),
+#[derive(Clone, Default)]
+struct RecordingBlobs {
+	stored: Arc<Mutex<Vec<Bytes>>>,
+}
+
+impl ReadBlobs for RecordingBlobs {
+	fn store(
+		&self,
+		bytes: Bytes,
+		media_type: Str,
+	) -> impl Future<Output = Result<BlobRef, ReadFault>> + Send + '_ {
+		let stored = Arc::clone(&self.stored);
+		async move {
+			let byte_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+			stored.lock().push(bytes);
+			Ok(BlobRef { hash: Str::new_static("glob-full"), media_type, byte_len })
+		}
 	}
 }
 
-fn invoke(workspace: FakeWorkspace, raw: &str) -> Verdict<glob::Payload, glob::Fault> {
-	let mut registry = Registry::new();
-	registry
-		.register(glob::tool(workspace))
-		.expect("glob schema and revision register");
+struct Invocation {
+	result:  Result<glob::Payload, glob::Fault>,
+	useless: bool,
+	text:    String,
+}
+
+fn fake(result: glob::WalkResult) -> FakeWorkspace {
+	FakeWorkspace { result: Ok(result), seen: Arc::new(Mutex::new(Vec::new())) }
+}
+
+fn faulty(fault: glob::Fault) -> FakeWorkspace {
+	FakeWorkspace { result: Err(fault), seen: Arc::new(Mutex::new(Vec::new())) }
+}
+
+fn walk(matches: Vec<glob::WalkMatch>) -> glob::WalkResult {
+	glob::WalkResult { matches, missing_paths: Vec::new(), timed_out: false, truncated: false }
+}
+
+fn matched(path: &'static str, modified_ms: u64) -> glob::WalkMatch {
+	glob::WalkMatch { path: Str::new_static(path), modified_ms, is_dir: false }
+}
+
+fn directory(path: &'static str, modified_ms: u64) -> glob::WalkMatch {
+	glob::WalkMatch { path: Str::new_static(path), modified_ms, is_dir: true }
+}
+
+fn invoke_with_blobs(workspace: FakeWorkspace, raw: &str, blobs: RecordingBlobs) -> Invocation {
+	let tool = glob::tool(workspace, blobs);
 	let (feed, params) = IncomingParams::channel();
 	feed
 		.args_committed(Str::from(raw))
 		.expect("invocation consumer remains live");
-	let events = block_on(
-		registry
-			.invoke("glob", params)
-			.expect("registered glob is invokable")
-			.collect::<Vec<_>>(),
-	);
-	let [Ok(ErasedEv::Done(ErasedOutcome::Done { verdict, useless: false }))] = events.as_slice()
-	else {
-		panic!("expected one terminal glob event: {events:?}");
+	let events = block_on(tool.call(params).collect::<Vec<_>>());
+	let [Ev::Done(Outcome::Done { result, useless })] = events.as_slice() else {
+		panic!("expected one terminal glob outcome: {events:?}");
 	};
-	serde_json::from_slice(verdict).expect("typed glob verdict survives registry erasure")
+	let parts = tool.prompt(result.as_ref(), &PromptCaps {
+		maximum_parts:      1,
+		maximum_text_bytes: 64 * 1024,
+		media:              false,
+	});
+	let text = parts
+		.into_iter()
+		.map(|part| match part {
+			Part::Text { text } => text.to_string(),
+			Part::Json { .. } => panic!("glob must project text only"),
+			Part::Blob { .. } => panic!("glob must never project blobs"),
+		})
+		.collect();
+	Invocation { result: result.clone(), useless: *useless, text }
+}
+
+fn invoke(workspace: FakeWorkspace, raw: &str) -> Invocation {
+	invoke_with_blobs(workspace, raw, RecordingBlobs::default())
 }
 
 #[test]
-fn paths_are_sorted_capped_and_controls_are_forwarded_exactly() {
-	let workspace = fake(Ok(glob::WalkResult {
-		paths:     vec![Str::from("z.rs"), Str::from("a.rs"), Str::from("m.rs")],
-		truncated: false,
-	}));
+fn pi_schema_and_defaults_are_exact() {
+	let workspace = fake(walk(Vec::new()));
 	let seen = Arc::clone(&workspace.seen);
-	let verdict = invoke(
-		workspace,
-		r#"{"path":"src","patterns":["**/*.rs","build.rs"],"exclude":["generated/**"],"gitignore":false,"hidden":true,"limit":2}"#,
-	);
+	let tool = glob::tool(workspace.clone(), RecordingBlobs::default());
+	let actual: serde_json::Value =
+		serde_json::from_slice(&tool.spec().schema).expect("glob schema is JSON");
 	assert_eq!(
-		verdict,
-		Verdict::Ok(glob::Payload {
-			paths:     vec![Str::from("a.rs"), Str::from("m.rs")],
-			truncated: true,
+		actual,
+		json!({
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"path": {
+					"type": "string",
+					"description": "glob, file, or directory to search — a single path or a semicolon-delimited list (\"src/**/*.ts; test/**/*.ts\"). Omitted -> searches the workspace root (\".\")"
+				},
+				"hidden": {
+					"type": "boolean",
+					"description": "include hidden files"
+				},
+				"gitignore": {
+					"type": "boolean",
+					"description": "respect gitignore"
+				},
+				"limit": {
+					"type": "number",
+					"description": "max results"
+				}
+			}
 		})
 	);
+
+	let invocation = invoke(workspace, "{}");
+	assert_eq!(invocation.text, "No files found matching pattern");
+	assert!(invocation.useless);
 	let requests = seen.lock();
-	assert_eq!(requests.len(), 1);
-	assert_eq!(requests[0].path, "src");
-	assert_eq!(requests[0].patterns, [Str::from("**/*.rs"), Str::from("build.rs")]);
-	assert_eq!(requests[0].exclude, [Str::from("generated/**")]);
-	assert!(!requests[0].gitignore);
-	assert!(requests[0].hidden);
-	assert_eq!(requests[0].limit, 3);
-}
-
-#[test]
-fn zero_limit_preserves_the_truncated_boundary() {
-	let workspace =
-		fake(Ok(glob::WalkResult { paths: vec![Str::from("present.rs")], truncated: false }));
-	let seen = Arc::clone(&workspace.seen);
-	assert_eq!(
-		invoke(workspace, r#"{"patterns":["**"],"limit":0}"#),
-		Verdict::Ok(glob::Payload { paths: Vec::new(), truncated: true })
-	);
-	assert_eq!(seen.lock()[0].limit, 1);
-
-	let empty = fake(Ok(glob::WalkResult { paths: Vec::new(), truncated: false }));
-	assert_eq!(
-		invoke(empty, r#"{"patterns":["**"],"limit":0}"#),
-		Verdict::Ok(glob::Payload { paths: Vec::new(), truncated: false })
-	);
-}
-
-#[test]
-fn invalid_workspace_glob_is_a_typed_fault() {
-	let workspace = fake(Err(glob::Fault::InvalidPattern {
-		pattern: Str::from("["),
-		message: Str::from("unclosed character class"),
-	}));
-	assert_eq!(
-		invoke(workspace, r#"{"patterns":["["],"limit":10}"#),
-		Verdict::Fault(glob::Fault::InvalidPattern {
-			pattern: Str::from("["),
-			message: Str::from("unclosed character class"),
-		})
-	);
-}
-
-#[test]
-fn malformed_pulled_params_become_args_verdicts() {
-	let workspace = fake(Ok(glob::WalkResult { paths: Vec::new(), truncated: false }));
-	let seen = Arc::clone(&workspace.seen);
-	let verdict = invoke(workspace, r#"{"patterns":{"not":"an array"},"limit":4}"#);
-	let Verdict::Args(issue) = verdict else {
-		panic!("mistyped pulled patterns must be an args verdict");
+	let [request] = requests.as_slice() else {
+		panic!("default invocation must issue one walk: {requests:?}");
 	};
-	assert!(matches!(issue.kind, ArgIssueKind::TypeMismatch | ArgIssueKind::Malformed));
+	assert_eq!(request.path, ".");
+	assert!(request.hidden);
+	assert!(request.gitignore);
+	assert_eq!(request.limit, 200);
+	assert_eq!(request.timeout_ms, 5_000);
+}
+
+#[test]
+fn newest_first_matches_are_prefix_grouped_and_directories_keep_their_slash() {
+	let workspace = fake(walk(vec![
+		matched("src/old.rs", 10),
+		directory("fixtures/generated", 20),
+		matched("src/new.rs", 30),
+	]));
+	let seen = Arc::clone(&workspace.seen);
+	let invocation = invoke(workspace, r#"{"path":"**/*.rs","hidden":false,"gitignore":false}"#);
+	assert_eq!(invocation.text, "# src/\nnew.rs\nold.rs\n# fixtures/generated/");
+	assert!(!invocation.useless);
+	let payload = invocation.result.expect("glob succeeds");
+	assert_eq!(payload.matches, vec![
+		matched("src/new.rs", 30),
+		directory("fixtures/generated/", 20),
+		matched("src/old.rs", 10),
+	]);
+	let requests = seen.lock();
+	assert_eq!(requests[0].path, "**/*.rs");
+	assert!(!requests[0].hidden);
+	assert!(!requests[0].gitignore);
+}
+
+#[test]
+fn limit_one_keeps_only_the_newest_match_and_records_truncation_truth() {
+	let workspace = fake(walk(vec![matched("old.rs", 1), matched("new.rs", 2)]));
+	let seen = Arc::clone(&workspace.seen);
+	let invocation = invoke(workspace, r#"{"path":"*.rs","limit":1}"#);
+	assert_eq!(invocation.text, "new.rs");
+	assert!(!invocation.useless);
+	let payload = invocation.result.expect("glob succeeds");
+	assert_eq!(payload.matches, vec![matched("new.rs", 2)]);
+	assert!(payload.truncated);
+	assert_eq!(payload.result_limit_reached, Some(1));
+	assert_eq!(seen.lock()[0].limit, 1);
+}
+
+#[test]
+fn root_search_is_rejected_before_workspace_traversal() {
+	let workspace = fake(walk(Vec::new()));
+	let seen = Arc::clone(&workspace.seen);
+	let invocation = invoke(workspace, r#"{"path":"/"}"#);
+	assert!(invocation.result.is_err());
+	assert_eq!(invocation.text, "Searching from root directory '/' is not allowed");
+	assert!(!invocation.useless);
 	assert!(seen.lock().is_empty());
 }
 
 #[test]
-fn owner_drop_before_commit_is_an_input_drop_abort() {
-	let workspace = fake(Ok(glob::WalkResult { paths: Vec::new(), truncated: false }));
-	let mut registry = Registry::new();
-	registry
-		.register(glob::tool(workspace))
-		.expect("glob registers");
-	let (feed, params) = IncomingParams::channel();
-	drop(feed);
-	let events = block_on(registry.invoke("glob", params).unwrap().collect::<Vec<_>>());
-	let [Ok(ErasedEv::Done(ErasedOutcome::Done { verdict, .. }))] = events.as_slice() else {
-		panic!("input drop must settle once: {events:?}");
-	};
-	let verdict: Verdict<glob::Payload, glob::Fault> =
-		serde_json::from_slice(verdict).expect("abort verdict decodes");
-	assert_eq!(verdict, Verdict::Aborted(omp_tool::Abort::InputDropped));
-}
-
-#[test]
-fn interrupt_drops_the_active_walk_future() {
-	let mut workspace = fake(Ok(glob::WalkResult { paths: Vec::new(), truncated: false }));
-	workspace.pending = true;
-	let dropped = Arc::clone(&workspace.dropped);
-	let mut registry = Registry::new();
-	registry
-		.register(glob::tool(workspace))
-		.expect("glob registers");
-	let (feed, params) = IncomingParams::channel();
-	let raw = r#"{"patterns":["**/*.rs"],"limit":10}"#;
-	feed
-		.args_committed(Str::from(raw))
-		.expect("commit reaches executor");
-	feed
-		.interrupt(Interrupt { class: Str::from("immediate"), reason: Str::from("stop walking") })
-		.expect("interrupt reaches executor");
-	let events = block_on(registry.invoke("glob", params).unwrap().collect::<Vec<_>>());
-	let [Ok(ErasedEv::Done(ErasedOutcome::Done { verdict, .. }))] = events.as_slice() else {
-		panic!("interrupt must settle once: {events:?}");
-	};
-	let verdict: Verdict<glob::Payload, glob::Fault> =
-		serde_json::from_slice(verdict).expect("abort verdict decodes");
-	assert!(matches!(
-		verdict,
-		Verdict::Aborted(omp_tool::Abort::Interrupted { reason }) if reason == "stop walking"
-	));
-	assert!(dropped.load(Ordering::SeqCst));
-}
-
-#[test]
-fn prompt_caps_keep_only_whole_utf8_path_records() {
-	let tool = glob::tool(fake(Ok(glob::WalkResult { paths: Vec::new(), truncated: false })));
-	let first_record = "src/λ.rs\n";
-	let payload = glob::Payload {
-		paths:     vec![Str::from("src/λ.rs"), Str::from("src/z.rs")],
-		truncated: false,
-	};
-	let parts = tool.prompt(Ok(&payload), &PromptCaps {
-		maximum_parts:      1,
-		maximum_text_bytes: u32::try_from(first_record.len()).unwrap(),
-		media:              false,
-	});
-	assert_eq!(parts, vec![Part::Text { text: Str::from(first_record) }]);
-	assert!(
-		tool
-			.prompt(Ok(&payload), &PromptCaps {
-				maximum_parts:      1,
-				maximum_text_bytes: 0,
-				media:              false,
-			})
-			.is_empty()
+fn missing_paths_fault_only_when_no_target_survives() {
+	let invocation = invoke(
+		faulty(glob::Fault::PathNotFound { paths: vec![Str::new_static("missing")] }),
+		r#"{"path":"missing"}"#,
 	);
+	assert!(invocation.result.is_err());
+	assert_eq!(invocation.text, "Path not found: missing");
+	assert!(!invocation.useless);
+
+	let invocation = invoke(
+		faulty(glob::Fault::PathNotFound {
+			paths: vec![Str::new_static("one"), Str::new_static("two")],
+		}),
+		r#"{"path":"one; two"}"#,
+	);
+	assert!(invocation.result.is_err());
+	assert_eq!(invocation.text, "Path not found: one, two");
+	assert!(!invocation.useless);
+}
+
+#[test]
+fn surviving_multi_target_appends_the_missing_path_note() {
+	let mut result = walk(vec![matched("src/lib.rs", 1)]);
+	result.missing_paths = vec![Str::new_static("gone"), Str::new_static("also-gone")];
+	let invocation = invoke(fake(result), r#"{"path":"src; gone; also-gone"}"#);
+	assert_eq!(invocation.text, "# src/\nlib.rs\n\nSkipped missing paths: gone, also-gone");
+	assert!(!invocation.useless);
+	assert_eq!(
+		invocation
+			.result
+			.expect("surviving target succeeds")
+			.missing_paths
+			.len(),
+		2
+	);
+}
+
+#[test]
+fn exact_file_target_is_returned_without_a_synthetic_header() {
+	let workspace = fake(walk(vec![matched("Cargo.toml", 42)]));
+	let seen = Arc::clone(&workspace.seen);
+	let invocation = invoke(workspace, r#"{"path":"Cargo.toml"}"#);
+	assert_eq!(invocation.text, "Cargo.toml");
+	assert!(!invocation.useless);
+	assert_eq!(seen.lock()[0].path, "Cargo.toml");
+}
+
+#[test]
+fn directory_star_stays_nonrecursive() {
+	let workspace = fake(walk(vec![matched("dir/direct.rs", 2)]));
+	let seen = Arc::clone(&workspace.seen);
+	let invocation = invoke(workspace, r#"{"path":"dir/*"}"#);
+	assert_eq!(invocation.text, "# dir/\ndirect.rs");
+	assert_eq!(seen.lock()[0].path, "dir/*");
+}
+
+#[test]
+fn a_leading_glob_search_can_return_nested_matches() {
+	let workspace = fake(walk(vec![matched("nested/deep/match.rs", 2)]));
+	let seen = Arc::clone(&workspace.seen);
+	let invocation = invoke(workspace, r#"{"path":"*.rs"}"#);
+	assert_eq!(invocation.text, "# nested/deep/\nmatch.rs");
+	assert_eq!(seen.lock()[0].path, "*.rs");
+}
+
+#[test]
+fn timeout_with_partial_matches_returns_ranked_incomplete_output() {
+	let mut result = walk(vec![matched("old.rs", 1), matched("new.rs", 2)]);
+	result.timed_out = true;
+	let invocation = invoke(fake(result), r#"{"path":"*.rs"}"#);
+	assert_eq!(
+		invocation.text,
+		"new.rs\nold.rs\n\nglob timed out after 5s; returning 2 partial matches — results are \
+		 incomplete, scope to a deeper directory instead of retrying blindly"
+	);
+	assert!(!invocation.useless);
+	let payload = invocation.result.expect("partial timeout is successful");
+	assert!(payload.timed_out);
+	assert!(payload.truncated);
+	assert_eq!(payload.partial_match_count, 2);
+	assert_eq!(payload.timeout_ms, 5_000);
+}
+
+#[test]
+fn timeout_without_matches_is_not_reported_as_proof_of_absence() {
+	let mut result = walk(Vec::new());
+	result.timed_out = true;
+	let invocation = invoke(fake(result), r#"{"path":"*.rs"}"#);
+	assert_eq!(
+		invocation.text,
+		"Glob timed out after 5s before finding any matches — the scan is incomplete, NOT proof of \
+		 absence. The walk is bounded by directory size, not pattern width; scope the search to a \
+		 deeper directory (e.g. `sub/dir/*.ext` instead of `*.ext` at a huge root)."
+	);
+	assert!(invocation.useless);
+	let payload = invocation.result.expect("empty timeout is successful");
+	assert!(payload.timed_out);
+	assert!(payload.truncated);
+	assert_eq!(payload.partial_match_count, 0);
+	assert_eq!(payload.timeout_ms, 5_000);
+}
+
+#[test]
+fn oversized_projection_spills_complete_output_with_truthful_footer() {
+	let matches = (0..200)
+		.map(|index| glob::WalkMatch {
+			path:        Str::from(format!("dir/{index:03}-{}.rs", "x".repeat(400))),
+			modified_ms: index,
+			is_dir:      false,
+		})
+		.collect();
+	let blobs = RecordingBlobs::default();
+	let invocation = invoke_with_blobs(fake(walk(matches)), r#"{"path":"dir/*.rs"}"#, blobs.clone());
+	let payload = invocation
+		.result
+		.as_ref()
+		.expect("large glob output succeeds");
+	let stored = blobs.stored.lock();
+	let [full] = stored.as_slice() else {
+		panic!("glob must store exactly one complete pre-truncation output");
+	};
+	let full = std::str::from_utf8(full).expect("rendered glob output is UTF-8");
+	assert!(full.starts_with("# dir/\n199-"));
+	assert!(full.ends_with(".rs"));
+	assert_eq!(payload.output_total_lines, 201);
+	assert!(payload.output_shown_lines < payload.output_total_lines);
+	assert_eq!(payload.output_blob.as_ref().map(|blob| blob.hash.as_str()), Some("glob-full"));
+	let expected_footer = format!(
+		"[truncated: {} of {} lines shown; full output in blob glob-full]",
+		payload.output_shown_lines, payload.output_total_lines
+	);
+	assert!(invocation.text.ends_with(expected_footer.as_str()));
+
+	let zero = glob::tool(fake(walk(Vec::new())), RecordingBlobs::default()).prompt(
+		Ok(payload),
+		&PromptCaps { maximum_parts: 0, maximum_text_bytes: 0, media: false },
+	);
+	assert!(zero.is_empty());
 }

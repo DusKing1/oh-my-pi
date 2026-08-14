@@ -434,6 +434,14 @@ impl Registry {
 		self.live.get_key_value(name)
 	}
 
+	/// Iterates the exact live identities in deterministic name order.
+	///
+	/// This is an authorization surface for session adapters: callers still
+	/// need to inspect [`Self::route`] before granting an execution capability.
+	pub fn live_identities(&self) -> impl Iterator<Item = (&Str, &Rev)> {
+		self.live.iter()
+	}
+
 	/// Returns the execution route of the live declaration named `name`.
 	pub fn route(&self, name: &str) -> Result<ToolRoute, RegistryError> {
 		Ok(self.live_entry(name)?.route())

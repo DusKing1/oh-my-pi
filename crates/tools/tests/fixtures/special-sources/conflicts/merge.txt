@@ -1,0 +1,9 @@
+before
+<<<<<<< HEAD
+ours
+||||||| base
+ancestor
+=======
+theirs
+>>>>>>> feature/source
+after

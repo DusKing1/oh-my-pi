@@ -1,0 +1,16 @@
+Analysis of sampling fixture (pid 123) every 1 millisecond
+
+Call graph:
+    1000 Thread_1   DispatchQueue_1: com.apple.main-thread  (serial)
+    + 1000 start  (in dyld) + 0  [0x1000]
+    +   800 work  (in fixture) + 12  [0x2000]
+    +   200 idle  (in libsystem_kernel.dylib) + 8  [0x3000]
+
+Total number in stack (recursive counted multiple, when >=5):
+        1000 start  (in dyld) + 0
+         800 work  (in fixture) + 12
+         200 idle  (in libsystem_kernel.dylib) + 8
+
+Sort by top of stack, same collapsed (when >= 5):
+         800 work  (in fixture) + 12
+         200 idle  (in libsystem_kernel.dylib) + 8

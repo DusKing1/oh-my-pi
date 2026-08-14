@@ -1,0 +1,171 @@
+//! Shared OOXML archive, XML, and Markdown helpers.
+
+use std::{
+	collections::BTreeMap,
+	io::Cursor,
+	path::{Component, Path, PathBuf},
+};
+
+use omp_ar::{Archive as ArArchive, Format, Limits};
+use quick_xml::{
+	Reader, XmlVersion,
+	escape::unescape,
+	events::{BytesStart, BytesText},
+};
+
+const MAX_ARCHIVE_MEMBER_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_ENTITY_EXPANSIONS: usize = 1_000_000;
+
+pub(super) struct Archive<'a> {
+	archive: ArArchive<Cursor<&'a [u8]>>,
+	entries: BTreeMap<String, String>,
+}
+
+impl<'a> Archive<'a> {
+	pub(super) fn open(bytes: &'a [u8]) -> Result<Self, String> {
+		let limits = Limits::DEFAULT.with_max_member_size(MAX_ARCHIVE_MEMBER_BYTES);
+		let archive = ArArchive::from_bytes_with_format_and_limits(bytes, Format::Zip, limits)
+			.map_err(|error| format!("invalid ZIP container: {error}"))?;
+		let mut entries = BTreeMap::new();
+		for entry in archive.entries().filter(|entry| !entry.is_directory()) {
+			if entry.size() > MAX_ARCHIVE_MEMBER_BYTES {
+				return Err(format!(
+					"Archive member '{}' is too large to extract in memory ({} bytes > {} byte limit)",
+					entry.path(),
+					entry.size(),
+					MAX_ARCHIVE_MEMBER_BYTES
+				));
+			}
+			let Some(path) = normalize_part_name(entry.path()) else {
+				continue;
+			};
+			entries.insert(path, entry.path().to_owned());
+		}
+		Ok(Self { archive, entries })
+	}
+
+	pub(super) fn paths(&self) -> impl Iterator<Item = &str> {
+		self.entries.keys().map(String::as_str)
+	}
+
+	pub(super) fn contains(&self, path: &str) -> bool {
+		self.entries.contains_key(path)
+	}
+
+	pub(super) fn read_xml(&mut self, path: &str) -> Result<Option<Vec<u8>>, String> {
+		let Some(source_path) = self.entries.get(path) else {
+			return Ok(None);
+		};
+		let bytes = self
+			.archive
+			.read(source_path)
+			.map_err(|error| format!("could not read {path}: {error}"))?;
+		validate_entity_expansion_cap(&bytes)?;
+		Ok(Some(bytes))
+	}
+}
+
+fn normalize_part_name(name: &str) -> Option<String> {
+	let name = name.replace('\\', "/");
+	normalize_path(Path::new(name.trim_start_matches('/')))
+}
+
+fn normalize_path(path: &Path) -> Option<String> {
+	let mut normalized = PathBuf::new();
+	for component in path.components() {
+		match component {
+			Component::Normal(part) => normalized.push(part),
+			Component::CurDir => {},
+			Component::ParentDir => {
+				if !normalized.pop() {
+					return None;
+				}
+			},
+			Component::RootDir | Component::Prefix(_) => return None,
+		}
+	}
+	let normalized = normalized.to_str()?.replace('\\', "/");
+	(!normalized.is_empty()).then_some(normalized)
+}
+
+fn validate_entity_expansion_cap(xml: &[u8]) -> Result<(), String> {
+	let mut expansions = 0usize;
+	let mut index = 0usize;
+	while let Some(relative) = xml[index..].iter().position(|byte| *byte == b'&') {
+		let start = index + relative;
+		let Some(end) = xml[start + 1..].iter().position(|byte| *byte == b';') else {
+			break;
+		};
+		expansions += 1;
+		if expansions > MAX_ENTITY_EXPANSIONS {
+			return Err(format!(
+				"invalid XML: entity expansion count exceeds {MAX_ENTITY_EXPANSIONS}"
+			));
+		}
+		index = start + end + 2;
+	}
+	Ok(())
+}
+
+pub(super) fn decode_xml_bytes(bytes: &[u8]) -> Result<String, String> {
+	let (bom, skip) = xutf::detect_bom(bytes);
+	match bom {
+		xutf::Bom::None | xutf::Bom::Utf8 => std::str::from_utf8(&bytes[skip..])
+			.map(str::to_owned)
+			.map_err(|error| error.to_string()),
+		_ => {
+			let decoded = xutf::from_bytes::<xutf::Utf8>(bytes);
+			String::from_utf8(decoded).map_err(|error| error.to_string())
+		},
+	}
+}
+
+pub(super) fn xml_reader(xml: &[u8]) -> Reader<&[u8]> {
+	let mut reader = Reader::from_reader(xml);
+	reader.config_mut().trim_text(false);
+	reader
+}
+
+pub(super) fn attribute(
+	reader: &Reader<&[u8]>,
+	start: &BytesStart<'_>,
+	wanted: &[u8],
+) -> Result<Option<String>, String> {
+	for attribute in start.attributes().with_checks(false) {
+		let attribute = attribute.map_err(|error| format!("invalid XML: {error}"))?;
+		if local_name(attribute.key.as_ref()) == local_name(wanted) {
+			return attribute
+				.decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+				.map(|value| Some(value.into_owned()))
+				.map_err(|error| format!("invalid XML: {error}"));
+		}
+	}
+	Ok(None)
+}
+
+pub(super) fn decode_text(text: &BytesText<'_>) -> Result<String, String> {
+	let decoded = text
+		.decode()
+		.map_err(|error| format!("invalid XML: {error}"))?;
+	unescape(&decoded)
+		.map(|text| text.into_owned())
+		.map_err(|error| format!("invalid XML: {error}"))
+}
+
+pub(super) fn local_name(name: &[u8]) -> &[u8] {
+	name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
+}
+
+pub(super) fn render_markdown_table(mut rows: Vec<Vec<String>>) -> String {
+	let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+	for row in &mut rows {
+		row.resize(columns, String::new());
+	}
+	let mut rows = rows.into_iter();
+	let header = rows.next().unwrap_or_default();
+	let mut lines = Vec::new();
+	lines.push(format!("| {} |", header.join(" | ")));
+	lines.push(format!("| {} |", vec!["---"; columns].join(" | ")));
+	lines.extend(rows.map(|row| format!("| {} |", row.join(" | "))));
+	lines.join("\n")
+}

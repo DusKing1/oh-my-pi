@@ -1,0 +1,7 @@
+alpha
+café
+東京
+emoji: 🧪
+combining: é
+literal selector name: report:1
+omega

@@ -1,6 +1,11 @@
 use omp_core::Str;
 use omp_tool::{Part, PromptCaps};
 
+/// Grouped path and directory-tree rendering.
+pub(crate) mod paths;
+/// Shared line, byte, and column truncation.
+pub(crate) mod truncate;
+
 /// Accumulates whole UTF-8 fragments without splitting a caller-owned unit.
 pub(crate) struct TextProjection {
 	text:      String,

@@ -118,17 +118,49 @@ impl BetaSet {
 	}
 }
 
+/// Cache-control type accepted by Anthropic prompt cache markers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheControlKind {
+	/// Temporary cache policy.
+	Ephemeral,
+}
+
+/// Cache-control retention accepted by Anthropic prompt cache markers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum CacheTtl {
+	/// Cache marker with short retention.
+	#[serde(rename = "5m")]
+	FiveMinutes,
+	/// Cache marker with long retention.
+	#[serde(rename = "1h")]
+	OneHour,
+}
+
 /// Prompt-cache directive accepted on cacheable Anthropic objects.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CacheControl {
-	/// Cache directive type; currently `ephemeral`.
+	/// Cache directive type.
 	#[serde(rename = "type")]
-	pub kind:  Str,
+	pub kind:  CacheControlKind,
 	/// Requested retention (`5m` or `1h`).
-	pub ttl:   Str,
+	pub ttl:   CacheTtl,
 	/// Optional provider cache scope.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub scope: Option<Str>,
+}
+
+impl CacheTtl {
+	/// Maps canonical retention buckets to wire representation.
+	#[inline]
+	const fn from_retention(retention: CacheRetention) -> Self {
+		match retention {
+			CacheRetention::Long => Self::OneHour,
+			CacheRetention::Request | CacheRetention::Session | CacheRetention::Short => {
+				Self::FiveMinutes
+			},
+		}
+	}
 }
 
 /// Typed inline or uploaded Anthropic media source.
@@ -733,12 +765,11 @@ fn lower_parts(
 			},
 			CanonicalPart::CachePoint(retention) => {
 				let marker = CacheControl {
-					kind:  Str::new_static("ephemeral"),
-					ttl:   Str::new_static(if *retention == CacheRetention::Long {
-						"1h"
-					} else {
-						"5m"
-					}),
+					kind:  CacheControlKind::Ephemeral,
+					ttl:   match *retention {
+						CacheRetention::Long => CacheTtl::OneHour,
+						_ => CacheTtl::FiveMinutes,
+					},
 					scope: None,
 				};
 				let previous = blocks
@@ -776,6 +807,19 @@ fn lower_tool_result(content: &[ToolResultContent]) -> Result<Vec<ContentBlock>,
 		});
 	}
 	Ok(blocks)
+}
+fn media_source(media: &MediaInput) -> Result<MediaSource, Error> {
+	Ok(match media {
+		MediaInput::Stored(reference) => MediaSource::File { file_id: reference.id.clone() },
+		MediaInput::Remote { uri, .. } => MediaSource::Url { url: uri.clone() },
+		MediaInput::Bytes { media_type, data } => {
+			let encoded: String = base64::encode(data).map(char::from).collect();
+			MediaSource::Base64 { media_type: media_type.clone(), data: Str::new(encoded) }
+		},
+		MediaInput::Body { .. } => {
+			return Err(capability_error("anthropic.media.body_requires_staging"));
+		},
+	})
 }
 
 fn validate_proof(
@@ -816,27 +860,10 @@ fn apply_cache(block: &mut ContentBlock, marker: CacheControl) -> Result<(), Err
 	}
 }
 
-fn media_source(media: &MediaInput) -> Result<MediaSource, Error> {
-	Ok(match media {
-		MediaInput::Stored(reference) => MediaSource::File { file_id: reference.id.clone() },
-		MediaInput::Remote { uri, .. } => MediaSource::Url { url: uri.clone() },
-		MediaInput::Bytes { media_type, data } => {
-			let encoded: String = base64::encode(data).map(char::from).collect();
-			MediaSource::Base64 { media_type: media_type.clone(), data: Str::new(encoded) }
-		},
-		MediaInput::Body { .. } => {
-			return Err(capability_error("anthropic.media.body_requires_staging"));
-		},
-	})
-}
-
 fn cache_control(setting: &Setting<CacheRetention>) -> Option<CacheControl> {
 	setting_value(setting).map(|retention| CacheControl {
-		kind:  Str::new_static("ephemeral"),
-		ttl:   Str::new_static(match retention {
-			CacheRetention::Long => "1h",
-			CacheRetention::Request | CacheRetention::Session | CacheRetention::Short => "5m",
-		}),
+		kind:  CacheControlKind::Ephemeral,
+		ttl:   CacheTtl::from_retention(*retention),
 		scope: None,
 	})
 }

@@ -1,56 +1,32 @@
-//! Registry-level contracts for deterministic, cancellable exact workspace
-//! search.
+//! Model-facing behavioral contracts for pi-compatible `grep@1`.
 
-use std::{
-	future::{Future, pending},
-	sync::{
-		Arc,
-		atomic::{AtomicBool, Ordering},
-	},
-};
+use std::{future::Future, sync::Arc};
 
+use bytes::Bytes;
 use futures::{StreamExt, executor::block_on};
 use omp_core::Str;
 use omp_tool::{
-	ArgIssueKind, ErasedEv, ErasedOutcome, IncomingParams, Interrupt, Part, PromptCaps, Registry,
-	Tool, Verdict,
+	BlobRef, ErasedEv, ErasedOutcome, IncomingParams, Part, PromptCaps, Registry, Tool, Verdict,
 };
-use omp_tools::{glob, grep};
+use omp_tools::{
+	glob, grep,
+	read::{Fault as ReadFault, ReadBlobs},
+};
 use parking_lot::Mutex;
+use serde_json::json;
 
 #[derive(Clone)]
 struct FakeWorkspace {
-	result:  grep::SearchResult,
-	seen:    Arc<Mutex<Vec<grep::SearchRequest>>>,
-	pending: bool,
-	dropped: Arc<AtomicBool>,
-}
-
-struct ActiveGuard(Arc<AtomicBool>);
-
-impl Drop for ActiveGuard {
-	fn drop(&mut self) {
-		self.0.store(true, Ordering::SeqCst);
-	}
+	result: Result<grep::SearchResult, grep::Fault>,
 }
 
 impl grep::WorkspaceSearch for FakeWorkspace {
 	fn search(
 		&self,
-		request: grep::SearchRequest,
+		_request: grep::SearchRequest,
 	) -> impl Future<Output = Result<grep::SearchResult, grep::Fault>> + Send + '_ {
 		let result = self.result.clone();
-		let seen = Arc::clone(&self.seen);
-		let dropped = Arc::clone(&self.dropped);
-		let remains_pending = self.pending;
-		async move {
-			seen.lock().push(request);
-			let _guard = remains_pending.then(|| ActiveGuard(dropped));
-			if remains_pending {
-				pending::<()>().await;
-			}
-			Ok(result)
-		}
+		async move { result }
 	}
 
 	fn glob(
@@ -61,28 +37,57 @@ impl grep::WorkspaceSearch for FakeWorkspace {
 	}
 }
 
-fn matched(path: &str, line: u64, start: u64, end: u64, text: &str) -> grep::SearchMatch {
-	grep::SearchMatch {
-		path: Str::from(path),
-		line,
-		spans: vec![grep::ByteSpan { start, end }],
-		line_text: Str::from(text),
+#[derive(Clone, Default)]
+struct RecordingBlobs {
+	stored: Arc<Mutex<Vec<Bytes>>>,
+}
+
+impl ReadBlobs for RecordingBlobs {
+	fn store(
+		&self,
+		bytes: Bytes,
+		media_type: Str,
+	) -> impl Future<Output = Result<BlobRef, ReadFault>> + Send + '_ {
+		let stored = Arc::clone(&self.stored);
+		async move {
+			let byte_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+			stored.lock().push(bytes);
+			Ok(BlobRef { hash: Str::new_static("grep-full"), media_type, byte_len })
+		}
 	}
+}
+
+struct Invocation {
+	verdict: Verdict<grep::Payload, grep::Fault>,
+	useless: bool,
 }
 
 fn fake(result: grep::SearchResult) -> FakeWorkspace {
-	FakeWorkspace {
-		result,
-		seen: Arc::new(Mutex::new(Vec::new())),
-		pending: false,
-		dropped: Arc::new(AtomicBool::new(false)),
+	FakeWorkspace { result: Ok(result) }
+}
+
+fn failed(fault: grep::Fault) -> FakeWorkspace {
+	FakeWorkspace { result: Err(fault) }
+}
+
+fn matched(path: &str, line_number: u32, line: &str, tag: Option<&str>) -> grep::SearchMatch {
+	grep::SearchMatch {
+		source_key: Str::from(path),
+		path: Str::from(path),
+		root_index: 0,
+		line_number,
+		line: Str::from(line),
+		truncated: false,
+		context_before: Vec::new(),
+		context_after: Vec::new(),
+		snapshot_tag: tag.map(Str::from),
 	}
 }
 
-fn invoke(workspace: FakeWorkspace, raw: &str) -> Verdict<grep::Payload, grep::Fault> {
+fn invoke_with_blobs(workspace: &FakeWorkspace, raw: &str, blobs: RecordingBlobs) -> Invocation {
 	let mut registry = Registry::new();
 	registry
-		.register(grep::tool(workspace))
+		.register(grep::tool(workspace.clone(), blobs))
 		.expect("grep schema and revision register");
 	let (feed, params) = IncomingParams::channel();
 	feed
@@ -94,196 +99,230 @@ fn invoke(workspace: FakeWorkspace, raw: &str) -> Verdict<grep::Payload, grep::F
 			.expect("registered grep is invokable")
 			.collect::<Vec<_>>(),
 	);
-	let [Ok(ErasedEv::Done(ErasedOutcome::Done { verdict, useless: false }))] = events.as_slice()
-	else {
+	let [Ok(ErasedEv::Done(ErasedOutcome::Done { verdict, useless }))] = events.as_slice() else {
 		panic!("expected one terminal grep event: {events:?}");
 	};
-	serde_json::from_slice(verdict).expect("typed grep verdict survives registry erasure")
+	Invocation {
+		verdict: serde_json::from_slice(verdict)
+			.expect("typed grep verdict survives registry erasure"),
+		useless: *useless,
+	}
+}
+
+fn invoke(workspace: &FakeWorkspace, raw: &str) -> Invocation {
+	invoke_with_blobs(workspace, raw, RecordingBlobs::default())
+}
+
+fn prompt(workspace: &FakeWorkspace, verdict: &Verdict<grep::Payload, grep::Fault>) -> String {
+	let tool = grep::tool(workspace.clone(), RecordingBlobs::default());
+	let parts = match verdict {
+		Verdict::Ok(payload) => tool.prompt(Ok(payload), &PromptCaps {
+			maximum_parts:      1,
+			maximum_text_bytes: u32::MAX,
+			media:              false,
+		}),
+		Verdict::Fault(fault) => tool.prompt(Err(fault), &PromptCaps {
+			maximum_parts:      1,
+			maximum_text_bytes: u32::MAX,
+			media:              false,
+		}),
+		other => panic!("expected a projectable grep verdict, got {other:?}"),
+	};
+	let [Part::Text { text }] = parts.as_slice() else {
+		panic!("grep must project exactly one text part: {parts:?}");
+	};
+	text.to_string()
+}
+
+fn invoke_prompt(workspace: &FakeWorkspace, raw: &str) -> (String, bool) {
+	let invocation = invoke(workspace, raw);
+	(prompt(workspace, &invocation.verdict), invocation.useless)
 }
 
 #[test]
-fn exact_matches_are_sorted_capped_and_retain_multibyte_line_truth() {
-	let workspace = fake(grep::SearchResult {
-		matches:        vec![
-			matched("z.rs", 9, 0, 6, "needle"),
-			matched("a.rs", 3, 2, 8, "λneedle tail"),
-			matched("a.rs", 1, 4, 10, "two needle"),
-		],
-		binary_skipped: vec![Str::from("z.bin"), Str::from("a.bin")],
-		truncated:      false,
-	});
-	let seen = Arc::clone(&workspace.seen);
-	let verdict = invoke(
-		workspace,
-		r#"{"path":"src","patterns":["needle"],"include":["**/*.rs"],"exclude":["vendor/**"],"gitignore":false,"hidden":true,"case_sensitive":true,"mode":"fixed","limit":2}"#,
+fn schema_is_exactly_the_pi_grep_schema() {
+	let tool = grep::tool(fake(grep::SearchResult::default()), RecordingBlobs::default());
+	let actual: serde_json::Value =
+		serde_json::from_slice(&tool.spec().schema).expect("grep schema is JSON");
+	assert_eq!(
+		actual,
+		json!({
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["pattern"],
+			"properties": {
+				"pattern": {"type": "string", "description": "regex pattern"},
+				"path": {
+					"type": "string",
+					"description": "file, directory, glob, internal URL, or \"<file>:<lines>\" selector to search; pass several as a semicolon-delimited list (\"src; tests\"). Omitted -> searches the workspace root (\".\")"
+				},
+				"case": {"type": "boolean", "description": "case-sensitive search"},
+				"gitignore": {"type": "boolean", "description": "respect gitignore"},
+				"skip": {
+					"type": ["number", "null"],
+					"description": "files to skip before collecting results — use to paginate when the prior call hit the file limit"
+				}
+			}
+		})
 	);
-	let Verdict::Ok(payload) = verdict else {
-		panic!("expected successful grep verdict");
-	};
-	assert_eq!(payload.matches.len(), 2);
-	assert_eq!(payload.matches[0], matched("a.rs", 1, 4, 10, "two needle"));
-	assert_eq!(payload.matches[1], matched("a.rs", 3, 2, 8, "λneedle tail"));
-	assert_eq!(payload.matches[1].spans[0], grep::ByteSpan { start: 2, end: 8 });
-	assert_eq!(payload.matches[1].line_text, "λneedle tail");
-	assert_eq!(payload.binary_skipped, [Str::from("a.bin"), Str::from("z.bin")]);
-	assert!(payload.truncated);
-
-	let requests = seen.lock();
-	assert_eq!(requests.len(), 1);
-	assert_eq!(requests[0].path, "src");
-	assert_eq!(requests[0].patterns, [Str::from("needle")]);
-	assert_eq!(requests[0].include, [Str::from("**/*.rs")]);
-	assert_eq!(requests[0].exclude, [Str::from("vendor/**")]);
-	assert!(!requests[0].gitignore);
-	assert!(requests[0].hidden);
-	assert_eq!(requests[0].limit, 3);
 }
 
 #[test]
-fn zero_limit_returns_no_records_and_reports_resource_truth() {
+fn grouped_matches_have_folded_headers_tags_and_hashline_match_rows() {
 	let workspace = fake(grep::SearchResult {
-		matches:        vec![matched("one.rs", 1, 0, 1, "x")],
-		binary_skipped: vec![Str::from("raw.bin")],
-		truncated:      false,
+		matches: vec![
+			matched("dir/alpha.rs", 2, "let needle = 1;", Some("A1B2")),
+			matched("dir/beta.rs", 7, "// needle", Some("C3D4")),
+		],
+		multi_scope: true,
+		..grep::SearchResult::default()
 	});
-	let seen = Arc::clone(&workspace.seen);
-	let verdict = invoke(workspace, r#"{"patterns":["x"],"limit":0}"#);
-	let Verdict::Ok(payload) = verdict else {
-		panic!("zero remains a successful hard limit");
-	};
-	assert!(payload.matches.is_empty());
-	assert!(payload.truncated);
-	assert_eq!(payload.binary_skipped, [Str::from("raw.bin")]);
-	assert_eq!(seen.lock()[0].limit, 1);
+	let (text, useless) = invoke_prompt(&workspace, r#"{"pattern":"needle","path":"dir"}"#);
+	assert_eq!(text, "# dir/\n## alpha.rs#A1B2\n*2:let needle = 1;\n## beta.rs#C3D4\n*7:// needle");
+	assert!(!useless);
 }
 
 #[test]
-fn unsupported_search_semantics_are_typed_faults_not_approximations() {
-	let regex = fake(grep::SearchResult {
-		matches:        Vec::new(),
-		binary_skipped: Vec::new(),
-		truncated:      false,
-	});
-	let regex_seen = Arc::clone(&regex.seen);
-	assert!(matches!(
-		invoke(regex, r#"{"patterns":["n.*e"],"mode":"regex","limit":10}"#),
-		Verdict::Fault(grep::Fault::UnsupportedPatternMode { mode: grep::PatternMode::Regex })
-	));
-	assert!(regex_seen.lock().is_empty());
-
-	let insensitive = fake(grep::SearchResult {
-		matches:        Vec::new(),
-		binary_skipped: Vec::new(),
-		truncated:      false,
-	});
-	let insensitive_seen = Arc::clone(&insensitive.seen);
-	assert!(matches!(
-		invoke(insensitive, r#"{"patterns":["Needle"],"case_sensitive":false,"limit":10}"#),
-		Verdict::Fault(grep::Fault::CaseInsensitiveUnsupported)
-	));
-	assert!(insensitive_seen.lock().is_empty());
-}
-
-#[test]
-fn malformed_pulled_params_become_args_verdicts() {
+fn single_file_match_has_hashline_header_and_no_group_heading() {
 	let workspace = fake(grep::SearchResult {
-		matches:        Vec::new(),
-		binary_skipped: Vec::new(),
-		truncated:      false,
+		matches: vec![matched("src/one.rs", 4, "needle();", Some("BEEF"))],
+		multi_scope: false,
+		..grep::SearchResult::default()
 	});
-	let seen = Arc::clone(&workspace.seen);
-	let verdict = invoke(workspace, r#"{"patterns":"needle","limit":4}"#);
-	let Verdict::Args(issue) = verdict else {
-		panic!("mistyped pulled patterns must be an args verdict");
-	};
-	assert!(matches!(issue.kind, ArgIssueKind::TypeMismatch | ArgIssueKind::Malformed));
-	assert!(seen.lock().is_empty());
+	let (text, useless) = invoke_prompt(&workspace, r#"{"pattern":"needle","path":"src/one.rs"}"#);
+	assert_eq!(text, "[src/one.rs#BEEF]\n*4:needle();");
+	assert!(!useless);
 }
 
 #[test]
-fn owner_drop_before_commit_is_an_input_drop_abort() {
+fn twenty_file_window_has_exact_footer_and_skip_twenty_returns_next_page() {
+	let matches = (1..=21)
+		.map(|index| {
+			let path = format!("page/file-{index:02}.rs");
+			matched(&path, 1, "needle", Some("CAFE"))
+		})
+		.collect();
+	let workspace =
+		fake(grep::SearchResult { matches, multi_scope: true, ..grep::SearchResult::default() });
+
+	let (first, first_useless) = invoke_prompt(&workspace, r#"{"pattern":"needle","path":"page"}"#);
+	let expected_files = (1..=20)
+		.map(|index| format!("## file-{index:02}.rs#CAFE\n*1:needle"))
+		.collect::<Vec<_>>()
+		.join("\n");
+	assert_eq!(
+		first,
+		format!(
+			"# page/\n{expected_files}\n\nShowing files 1-20 of 21. Use skip=20 for the next page, \
+			 or narrow paths/pattern."
+		)
+	);
+	assert!(!first_useless);
+
+	let (second, second_useless) =
+		invoke_prompt(&workspace, r#"{"pattern":"needle","path":"page","skip":20}"#);
+	assert_eq!(second, "# page/\n## file-21.rs#CAFE\n*1:needle");
+	assert!(!second_useless);
+}
+
+#[test]
+fn no_matches_projects_the_pi_message_and_is_useless() {
+	let workspace = fake(grep::SearchResult { multi_scope: true, ..grep::SearchResult::default() });
+	let (text, useless) = invoke_prompt(&workspace, r#"{"pattern":"absent","path":"src"}"#);
+	assert_eq!(text, "No matches found");
+	assert!(useless);
+}
+
+#[test]
+fn invalid_regex_is_mapped_to_the_pi_fault_text() {
+	let workspace = failed(grep::Fault::InvalidRegex { message: Str::from("unclosed group") });
+	let (text, useless) = invoke_prompt(&workspace, r#"{"pattern":"(","path":"src"}"#);
+	assert_eq!(text, "Invalid regex: unclosed group");
+	assert!(!useless);
+}
+
+#[test]
+fn line_selector_filters_matches_before_projection() {
 	let workspace = fake(grep::SearchResult {
-		matches:        Vec::new(),
-		binary_skipped: Vec::new(),
-		truncated:      false,
+		matches: vec![
+			matched("src/range.rs", 2, "needle before", Some("F00D")),
+			matched("src/range.rs", 3, "needle in range", Some("F00D")),
+			matched("src/range.rs", 5, "needle after", Some("F00D")),
+		],
+		multi_scope: false,
+		..grep::SearchResult::default()
 	});
-	let mut registry = Registry::new();
-	registry
-		.register(grep::tool(workspace))
-		.expect("grep registers");
-	let (feed, params) = IncomingParams::channel();
-	drop(feed);
-	let events = block_on(registry.invoke("grep", params).unwrap().collect::<Vec<_>>());
-	let [Ok(ErasedEv::Done(ErasedOutcome::Done { verdict, .. }))] = events.as_slice() else {
-		panic!("input drop must settle once: {events:?}");
-	};
-	let verdict: Verdict<grep::Payload, grep::Fault> =
-		serde_json::from_slice(verdict).expect("abort verdict decodes");
-	assert_eq!(verdict, Verdict::Aborted(omp_tool::Abort::InputDropped));
+	let (text, useless) =
+		invoke_prompt(&workspace, r#"{"pattern":"needle","path":"src/range.rs:3-4"}"#);
+	assert_eq!(text, "[src/range.rs#F00D]\n*3:needle in range");
+	assert!(!useless);
 }
 
 #[test]
-fn interrupt_drops_the_active_search_future() {
-	let mut workspace = fake(grep::SearchResult {
-		matches:        Vec::new(),
-		binary_skipped: Vec::new(),
-		truncated:      false,
+fn explicit_oversized_file_note_is_appended_verbatim() {
+	let workspace = fake(grep::SearchResult {
+		matches: vec![matched("large.log", 1, "needle", None)],
+		multi_scope: false,
+		oversized_files: vec![Str::from("large.log")],
+		..grep::SearchResult::default()
 	});
-	workspace.pending = true;
-	let dropped = Arc::clone(&workspace.dropped);
-	let mut registry = Registry::new();
-	registry
-		.register(grep::tool(workspace))
-		.expect("grep registers");
-	let (feed, params) = IncomingParams::channel();
-	let raw = r#"{"patterns":["needle"],"limit":10}"#;
-	feed
-		.args_committed(Str::from(raw))
-		.expect("commit reaches executor");
-	feed
-		.interrupt(Interrupt { class: Str::from("immediate"), reason: Str::from("stop walking") })
-		.expect("interrupt reaches executor");
-	let events = block_on(registry.invoke("grep", params).unwrap().collect::<Vec<_>>());
-	let [Ok(ErasedEv::Done(ErasedOutcome::Done { verdict, .. }))] = events.as_slice() else {
-		panic!("interrupt must settle once: {events:?}");
-	};
-	let verdict: Verdict<grep::Payload, grep::Fault> =
-		serde_json::from_slice(verdict).expect("abort verdict decodes");
-	assert!(matches!(
-		verdict,
-		Verdict::Aborted(omp_tool::Abort::Interrupted { reason }) if reason == "stop walking"
-	));
-	assert!(dropped.load(Ordering::SeqCst));
+	let (text, useless) = invoke_prompt(&workspace, r#"{"pattern":"needle","path":"large.log"}"#);
+	assert_eq!(
+		text,
+		"*1:needle\n\nSearched only the first 4MB of large files (matches past the 4MB window are \
+		 not shown; use `read` for the rest): large.log"
+	);
+	assert!(!useless);
 }
 
 #[test]
-fn prompt_caps_keep_only_whole_utf8_match_records() {
-	let tool = grep::tool(fake(grep::SearchResult {
-		matches:        Vec::new(),
-		binary_skipped: Vec::new(),
-		truncated:      false,
-	}));
-	let first = matched("λ.rs", 1, 0, 2, "λambda");
-	let second = matched("z.rs", 2, 0, 1, "z");
-	let first_record = "λ.rs:1:0-2: λambda\n";
-	let payload = grep::Payload {
-		matches:        vec![first, second],
-		binary_skipped: Vec::new(),
-		truncated:      false,
+fn injected_timeout_projects_the_fixed_thirty_second_mapping() {
+	let workspace = failed(grep::Fault::TimedOut);
+	let (text, useless) = invoke_prompt(&workspace, r#"{"pattern":"needle","path":"src"}"#);
+	assert_eq!(
+		text,
+		"Grep timed out after 30s; narrow paths or pattern, or scope with `glob` first"
+	);
+	assert!(!useless);
+}
+
+#[test]
+fn oversized_projection_spills_complete_output_with_truthful_footer() {
+	let matches = (1..=200)
+		.map(|line_number| {
+			matched("large.rs", line_number, &format!("needle {}", "x".repeat(400)), Some("B10B"))
+		})
+		.collect();
+	let workspace =
+		fake(grep::SearchResult { matches, multi_scope: false, ..grep::SearchResult::default() });
+	let blobs = RecordingBlobs::default();
+	let invocation =
+		invoke_with_blobs(&workspace, r#"{"pattern":"needle","path":"large.rs"}"#, blobs.clone());
+	let text = prompt(&workspace, &invocation.verdict);
+	let Verdict::Ok(payload) = &invocation.verdict else {
+		panic!("large grep output must succeed");
 	};
-	let parts = tool.prompt(Ok(&payload), &PromptCaps {
-		maximum_parts:      1,
-		maximum_text_bytes: u32::try_from(first_record.len()).unwrap(),
+	let stored = blobs.stored.lock();
+	let [full] = stored.as_slice() else {
+		panic!("grep must store exactly one complete pre-truncation output");
+	};
+	let full = std::str::from_utf8(full).expect("rendered grep output is UTF-8");
+	assert!(full.starts_with("[large.rs#B10B]\n*1:needle "));
+	let expected_tail = format!("*200:needle {}", "x".repeat(400));
+	assert!(full.ends_with(expected_tail.as_str()));
+	assert_eq!(payload.output_total_lines, 201);
+	assert!(payload.output_shown_lines < payload.output_total_lines);
+	assert_eq!(payload.output_blob.as_ref().map(|blob| blob.hash.as_str()), Some("grep-full"));
+	let expected_footer = format!(
+		"[truncated: {} of {} lines shown; full output in blob grep-full]",
+		payload.output_shown_lines, payload.output_total_lines
+	);
+	assert!(text.ends_with(expected_footer.as_str()));
+
+	let zero = grep::tool(workspace, RecordingBlobs::default()).prompt(Ok(payload), &PromptCaps {
+		maximum_parts:      0,
+		maximum_text_bytes: 0,
 		media:              false,
 	});
-	assert_eq!(parts, vec![Part::Text { text: Str::from(first_record) }]);
-	assert!(
-		tool
-			.prompt(Ok(&payload), &PromptCaps {
-				maximum_parts:      0,
-				maximum_text_bytes: u32::MAX,
-				media:              false,
-			})
-			.is_empty()
-	);
+	assert!(zero.is_empty());
 }

@@ -1,9 +1,7 @@
 //! Sans-I/O codec for Kagi's standalone v1 Search API.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
 use bytes::{Bytes, BytesMut};
-use omp_core::Str;
+use omp_core::{Str, parse_rfc3339};
 use omp_llm_catalog::OperationKind;
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -341,82 +339,6 @@ fn trimmed(value: Str) -> Option<Str> {
 	}
 }
 
-fn parse_rfc3339(value: &str) -> Option<SystemTime> {
-	let (date, time_and_zone) = value.split_once('T')?;
-	let mut date_parts = date.split('-');
-	let year = date_parts.next()?.parse::<i32>().ok()?;
-	let month = date_parts.next()?.parse::<u32>().ok()?;
-	let day = date_parts.next()?.parse::<u32>().ok()?;
-	if date_parts.next().is_some() {
-		return None;
-	}
-	let (time, zone_seconds) = if let Some(time) = time_and_zone.strip_suffix('Z') {
-		(time, 0_i64)
-	} else {
-		let split = time_and_zone.rfind(['+', '-'])?;
-		let (time, zone) = time_and_zone.split_at(split);
-		let sign = if zone.starts_with('+') { 1_i64 } else { -1_i64 };
-		let (hours, minutes) = zone[1..].split_once(':')?;
-		let hours = hours.parse::<i64>().ok()?;
-		let minutes = minutes.parse::<i64>().ok()?;
-		if hours > 23 || minutes > 59 {
-			return None;
-		}
-		(time, sign * (hours * 3_600 + minutes * 60))
-	};
-	let mut time_parts = time.split(':');
-	let hour = time_parts.next()?.parse::<u32>().ok()?;
-	let minute = time_parts.next()?.parse::<u32>().ok()?;
-	let seconds = time_parts.next()?;
-	if time_parts.next().is_some() || hour > 23 || minute > 59 {
-		return None;
-	}
-	let (second, nanos) = match seconds.split_once('.') {
-		Some((whole, fraction)) => {
-			if fraction.is_empty()
-				|| fraction.len() > 9
-				|| !fraction.bytes().all(|byte| byte.is_ascii_digit())
-			{
-				return None;
-			}
-			let fraction_value = fraction.parse::<u32>().ok()?;
-			let scale = 10_u32.checked_pow(9_u32.checked_sub(fraction.len() as u32)?)?;
-			(whole.parse::<u32>().ok()?, fraction_value.checked_mul(scale)?)
-		},
-		None => (seconds.parse::<u32>().ok()?, 0),
-	};
-	if second > 59 {
-		return None;
-	}
-	let days = days_from_civil(year, month, day)?;
-	let day_seconds = i64::from(hour) * 3_600 + i64::from(minute) * 60 + i64::from(second);
-	let unix_seconds = days
-		.checked_mul(86_400)?
-		.checked_add(day_seconds)?
-		.checked_sub(zone_seconds)?;
-	let unix_seconds = u64::try_from(unix_seconds).ok()?;
-	UNIX_EPOCH.checked_add(Duration::new(unix_seconds, nanos))
-}
-
-fn days_from_civil(mut year: i32, month: u32, day: u32) -> Option<i64> {
-	if !(1..=12).contains(&month) {
-		return None;
-	}
-	let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-	let month_days = [31_u32, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-	if day == 0 || day > month_days[month as usize - 1] {
-		return None;
-	}
-	year -= i32::from(month <= 2);
-	let era = year.div_euclid(400);
-	let year_of_era = year - era * 400;
-	let shifted_month = i64::from(month) + if month > 2 { -3 } else { 9 };
-	let day_of_year = (153 * shifted_month + 2) / 5 + i64::from(day) - 1;
-	let year_of_era = i64::from(year_of_era);
-	let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-	Some(i64::from(era) * 146_097 + day_of_era - 719_468)
-}
-
 fn codec_mismatch(reason: &'static str) -> Error {
 	let mut error = Error::new(
 		ErrorKind::CodecMismatch,
@@ -465,7 +387,10 @@ fn api_error(_provider_code: &str) -> Error {
 
 #[cfg(test)]
 mod tests {
-	use std::sync::Arc;
+	use std::{
+		sync::Arc,
+		time::{Duration, UNIX_EPOCH},
+	};
 
 	use super::*;
 	use crate::call::{NegotiationPolicy, Setting};

@@ -1,0 +1,1 @@
+{"nodes":[{"id":1,"callFrame":{"functionName":"(root)","scriptId":"0","url":"","lineNumber":0,"columnNumber":0},"children":[2]},{"id":2,"callFrame":{"functionName":"work","scriptId":"1","url":"file:///src/work.js","lineNumber":4,"columnNumber":0}}],"startTime":0,"endTime":1000000,"samples":[2,2,2,2],"timeDeltas":[250000,250000,250000,250000]}

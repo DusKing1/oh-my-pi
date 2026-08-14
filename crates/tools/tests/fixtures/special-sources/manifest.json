@@ -1,0 +1,12 @@
+{
+  "plain": ["plain/unicode.txt", "plain/large-utf8.txt"],
+  "directory": ["tree/.gitignore", "tree/.hidden.txt", "tree/visible.txt", "tree/ignored.txt", "tree/nested/kept.rs", "tree/nested/ignored-generated.txt"],
+  "archives": ["archives/bundle.zip", "archives/bundle.tar.gz"],
+  "database": ["database/catalog.sqlite"],
+  "images": ["images/pixel.png"],
+  "documents": ["documents/report.docx"],
+  "notebooks": ["notebooks/book.ipynb"],
+  "profiles": ["profiles/run.cpuprofile", "profiles/trace.sample.txt"],
+  "conflicts": ["conflicts/merge.txt", "conflicts/merge.ipynb"],
+  "web": ["web/routes.json", "web/page.html", "web/data.json"]
+}
