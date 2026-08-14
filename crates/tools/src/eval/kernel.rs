@@ -9,9 +9,9 @@
 //! threads and tasks started by a cell inherit it (free-threaded 3.14 copies
 //! the caller's context into new threads). A write whose context sink is
 //! sealed may only move to the *same session's* currently open cell; a write
-//! with no context sink at all falls back to the sole open cell
-//! process-wide. Anything else is discarded rather than leaked across
-//! sessions. A cell's sink is sealed before its terminal event is sent, so
+//! with no context sink at all has no provenance and is discarded rather
+//! than risked across sessions. A cell's sink is sealed before its terminal
+//! event is sent, so
 //! `Completed` is always the last event on the channel.
 //!
 //! Timeouts are enforced solely by a Tokio watchdog task that raises
@@ -299,8 +299,8 @@ static OUTPUT_ROUTER_OBJECTS: PyOnceLock<(Py<OutputRouter>, Py<OutputRouter>)> =
 /// Routing context variable holding the active cell's [`CellSink`]; created
 /// once and injected into the bootstrap module as `_OMP_SINK`.
 static SINK_VAR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
-/// Registry of sinks for currently-executing cells, backing the
-/// single-open-cell fallback route.
+/// Registry of sinks for currently-executing cells, backing the same-session
+/// redirect for writes whose context sink is already sealed.
 static OPEN_SINKS: LazyLock<Arc<SinkRegistry>> =
 	LazyLock::new(|| Arc::new(SinkRegistry::default()));
 
@@ -395,24 +395,13 @@ struct SinkRegistry {
 }
 
 impl SinkRegistry {
-	/// Returns the sole open sink, or `None` when zero or several cells run.
-	///
-	/// Attributing context-less output is safe only when exactly one cell
-	/// could own it; otherwise it is dropped rather than leaked across
-	/// sessions.
-	fn sole_open(&self) -> Option<Arc<SinkShared>> {
-		match self.open.lock().as_slice() {
-			[sink] => Some(Arc::clone(sink)),
-			_ => None,
-		}
-	}
-
 	/// Returns the open sink belonging to `session`, if that session is
 	/// currently running a cell.
 	///
-	/// This is the only legal target for output whose context names a sealed
-	/// sink: the sealed sink proves the writer's session, so redirecting
-	/// anywhere else would leak output across sessions.
+	/// This is the only legal redirect target for output whose context names a
+	/// sealed sink: the sealed sink proves the writer's session, so routing
+	/// anywhere else would leak output across sessions. Writes with no context
+	/// sink at all have no provenance and are never rerouted.
 	fn open_for(&self, session: &Bytes) -> Option<Arc<SinkShared>> {
 		self
 			.open
@@ -424,7 +413,8 @@ impl SinkRegistry {
 }
 
 /// RAII registration of one cell's sink. Closing (or dropping) seals the gate
-/// and removes the fallback route before the worker emits the terminal event.
+/// and removes the redirect target before the worker emits the terminal
+/// event.
 struct SinkGuard {
 	registry: Arc<SinkRegistry>,
 	shared:   Arc<SinkShared>,
@@ -468,8 +458,8 @@ struct CellSink {
 ///
 /// Resolution order: the context sink (inherited by threads and asyncio tasks
 /// started inside a cell); if that sink is sealed, the same session's
-/// currently open cell; with no context sink at all, the registry's sole open
-/// cell; then deliberate discard.
+/// currently open cell; otherwise deliberate discard — a context with no sink
+/// has no provenance and must not be guessed at.
 #[pyclass(frozen)]
 struct OutputRouter {
 	channel:  OutputChannel,
@@ -494,11 +484,7 @@ impl OutputRouter {
 				.and_then(|next| next.write(self.channel, text))
 				.unwrap_or_else(|| text.chars().count());
 		}
-		self
-			.registry
-			.sole_open()
-			.and_then(|sink| sink.write(self.channel, text))
-			.unwrap_or_else(|| text.chars().count())
+		text.chars().count()
 	}
 
 	#[staticmethod]
@@ -1344,57 +1330,39 @@ mod tests {
 	}
 
 	#[test]
-	fn pool_thread_print_routes_only_to_an_unambiguous_cell_sink() {
+	fn context_less_pool_thread_print_is_never_routed_to_an_open_cell() {
 		let registry = Arc::new(SinkRegistry::default());
-		let run_pool_print = |registry: &Arc<SinkRegistry>| {
-			ENGINE
-				.attach(|py| -> PyResult<()> {
-					let locals = PyDict::new(py);
-					locals.set_item(
-						"router",
-						Py::new(py, OutputRouter {
-							channel:  OutputChannel::Stdout,
-							registry: Arc::clone(registry),
-						})?,
-					)?;
-					py.run(
-						c_str!(
-							r#"
+		let (events, received) = flume::unbounded();
+		let sole = SinkGuard::open(Arc::clone(&registry), Bytes::from_static(b"py-a"), events);
+
+		// A pool thread created outside any cell carries no context sink: even
+		// with exactly one open cell (a later, unrelated session), its output
+		// has no provenance and must be discarded, not attributed.
+		ENGINE
+			.attach(|py| -> PyResult<()> {
+				let locals = PyDict::new(py);
+				locals.set_item(
+					"router",
+					Py::new(py, OutputRouter {
+						channel:  OutputChannel::Stdout,
+						registry: Arc::clone(&registry),
+					})?,
+				)?;
+				py.run(
+					c_str!(
+						r#"
 from concurrent.futures import ThreadPoolExecutor
 with ThreadPoolExecutor(max_workers=1) as pool:
     pool.submit(print, "parallel", file=router).result()
 "#
-						),
-						None,
-						Some(&locals),
-					)
-				})
-				.expect("pool print completes");
-		};
-
-		let (events, received) = flume::unbounded();
-		let sole = SinkGuard::open(Arc::clone(&registry), Bytes::from_static(b"py-a"), events);
-		run_pool_print(&registry);
-		sole.close();
-		let captured = received
-			.try_iter()
-			.filter_map(|event| match event.expect("capture event") {
-				RunEvent::Output(update) => Some(update.data.to_vec()),
-				RunEvent::Started { .. } | RunEvent::Completed(_) => None,
+					),
+					None,
+					Some(&locals),
+				)
 			})
-			.flatten()
-			.collect::<Vec<_>>();
-		assert_eq!(captured, b"parallel\n");
-
-		let (left_events, left_received) = flume::unbounded();
-		let (right_events, right_received) = flume::unbounded();
-		let left = SinkGuard::open(Arc::clone(&registry), Bytes::from_static(b"py-a"), left_events);
-		let right = SinkGuard::open(Arc::clone(&registry), Bytes::from_static(b"py-b"), right_events);
-		run_pool_print(&registry);
-		left.close();
-		right.close();
-		assert!(left_received.try_recv().is_err());
-		assert!(right_received.try_recv().is_err());
+			.expect("pool print completes");
+		sole.close();
+		assert!(received.try_recv().is_err(), "context-less output must be dropped");
 	}
 
 	#[test]
@@ -1410,7 +1378,7 @@ with ThreadPoolExecutor(max_workers=1) as pool:
 		// Writes after sealing are refused, so nothing can trail the terminal
 		// event, and the fallback route is gone.
 		assert_eq!(guard.shared.write(OutputChannel::Stdout, "late\n"), None);
-		assert!(registry.sole_open().is_none());
+		assert!(registry.open_for(&session).is_none());
 		let outputs = received
 			.try_iter()
 			.filter_map(|event| match event.expect("capture event") {
