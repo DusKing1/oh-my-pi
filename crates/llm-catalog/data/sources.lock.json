@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source_digest": "f44bb62a03945b72183b775ca81a08259dcf953478159458bfc8ee049c121cf6",
+  "source_digest": "215fe0d9e51109bcb291405273084ae33ea5fa664bf76db45890d780e2bc0e11",
   "inputs": [
     {
       "id": "catalog-policy.manifest.v1",
@@ -41,7 +41,7 @@
     {
       "id": "catalog.oauth.source.v1",
       "path": "fixtures/llm-oracle/catalog/oauth.toml",
-      "sha256": "775ea37ea3e97de177cdac3b6109fd62e08ae25131b486af89cd5b9291cde9b2",
+      "sha256": "b2165a3da960510cc0281662bac65b762df65a122620a1e9281db5eec61a8a24",
       "source": "oracle:catalog.oauth.source.v1"
     },
     {

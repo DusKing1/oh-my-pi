@@ -16,8 +16,9 @@ use crate::{
 	auth::AuthManager,
 	body::RetryDecision,
 	call::{Call, OperationCall},
-	catalog::{CatalogRevision, OperationKind, RouteDef, RouteId, snapshot::Catalog},
+	catalog::{CatalogRevision, OperationKind, ProviderId, RouteDef, RouteId, snapshot::Catalog},
 	error::{Error, ErrorDetail, ErrorKind, RetryAction},
+	id::RequestId,
 	layer::{
 		ExecutionContext, LayerCall,
 		observe::{NoopObserver, ObserveLayer, Observer},
@@ -329,6 +330,7 @@ async fn dispatch_preplanned(
 		let body = match manager.execute(request.as_ref().clone()).await {
 			Ok(body) => body,
 			Err(mut error) => {
+				attribute_error(&mut error, &plan.provider, &plan.route, &layered.payload.id);
 				layered.context.finalize_error(&mut error);
 				return Err(error);
 			},
@@ -369,6 +371,7 @@ async fn dispatch_preplanned(
 		let service = match registry.route_service(&plan.route, layered.payload.operation.kind()) {
 			Ok(service) => service,
 			Err(mut error) => {
+				attribute_error(&mut error, &plan.provider, &plan.route, &layered.payload.id);
 				layered.context.finalize_error(&mut error);
 				return Err(error);
 			},
@@ -381,6 +384,7 @@ async fn dispatch_preplanned(
 				return Ok(answer);
 			},
 			Err(mut error) => {
+				attribute_error(&mut error, &plan.provider, &plan.route, &layered.payload.id);
 				let has_next = index < candidates.len();
 				if fallback_is_safe(&error, has_next) {
 					layered.context.merge_receipt(error.receipt());
@@ -393,6 +397,23 @@ async fn dispatch_preplanned(
 		}
 	}
 	unreachable!("primary route and finite preplanned fallbacks always return")
+}
+
+fn attribute_error(
+	error: &mut Error,
+	provider: &ProviderId,
+	route: &RouteId,
+	request_id: &RequestId,
+) {
+	if error.provider.is_none() {
+		error.provider = Some(Box::new(provider.clone()));
+	}
+	if error.route.is_none() {
+		error.route = Some(Box::new(route.clone()));
+	}
+	if error.request_id.is_none() {
+		error.request_id = Some(Box::new(request_id.clone()));
+	}
 }
 
 fn fallback_is_safe(error: &Error, has_next: bool) -> bool {
@@ -470,8 +491,6 @@ mod tests {
 		body::{AttemptBodyEvidence, Replayability, RetryDecisionReason},
 		call::{AuthMethod, AuthRequest, LoginRequest, Target},
 		error::ErrorPhase,
-		id::RequestId,
-		layer::stack::RouteProviderService,
 		plan::{
 			CapabilityAvailability, ExecutionPlan, FallbackScope, ReplayPlan, RouteHealth,
 			RuntimeRouteEvidence,
@@ -557,13 +576,13 @@ mod tests {
 
 	fn attempt(decision: RetryDecision) -> AttemptReceipt {
 		AttemptReceipt {
-			index:             0,
-			hidden:            false,
-			provider:          None,
-			route:             None,
-			account:           None,
-			principal:         None,
-			body:              AttemptBodyEvidence {
+			index:     0,
+			hidden:    false,
+			provider:  None,
+			route:     None,
+			account:   None,
+			principal: None,
+			body:      AttemptBodyEvidence {
 				opened:         true,
 				consumed:       decision != RetryDecision::Allow,
 				replayability:  Replayability::Replayable,
@@ -574,6 +593,7 @@ mod tests {
 					RetryDecisionReason::ConsumedOneShot
 				},
 			},
+
 			outcome:           AttemptOutcome::FailedPreCommit,
 			usage:             Usage::default(),
 			cost:              Cost::default(),
@@ -593,6 +613,27 @@ mod tests {
 			RetryAction::ReselectRoute,
 			receipt,
 		)
+	}
+
+	#[test]
+	fn dispatch_errors_inherit_the_selected_route_identity() {
+		let provider = ProviderId::from("planned-provider");
+		let route = RouteId::from("planned-route");
+		let request_id = RequestId::from("planned-request");
+		let mut error = test_auth_error();
+		attribute_error(&mut error, &provider, &route, &request_id);
+		assert_eq!(error.provider.as_deref(), Some(&provider));
+		assert_eq!(error.route.as_deref(), Some(&route));
+		assert_eq!(error.request_id.as_deref(), Some(&request_id));
+
+		let mut specific = test_auth_error()
+			.provider(ProviderId::from("specific-provider"))
+			.route(RouteId::from("specific-route"))
+			.request_id(RequestId::from("specific-request"));
+		attribute_error(&mut specific, &provider, &route, &request_id);
+		assert_eq!(specific.provider.as_deref().map(ProviderId::as_str), Some("specific-provider"));
+		assert_eq!(specific.route.as_deref().map(RouteId::as_str), Some("specific-route"));
+		assert_eq!(specific.request_id.as_deref().map(RequestId::as_str), Some("specific-request"));
 	}
 
 	#[test]

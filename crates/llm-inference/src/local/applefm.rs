@@ -1074,9 +1074,11 @@ fn apple_prompt(
 		));
 	}
 	let mut instructions = String::new();
-	let mut prompt = String::new();
-	let mut instruction_messages = 0_u8;
-	let mut user_messages = 0_u8;
+	// The dynamic binding opens a fresh framework session per request, so the
+	// thread is rendered into one prompt: instructions from system/developer
+	// messages, conversation turns labeled `User:`/`Assistant:`. A lone user
+	// message stays unlabeled to keep the single-turn wire shape unchanged.
+	let mut turns: Vec<(Role, String)> = Vec::new();
 	for message in request.messages.iter() {
 		if message.name.is_some() {
 			return Err(codec_route_error(
@@ -1088,27 +1090,22 @@ fn apple_prompt(
 			));
 		}
 		let destination = match message.role {
-			Role::System | Role::Developer if instruction_messages == 0 => {
-				instruction_messages += 1;
+			Role::System | Role::Developer => {
+				if !instructions.is_empty() {
+					instructions.push_str("\n\n");
+				}
 				&mut instructions
 			},
-			Role::User if user_messages == 0 => {
-				user_messages += 1;
-				&mut prompt
+			Role::User | Role::Assistant => {
+				if turns.last().is_none_or(|(role, _)| *role != message.role) {
+					turns.push((message.role, String::new()));
+				}
+				&mut turns.last_mut().expect("turn pushed above").1
 			},
-			Role::System | Role::Developer => {
+			Role::Tool => {
 				return Err(codec_route_error(
 					ErrorKind::CapabilityMismatch,
-					"Apple Foundation Models accepts one instruction message",
-					request_id,
-					provider,
-					route,
-				));
-			},
-			Role::User | Role::Assistant | Role::Tool => {
-				return Err(codec_route_error(
-					ErrorKind::CapabilityMismatch,
-					"Apple Foundation Models accepts one user turn without history",
+					"Apple Foundation Models does not accept tool result messages",
 					request_id,
 					provider,
 					route,
@@ -1139,15 +1136,38 @@ fn apple_prompt(
 			}
 		}
 	}
-	if user_messages == 0 || prompt.trim().is_empty() {
+	if !turns
+		.last()
+		.is_some_and(|(role, text)| *role == Role::User && !text.trim().is_empty())
+	{
 		return Err(codec_route_error(
 			ErrorKind::InvalidRequest,
-			"Apple Foundation Models requires non-empty user text",
+			"Apple Foundation Models requires non-empty trailing user text",
 			request_id,
 			provider,
 			route,
 		));
 	}
+	let prompt = if let [(Role::User, only)] = turns.as_mut_slice() {
+		std::mem::take(only)
+	} else {
+		let mut transcript = String::new();
+		for (role, text) in &turns {
+			if text.trim().is_empty() {
+				continue;
+			}
+			if !transcript.is_empty() {
+				transcript.push_str("\n\n");
+			}
+			transcript.push_str(if *role == Role::User {
+				"User: "
+			} else {
+				"Assistant: "
+			});
+			transcript.push_str(text);
+		}
+		transcript
+	};
 	Ok((prompt.into(), (!instructions.is_empty()).then(|| instructions.into())))
 }
 
