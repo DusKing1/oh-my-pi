@@ -508,13 +508,12 @@ async fn real_chat_resume_replays_pending_turn_through_cli_startup() {
 	fs::create_dir_all(&sessions).expect("create chat session directory");
 	fs::set_permissions(&omp_dir, fs::Permissions::from_mode(0o700)).expect("secure .omp");
 	fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).expect("secure sessions");
-	let docserver = DocServerTask::spawn(
-		project.clone(),
-		scratch.socket("binary-docserver.sock"),
-		Vec::new(),
-	)
-	.await
-	.expect("start real binary-resume document authority");
+	fs::set_permissions(scratch.state(), fs::Permissions::from_mode(0o700))
+		.expect("secure binary-resume daemon state");
+	let docserver =
+		DocServerTask::spawn(project.clone(), scratch.socket("binary-docserver.sock"), Vec::new())
+			.await
+			.expect("start real binary-resume document authority");
 	std::os::unix::fs::symlink(docserver.socket(), omp_dir.join("docserver.sock"))
 		.expect("link binary-resume document authority");
 	let journal_path = sessions.join(format!("{BINARY_SESSION}.jsonl"));
@@ -549,12 +548,14 @@ async fn real_chat_resume_replays_pending_turn_through_cli_startup() {
 	let mut first = ChatPty::spawn(&binary, &args, &project, &first_debug);
 	let mut first_ui =
 		ChatDebug::connect(&first_debug, Instant::now() + Duration::from_secs(15), &mut first);
+	first_ui.wait_text(BINARY_SESSION, Duration::from_secs(10));
 	first_ui.keys("'exercise binary resume' enter");
+	first_ui.wait_text("exercise binary resume", Duration::from_secs(10));
+	let pending_turn = wait_pending_turn(&journal_path, Duration::from_secs(10)).await;
 	gateway
 		.wait_response_gated(Duration::from_secs(15))
 		.await
 		.expect("provider response reached deterministic gate");
-	let pending_turn = wait_pending_turn(&journal_path, Duration::from_secs(10)).await;
 	assert!(pending_turn.parse::<ulid::Ulid>().is_ok(), "chat minted non-ULID TurnId");
 	first.stop();
 	gateway
@@ -681,14 +682,18 @@ impl ChatDebug {
 						let mut stdout = String::new();
 						let mut stderr = String::new();
 						if let Some(mut pipe) = process.child.stdout.take() {
-							pipe.read_to_string(&mut stdout).expect("read early binary stdout");
+							pipe
+								.read_to_string(&mut stdout)
+								.expect("read early binary stdout");
 						}
 						if let Some(mut pipe) = process.child.stderr.take() {
-							pipe.read_to_string(&mut stderr).expect("read early binary stderr");
+							pipe
+								.read_to_string(&mut stderr)
+								.expect("read early binary stderr");
 						}
 						panic!(
-							"binary chat exited before debug socket: {status}; connect: {error}\n\
-							 stdout:\n{stdout}\nstderr:\n{stderr}"
+							"binary chat exited before debug socket: {status}; connect: \
+							 {error}\nstdout:\n{stdout}\nstderr:\n{stderr}"
 						);
 					}
 					assert!(Instant::now() < deadline, "binary chat debug socket timed out: {error}");
@@ -833,6 +838,19 @@ impl ChatPty {
 		if let Some(reader) = self.reader.take() {
 			reader.join().expect("binary chat PTY reader joins");
 		}
+	}
+}
+
+impl Drop for ChatPty {
+	fn drop(&mut self) {
+		if self.child.try_wait().ok().flatten().is_none() {
+			let _ = nix::sys::signal::killpg(
+				nix::unistd::Pid::from_raw(i32::try_from(self.child.id()).unwrap_or(i32::MAX)),
+				Some(nix::sys::signal::Signal::SIGKILL),
+			);
+			let _ = self.child.wait();
+		}
+		self.finish_reader();
 	}
 }
 async fn run_child(stage: &str, root: &Path) {

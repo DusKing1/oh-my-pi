@@ -161,7 +161,6 @@ fn revision(head: u64) -> Option<Revision> {
 	Some(Revision { head, token: Bytes::from(head.to_le_bytes().to_vec()) })
 }
 
-
 fn end_outcome(head: u64) -> inference::Outcome {
 	inference::Outcome {
 		stop: StopReason::StopEndTurn as i32,

@@ -7,7 +7,10 @@ use std::{
 	fs,
 	os::unix::fs::PermissionsExt as _,
 	path::{Path, PathBuf},
-	sync::Arc,
+	sync::{
+		Arc,
+		atomic::{AtomicUsize, Ordering},
+	},
 	time::Duration,
 };
 
@@ -164,11 +167,21 @@ async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> R
 				.map(|bytes| String::from_utf8(bytes.to_vec()).expect("UTF-8 race fixture"))
 				.collect();
 		assert_lsp_publication(&race_records, &uri, &published_race, race_final)?;
+		let public_lsp_uri = url::Url::parse(&uri)?;
 		ensure!(
 			race_records.iter().any(|record| {
-				record.kind == "format" && record.uri == uri && record.text.as_bytes() == race_final
+				let Ok(shadow_uri) = url::Url::parse(&record.uri) else {
+					return false;
+				};
+				record.kind == "format"
+					&& shadow_uri != public_lsp_uri
+					&& shadow_uri.scheme() == public_lsp_uri.scheme()
+					&& shadow_uri.path() == public_lsp_uri.path()
+					&& shadow_uri.query().is_some()
+					&& record.text.as_bytes() == race_final
 			}),
-			"the stale A candidate was not formatted to the later published head: {race_records:?}"
+			"the stale A candidate was not formatted on a selector-preserving shadow URI: \
+			 {race_records:?}"
 		);
 		storm(&scratch, &docserver, &lsp_log).await?;
 
@@ -363,21 +376,34 @@ async fn storm(scratch: &Scratch, docserver: &DocServerTask, lsp_log: &Path) -> 
 	for _ in 0..PINNED_READERS {
 		pinned.push(open(&readers, &uri, &cancel).await?);
 	}
+	let format_count = lsp_records(lsp_log)?
+		.iter()
+		.filter(|record| record.kind == "format")
+		.count();
+	let format_done_count = lsp_records(lsp_log)?
+		.iter()
+		.filter(|record| record.kind == "format_done")
+		.count();
 	let barrier = Arc::new(tokio::sync::Barrier::new(STORM_COUNT + 1));
 	let reader_gate = Gate::default();
+	let first_reads = Arc::new(AtomicUsize::new(0));
 	let mut reader_tasks = Vec::new();
 	for lease in pinned {
 		let host = readers.clone();
 		let expected = initial.clone();
 		let reader_gate = reader_gate.clone();
+		let first_reads = Arc::clone(&first_reads);
 		reader_tasks.push(tokio::spawn(async move {
 			reader_gate.arrive_and_wait(TEST_TIMEOUT).await?;
-			for _ in 0..PINNED_READS {
+			for index in 0..PINNED_READS {
 				let bytes = read_whole(&host, &lease).await?;
 				ensure!(
 					bytes.as_ref() == expected.as_slice(),
 					"pinned reader observed a torn or newer head"
 				);
+				if index == 0 {
+					first_reads.fetch_add(1, Ordering::Release);
+				}
 				tokio::task::yield_now().await;
 			}
 			Ok::<_, anyhow::Error>(lease)
@@ -447,7 +473,8 @@ async fn storm(scratch: &Scratch, docserver: &DocServerTask, lsp_log: &Path) -> 
 						matches!(
 							document::TransactionRejectReason::try_from(rejected.reason),
 							Ok(document::TransactionRejectReason::StaleBase
-								| document::TransactionRejectReason::OverlappingChange)
+								| document::TransactionRejectReason::OverlappingChange
+								| document::TransactionRejectReason::RevisionExpired)
 						),
 						"storm rejection was not a typed conflict: {rejected:?}"
 					);
@@ -461,19 +488,27 @@ async fn storm(scratch: &Scratch, docserver: &DocServerTask, lsp_log: &Path) -> 
 		}));
 	}
 	barrier.wait().await;
-	wait_lsp_kind(lsp_log, &uri, "format", 1).await?;
+	wait_lsp_kind(lsp_log, "", "format", format_count + 1).await?;
 	reader_gate.wait_arrived(TEST_TIMEOUT).await?;
 	reader_gate.release();
+	within("pinned readers during formatter", TEST_TIMEOUT, async {
+		while first_reads.load(Ordering::Acquire) < PINNED_READERS {
+			tokio::task::yield_now().await;
+		}
+	})
+	.await?;
+	ensure!(
+		lsp_records(lsp_log)?
+			.iter()
+			.filter(|record| record.kind == "format_done")
+			.count()
+			== format_done_count,
+		"formatter completed before every pinned reader observed its immutable head"
+	);
 	for task in reader_tasks {
 		let lease = within("pinned reader", TEST_TIMEOUT, task).await???;
 		readers.close(lease, &CancellationToken::new()).await?;
 	}
-	ensure!(
-		!lsp_records(lsp_log)?
-			.iter()
-			.any(|record| record.kind == "format_done" && record.uri == uri),
-		"formatter completed before pinned readers exercised the in-flight commit"
-	);
 
 	let mut committed = Vec::new();
 	for task in commits {
@@ -601,7 +636,7 @@ async fn wait_lsp_kind(path: &Path, uri: &str, kind: &str, minimum: usize) -> Re
 		loop {
 			if lsp_records(path)?
 				.iter()
-				.filter(|record| record.kind == kind && record.uri == uri)
+				.filter(|record| record.kind == kind && (uri.is_empty() || record.uri == uri))
 				.count() >= minimum
 			{
 				return Ok::<_, anyhow::Error>(());
@@ -624,7 +659,9 @@ fn assert_lsp_publication(
 		.collect();
 	ensure!(!changes.is_empty(), "LSP received no didChange for {uri}");
 	ensure!(
-		changes.iter().all(|record| published.contains(&record.text)),
+		changes
+			.iter()
+			.all(|record| published.contains(&record.text)),
 		"LSP didChange was attributed to bytes that never became a published head: \
 		 changes={changes:?}, published={published:?}"
 	);

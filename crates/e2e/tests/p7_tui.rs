@@ -146,10 +146,7 @@ impl Service<LayerCall<Call>> for GatedRoute {
 					AnswerBody::Chat(mut chat) => {
 						let events = async_stream::stream! {
 							while let Some(event) = chat.next().await {
-								let pause = matches!(
-									&event,
-									Ok(ChatEvent::ToolArgumentsDelta { .. })
-								);
+								let pause = matches!(&event, Ok(ChatEvent::ToolCallReady { .. }));
 								yield event;
 								if pause {
 									preview_reached
@@ -407,6 +404,7 @@ fn scripts(shell_release: &Path) -> Vec<FakeScript> {
 	let batch_one_marker = shell_quote(&fixture_root.join("p7-b1-side-effect"));
 	let batch_two_marker = shell_quote(&fixture_root.join("p7-b2-side-effect"));
 	let batch_three_marker = shell_quote(&fixture_root.join("p7-b3-side-effect"));
+	let queue_marker = shell_quote(&fixture_root.join("p7-queue-side-effect"));
 	vec![
 		tool_script(&[("read-1", "read", json!({ "path": "scratch.txt" }))]),
 		tool_script(&[(
@@ -446,7 +444,12 @@ fn scripts(shell_release: &Path) -> Vec<FakeScript> {
 				json!({ "command": format!("touch {batch_three_marker}; printf '\\142\\141\\164\\143\\150\\055\\164\\150\\162\\145\\145\\055\\162\\141\\156\\n'") }),
 			),
 		]),
-		text_script("The steering item reached the next turn."),
+		tool_script(&[(
+			"queue-batch",
+			"shell",
+			json!({ "command": format!("touch {queue_marker}; printf '\\161\\165\\145\\165\\145\\055\\142\\141\\164\\143\\150\\055\\154\\151\\166\\145\\n'; sleep 30") }),
+		)]),
+		text_script("The plain Enter steering ran before the queued follow-up."),
 		text_script("The queued follow-up ran after all prior work."),
 	]
 }
@@ -914,12 +917,15 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	});
 	assert_surface(&unknown, "unknown");
 	gateway.release(4);
-	let summary = wait_snapshot(&mut debug, &raw_capture, "first turn metrics complete", |snapshot| {
-		snapshot.frame.contains("deterministic tool sequence is complete")
-			&& snapshot.frame.contains(&gateway.model)
-			&& snapshot.frame.contains("Ctx:")
-			&& snapshot.frame.contains("Cost: $1.5000")
-	});
+	let summary =
+		wait_snapshot(&mut debug, &raw_capture, "first turn metrics complete", |snapshot| {
+			snapshot
+				.frame
+				.contains("deterministic tool sequence is complete")
+				&& snapshot.frame.contains(&gateway.model)
+				&& snapshot.frame.contains("Ctx:")
+				&& snapshot.frame.contains("Cost: $1.5000")
+		});
 	assert_surface(&summary, "summary");
 
 	gateway.release(5);
@@ -961,19 +967,6 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 		"chat entered alt screen: {info}"
 	);
 
-	debug.keys("'steer now' enter");
-	let immediate_steering =
-		wait_snapshot(&mut debug, &raw_capture, "plain Enter immediate steering", |snapshot| {
-			snapshot.frame.contains("steer now")
-		});
-	assert_surface(&immediate_steering, "plain Enter immediate steering");
-	debug.keys("'after all work' alt-enter");
-	let queued_follow_up =
-		wait_snapshot(&mut debug, &raw_capture, "Alt+Enter queued follow-up", |snapshot| {
-			snapshot.frame.contains("after all work")
-				&& snapshot.values.get("input").and_then(Value::as_str) == Some("")
-		});
-	assert_surface(&queued_follow_up, "Alt+Enter queued follow-up");
 	debug.keys("esc");
 	let interrupted =
 		wait_snapshot(&mut debug, &raw_capture, "batch interrupted and skipped", |snapshot| {
@@ -991,22 +984,54 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	assert!(!batch_three_marker.exists(), "batch-3 side-effect marker exists");
 
 	gateway.release(6);
-	let steering = wait_snapshot(&mut debug, &raw_capture, "steering next turn", |snapshot| {
-		let frame = snapshot.frame.to_ascii_lowercase();
-		frame.contains("steering item")
-			&& frame.contains("next turn")
-			&& gateway.captured_text(6, "steer now")
-			&& gateway.captured_text(6, "User interrupted via Esc.")
-			&& !gateway.captured_text(6, "after all work")
-	});
-	assert_surface(&steering, "steering");
+	let queue_marker = scratch.path().join("p7-queue-side-effect");
+	let queue_live = wait_snapshot(
+		&mut debug,
+		&raw_capture,
+		"Esc steering reaches isolated next batch",
+		|snapshot| {
+			snapshot.frame.contains("queue-batch-live")
+				&& queue_marker.is_file()
+				&& gateway.captured_text(6, "User interrupted via Esc.")
+				&& !gateway.captured_text(6, "steer now")
+				&& !gateway.captured_text(6, "after all work")
+				&& tree_node_by_id(&snapshot.tree, "queue-batch")
+					.is_some_and(|node| node.to_string().contains("TextLeaf"))
+		},
+	);
+	assert_surface(&queue_live, "Esc steering reaches isolated next batch");
+	debug.keys("'steer now' enter");
+	let immediate_steering =
+		wait_snapshot(&mut debug, &raw_capture, "plain Enter immediate steering", |snapshot| {
+			snapshot.frame.contains("steer now")
+		});
+	assert_surface(&immediate_steering, "plain Enter immediate steering");
+	debug.keys("'after all work' alt-enter");
+	let queued_follow_up =
+		wait_snapshot(&mut debug, &raw_capture, "Alt+Enter queued follow-up", |snapshot| {
+			snapshot.frame.contains("after all work")
+				&& snapshot.values.get("input").and_then(Value::as_str) == Some("")
+		});
+	assert_surface(&queued_follow_up, "Alt+Enter queued follow-up");
 	gateway.release(7);
+	let entered = wait_snapshot(
+		&mut debug,
+		&raw_capture,
+		"plain Enter steering precedes follow-up",
+		|snapshot| {
+			snapshot.frame.contains("plain Enter steering ran before")
+				&& gateway.captured_text(7, "steer now")
+				&& !gateway.captured_text(7, "after all work")
+		},
+	);
+	assert_surface(&entered, "plain Enter steering precedes follow-up");
+	gateway.release(8);
 	let follow_up =
 		wait_snapshot(&mut debug, &raw_capture, "Alt+Enter follows all active work", |snapshot| {
 			snapshot
 				.frame
 				.contains("queued follow-up ran after all prior work")
-				&& gateway.captured_text(7, "after all work")
+				&& gateway.captured_text(8, "after all work")
 		});
 	assert_surface(&follow_up, "Alt+Enter follows all active work");
 
