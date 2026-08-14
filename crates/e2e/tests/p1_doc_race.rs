@@ -148,11 +148,11 @@ async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> R
 		ensure!(a2.rebased, "A's revision-two proposal was not daemon-rebased");
 		ensure!(!a1.rebased && !b.rebased, "fresh edits were incorrectly reported as rebased");
 		let a1_old = revision_sequence(&a1.old_revision)?;
-		let a1_new = revision_sequence(&a1.new_revision)?;
+		let a1_new = revision_sequence(committed_revision(&a1)?)?;
 		let b_old = revision_sequence(&b.old_revision)?;
-		let b_new = revision_sequence(&b.new_revision)?;
+		let b_new = revision_sequence(committed_revision(&b)?)?;
 		let a2_old = revision_sequence(&a2.old_revision)?;
-		let a2_new = revision_sequence(&a2.new_revision)?;
+		let a2_new = revision_sequence(committed_revision(&a2)?)?;
 		ensure!(a1_old < a1_new && a1_new < b_new && b_new < a2_new, "race revisions regressed");
 		ensure!(
 			b_old == a1_new && a2_old == a1_new,
@@ -343,7 +343,10 @@ fn end_turn() -> ScriptedTurn {
 	])
 }
 
-async fn next_edit_payload(events: &EventSubscription, call_id: &str) -> Result<edit::Payload> {
+async fn next_edit_payload(
+	events: &EventSubscription,
+	call_id: &str,
+) -> Result<edit::SectionPayload> {
 	within("successful edit tool result", TEST_TIMEOUT, async {
 		loop {
 			let event = events.recv().await?;
@@ -364,7 +367,16 @@ async fn next_edit_payload(events: &EventSubscription, call_id: &str) -> Result<
 				proto_json(details).ok_or_else(|| anyhow!("invalid edit verdict"))?,
 			)?;
 			match verdict {
-				Verdict::Ok(payload) => return Ok(payload),
+				Verdict::Ok(mut payload) => {
+					ensure!(
+						payload.sections.len() == 1,
+						"edit transaction should contain exactly one section"
+					);
+					return Ok(payload
+						.sections
+						.pop()
+						.expect("verified single edit section"));
+				},
 				other => return Err(anyhow!("edit did not commit: {other:?}")),
 			}
 		}
@@ -405,6 +417,13 @@ fn revision_sequence(revision: &Str) -> Result<u64> {
 		.0
 		.parse()
 		.context("parse revision sequence")
+}
+
+fn committed_revision(section: &edit::SectionPayload) -> Result<&Str> {
+	section
+		.new_revision
+		.as_ref()
+		.ok_or_else(|| anyhow!("race edit unexpectedly deleted its document"))
 }
 
 async fn storm(scratch: &Scratch, docserver: &DocServerTask, lsp_log: &Path) -> Result<()> {

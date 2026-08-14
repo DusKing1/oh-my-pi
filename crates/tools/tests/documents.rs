@@ -1,6 +1,7 @@
 //! In-memory document conversion contracts for `read`.
 
 use std::{
+	fmt::Write as _,
 	future::{Future, ready},
 	io::Write as _,
 	path::Path,
@@ -254,11 +255,7 @@ fn selector_fixture_docx() -> Vec<u8> {
 async fn read_tool_dispatches_docx_bytes_and_applies_line_selectors_to_converted_text() {
 	let output =
 		read_document_tool_text("fixture.docx:3-3", "fixture.docx", selector_fixture_docx()).await;
-	assert_eq!(
-		output,
-		"[fixture.docx#A1B2]\n2:\n3:alpha\n4:\n5:beta\n6:\n\n[3 more lines in file. Use :7 to \
-		 continue]"
-	);
+	assert_eq!(output, "2:\n3:alpha\n4:\n5:beta\n6:\n\n[3 more lines in file. Use :7 to continue]");
 }
 
 #[tokio::test]
@@ -274,7 +271,7 @@ async fn converted_document_truncation_spills_the_complete_numbered_markdown() {
 		r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>"#,
 	);
 	for line in 1..=3200 {
-		document.push_str(&format!("<w:p><w:r><w:t>Converted line {line}</w:t></w:r></w:p>"));
+		write!(document, "<w:p><w:r><w:t>Converted line {line}</w:t></w:r></w:p>").unwrap();
 	}
 	document.push_str("</w:body></w:document>");
 	let bytes = zip(&[("word/document.xml", &document)]);
@@ -288,7 +285,7 @@ async fn converted_document_truncation_spills_the_complete_numbered_markdown() {
 		.map(|(index, line)| format!("{}:{line}", index + 1))
 		.collect::<Vec<_>>()
 		.join("\n");
-	let full = format!("[large.docx#A1B2]\n{numbered}");
+	let full = numbered;
 	let total_lines = full.lines().count();
 	let blobs = RecordingBlobs::default();
 
@@ -340,7 +337,7 @@ fn xlsx_preserves_sheet_order_shared_strings_inline_strings_numbers_and_booleans
 		),
 		(
 			"xl/sharedStrings.xml",
-			r#"<sst><si><t>Name</t></si><si><r><t>Val</t></r><r><t>ue</t></r></si><si><t>alpha</t></si></sst>"#,
+			r"<sst><si><t>Name</t></si><si><r><t>Val</t></r><r><t>ue</t></r></si><si><t>alpha</t></si></sst>",
 		),
 		(
 			"xl/worksheets/sheet1.xml",

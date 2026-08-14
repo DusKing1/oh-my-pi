@@ -73,28 +73,23 @@ impl EditPrepared for Lease {
 impl EditDocuments for Fake {
 	type Prepared = Lease;
 
-	fn prepare(
-		&self,
-		request: PrepareRequest,
-	) -> impl Future<Output = Result<Self::Prepared, Fault>> + Send + '_ {
-		async move {
-			self.state.lock().prepared.push(request.clone());
-			if let Some(fault) = &self.fault {
-				return Err(fault.clone());
-			}
-			let Some(content) = self.files.get(&request.path).cloned() else {
-				return Err(Fault {
-					reason:    RejectionReason::InvalidPatch { message: "file not found".into() },
-					conflicts: Vec::new(),
-				});
-			};
-			Ok(Lease {
-				path:     request.path,
-				revision: "r1".into(),
-				base:     content.clone(),
-				authored: content,
-			})
+	async fn prepare(&self, request: PrepareRequest) -> Result<Self::Prepared, Fault> {
+		self.state.lock().prepared.push(request.clone());
+		if let Some(fault) = &self.fault {
+			return Err(fault.clone());
 		}
+		let Some(content) = self.files.get(&request.path).cloned() else {
+			return Err(Fault {
+				reason:    RejectionReason::InvalidPatch { message: "file not found".into() },
+				conflicts: Vec::new(),
+			});
+		};
+		Ok(Lease {
+			path:     request.path,
+			revision: "r1".into(),
+			base:     content.clone(),
+			authored: content,
+		})
 	}
 
 	fn record_noop(&self, canonical_path: &str, display_path: &str, input: Bytes) -> NoopResult {
@@ -115,33 +110,31 @@ impl EditDocuments for Fake {
 		Clipboard::default()
 	}
 
-	fn commit<'a>(
-		&'a self,
-		_prepared: Vec<&'a mut Self::Prepared>,
+	async fn commit(
+		&self,
+		_prepared: Vec<&mut Self::Prepared>,
 		proposals: Vec<EditProposal>,
 		_clipboard: Clipboard,
-	) -> impl Future<Output = Result<CommitResult, EditCommitError>> + Send + 'a {
-		async move {
-			let sections = proposals
-				.iter()
-				.map(|proposal| CommittedSection {
-					new_revision: (!matches!(proposal.action, EditAction::Delete)).then(|| "r2".into()),
-					rebased:      false,
-					content:      match &proposal.action {
-						EditAction::Write { content } | EditAction::Move { content, .. } => {
-							Some(content.clone())
-						},
-						EditAction::Delete => None,
+	) -> Result<CommitResult, EditCommitError> {
+		let sections = proposals
+			.iter()
+			.map(|proposal| CommittedSection {
+				new_revision: (!matches!(proposal.action, EditAction::Delete)).then(|| "r2".into()),
+				rebased:      false,
+				content:      match &proposal.action {
+					EditAction::Write { content } | EditAction::Move { content, .. } => {
+						Some(content.clone())
 					},
-				})
-				.collect();
-			self.state.lock().commits.extend(proposals);
-			Ok(CommitResult { sections })
-		}
+					EditAction::Delete => None,
+				},
+			})
+			.collect();
+		self.state.lock().commits.extend(proposals);
+		Ok(CommitResult { sections })
 	}
 }
 
-fn caps() -> PromptCaps {
+const fn caps() -> PromptCaps {
 	PromptCaps { maximum_parts: 1, maximum_text_bytes: 16 * 1024, media: false }
 }
 
@@ -246,6 +239,22 @@ async fn rem_and_mv_render_exact_file_operation_text() {
 }
 
 #[tokio::test]
+async fn edits_followed_by_mv_form_one_move_with_final_content() {
+	let fake = Fake::with_files(&[("old.txt", b"one\ntwo\n")]);
+	let old_tag = compute_snapshot_tag(b"one\ntwo\n");
+	let input = format!("[old.txt#{old_tag}]\nPUT 2.=2:\n+TWO\nMV new.txt");
+	let _ = invoke(fake.clone(), &input).await;
+	let edited = b"one\nTWO\n";
+	let state = fake.state.lock();
+	assert_eq!(state.commits.len(), 1);
+	assert!(matches!(
+		&state.commits[0].action,
+		EditAction::Move { destination, content }
+			if destination == "new.txt" && content.as_ref() == edited
+	));
+}
+
+#[tokio::test]
 async fn byte_identical_put_escalates_from_exact_soft_diagnostic_to_loop_guard_failure() {
 	let fake = Fake::with_files(&[("a.txt", b"same\n")]);
 	let tag = compute_snapshot_tag(b"same\n");
@@ -283,7 +292,7 @@ async fn byte_identical_put_escalates_from_exact_soft_diagnostic_to_loop_guard_f
 		 then author a different edit). This exact payload will keep being rejected until it \
 		 changes."
 	);
-	assert!(fake.state.lock().commits.is_empty());
+	assert_eq!(fake.state.lock().commits, [] as [omp_tools::edit::EditProposal; 0]);
 }
 
 #[tokio::test]
@@ -356,7 +365,7 @@ async fn malformed_and_headerless_input_never_commit_and_preserve_parser_diagnos
 			.expect("diagnostic event");
 		assert_eq!(rendered, expected);
 	}
-	assert!(fake.state.lock().commits.is_empty());
+	assert_eq!(fake.state.lock().commits, [] as [omp_tools::edit::EditProposal; 0]);
 }
 
 #[tokio::test]

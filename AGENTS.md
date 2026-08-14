@@ -197,7 +197,7 @@ saying what it is and its structural philosophy.
   concrete Tower services, `TurnClient`s, and authorities there; library crates
   must not build a second production stack.
 - Libraries expose typed domain errors with `thiserror`. Application
-  orchestration uses `AppError`/`anyhow` and classifies or redacts untrusted
+  orchestration uses `miette` and classifies or redacts untrusted
   provider diagnostics before the top-level error reaches stderr.
 - Durable state belongs in the append-only transcript journal and blob store.
   Build turn state from `AgentSnapshot` plus journal projection; do not create a

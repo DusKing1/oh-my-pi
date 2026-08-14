@@ -1,3 +1,5 @@
+//! End-to-end construction and command-line parsing smoke tests.
+
 use std::{path::Path, sync::Arc};
 
 use clap::Parser as _;

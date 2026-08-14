@@ -38,7 +38,7 @@ pub struct EnvHarness {
 	shutdown:    CancellationToken,
 	server_task: Option<JoinHandle<Result<(), omp_app::envd::EnvdError>>>,
 	client_task: Option<JoinHandle<io::Result<()>>>,
-	_server:     Arc<EnvServer>,
+	server:      Arc<EnvServer>,
 }
 
 impl EnvHarness {
@@ -76,7 +76,7 @@ impl EnvHarness {
 			shutdown,
 			server_task: Some(server_task),
 			client_task: Some(client_task),
-			_server: server,
+			server,
 		})
 	}
 
@@ -117,7 +117,7 @@ impl EnvHarness {
 
 	/// Returns the hello-complete environment client.
 	#[must_use]
-	pub fn client(&self) -> &EnvClient {
+	pub const fn client(&self) -> &EnvClient {
 		&self.client
 	}
 
@@ -131,7 +131,7 @@ impl EnvHarness {
 	/// resources.
 	#[must_use]
 	pub fn registry(&self) -> Arc<Registry> {
-		self._server.registry()
+		self.server.registry()
 	}
 
 	/// Returns the owner-local environment socket.
@@ -186,7 +186,7 @@ pub struct ProcessEnvHarness {
 impl ProcessEnvHarness {
 	/// Returns the hello-complete environment client.
 	#[must_use]
-	pub fn client(&self) -> &EnvClient {
+	pub const fn client(&self) -> &EnvClient {
 		&self.client
 	}
 
@@ -247,7 +247,7 @@ impl FramedEnvConnection {
 
 	/// Returns the decoded environment client.
 	#[must_use]
-	pub fn client(&self) -> &EnvClient {
+	pub const fn client(&self) -> &EnvClient {
 		&self.client
 	}
 

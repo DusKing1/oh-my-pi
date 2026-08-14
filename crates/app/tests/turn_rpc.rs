@@ -1,3 +1,5 @@
+//! Integration coverage for daemon-backed RPC turn sessions.
+
 #![cfg(unix)]
 
 use std::{
@@ -108,7 +110,7 @@ fn completion(reason: FinishReason, blocks: u32) -> ChatEvent {
 		reason,
 		blocks,
 		usage: Usage::default(),
-		receipt: ExecutionReceipt::default(),
+		receipt: ExecutionReceipt::default().into(),
 	})
 }
 
@@ -400,11 +402,11 @@ async fn rpc_turn_client_proves_stateful_replay_duplex_and_recovery_over_owner_u
 		..Default::default()
 	};
 	delta
-		.submit(InvokeFrame::Input(input.clone()))
+		.submit(InvokeFrame::from(input.clone()))
 		.await
 		.expect("live input accepted");
 	delta
-		.submit(InvokeFrame::Complete(complete.clone()))
+		.submit(InvokeFrame::from(complete.clone()))
 		.await
 		.expect("live completion accepted");
 	match observed_response(&responses).await {
@@ -709,7 +711,7 @@ fn provider_schema_bytes(request: &omp_llm_inference::call::ChatRequest) -> Vec<
 #[test]
 fn canonical_history_uses_only_live_definitions_and_lifts_deterministically() {
 	let outcome = historical_outcome();
-	let thread = thread_pb::Thread { items: outcome.output.clone() };
+	let thread = thread_pb::Thread { items: outcome.output };
 	let params = pb::ChatParams {
 		tools: vec![pb::ToolDef {
 			name:        "history_law".to_owned(),

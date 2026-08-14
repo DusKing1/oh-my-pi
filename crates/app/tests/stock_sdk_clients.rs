@@ -84,7 +84,7 @@ async fn typed_chat_and_discovery_plan_through_the_production_registry() {
 		})
 		.map(|model| model.key.clone())
 		.expect("catalog advertises a constructed chat model");
-	let mut chat = Client::new(
+	let chat = Client::new(
 		registry.service(),
 		Router::new(registry.clone(), Duration::from_secs(30)),
 		metadata(Target::Model(chat_model), "typed-chat-smoke"),
@@ -117,13 +117,13 @@ async fn typed_chat_and_discovery_plan_through_the_production_registry() {
 		});
 	let provider = discovery_route.provider.clone();
 	let discovery_request = DiscoveryRequest {
-		provider:  Some(provider.clone()),
+		provider:  Some(provider),
 		route:     Some(discovery_route.id.clone()),
 		cursor:    None,
 		page_size: 100,
 		operation: None,
 	};
-	let mut discovery = Client::new(
+	let discovery = Client::new(
 		registry.service(),
 		Router::new(registry, Duration::from_secs(30)),
 		metadata(Target::RouteService(discovery_route.id), "typed-discovery-smoke"),

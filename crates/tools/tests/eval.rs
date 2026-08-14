@@ -59,8 +59,23 @@ static PYTHON: LazyLock<Arc<omp_py::Engine>> = LazyLock::new(|| {
 });
 
 async fn execute(tool: &eval::EvalTool<eval::kernel::EmbeddedPython>, code: &str) -> Payload {
+	execute_params(tool, IncomingParams::channel(), code).await
+}
+
+async fn execute_owned(
+	tool: &eval::EvalTool<eval::kernel::EmbeddedPython>,
+	owner: &str,
+	code: &str,
+) -> Payload {
+	execute_params(tool, IncomingParams::owned_channel(Str::from(owner)), code).await
+}
+
+async fn execute_params(
+	tool: &eval::EvalTool<eval::kernel::EmbeddedPython>,
+	(feed, params): (omp_tool::InvocationFeed, IncomingParams<'static>),
+	code: &str,
+) -> Payload {
 	let raw = json!({"language":"py","code":code}).to_string();
-	let (feed, params) = IncomingParams::channel();
 	feed
 		.args_committed(Str::from(raw))
 		.expect("eval invocation remains live");
@@ -337,5 +352,23 @@ async fn external_session_reset_separates_chat_state_and_preserves_the_new_sessi
 	assert_eq!(
 		persisted_b.result,
 		Some(CellValue { text: Str::from("'B'"), json: Some(json!("B")) })
+	);
+}
+
+#[tokio::test]
+async fn authenticated_owners_have_isolated_persistent_namespaces() {
+	let runtime = eval::kernel::EmbeddedPython::new(Arc::clone(&PYTHON));
+	let tool = eval::eval(runtime);
+
+	execute_owned(&tool, "chat-a", "private_value = 'A'").await;
+	let absent_from_b = execute_owned(&tool, "chat-b", "'private_value' in globals()").await;
+	assert_eq!(
+		absent_from_b.result,
+		Some(CellValue { text: Str::from("False"), json: Some(json!(false)) })
+	);
+	let persisted_in_a = execute_owned(&tool, "chat-a", "private_value").await;
+	assert_eq!(
+		persisted_in_a.result,
+		Some(CellValue { text: Str::from("'A'"), json: Some(json!("A")) })
 	);
 }

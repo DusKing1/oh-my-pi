@@ -150,21 +150,22 @@ fn journal(path: &Path, root: &Path) -> Journal {
 }
 
 fn state(root: &Path, registry: Arc<Registry>) -> AgentState {
-	let mut turn = TurnOptions::default();
-	turn.context_id = Some(Str::new_static("p3-context"));
-	let mut snapshot = AgentSnapshot::new(turn, WorkspaceInput::new(root, Arc::from([])), registry);
-	snapshot.enabled_tools = Arc::from([Str::new_static("shell")]);
+	let turn = TurnOptions { context_id: Some(Str::new_static("p3-context")), ..Default::default() };
+	let snapshot = AgentSnapshot {
+		enabled_tools: Arc::from([Str::new_static("shell")]),
+		..AgentSnapshot::new(turn, WorkspaceInput::new(root, Arc::from([])), registry)
+	};
 	AgentState::new(snapshot)
 }
 
-fn revision(head: u64) -> Option<Revision> {
-	Some(Revision { head, token: Bytes::from(head.to_le_bytes().to_vec()) })
+fn revision(head: u64) -> Revision {
+	Revision { head, token: Bytes::from(head.to_le_bytes().to_vec()) }
 }
 
 fn end_outcome(head: u64) -> inference::Outcome {
 	inference::Outcome {
 		stop: StopReason::StopEndTurn as i32,
-		revision: revision(head),
+		revision: Some(revision(head)),
 		provider: "p3-script".to_owned(),
 		model: "deterministic".to_owned(),
 		..Default::default()
@@ -714,7 +715,7 @@ async fn detached_replay_acceptance_comes_from_real_gateway_authority() {
 			reason:  FinishReason::Stop,
 			blocks:  1,
 			usage:   Usage::default(),
-			receipt: ExecutionReceipt::default(),
+			receipt: ExecutionReceipt::default().into(),
 		})),
 	]);
 	let mut gateway = ScriptedGateway::spawn(&scratch, [script], Arc::new(Registry::new()))

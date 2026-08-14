@@ -4,7 +4,7 @@ use std::{
 	collections::VecDeque,
 	pin::Pin,
 	sync::{
-		Arc, Mutex,
+		Arc,
 		atomic::{AtomicUsize, Ordering},
 	},
 	time::Duration,
@@ -13,8 +13,7 @@ use std::{
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use omp_agent::{
-	Error, InProcTurnClient, InvokeFrame, RpcTurnSession, TurnClient, TurnId, TurnInput,
-	TurnOptions, TurnSession,
+	Error, InProcTurnClient, RpcTurnSession, TurnClient, TurnId, TurnInput, TurnOptions, TurnSession,
 };
 use omp_proto::{
 	inference::v1::{self as pb, inference_server::Inference},
@@ -61,7 +60,7 @@ struct ScriptedInference {
 }
 
 struct ScriptState {
-	exchanges: Mutex<VecDeque<Exchange>>,
+	exchanges: parking_lot::Mutex<VecDeque<Exchange>>,
 	opens:     flume::Sender<pb::TurnRequest>,
 	inputs:    flume::Sender<Vec<pb::TurnFrame>>,
 	calls:     AtomicUsize,
@@ -78,7 +77,7 @@ impl ScriptedInference {
 		let (open_sender, opens) = flume::bounded(exchanges.len().max(1));
 		let (input_sender, inputs) = flume::bounded(exchanges.len().max(1));
 		let state = Arc::new(ScriptState {
-			exchanges: Mutex::new(exchanges.into()),
+			exchanges: parking_lot::Mutex::new(exchanges.into()),
 			opens:     open_sender,
 			inputs:    input_sender,
 			calls:     AtomicUsize::new(0),
@@ -112,9 +111,8 @@ macro_rules! impl_scripted_inference {
 					.message()
 					.await?
 					.ok_or_else(|| Status::invalid_argument("missing opening frame"))?;
-				let open = match first.frame {
-					Some(pb::turn_frame::Frame::Open(open)) => open,
-					_ => return Err(Status::invalid_argument("first frame was not open")),
+				let Some(pb::turn_frame::Frame::Open(open)) = first.frame else {
+					return Err(Status::invalid_argument("first frame was not open"));
 				};
 				self.state
 					.opens
@@ -125,7 +123,6 @@ macro_rules! impl_scripted_inference {
 					.state
 					.exchanges
 					.lock()
-					.map_err(|_| Status::internal("script lock poisoned"))?
 					.pop_front()
 					.ok_or_else(|| Status::failed_precondition("no scripted exchange"))?;
 
@@ -220,11 +217,11 @@ impl_scripted_inference! {
 	}
 }
 
-fn event(event: pb::turn_event::Event) -> pb::TurnEvent {
+const fn event(event: pb::turn_event::Event) -> pb::TurnEvent {
 	pb::TurnEvent { event: Some(event) }
 }
 
-fn accepted(replay: bool) -> pb::TurnEvent {
+const fn accepted(replay: bool) -> pb::TurnEvent {
 	event(pb::turn_event::Event::Accepted(pb::Accepted { replay }))
 }
 
@@ -339,7 +336,7 @@ async fn full_then_delta_preserve_the_injected_services_context_revision() {
 		.expect("accepted event");
 	match next_event(&mut incremental).await {
 		Some(Ok(pb::TurnEvent { event: Some(pb::turn_event::Event::Outcome(outcome)) })) => {
-			assert_eq!(outcome.provider, "injected/delta")
+			assert_eq!(outcome.provider, "injected/delta");
 		},
 		other => panic!("expected delta outcome, got {other:?}"),
 	}
@@ -431,7 +428,7 @@ async fn replay_acceptance_and_unknown_terminal_errors_pass_through_verbatim() {
 		.expect("replay opens");
 	match next_event(&mut replay).await {
 		Some(Ok(pb::TurnEvent { event: Some(pb::turn_event::Event::Accepted(accepted)) })) => {
-			assert!(accepted.replay)
+			assert!(accepted.replay);
 		},
 		other => panic!("expected replay acceptance, got {other:?}"),
 	}
@@ -486,7 +483,7 @@ async fn invocation_frames_flow_while_the_response_stream_is_live() {
 		.expect("accepted event");
 	match next_event(&mut session).await {
 		Some(Ok(pb::TurnEvent { event: Some(pb::turn_event::Event::Invoke(actual)) })) => {
-			assert_eq!(actual, invoke)
+			assert_eq!(actual, invoke);
 		},
 		other => panic!("expected invocation, got {other:?}"),
 	}
@@ -508,11 +505,11 @@ async fn invocation_frames_flow_while_the_response_stream_is_live() {
 		..Default::default()
 	};
 	session
-		.submit(InvokeFrame::Input(input.clone()))
+		.submit(input.clone().into())
 		.await
 		.expect("input accepted");
 	session
-		.submit(InvokeFrame::Complete(complete.clone()))
+		.submit(complete.clone().into())
 		.await
 		.expect("completion accepted");
 
@@ -522,7 +519,7 @@ async fn invocation_frames_flow_while_the_response_stream_is_live() {
 	assert_eq!(frames[1].frame, Some(pb::turn_frame::Frame::Complete(complete)));
 	match next_event(&mut session).await {
 		Some(Ok(pb::TurnEvent { event: Some(pb::turn_event::Event::Outcome(outcome)) })) => {
-			assert_eq!(outcome.provider, "after-invocation")
+			assert_eq!(outcome.provider, "after-invocation");
 		},
 		other => panic!("expected post-invocation outcome, got {other:?}"),
 	}
@@ -552,7 +549,7 @@ async fn sessions_keep_the_injected_server_alive_and_report_response_channel_shu
 		.expect("accepted");
 	match next_event(&mut session).await {
 		Some(Ok(pb::TurnEvent { event: Some(pb::turn_event::Event::Outcome(outcome)) })) => {
-			assert_eq!(outcome.provider, "server-owned-by-session")
+			assert_eq!(outcome.provider, "server-owned-by-session");
 		},
 		other => panic!("expected outcome after dropping client, got {other:?}"),
 	}
@@ -579,9 +576,7 @@ async fn sessions_keep_the_injected_server_alive_and_report_response_channel_shu
 	));
 	assert!(next_event(&mut shutdown).await.is_none());
 	assert!(matches!(
-		shutdown
-			.submit(InvokeFrame::Complete(pb::InvokeComplete::default()))
-			.await,
+		shutdown.submit(pb::InvokeComplete::default().into()).await,
 		Err(Error::Closed)
 	));
 }

@@ -1,3 +1,5 @@
+//! End-to-end coverage for built-in source tool contracts.
+
 #![cfg(unix)]
 
 use anyhow::{Result, bail};

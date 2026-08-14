@@ -157,7 +157,7 @@ struct CancellableSleeper {
 }
 
 impl CancellableSleeper {
-	fn new(started: PathBuf, marker: PathBuf, dropped: Arc<AtomicBool>) -> Self {
+	const fn new(started: PathBuf, marker: PathBuf, dropped: Arc<AtomicBool>) -> Self {
 		Self {
 			spec: ToolSpec {
 				name:        Str::new_static("matrix_sleeper"),
@@ -365,7 +365,7 @@ async fn dropping_exec_run_kills_the_whole_pgid_but_preserves_its_session() {
 	let (_, cancelled) = collect_exec(&mut status_probe).await;
 	assert_eq!(cancelled.outcome, ExecOutcome::Cancelled as i32);
 	assert_eq!(cancelled.exit_code, None);
-	assert!(cancelled.signal.is_empty());
+	assert_eq!(cancelled.signal, "");
 	assert!(cancelled.aborted);
 
 	let mut pwd = within(EVENT_DEADLINE, env.client.exec(exec_request(&opened.session, "pwd")))
@@ -470,7 +470,7 @@ async fn python_native_sleep_requires_sigkill_then_respawns_and_serves() {
 	let success = next_verdict(&mut next).await;
 	assert!(!success.is_error);
 	assert!(!success.useless);
-	assert!(success.parts.is_empty());
+	assert_eq!(success.parts, [] as [omp_proto::thread::v1::Part; 0]);
 	let Verdict::Ok(details) = decode_verdict(&success) else {
 		panic!("replacement worker did not return an ok verdict");
 	};
@@ -525,7 +525,7 @@ fn decode_verdict(terminal: &omp_proto::env::v1::Verdict) -> Verdict<Value, Valu
 fn assert_abort_envelope(terminal: &omp_proto::env::v1::Verdict) {
 	assert!(terminal.is_error);
 	assert!(!terminal.useless);
-	assert!(terminal.parts.is_empty());
+	assert_eq!(terminal.parts, [] as [omp_proto::thread::v1::Part; 0]);
 }
 
 fn file_uri(path: &Path) -> String {

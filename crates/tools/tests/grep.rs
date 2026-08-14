@@ -29,11 +29,8 @@ impl grep::WorkspaceSearch for FakeWorkspace {
 		async move { result }
 	}
 
-	fn glob(
-		&self,
-		_request: glob::WalkRequest,
-	) -> impl Future<Output = Result<glob::WalkResult, glob::Fault>> + Send + '_ {
-		async { Err(glob::Fault::Workspace { message: Str::from("unused fake glob boundary") }) }
+	async fn glob(&self, _request: glob::WalkRequest) -> Result<glob::WalkResult, glob::Fault> {
+		Err(glob::Fault::Workspace { message: Str::from("unused fake glob boundary") })
 	}
 }
 
@@ -62,11 +59,11 @@ struct Invocation {
 	useless: bool,
 }
 
-fn fake(result: grep::SearchResult) -> FakeWorkspace {
+const fn fake(result: grep::SearchResult) -> FakeWorkspace {
 	FakeWorkspace { result: Ok(result) }
 }
 
-fn failed(fault: grep::Fault) -> FakeWorkspace {
+const fn failed(fault: grep::Fault) -> FakeWorkspace {
 	FakeWorkspace { result: Err(fault) }
 }
 
@@ -329,5 +326,5 @@ fn oversized_projection_spills_complete_output_with_truthful_footer() {
 		maximum_text_bytes: 0,
 		media:              false,
 	});
-	assert!(zero.is_empty());
+	assert_eq!(zero, [] as [omp_tool::Part; 0]);
 }

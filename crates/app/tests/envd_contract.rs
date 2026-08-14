@@ -1,4 +1,5 @@
 #![cfg(unix)]
+//! End-to-end environment daemon contract tests.
 
 use std::{
 	path::{Path, PathBuf},
@@ -39,11 +40,11 @@ struct EffectTool {
 }
 
 impl EffectTool {
-	fn new(marker: PathBuf) -> Self {
+	const fn new(marker: PathBuf) -> Self {
 		Self::named("effect_probe", marker)
 	}
 
-	fn named(name: &'static str, marker: PathBuf) -> Self {
+	const fn named(name: &'static str, marker: PathBuf) -> Self {
 		Self {
 			spec: ToolSpec {
 				name:        Str::new_static(name),
@@ -106,7 +107,7 @@ struct StreamingTool {
 }
 
 impl StreamingTool {
-	fn new(lease: PathBuf, effect: PathBuf) -> Self {
+	const fn new(lease: PathBuf, effect: PathBuf) -> Self {
 		Self {
 			spec: ToolSpec {
 				name:        Str::new_static("streaming_probe"),
@@ -138,14 +139,11 @@ impl Tool for StreamingTool {
 		mut params: IncomingParams<'c>,
 	) -> impl Stream<Item = Ev<Value, Value, Value>> + Send + 'c {
 		stream! {
-			let path = match params.pull(|mut doc| async move {
+			let Ok(path) = params.pull(|mut doc| async move {
 				doc.json().object().key("path").string().finish().await
-			}).await {
-				Ok(path) => path,
-				Err(_) => {
-					yield Ev::Aborted(Abort::InputDropped);
-					return;
-				},
+			}).await else {
+				yield Ev::Aborted(Abort::InputDropped);
+				return;
 			};
 			std::fs::write(&self.lease, path.as_bytes()).expect("open speculative lease");
 			let _lease = SpeculativeLease { marker: self.lease.clone() };
@@ -174,7 +172,7 @@ struct BlockingTool {
 }
 
 impl BlockingTool {
-	fn new(started: PathBuf) -> Self {
+	const fn new(started: PathBuf) -> Self {
 		Self {
 			spec: ToolSpec {
 				name:        Str::new_static("native_block"),
@@ -224,7 +222,7 @@ struct CooperativeInterruptTool {
 }
 
 impl CooperativeInterruptTool {
-	fn new() -> Self {
+	const fn new() -> Self {
 		Self {
 			spec: ToolSpec {
 				name:        Str::new_static("cooperative_interrupt"),
@@ -345,10 +343,10 @@ OMP_TOOLS = [
 "#;
 
 struct Harness {
-	_client:     EnvClient,
+	client:      EnvClient,
 	server:      Arc<EnvServer>,
 	root:        TempDir,
-	_state:      TempDir,
+	state:       TempDir,
 	server_task: tokio::task::JoinHandle<()>,
 }
 
@@ -380,11 +378,11 @@ impl Harness {
 			})
 			.await
 			.expect("environment hello");
-		Self { _client: client, server, root, _state: state, server_task }
+		Self { client, server, root, state, server_task }
 	}
 
-	fn client(&self) -> &EnvClient {
-		&self._client
+	const fn client(&self) -> &EnvClient {
+		&self.client
 	}
 
 	async fn connect(&self, name: &str) -> (EnvClient, tokio::task::JoinHandle<()>) {
@@ -495,9 +493,8 @@ async fn write_name_is_reserved_before_production_registry_assembly() {
 		ToolWorkerConfig::new(PathBuf::from(env!("CARGO_BIN_EXE_omp"))),
 	)
 	.await;
-	let error = match result {
-		Ok(_) => panic!("production registry accepted a caller-owned write tool"),
-		Err(error) => error,
+	let Err(error) = result else {
+		panic!("production registry accepted a caller-owned write tool");
 	};
 	assert_eq!(error.to_string(), "duplicate production tool name: write");
 }
@@ -1037,7 +1034,7 @@ async fn uds_clients_cannot_invoke_session_local_eval_but_retain_ordinary_tools(
 	.await;
 	assert!(!local_eval.is_error, "session-local in-process eval was denied");
 
-	let socket = harness._state.path().join("env-remote.sock");
+	let socket = harness.state.path().join("env-remote.sock");
 	let shutdown = CancellationToken::new();
 	let server = Arc::clone(&harness.server);
 	let serve_shutdown = shutdown.clone();
@@ -1824,6 +1821,7 @@ async fn cancelled_exec_preserves_session_cwd_and_kills_term_ignoring_tree() {
 			.expect("pid");
 		let mut dead = false;
 		for _ in 0..100 {
+			// SAFETY: `pid` is a parsed child process identifier; `kill` only reads it.
 			if unsafe { libc::kill(pid, 0) } == -1 {
 				dead = true;
 				break;
@@ -1861,16 +1859,13 @@ async fn blob_and_named_process_frames_route_through_one_host() {
 		.await
 		.expect("get blob");
 	let mut received = Vec::new();
-	loop {
-		match download
-			.next_event()
-			.await
-			.expect("blob event")
-			.expect("blob event present")
-		{
-			BlobDownloadEvent::Chunk(chunk) => received.extend_from_slice(&chunk.data),
-			BlobDownloadEvent::Complete(_) => break,
-		}
+	while let BlobDownloadEvent::Chunk(chunk) = download
+		.next_event()
+		.await
+		.expect("blob event")
+		.expect("blob event present")
+	{
+		received.extend_from_slice(&chunk.data);
 	}
 	assert_eq!(received, payload);
 
@@ -2013,7 +2008,7 @@ async fn named_process_attach_has_no_gap_between_backlog_and_future_output() {
 			_ => {},
 		}
 	}
-	assert!(!sequences.is_empty());
+	assert_ne!(sequences, [] as [u64; 0]);
 	assert_eq!(sequences[0], 1);
 	assert!(
 		sequences.windows(2).all(|pair| pair[1] == pair[0] + 1),

@@ -74,19 +74,19 @@ pub fn tool_result_item(
 
 /// Builds the first successful event in an admitted turn.
 #[must_use]
-pub fn accepted_event(replay: bool) -> inference::TurnEvent {
+pub const fn accepted_event(replay: bool) -> inference::TurnEvent {
 	turn_event(inference::turn_event::Event::Accepted(inference::Accepted { replay }))
 }
 
 /// Builds one terminal canonical turn outcome event.
 #[must_use]
-pub fn outcome_event(outcome: inference::Outcome) -> inference::TurnEvent {
+pub const fn outcome_event(outcome: inference::Outcome) -> inference::TurnEvent {
 	turn_event(inference::turn_event::Event::Outcome(outcome))
 }
 
 /// Wraps a generated inference event body.
 #[must_use]
-pub fn turn_event(event: inference::turn_event::Event) -> inference::TurnEvent {
+pub const fn turn_event(event: inference::turn_event::Event) -> inference::TurnEvent {
 	inference::TurnEvent { event: Some(event) }
 }
 

@@ -6,6 +6,7 @@
 
 use std::{
 	collections::VecDeque,
+	fmt::Write as _,
 	io::{BufRead as _, BufReader, Read as _, Write as _},
 	os::{
 		fd::{AsFd as _, AsRawFd as _},
@@ -382,7 +383,7 @@ fn metered_text_script(text: &'static str) -> FakeScript {
 			reason: FinishReason::Stop,
 			blocks: 1,
 			usage,
-			receipt,
+			receipt: receipt.into(),
 		})),
 	])
 }
@@ -400,7 +401,7 @@ fn streaming_edit_script() -> FakeScript {
 			index: 0,
 			bytes: Bytes::from_static(br#"{"input":"[scratch.txt#A1B2]\nPUT 1.=1:\n+new""#),
 		}),
-		Ok(ChatEvent::ToolArgumentsDelta { index: 0, bytes: Bytes::from_static(br#"}"#) }),
+		Ok(ChatEvent::ToolArgumentsDelta { index: 0, bytes: Bytes::from_static(br"}") }),
 		Ok(ChatEvent::ToolCallReady { index: 0, call }),
 		Ok(completed(FinishReason::ToolCalls, 1)),
 	])
@@ -409,9 +410,9 @@ fn streaming_edit_script() -> FakeScript {
 fn completed(reason: FinishReason, blocks: usize) -> ChatEvent {
 	ChatEvent::Completed(Completion {
 		reason,
-		blocks: u32::try_from(blocks).expect("small script"),
+		blocks: blocks.try_into().unwrap(),
 		usage: Usage::default(),
-		receipt: ExecutionReceipt::default(),
+		receipt: ExecutionReceipt::default().into(),
 	})
 }
 
@@ -465,14 +466,7 @@ fn scripts(shell_release: &Path) -> Vec<FakeScript> {
 }
 
 fn shell_quote(path: &Path) -> String {
-	format!(
-		"'{}'",
-		path
-			.display()
-			.to_string()
-			.replace('’', "'\\''")
-			.replace('\'', "'\\''")
-	)
+	format!("'{}'", path.display().to_string().replace(['’', '\''], "'\\''"))
 }
 
 #[derive(Clone, Debug)]
@@ -750,13 +744,12 @@ fn wait_raw_sequence(
 		{
 			return segment.to_vec();
 		}
-		if Instant::now() >= deadline {
-			panic!(
-				"raw checkpoint {label:?} timed out waiting for {}\nraw PTY:\n{}",
-				visible(sequence),
-				visible(&captured),
-			);
-		}
+		assert!(
+			Instant::now() < deadline,
+			"raw checkpoint {label:?} timed out waiting for {}\nraw PTY:\n{}",
+			visible(sequence),
+			visible(&captured),
+		);
 		drop(captured);
 		thread::sleep(Duration::from_millis(15));
 	}
@@ -793,7 +786,7 @@ fn visible(bytes: &[u8]) -> String {
 			b'\r' => out.push_str("\\r"),
 			b'\t' => out.push_str("\\t"),
 			0x20..=0x7e => out.push(char::from(byte)),
-			_ => out.push_str(&format!("\\x{byte:02x}")),
+			_ => write!(out, "\\x{byte:02x}").expect("writing to String cannot fail"),
 		}
 	}
 	out

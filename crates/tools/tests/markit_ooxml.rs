@@ -28,7 +28,7 @@ fn port_xlsx_preserves_declared_sheet_order_and_cell_display() {
 		),
 		(
 			"xl/sharedStrings.xml",
-			r#"<sst><si><t>A &amp; B</t></si><si><r><t>Rich </t></r><r><t>text</t></r></si></sst>"#,
+			r"<sst><si><t>A &amp; B</t></si><si><r><t>Rich </t></r><r><t>text</t></r></si></sst>",
 		),
 		(
 			"xl/worksheets/sheet2.xml",

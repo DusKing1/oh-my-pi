@@ -1,3 +1,5 @@
+//! Windows named-pipe CLI integration coverage.
+
 #![cfg(windows)]
 
 use std::path::Path;

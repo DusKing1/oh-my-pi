@@ -38,124 +38,108 @@ struct FakeRun {
 }
 
 impl ShellRun for FakeRun {
-	fn next_event(&mut self) -> impl Future<Output = Result<Option<RunEvent>, Fault>> + Send + '_ {
-		async move {
-			if let Some(event) = self.events.pop_front() {
-				return Ok(Some(event));
-			}
-			if let Some(event) = self.cancelled.lock().take() {
-				return Ok(Some(event));
-			}
-			futures::future::pending().await
+	async fn next_event(&mut self) -> Result<Option<RunEvent>, Fault> {
+		if let Some(event) = self.events.pop_front() {
+			return Ok(Some(event));
 		}
+		let cancelled = { self.cancelled.lock().take() };
+		if let Some(event) = cancelled {
+			return Ok(Some(event));
+		}
+		futures::future::pending().await
 	}
 
-	fn cancel(&self) -> impl Future<Output = Result<(), Fault>> + Send + '_ {
-		async move {
-			self.state.lock().cancels += 1;
-			*self.cancelled.lock() = Some(RunEvent::Exit(status(ExecOutcome::Cancelled)));
-			Ok(())
-		}
+	async fn cancel(&self) -> Result<(), Fault> {
+		self.state.lock().cancels += 1;
+		*self.cancelled.lock() = Some(RunEvent::Exit(status(ExecOutcome::Cancelled)));
+		Ok(())
 	}
 }
 
 impl ShellExec for FakeExec {
 	type Run = FakeRun;
 
-	fn open_session(&self) -> impl Future<Output = Result<Session, Fault>> + Send + '_ {
-		async move {
-			let mut state = self.state.lock();
-			state.opens += 1;
-			if state.cwd.is_empty() {
-				state.cwd = "/workspace".into();
-			}
-			Ok(Session { id: Bytes::from_static(b"session-41") })
+	async fn open_session(&self) -> Result<Session, Fault> {
+		let mut state = self.state.lock();
+		state.opens += 1;
+		if state.cwd.is_empty() {
+			state.cwd = "/workspace".into();
 		}
+		Ok(Session { id: Bytes::from_static(b"session-41") })
 	}
 
-	fn run<'a>(
+	async fn run<'a>(
 		&'a self,
 		session: &'a Session,
 		request: RunRequest,
-	) -> impl Future<Output = Result<Self::Run, Fault>> + Send + 'a {
-		async move {
-			let mut events = VecDeque::new();
-			let command = request.command.clone();
-			self.state.lock().runs.push((session.id.clone(), request));
-			events.push_back(RunEvent::Started { exec_id: Bytes::from(format!("exec-{command}")) });
-			match command.as_str() {
-				"set-state" => {
-					let mut state = self.state.lock();
-					state.cwd = "/workspace/subdir".into();
-					state.env_value = "preserved".into();
-					events.push_back(RunEvent::Exit(status(ExecOutcome::Exited)));
-				},
-				"show-state" => {
-					let state = self.state.lock();
-					let text = format!("{}\n{}\n", state.cwd, state.env_value).into_bytes();
-					drop(state);
-					events.push_back(RunEvent::Output(Update {
-						channel:  OutputChannel::Stdout,
-						data:     text.into(),
-						sequence: 1,
-					}));
-					events.push_back(RunEvent::Exit(status(ExecOutcome::Exited)));
-				},
-				"ordered" => {
-					for (channel, data, sequence) in [
-						(OutputChannel::Stdout, CowBytes::from_static(b"one"), 4),
-						(OutputChannel::Stderr, CowBytes::from_static(b"two"), 5),
-						(OutputChannel::Stdout, CowBytes::from_static(b"three"), 6),
-					] {
-						events.push_back(RunEvent::Output(Update { channel, data, sequence }));
-					}
-					events.push_back(RunEvent::Exit(status(ExecOutcome::Exited)));
-				},
-				"timeout" => events.push_back(RunEvent::Exit(status(ExecOutcome::Timeout))),
-				"overflow" => {
-					events.push_back(RunEvent::Output(Update {
-						channel:  OutputChannel::Stdout,
-						data:     CowBytes::owned(Bytes::from(vec![b'x'; 16])),
-						sequence: 1,
-					}));
-					let mut terminal = status(ExecOutcome::Exited);
-					terminal.spilled_output = Some(omp_tool::BlobRef {
-						hash:       Str::from("sha256:overflow"),
-						media_type: Str::from("application/octet-stream"),
-						byte_len:   4096,
-					});
-					events.push_back(RunEvent::Exit(terminal));
-				},
-				"wait" => {},
-				"effects-unknown" => {
-					let mut terminal = status(ExecOutcome::Cancelled);
-					terminal.effects_unknown = true;
-					events.push_back(RunEvent::Exit(terminal));
-				},
-				_ => events.push_back(RunEvent::Exit(status(ExecOutcome::Exited))),
-			}
-			Ok(FakeRun {
-				events,
-				cancelled: Arc::new(Mutex::new(None)),
-				state: Arc::clone(&self.state),
-			})
+	) -> Result<Self::Run, Fault> {
+		let mut events = VecDeque::new();
+		let command = request.command.clone();
+		self.state.lock().runs.push((session.id.clone(), request));
+		events.push_back(RunEvent::Started { exec_id: Bytes::from(format!("exec-{command}")) });
+		match command.as_str() {
+			"set-state" => {
+				let mut state = self.state.lock();
+				state.cwd = "/workspace/subdir".into();
+				state.env_value = "preserved".into();
+				events.push_back(RunEvent::Exit(status(ExecOutcome::Exited)));
+			},
+			"show-state" => {
+				let state = self.state.lock();
+				let text = format!("{}\n{}\n", state.cwd, state.env_value).into_bytes();
+				drop(state);
+				events.push_back(RunEvent::Output(Update {
+					channel:  OutputChannel::Stdout,
+					data:     text.into(),
+					sequence: 1,
+				}));
+				events.push_back(RunEvent::Exit(status(ExecOutcome::Exited)));
+			},
+			"ordered" => {
+				for (channel, data, sequence) in [
+					(OutputChannel::Stdout, CowBytes::from_static(b"one"), 4),
+					(OutputChannel::Stderr, CowBytes::from_static(b"two"), 5),
+					(OutputChannel::Stdout, CowBytes::from_static(b"three"), 6),
+				] {
+					events.push_back(RunEvent::Output(Update { channel, data, sequence }));
+				}
+				events.push_back(RunEvent::Exit(status(ExecOutcome::Exited)));
+			},
+			"timeout" => events.push_back(RunEvent::Exit(status(ExecOutcome::Timeout))),
+			"overflow" => {
+				events.push_back(RunEvent::Output(Update {
+					channel:  OutputChannel::Stdout,
+					data:     CowBytes::owned(Bytes::from(vec![b'x'; 16])),
+					sequence: 1,
+				}));
+				let mut terminal = status(ExecOutcome::Exited);
+				terminal.spilled_output = Some(omp_tool::BlobRef {
+					hash:       Str::from("sha256:overflow"),
+					media_type: Str::from("application/octet-stream"),
+					byte_len:   4096,
+				});
+				events.push_back(RunEvent::Exit(terminal));
+			},
+			"wait" => {},
+			"effects-unknown" => {
+				let mut terminal = status(ExecOutcome::Cancelled);
+				terminal.effects_unknown = true;
+				events.push_back(RunEvent::Exit(terminal));
+			},
+			_ => events.push_back(RunEvent::Exit(status(ExecOutcome::Exited))),
 		}
+		Ok(FakeRun { events, cancelled: Arc::new(Mutex::new(None)), state: Arc::clone(&self.state) })
 	}
 
-	fn detach(
-		&self,
-		request: DetachRequest,
-	) -> impl Future<Output = Result<DetachedJob, Fault>> + Send + '_ {
-		async move {
-			let pending = request.command == "pending-detach";
-			let id = Str::from(format!("process:{}:1", request.name));
-			let owner_name = request.name.clone();
-			self.state.lock().detaches.push(request);
-			if pending {
-				futures::future::pending().await
-			}
-			Ok(DetachedJob { id, owner: JobOwner::NamedProcess { name: owner_name, generation: 1 } })
+	async fn detach(&self, request: DetachRequest) -> Result<DetachedJob, Fault> {
+		let pending = request.command == "pending-detach";
+		let id = Str::from(format!("process:{}:1", request.name));
+		let owner_name = request.name.clone();
+		self.state.lock().detaches.push(request);
+		if pending {
+			futures::future::pending().await;
 		}
+		Ok(DetachedJob { id, owner: JobOwner::NamedProcess { name: owner_name, generation: 1 } })
 	}
 }
 

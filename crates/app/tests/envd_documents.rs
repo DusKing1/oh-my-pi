@@ -1,3 +1,5 @@
+//! Unix document-daemon integration tests.
+
 #![cfg(unix)]
 
 use std::{future::Future, sync::mpsc, time::Duration};
@@ -25,7 +27,7 @@ async fn within<T>(future: impl Future<Output = T>) -> T {
 		.expect("resource operation exceeded its deterministic deadline")
 }
 
-fn rust_fixture() -> &'static [u8] {
+const fn rust_fixture() -> &'static [u8] {
 	br#"pub fn aggregate(values: &[u64]) -> u64 {
     let mut total = 0;
     for value in values {
@@ -52,7 +54,7 @@ pub fn label(value: u64) -> String {
 "#
 }
 
-fn proposed_content(content: &'static [u8]) -> document_pb::TextMutation {
+const fn proposed_content(content: &'static [u8]) -> document_pb::TextMutation {
 	document_pb::TextMutation {
 		base_revision: None,
 		change:        Some(document_pb::text_mutation::Change::ProposedContent(Bytes::from_static(
@@ -146,7 +148,7 @@ async fn document_host_round_trips_a_real_revisioned_docserver_session() {
 	};
 	assert!(summary.parsed);
 	assert!(summary.elided);
-	assert!(!summary.segments.is_empty());
+	assert_ne!(summary.segments, [] as [omp_proto::document::v1::DocumentSummarySegment; 0]);
 
 	static COMMITTED: &[u8] = b"pub fn answer() -> u64 {\n    42\n}\n";
 	let committed = within(host.commit(
@@ -257,7 +259,7 @@ fn workspace_host_matches_direct_walker_and_cancels_an_active_walk() {
 		std::fs::write(bulk.join(format!("entry-{index:05}.txt")), b"x").expect("bulk fixture entry");
 	}
 	let active_request = host.request().gitignore(false).cache(false);
-	let active_host = host.clone();
+	let active_host = host;
 	let cancel = CancellationToken::new();
 	let worker_cancel = cancel.clone();
 	let (started_tx, started_rx) = mpsc::sync_channel(0);

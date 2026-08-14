@@ -41,30 +41,48 @@ const DEFAULT_SAMPLES: usize = 5;
 const GROSS_REGRESSION_LIMIT: f64 = 5.0;
 const TOKEN: &str = "·";
 
+/// Recorded frame and agent-loop measurements for a baseline run.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub(crate) struct BaselineMetrics {
+pub struct BaselineMetrics {
+	/// Version of the serialized baseline schema.
 	pub schema_version: u32,
+	/// Retained-TUI frame measurements.
 	pub frame:          FrameMetrics,
+	/// Full agent-loop measurements.
 	pub r#loop:         LoopMetrics,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub(crate) struct FrameMetrics {
+/// Frame-time measurements collected during streaming text updates.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct FrameMetrics {
+	/// Number of streamed tokens measured.
 	pub token_count:  usize,
+	/// Number of individual frame samples.
 	pub sample_count: usize,
+	/// Ninety-fifth percentile frame duration in nanoseconds.
 	pub p95_frame_ns: u128,
 }
 
+/// Agent-loop throughput measurements collected from scripted token streams.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub(crate) struct LoopMetrics {
+pub struct LoopMetrics {
+	/// Number of tokens processed in each sample.
 	pub tokens_per_sample:      usize,
+	/// Number of independent loop samples.
 	pub sample_count:           usize,
+	/// Total raw client-stream duration in nanoseconds.
 	pub raw_duration_ns:        u128,
+	/// Total end-to-end agent-loop duration in nanoseconds.
 	pub full_loop_duration_ns:  u128,
+	/// Raw client-stream throughput in tokens per second.
 	pub raw_tokens_per_second:  f64,
+	/// End-to-end agent-loop throughput in tokens per second.
 	pub full_tokens_per_second: f64,
+	/// Ratio of raw throughput to end-to-end throughput.
 	pub slowdown_ratio:         f64,
+	/// Threshold used to mark gross throughput regressions.
 	pub regression_limit:       f64,
+	/// Whether the measured slowdown exceeds the regression threshold.
 	pub gross_regression:       bool,
 }
 
@@ -190,7 +208,8 @@ impl LoopFixture {
 	}
 }
 
-pub(crate) async fn measure(
+/// Measures retained-frame and end-to-end agent-loop performance.
+pub async fn measure(
 	frame_tokens: usize,
 	loop_tokens: usize,
 	samples: usize,
@@ -300,7 +319,8 @@ async fn measure_raw(client: &ScriptedTurnClient, samples: usize) -> Result<Dura
 	Ok(total)
 }
 
-pub(crate) fn duration_rate(tokens: usize, duration: Duration) -> Result<f64> {
+/// Computes token throughput from a nonzero duration and token count.
+pub fn duration_rate(tokens: usize, duration: Duration) -> Result<f64> {
 	if tokens == 0 {
 		bail!("token count must be non-zero");
 	}
@@ -314,7 +334,8 @@ pub(crate) fn duration_rate(tokens: usize, duration: Duration) -> Result<f64> {
 	Ok(rate)
 }
 
-pub(crate) fn slowdown_ratio(raw_rate: f64, full_rate: f64) -> Result<f64> {
+/// Computes the end-to-end slowdown relative to raw token throughput.
+pub fn slowdown_ratio(raw_rate: f64, full_rate: f64) -> Result<f64> {
 	if !raw_rate.is_finite() || raw_rate <= 0.0 || !full_rate.is_finite() || full_rate <= 0.0 {
 		bail!("token rates must be finite and positive");
 	}
@@ -324,19 +345,19 @@ pub(crate) fn slowdown_ratio(raw_rate: f64, full_rate: f64) -> Result<f64> {
 fn user_item(text: &str) -> Item {
 	Item {
 		kind: Some(thread::item::Kind::Message(thread::Message {
-			role: thread::Role::User.into(),
+			role:  thread::Role::User.into(),
 			parts: vec![thread::Part { kind: Some(thread::part::Kind::Text(text.to_owned())) }],
-			..Default::default()
 		})),
 		..Default::default()
 	}
 }
 
-fn turn_event(event: pb::turn_event::Event) -> TurnEvent {
+const fn turn_event(event: pb::turn_event::Event) -> TurnEvent {
 	TurnEvent { event: Some(event) }
 }
 
-pub(crate) fn write_metrics(path: &Path, metrics: &BaselineMetrics) -> Result<()> {
+/// Serializes measurements to the requested artifact path.
+pub fn write_metrics(path: &Path, metrics: &BaselineMetrics) -> Result<()> {
 	if let Some(parent) = path.parent()
 		&& !parent.as_os_str().is_empty()
 	{

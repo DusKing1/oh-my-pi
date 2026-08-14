@@ -424,7 +424,7 @@ async fn delta_context_prompt_rewind_preserves_exact_provider_prefixes() {
 		let summary = within(
 			"p5 steady turn",
 			Duration::from_secs(5),
-			agent.submit([user_item(text)], canonical_turn_id()),
+			Box::pin(agent.submit([user_item(text)], canonical_turn_id())),
 		)
 		.await
 		.expect("steady turn stays within deadline")
@@ -451,7 +451,7 @@ async fn delta_context_prompt_rewind_preserves_exact_provider_prefixes() {
 	let fourth = within(
 		"p5 prompt rewind",
 		Duration::from_secs(5),
-		agent.submit([user_item("after prompt")], canonical_turn_id()),
+		Box::pin(agent.submit([user_item("after prompt")], canonical_turn_id())),
 	)
 	.await
 	.expect("prompt rewind stays within deadline")
@@ -480,7 +480,7 @@ async fn delta_context_prompt_rewind_preserves_exact_provider_prefixes() {
 	let fifth = within(
 		"p5 unchanged registry",
 		Duration::from_secs(5),
-		agent.submit([user_item("same tools")], canonical_turn_id()),
+		Box::pin(agent.submit([user_item("same tools")], canonical_turn_id())),
 	)
 	.await
 	.expect("unchanged registry stays within deadline")
@@ -498,7 +498,7 @@ async fn delta_context_prompt_rewind_preserves_exact_provider_prefixes() {
 	let sixth = within(
 		"p5 continued stable registry",
 		Duration::from_secs(5),
-		agent.submit([user_item("same tools again")], canonical_turn_id()),
+		Box::pin(agent.submit([user_item("same tools again")], canonical_turn_id())),
 	)
 	.await
 	.expect("continued stable registry stays within deadline")
@@ -520,7 +520,7 @@ async fn delta_context_prompt_rewind_preserves_exact_provider_prefixes() {
 	let seventh = within(
 		"p5 final stable registry",
 		Duration::from_secs(5),
-		agent.submit([user_item("tools stay")], canonical_turn_id()),
+		Box::pin(agent.submit([user_item("tools stay")], canonical_turn_id())),
 	)
 	.await
 	.expect("final stable registry stays within deadline")

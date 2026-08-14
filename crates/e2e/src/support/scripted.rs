@@ -17,20 +17,20 @@ use super::Gate;
 #[derive(Debug)]
 pub enum ScriptedStep {
 	/// Emits one canonical event or typed turn failure.
-	Event(Result<TurnEvent, Error>),
+	Event(Result<Box<TurnEvent>, Error>),
 	/// Marks arrival, then pauses the stream until the test releases the gate.
 	Wait(Gate),
 }
 
 impl From<TurnEvent> for ScriptedStep {
 	fn from(event: TurnEvent) -> Self {
-		Self::Event(Ok(event))
+		Self::Event(Ok(Box::new(event)))
 	}
 }
 
 impl From<Result<TurnEvent, Error>> for ScriptedStep {
 	fn from(event: Result<TurnEvent, Error>) -> Self {
-		Self::Event(event)
+		Self::Event(event.map(Box::new))
 	}
 }
 
@@ -168,7 +168,9 @@ impl Stream for ScriptedEventStream<'_> {
 				self.waiting = None;
 			}
 			match self.steps.pop_front() {
-				Some(ScriptedStep::Event(event)) => return Poll::Ready(Some(event)),
+				Some(ScriptedStep::Event(event)) => {
+					return Poll::Ready(Some(event.map(|event| *event)));
+				},
 				Some(ScriptedStep::Wait(gate)) => {
 					gate.arrive();
 					self.waiting = Some(Box::pin(async move { gate.released().await }));

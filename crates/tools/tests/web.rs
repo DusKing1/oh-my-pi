@@ -1,7 +1,7 @@
 //! Network-free web pipeline and scraper contracts for `read`.
-
 use std::{
 	collections::VecDeque,
+	fmt::Write as _,
 	future::{Future, ready},
 	sync::Arc,
 };
@@ -713,9 +713,11 @@ async fn github_issue_comments_paginate_and_render_in_api_order_exactly() {
 		 2024-02-01\nLabels: bug, help wanted\n\n---\n\nIssue body\n\n---\n\n## Comments (101)\n\n",
 	);
 	for number in 1..=101 {
-		expected.push_str(&format!(
+		write!(
+			expected,
 			"### @user-{number:03} · 2024-01-{number:03}\n\nbody-{number:03}\n\n---\n\n"
-		));
+		)
+		.expect("writing to a String cannot fail");
 	}
 	assert_eq!(rendered.content.as_str(), expected.trim());
 	assert_eq!(rendered.method.as_str(), "github-issue");
@@ -842,7 +844,7 @@ async fn github_repository_file_listing_uses_pi_hundred_entry_limit() {
 	let mut expected =
 		String::from("# owner/repo\n\nStars: 0 · Forks: 0 · Issues: 0\n\n---\n\n## Files\n\n```\n");
 	for number in 0..100 {
-		expected.push_str(&format!("      file-{number:03}\n"));
+		writeln!(expected, "      file-{number:03}").expect("writing to a String cannot fail");
 	}
 	expected.push_str("[…1 files elided…]\n```");
 	assert_eq!(rendered.content.as_str(), expected);
@@ -881,7 +883,7 @@ async fn github_and_gist_failures_decline_without_inventing_content() {
 		.await
 		.expect("unsupported repository page cleanly declines");
 	assert!(result.is_none());
-	assert!(unsupported.requests().is_empty());
+	assert_eq!(unsupported.requests(), [] as [omp_tools::read::web::types::HttpRequest; 0]);
 
 	for client in [
 		CannedHttp::from_results([Err(WebError::request("offline"))]),
@@ -921,7 +923,7 @@ async fn github_and_gist_failures_decline_without_inventing_content() {
 		.await
 		.expect("invalid gist URL cleanly declines");
 	assert!(result.is_none());
-	assert!(invalid_gist.requests().is_empty());
+	assert_eq!(invalid_gist.requests(), [] as [omp_tools::read::web::types::HttpRequest; 0]);
 }
 
 #[tokio::test]

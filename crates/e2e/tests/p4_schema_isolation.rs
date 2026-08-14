@@ -41,7 +41,7 @@ struct LiveEdit {
 }
 
 impl LiveEdit {
-	fn new(allow_lift: bool) -> Self {
+	const fn new(allow_lift: bool) -> Self {
 		Self {
 			spec: ToolSpec {
 				name:        Str::new_static("edit"),
@@ -59,7 +59,7 @@ struct HistoricalEdit {
 }
 
 impl HistoricalEdit {
-	fn new() -> Self {
+	const fn new() -> Self {
 		Self {
 			spec: ToolSpec {
 				name:        Str::new_static("edit"),
@@ -495,7 +495,7 @@ async fn historical_edit_schema_is_isolated_and_lifts_from_recorded_truth() {
 		"projection must retain every canonical call/result item"
 	);
 
-	for (ordinal, pair) in first.items.chunks_exact(2).enumerate() {
+	for (ordinal, pair) in first.items.as_chunks::<2>().0.iter().enumerate() {
 		let call = match pair[0].kind.as_ref() {
 			Some(thread_pb::item::Kind::ToolCall(call)) => call,
 			other => panic!("expected lifted tool call, got {other:?}"),
@@ -583,7 +583,7 @@ async fn historical_edit_schema_is_isolated_and_lifts_from_recorded_truth() {
 			reason:  FinishReason::Stop,
 			blocks:  0,
 			usage:   Usage::default(),
-			receipt: ExecutionReceipt::default(),
+			receipt: ExecutionReceipt::default().into(),
 		}))])],
 		Arc::new(with_lift),
 	)

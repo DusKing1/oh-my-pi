@@ -2,18 +2,20 @@
 
 use std::{
 	collections::{HashMap, VecDeque},
+	fmt::Write as _,
 	future::{Future, ready},
 	path::{Path, PathBuf},
 	sync::{
 		Arc,
 		atomic::{AtomicU64, Ordering},
 	},
+	time::Duration,
 };
 
 use bytes::Bytes;
 use futures::StreamExt as _;
 use omp_core::Str;
-use omp_tool::{BlobRef, Ev, IncomingParams, Outcome, Part, PromptCaps, Tool};
+use omp_tool::{Abort, BlobRef, Ev, IncomingParams, Interrupt, Outcome, Part, PromptCaps, Tool};
 use omp_tools::read::{
 	self, DirectoryEntry, DirectorySource, Fault, ReadBlobs, ReadLease, ReadSources, SnapshotRecord,
 	SourceKind, SourceStat,
@@ -75,7 +77,7 @@ impl ReadSources for Sources {
 					.get(path.as_str())
 					.map(|(stat, _)| stat.clone())
 			})
-			.ok_or_else(|| Fault::source(format!("Path '{}' not found", path)));
+			.ok_or_else(|| Fault::source(format!("Path '{path}' not found")));
 		ready(result)
 	}
 
@@ -97,7 +99,7 @@ impl ReadSources for Sources {
 				revision:       source.revision,
 				bytes:          source.bytes,
 			})
-			.ok_or_else(|| Fault::source(format!("Path '{}' not found", path)));
+			.ok_or_else(|| Fault::source(format!("Path '{path}' not found")));
 		ready(result)
 	}
 
@@ -107,7 +109,7 @@ impl ReadSources for Sources {
 			.lock()
 			.get(path.as_str())
 			.map(|source| source.bytes.clone())
-			.ok_or_else(|| Fault::source(format!("Path '{}' not found", path)));
+			.ok_or_else(|| Fault::source(format!("Path '{path}' not found")));
 		ready(result)
 	}
 
@@ -121,7 +123,7 @@ impl ReadSources for Sources {
 			.lock()
 			.get(path.as_str())
 			.map(|(_, source)| source.clone())
-			.ok_or_else(|| Fault::source(format!("Path '{}' not found", path)));
+			.ok_or_else(|| Fault::source(format!("Path '{path}' not found")));
 		ready(result)
 	}
 
@@ -201,6 +203,21 @@ impl Sources {
 			path.to_owned(),
 			(stat, DirectorySource { root: Str::from(path), entries, truncated: false }),
 		);
+	}
+
+	fn directory_symlink(&self, authored: &str, target: &str) {
+		let target_stat = self
+			.dirs
+			.lock()
+			.get(target)
+			.unwrap_or_else(|| panic!("directory symlink target '{target}' exists"))
+			.0
+			.clone();
+		self.files.lock().insert(authored.to_owned(), FileSource {
+			stat:     SourceStat { kind: SourceKind::Symlink, ..target_stat },
+			bytes:    Bytes::new(),
+			revision: Str::new_static("symlink"),
+		});
 	}
 
 	fn suffix(&self, authored: &str, resolved: &str) {
@@ -364,6 +381,20 @@ async fn directory_listing_is_depth_two_and_elides_nested_children() {
 }
 
 #[tokio::test]
+async fn directory_symlink_is_reclassified_before_special_dispatch() {
+	let sources = Sources::default();
+	sources.directory("tree", vec![DirectoryEntry {
+		path:        Str::new_static("leaf.txt"),
+		kind:        SourceKind::File,
+		byte_len:    4,
+		modified_ms: Some(u64::MAX),
+	}]);
+	sources.directory_symlink("tree-link", "tree");
+
+	assert_eq!(text(sources, r#"{"path":"tree-link"}"#).await, ".\n  - leaf.txt");
+}
+
+#[tokio::test]
 async fn line_range_adds_context_header_and_records_the_exposed_snapshot() {
 	let sources = Sources::default();
 	sources.file("file.txt", numbered_lines(12));
@@ -401,7 +432,7 @@ async fn raw_is_verbatim_and_multi_range_uses_one_hashline_header_and_ellipsis()
 	);
 	assert_eq!(
 		text(sources, r#"{"path":"file.txt:2-3,8-9"}"#).await,
-		concat!("[file.txt#A1B2]\n2:line 2\n3:line 3\n…\n8:line 8\n9:line 9",)
+		"[file.txt#A1B2]\n2:line 2\n3:line 3\n…\n8:line 8\n9:line 9"
 	);
 }
 
@@ -420,7 +451,7 @@ async fn standard_text_truncation_spills_the_complete_numbered_projection() {
 		if line > 1 {
 			full.push('\n');
 		}
-		full.push_str(&format!("{line}:line {line}"));
+		write!(full, "{line}:line {line}").expect("writing to string");
 	}
 	let visible = full.lines().take(3000).collect::<Vec<_>>().join("\n");
 	assert_eq!(
@@ -437,11 +468,31 @@ async fn standard_text_truncation_spills_the_complete_numbered_projection() {
 }
 
 #[tokio::test]
+async fn final_projection_only_authorizes_source_lines_that_survive_the_shared_cap() {
+	let sources = Sources::default();
+	sources.file("large.txt", numbered_lines(4000));
+	let _ = project(sources.clone(), Blobs::default(), r#"{"path":"large.txt"}"#, false).await;
+	let snapshots = sources.snapshots.lock();
+	let [snapshot] = snapshots.as_slice() else {
+		panic!("one snapshot must be recorded")
+	};
+	assert_eq!(
+		snapshot
+			.seen
+			.iter()
+			.map(|span| (span.start_line, span.end_line))
+			.collect::<Vec<_>>(),
+		vec![(1, 2999)],
+		"the header consumes one of the 3000 retained projection lines"
+	);
+}
+
+#[tokio::test]
 async fn structural_summary_has_a_concrete_recovery_footer() {
 	let sources = Sources::default();
 	let mut body = String::from("pub fn giant() {\n");
 	for line in 0..120 {
-		body.push_str(&format!("    let value_{line} = {line};\n"));
+		writeln!(body, "    let value_{line} = {line}").expect("writing to string");
 	}
 	body.push_str("}\n");
 	sources.file("big.rs", body);
@@ -460,7 +511,7 @@ async fn files_over_twenty_thousand_lines_skip_structural_summary() {
 	let sources = Sources::default();
 	let mut body = String::from("pub fn too_many_lines() {\n");
 	for line in 0..20_001 {
-		body.push_str(&format!("\tlet value_{line} = {line};\n"));
+		writeln!(body, "\tlet value_{line} = {line}").expect("writing to string");
 	}
 	body.push_str("}\n");
 	sources.file("too-many.rs", body);
@@ -535,11 +586,91 @@ async fn sqlite_root_table_key_where_and_forbidden_where_are_model_text() {
 	);
 }
 
-fn zip_fixture() -> Bytes {
+#[tokio::test]
+async fn suffix_resolved_sqlite_container_dispatches_with_exact_notice() {
+	let db = sqlite_fixture();
+	let sources = Sources::default();
+	sources.file_as(
+		"resolved/data.sqlite",
+		db.0.to_str().unwrap(),
+		"resolved/data.sqlite",
+		std::fs::read(&db.0).expect("read SQLite fixture bytes"),
+	);
+	sources.suffix("missing/data.sqlite", "resolved/data.sqlite");
+
+	assert_eq!(
+		text(sources, r#"{"path":"missing/data.sqlite"}"#).await,
+		concat!(
+			"[Path 'missing/data.sqlite' not found; resolved to 'resolved/data.sqlite' via suffix \
+			 match]\n",
+			"packages (2 rows)\npeople (3 rows)",
+		)
+	);
+}
+
+#[tokio::test]
+async fn sqlite_extensions_without_magic_are_read_as_ordinary_text() {
+	let sources = Sources::default();
+	sources.file("notes.db", "not a database");
+	sources.file("notes.sqlite", "also plain text");
+
+	assert_eq!(
+		text(sources.clone(), r#"{"path":"notes.db"}"#).await,
+		"[notes.db#A1B2]\n1:not a database"
+	);
+	assert_eq!(
+		text(sources, r#"{"path":"notes.sqlite"}"#).await,
+		"[notes.sqlite#A1B2]\n1:also plain text"
+	);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn long_sqlite_query_is_interrupted_without_blocking_the_runtime() {
+	let db = sqlite_fixture();
+	let sources = Sources::default();
+	sources.file_as(
+		"data.sqlite",
+		db.0.to_str().unwrap(),
+		"data.sqlite",
+		std::fs::read(&db.0).expect("read SQLite fixture bytes"),
+	);
+	let tool = read::tool(sources, Blobs::default());
+	let (feed, params) = IncomingParams::channel();
+	feed
+		.args_committed(Str::new_static(
+			r#"{"path":"data.sqlite?q=WITH%20RECURSIVE%20count(x)%20AS%20(VALUES(0)%20UNION%20ALL%20SELECT%20x%2B1%20FROM%20count)%20SELECT%20sum(x)%20FROM%20count"}"#,
+		))
+		.expect("read invocation remains live");
+	let events = tool.call(params).collect::<Vec<_>>();
+	tokio::pin!(events);
+
+	tokio::select! {
+		result = &mut events => panic!("unbounded SQLite query completed unexpectedly: {result:?}"),
+		() = tokio::time::sleep(Duration::from_millis(50)) => {},
+	}
+	feed
+		.interrupt(Interrupt {
+			class:  Str::new_static("deadline"),
+			reason: Str::new_static("test deadline exceeded"),
+		})
+		.expect("read invocation accepts its deadline interrupt");
+	let events = tokio::time::timeout(Duration::from_secs(1), &mut events)
+		.await
+		.expect("SQLite query stops within the cancellation bound");
+	assert!(
+		matches!(
+			events.as_slice(),
+			[Ev::Aborted(Abort::Interrupted { reason })] if reason == "test deadline exceeded"
+		),
+		"deadline remains structured abort truth: {events:?}"
+	);
+}
+
+const fn zip_fixture() -> Bytes {
 	Bytes::from_static(include_bytes!("fixtures/special-sources/archives/bundle.zip"))
 }
 
-fn tar_fixture() -> Bytes {
+const fn tar_fixture() -> Bytes {
 	Bytes::from_static(include_bytes!("fixtures/special-sources/archives/bundle.tar.gz"))
 }
 
@@ -575,16 +706,57 @@ async fn zip_and_tar_root_member_and_member_range_use_standard_text_formatting()
 }
 
 #[tokio::test]
+async fn suffix_resolved_archive_container_dispatches_with_exact_notice() {
+	let sources = Sources::default();
+	sources.file_as(
+		"resolved/bundle.zip",
+		"resolved/bundle.zip",
+		"resolved/bundle.zip",
+		zip_fixture(),
+	);
+	sources.suffix("missing/bundle.zip", "resolved/bundle.zip");
+
+	assert_eq!(
+		text(sources, r#"{"path":"missing/bundle.zip:dir/member.txt"}"#).await,
+		concat!(
+			"[Path 'missing/bundle.zip' not found; resolved to 'resolved/bundle.zip' via suffix \
+			 match]\n",
+			"1:one\n2:two\n3:three\n4:four\n5:five",
+		)
+	);
+}
+
+#[tokio::test]
 async fn notebook_cells_are_projected_with_editable_markers() {
 	let sources = Sources::default();
 	let notebook = include_str!("fixtures/special-sources/notebooks/book.ipynb");
 	sources.file("book.ipynb", notebook);
 	assert_eq!(
-		text(sources, r#"{"path":"book.ipynb"}"#).await,
+		text(sources.clone(), r#"{"path":"book.ipynb"}"#).await,
 		concat!(
+			"[book.ipynb#A1B2]\n",
 			"1:# %% [markdown] cell:0\n2:# Fixture notebook\n3:Unicode: café 東京\n4:\n",
 			"5:# %% [code] cell:1\n6:value = 42\n7:print(value)",
 		)
+	);
+	let snapshots = sources.snapshots.lock();
+	let [snapshot] = snapshots.as_slice() else {
+		panic!("one notebook snapshot must be recorded")
+	};
+	assert_eq!(
+		snapshot.bytes.as_ref(),
+		read::notebook::render(notebook.as_bytes(), "book.ipynb")
+			.unwrap()
+			.text
+			.as_bytes()
+	);
+	assert_eq!(
+		snapshot
+			.seen
+			.iter()
+			.map(|span| (span.start_line, span.end_line))
+			.collect::<Vec<_>>(),
+		vec![(1, 7)]
 	);
 }
 
@@ -611,9 +783,10 @@ async fn document_raw_selector_returns_converted_markdown_without_line_projectio
 		Bytes::from_static(include_bytes!("fixtures/special-sources/documents/report.docx")),
 	);
 	assert_eq!(
-		text(sources, r#"{"path":"report.docx:raw"}"#).await,
+		text(sources.clone(), r#"{"path":"report.docx:raw"}"#).await,
 		"Fixture document\n\nConverted café."
 	);
+	assert!(sources.snapshots.lock().is_empty());
 }
 
 const CONFLICTED: &str = include_str!("fixtures/special-sources/conflicts/merge.txt");
@@ -623,25 +796,76 @@ async fn conflict_selector_is_a_compact_index_and_normal_read_appends_warning() 
 	let sources = Sources::default();
 	sources.file("conflicted.txt", CONFLICTED);
 	let summary = text(sources.clone(), r#"{"path":"conflicted.txt:conflicts"}"#).await;
-	assert!(
-		summary.starts_with(
-			"⚠ 1 unresolved conflict in conflicted.txt\n- ours = HEAD\n- theirs = feature/source\n- \
-			 base = base\n"
-		),
-		"{summary}"
+	assert_eq!(
+		summary,
+		concat!(
+			"⚠ 1 unresolved conflict in conflicted.txt\n",
+			"- ours = HEAD\n",
+			"- theirs = feature/source\n",
+			"- base = base\n",
+			"NOTICE: Read `conflicted.txt:conflicts` for the conflict index, then read the affected ",
+			"source ranges to obtain their `[conflicted.txt#TAG]` header and numbered marker lines. ",
+			"Resolve each complete marker block with the hashline `edit` tool, using `PUT N.=M:` \
+			 from ",
+			"`<<<<<<<` through `>>>>>>>`; preserve the intended side(s), and re-read ",
+			"`conflicted.txt:conflicts` to verify.\n\n",
+			"#1  L2-8  (3-way)",
+		)
 	);
-	assert!(summary.ends_with("\n\n#1  L2-8  (3-way)"), "{summary}");
+	assert!(!summary.contains("conflict://"));
+	let warning = read::conflicts::render_conflict_warning(CONFLICTED);
+	assert_eq!(
+		warning.text,
+		concat!(
+			"\n⚠ 1 unresolved conflict detected\n",
+			"- ours = HEAD\n",
+			"- theirs = feature/source\n",
+			"- base = base\n",
+			"NOTICE: Read `path:conflicts` for the conflict index, then read the affected source ",
+			"ranges to obtain their `[path#TAG]` header and numbered marker lines. Resolve each ",
+			"complete marker block with the hashline `edit` tool, using `PUT N.=M:` from ",
+			"`<<<<<<<` through `>>>>>>>`; preserve the intended side(s), and re-read ",
+			"`path:conflicts` to verify.\n\n",
+			"──── #1  L2-8 ────\n",
+			"<<< ours\n",
+			"ours\n",
+			"=== base\n",
+			"ancestor\n",
+			">>> theirs\n",
+			"theirs",
+		)
+	);
+	assert!(!warning.text.contains("conflict://"));
 	let ordinary = text(sources, r#"{"path":"conflicted.txt"}"#).await;
 	assert!(ordinary.starts_with("[conflicted.txt#A1B2]\n1:before\n2:<<<<<<< HEAD"), "{ordinary}");
-	assert!(
-		ordinary.contains(
-			"\n⚠ 1 unresolved conflict detected\n- ours = HEAD\n- theirs = feature/source\n"
-		),
-		"{ordinary}"
-	);
+	assert!(ordinary.ends_with(warning.text.as_str()), "{ordinary}");
 }
 
-fn png_fixture() -> Bytes {
+#[tokio::test]
+async fn ordinary_conflict_warning_requires_a_complete_emitted_marker_block() {
+	const SOURCE: &str = concat!(
+		"before\n",
+		"<<<<<<< HEAD\n",
+		"ours\n",
+		"||||||| base\n",
+		"ancestor\n",
+		"=======\n",
+		"theirs\n",
+		">>>>>>> feature\n",
+		"after\n",
+		"far away\n",
+	);
+	let sources = Sources::default();
+	sources.file("window.txt", SOURCE);
+
+	let hidden = text(sources.clone(), r#"{"path":"window.txt:10"}"#).await;
+	assert!(!hidden.contains("unresolved conflict"), "{hidden}");
+
+	let visible = text(sources, r#"{"path":"window.txt:3-7"}"#).await;
+	assert!(visible.contains("\n⚠ 1 unresolved conflict detected"), "{visible}");
+}
+
+const fn png_fixture() -> Bytes {
 	Bytes::from_static(include_bytes!("fixtures/special-sources/images/pixel.png"))
 }
 
@@ -654,10 +878,15 @@ async fn image_read_emits_description_and_blob_and_rejects_over_twenty_mibibytes
 	let [Part::Text { text: description }, Part::Blob { blob, alt }] = parts.as_slice() else {
 		panic!("image read must emit text plus blob: {parts:?}");
 	};
-	assert_eq!(description, "Read image file [image/png]");
+	let expected = concat!(
+		"Read image file [image/jpeg]\n",
+		"[Image: original 8x6, displayed at 267x200. Multiply coordinates by 0.03 to map to \
+		 original image.]",
+	);
+	assert_eq!(description, expected);
 	assert_eq!(blob.hash, "blob-hash");
-	assert_eq!(blob.media_type, "image/png");
-	assert_eq!(alt.as_deref(), Some("Read image file [image/png]"));
+	assert_eq!(blob.media_type, "image/jpeg");
+	assert_eq!(alt.as_deref(), Some(expected));
 	assert_eq!(blobs.stored.lock().len(), 1);
 
 	sources.file("huge.png", Bytes::from(vec![0; 20 * 1024 * 1024 + 1]));
@@ -673,7 +902,7 @@ async fn cpu_profile_is_summarized_instead_of_dumping_json() {
 	let profile = include_str!("fixtures/special-sources/profiles/run.cpuprofile");
 	sources.file("run.cpuprofile", profile);
 	assert_eq!(
-		text(sources, r#"{"path":"run.cpuprofile"}"#).await,
+		text(sources.clone(), r#"{"path":"run.cpuprofile"}"#).await,
 		concat!(
 			"1:V8 CPU profile: 1.00 s wall clock, 4 samples (avg interval 250000 µs)\n",
 			"2:On-CPU total: 1.00 s (100.0% of wall clock). Values below are on-CPU milliseconds \
@@ -684,6 +913,7 @@ async fn cpu_profile_is_summarized_instead_of_dumping_json() {
 			"9:\n10:[Summarized view of a V8 .cpuprofile. Use ':raw' to read the original JSON.]",
 		)
 	);
+	assert!(sources.snapshots.lock().is_empty());
 }
 
 #[tokio::test]
@@ -691,7 +921,7 @@ async fn macos_sample_profile_uses_the_checked_in_call_tree_fixture() {
 	let sources = Sources::default();
 	sources
 		.file("trace.sample.txt", include_str!("fixtures/special-sources/profiles/trace.sample.txt"));
-	let output = text(sources, r#"{"path":"trace.sample.txt"}"#).await;
+	let output = text(sources.clone(), r#"{"path":"trace.sample.txt"}"#).await;
 	assert!(
 		output.starts_with("1:macOS sample profile: fixture (pid 123), sampled every 1 ms\n"),
 		"{output}"
@@ -704,6 +934,7 @@ async fn macos_sample_profile_uses_the_checked_in_call_tree_fixture() {
 		),
 		"{output}"
 	);
+	assert!(sources.snapshots.lock().is_empty());
 }
 
 #[tokio::test]
@@ -744,13 +975,13 @@ async fn unsupported_uri_suffix_recovery_and_semicolon_sections_are_exact() {
 	sources.suffix("lost.txt", "nested/lost.txt");
 	assert_eq!(
 		text(sources.clone(), r#"{"path":"lost.txt:raw"}"#).await,
-		concat!("[Path 'lost.txt' not found; resolved to 'nested/lost.txt' via suffix match]\nfound",)
+		"[Path 'lost.txt' not found; resolved to 'nested/lost.txt' via suffix match]\nfound"
 	);
 
 	sources.file("one.txt", "alpha");
 	sources.file("two.txt", "beta");
 	assert_eq!(
 		text(sources, r#"{"path":"one.txt:raw;two.txt:raw"}"#).await,
-		concat!("Note: interpreted as 2 paths: one.txt:raw, two.txt:raw\n\nalpha\n\nbeta",)
+		"Note: interpreted as 2 paths: one.txt:raw, two.txt:raw\n\nalpha\n\nbeta"
 	);
 }

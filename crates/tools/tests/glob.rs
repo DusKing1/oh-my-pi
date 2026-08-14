@@ -1,6 +1,6 @@
 //! Pi-equivalent `glob@1` schema, traversal, and model-facing output contracts.
 
-use std::{future::Future, sync::Arc};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::{StreamExt, executor::block_on};
@@ -20,11 +20,11 @@ struct FakeWorkspace {
 }
 
 impl grep::WorkspaceSearch for FakeWorkspace {
-	fn search(
+	async fn search(
 		&self,
 		_request: grep::SearchRequest,
-	) -> impl Future<Output = Result<grep::SearchResult, grep::Fault>> + Send + '_ {
-		async { Err(grep::Fault::Workspace { message: Str::from("unused fake search boundary") }) }
+	) -> Result<grep::SearchResult, grep::Fault> {
+		Err(grep::Fault::Workspace { message: Str::from("unused fake search boundary") })
 	}
 
 	fn glob(
@@ -74,15 +74,15 @@ fn faulty(fault: glob::Fault) -> FakeWorkspace {
 	FakeWorkspace { result: Err(fault), seen: Arc::new(Mutex::new(Vec::new())) }
 }
 
-fn walk(matches: Vec<glob::WalkMatch>) -> glob::WalkResult {
+const fn walk(matches: Vec<glob::WalkMatch>) -> glob::WalkResult {
 	glob::WalkResult { matches, missing_paths: Vec::new(), timed_out: false, truncated: false }
 }
 
-fn matched(path: &'static str, modified_ms: u64) -> glob::WalkMatch {
+const fn matched(path: &'static str, modified_ms: u64) -> glob::WalkMatch {
 	glob::WalkMatch { path: Str::new_static(path), modified_ms, is_dir: false }
 }
 
-fn directory(path: &'static str, modified_ms: u64) -> glob::WalkMatch {
+const fn directory(path: &'static str, modified_ms: u64) -> glob::WalkMatch {
 	glob::WalkMatch { path: Str::new_static(path), modified_ms, is_dir: true }
 }
 
@@ -311,7 +311,7 @@ fn timeout_without_matches_is_not_reported_as_proof_of_absence() {
 		 absence. The walk is bounded by directory size, not pattern width; scope the search to a \
 		 deeper directory (e.g. `sub/dir/*.ext` instead of `*.ext` at a huge root)."
 	);
-	assert!(invocation.useless);
+	assert!(!invocation.useless, "an incomplete traversal is useful partial truth");
 	let payload = invocation.result.expect("empty timeout is successful");
 	assert!(payload.timed_out);
 	assert!(payload.truncated);
@@ -340,7 +340,7 @@ fn oversized_projection_spills_complete_output_with_truthful_footer() {
 	};
 	let full = std::str::from_utf8(full).expect("rendered glob output is UTF-8");
 	assert!(full.starts_with("# dir/\n199-"));
-	assert!(full.ends_with(".rs"));
+	assert!(full.to_ascii_lowercase().ends_with(".rs"));
 	assert_eq!(payload.output_total_lines, 201);
 	assert!(payload.output_shown_lines < payload.output_total_lines);
 	assert_eq!(payload.output_blob.as_ref().map(|blob| blob.hash.as_str()), Some("glob-full"));
@@ -354,5 +354,5 @@ fn oversized_projection_spills_complete_output_with_truthful_footer() {
 		Ok(payload),
 		&PromptCaps { maximum_parts: 0, maximum_text_bytes: 0, media: false },
 	);
-	assert!(zero.is_empty());
+	assert_eq!(zero, [] as [omp_tool::Part; 0]);
 }

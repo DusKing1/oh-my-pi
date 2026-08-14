@@ -132,16 +132,11 @@ struct DiskTurnClient {
 }
 
 impl DiskTurnClient {
-	fn new(path: PathBuf) -> Self {
+	const fn new(path: PathBuf) -> Self {
 		Self { path }
 	}
 
-	fn open(
-		&self,
-		turn_id: TurnId,
-		input: TurnInput,
-		options: &TurnOptions,
-	) -> Result<DiskTurnSession, TurnError> {
+	fn open(&self, turn_id: TurnId, input: TurnInput, options: &TurnOptions) -> DiskTurnSession {
 		let open = OpenRecord {
 			turn_id: turn_id.as_str().into(),
 			input:   input_record(&input),
@@ -168,7 +163,7 @@ impl DiskTurnClient {
 		state.turns.push(GatewayTurn { open, outcome });
 		state.accepted.push(false);
 		store_gateway(&self.path, &state);
-		Ok(DiskTurnSession { events: events.into() })
+		DiskTurnSession { events: events.into() }
 	}
 }
 
@@ -181,7 +176,7 @@ impl TurnClient for DiskTurnClient {
 		input: TurnInput,
 		options: &'client TurnOptions,
 	) -> impl Future<Output = Result<Self::Session<'client>, TurnError>> + Send + 'client {
-		ready(self.open(turn_id, input, options))
+		ready(Ok(self.open(turn_id, input, options)))
 	}
 }
 
@@ -332,7 +327,7 @@ async fn rpc_host(
 				reason:  FinishReason::Stop,
 				blocks:  1,
 				usage:   Usage::default(),
-				receipt: ExecutionReceipt::default(),
+				receipt: ExecutionReceipt::default().into(),
 			})),
 		])]);
 	}
@@ -404,7 +399,7 @@ async fn rpc_outcome(session: &mut RpcTurnSession) -> pb::Outcome {
 async fn crash_resume_replays_exact_durable_truth() {
 	assert_fixed_turn_ids();
 	if let (Ok(stage), Ok(root)) = (std::env::var(CHILD_ENV), std::env::var(ROOT_ENV)) {
-		run_child(&stage, Path::new(&root)).await;
+		Box::pin(run_child(&stage, Path::new(&root))).await;
 		return;
 	}
 
@@ -521,7 +516,7 @@ async fn real_chat_resume_replays_pending_turn_through_cli_startup() {
 		.expect("use standard sessions permissions");
 	fs::set_permissions(scratch.state(), fs::Permissions::from_mode(0o700))
 		.expect("secure binary-resume daemon state");
-	let docserver =
+	let _docserver =
 		DocServerTask::spawn(project.clone(), state_dir.join("docserver.sock"), Vec::new())
 			.await
 			.expect("start real binary-resume document authority");
@@ -545,7 +540,7 @@ async fn real_chat_resume_replays_pending_turn_through_cli_startup() {
 			reason:  FinishReason::Stop,
 			blocks:  1,
 			usage:   Usage::default(),
-			receipt: ExecutionReceipt::default(),
+			receipt: ExecutionReceipt::default().into(),
 		})),
 	]);
 	let gateway = ScriptedGateway::spawn_gated(&scratch, [script], Arc::new(Registry::new()))
@@ -864,8 +859,8 @@ impl Drop for ChatPty {
 }
 async fn run_child(stage: &str, root: &Path) {
 	match stage {
-		"replay-crash" => replay_child(root, true, false).await,
-		"replay-resume" => replay_child(root, false, true).await,
+		"replay-crash" => Box::pin(replay_child(root, true, false)).await,
+		"replay-resume" => Box::pin(replay_child(root, false, true)).await,
 		"receipt-crash" => receipt_child(root, true),
 		"receipt-resume" => receipt_child(root, false),
 		"batch-crash" => batch_child(root, true).await,
@@ -923,51 +918,44 @@ async fn replay_child(root: &Path, create: bool, _mutated: bool) {
 		loop {
 			std::thread::park();
 		}
-	} else {
-		let journal = Journal::open(&journal_path).expect("reopen pending RPC journal");
-		let start = journal
-			.pending_turn()
-			.cloned()
-			.expect("pending durable TurnStart");
-		let poison = TurnOptions {
-			context_id: Some("poison-context".into()),
-			params: pb::ChatParams { model: "poison/model".to_owned(), ..pb::ChatParams::default() },
-			..TurnOptions::default()
-		};
-		assert_ne!(start.options, options_record(&poison), "fixture must distinguish mutable state");
-		let (env, _transport) = EnvClient::in_process(0);
-		let snapshot = AgentSnapshot::new(poison, Default::default(), Arc::new(Registry::new()));
-		let mut agent = Agent::new(client, env, AgentState::new(snapshot), journal, caps());
-		let events = agent.events().subscribe_lossless();
-		let summary = agent
-			.submit(Vec::<thread::Item>::new(), TurnId::new(FALLBACK_TURN))
-			.await
-			.expect("Agent::submit resumes exact durable RPC turn");
-		let expected = pb::Outcome::decode(
-			fs::read(root.join("rpc-outcome.bin"))
-				.expect("read first host outcome")
-				.as_slice(),
-		)
-		.expect("decode first host outcome");
-		assert_eq!(summary.outcome, expected, "RPC replay outcome changed bytes");
-		let mut replay_accepted = false;
-		while let Ok(event) = events.try_recv() {
-			if matches!(
-				event.as_ref(),
-				AgentEvent::Turn {
-					turn_id,
-					event: pb::TurnEvent {
-						event: Some(pb::turn_event::Event::Accepted(pb::Accepted {
-							replay: true
-						}))
-					}
-				} if turn_id.as_str() == ROOT_TURN
-			) {
-				replay_accepted = true;
-			}
-		}
-		assert!(replay_accepted, "Agent::submit did not observe Accepted replay=true");
 	}
+	let journal = Journal::open(&journal_path).expect("reopen pending RPC journal");
+	let start = journal
+		.pending_turn()
+		.cloned()
+		.expect("pending durable TurnStart");
+	let poison = TurnOptions {
+		context_id: Some("poison-context".into()),
+		params: pb::ChatParams { model: "poison/model".to_owned(), ..pb::ChatParams::default() },
+		..TurnOptions::default()
+	};
+	assert_ne!(start.options, options_record(&poison), "fixture must distinguish mutable state");
+	let (env, _transport) = EnvClient::in_process(0);
+	let snapshot = AgentSnapshot::new(poison, Default::default(), Arc::new(Registry::new()));
+	let mut agent = Agent::new(client, env, AgentState::new(snapshot), journal, caps());
+	let events = agent.events().subscribe_lossless();
+	let summary = agent
+		.submit(Vec::<thread::Item>::new(), TurnId::new(FALLBACK_TURN))
+		.await
+		.expect("Agent::submit resumes exact durable RPC turn");
+	let expected = pb::Outcome::decode(
+		fs::read(root.join("rpc-outcome.bin"))
+			.expect("read first host outcome")
+			.as_slice(),
+	)
+	.expect("decode first host outcome");
+	assert_eq!(summary.outcome, expected, "RPC replay outcome changed bytes");
+	let mut replay_accepted = false;
+	while let Ok(event) = events.try_recv() {
+		if let AgentEvent::Turn { turn_id, event } = event.as_ref()
+			&& matches!(event.as_ref(), pb::TurnEvent {
+				event: Some(pb::turn_event::Event::Accepted(pb::Accepted { replay: true })),
+			}) && turn_id.as_str() == ROOT_TURN
+		{
+			replay_accepted = true;
+		}
+	}
+	assert!(replay_accepted, "Agent::submit did not observe Accepted replay=true");
 }
 
 fn receipt_child(root: &Path, crash: bool) {
@@ -1020,14 +1008,13 @@ fn receipt_child(root: &Path, crash: bool) {
 		loop {
 			std::thread::park();
 		}
-	} else {
-		let journal = Journal::open(&journal_path).expect("recover missing sequence amendments");
-		let first = fs::read(&journal_path).expect("read recovered journal");
-		drop(journal);
-		let reopened = Journal::open(&journal_path).expect("reopen recovered journal");
-		drop(reopened);
-		assert_eq!(fs::read(&journal_path).expect("read stable journal"), first);
 	}
+	let journal = Journal::open(&journal_path).expect("recover missing sequence amendments");
+	let first = fs::read(&journal_path).expect("read recovered journal");
+	drop(journal);
+	let reopened = Journal::open(&journal_path).expect("reopen recovered journal");
+	drop(reopened);
+	assert_eq!(fs::read(&journal_path).expect("read stable journal"), first);
 }
 
 async fn batch_child(root: &Path, create: bool) {
@@ -1086,11 +1073,10 @@ async fn batch_child(root: &Path, create: bool) {
 	if create {
 		let _ = result.expect("batch remains live until parent kills this host");
 		panic!("hanging tool batch unexpectedly completed");
-	} else {
-		let summary = result.expect("recover interrupted batch and proceed");
-		assert_eq!(summary.outcome.provider, "p6-gateway");
-		assert_eq!(summary.outcome.stop(), pb::StopReason::StopEndTurn);
 	}
+	let summary = result.expect("recover interrupted batch and proceed");
+	assert_eq!(summary.outcome.provider, "p6-gateway");
+	assert_eq!(summary.outcome.stop(), pb::StopReason::StopEndTurn);
 	server_task.abort();
 }
 
@@ -1250,7 +1236,7 @@ fn assert_batch_recovery(journal_path: &Path, gateway_path: &Path) {
 			assert_crash_abort(result);
 		}
 	}
-	result_ids.sort();
+	result_ids.sort_unstable();
 	assert_eq!(result_ids, vec!["durable-a", "durable-b"]);
 	let mut nonzero: Vec<_> = projected
 		.items
@@ -1272,7 +1258,7 @@ fn assert_interrupted_follow_up(input: &TurnInput) {
 			ids.push(result.call_id.as_str());
 		}
 	}
-	ids.sort();
+	ids.sort_unstable();
 	assert_eq!(
 		ids,
 		vec!["durable-a", "durable-b"],
@@ -1423,10 +1409,9 @@ fn tool_call(seq: u64, id: &str) -> thread::Item {
 			..thread::ToolCall::default()
 		})),
 		props: Some(pb::ValueMap {
-			fields: [(TOOL_REV_PROP.to_owned(), pb::Value {
+			fields: std::iter::once((TOOL_REV_PROP.to_owned(), pb::Value {
 				kind: Some(pb::value::Kind::String("p6.1".to_owned())),
-			})]
-			.into_iter()
+			}))
 			.collect(),
 		}),
 	}
@@ -1442,15 +1427,15 @@ fn message(role: thread::Role, text: &str) -> thread::Item {
 	}
 }
 
-fn accepted(replay: bool) -> pb::TurnEvent {
+const fn accepted(replay: bool) -> pb::TurnEvent {
 	event(pb::turn_event::Event::Accepted(pb::Accepted { replay }))
 }
 
-fn outcome_event(outcome: pb::Outcome) -> pb::TurnEvent {
+const fn outcome_event(outcome: pb::Outcome) -> pb::TurnEvent {
 	event(pb::turn_event::Event::Outcome(outcome))
 }
 
-fn event(event: pb::turn_event::Event) -> pb::TurnEvent {
+const fn event(event: pb::turn_event::Event) -> pb::TurnEvent {
 	pb::TurnEvent { event: Some(event) }
 }
 
@@ -1461,7 +1446,7 @@ fn revision(head: u64) -> thread::Revision {
 	}
 }
 
-fn caps() -> PromptCaps {
+const fn caps() -> PromptCaps {
 	PromptCaps { maximum_parts: 8, maximum_text_bytes: 4096, media: false }
 }
 

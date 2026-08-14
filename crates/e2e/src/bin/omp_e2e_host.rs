@@ -23,7 +23,7 @@ async fn main() -> ExitCode {
 	match result {
 		Ok(()) => ExitCode::SUCCESS,
 		Err(error) => {
-			eprintln!("omp: {error}");
+			eprintln!("{error:?}");
 			ExitCode::FAILURE
 		},
 	}
