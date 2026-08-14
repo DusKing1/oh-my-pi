@@ -508,10 +508,7 @@ async fn rpc_turn_client_proves_stateful_replay_duplex_and_recovery_over_owner_u
 					context_id: "context-1".to_owned(),
 					expected:   second.revision.clone(),
 				},
-				pb::ThreadDelta {
-					truncate_to: Some(first_revision.head),
-					append:      Vec::new(),
-				},
+				pb::ThreadDelta { truncate_to: Some(first_revision.head), append: Vec::new() },
 			),
 			&options,
 		)
@@ -526,9 +523,12 @@ async fn rpc_turn_client_proves_stateful_replay_duplex_and_recovery_over_owner_u
 	let forked = outcome(&mut fork).await;
 	assert_eq!(forked.provider, first.provider);
 	assert_eq!(forked.model, first.model);
-	assert_eq!(forked.diagnostics.len(), 1);
-	assert_eq!(forked.diagnostics[0].code, "session_reseed");
-	assert_eq!(forked.diagnostics[0].detail, "Fork");
+	let calls = fake.calls();
+	let fork_call = calls.last().expect("fork provider call captured");
+	assert!(
+		fork_call.session_forked,
+		"truncated delta must mark its provider session as an explicit fork"
+	);
 	assert_eq!(fake.calls().len(), 3);
 
 	let terminal_options = TurnOptions { context_id: None, ..options.clone() };

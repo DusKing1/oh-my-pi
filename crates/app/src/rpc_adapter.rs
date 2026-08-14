@@ -1356,7 +1356,7 @@ fn model_card(model: &ModelSpec, provider: &str, facets: Vec<i32>) -> pb::ModelC
 		provider: provider.to_owned(),
 		model: model.key.as_str().to_owned(),
 		name: model.display_name.as_str().to_owned(),
-		family: model.family.as_str().to_owned(),
+		family: model.class.as_str().to_owned(),
 		facets,
 		inputs: Vec::new(),
 		outputs: Vec::new(),
@@ -2972,7 +2972,7 @@ mod tests {
 	}
 
 	#[test]
-	fn fork_reseed_outcome_retains_selected_route_and_one_recovery() {
+	fn fork_reseed_outcome_retains_identity_and_one_recovery() {
 		let mut receipt = ExecutionReceipt::default();
 		receipt.plan.provider = Some(ProviderId::from("provider-fork"));
 		receipt.plan.model = Some(ModelKey::from("model-fork"));

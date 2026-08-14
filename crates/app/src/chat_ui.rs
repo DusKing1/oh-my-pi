@@ -53,16 +53,14 @@ pub async fn run<C: TurnClient + 'static>(
 	let bus = agent.events().clone();
 	let mailbox = agent.mailbox();
 	let events = bus.subscribe_ui(256);
-	// Subscribe before the submit task can publish its first transition. This
-	// feed is lossless because phase controls input routing, not decoration.
-	let phase_events = bus.subscribe_lossless();
 	let agent_state = agent.state().clone();
 
 	let mut app = AppOptions::new()
+		.keep_on_cancel()
 		.start(|env| {
 			let root = dom! {
 				<col>
-					<TranscriptView id="transcript" />
+					{ TranscriptView::new().with(Prop::Id, "transcript") }
 					<editor id="input" submit>
 						<status id="status" />
 					</editor>
@@ -83,7 +81,10 @@ pub async fn run<C: TurnClient + 'static>(
 	let mut live_jobs = HashSet::new();
 	let mut attempt_indicator = 0;
 	let mut context_tokens = 0_u64;
-	let mut phase = AgentPhase::Idle;
+	let mut submit_pending = startup_recovery_needed(
+		agent.journal().pending_turn().is_some(),
+		agent.journal().pending_input_submission().is_some(),
+	);
 	let mut active_parts: HashMap<u32, ActivePart> = HashMap::new();
 	let mut part_serial = 0_u64;
 
@@ -99,8 +100,9 @@ pub async fn run<C: TurnClient + 'static>(
 		events.dropped(),
 	);
 
-	let (tx, rx) = flume::unbounded::<Item>();
+	let (tx, rx) = flume::bounded::<Item>(1);
 	let (err_tx, err_rx) = flume::unbounded::<String>();
+	let (submit_ack_tx, submit_ack_rx) = flume::bounded::<()>(1);
 	let mut agent_task = tokio::spawn(async move {
 		if startup_recovery_needed(
 			agent.journal().pending_turn().is_some(),
@@ -110,17 +112,24 @@ pub async fn run<C: TurnClient + 'static>(
 			if let Err(error) = agent.submit(Vec::new(), resume_turn_id).await {
 				let _ = err_tx.send(format!("**Startup resume error:** {error}"));
 			}
+			let _ = submit_ack_tx.send(());
 		}
 		while let Ok(item) = rx.recv_async().await {
 			let turn_id = TurnId::new(ulid::Ulid::generate().to_string());
 			if let Err(error) = agent.submit([item], turn_id).await {
 				let _ = err_tx.send(format!("**Submit error:** {error}"));
 			}
+			let _ = submit_ack_tx.send(());
 		}
 	});
 	'ui: loop {
 		tokio::select! {
-			event = app.next() => match event {
+			event = app.next() => {
+				while let Ok(()) = submit_ack_rx.try_recv() {
+					submit_pending = false;
+				}
+				let is_active = chat_active(submit_pending, bus.phase());
+				match event {
 				Ok(Some(trigger @ (AppEvent::Submitted | AppEvent::Key(Key::FollowUp)))) => {
 					let text = app.ui().values()["input"].as_str().unwrap_or("").to_owned();
 					app.ui_mut().set_text("input", "");
@@ -130,6 +139,17 @@ pub async fn run<C: TurnClient + 'static>(
 								Some(spec) => {
 									session_model = spec.key.to_string();
 									context_window = spec.limits.context_window;
+									update_status(
+										app.ui_mut(),
+										&session.session_id,
+										&session_model,
+										attempt_indicator,
+										live_jobs.len(),
+										session_cost_nanos,
+										context_tokens,
+										context_window,
+										events.dropped(),
+									);
 								},
 								None => push_error(app.ui_mut(), format!("Unknown model: {requested}")),
 							}
@@ -139,17 +159,21 @@ pub async fn run<C: TurnClient + 'static>(
 							"Session already active; select another session with `omp chat --resume <id>`.",
 						),
 						Ok(ChatCommand::Quit) => {
-							enqueue_shutdown_interrupt(&mailbox, phase);
+							enqueue_shutdown_interrupt(&mailbox, is_active);
 							break 'ui;
 						},
 						Ok(ChatCommand::Submit(item)) => {
-							if phase == AgentPhase::Idle {
+							if !is_active {
 								let sent = render_then_deliver(
 									item,
 									|item| render_submitted_item(app.ui_mut(), item),
-									|item| tx.send(item),
+									|item| {
+										submit_pending = true;
+										tx.send(item)
+									},
 								);
 								if sent.is_err() {
+									submit_pending = false;
 									push_error(app.ui_mut(), "Agent input channel is closed.");
 								}
 							} else {
@@ -175,7 +199,7 @@ pub async fn run<C: TurnClient + 'static>(
 					}
 				},
 				Ok(Some(AppEvent::Key(Key::Esc))) => {
-					if interrupt_needed(phase) {
+					if is_active {
 						let _ = mailbox.try_enqueue(Interrupt {
 							class: InterruptClass::Immediate,
 							item: interrupt_item("User interrupted via Esc."),
@@ -185,15 +209,14 @@ pub async fn run<C: TurnClient + 'static>(
 				},
 				Ok(Some(_)) => {},
 				Ok(None) | Err(_) => {
-					enqueue_shutdown_interrupt(&mailbox, phase);
+					enqueue_shutdown_interrupt(&mailbox, is_active);
 					break 'ui;
 				},
+				}
 			},
 			Ok(message) = err_rx.recv_async() => push_error(app.ui_mut(), message),
-			Ok(phase_event) = phase_events.recv() => {
-				if let AgentEvent::PhaseChanged { to, .. } = &*phase_event {
-					phase = *to;
-				}
+			Ok(()) = submit_ack_rx.recv_async() => {
+				submit_pending = false;
 			},
 			Ok(agent_event) = events.recv() => {
 				match &*agent_event {
@@ -443,12 +466,12 @@ fn startup_recovery_needed(pending_turn: bool, pending_input_submission: bool) -
 	pending_turn || pending_input_submission
 }
 
-fn interrupt_needed(phase: AgentPhase) -> bool {
-	phase != AgentPhase::Idle
+fn chat_active(submit_pending: bool, phase: AgentPhase) -> bool {
+	submit_pending || phase != AgentPhase::Idle
 }
 
-fn enqueue_shutdown_interrupt(mailbox: &MailboxSender, phase: AgentPhase) {
-	if interrupt_needed(phase) {
+fn enqueue_shutdown_interrupt(mailbox: &MailboxSender, is_active: bool) {
+	if is_active {
 		let _ = mailbox.try_enqueue(Interrupt {
 			class:  InterruptClass::Immediate,
 			item:   interrupt_item("User quit the active chat."),
@@ -568,11 +591,11 @@ mod tests {
 		assert!(startup_recovery_needed(true, true));
 	}
 	#[test]
-	fn interrupt_is_only_needed_while_active() {
-		assert!(!interrupt_needed(AgentPhase::Idle));
-		assert!(interrupt_needed(AgentPhase::Projecting));
-		assert!(interrupt_needed(AgentPhase::Turning));
-		assert!(interrupt_needed(AgentPhase::ToolBatch));
+	fn chat_is_active_when_pending_or_phase_turning() {
+		assert!(!chat_active(false, AgentPhase::Idle));
+		assert!(chat_active(true, AgentPhase::Idle));
+		assert!(chat_active(false, AgentPhase::Turning));
+		assert!(chat_active(true, AgentPhase::Projecting));
 	}
 	#[test]
 	fn status_update_formats_all_metrics_including_context_percentage() {
@@ -587,5 +610,25 @@ mod tests {
 		assert!(painted.contains("Cost: $1.5000"));
 		assert!(painted.contains("Ctx: 45%"));
 		assert!(painted.contains("Dropped: 5"));
+	}
+
+	#[test]
+	fn root_transcript_view_is_typed_and_updates_successfully() {
+		let root = dom! {
+			<col>
+				{ TranscriptView::new().with(Prop::Id, "transcript") }
+			</col>
+		};
+		let mut ui = Ui::from_root(root, 120, UiContext::default());
+		let updated = ui.update_component::<TranscriptView>("transcript", |view| {
+			view.push(dom! { <markdown>"Test Item"</markdown> });
+			true
+		});
+		assert!(updated, "TranscriptView resolves to concrete type and accepts children");
+
+		let mut renderer = omp_tui::Renderer::new(omp_tui::test_support::TestOut::new());
+		ui.present(&mut renderer, 10, 0).unwrap();
+		let text = omp_tui::test_support::frame_row_text(ui.frame(), 0);
+		assert!(text.contains("Test Item"));
 	}
 }
