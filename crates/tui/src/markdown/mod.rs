@@ -176,12 +176,25 @@ impl RichSink for DocumentSink<'_> {
 	}
 }
 
-/// Renders Markdown into rows no wider than `width` terminal cells.
+/// Renders final Markdown into rows no wider than `width` terminal cells.
 pub fn render(src: &Str, width: u16, theme: &MdTheme, sink: &mut dyn RichSink) {
+	render_inner(src, width, theme, sink, false);
+}
+
+pub(crate) fn render_partial(src: &Str, width: u16, theme: &MdTheme, sink: &mut dyn RichSink) {
+	render_inner(src, width, theme, sink, true);
+}
+
+fn render_inner(src: &Str, width: u16, theme: &MdTheme, sink: &mut dyn RichSink, partial: bool) {
 	let normalized = normalize_source(src);
+	let repaired = if partial {
+		normalized
+	} else {
+		repair_orphan_closing_fence(&normalized)
+	};
 	// degenerate viewports still make progress: every block renders at
 	// one cell and the paint layer clips
-	render_document(&normalized, width.max(1), theme, sink);
+	render_document(&repaired, width.max(1), theme, sink);
 }
 
 fn render_document(source: &Str, width: u16, theme: &MdTheme, sink: &mut dyn RichSink) {
@@ -488,6 +501,130 @@ fn is_closing_fence(line: &str, fence: char, opening_count: usize) -> bool {
 		.take_while(|character| *character == fence)
 		.count();
 	close_count >= opening_count && candidate[close_count..].trim().is_empty()
+}
+fn repair_orphan_closing_fence(source: &Str) -> Str {
+	struct OpenFence<'a> {
+		start:  usize,
+		end:    usize,
+		marker: char,
+		count:  usize,
+		info:   &'a str,
+	}
+
+	let text = source.as_str();
+	let mut open = None;
+	let mut offset = 0;
+	for line_with_newline in text.split_inclusive('\n') {
+		let line = line_with_newline
+			.strip_suffix('\n')
+			.unwrap_or(line_with_newline);
+		if let Some((marker, info)) = fence_start(line) {
+			let count = line
+				.trim_start_matches(' ')
+				.chars()
+				.take_while(|character| *character == marker)
+				.count();
+			if open.as_ref().is_some_and(|opening: &OpenFence<'_>| {
+				marker == opening.marker && is_closing_fence(line, opening.marker, opening.count)
+			}) {
+				open = None;
+			} else if open.is_none() {
+				open = Some(OpenFence {
+					start: offset,
+					end: offset + line_with_newline.len(),
+					marker,
+					count,
+					info,
+				});
+			}
+		}
+		offset += line_with_newline.len();
+	}
+	let Some(open) = open.filter(|opening| opening.info.is_empty()) else {
+		return source.clone();
+	};
+
+	let previous = text[..open.start]
+		.lines()
+		.rev()
+		.map(str::trim)
+		.find(|line| !line.is_empty())
+		.unwrap_or("");
+	if previous.is_empty() || previous.ends_with(':') || is_fenced_source_intro(previous) {
+		return source.clone();
+	}
+
+	let mut has_heading = false;
+	let mut has_table_delimiter = false;
+	let mut previous_line = None;
+	for line in text[open.end..].lines() {
+		has_heading |= is_atx_heading_line(line);
+		has_table_delimiter |=
+			previous_line.is_some_and(|header| is_gfm_table_delimiter(line, header));
+		if has_heading && has_table_delimiter {
+			let mut start = open.start;
+			if open.end == text.len() && start > 0 {
+				start -= 1;
+			}
+			let mut repaired = StrMut::with_capacity(text.len() - (open.end - start));
+			repaired.push_str(&text[..start]);
+			repaired.push_str(&text[open.end..]);
+			return repaired.freeze();
+		}
+		previous_line = Some(line);
+	}
+	source.clone()
+}
+
+fn is_atx_heading_line(line: &str) -> bool {
+	let trimmed = line.trim_start_matches(' ');
+	if line.len().saturating_sub(trimmed.len()) > 3 {
+		return false;
+	}
+	let depth = trimmed.bytes().take_while(|byte| *byte == b'#').count();
+	let rest = &trimmed[depth..];
+	(1..=6).contains(&depth)
+		&& rest
+			.as_bytes()
+			.first()
+			.is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+		&& rest.chars().any(|character| !character.is_whitespace())
+}
+
+fn is_fenced_source_intro(line: &str) -> bool {
+	let candidate = line
+		.trim_end()
+		.strip_suffix(':')
+		.unwrap_or(line.trim_end())
+		.trim_end();
+	let word_start = candidate
+		.rfind(|character: char| !character.is_ascii_alphabetic())
+		.map_or(0, |index| index + candidate[index..].chars().next().map_or(0, char::len_utf8));
+	let word = &candidate[word_start..];
+	if !["code", "example", "markdown", "output", "snippet", "source"]
+		.iter()
+		.any(|expected| word.eq_ignore_ascii_case(expected))
+	{
+		return false;
+	}
+	word_start == 0
+		|| candidate[..word_start]
+			.chars()
+			.next_back()
+			.is_some_and(|character| !character.is_alphanumeric() && character != '_')
+}
+
+fn is_gfm_table_delimiter(line: &str, header_line: &str) -> bool {
+	if !line.contains('|') || !header_line.contains('|') {
+		return false;
+	}
+	let mut delimiter_cells = table_cell_iter(line);
+	let delimiter_count = delimiter_cells.clone().count();
+	let mut header_cells = table_cell_iter(header_line);
+	delimiter_count >= 2
+		&& header_cells.clone().count() == delimiter_count
+		&& delimiter_cells.all(|cell| table_delimiter_alignment(cell).is_some())
+		&& header_cells.all(|cell| !cell.is_empty())
 }
 
 fn render_fenced_code(
@@ -1114,37 +1251,55 @@ fn table_header<'a>(lines: &[&'a str], index: usize) -> Option<(Vec<Alignment>, 
 	(header.len() == alignments.len() && !header.is_empty()).then_some((alignments, header))
 }
 
-fn table_cells(line: &str) -> Vec<&str> {
+fn table_cell_iter(line: &str) -> impl Clone + Iterator<Item = &str> {
 	let trimmed = line.trim();
 	let body = trimmed.strip_prefix('|').unwrap_or(trimmed);
 	let body = body.strip_suffix('|').unwrap_or(body);
-	body.split('|').map(str::trim).collect()
+	body.split('|').map(str::trim)
+}
+
+fn table_cells(line: &str) -> Vec<&str> {
+	table_cell_iter(line).collect()
 }
 
 fn table_separator(line: &str) -> Option<Vec<Alignment>> {
 	if !line.contains('|') {
 		return None;
 	}
-	let cells = table_cells(line);
-	if cells.is_empty() {
+	let cells = table_cell_iter(line);
+	if cells.clone().next().is_none() {
 		return None;
 	}
-	cells
-		.into_iter()
-		.map(|cell| {
-			let left = cell.starts_with(':');
-			let right = cell.ends_with(':');
-			let dashes = cell.trim_matches(':');
-			if dashes.len() < 3 || !dashes.bytes().all(|byte| byte == b'-') {
-				return None;
-			}
-			Some(match (left, right) {
-				(true, true) => Alignment::Center,
-				(false, true) => Alignment::Right,
-				_ => Alignment::Left,
-			})
-		})
-		.collect()
+	cells.map(table_alignment).collect()
+}
+
+fn table_alignment(cell: &str) -> Option<Alignment> {
+	let left = cell.starts_with(':');
+	let right = cell.ends_with(':');
+	let dashes = cell.trim_matches(':');
+	if dashes.len() < 3 || !dashes.bytes().all(|byte| byte == b'-') {
+		return None;
+	}
+	Some(match (left, right) {
+		(true, true) => Alignment::Center,
+		(false, true) => Alignment::Right,
+		_ => Alignment::Left,
+	})
+}
+
+fn table_delimiter_alignment(cell: &str) -> Option<Alignment> {
+	let left = cell.starts_with(':');
+	let right = cell.ends_with(':');
+	let dashes = cell.strip_prefix(':').unwrap_or(cell);
+	let dashes = dashes.strip_suffix(':').unwrap_or(dashes);
+	if dashes.len() < 3 || !dashes.bytes().all(|byte| byte == b'-') {
+		return None;
+	}
+	Some(match (left, right) {
+		(true, true) => Alignment::Center,
+		(false, true) => Alignment::Right,
+		_ => Alignment::Left,
+	})
 }
 
 fn repeated_char(character: char, count: usize) -> Str {
@@ -1520,6 +1675,68 @@ mod tests {
 		(0..RichText::rows(&rendered))
 			.map(|row| rendered.row_text(row).to_owned())
 			.collect()
+	}
+	fn plain_partial(source: &str, width: u16) -> Vec<String> {
+		let source = Str::new(source);
+		let mut rendered = RichText::default();
+		render_partial(&source, width, &MdTheme::default(), &mut rendered);
+		(0..RichText::rows(&rendered))
+			.map(|row| rendered.row_text(row).to_owned())
+			.collect()
+	}
+
+	const GEMINI_SOAK_RESULTS: &str = "=== PACED IP ROTATION SOAK RESULTS ===\nTotal Queries: \
+	                                   20\nAverage Latency: 1,240 ms\n```\n\n---\n\n### Production \
+	                                   Deployment Status\n\n| Workload | Pod Status |\n| :--- | \
+	                                   :--- |\n| google-scraper | **1/1 Running** |";
+
+	#[test]
+	fn final_render_repairs_gemini_orphan_closing_fence() {
+		let rows = plain(GEMINI_SOAK_RESULTS, 80);
+		assert!(
+			!rows.iter().any(|row| row.contains("| :--- | :--- |")),
+			"delimiter remained literal: {rows:?}",
+		);
+		assert!(
+			rows
+				.iter()
+				.any(|row| row.contains("google-scraper") && row.contains("1/1 Running")),
+			"table row was not rendered: {rows:?}",
+		);
+	}
+
+	#[test]
+	fn partial_render_keeps_gemini_orphan_fence_unrepaired() {
+		let rows = plain_partial(GEMINI_SOAK_RESULTS, 80);
+		assert!(
+			rows.iter().any(|row| row.contains("| :--- | :--- |")),
+			"streaming render repaired the fence: {rows:?}",
+		);
+	}
+
+	#[test]
+	fn final_render_keeps_intentional_unclosed_markdown_example() {
+		let source = "Markdown source:\n```\n### Production Deployment Status\n\n| Workload | Pod \
+		              Status |\n| :--- | :--- |\n| google-scraper | 1/1 Running |";
+		let rows = plain(source, 80);
+		assert!(
+			rows.iter().any(|row| row.contains("| :--- | :--- |")),
+			"intentional fenced source was repaired: {rows:?}",
+		);
+	}
+
+	#[test]
+	fn final_render_keeps_unfinished_code_without_table() {
+		let source =
+			Str::new("The process printed this\n```\n---\n### Still inside the unfinished block");
+		assert_eq!(repair_orphan_closing_fence(&source), source);
+		let rows = plain(source.as_str(), 80);
+		assert!(
+			rows
+				.iter()
+				.any(|row| row.contains("### Still inside the unfinished block")),
+			"heading escaped the unfinished code block: {rows:?}",
+		);
 	}
 
 	#[test]

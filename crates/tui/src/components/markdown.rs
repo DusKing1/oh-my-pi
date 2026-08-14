@@ -11,30 +11,32 @@ use crate::{
 
 /// Rendered Markdown content backing the `<markdown>` markup tag.
 pub struct Markdown {
-	props:        Props,
-	slot:         Slot,
-	text:         Str,
-	source:       Str,
-	rich:         RichText,
-	embedded:     Vec<Cached>,
-	version:      u64,
-	cached_width: u16,
-	cached:       Option<MemoKey>,
+	props:          Props,
+	slot:           Slot,
+	text:           Str,
+	source:         Str,
+	rich:           RichText,
+	embedded:       Vec<Cached>,
+	version:        u64,
+	cached_width:   u16,
+	cached_partial: bool,
+	cached:         Option<MemoKey>,
 }
 
 impl Markdown {
 	/// Creates an empty Markdown block.
 	pub fn new() -> Self {
 		Self {
-			props:        Props::new(),
-			slot:         next_slot(),
-			text:         Str::default(),
-			source:       Str::default(),
-			rich:         RichText::default(),
-			embedded:     Vec::new(),
-			version:      1,
-			cached_width: 0,
-			cached:       None,
+			props:          Props::new(),
+			slot:           next_slot(),
+			text:           Str::default(),
+			source:         Str::default(),
+			rich:           RichText::default(),
+			embedded:       Vec::new(),
+			version:        1,
+			cached_width:   0,
+			cached_partial: false,
+			cached:         None,
 		}
 	}
 
@@ -77,15 +79,21 @@ impl Markdown {
 	fn render(&mut self, ctx: &crate::UiContext, width: u16) {
 		let width = width.max(1);
 		let key = MemoKey::new(self.version, ctx);
-		if self.cached_width == width && self.cached == Some(key) {
+		let partial = self.props.partial();
+		if self.cached_width == width && self.cached_partial == partial && self.cached == Some(key) {
 			return;
 		}
 		let theme = self.theme(ctx);
 		let style = self.props.style(&ctx.theme);
 		self.rich.clear();
-		crate::markdown::render(&self.text, width, &theme, &mut self.rich);
+		if partial {
+			crate::markdown::render_partial(&self.text, width, &theme, &mut self.rich);
+		} else {
+			crate::markdown::render(&self.text, width, &theme, &mut self.rich);
+		}
 		truncate_rich(&mut self.rich, width, style, self.props.truncate());
 		self.cached_width = width;
+		self.cached_partial = partial;
 		self.cached = Some(key);
 	}
 }
@@ -120,7 +128,11 @@ impl Component for Markdown {
 	fn measure(&mut self, ctx: &crate::UiContext) -> (u16, u16) {
 		let theme = self.theme(ctx);
 		let mut natural = Measure::default();
-		crate::markdown::render(&self.text, u16::MAX, &theme, &mut natural);
+		if self.props.partial() {
+			crate::markdown::render_partial(&self.text, u16::MAX, &theme, &mut natural);
+		} else {
+			crate::markdown::render(&self.text, u16::MAX, &theme, &mut natural);
+		}
 		let mut min = natural.widest.clamp(1, 12);
 		let mut nat = natural.widest.max(min);
 		for child in &mut self.embedded {

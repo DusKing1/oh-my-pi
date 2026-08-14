@@ -295,6 +295,9 @@ where
 							if let Some(snapshot) = &outcome.context_snapshot {
 								context_tokens = snapshot.prompt_tokens;
 							}
+							for active in active_parts.values() {
+								app.ui_mut().set_prop(active.id.as_str(), Prop::Partial, false);
+							}
 							active_parts.clear();
 						},
 						Some(Event::Attempt(attempt)) => attempt_indicator = attempt.number,
@@ -308,7 +311,11 @@ where
 								part_serial = part_serial.saturating_add(1);
 								let id = fmts!("part-{part_serial}");
 								app.ui_mut().update_component::<TranscriptView>("transcript", |view| {
-									view.push(Markdown::new().with(Prop::Id, id.as_str()));
+									view.push(
+										Markdown::new()
+											.with(Prop::Id, id.as_str())
+											.with(Prop::Partial, true),
+									);
 									true
 								});
 								active_parts.insert(
@@ -327,7 +334,9 @@ where
 							}
 						},
 						Some(Event::PartEnd(end)) => {
-							active_parts.remove(&end.index);
+							if let Some(active) = active_parts.remove(&end.index) {
+								app.ui_mut().set_prop(active.id.as_str(), Prop::Partial, false);
+							}
 						},
 						_ => {},
 					},

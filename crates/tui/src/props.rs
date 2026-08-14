@@ -438,6 +438,8 @@ define_props! {
 	Shimmer("shimmer") => shimmer: Toggle<Ms<2000>> [toggle Duration; "Returns the shimmer period, with a bare flag selecting 2s."];
 	/// Catch-up horizon for progressively revealed streamed text.
 	Reveal("reveal") => reveal: Toggle<Ms<250>> [toggle Duration; "Returns the reveal horizon, with a bare flag selecting 250ms."];
+	/// Marks content as an incomplete stream whose final-only repairs must stay disabled.
+	Partial("partial") => partial: bool [default bool = false; "Returns whether the content is still streaming."];
 }
 
 /// A property value rejected by the key-aware parser.
