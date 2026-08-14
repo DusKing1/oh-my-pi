@@ -14,6 +14,7 @@ repository = "https://github.com/can1357/omp"
 # `dep = { workspace = true }` and never pin their own versions.
 [workspace.dependencies]
 anyhow = "1.0"
+anydoc = "0.1.9"
 arboard = { version = "3.6", features = ["wayland-data-control"] }
 ast-grep-core = { version = "0.39", default-features = false, features = ["tree-sitter"] }
 argmax = "0.3"
@@ -33,6 +34,7 @@ bytes-utils = { version = "0.1.4", features = ["serde"] }
 bytemuck = { version = "1.25", features = ["derive"] }
 cap-std = "4"
 cached = "0.59"
+cfb = "0.14"
 candle-core = "0.11"
 candle-nn = "0.11"
 cfg-if = "1"
@@ -173,6 +175,7 @@ rustix = { version = "1.1", features = ["fs", "process", "time"] }
 rusqlite = { version = "0.40", features = ["bundled", "fallible_uint"] }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+schemars = "1.2.2"
 secrecy = "0.10"
 security-framework = "3.7"
 rustybuzz = "0.20"
@@ -278,7 +281,7 @@ windows-sys = { version = "0.61", features = ["Wdk_Storage_FileSystem", "Win32_F
 wreq = { version = "=6.0.0-rc.29", default-features = false, features = ["prefix-symbols", "stream", "tokio-rt", "webpki-roots"] }
 zip = { version = "6", default-features = false, features = ["deflate"] }
 zerocopy = { version = "0.8", features = ["derive"] }
-zeroize = "1.9"
+zeroize = { version = "1.9", features = ["derive"] }
 zstd = "0.13"
 xutf = "1.1"
 xxhash-rust = { version = "0.8", features = ["xxh32"] }
