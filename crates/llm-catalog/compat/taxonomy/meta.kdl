@@ -1,0 +1,6 @@
+class "meta" {
+	bounded "llama"
+	namespace "meta-llama"
+
+	family "llama" glob="*llama*"
+}

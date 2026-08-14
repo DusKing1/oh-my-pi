@@ -2522,7 +2522,7 @@ fn select_reference(
 				model: bare,
 				observed_at_ms: None,
 			});
-			bare.family.as_str() == "qwen" && namespace.eq_ignore_ascii_case("qwen")
+			bare.class.as_str() == "qwen" && namespace.eq_ignore_ascii_case("qwen")
 		});
 	if prefer_suffix && candidates.len() > 1 {
 		candidates.swap(0, 1);
@@ -3187,7 +3187,7 @@ fn compile_models(
 					&& members.iter().any(|(_, _, classified)| {
 						classified.effort.is_some() || classified.thinking_variant
 					}));
-			let family = first.2.family.clone();
+			let class = first.2.class.clone();
 			let display_name = first
 				.1
 				.name
@@ -3360,7 +3360,7 @@ fn compile_models(
 			}
 			output.push(ModelSpec {
 				key,
-				family,
+				class,
 				display_name,
 				wire_ids: wire_ids.into_boxed_slice(),
 				routes: routes.into_boxed_slice(),

@@ -1,8 +1,8 @@
 // Deployment compat for provider "openai": transport/wire contract of this deployment,
-// plus per-model residues the family stratum does not explain.
+// plus per-model residues the class stratum does not explain.
 
 provider "openai" {
-	family "unknown" {
+	class "unknown" {
 		thinking-efforts "low" "medium" "high" "xhigh" "max"
 		thinking-mode "effort"
 	}

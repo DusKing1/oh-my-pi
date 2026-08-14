@@ -1,7 +1,7 @@
-// Model-lineage compat for the "deepseek" family (census: model-family predicates in pi
+// Model-lineage compat for the "deepseek" class (census: model-class predicates in pi
 // dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
 
-family "deepseek" {
+class "deepseek" {
 	models "DeepSeek-V4-Flash-0731-Fast" "DeepSeek-V4-Pro" "TEE/deepseek-v4-pro" "TEE/deepseek-v4-pro:thinking" \
 		"deepseek-ai/DeepSeek-R1" "deepseek-ai/DeepSeek-R1-0528" "deepseek-ai/DeepSeek-V3-1" "deepseek-ai/DeepSeek-V3.2" \
 		"deepseek-ai/DeepSeek-V4-Flash" "deepseek-ai/DeepSeek-V4-Pro" "deepseek-ai/deepseek-r1-0528" "deepseek-ai/deepseek-v3.1" \

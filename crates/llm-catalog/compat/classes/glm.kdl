@@ -1,7 +1,7 @@
-// Model-lineage compat for the "glm" family (census: model-family predicates in pi
+// Model-lineage compat for the "glm" class (census: model-class predicates in pi
 // dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
 
-family "glm" {
+class "glm" {
 	models "GLM-5.1" "GLM-5.2" "GLM5.2-Turbo" "glm-5.2-highspeed" \
 		"glm-5.2-highspeed[1m]" "glm5.2-fast" {
 		reasoning-content-field "reasoning_content"

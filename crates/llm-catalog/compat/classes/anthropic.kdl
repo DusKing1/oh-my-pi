@@ -1,7 +1,7 @@
-// Model-lineage compat for the "anthropic" family (census: model-family predicates in pi
+// Model-lineage compat for the "anthropic" class (census: model-class predicates in pi
 // dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
 
-family "anthropic" {
+class "anthropic" {
 	models "anthropic.claude-opus-4-6-v1" "anthropic.claude-opus-4-7" "anthropic.claude-opus-4-8" "anthropic.claude-opus-5" \
 		"anthropic.claude-sonnet-5" "anthropic/claude-fable-5-free" "anthropic/claude-opus-4-6" "anthropic/claude-opus-4-7" \
 		"anthropic/claude-opus-4-8" "anthropic/claude-sonnet-4-6" "anthropic/claude-sonnet-5-free" "au.anthropic.claude-opus-4-6-v1" \

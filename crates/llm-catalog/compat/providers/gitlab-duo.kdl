@@ -1,5 +1,5 @@
 // Deployment compat for provider "gitlab-duo": transport/wire contract of this deployment,
-// plus per-model residues the family stratum does not explain.
+// plus per-model residues the class stratum does not explain.
 
 provider "gitlab-duo" {
 	models "claude-haiku-4-5-20251001" "claude-sonnet-4-5-20250929" {

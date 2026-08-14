@@ -1,27 +1,27 @@
-//! KDL compat cascade: family/provider/model wire- and thinking-policy rules.
+//! KDL compat cascade: class/provider/model wire- and thinking-policy rules.
 //!
 //! Authoring format for the sparse per-model compatibility data that today
 //! lives as flat enumerated profiles in
 //! `fixtures/llm-oracle/catalog-policy/{compat,thinking}-profiles.json`.
 //! Rules are conjunctions over three selector dimensions:
 //!
-//! - **family** — the centrally classified model family ([`crate::classify`]),
-//! - **providers** — deployment hosts (`on "a" "b"` inside a family block, or
+//! - **class** — the centrally classified model class ([`crate::classify`]),
+//! - **providers** — deployment hosts (`on "a" "b"` inside a class block, or
 //!   the enclosing `provider` block),
 //! - **models** — exact or `*`-glob, ASCII-case-insensitive, matched against
 //!   the provider-relative model identifier.
 //!
-//! Axis ownership is semantic, not statistical: `families/*.kdl` carry
-//! model-lineage truths (the census keys them on model-family predicates —
+//! Axis ownership is semantic, not statistical: `classes/*.kdl` carry
+//! model-lineage truths (the census keys them on model-class predicates —
 //! dialect thinking markup, reasoning-content replay needs, reasoning control
 //! ladders), while `providers/*.kdl` carry deployment wire contracts (role
 //! and store support, token-field spelling, effort pass-through) plus
-//! per-model residues the family stratum does not explain. Absence is never
+//! per-model residues the class stratum does not explain. Absence is never
 //! inferred as "stripping": a rule only states what the census established,
-//! scoped with `on` when a behavior is a family×host composition.
+//! scoped with `on` when a behavior is a class×host composition.
 //!
 //! ```kdl
-//! family "deepseek" {
+//! class "deepseek" {
 //!     models "deepseek-r1" "deepseek/deepseek-v3.2-exp" {
 //!         requires-reasoning-content-for-all-assistant-turns #true
 //!     }
@@ -168,30 +168,30 @@ macro_rules! sources {
 	};
 }
 
-/// Checked-in cascade sources: `families/*` then `providers/*`.
+/// Checked-in cascade sources: `classes/*` then `providers/*`.
 ///
 /// `tests/compat_cascade.rs` asserts this list matches the on-disk `compat/`
 /// tree so a new file cannot be silently dropped.
 pub const BUNDLED_COMPAT: &[(&str, &str)] = sources![
-	"families/amazon",
-	"families/anthropic",
-	"families/baidu",
-	"families/bytedance",
-	"families/cohere",
-	"families/deepseek",
-	"families/gemini",
-	"families/gemma",
-	"families/glm",
-	"families/gpt-oss",
-	"families/kimi",
-	"families/meta",
-	"families/mimo",
-	"families/minimax",
-	"families/mistral",
-	"families/openai",
-	"families/qwen",
-	"families/stepfun",
-	"families/xai",
+	"classes/amazon",
+	"classes/anthropic",
+	"classes/baidu",
+	"classes/bytedance",
+	"classes/cohere",
+	"classes/deepseek",
+	"classes/gemini",
+	"classes/gemma",
+	"classes/glm",
+	"classes/gpt-oss",
+	"classes/kimi",
+	"classes/meta",
+	"classes/mimo",
+	"classes/minimax",
+	"classes/mistral",
+	"classes/openai",
+	"classes/qwen",
+	"classes/stepfun",
+	"classes/xai",
 	"providers/agnes",
 	"providers/agnes-plan",
 	"providers/aiand",
@@ -411,7 +411,7 @@ fn glob_match(pattern: &str, value: &str) -> bool {
 /// One conjunction rule: every present dimension must match.
 #[derive(Clone, Debug)]
 struct Rule {
-	family:    Option<Str>,
+	class:     Option<Str>,
 	providers: Option<Vec<Str>>,
 	models:    Option<Vec<Selector>>,
 	priority:  i64,
@@ -424,7 +424,7 @@ struct Rule {
 impl Rule {
 	/// Number of constrained selector dimensions.
 	fn dimensions(&self) -> u8 {
-		u8::from(self.family.is_some())
+		u8::from(self.class.is_some())
 			+ u8::from(self.providers.is_some())
 			+ u8::from(self.models.is_some())
 	}
@@ -433,12 +433,12 @@ impl Rule {
 	fn rank(
 		&self,
 		provider: &str,
-		family: &str,
+		class: &str,
 		model: &str,
 		model_lower: &str,
 	) -> Option<(u8, u8, i64)> {
-		if let Some(required) = &self.family
-			&& required.as_str() != family
+		if let Some(required) = &self.class
+			&& required.as_str() != class
 		{
 			return None;
 		}
@@ -485,7 +485,7 @@ impl CompatCascade {
 					})?;
 			for node in document.nodes() {
 				match node.name().value() {
-					"family" => parse_family(file, node, &mut rules)?,
+					"class" => parse_class(file, node, &mut rules)?,
 					"provider" => parse_provider(file, node, &mut rules)?,
 					other => {
 						return Err(CascadeError::UnexpectedNode {
@@ -511,10 +511,10 @@ impl CompatCascade {
 
 	/// Resolves wire and thinking assignments for one model.
 	///
-	/// `model` is the provider-relative identifier; `family` is the centrally
-	/// classified family (`unknown` when unclassified); `reasoning` is the
+	/// `model` is the provider-relative identifier; `class` is the centrally
+	/// classified class (`unknown` when unclassified); `reasoning` is the
 	/// catalog's thinking capability for this model. When `false`, thinking
-	/// axes are never evaluated, so family and `on` thinking rules cannot
+	/// axes are never evaluated, so class and `on` thinking rules cannot
 	/// leak onto non-reasoning siblings. Unmatched models resolve to empty
 	/// maps.
 	///
@@ -524,7 +524,7 @@ impl CompatCascade {
 	pub fn resolve(
 		&self,
 		provider: &str,
-		family: &str,
+		class: &str,
 		model: &str,
 		reasoning: bool,
 	) -> Result<Resolved, CascadeError> {
@@ -535,7 +535,7 @@ impl CompatCascade {
 			if !reasoning && rule.wire.is_empty() {
 				continue;
 			}
-			let Some(rank) = rule.rank(provider, family, model, &model_lower) else {
+			let Some(rank) = rule.rank(provider, class, model, &model_lower) else {
 				continue;
 			};
 			contest(&mut wire, &rule.wire, rank, rule, provider, model)?;
@@ -586,12 +586,12 @@ fn contest<'cascade>(
 	Ok(())
 }
 
-fn parse_family(file: &str, node: &KdlNode, rules: &mut Vec<Rule>) -> Result<(), CascadeError> {
+fn parse_class(file: &str, node: &KdlNode, rules: &mut Vec<Rule>) -> Result<(), CascadeError> {
 	let name = single_string_argument(node).ok_or_else(|| CascadeError::MalformedDirective {
 		file:      file.to_str(),
-		directive: "family".to_str(),
+		directive: "class".to_str(),
 	})?;
-	let family = name.to_str();
+	let class = name.to_str();
 	let mut direct = RuleAxes::default();
 	if let Some(children) = node.children() {
 		for child in children.nodes() {
@@ -599,13 +599,13 @@ fn parse_family(file: &str, node: &KdlNode, rules: &mut Vec<Rule>) -> Result<(),
 				"on" => {
 					let providers = string_arguments(child, file, "on")?;
 					let (axes, models) = parse_rule_body(file, child, true)?;
-					push_rule(rules, Some(family.clone()), Some(providers), models, child, axes, file);
+					push_rule(rules, Some(class.clone()), Some(providers), models, child, axes, file);
 				},
 				"models" => {
 					let selectors = selector_arguments(child, file)?;
 					let (axes, nested) = parse_rule_body(file, child, false)?;
 					debug_assert!(nested.is_none());
-					push_rule(rules, Some(family.clone()), None, Some(selectors), child, axes, file);
+					push_rule(rules, Some(class.clone()), None, Some(selectors), child, axes, file);
 				},
 				_ => direct.collect(file, child)?,
 			}
@@ -613,13 +613,13 @@ fn parse_family(file: &str, node: &KdlNode, rules: &mut Vec<Rule>) -> Result<(),
 	}
 	if !direct.is_empty() {
 		rules.push(Rule {
-			family:    Some(family.clone()),
+			class:     Some(class.clone()),
 			providers: None,
 			models:    None,
 			priority:  node_priority(node),
 			wire:      direct.wire,
 			thinking:  direct.thinking,
-			label:     fmt_label(file, &["family", family.as_str()]),
+			label:     fmt_label(file, &["class", class.as_str()]),
 		});
 	}
 	Ok(())
@@ -635,18 +635,18 @@ fn parse_provider(file: &str, node: &KdlNode, rules: &mut Vec<Rule>) -> Result<(
 	if let Some(children) = node.children() {
 		for child in children.nodes() {
 			match child.name().value() {
-				"family" => {
-					let family = single_string_argument(child).ok_or_else(|| {
+				"class" => {
+					let class = single_string_argument(child).ok_or_else(|| {
 						CascadeError::MalformedDirective {
 							file:      file.to_str(),
-							directive: "family".to_str(),
+							directive: "class".to_str(),
 						}
 					})?;
 					let (axes, nested) = parse_rule_body(file, child, false)?;
 					debug_assert!(nested.is_none());
 					push_rule(
 						rules,
-						Some(family.to_str()),
+						Some(class.to_str()),
 						Some(vec![provider.clone()]),
 						None,
 						child,
@@ -674,7 +674,7 @@ fn parse_provider(file: &str, node: &KdlNode, rules: &mut Vec<Rule>) -> Result<(
 	}
 	if !direct.is_empty() {
 		rules.push(Rule {
-			family:    None,
+			class:     None,
 			providers: Some(vec![provider.clone()]),
 			models:    None,
 			priority:  node_priority(node),
@@ -712,7 +712,7 @@ fn parse_rule_body(
 
 fn push_rule(
 	rules: &mut Vec<Rule>,
-	family: Option<Str>,
+	class: Option<Str>,
 	providers: Option<Vec<Str>>,
 	models: Option<Vec<Selector>>,
 	node: &KdlNode,
@@ -724,7 +724,7 @@ fn push_rule(
 	}
 	let label = fmt_label(file, &[node.name().value()]);
 	rules.push(Rule {
-		family,
+		class,
 		providers,
 		models,
 		priority: node_priority(node),
@@ -903,10 +903,10 @@ mod tests {
 	}
 
 	#[test]
-	fn family_provider_and_model_rules_rank_by_specificity() {
+	fn class_provider_and_model_rules_rank_by_specificity() {
 		let cascade = parse_one(
 			r#"
-			family "deepseek" {
+			class "deepseek" {
 				models "r1-*" { requires-reasoning-content-for-all-assistant-turns #true }
 				on "vendor" { thinking-mode "effort" }
 			}
@@ -1054,7 +1054,7 @@ mod tests {
 	#[test]
 	fn exact_selectors_are_case_sensitive_and_globs_are_not() {
 		let cascade = parse_one(
-			r#"family "glm" {
+			r#"class "glm" {
 				models "zai-org/GLM-4.7" "glm-5.*" { thinking-format "zai" }
 			}"#,
 		)

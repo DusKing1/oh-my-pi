@@ -1,0 +1,7 @@
+class "glm" {
+    bounded "glm"
+
+    family "flash" glob="*flash*"
+    family "air" glob="*air*"
+    family "turbo" glob="*turbo*"
+}

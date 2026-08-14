@@ -1,0 +1,9 @@
+collapse {
+	thinking-suffix "-thinking"
+	effort-suffix "-minimal" tier="minimal"
+	effort-suffix "-medium" tier="medium"
+	effort-suffix "-xhigh" tier="xhigh"
+	effort-suffix "-high" tier="high"
+	effort-suffix "-low" tier="low"
+	effort-suffix "-max" tier="max" except-bare-prefix="qwen"
+}

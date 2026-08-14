@@ -1,5 +1,5 @@
 // Deployment compat for provider "anthropic": transport/wire contract of this deployment,
-// plus per-model residues the family stratum does not explain.
+// plus per-model residues the class stratum does not explain.
 
 provider "anthropic" {
 	models "claude-3-7-sonnet-20250219" {

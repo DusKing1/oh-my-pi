@@ -1,15 +1,15 @@
 // Deployment compat for provider "alibaba-coding-plan": transport/wire contract of this deployment,
-// plus per-model residues the family stratum does not explain.
+// plus per-model residues the class stratum does not explain.
 
 provider "alibaba-coding-plan" priority=10 {
 	// pi-openai-chat:015 — `isAlibaba` (DashScope) => top-level enable_thinking
-	// for every model on this host; priority beats family defaults.
+	// for every model on this host; priority beats class defaults.
 	thinking-format "qwen"
 	supports-developer-role #false
-	family "glm" {
+	class "glm" {
 		thinking-efforts "minimal" "low" "medium" "high"
 	}
-	family "kimi" {
+	class "kimi" {
 		thinking-efforts "minimal" "low" "medium" "high"
 	}
 }

@@ -1,9 +1,9 @@
-// Model-lineage compat for the "cohere" family (census: model-family predicates in pi
+// Model-lineage compat for the "baidu" class (census: model-class predicates in pi
 // dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
 
-family "cohere" {
+class "baidu" {
 	thinking-mode "effort"
-	on "cohere" "kilo" {
+	on "aimlapi" "kilo" "nanogpt" "novita" "zenmux" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}
 }

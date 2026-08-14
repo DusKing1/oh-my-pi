@@ -1,7 +1,7 @@
-// Model-lineage compat for the "mimo" family (census: model-family predicates in pi
+// Model-lineage compat for the "mimo" class (census: model-class predicates in pi
 // dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
 
-family "mimo" {
+class "mimo" {
 	on "aimlapi" "huggingface" "kilo" "nanogpt" "novita" "opencode-go" "opencode-zen" "openrouter" "venice" "xiaomi" "xiaomi-token-plan-ams" "xiaomi-token-plan-cn" "xiaomi-token-plan-sgp" "zenmux" {
 		thinking-mode "effort"
 	}

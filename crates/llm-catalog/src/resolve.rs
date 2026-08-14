@@ -7,8 +7,8 @@ use omp_core::Str;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	AuthSpecId, Availability, CatalogAlias, CatalogRevision, CodecId, ContextStrategy,
-	EmbeddingFormatBits, EvidenceConfidence, FamilyId, GrammarBits, HostedToolBits, ModalityBits,
+	AuthSpecId, Availability, CatalogAlias, CatalogRevision, ClassId, CodecId, ContextStrategy,
+	EmbeddingFormatBits, EvidenceConfidence, GrammarBits, HostedToolBits, ModalityBits,
 	ModelAvailability, ModelCapabilities, ModelKey, ModelLimits, ModelRemoteCompaction, ModelSpec,
 	OperationKind, PolicyModel, PremiumMultiplier, Pricing, ProvenanceKind, ProvenanceSource,
 	ProviderDef, ProviderId, ReasoningFeatureBits, RoleBits, RouteDef, RouteId, RouteRestrictions,
@@ -93,8 +93,8 @@ pub struct ScopedAlias {
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelField {
-	/// Normalized family.
-	Family,
+	/// Normalized class.
+	Class,
 	/// Display name.
 	DisplayName,
 	/// Route-specific wire identifiers.
@@ -167,8 +167,8 @@ pub struct FieldProvenance {
 /// A partial model replacement; omitted fields retain lower-precedence values.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ModelPatch {
-	/// Replacement family.
-	pub family: Option<FamilyId>,
+	/// Replacement class.
+	pub class: Option<ClassId>,
 	/// Replacement display name.
 	pub display_name: Option<Str>,
 	/// Replacement route/wire-id pairs.
@@ -683,7 +683,7 @@ fn model_has_provider(model: &ModelSpec, provider: &ProviderId, routes: &[RouteD
 
 fn all_model_sources(source: ProvenanceSource) -> BTreeMap<ModelField, ProvenanceSource> {
 	[
-		ModelField::Family,
+		ModelField::Class,
 		ModelField::DisplayName,
 		ModelField::WireIds,
 		ModelField::Routes,
@@ -739,7 +739,7 @@ fn apply_model_patch(
 	source: &ProvenanceSource,
 	sources: &mut BTreeMap<ModelField, ProvenanceSource>,
 ) {
-	patch_field!(patch, model, family, ModelField::Family, source, sources);
+	patch_field!(patch, model, class, ModelField::Class, source, sources);
 	patch_field!(patch, model, display_name, ModelField::DisplayName, source, sources);
 	patch_field!(patch, model, wire_ids, ModelField::WireIds, source, sources);
 	patch_field!(patch, model, routes, ModelField::Routes, source, sources);
@@ -1070,7 +1070,7 @@ mod tests {
 		});
 		ModelSpec {
 			key: key.into(),
-			family: FamilyId::from("family"),
+			class: ClassId::from("class"),
 			display_name: key.into(),
 			wire_ids: route_ids
 				.iter()

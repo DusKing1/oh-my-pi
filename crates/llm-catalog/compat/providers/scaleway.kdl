@@ -1,8 +1,8 @@
 // Deployment compat for provider "scaleway": transport/wire contract of this deployment,
-// plus per-model residues the family stratum does not explain.
+// plus per-model residues the class stratum does not explain.
 
 provider "scaleway" {
-	family "glm" {
+	class "glm" {
 		thinking-efforts "minimal" "low" "medium" "high" "max"
 	}
 }

@@ -1,7 +1,7 @@
-// Model-lineage compat for the "gemma" family (census: model-family predicates in pi
+// Model-lineage compat for the "gemma" class (census: model-class predicates in pi
 // dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
 
-family "gemma" {
+class "gemma" {
 	on "aiand" "aimlapi" "cerebras" "coreweave" "crofai" "friendli" "huggingface" "kilo" "nanogpt" "novita" "nvidia" "ollama-cloud" "openrouter" "scaleway" "together" "zenmux" {
 		thinking-mode "effort"
 	}

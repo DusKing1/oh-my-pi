@@ -1,7 +1,7 @@
-// Model-lineage compat for the "amazon" family (census: model-family predicates in pi
+// Model-lineage compat for the "amazon" class (census: model-class predicates in pi
 // dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
 
-family "amazon" {
+class "amazon" {
 	on "kilo" "nanogpt" "openrouter" {
 		thinking-mode "effort"
 	}

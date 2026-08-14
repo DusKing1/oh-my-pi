@@ -1,7 +1,7 @@
-// Model-lineage compat for the "stepfun" family (census: model-family predicates in pi
+// Model-lineage compat for the "stepfun" class (census: model-class predicates in pi
 // dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
 
-family "stepfun" {
+class "stepfun" {
 	on "aimlapi" "huggingface" "kilo" "nanogpt" "novita" "nvidia" "openrouter" "stepfun" "stepfun-plan" "zenmux" {
 		thinking-mode "effort"
 	}

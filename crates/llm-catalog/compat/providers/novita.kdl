@@ -1,8 +1,8 @@
 // Deployment compat for provider "novita": transport/wire contract of this deployment,
-// plus per-model residues the family stratum does not explain.
+// plus per-model residues the class stratum does not explain.
 
 provider "novita" {
-	family "unknown" {
+	class "unknown" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 		thinking-mode "effort"
 	}

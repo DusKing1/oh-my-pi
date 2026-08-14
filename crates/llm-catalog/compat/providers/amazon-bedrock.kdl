@@ -1,14 +1,14 @@
 // Deployment compat for provider "amazon-bedrock": transport/wire contract of this deployment,
-// plus per-model residues the family stratum does not explain.
+// plus per-model residues the class stratum does not explain.
 
 provider "amazon-bedrock" {
-	family "deepseek" {
+	class "deepseek" {
 		thinking-efforts "minimal" "low" "medium" "high"
 	}
-	family "minimax" {
+	class "minimax" {
 		thinking-mode "budget"
 	}
-	family "unknown" {
+	class "unknown" {
 		thinking-efforts "minimal" "low" "medium" "high"
 		thinking-mode "budget"
 	}

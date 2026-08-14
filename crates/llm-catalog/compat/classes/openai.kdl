@@ -1,7 +1,7 @@
-// Model-lineage compat for the "openai" family (census: model-family predicates in pi
+// Model-lineage compat for the "openai" class (census: model-class predicates in pi
 // dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
 
-family "openai" {
+class "openai" {
 	models "codex-mini" "codex-mini-latest" "gpt-chat-latest" "gpt-realtime-2.1" \
 		"o1" "o1-mini" "o1-pro" "o3" \
 		"o3-deep-research" "o3-mini" "o3-pro" "o4-mini" \

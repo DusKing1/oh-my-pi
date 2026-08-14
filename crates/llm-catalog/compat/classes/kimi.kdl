@@ -1,7 +1,7 @@
-// Model-lineage compat for the "kimi" family (census: model-family predicates in pi
+// Model-lineage compat for the "kimi" class (census: model-class predicates in pi
 // dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
 
-family "kimi" {
+class "kimi" {
 	models "Kimi-K2.6" "Kimi-K2.7-Code" "Kimi-K3" "kimi-for-coding" \
 		"kimi-for-coding-highspeed" "kimi-k3-fast" {
 		reasoning-content-field "reasoning_content"

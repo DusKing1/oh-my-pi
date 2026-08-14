@@ -120,8 +120,8 @@ string_id!(/// Identifies one wire codec implementation.
 	CodecId);
 string_id!(/// Identifies one normalized selectable model deployment.
 	ModelKey);
-string_id!(/// Identifies a normalized model family.
-	FamilyId);
+string_id!(/// Identifies a normalized model class (vendor lineage).
+	ClassId);
 string_id!(/// Identifies an interned authentication specification.
 	AuthSpecId);
 string_id!(/// Identifies an interned public OAuth flow specification.

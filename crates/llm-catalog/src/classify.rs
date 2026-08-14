@@ -4,7 +4,7 @@
 use omp_core::Str;
 use serde::{Deserialize, Serialize};
 
-use crate::id::FamilyId;
+use crate::id::ClassId;
 
 /// Source phase allowed to invoke identity classification.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -38,7 +38,7 @@ pub enum EffortTier {
 
 /// Three-component model generation parsed from an identity.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-pub struct ModelVersion {
+pub struct Revision {
 	/// Major generation.
 	pub major: u16,
 	/// Minor generation.
@@ -53,8 +53,9 @@ pub struct ModelVersion {
 pub enum ClassificationMethod {
 	/// An exact reviewed override supplied the result.
 	ExactOverride,
-	/// A bounded family rule supplied the result.
-	FamilyRule,
+	/// A bounded class rule supplied the result.
+	#[serde(rename = "family_rule")]
+	ClassRule,
 	/// A structural suffix rule supplied the result.
 	StructuralSuffix,
 	/// No rule established the fact.
@@ -94,19 +95,19 @@ pub struct ClassificationInput<'a> {
 pub struct ModelClassification {
 	/// Logical model identifier after effort sibling collapse.
 	pub logical_model:    Str,
-	/// Centrally classified model family; `unknown` is conservative.
-	pub family:           FamilyId,
-	/// Parsed family generation when the rule establishes one.
-	pub version:          Option<ModelVersion>,
+	/// Centrally classified model class; `unknown` is conservative.
+	pub class:            ClassId,
+	/// Parsed class revision when the rule establishes one.
+	pub revision:         Option<Revision>,
 	/// Effort route represented by this source row.
 	pub effort:           Option<EffortTier>,
 	/// Whether this row is the reasoning sibling of an explicit off route.
 	pub thinking_variant: bool,
-	/// Evidence for family and identity normalization.
+	/// Evidence for class and identity normalization.
 	pub evidence:         ClassificationEvidence,
 }
 
-/// Reviewed exact identity correction applied before general family rules.
+/// Reviewed exact identity correction applied before general class rules.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExactOverride {
 	/// Stable override identifier.
@@ -117,10 +118,10 @@ pub struct ExactOverride {
 	pub model:         &'static str,
 	/// Logical model identifier.
 	pub logical_model: &'static str,
-	/// Classified family.
-	pub family:        &'static str,
-	/// Optional pinned generation.
-	pub version:       Option<ModelVersion>,
+	/// Classified class.
+	pub class:         &'static str,
+	/// Optional pinned revision.
+	pub version:       Option<Revision>,
 	/// Optional effort route.
 	pub effort:        Option<EffortTier>,
 	/// Review rationale.
@@ -131,12 +132,12 @@ pub struct ExactOverride {
 	pub expires_at_ms: Option<u64>,
 }
 
-const fn exact_family(
+const fn exact_class(
 	id: &'static str,
 	provider: &'static str,
 	model: &'static str,
 	logical_model: &'static str,
-	family: &'static str,
+	class: &'static str,
 	rationale: &'static str,
 ) -> ExactOverride {
 	ExactOverride {
@@ -144,7 +145,7 @@ const fn exact_family(
 		provider: Some(provider),
 		model,
 		logical_model,
-		family,
+		class,
 		version: None,
 		effort: None,
 		rationale,
@@ -159,8 +160,8 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      None,
 		model:         "daybreak-blue-latest",
 		logical_model: "daybreak-blue-latest",
-		family:        "unknown",
-		version:       Some(ModelVersion { major: 5, minor: 6, patch: 0 }),
+		class:         "unknown",
+		version:       Some(Revision { major: 5, minor: 6, patch: 0 }),
 		effort:        None,
 		rationale:     "OpenAI rolling alias pins only the documented generation; its opaque \
 		                product name supplies no family evidence",
@@ -172,8 +173,8 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      None,
 		model:         "daybreak-red-latest",
 		logical_model: "daybreak-red-latest",
-		family:        "unknown",
-		version:       Some(ModelVersion { major: 5, minor: 6, patch: 0 }),
+		class:         "unknown",
+		version:       Some(Revision { major: 5, minor: 6, patch: 0 }),
 		effort:        None,
 		rationale:     "OpenAI rolling alias pins only the documented generation; its opaque \
 		                product name supplies no family evidence",
@@ -185,8 +186,8 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      None,
 		model:         "gpt-daybreak-blue-latest",
 		logical_model: "gpt-daybreak-blue-latest",
-		family:        "openai",
-		version:       Some(ModelVersion { major: 5, minor: 6, patch: 0 }),
+		class:         "openai",
+		version:       Some(Revision { major: 5, minor: 6, patch: 0 }),
 		effort:        None,
 		rationale:     "OpenAI rolling alias pinned to the generation declared by the source \
 		                snapshot",
@@ -198,8 +199,8 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      None,
 		model:         "gpt-daybreak-red-latest",
 		logical_model: "gpt-daybreak-red-latest",
-		family:        "openai",
-		version:       Some(ModelVersion { major: 5, minor: 6, patch: 0 }),
+		class:         "openai",
+		version:       Some(Revision { major: 5, minor: 6, patch: 0 }),
 		effort:        None,
 		rationale:     "OpenAI rolling alias pinned to the generation declared by the source \
 		                snapshot",
@@ -211,7 +212,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      Some("kilo"),
 		model:         "kimi-k2-thinking",
 		logical_model: "moonshotai/kimi-k2-thinking",
-		family:        "kimi",
+		class:         "kimi",
 		version:       None,
 		effort:        None,
 		rationale:     "Oracle exposes this independently priced product rather than an effort route",
@@ -223,7 +224,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      Some("openrouter"),
 		model:         "kimi-k2-thinking",
 		logical_model: "moonshotai/kimi-k2-thinking",
-		family:        "kimi",
+		class:         "kimi",
 		version:       None,
 		effort:        None,
 		rationale:     "Oracle exposes this independently priced product rather than an effort route",
@@ -235,7 +236,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      Some("vercel-ai-gateway"),
 		model:         "kimi-k2-thinking",
 		logical_model: "moonshotai/kimi-k2-thinking",
-		family:        "kimi",
+		class:         "kimi",
 		version:       None,
 		effort:        None,
 		rationale:     "Oracle exposes this independently priced product rather than an effort route",
@@ -247,7 +248,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      Some("vercel-ai-gateway"),
 		model:         "deepseek-v3.2-thinking",
 		logical_model: "deepseek/deepseek-v3.2-thinking",
-		family:        "deepseek",
+		class:         "deepseek",
 		version:       None,
 		effort:        None,
 		rationale:     "Oracle exposes this independently priced product rather than an effort route",
@@ -259,7 +260,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      Some("umans"),
 		model:         "umans-deepseek-v4-flash-0731",
 		logical_model: "umans-deepseek-v4-flash-0731",
-		family:        "deepseek",
+		class:         "deepseek",
 		version:       None,
 		effort:        None,
 		rationale:     "The opaque Umans product identifier is backed by the reviewed DeepSeek V4 \
@@ -272,7 +273,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      Some("umans"),
 		model:         "umans-deepseek-v4-flash-0731-lab",
 		logical_model: "umans-deepseek-v4-flash-0731-lab",
-		family:        "deepseek",
+		class:         "deepseek",
 		version:       None,
 		effort:        None,
 		rationale:     "The opaque Umans lab product identifier is backed by the reviewed DeepSeek \
@@ -285,7 +286,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      Some("kilo"),
 		model:         "qwq-32b",
 		logical_model: "qwen/qwq-32b",
-		family:        "qwen",
+		class:         "qwen",
 		version:       None,
 		effort:        None,
 		rationale:     "The reviewed Kilo QwQ deployment belongs to the Qwen family despite its \
@@ -298,7 +299,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      Some("nanogpt"),
 		model:         "EVA-Qwen2.5-32B-v0.2",
 		logical_model: "EVA-UNIT-01/EVA-Qwen2.5-32B-v0.2",
-		family:        "qwen",
+		class:         "qwen",
 		version:       None,
 		effort:        None,
 		rationale:     "The reviewed EVA deployment is a Qwen 2.5 derivative despite its opaque \
@@ -311,7 +312,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      Some("nanogpt"),
 		model:         "EVA-Qwen2.5-72B-v0.2",
 		logical_model: "EVA-UNIT-01/EVA-Qwen2.5-72B-v0.2",
-		family:        "qwen",
+		class:         "qwen",
 		version:       None,
 		effort:        None,
 		rationale:     "The reviewed EVA 72B deployment is a Qwen 2.5 derivative despite its opaque \
@@ -324,7 +325,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      Some("nanogpt"),
 		model:         "Gemma-4-31B-Claude-4.6-Opus-Reasoning-Distilled",
 		logical_model: "Gemma-4-31B-Claude-4.6-Opus-Reasoning-Distilled",
-		family:        "anthropic",
+		class:         "anthropic",
 		version:       None,
 		effort:        None,
 		rationale:     "The reviewed distillation lineage follows its Claude Opus teacher rather \
@@ -337,7 +338,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      Some("nanogpt"),
 		model:         "Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-Derestricted",
 		logical_model: "Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-Derestricted",
-		family:        "anthropic",
+		class:         "anthropic",
 		version:       None,
 		effort:        None,
 		rationale:     "The reviewed distillation lineage follows its Claude Opus teacher rather \
@@ -350,7 +351,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      Some("nanogpt"),
 		model:         "Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-Derestricted-Lite",
 		logical_model: "Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-Derestricted-Lite",
-		family:        "anthropic",
+		class:         "anthropic",
 		version:       None,
 		effort:        None,
 		rationale:     "The reviewed lite distillation lineage follows its Claude Opus teacher \
@@ -363,14 +364,14 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		provider:      Some("nanogpt"),
 		model:         "QwenLong-L1-32B",
 		logical_model: "Tongyi-Zhiwen/QwenLong-L1-32B",
-		family:        "qwen",
+		class:         "qwen",
 		version:       None,
 		effort:        None,
 		rationale:     "The reviewed Tongyi Zhiwen QwenLong deployment belongs to the Qwen family",
 		provenance:    "fixtures/llm-oracle/catalog/models.normalized.json",
 		expires_at_ms: None,
 	},
-	exact_family(
+	exact_class(
 		"nanogpt-dolphin-qwen-family",
 		"nanogpt",
 		"dolphin-2.9.2-qwen2-72b",
@@ -378,7 +379,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"qwen",
 		"The reviewed Dolphin deployment is a Qwen derivative",
 	),
-	exact_family(
+	exact_class(
 		"nanogpt-cogito-qwen-family",
 		"nanogpt",
 		"cogito-v1-preview-qwen-32B",
@@ -386,7 +387,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"qwen",
 		"The reviewed Cogito deployment is a Qwen derivative",
 	),
-	exact_family(
+	exact_class(
 		"nanogpt-qwq-preview-family",
 		"nanogpt",
 		"qwq-32b-preview",
@@ -394,7 +395,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"qwen",
 		"The reviewed QwQ preview belongs to the Qwen family",
 	),
-	exact_family(
+	exact_class(
 		"nanogpt-grayline-qwen-family",
 		"nanogpt",
 		"GrayLine-Qwen3-8B",
@@ -402,7 +403,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"qwen",
 		"The reviewed GrayLine deployment is a Qwen derivative",
 	),
-	exact_family(
+	exact_class(
 		"novita-r1-qwen-family",
 		"novita",
 		"deepseek-r1-0528-qwen3-8b",
@@ -410,7 +411,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"qwen",
 		"The reviewed distillation lineage follows the Qwen student architecture",
 	),
-	exact_family(
+	exact_class(
 		"openrouter-qwq-family",
 		"openrouter",
 		"qwq-32b",
@@ -418,7 +419,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"qwen",
 		"The reviewed QwQ deployment belongs to the Qwen family",
 	),
-	exact_family(
+	exact_class(
 		"umans-qwen-3-6-family",
 		"umans",
 		"umans-qwen3.6-35b-a3b",
@@ -426,7 +427,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"qwen",
 		"The opaque Umans deployment is backed by the reviewed Qwen 3.6 family",
 	),
-	exact_family(
+	exact_class(
 		"venice-e2ee-deepseek-family",
 		"venice",
 		"e2ee-deepseek-v4-flash",
@@ -434,7 +435,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"deepseek",
 		"The opaque Venice E2EE deployment is backed by the reviewed DeepSeek family",
 	),
-	exact_family(
+	exact_class(
 		"venice-e2ee-gpt-oss-120b-family",
 		"venice",
 		"e2ee-gpt-oss-120b-p",
@@ -442,7 +443,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"gpt-oss",
 		"The opaque Venice E2EE deployment is backed by the reviewed GPT OSS family",
 	),
-	exact_family(
+	exact_class(
 		"venice-e2ee-gpt-oss-20b-family",
 		"venice",
 		"e2ee-gpt-oss-20b-p",
@@ -450,7 +451,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"gpt-oss",
 		"The opaque Venice E2EE deployment is backed by the reviewed GPT OSS family",
 	),
-	exact_family(
+	exact_class(
 		"venice-e2ee-qwen-2-5-family",
 		"venice",
 		"e2ee-qwen-2-5-7b-p",
@@ -458,7 +459,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"qwen",
 		"The opaque Venice E2EE deployment is backed by the reviewed Qwen family",
 	),
-	exact_family(
+	exact_class(
 		"venice-e2ee-qwen-3-30b-family",
 		"venice",
 		"e2ee-qwen3-30b-a3b-p",
@@ -466,7 +467,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"qwen",
 		"The opaque Venice E2EE deployment is backed by the reviewed Qwen family",
 	),
-	exact_family(
+	exact_class(
 		"venice-e2ee-qwen-3-5-family",
 		"venice",
 		"e2ee-qwen3-5-122b-a10b",
@@ -474,7 +475,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"qwen",
 		"The opaque Venice E2EE deployment is backed by the reviewed Qwen family",
 	),
-	exact_family(
+	exact_class(
 		"venice-e2ee-qwen-3-6-27b-family",
 		"venice",
 		"e2ee-qwen3-6-27b",
@@ -482,7 +483,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"qwen",
 		"The opaque Venice E2EE deployment is backed by the reviewed Qwen family",
 	),
-	exact_family(
+	exact_class(
 		"venice-e2ee-qwen-3-6-35b-family",
 		"venice",
 		"e2ee-qwen3-6-35b-a3b",
@@ -490,7 +491,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"qwen",
 		"The opaque Venice E2EE deployment is backed by the reviewed Qwen family",
 	),
-	exact_family(
+	exact_class(
 		"venice-e2ee-qwen-3-6-uncensored-family",
 		"venice",
 		"e2ee-qwen3-6-35b-a3b-uncensored-p",
@@ -498,7 +499,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"qwen",
 		"The opaque Venice E2EE deployment is backed by the reviewed Qwen family",
 	),
-	exact_family(
+	exact_class(
 		"venice-e2ee-qwen-vl-family",
 		"venice",
 		"e2ee-qwen3-vl-30b-a3b-p",
@@ -506,7 +507,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"qwen",
 		"The opaque Venice E2EE deployment is backed by the reviewed Qwen family",
 	),
-	exact_family(
+	exact_class(
 		"venice-openai-gpt-oss-family",
 		"venice",
 		"openai-gpt-oss-120b",
@@ -514,7 +515,7 @@ const EXACT_OVERRIDES: &[ExactOverride] = &[
 		"gpt-oss",
 		"The reviewed Venice deployment belongs to the GPT OSS family",
 	),
-	exact_family(
+	exact_class(
 		"venice-xiaomi-mimo-family",
 		"venice",
 		"xiaomi-mimo-v2-5",
@@ -543,8 +544,8 @@ pub fn classify(input: ClassificationInput<'_>) -> ModelClassification {
 	}) {
 		return ModelClassification {
 			logical_model:    Str::from(override_.logical_model),
-			family:           FamilyId::new(override_.family),
-			version:          override_.version,
+			class:            ClassId::new(override_.class),
+			revision:         override_.version,
 			effort:           override_.effort,
 			thinking_variant: false,
 			evidence:         ClassificationEvidence {
@@ -562,20 +563,20 @@ pub fn classify(input: ClassificationInput<'_>) -> ModelClassification {
 	} else {
 		(trimmed, None, false)
 	};
-	let family = family(logical);
-	let version = parse_version(family.as_str(), logical);
+	let class = class(logical);
+	let version = parse_version(class.as_str(), logical);
 	let structural = effort.is_some() || thinking_variant;
 	let method = if structural {
 		ClassificationMethod::StructuralSuffix
-	} else if family.as_str() == "unknown" {
+	} else if class.as_str() == "unknown" {
 		ClassificationMethod::Unknown
 	} else {
-		ClassificationMethod::FamilyRule
+		ClassificationMethod::ClassRule
 	};
 	ModelClassification {
 		logical_model: Str::from(logical),
-		family,
-		version,
+		class,
+		revision: version,
 		effort,
 		thinking_variant,
 		evidence: ClassificationEvidence {
@@ -629,7 +630,7 @@ fn collapse_suffix(model: &str) -> (&str, Option<EffortTier>, bool) {
 	(model, None, false)
 }
 
-fn family(model: &str) -> FamilyId {
+fn class(model: &str) -> ClassId {
 	let lower = model.trim().to_ascii_lowercase();
 	let segments: Vec<&str> = lower
 		.split('/')
@@ -641,7 +642,7 @@ fn family(model: &str) -> FamilyId {
 			"anthropic"
 		} else if namespaced(&lower, "gpt-oss") || bounded(bare, "gpt-oss") {
 			"gpt-oss"
-		} else if segments.contains(&"openai") || openai_family(bare) {
+		} else if segments.contains(&"openai") || openai_class(bare) {
 			"openai"
 		} else if segments.contains(&"moonshotai") || bounded(bare, "kimi") {
 			"kimi"
@@ -685,7 +686,7 @@ fn family(model: &str) -> FamilyId {
 		} else {
 			"unknown"
 		};
-	FamilyId::new(selected)
+	ClassId::new(selected)
 }
 
 fn namespaced(value: &str, namespace: &str) -> bool {
@@ -704,7 +705,7 @@ fn bounded(value: &str, prefix: &str) -> bool {
 		})
 }
 
-fn openai_family(bare: &str) -> bool {
+fn openai_class(bare: &str) -> bool {
 	bare.starts_with("gpt-")
 		|| bare.starts_with("chatgpt-")
 		|| bare.starts_with("codex-")
@@ -715,14 +716,13 @@ fn openai_family(bare: &str) -> bool {
 					.is_some_and(|suffix| suffix.starts_with('-') || suffix.starts_with('.'))
 		})
 }
-
-fn parse_version(family: &str, model: &str) -> Option<ModelVersion> {
+fn parse_version(class: &str, model: &str) -> Option<Revision> {
 	let bare = model.rsplit('/').next()?;
 	let lower = bare.to_ascii_lowercase();
-	if family == "openai" && ["o1", "o3", "o4"].contains(&lower.as_str()) {
+	if class == "openai" && ["o1", "o3", "o4"].contains(&lower.as_str()) {
 		return None;
 	}
-	let prefixes: &[&str] = match family {
+	let prefixes: &[&str] = match class {
 		"openai" => &["chatgpt-", "gpt-", "o"],
 		"gemini" => &["gemini-"],
 		"anthropic" => &["claude-"],
@@ -739,7 +739,7 @@ fn parse_version(family: &str, model: &str) -> Option<ModelVersion> {
 		.take_while(|character| character.is_ascii_digit() || *character == '.')
 		.collect();
 	let mut parts = numeric.split('.');
-	Some(ModelVersion {
+	Some(Revision {
 		major: parts.next()?.parse().ok()?,
 		minor: parts
 			.next()
@@ -772,11 +772,11 @@ mod tests {
 	}
 
 	#[test]
-	fn classifies_bounded_families_without_substring_false_positives() {
-		assert_eq!(compiler("openrouter/qwen/qwen3-coder").family.as_str(), "qwen");
-		assert_eq!(compiler("acme/notqwen-model").family.as_str(), "unknown");
-		assert_eq!(compiler("xai/grok-4.6").family.as_str(), "xai");
-		assert_eq!(compiler("myxai/grokker").family.as_str(), "unknown");
+	fn classifies_bounded_classes_without_substring_false_positives() {
+		assert_eq!(compiler("openrouter/qwen/qwen3-coder").class.as_str(), "qwen");
+		assert_eq!(compiler("acme/notqwen-model").class.as_str(), "unknown");
+		assert_eq!(compiler("xai/grok-4.6").class.as_str(), "xai");
+		assert_eq!(compiler("myxai/grokker").class.as_str(), "unknown");
 	}
 
 	#[test]
@@ -814,7 +814,7 @@ mod tests {
 			observed_at_ms: Some(1_799_711_999_999),
 		});
 		assert_eq!(before_expiry.evidence.method, ClassificationMethod::ExactOverride);
-		assert_eq!(before_expiry.version, Some(ModelVersion { major: 5, minor: 6, patch: 0 }));
+		assert_eq!(before_expiry.revision, Some(Revision { major: 5, minor: 6, patch: 0 }));
 
 		let at_expiry = classify(ClassificationInput {
 			phase:          ClassificationPhase::CatalogCompiler,
@@ -822,7 +822,7 @@ mod tests {
 			model:          "gpt-daybreak-blue-latest",
 			observed_at_ms: Some(1_799_712_000_000),
 		});
-		assert_eq!(at_expiry.evidence.method, ClassificationMethod::FamilyRule);
-		assert_eq!(at_expiry.version, None);
+		assert_eq!(at_expiry.evidence.method, ClassificationMethod::ClassRule);
+		assert_eq!(at_expiry.revision, None);
 	}
 }

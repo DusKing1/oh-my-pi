@@ -1,7 +1,7 @@
-// Model-lineage compat for the "qwen" family (census: model-family predicates in pi
+// Model-lineage compat for the "qwen" class (census: model-class predicates in pi
 // dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
 
-family "qwen" {
+class "qwen" {
 	models "Qwen/Qwen3-235B-A22B-Thinking-2507" "alibaba/qwen3-235b-a22b-thinking" "alibaba/qwen3-next-80b-a3b-thinking" "alibaba/qwen3-vl-thinking" \
 		"qwen/qwen3-235b-a22b-thinking-2507" "qwen/qwen3-30b-a3b-thinking-2507" "qwen/qwen3-next-80b-a3b-thinking" "qwen/qwen3-omni-30b-a3b-thinking" \
 		"qwen/qwen3-vl-235b-a22b-thinking" "qwen/qwen3-vl-30b-a3b-thinking" "qwen/qwen3-vl-8b-thinking" "qwen3-235b-a22b-thinking-2507" {

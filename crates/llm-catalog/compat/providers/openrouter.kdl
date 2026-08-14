@@ -1,28 +1,28 @@
 // Deployment compat for provider "openrouter": transport/wire contract of this deployment,
-// plus per-model residues the family stratum does not explain.
+// plus per-model residues the class stratum does not explain.
 
 provider "openrouter" priority=10 {
 	// pi-openai-chat:012 — `isOpenRouter` => nested reasoning object wire
-	// format for every model on this host; priority beats the qwen family
-	// default (pi checks the host before the family fallback).
+	// format for every model on this host; priority beats the qwen class
+	// default (pi checks the host before the class fallback).
 	thinking-format "openrouter"
-	family "amazon" {
+	class "amazon" {
 		thinking-efforts "minimal" "low" "medium" "high"
 	}
-	family "baidu" {
+	class "baidu" {
 		thinking-efforts "minimal" "low" "medium" "high"
 	}
-	family "cohere" {
+	class "cohere" {
 		thinking-efforts "minimal" "low" "medium" "high"
 	}
-	family "meta" {
+	class "meta" {
 		thinking-efforts "minimal" "low" "medium" "high"
 	}
-	family "stepfun" {
+	class "stepfun" {
 		thinking-efforts "minimal" "low" "medium" "high"
 		supports-tool-choice #false
 	}
-	family "unknown" {
+	class "unknown" {
 		thinking-efforts "minimal" "low" "medium" "high"
 		thinking-mode "effort"
 	}

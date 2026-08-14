@@ -6,13 +6,13 @@ use omp_core::Str;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	Availability, CatalogAlias, CatalogOverlay, ChatCapabilities, ClassificationEvidence,
+	Availability, CatalogAlias, CatalogOverlay, ChatCapabilities, ClassId, ClassificationEvidence,
 	ClassificationInput, ClassificationPhase, ContextStrategy, DiscoveryPagination, DiscoverySpec,
-	DiscoverySpecId, EvidenceConfidence, ExactSelector, ExtendedContextMode, FamilyId,
-	ModelAvailability, ModelCapabilities, ModelKey, ModelLimits, ModelOverlay, ModelPatch,
-	ModelProvenance, ModelSpec, OperationBits, OperationKind, Pricing, ProvenanceKind,
-	ProvenanceSource, ProviderDef, ProviderId, RouteDef, RouteId, ScopedAlias, ThinkingPolicyId,
-	ThinkingRouting, WireModelId, WirePolicyId, classify,
+	DiscoverySpecId, EvidenceConfidence, ExactSelector, ExtendedContextMode, ModelAvailability,
+	ModelCapabilities, ModelKey, ModelLimits, ModelOverlay, ModelPatch, ModelProvenance, ModelSpec,
+	OperationBits, OperationKind, Pricing, ProvenanceKind, ProvenanceSource, ProviderDef,
+	ProviderId, RouteDef, RouteId, ScopedAlias, ThinkingPolicyId, ThinkingRouting, WireModelId,
+	WirePolicyId, classify,
 };
 
 /// Provider-declared facts for one remotely discovered wire model.
@@ -29,8 +29,8 @@ pub struct DiscoveredModel {
 	pub aliases:               Box<[WireModelId]>,
 	/// Provider-declared display name, if present.
 	pub display_name:          Option<Str>,
-	/// Provider-declared family, if present.
-	pub declared_family:       Option<FamilyId>,
+	/// Provider-declared class, if present.
+	pub declared_class:        Option<ClassId>,
 	/// Positive operation evidence reported by the provider.
 	pub declared_operations:   OperationBits,
 	/// Detailed provider-declared capability evidence, if present.
@@ -336,7 +336,7 @@ impl NormalizedDiscovery {
 			selector: ExactSelector { provider, model: model.key.clone() },
 			added:    Some(model.clone()),
 			patch:    ModelPatch {
-				family: Some(model.family),
+				class: Some(model.class),
 				display_name: Some(model.display_name),
 				wire_ids: Some(model.wire_ids),
 				routes: Some(model.routes),
@@ -385,10 +385,10 @@ impl DiscoveryNormalizer {
 			model:          row.wire_model.as_str(),
 			observed_at_ms: row.observed_at_ms,
 		});
-		let family = row
-			.declared_family
+		let class = row
+			.declared_class
 			.clone()
-			.unwrap_or_else(|| classification.family.clone());
+			.unwrap_or_else(|| classification.class.clone());
 		let capabilities = declared_capabilities(row);
 		let wire_policy = match row.extended_context_mode {
 			Some(ExtendedContextMode::Extended) => {
@@ -438,7 +438,7 @@ impl DiscoveryNormalizer {
 			source: declared.clone(),
 			model: ModelSpec {
 				key: ModelKey::new(classification.logical_model.clone()),
-				family,
+				class,
 				display_name: row
 					.display_name
 					.clone()
@@ -514,15 +514,12 @@ fn continuation(
 			Ok(DiscoveryContinuation::Cursor { query_parameter: query_parameter.clone(), value })
 		},
 		DiscoveryPagination::PageNumber { query_parameter, first_page } => {
-			let page = value
-				.parse::<u32>()
-				.ok()
-				.filter(|page| {
-					if page.to_string() != value.as_str() {
-						return false;
-					}
-					*page >= *first_page
-				});
+			let page = value.parse::<u32>().ok().filter(|page| {
+				if page.to_string() != value.as_str() {
+					return false;
+				}
+				*page >= *first_page
+			});
 			page
 				.map(|page| DiscoveryContinuation::PageNumber {
 					query_parameter: query_parameter.clone(),
@@ -621,8 +618,8 @@ fn merge_discovery(existing: &mut NormalizedDiscovery, incoming: NormalizedDisco
 	);
 	existing.model.limits.maximum_batch =
 		conservative_min(existing.model.limits.maximum_batch, incoming.model.limits.maximum_batch);
-	if existing.model.family != incoming.model.family {
-		existing.model.family = FamilyId::new("unknown");
+	if existing.model.class != incoming.model.class {
+		existing.model.class = ClassId::new("unknown");
 	}
 	let mut sources = existing.model.provenance.sources.to_vec();
 	for source in incoming.model.provenance.sources {
@@ -700,7 +697,7 @@ mod tests {
 			wire_model:            WireModelId::from(model),
 			display_name:          None,
 			aliases:               Box::new([]),
-			declared_family:       None,
+			declared_class:        None,
 			declared_operations:   OperationBits::empty(),
 			declared_capabilities: None,
 			declared_limits:       None,
@@ -897,7 +894,7 @@ mod tests {
 	#[test]
 	fn provider_declared_capabilities_are_preserved_with_provenance() {
 		let mut discovered = row("declared");
-		discovered.declared_family = Some(FamilyId::from("provider-family"));
+		discovered.declared_class = Some(ClassId::from("provider-class"));
 		discovered
 			.declared_operations
 			.insert_kind(OperationKind::Chat);
@@ -924,7 +921,7 @@ mod tests {
 		let normalized = DiscoveryNormalizer::new(defaults())
 			.normalize(&discovered)
 			.expect("declared capabilities normalize");
-		assert_eq!(normalized.model.family, "provider-family");
+		assert_eq!(normalized.model.class, "provider-class");
 		assert!(matches!(
 			normalized.model.capabilities.chat.as_ref().map(|chat| &chat.structured_output),
 			Some(Availability::Native(bits)) if bits.contains(StructuredOutputBits::JSON_SCHEMA)

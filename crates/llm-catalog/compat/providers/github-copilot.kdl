@@ -1,17 +1,17 @@
 // Deployment compat for provider "github-copilot": transport/wire contract of this deployment,
-// plus per-model residues the family stratum does not explain.
+// plus per-model residues the class stratum does not explain.
 
 provider "github-copilot" {
-	family "gemini" {
+	class "gemini" {
 		supports-reasoning-effort #false
 		supports-store #false
 	}
-	family "kimi" {
+	class "kimi" {
 		supports-developer-role #false
 		supports-reasoning-effort #false
 		supports-store #false
 	}
-	family "unknown" {
+	class "unknown" {
 		thinking-mode "effort"
 	}
 	models "claude-fable-5" "claude-opus-5" "claude-sonnet-5" {

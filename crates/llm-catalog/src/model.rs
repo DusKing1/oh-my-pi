@@ -7,7 +7,7 @@ use strum::{Display, EnumString, IntoStaticStr};
 use crate::{
 	capability::{CacheRetentionBits, ModelCapabilities},
 	id::{
-		CatalogRevision, CodecId, FamilyId, ModelKey, RouteId, ThinkingPolicyId, WireModelId,
+		CatalogRevision, ClassId, CodecId, ModelKey, RouteId, ThinkingPolicyId, WireModelId,
 		WirePolicyId,
 	},
 	pricing::{PremiumMultiplier, Pricing},
@@ -201,8 +201,8 @@ pub struct ModelProvenance {
 pub struct ModelSpec {
 	/// Stable normalized model key.
 	pub key: ModelKey,
-	/// Normalized model family.
-	pub family: FamilyId,
+	/// Normalized model class (vendor lineage).
+	pub class: ClassId,
 	/// Human-readable display name.
 	pub display_name: Str,
 	/// Opaque wire identifiers paired with their routes.
@@ -238,8 +238,8 @@ pub struct ModelSpec {
 /// Router-facing model facts with no logical or wire model identifier.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PolicyModel {
-	/// Normalized family used only for compiler-resolved policy grouping.
-	pub family: FamilyId,
+	/// Normalized class used only for compiler-resolved policy grouping.
+	pub class: ClassId,
 	/// Typed operation and feature capabilities.
 	pub capabilities: ModelCapabilities,
 	/// Token and batch limits.
@@ -265,7 +265,7 @@ pub struct PolicyModel {
 impl From<&ModelSpec> for PolicyModel {
 	fn from(model: &ModelSpec) -> Self {
 		Self {
-			family: model.family.clone(),
+			class: model.class.clone(),
 			capabilities: model.capabilities.clone(),
 			limits: model.limits,
 			thinking: model.thinking.clone(),

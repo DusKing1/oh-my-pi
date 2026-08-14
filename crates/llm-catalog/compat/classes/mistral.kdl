@@ -1,7 +1,7 @@
-// Model-lineage compat for the "mistral" family (census: model-family predicates in pi
+// Model-lineage compat for the "mistral" class (census: model-class predicates in pi
 // dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
 
-family "mistral" {
+class "mistral" {
 	on "amazon-bedrock" "openrouter" {
 		thinking-efforts "minimal" "low" "medium" "high"
 	}

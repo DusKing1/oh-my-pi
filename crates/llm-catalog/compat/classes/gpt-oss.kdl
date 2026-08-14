@@ -1,7 +1,7 @@
-// Model-lineage compat for the "gpt-oss" family (census: model-family predicates in pi
+// Model-lineage compat for the "gpt-oss" class (census: model-class predicates in pi
 // dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
 
-family "gpt-oss" {
+class "gpt-oss" {
 	on "aiand" "aimlapi" "baseten" "cerebras" "coreweave" "fireworks" "google-vertex" "groq" "huggingface" "kilo" "nanogpt" "novita" "nvidia" "ollama-cloud" "openrouter" "ovhai" "scaleway" "synthetic" "together" "venice" {
 		thinking-mode "effort"
 	}

@@ -1,7 +1,7 @@
-// Model-lineage compat for the "xai" family (census: model-family predicates in pi
+// Model-lineage compat for the "xai" class (census: model-class predicates in pi
 // dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
 
-family "xai" {
+class "xai" {
 	models "grok-4.20-0309-reasoning" "grok-4.20-beta-latest-reasoning" "xai/grok-4-fast-reasoning" "xai/grok-4.1-fast-reasoning" \
 		"xai/grok-4.20-reasoning" "xai/grok-4.20-reasoning-beta" {
 		thinking-requires-effort #true
