@@ -682,13 +682,16 @@ async fn detached_shell_settles_once_after_reconnect_with_exact_artifact() {
 			early_gate.release();
 		}
 	});
-	final_agent
-		.submit(
+	tokio::time::timeout(
+		LIMIT,
+		final_agent.submit(
 			[user_item("observe retained early exit")],
 			TurnId::new(ulid::Ulid::generate().to_string()),
-		)
-		.await
-		.expect("turn after already-exited attachment");
+		),
+	)
+	.await
+	.expect("already-exited attachment submit timeout")
+	.expect("turn after already-exited attachment");
 	early_release.await.expect("early-exit release task");
 	let _early_settled = one_job_event(&final_events, early_job.id.as_str(), false).await;
 	let final_turns = final_capture.captures();

@@ -23,8 +23,10 @@ use omp_e2e::support::{
 	DocServerTask, EnvHarness, Gate, Scratch, ScriptedStep, ScriptedTurn, ScriptedTurnClient,
 	accepted_event, outcome_event, tool_call_item, turn_event, user_item, within,
 };
-use omp_env::EnvClient;
-use omp_proto::{document::v1 as document, inference::v1 as inference, thread::v1 as thread};
+use omp_env::{EnvClient, InvocationEvent};
+use omp_proto::{
+	document::v1 as document, env::v1::InvokeTool, inference::v1 as inference, thread::v1 as thread,
+};
 use omp_storage::transcript::{Header, SessionId};
 use omp_tool::{PromptCaps, Registry, Rev, ToolIdentity, Verdict};
 use omp_tools::edit::{self, FormatPolicy};
@@ -78,6 +80,7 @@ async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> R
 		let env_b_connection = env.connect_client("p1-agent-b").await?;
 		let env_a = env_a_connection.client_clone();
 		let env_b = env_b_connection.client_clone();
+		let initial_tag = read_snapshot_tag(&env_a, "f.rs").await?;
 		let lsp_observer = within(
 			"open persistent LSP observer",
 			TEST_TIMEOUT,
@@ -93,9 +96,9 @@ async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> R
 		registry.register(edit::tool(direct_a.clone(), FormatPolicy::Configured))?;
 		let registry = Arc::new(registry);
 
-		let a1_args = edit_args("f.rs", "PUT 2.=2:\n+    let value = 2;")?;
-		let a2_args = edit_args("f.rs", "PUT 2.=2:\n+    let value = 3;")?;
-		let b_args = edit_args("f.rs", "PUT 1.=1:\n+fn main() { // agent B")?;
+		let a1_args = edit_args("f.rs", initial_tag.as_str(), "PUT 2.=2:\n+    let value = 2;")?;
+		let a2_args = edit_args("f.rs", initial_tag.as_str(), "PUT 2.=2:\n+    let value = 3;")?;
+		let b_args = edit_args("f.rs", initial_tag.as_str(), "PUT 1.=1:\n+fn main() { // agent B")?;
 		let stale_gate = Gate::default();
 		let a_client = ScriptedTurnClient::new([
 			tool_turn(&identity, "a-rev2", a1_args, None),
@@ -224,8 +227,73 @@ fn agent(
 	Ok((agent, events))
 }
 
-fn edit_args(path: &str, patch: &str) -> Result<Bytes> {
-	Ok(Bytes::from(serde_json::to_vec(&serde_json::json!({ "path": path, "patch": patch }))?))
+async fn read_snapshot_tag(client: &EnvClient, path: &str) -> Result<Str> {
+	let mut invocation = within(
+		"opening snapshot read",
+		TEST_TIMEOUT,
+		client.invoke(InvokeTool {
+			invocation_id: "p1-seed-read".to_owned(),
+			name: "read".to_owned(),
+			rev: "1".to_owned(),
+			..InvokeTool::default()
+		}),
+	)
+	.await??;
+	match within("accepting snapshot read", TEST_TIMEOUT, invocation.next_event()).await?? {
+		Some(InvocationEvent::Accepted(_)) => {},
+		other => return Err(anyhow!("snapshot read was not accepted: {other:?}")),
+	}
+	within(
+		"committing snapshot read",
+		TEST_TIMEOUT,
+		invocation.commit_args(Bytes::from(serde_json::to_vec(&serde_json::json!({"path": path}))?)),
+	)
+	.await??;
+	loop {
+		match within("receiving snapshot read", TEST_TIMEOUT, invocation.next_event()).await?? {
+			Some(InvocationEvent::Verdict(verdict)) => {
+				ensure!(
+					!verdict.is_error,
+					"snapshot read failed: {}",
+					String::from_utf8_lossy(&verdict.json)
+				);
+				let verdict: Verdict<serde_json::Value, serde_json::Value> =
+					serde_json::from_slice(&verdict.json)?;
+				let Verdict::Ok(payload) = verdict else {
+					return Err(anyhow!("snapshot read returned a non-success verdict"));
+				};
+				let header = payload["parts"][0]["text"]
+					.as_str()
+					.and_then(|text| text.lines().next())
+					.ok_or_else(|| anyhow!("snapshot read omitted its hashline header"))?;
+				let body = header
+					.strip_prefix('[')
+					.and_then(|header| header.strip_suffix(']'))
+					.ok_or_else(|| anyhow!("snapshot read returned malformed header {header:?}"))?;
+				let (_, tag) = body
+					.rsplit_once('#')
+					.ok_or_else(|| anyhow!("snapshot read returned untagged header {header:?}"))?;
+				ensure!(
+					tag.len() == 4 && tag.bytes().all(|byte| byte.is_ascii_hexdigit()),
+					"snapshot read returned invalid tag {tag:?}"
+				);
+				return Ok(Str::from(tag));
+			},
+			Some(InvocationEvent::Update(_)) => {},
+			Some(InvocationEvent::Accepted(_)) => {
+				return Err(anyhow!("snapshot read was accepted twice"));
+			},
+			Some(InvocationEvent::StreamError(error)) => {
+				return Err(anyhow!("snapshot read stream failed: {}", error.message));
+			},
+			None => return Err(anyhow!("snapshot read closed before its verdict")),
+		}
+	}
+}
+
+fn edit_args(path: &str, tag: &str, patch: &str) -> Result<Bytes> {
+	let input = format!("[{path}#{tag}]\n{patch}");
+	Ok(Bytes::from(serde_json::to_vec(&serde_json::json!({ "input": input }))?))
 }
 
 fn tool_turn(

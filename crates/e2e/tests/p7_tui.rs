@@ -145,8 +145,11 @@ impl Service<LayerCall<Call>> for GatedRoute {
 				match body {
 					AnswerBody::Chat(mut chat) => {
 						let events = async_stream::stream! {
+							let mut pause_pending = true;
 							while let Some(event) = chat.next().await {
-								let pause = matches!(&event, Ok(ChatEvent::ToolCallReady { .. }));
+								let pause = pause_pending
+									&& matches!(&event, Ok(ChatEvent::ToolArgumentsDelta { .. }));
+								pause_pending &= !pause;
 								yield event;
 								if pause {
 									preview_reached
@@ -204,14 +207,9 @@ impl ScriptedGateway {
 		fake.extend(scripts);
 
 		let mut tools = omp_tool::Registry::new();
-		for (name, family) in [
-			("read", ""),
-			("edit", "hl"),
-			("shell", ""),
-			("grep", ""),
-			("glob", ""),
-			("p7_unknown", ""),
-		] {
+		for (name, family) in
+			[("read", ""), ("edit", "hl"), ("shell", ""), ("grep", ""), ("glob", ""), ("py_eval", "")]
+		{
 			tools
 				.register(ProofTool::new(name, family))
 				.expect("proof tool registers");
@@ -389,6 +387,25 @@ fn metered_text_script(text: &'static str) -> FakeScript {
 	])
 }
 
+fn streaming_edit_script() -> FakeScript {
+	let arguments = json!({ "input": "[scratch.txt#A1B2]\nPUT 1.=1:\n+new" });
+	let call = ToolCall {
+		id:        ToolCallId::from("edit-1"),
+		name:      Str::from("edit"),
+		arguments: OpaqueJson::new(arguments),
+	};
+	FakeScript::chat(vec![
+		Ok(ChatEvent::ToolCallStarted { index: 0, id: call.id.clone(), name: call.name.clone() }),
+		Ok(ChatEvent::ToolArgumentsDelta {
+			index: 0,
+			bytes: Bytes::from_static(br#"{"input":"[scratch.txt#A1B2]\nPUT 1.=1:\n+new""#),
+		}),
+		Ok(ChatEvent::ToolArgumentsDelta { index: 0, bytes: Bytes::from_static(br#"}"#) }),
+		Ok(ChatEvent::ToolCallReady { index: 0, call }),
+		Ok(completed(FinishReason::ToolCalls, 1)),
+	])
+}
+
 fn completed(reason: FinishReason, blocks: usize) -> ChatEvent {
 	ChatEvent::Completed(Completion {
 		reason,
@@ -407,11 +424,7 @@ fn scripts(shell_release: &Path) -> Vec<FakeScript> {
 	let queue_marker = shell_quote(&fixture_root.join("p7-queue-side-effect"));
 	vec![
 		tool_script(&[("read-1", "read", json!({ "path": "scratch.txt" }))]),
-		tool_script(&[(
-			"edit-1",
-			"edit",
-			json!({ "path": "scratch.txt", "patch": "PUT 1.=1:\n+new" }),
-		)]),
+		streaming_edit_script(),
 		tool_script(&[(
 			"shell-1",
 			"shell",
@@ -421,11 +434,7 @@ fn scripts(shell_release: &Path) -> Vec<FakeScript> {
 				)
 			}),
 		)]),
-		tool_script(&[(
-			"unknown-1",
-			"p7_unknown",
-			json!({ "path": "mystery.fixture", "opaque": true }),
-		)]),
+		tool_script(&[("unknown-1", "py_eval", json!({ "code": "40 + 2" }))]),
 		metered_text_script("The deterministic tool sequence is complete."),
 		tool_script(&[
 			(
@@ -451,6 +460,7 @@ fn scripts(shell_release: &Path) -> Vec<FakeScript> {
 		)]),
 		text_script("The plain Enter steering ran before the queued follow-up."),
 		text_script("The queued follow-up ran after all prior work."),
+		text_script("Second session retained content."),
 	]
 }
 
@@ -724,6 +734,34 @@ fn wait_snapshot(
 	}
 }
 
+fn wait_raw_sequence(
+	raw: &Arc<Mutex<Vec<u8>>>,
+	start: usize,
+	sequence: &[u8],
+	label: &str,
+) -> Vec<u8> {
+	let deadline = Instant::now() + CHECKPOINT_TIMEOUT;
+	loop {
+		let captured = raw.lock();
+		let segment = &captured[start.min(captured.len())..];
+		if segment
+			.windows(sequence.len())
+			.any(|window| window == sequence)
+		{
+			return segment.to_vec();
+		}
+		if Instant::now() >= deadline {
+			panic!(
+				"raw checkpoint {label:?} timed out waiting for {}\nraw PTY:\n{}",
+				visible(sequence),
+				visible(&captured),
+			);
+		}
+		drop(captured);
+		thread::sleep(Duration::from_millis(15));
+	}
+}
+
 fn assert_surface(snapshot: &Snapshot, label: &str) {
 	let tree = snapshot.tree.to_string();
 	let values = snapshot.values.as_object();
@@ -849,6 +887,7 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 		project.display().to_string(),
 		"--gateway".to_owned(),
 		gateway_socket.display().to_string(),
+		"--py-eval".to_owned(),
 	];
 	let mut process = PtyChild::spawn(&binary, &args, &project, &debug_socket);
 	let raw_capture = process.raw.clone();
@@ -910,8 +949,8 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 
 	gateway.release(3);
 	let unknown = wait_snapshot(&mut debug, &raw_capture, "unknown generic card", |snapshot| {
-		snapshot.combined().contains("p7_unknown")
-			&& snapshot.combined().contains("mystery.fixture")
+		snapshot.combined().contains("py_eval")
+			&& snapshot.combined().contains("42")
 			&& tree_node_by_id(&snapshot.tree, "unknown-1")
 				.is_some_and(|node| node.get("kind").and_then(Value::as_str) == Some("ToolCard"))
 	});
@@ -1056,35 +1095,79 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 		})
 		.collect();
 	assert_eq!(journals.len(), 1, "expected one durable chat journal: {journals:?}");
-	let resume_id = journals[0]
+	let original_session_id = journals[0]
 		.file_stem()
 		.and_then(std::ffi::OsStr::to_str)
 		.expect("session journal has UTF-8 ULID stem");
 	let resume_debug_socket = scratch.path().join("resume-tui-debug.sock");
-	let mut resume_args = args.clone();
-	resume_args.extend(["--resume".to_owned(), resume_id.to_owned()]);
-	let mut resumed = PtyChild::spawn(&binary, &resume_args, &project, &resume_debug_socket);
+	let mut resumed = PtyChild::spawn(&binary, &args, &project, &resume_debug_socket);
 	let resumed_raw = resumed.raw.clone();
 	let mut resume_debug =
 		DebugClient::connect(&resume_debug_socket, Instant::now() + READY_TIMEOUT, &mut resumed);
-	let rehydrated =
-		wait_snapshot(&mut resume_debug, &resumed_raw, "resumed transcript rehydrated", |snapshot| {
-			let frame = &snapshot.frame;
+	let fresh = wait_snapshot(&mut resume_debug, &resumed_raw, "fresh second session", |snapshot| {
+		let frame = &snapshot.frame;
+		frame.contains("Session:")
+			&& !frame.contains("exercise deterministic tools")
+			&& tree_node_by_id(&snapshot.tree, "input").is_some()
+	});
+	assert_surface(&fresh, "fresh second session");
+
+	gateway.release(9);
+	resume_debug.keys("'second-session retained content' enter");
+	let second_session = wait_snapshot(
+		&mut resume_debug,
+		&resumed_raw,
+		"second session retained content",
+		|snapshot| {
+			snapshot.frame.contains("second-session retained content")
+				&& snapshot.frame.contains("Second session retained content.")
+		},
+	);
+	assert_surface(&second_session, "second session retained content");
+
+	resume_debug.keys("'/resume' enter");
+	let picker =
+		wait_snapshot(&mut resume_debug, &resumed_raw, "resume session picker", |snapshot| {
+			snapshot.frame.contains("Resume Session")
+				&& tree_node_by_id(&snapshot.tree, "resume-session").is_some()
+		});
+	assert_surface(&picker, "resume session picker");
+	let rebuild_start = resumed_raw.lock().len();
+	resume_debug.keys("down enter");
+	let rehydrated = wait_snapshot(
+		&mut resume_debug,
+		&resumed_raw,
+		"same-process transcript rehydrated",
+		|snapshot| {
+			let all = snapshot.combined();
 			let tree = snapshot.tree.to_string();
-			frame.contains("exercise deterministic tools")
-				&& frame.contains("read scratch.txt")
-				&& frame.contains("edit scratch.txt")
-				&& frame.contains("shell")
-				&& frame.contains("exit 7")
-				&& frame.contains("p7_unknown")
-				&& frame.contains("mystery.fixture")
-				&& frame.contains("deterministic tool sequence is complete")
-				&& frame.contains("queued follow-up ran after all prior work")
+			all.contains("exercise deterministic tools")
+				&& all.contains("read scratch.txt")
+				&& all.contains("edit scratch.txt")
+				&& all.contains("shell")
+				&& all.contains("exit 7")
+				&& all.contains("py_eval")
+				&& all.contains("\"result\": 42")
+				&& all.contains("deterministic tool sequence is complete")
+				&& all.contains("queued follow-up ran after all prior work")
+				&& snapshot.frame.contains(original_session_id)
+				&& !snapshot.frame.contains("second-session retained content")
+				&& !snapshot.frame.contains("Second session retained content.")
 				&& ["read-1", "edit-1", "shell-1", "unknown-1"]
 					.iter()
 					.all(|id| tree.contains(id))
-		});
-	assert_surface(&rehydrated, "resumed transcript");
+		},
+	);
+	assert_surface(&rehydrated, "same-process resumed transcript");
+	let rebuild_bytes =
+		wait_raw_sequence(&resumed_raw, rebuild_start, b"\x1b[H\x1b[3J", "history rebuild");
+	assert!(
+		rebuild_bytes
+			.windows(b"\x1b[H\x1b[3J".len())
+			.any(|window| window == b"\x1b[H\x1b[3J"),
+		"session switch omitted direct-terminal history rebuild:\n{}",
+		visible(&rebuild_bytes),
+	);
 	resume_debug.keys("'/quit' enter");
 	drop(resume_debug);
 	let resumed_before = resumed.before.clone();
