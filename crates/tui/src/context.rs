@@ -65,7 +65,7 @@ pub struct Grid {
 
 /// Semantic prefixes for diff lines.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct DiffPrefixes {
+pub struct DiffPrefixes {
 	/// Header or file metadata prefix.
 	pub header:       &'static str,
 	/// Unchanged context line prefix.

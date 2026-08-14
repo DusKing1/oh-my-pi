@@ -931,12 +931,6 @@ impl Demo {
 		self.editor.borrow_mut().take_copied()
 	}
 
-	/// Height in rows of the composer block at the document tail; the GUI
-	/// host routes plain pointer gestures there to the scene.
-	pub const fn composer_rows(&self) -> u16 {
-		self.editor_ui.height()
-	}
-
 	/// Routes a document-space mouse report into the editor UI.
 	pub fn handle_mouse(&mut self, report: &MouseReport) {
 		let editor_height = self.editor_ui.height();

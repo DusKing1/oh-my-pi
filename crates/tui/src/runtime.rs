@@ -561,7 +561,7 @@ impl App {
 	/// Direct terminals clear and reconstruct native history on the next
 	/// [`App::next`] call. A visible alternate-screen layer defers that rebuild
 	/// until release so the replacement appears atomically.
-	pub fn rebuild_history(&mut self) {
+	pub const fn rebuild_history(&mut self) {
 		if self.alt_hold {
 			self.main_stale = true;
 			self.needs_rebuild = false;

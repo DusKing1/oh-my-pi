@@ -186,15 +186,10 @@ pub(crate) fn render_partial(src: &Str, width: u16, theme: &MdTheme, sink: &mut 
 }
 
 fn render_inner(src: &Str, width: u16, theme: &MdTheme, sink: &mut dyn RichSink, partial: bool) {
-	let normalized = normalize_source(src);
-	let repaired = if partial {
-		normalized
-	} else {
-		repair_orphan_closing_fence(&normalized)
-	};
+	let normalized = normalize_source(src, !partial);
 	// degenerate viewports still make progress: every block renders at
 	// one cell and the paint layer clips
-	render_document(&repaired, width.max(1), theme, sink);
+	render_document(&normalized, width.max(1), theme, sink);
 }
 
 fn render_document(source: &Str, width: u16, theme: &MdTheme, sink: &mut dyn RichSink) {
@@ -592,11 +587,8 @@ fn is_atx_heading_line(line: &str) -> bool {
 }
 
 fn is_fenced_source_intro(line: &str) -> bool {
-	let candidate = line
-		.trim_end()
-		.strip_suffix(':')
-		.unwrap_or(line.trim_end())
-		.trim_end();
+	let trimmed = line.trim_end();
+	let candidate = trimmed.strip_suffix(':').unwrap_or(trimmed).trim_end();
 	let word_start = candidate
 		.rfind(|character: char| !character.is_ascii_alphabetic())
 		.map_or(0, |index| index + candidate[index..].chars().next().map_or(0, char::len_utf8));
@@ -1267,9 +1259,7 @@ fn table_separator(line: &str) -> Option<Vec<Alignment>> {
 		return None;
 	}
 	let cells = table_cell_iter(line);
-	if cells.clone().next().is_none() {
-		return None;
-	}
+	cells.clone().next()?;
 	cells.map(table_alignment).collect()
 }
 
@@ -1322,18 +1312,17 @@ fn join_lines(lines: &[&str]) -> Str {
 	joined.freeze()
 }
 
-fn normalize_source(source: &Str) -> Str {
-	if !source.as_str().contains('\t')
-		&& !source.as_str().contains('<')
-		&& !source.as_str().contains('&')
-	{
-		return source.clone();
-	}
+fn normalize_source(source: &Str, repair_fences: bool) -> Str {
 	let tabs = replace_tabs(source);
-	if !tabs.as_str().contains('<') && !tabs.as_str().contains('&') {
-		return tabs;
+	let source = if repair_fences {
+		repair_orphan_closing_fence(&tabs)
+	} else {
+		tabs
+	};
+	if !source.as_str().contains('<') && !source.as_str().contains('&') {
+		return source;
 	}
-	let text = tabs.as_str();
+	let text = source.as_str();
 	let mut output = StrMut::with_capacity(text.len());
 	let mut outside_start = 0;
 	let mut in_fence: Option<(char, usize)> = None;

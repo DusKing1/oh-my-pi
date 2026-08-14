@@ -27,7 +27,7 @@ flume = { workspace = true }
 layout-rs = { workspace = true }
 mermaid-text = { workspace = true }
 omp-core = { workspace = true }
-omp-tui-macros = { workspace = true }
+omp-macros = { workspace = true }
 png = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }

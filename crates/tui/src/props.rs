@@ -1187,7 +1187,7 @@ mod tests {
 			assert_eq!(name.parse(), Ok(prop));
 			count += 1;
 		}
-		assert_eq!(count, 69);
+		assert_eq!(count, 70);
 	}
 
 	#[test]

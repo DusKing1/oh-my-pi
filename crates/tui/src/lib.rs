@@ -88,7 +88,7 @@ pub use notify::{
 	Notification, NotificationAction, NotificationBuilder, NotificationSound, Urgency, notify,
 };
 /// Builds a component tree from declarative markup.
-pub use omp_tui_macros::dom;
+pub use omp_macros::dom;
 pub use overlay::{Layer, OverlayAnchor, OverlayBand, OverlayId, OverlayMargin, OverlayOptions};
 pub use paste::{Pasted, PastedImage};
 pub use props::{Prop, PropValue, Props};

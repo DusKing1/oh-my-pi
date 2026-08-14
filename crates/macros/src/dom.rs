@@ -1,21 +1,13 @@
-//! Proc macros for `omp-tui`: the [`dom!`](macro@dom) markup macro.
+//! `dom!` markup lowering: parses a single-root element tree and lowers
+//! elements, attributes, expressions, string children, and child-level `for`,
+//! `if`, and `match` control flow into `omp_tui` component-builder calls.
 
-use proc_macro::TokenStream;
 use proc_macro2::{Delimiter, Group, Ident, Span, TokenStream as TokenStream2, TokenTree};
 use quote::{format_ident, quote};
 use syn::{Arm, Expr, ExprForLoop, ExprIf, ExprMatch, LitInt, LitStr, parse2};
 
-/// Builds one component tree from markup with child-level `for`, `if`, and
-/// `match` control flow.
-#[proc_macro]
-pub fn dom(input: TokenStream) -> TokenStream {
-	match expand(input.into()) {
-		Ok(tokens) => tokens.into(),
-		Err(error) => error.into_compile_error().into(),
-	}
-}
-
-fn expand(input: TokenStream2) -> syn::Result<TokenStream2> {
+/// Expands the `dom!` body into component-builder calls.
+pub fn expand(input: TokenStream2) -> syn::Result<TokenStream2> {
 	let mut parser = Parser::new(input);
 	let root = parser.element()?;
 	if let Some(token) = parser.peek() {

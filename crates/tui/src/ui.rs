@@ -2351,6 +2351,7 @@ mod tests {
 		"lift",
 		"shimmer",
 		"reveal",
+		"partial",
 	];
 
 	#[test]
