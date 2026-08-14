@@ -1133,8 +1133,11 @@ async fn uds_clients_cannot_invoke_session_local_eval_but_retain_ordinary_tools(
 	let server = Arc::clone(&harness.server);
 	let serve_shutdown = shutdown.clone();
 	let socket_for_server = socket.clone();
-	let server_task =
-		tokio::spawn(async move { server.serve_uds(&socket_for_server, serve_shutdown).await });
+	let server_task = tokio::spawn(async move {
+		server
+			.serve_uds(&socket_for_server, serve_shutdown, None)
+			.await
+	});
 	tokio::time::timeout(Duration::from_secs(2), async {
 		while !socket.exists() {
 			tokio::task::yield_now().await;
@@ -2170,4 +2173,105 @@ async fn real_embedded_python_worker_registers_configured_extensions_when_availa
 		.expect("real embedded Python worker and extension");
 	assert!(!supervisor.registrations().is_empty(), "configured extension registered no tools");
 	supervisor.shutdown().await;
+}
+
+#[tokio::test]
+async fn uds_retire_unlinks_listener_and_drains_existing_clients() {
+	let harness = Harness::start(Registry::new()).await;
+	let socket = harness.state.path().join("env-retire.sock");
+	let shutdown = CancellationToken::new();
+	let server = Arc::clone(&harness.server);
+	let serve_shutdown = shutdown.clone();
+	let socket_for_server = socket.clone();
+	let mut server_task = tokio::spawn(async move {
+		server
+			.serve_uds(&socket_for_server, serve_shutdown, None)
+			.await
+	});
+	tokio::time::timeout(Duration::from_secs(2), async {
+		while !socket.exists() {
+			tokio::task::yield_now().await;
+		}
+	})
+	.await
+	.expect("UDS environment socket did not become ready");
+
+	let (retiring, retiring_bridge) = EnvServer::connect_owner_uds(&socket)
+		.await
+		.expect("connect retiring client");
+	let retiring_hello = retiring
+		.hello(ClientHello {
+			client: "envd-retiring".into(),
+			schema_rev: SCHEMA_REV,
+			..ClientHello::default()
+		})
+		.await
+		.expect("retiring client hello");
+	let (remaining, remaining_bridge) = EnvServer::connect_owner_uds(&socket)
+		.await
+		.expect("connect remaining client");
+	let remaining_hello = remaining
+		.hello(ClientHello {
+			client: "envd-remaining".into(),
+			schema_rev: SCHEMA_REV,
+			..ClientHello::default()
+		})
+		.await
+		.expect("remaining client hello");
+	assert!(!retiring_hello.server_build.is_empty());
+	assert_eq!(retiring_hello.server_build, remaining_hello.server_build);
+
+	retiring.retire().await.expect("retire acknowledgement");
+	tokio::time::timeout(Duration::from_secs(2), async {
+		loop {
+			match tokio::net::UnixStream::connect(&socket).await {
+				Err(error)
+					if matches!(
+						error.kind(),
+						std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+					) =>
+				{
+					break;
+				},
+				_ => tokio::task::yield_now().await,
+			}
+		}
+	})
+	.await
+	.expect("retired UDS listener remained reachable");
+	remaining
+		.list_processes(ListProcesses::default())
+		.await
+		.expect("existing client request after retire");
+
+	drop(retiring);
+	retiring_bridge.abort();
+	assert!(
+		tokio::time::timeout(Duration::from_millis(50), &mut server_task)
+			.await
+			.is_err(),
+		"server exited while an existing client remained connected"
+	);
+	drop(remaining);
+	remaining_bridge.abort();
+	tokio::time::timeout(Duration::from_secs(2), server_task)
+		.await
+		.expect("retired server did not finish draining")
+		.expect("retired server task panicked")
+		.expect("retired server failed");
+}
+
+#[tokio::test]
+async fn in_process_retire_is_rejected_as_unsupported() {
+	let harness = Harness::start(Registry::new()).await;
+	let error = harness
+		.client()
+		.retire()
+		.await
+		.expect_err("in-process retire succeeded");
+	let omp_env::ClientError::Protocol(error) = error else {
+		panic!("in-process retire did not return a protocol error");
+	};
+	assert_eq!(error.code, omp_proto::env::v1::ProtocolErrorCode::Unsupported as i32);
+	assert_eq!(error.message, "retire is not available on this transport");
 }

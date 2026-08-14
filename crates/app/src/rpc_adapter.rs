@@ -1443,6 +1443,23 @@ fn inference_turn_error(error: Error) -> pb::TurnEvent {
 		ErrorKind::EmptyOutput => pb::turn_error::Kind::EmptyOutput,
 		_ => pb::turn_error::Kind::Upstream,
 	};
+	let detail = if error.kind == ErrorKind::Authentication {
+		error.provider.as_ref().map_or_else(
+			|| {
+				"Authentication failed. Use `/login <provider>` in chat or run `omp auth login \
+				 <provider>`."
+					.to_owned()
+			},
+			|provider| {
+				format!(
+					"Authentication failed for provider `{provider}`. Use `/login {provider}` in chat \
+					 or run `omp auth login {provider}`."
+				)
+			},
+		)
+	} else {
+		format!("{:?} during {:?}", error.kind, error.phase)
+	};
 	let retry_after_ms = match error.action {
 		omp_llm_inference::RetryAction::SameRoute { after } => {
 			after.as_millis().try_into().unwrap_or(u64::MAX)
@@ -1452,7 +1469,7 @@ fn inference_turn_error(error: Error) -> pb::TurnEvent {
 	pb::TurnEvent {
 		event: Some(pb::turn_event::Event::Error(pb::TurnError {
 			kind: kind as i32,
-			detail: format!("{:?} during {:?}", error.kind, error.phase),
+			detail,
 			actual: None,
 			unsupported: Vec::new(),
 			retry_after_ms,
@@ -3022,6 +3039,24 @@ mod tests {
 			Some(pb::turn_event::Event::Error(pb::TurnError { kind, .. }))
 				if kind == pb::turn_error::Kind::Upstream as i32
 		));
+	}
+
+	#[test]
+	fn authentication_turn_error_names_the_login_command_and_provider() {
+		let authentication = Error::new(
+			ErrorKind::Authentication,
+			ErrorPhase::Authentication,
+			RetryAction::Never,
+			ExecutionReceipt::default(),
+		)
+		.provider(ProviderId::from("kimi-code"));
+		let Some(pb::turn_event::Event::Error(error)) = inference_turn_error(authentication).event
+		else {
+			panic!("authentication failure must project a turn error");
+		};
+		assert_eq!(error.kind, pb::turn_error::Kind::Auth as i32);
+		assert!(error.detail.contains("/login kimi-code"));
+		assert!(error.detail.contains("omp auth login kimi-code"));
 	}
 
 	#[test]

@@ -56,8 +56,9 @@ impl EnvHarness {
 		let task_server = Arc::clone(&server);
 		let task_socket = socket.clone();
 		let task_shutdown = shutdown.clone();
-		let server_task =
-			tokio::spawn(async move { task_server.serve_uds(&task_socket, task_shutdown).await });
+		let server_task = tokio::spawn(async move {
+			task_server.serve_uds(&task_socket, task_shutdown, None).await
+		});
 		wait_socket(&socket).await?;
 		let (client, client_task) = connect_env(&socket).await?;
 		within(

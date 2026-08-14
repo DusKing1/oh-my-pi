@@ -3,6 +3,11 @@ pub mod renderers;
 
 use std::{
 	collections::{HashMap, HashSet},
+	future::pending,
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -34,6 +39,62 @@ use crate::chat_ui::{
 };
 
 const RESUME_SELECT_ID: &str = "resume-session";
+const HELP_TEXT: &str = "\
+**Commands**
+- `/help` — show this help
+- `/login [provider]` — authenticate the selected or named provider
+- `/model <model>` — change the selected model
+- `/resume` — open another project session
+- `/quit` — exit";
+
+/// User-visible progress from the asynchronous provider login worker.
+pub(crate) enum ChatAuthEvent {
+	/// Public login instructions or waiting state.
+	Notice(Str),
+	/// Login completed and credentials are available to later turns.
+	Complete(Str),
+	/// Login stopped with a secret-free diagnostic.
+	Failed(Str),
+}
+
+/// Non-blocking command and event channels for provider authentication.
+pub(crate) struct ChatAuth {
+	requests: flume::Sender<Str>,
+	events:   flume::Receiver<ChatAuthEvent>,
+	active:   Arc<AtomicBool>,
+}
+
+impl ChatAuth {
+	/// Creates a UI handle over an application-owned authentication worker.
+	pub(crate) const fn new(
+		requests: flume::Sender<Str>,
+		events: flume::Receiver<ChatAuthEvent>,
+		active: Arc<AtomicBool>,
+	) -> Self {
+		Self { requests, events, active }
+	}
+
+	/// Starts one provider login unless another flow is already active.
+	pub(crate) fn start(&self, provider: Str) -> Result<(), &'static str> {
+		if self
+			.active
+			.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+			.is_err()
+		{
+			return Err("authentication is already in progress");
+		}
+		if self.requests.try_send(provider).is_err() {
+			self.active.store(false, Ordering::Release);
+			return Err("authentication worker is unavailable");
+		}
+		Ok(())
+	}
+
+	/// Reports whether the worker currently owns a login flow.
+	pub(crate) fn is_active(&self) -> bool {
+		self.active.load(Ordering::Acquire)
+	}
+}
 
 /// One project-local durable session shown by the resume picker.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -100,6 +161,7 @@ pub async fn run<'a, C, R>(
 	app: &'a mut App,
 	mut agent: Agent<C>,
 	session: ChatUiSession,
+	auth: Option<&'a ChatAuth>,
 	mut list_sessions: R,
 ) -> anyhow::Result<ChatUiExit>
 where
@@ -189,6 +251,37 @@ where
 					let text = app.ui().values()["input"].as_str().unwrap_or("").to_owned();
 					app.ui_mut().set_text("input", "");
 					match parse_input(&text) {
+						Ok(ChatCommand::Help) => push_notice(app.ui_mut(), HELP_TEXT),
+						Ok(ChatCommand::Login(requested)) => {
+							if is_active {
+								push_error(
+									app.ui_mut(),
+									"Wait for the active turn to finish before logging in.",
+								);
+							} else if let Some(auth) = auth {
+								let provider = requested.or_else(|| {
+									model_provider(Catalog::embedded(), &session_model)
+								});
+								match provider {
+									Some(provider) => match auth.start(provider.clone()) {
+										Ok(()) => push_notice(
+											app.ui_mut(),
+											format!("Starting authentication for `{provider}`…"),
+										),
+										Err(error) => push_error(app.ui_mut(), error),
+									},
+									None => push_error(
+										app.ui_mut(),
+										"The selected model has no provider to authenticate.",
+									),
+								}
+							} else {
+								push_error(
+									app.ui_mut(),
+									"Provider login is unavailable through a remote gateway; run `omp auth login <provider>` on the gateway host.",
+								);
+							}
+						},
 						Ok(ChatCommand::Model(requested)) => {
 							match select_model(&agent_state, Catalog::embedded(), &requested) {
 								Some(spec) => {
@@ -226,7 +319,12 @@ where
 							break 'ui;
 						},
 						Ok(ChatCommand::Submit(item)) => {
-							if is_active {
+							if auth.is_some_and(ChatAuth::is_active) {
+								push_error(
+									app.ui_mut(),
+									"Wait for provider authentication to finish before submitting.",
+								);
+							} else if is_active {
 								let class = if matches!(trigger, AppEvent::Key(Key::FollowUp)) {
 									InterruptClass::Idle
 								} else {
@@ -284,6 +382,12 @@ where
 			Ok(message) = err_rx.recv_async() => push_error(app.ui_mut(), message),
 			Ok(()) = submit_ack_rx.recv_async() => {
 				submit_pending = false;
+			},
+			Some(auth_event) = next_auth_event(auth) => match auth_event {
+				ChatAuthEvent::Notice(message) | ChatAuthEvent::Complete(message) => {
+					push_notice(app.ui_mut(), message);
+				},
+				ChatAuthEvent::Failed(message) => push_error(app.ui_mut(), message),
 			},
 			Ok(agent_event) = events.recv() => {
 				match &*agent_event {
@@ -466,6 +570,18 @@ fn resolve_model<'a>(catalog: &'a Catalog, selector: &str) -> Option<&'a ModelSp
 		.model(&ModelKey::from(selector))
 		.or_else(|| catalog.resolve_alias(selector))
 }
+fn model_provider(catalog: &Catalog, selector: &str) -> Option<Str> {
+	let model = resolve_model(catalog, selector)?;
+	let route = catalog.route(model.routes.first()?)?;
+	Some(Str::from(route.provider.as_str()))
+}
+
+async fn next_auth_event(auth: Option<&ChatAuth>) -> Option<ChatAuthEvent> {
+	match auth {
+		Some(auth) => auth.events.recv_async().await.ok(),
+		None => pending().await,
+	}
+}
 
 fn render_history(
 	ui: &mut Ui,
@@ -574,6 +690,14 @@ fn push_tool_card(ui: &mut Ui, call_id: &Str) {
 	});
 }
 
+fn push_notice(ui: &mut Ui, message: impl Into<Str>) {
+	let message = message.into();
+	ui.update_component::<TranscriptView>("transcript", |view| {
+		view.push(dom! { <markdown>{message}</markdown> });
+		true
+	});
+}
+
 fn push_error(ui: &mut Ui, message: impl std::fmt::Display) {
 	let rendered = format!("**Error:** {message}");
 	ui.update_component::<TranscriptView>("transcript", |view| {
@@ -634,23 +758,13 @@ fn update_status(
 	dropped: u64,
 ) -> bool {
 	ui.update_component::<Status>("status", |status| {
-		let mut next = Status::new().segment(Segment::new().label(format!("Session: {session_id}")));
-		if !model.is_empty() {
-			next = next.segment(Segment::new().label(model));
-		}
-		if attempt > 1 {
-			next = next.segment(Segment::new().label(format!("Attempt: {attempt}")));
-		}
-		if job_count > 0 {
-			next = next.segment(Segment::new().label(format!("Jobs: {job_count}")));
-		}
-		if cost_nanos > 0 {
+		let cost = (cost_nanos > 0).then(|| {
 			let dollars = cost_nanos / 1_000_000_000;
 			let fraction = cost_nanos % 1_000_000_000 / 100_000;
-			next = next.segment(Segment::new().label(format!("Cost: ${dollars}.{fraction:04}")));
-		}
-		if context_tokens > 0 {
-			let context = context_window.filter(|limit| *limit > 0).map_or_else(
+			Segment::new().label(format!("Cost: ${dollars}.{fraction:04}"))
+		});
+		let context = (context_tokens > 0).then(|| {
+			let label = context_window.filter(|limit| *limit > 0).map_or_else(
 				|| format!("Ctx: {context_tokens} tk"),
 				|limit| {
 					let percent = context_tokens
@@ -661,12 +775,21 @@ fn update_status(
 					format!("Ctx: {percent}%")
 				},
 			);
-			next = next.segment(Segment::new().label(context));
-		}
-		if dropped > 0 {
-			next = next.segment(Segment::new().label(format!("Dropped: {dropped}")));
-		}
-		*status = next.with(Prop::Id, "status");
+			Segment::new().label(label)
+		});
+		status.set_segments(
+			[
+				Some(Segment::new().label(format!("Session: {session_id}"))),
+				(!model.is_empty()).then(|| Segment::new().label(model)),
+				(attempt > 1).then(|| Segment::new().label(format!("Attempt: {attempt}"))),
+				(job_count > 0).then(|| Segment::new().label(format!("Jobs: {job_count}"))),
+				cost,
+				context,
+				(dropped > 0).then(|| Segment::new().label(format!("Dropped: {dropped}"))),
+			]
+			.into_iter()
+			.flatten(),
+		);
 		true
 	})
 }
@@ -718,6 +841,31 @@ mod tests {
 		assert!(chat_active(true, AgentPhase::Idle));
 		assert!(chat_active(false, AgentPhase::Turning));
 		assert!(chat_active(true, AgentPhase::Projecting));
+	}
+
+	#[test]
+	fn help_lists_every_implemented_command() {
+		for command in ["/help", "/login", "/model", "/resume", "/quit"] {
+			assert!(HELP_TEXT.contains(command), "help omitted {command}");
+		}
+	}
+
+	#[test]
+	fn selected_model_resolves_its_login_provider() {
+		assert_eq!(model_provider(Catalog::embedded(), "kimi-code/k3").as_deref(), Some("kimi-code"));
+	}
+
+	#[test]
+	fn auth_handle_rejects_overlapping_logins() {
+		let (request_tx, request_rx) = flume::bounded(1);
+		let (_event_tx, event_rx) = flume::unbounded();
+		let active = Arc::new(AtomicBool::new(false));
+		let auth = ChatAuth::new(request_tx, event_rx, Arc::clone(&active));
+		auth.start(Str::from("kimi-code")).expect("start login");
+		assert_eq!(request_rx.try_recv().expect("login request").as_str(), "kimi-code");
+		assert_eq!(auth.start(Str::from("openai")), Err("authentication is already in progress"));
+		active.store(false, Ordering::Release);
+		assert!(!auth.is_active());
 	}
 	#[test]
 	fn status_updates_preserve_identity_and_replace_all_metrics() {

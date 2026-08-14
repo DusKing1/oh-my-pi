@@ -2,6 +2,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use omp_core::Str;
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -26,6 +27,7 @@ struct EnvironmentInner {
 	root_uri:     Url,
 	workspace_id: [u8; 16],
 	server_epoch: [u8; 16],
+	server_build: Str,
 }
 
 impl std::fmt::Debug for Environment {
@@ -40,6 +42,7 @@ impl std::fmt::Debug for Environment {
 impl Environment {
 	/// Creates one authority for a canonical project root.
 	pub fn new(config: ServerConfig) -> Result<Self> {
+		let server_build = config.server_build().clone();
 		let root_uri = config.file_uri(config.environment_root())?;
 		let store = DocumentStore::new(config)?;
 		let lsp = LspRegistry::new(store.clone());
@@ -58,6 +61,7 @@ impl Environment {
 				root_uri,
 				workspace_id,
 				server_epoch,
+				server_build,
 			}),
 		})
 	}
@@ -120,6 +124,12 @@ impl Environment {
 	#[must_use]
 	pub fn server_epoch(&self) -> &[u8; 16] {
 		&self.inner.server_epoch
+	}
+
+	/// Returns the build identity advertised to document clients.
+	#[must_use]
+	pub fn server_build(&self) -> &str {
+		self.inner.server_build.as_str()
 	}
 
 	/// Stops every active document actor after connection sessions are closed.

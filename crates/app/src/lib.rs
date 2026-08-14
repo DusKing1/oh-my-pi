@@ -10,6 +10,7 @@ use clap::Parser as _;
 pub mod auth_backend;
 pub mod auth_rpc;
 pub mod blob_rpc;
+pub mod build_id;
 pub mod chat;
 mod chat_ui;
 pub mod cli;

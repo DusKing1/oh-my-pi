@@ -1820,6 +1820,7 @@ mod tests {
 							workspace_id: Bytes::from_static(b"workspace"),
 							root_uri,
 							server_epoch: Bytes::from_static(b"rollback-epoch"),
+							server_build: String::new(),
 						})),
 					},
 					config,

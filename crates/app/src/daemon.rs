@@ -38,6 +38,8 @@ use omp_llm_inference::{
 	session::{ConversationError, ConversationSessionPlanner},
 	transport::{http::HttpTransport, websocket_transport::WebSocketTransport},
 };
+#[cfg(feature = "local-applefm")]
+use omp_llm_inference::{ReasonId, provider::builtin::LocalRouteBackend};
 use omp_proto::{
 	auth::v1::auth_server::AuthServer, blob::v1::blob_server::BlobServer,
 	inference::v1::inference_server::InferenceServer,

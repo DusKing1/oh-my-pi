@@ -6,6 +6,11 @@ use super::now_ms;
 /// Actions parsed from user input in the chat shell.
 #[derive(Debug, PartialEq)]
 pub enum ChatCommand {
+	/// Show the commands implemented by this chat shell.
+	Help,
+	/// Start provider authentication, defaulting to the selected model's
+	/// provider.
+	Login(Option<Str>),
 	/// Update the session model targeting the given identifier.
 	Model(Str),
 	/// Open the project-local durable-session picker.
@@ -49,6 +54,16 @@ pub fn parse_input(text: &str) -> Result<ChatCommand, InputError> {
 		if text == "/model" {
 			return Err(InputError::EmptyModel);
 		}
+		if text == "/help" {
+			return Ok(ChatCommand::Help);
+		}
+		if text == "/login" {
+			return Ok(ChatCommand::Login(None));
+		}
+		if let Some(rest) = text.strip_prefix("/login ") {
+			let provider = rest.trim();
+			return Ok(ChatCommand::Login((!provider.is_empty()).then(|| Str::from(provider))));
+		}
 		if text == "/resume" {
 			return Ok(ChatCommand::Resume);
 		}
@@ -78,6 +93,12 @@ mod tests {
 	#[test]
 	fn test_slash_commands() {
 		assert_eq!(parse_input("/model smol"), Ok(ChatCommand::Model(Str::from("smol"))));
+		assert_eq!(parse_input("/help"), Ok(ChatCommand::Help));
+		assert_eq!(parse_input("/login"), Ok(ChatCommand::Login(None)));
+		assert_eq!(
+			parse_input("/login kimi-code"),
+			Ok(ChatCommand::Login(Some(Str::from("kimi-code"))))
+		);
 		assert_eq!(parse_input("/resume"), Ok(ChatCommand::Resume));
 		assert_eq!(parse_input("/quit"), Ok(ChatCommand::Quit));
 	}

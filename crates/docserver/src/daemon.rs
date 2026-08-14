@@ -1,4 +1,7 @@
 //! Multi-client document authority over a local Unix socket or standard I/O.
+//!
+//! Embedding daemons can observe the socket connection gauge to drive idle
+//! detection without inspecting document protocol traffic.
 
 #[cfg(unix)]
 use std::path::Path;
@@ -9,6 +12,7 @@ use std::{
 };
 use std::{path::PathBuf, time::Duration};
 
+use omp_core::Str;
 #[cfg(unix)]
 use omp_core::hex;
 #[cfg(unix)]
@@ -40,6 +44,18 @@ pub enum Transport {
 	/// Serve concurrent framed connections over the Unix-domain socket at this
 	/// path.
 	Socket(PathBuf),
+}
+
+/// Options for serving the document authority.
+pub struct ServeOptions {
+	/// Language-server process configuration files loaded before serving.
+	pub lsp_config_paths: Vec<PathBuf>,
+	/// External shutdown; `None` installs signal handling.
+	pub shutdown:         Option<CancellationToken>,
+	/// Build identity advertised in `ServerHello`; empty means unknown.
+	pub server_build:     Str,
+	/// Socket-connection gauge receiving the live accepted-connection count.
+	pub connections:      Option<tokio::sync::watch::Sender<usize>>,
 }
 
 /// An error that prevents the document authority from starting or serving its
@@ -187,38 +203,21 @@ pub enum Error {
 /// The result of a document-authority operation.
 pub type Result<T = ()> = std::result::Result<T, Error>;
 
-/// Runs the document authority rooted at `root` on `transport` until shutdown.
+/// Serves the document authority rooted at `root` on `transport`.
 ///
-/// Every `lsp_config_path` is parsed before authority is acquired. All declared
-/// processes complete initialization and registry installation before the
-/// client transport starts accepting requests. On Unix, socket endpoints are
-/// protected by a separate instance lock and created sockets are owner-only.
-/// `SIGINT` or `SIGTERM` starts graceful connection, LSP, and actor shutdown.
-pub async fn run(root: PathBuf, transport: Transport, lsp_config_paths: Vec<PathBuf>) -> Result {
-	run_with_shutdown(root, transport, lsp_config_paths, None).await
+/// Every LSP configuration path is parsed before authority is acquired. All
+/// declared processes complete initialization and registry installation before
+/// the client transport starts accepting requests. On Unix, socket endpoints
+/// are protected by a separate instance lock and created sockets are
+/// owner-only. When no external shutdown token is supplied, `SIGINT` or
+/// `SIGTERM` starts graceful connection, LSP, and actor shutdown.
+pub async fn serve(root: PathBuf, transport: Transport, options: ServeOptions) -> Result {
+	run_with_shutdown(root, transport, options).await
 }
 
-/// Serves the document authority until `shutdown` is cancelled.
-///
-/// Environment daemons use this entry point to own the document authority in
-/// process while retaining the same socket transport used by other clients.
-pub async fn serve_until(
-	root: PathBuf,
-	transport: Transport,
-	lsp_config_paths: Vec<PathBuf>,
-	shutdown: CancellationToken,
-) -> Result {
-	run_with_shutdown(root, transport, lsp_config_paths, Some(shutdown)).await
-}
-
-async fn run_with_shutdown(
-	root: PathBuf,
-	transport: Transport,
-	lsp_config_paths: Vec<PathBuf>,
-	shutdown: Option<CancellationToken>,
-) -> Result {
-	let process_configs = load_lsp_process_configs(&lsp_config_paths)?;
-	let config = ServerConfig::new(root)?;
+async fn run_with_shutdown(root: PathBuf, transport: Transport, options: ServeOptions) -> Result {
+	let process_configs = load_lsp_process_configs(&options.lsp_config_paths)?;
+	let config = ServerConfig::new(root)?.with_server_build(options.server_build);
 	let authority_lock = config.try_lock_authority()?;
 	let environment = Environment::new(config)?;
 	let mut processes = Vec::with_capacity(process_configs.len());
@@ -232,12 +231,14 @@ async fn run_with_shutdown(
 			},
 		}
 	}
-	let serve_result = match (transport, shutdown) {
+	let serve_result = match (transport, options.shutdown) {
 		(Transport::Stdio, None) => serve_stdio(environment.clone()).await,
 		(Transport::Stdio, Some(shutdown)) => serve_stdio_until(environment.clone(), shutdown).await,
-		(Transport::Socket(path), None) => serve_socket(environment.clone(), path).await,
+		(Transport::Socket(path), None) => {
+			serve_socket(environment.clone(), path, options.connections).await
+		},
 		(Transport::Socket(path), Some(shutdown)) => {
-			serve_socket_until(environment.clone(), path, shutdown).await
+			serve_socket_until(environment.clone(), path, shutdown, options.connections).await
 		},
 	};
 	let process_result = stop_lsp_processes(&mut processes).await;
@@ -400,14 +401,18 @@ fn validate_socket_location(path: &Path, root: &Path) -> Result {
 }
 
 #[cfg(unix)]
-async fn serve_socket(environment: Environment, path: PathBuf) -> Result {
+async fn serve_socket(
+	environment: Environment,
+	path: PathBuf,
+	connections: Option<tokio::sync::watch::Sender<usize>>,
+) -> Result {
 	let shutdown = CancellationToken::new();
 	let signal_shutdown = shutdown.clone();
 	let signal = tokio::spawn(async move {
 		let _ = shutdown_signal().await;
 		signal_shutdown.cancel();
 	});
-	let result = serve_socket_until(environment, path, shutdown).await;
+	let result = serve_socket_until(environment, path, shutdown, connections).await;
 	signal.abort();
 	result
 }
@@ -417,6 +422,7 @@ async fn serve_socket_until(
 	environment: Environment,
 	path: PathBuf,
 	shutdown: CancellationToken,
+	connection_gauge: Option<tokio::sync::watch::Sender<usize>>,
 ) -> Result {
 	let root = environment
 		.root_uri()
@@ -425,6 +431,7 @@ async fn serve_socket_until(
 	validate_socket_location(&path, &root)?;
 	let (listener, socket) = bind_socket(path).await?;
 	let mut connections = JoinSet::new();
+	publish_connection_count(&connection_gauge, 0);
 
 	loop {
 		tokio::select! {
@@ -469,10 +476,12 @@ async fn serve_socket_until(
 					)
 					.await
 				});
+				publish_connection_count(&connection_gauge, connections.len());
 			},
 			completed = connections.join_next(), if !connections.is_empty() => {
 				if let Some(completed) = completed {
 					report_connection(completed);
+					publish_connection_count(&connection_gauge, connections.len());
 				}
 			},
 		}
@@ -482,17 +491,23 @@ async fn serve_socket_until(
 	let drain = async {
 		while let Some(completed) = connections.join_next().await {
 			report_connection(completed);
+			publish_connection_count(&connection_gauge, connections.len());
 		}
 	};
 	if timeout(SHUTDOWN_GRACE, drain).await.is_err() {
 		connections.shutdown().await;
+		publish_connection_count(&connection_gauge, 0);
 	}
 	drop(socket);
 	Ok(())
 }
 
 #[cfg(not(unix))]
-async fn serve_socket(_environment: Environment, _path: PathBuf) -> Result {
+async fn serve_socket(
+	_environment: Environment,
+	_path: PathBuf,
+	_connections: Option<tokio::sync::watch::Sender<usize>>,
+) -> Result {
 	Err(Error::UnsupportedSocket)
 }
 
@@ -501,8 +516,16 @@ async fn serve_socket_until(
 	_environment: Environment,
 	_path: PathBuf,
 	_shutdown: CancellationToken,
+	_connections: Option<tokio::sync::watch::Sender<usize>>,
 ) -> Result {
 	Err(Error::UnsupportedSocket)
+}
+
+#[cfg(unix)]
+fn publish_connection_count(gauge: &Option<tokio::sync::watch::Sender<usize>>, count: usize) {
+	if let Some(gauge) = gauge {
+		gauge.send_replace(count);
+	}
 }
 
 fn report_connection(
@@ -561,9 +584,16 @@ impl Drop for SocketCleanup {
 
 #[cfg(all(test, unix))]
 mod tests {
+	use bytes::{Bytes, BytesMut};
+	use omp_proto::document::v1 as proto;
 	use tempfile::TempDir;
+	use tokio::sync::watch;
 
 	use super::*;
+	use crate::{
+		connection::{PROTOCOL_MAJOR, PROTOCOL_MINOR},
+		wire::{FrameConfig, read_server_frame, write_client_frame},
+	};
 
 	#[test]
 	fn authority_lock_is_exclusive_and_released_on_drop() {
@@ -675,7 +705,13 @@ mod tests {
 		let task_project = project.clone();
 		let task_socket = socket.clone();
 		let task = tokio::spawn(async move {
-			serve_until(task_project, Transport::Socket(task_socket), Vec::new(), task_shutdown).await
+			serve(task_project, Transport::Socket(task_socket), ServeOptions {
+				lsp_config_paths: Vec::new(),
+				shutdown:         Some(task_shutdown),
+				server_build:     Str::default(),
+				connections:      None,
+			})
+			.await
 		});
 		let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
 		loop {
@@ -693,6 +729,108 @@ mod tests {
 			.expect("document authority task")
 			.expect("document authority result");
 		assert!(!socket.exists(), "document socket must be removed after shutdown");
+	}
+
+	#[tokio::test]
+	async fn socket_hello_advertises_configured_server_build() {
+		let scratch = TempDir::new().expect("temporary directory");
+		let project = scratch.path().join("project");
+		let runtime = scratch.path().join("runtime");
+		std::fs::create_dir(&project).expect("project directory");
+		std::fs::create_dir(&runtime).expect("runtime directory");
+		let socket = runtime.join("document.sock");
+		let shutdown = CancellationToken::new();
+		let (connection_tx, mut connection_rx) = watch::channel(usize::MAX);
+		let task = tokio::spawn(serve(project, Transport::Socket(socket.clone()), ServeOptions {
+			lsp_config_paths: Vec::new(),
+			shutdown:         Some(shutdown.clone()),
+			server_build:     Str::new_static("test-build"),
+			connections:      Some(connection_tx),
+		}));
+		wait_for_connection_count(&mut connection_rx, 0).await;
+
+		let mut stream = UnixStream::connect(&socket)
+			.await
+			.expect("connect document socket");
+		let mut scratch = BytesMut::new();
+		write_client_frame(
+			&mut stream,
+			&proto::ClientFrame {
+				request_id: 0,
+				body:       Some(proto::client_frame::Body::Hello(proto::ClientHello {
+					protocol_major: PROTOCOL_MAJOR,
+					protocol_minor: PROTOCOL_MINOR,
+					client_id:      Bytes::from_static(b"daemon-test"),
+				})),
+			},
+			FrameConfig::default(),
+			&mut scratch,
+		)
+		.await
+		.expect("write client hello");
+		let response = read_server_frame(&mut stream, FrameConfig::default(), &mut scratch)
+			.await
+			.expect("read server hello")
+			.expect("server hello frame");
+		let Some(proto::server_frame::Body::Hello(hello)) = response.body else {
+			panic!("expected server hello");
+		};
+		assert_eq!(hello.server_build, "test-build");
+
+		drop(stream);
+		shutdown.cancel();
+		timeout(Duration::from_secs(5), task)
+			.await
+			.expect("document authority stopped")
+			.expect("document authority task")
+			.expect("document authority result");
+	}
+
+	#[tokio::test]
+	async fn socket_connection_gauge_tracks_connect_and_disconnect() {
+		let scratch = TempDir::new().expect("temporary directory");
+		let project = scratch.path().join("project");
+		let runtime = scratch.path().join("runtime");
+		std::fs::create_dir(&project).expect("project directory");
+		std::fs::create_dir(&runtime).expect("runtime directory");
+		let socket = runtime.join("document.sock");
+		let shutdown = CancellationToken::new();
+		let (connection_tx, mut connection_rx) = watch::channel(usize::MAX);
+		let task = tokio::spawn(serve(project, Transport::Socket(socket.clone()), ServeOptions {
+			lsp_config_paths: Vec::new(),
+			shutdown:         Some(shutdown.clone()),
+			server_build:     Str::default(),
+			connections:      Some(connection_tx),
+		}));
+		wait_for_connection_count(&mut connection_rx, 0).await;
+
+		let stream = UnixStream::connect(&socket)
+			.await
+			.expect("connect document socket");
+		wait_for_connection_count(&mut connection_rx, 1).await;
+		drop(stream);
+		wait_for_connection_count(&mut connection_rx, 0).await;
+
+		shutdown.cancel();
+		timeout(Duration::from_secs(5), task)
+			.await
+			.expect("document authority stopped")
+			.expect("document authority task")
+			.expect("document authority result");
+	}
+
+	async fn wait_for_connection_count(receiver: &mut watch::Receiver<usize>, expected: usize) {
+		timeout(Duration::from_secs(5), async {
+			loop {
+				let current = *receiver.borrow_and_update();
+				if current == expected {
+					break;
+				}
+				receiver.changed().await.expect("connection gauge sender");
+			}
+		})
+		.await
+		.expect("connection gauge update");
 	}
 
 	#[test]

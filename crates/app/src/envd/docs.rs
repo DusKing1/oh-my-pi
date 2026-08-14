@@ -35,6 +35,8 @@ pub struct DocumentHello {
 	pub root_uri:       Str,
 	/// Epoch scoping transaction idempotency keys.
 	pub server_epoch:   Bytes,
+	/// Build identity of the serving document authority; empty means unknown.
+	pub server_build:   Str,
 }
 
 /// A document-server lease pinned to the revision returned by `OpenDocument`.
@@ -184,6 +186,7 @@ impl DocumentHost {
 			workspace_id:   hello.workspace_id,
 			root_uri:       Str::from(hello.root_uri),
 			server_epoch:   hello.server_epoch,
+			server_build:   Str::from(hello.server_build),
 		};
 
 		let (write_tx, write_rx) = flume::unbounded();

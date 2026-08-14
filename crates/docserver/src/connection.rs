@@ -466,6 +466,7 @@ async fn accept_handshake(
 			workspace_id: bytes::Bytes::copy_from_slice(environment.workspace_id()),
 			root_uri: environment.root_uri().as_str().to_owned(),
 			server_epoch: bytes::Bytes::copy_from_slice(environment.server_epoch()),
+			server_build: environment.server_build().to_owned(),
 		})),
 	};
 	output

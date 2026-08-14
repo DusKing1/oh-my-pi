@@ -11,6 +11,7 @@ use omp_llm_inference::{
 	id::{AccountId, RequestId},
 	receipt::ExecutionBudget,
 };
+use secrecy::ExposeSecret as _;
 
 use crate::cli::AuthCommand;
 
@@ -67,8 +68,11 @@ async fn print_auth(answer: AuthAnswer) -> Result<()> {
 			while let Ok(event) = session.events.recv_async().await {
 				match event.into_diagnostic()? {
 					AuthEvent::OpenUrl(url) => println!("open {url}"),
-					AuthEvent::ShowDeviceCode { verification_url, .. } => {
-						println!("complete device authorization at {verification_url}");
+					AuthEvent::ShowDeviceCode { code, verification_url } => {
+						println!(
+							"complete device authorization at {verification_url} using code {}",
+							code.expose_secret()
+						);
 					},
 					AuthEvent::Prompt(prompt) => println!("{}", prompt.message),
 					AuthEvent::Waiting => println!("waiting for provider authorization"),

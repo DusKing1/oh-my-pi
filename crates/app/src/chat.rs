@@ -4,8 +4,11 @@ use std::{
 	fs::File,
 	io::{BufRead as _, BufReader},
 	path::{Path, PathBuf},
-	sync::Arc,
-	time::{SystemTime, UNIX_EPOCH},
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
+	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -16,7 +19,15 @@ use omp_agent::{
 };
 use omp_core::{Str, fmts};
 use omp_llm_catalog::GrammarBits;
-use omp_llm_inference::ToolInputConstraint;
+use omp_llm_inference::{
+	Client, Registry as InferenceRegistry, ToolInputConstraint,
+	answer::{AuthAnswer, AuthEvent},
+	call::{AuthRequest, CallMeta, LoginRequest, Target},
+	error::ErrorDetail,
+	id::RequestId,
+	receipt::ExecutionBudget,
+	router::Router,
+};
 use omp_proto::{
 	inference::v1 as inference_pb,
 	thread::v1::{Item, Message, Part, Role, Thread, item, part},
@@ -24,12 +35,13 @@ use omp_proto::{
 use omp_storage::transcript::{Header, Kind, SessionId, read_header, read_line};
 use omp_tool::{LoweringCaps, PromptCaps, Registry};
 use parking_lot::Mutex;
+use secrecy::ExposeSecret as _;
 use serde_json::{Value, json};
 use thiserror::Error;
 use xutf::IntoAnsiStripped as _;
 
 use crate::{
-	chat_ui::{self, ChatUiExit, ChatUiSession, ResumeChoice},
+	chat_ui::{self, ChatAuth, ChatAuthEvent, ChatUiExit, ChatUiSession, ResumeChoice},
 	cli::ChatArgs,
 };
 
@@ -140,6 +152,128 @@ struct ChatScope<'a> {
 	root:         &'a Path,
 	sessions_dir: &'a Path,
 	registry:     Arc<Registry>,
+}
+struct ChatAuthWorker {
+	ui:   ChatAuth,
+	task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl ChatAuthWorker {
+	fn start(registry: InferenceRegistry) -> Self {
+		let (request_tx, request_rx) = flume::bounded(1);
+		let (event_tx, event_rx) = flume::unbounded();
+		let active = Arc::new(AtomicBool::new(false));
+		let worker_active = Arc::clone(&active);
+		let task = tokio::spawn(async move {
+			while let Ok(provider) = request_rx.recv_async().await {
+				let reset = AuthActivity(Arc::clone(&worker_active));
+				let result = run_chat_login(&registry, provider, &event_tx).await;
+				drop(reset);
+				let event = match result {
+					Ok(message) => ChatAuthEvent::Complete(message),
+					Err(error) => ChatAuthEvent::Failed(error),
+				};
+				let _ = event_tx.send(event);
+			}
+		});
+		Self { ui: ChatAuth::new(request_tx, event_rx, active), task: Some(task) }
+	}
+
+	async fn shutdown(mut self) {
+		if let Some(task) = self.task.take() {
+			task.abort();
+			let _ = task.await;
+		}
+	}
+}
+
+impl Drop for ChatAuthWorker {
+	fn drop(&mut self) {
+		if let Some(task) = &self.task {
+			task.abort();
+		}
+	}
+}
+
+struct AuthActivity(Arc<AtomicBool>);
+
+impl Drop for AuthActivity {
+	fn drop(&mut self) {
+		self.0.store(false, Ordering::Release);
+	}
+}
+
+fn auth_error_message(error: &omp_llm_inference::Error) -> Str {
+	let detail = match error.detail_ref() {
+		Some(ErrorDetail::Provider { sanitized_message }) => Some(sanitized_message.as_str()),
+		_ => None,
+	};
+	match (detail, error.status, error.code.as_deref()) {
+		(Some(detail), Some(status), Some(code)) => {
+			fmts!("{error}: {detail} ({status}, {code})")
+		},
+		(Some(detail), Some(status), None) => fmts!("{error}: {detail} ({status})"),
+		(Some(detail), None, Some(code)) => fmts!("{error}: {detail} ({code})"),
+		(Some(detail), None, None) => fmts!("{error}: {detail}"),
+		(None, ..) => Str::from(error.to_string()),
+	}
+}
+
+async fn run_chat_login(
+	registry: &InferenceRegistry,
+	provider: Str,
+	events: &flume::Sender<ChatAuthEvent>,
+) -> Result<Str, Str> {
+	let provider = omp_llm_catalog::ProviderId::from(provider);
+	let planner = Router::new(registry.clone(), Duration::from_secs(30));
+	let meta = CallMeta {
+		id:       RequestId::from(format!("chat-auth-{}", ulid::Ulid::generate())),
+		target:   Target::ProviderService(provider.clone()),
+		deadline: None,
+		budget:   ExecutionBudget::default(),
+		session:  None,
+	};
+	let mut client = Client::new(registry.service(), planner, meta);
+	let answer = client
+		.execute(AuthRequest::Login(LoginRequest { provider: provider.clone(), method: None }))
+		.await
+		.map_err(|error| auth_error_message(&error))?;
+	let AuthAnswer::Session(session) = answer else {
+		return Err(fmts!("provider `{provider}` did not start an interactive login"));
+	};
+	let mut waiting = false;
+	while let Ok(event) = session.events.recv_async().await {
+		let event = event.map_err(|error| auth_error_message(&error))?;
+		let message = match event {
+			AuthEvent::OpenUrl(url) => {
+				fmts!("Open {url} to continue authentication.")
+			},
+			AuthEvent::ShowDeviceCode { code, verification_url } => {
+				fmts!("Open {verification_url} and enter device code `{}`.", code.expose_secret())
+			},
+			AuthEvent::Prompt(prompt) => {
+				events
+					.send(ChatAuthEvent::Notice(fmts!("Provider requested input: {}", prompt.message)))
+					.map_err(|_| Str::new_static("chat authentication view closed"))?;
+				return Err(fmts!(
+					"This login requires private input; run `omp auth login {provider}` in another \
+					 terminal."
+				));
+			},
+			AuthEvent::Waiting if waiting => continue,
+			AuthEvent::Waiting => {
+				waiting = true;
+				Str::new_static("Waiting for provider authorization…")
+			},
+			AuthEvent::Complete(account) => {
+				return Ok(fmts!("Authenticated `{}` for `{}`.", account.account, account.provider));
+			},
+		};
+		events
+			.send(ChatAuthEvent::Notice(message))
+			.map_err(|_| Str::new_static("chat authentication view closed"))?;
+	}
+	Err(fmts!("authentication for `{provider}` ended without completing"))
 }
 
 #[derive(Clone)]
@@ -405,8 +539,9 @@ pub async fn run(args: ChatArgs) -> miette::Result<()> {
 	let catalog = omp_llm_catalog::snapshot::Catalog::try_embedded().into_diagnostic()?;
 	let session = open_session(&root, &sessions_dir, args.resume.as_ref(), registry.as_ref())
 		.into_diagnostic()?;
-	let snapshot = agent_snapshot(args.model.as_str(), &root, &session.id, Arc::clone(&registry))
-		.into_diagnostic()?;
+	let snapshot =
+		agent_snapshot(args.model.as_str(), catalog, &root, &session.id, Arc::clone(&registry))
+			.into_diagnostic()?;
 	let state = AgentState::new(snapshot);
 
 	if let Some(endpoint) = args.gateway {
@@ -421,31 +556,37 @@ pub async fn run(args: ChatArgs) -> miette::Result<()> {
 			session,
 			Arc::clone(&eval_bridge),
 			eval_control.clone(),
+			None,
 			ChatScope { catalog, root: &root, sessions_dir: &sessions_dir, registry },
 		)
 		.await
 		.into_diagnostic()?;
 	} else {
-		let (_, inference) = crate::daemon::production_inference(&data_dir, Arc::clone(&registry))
-			.await
-			.into_diagnostic()?;
+		let (inference_registry, inference) =
+			crate::daemon::production_inference(&data_dir, Arc::clone(&registry))
+				.await
+				.into_diagnostic()?;
 		let client = InProcTurnClient::new(inference)
 			.await
 			.map_err(ChatError::from)
 			.into_diagnostic()?;
-		run_ui(client, env, state, session, eval_bridge, eval_control, ChatScope {
-			catalog,
-			root: &root,
-			sessions_dir: &sessions_dir,
-			registry,
-		})
+		run_ui(
+			client,
+			env,
+			state,
+			session,
+			eval_bridge,
+			eval_control,
+			Some(inference_registry),
+			ChatScope { catalog, root: &root, sessions_dir: &sessions_dir, registry },
+		)
 		.await
 		.into_diagnostic()?;
 	}
 
 	// `environment` is deliberately retained until the agent and UI have been
 	// dropped. Its Drop implementation only stops authorities this process
-	// autostarted; pre-existing project daemons remain untouched.
+	// autostarted; it does not further affect any joined or draining daemon.
 	drop(environment);
 	Ok(())
 }
@@ -468,6 +609,7 @@ async fn run_ui<C: TurnClient + Clone + 'static>(
 	mut session: Session,
 	eval_bridge: Arc<crate::envd::eval::SessionBridgeHost>,
 	eval_control: omp_tools::eval::EvalSessionControl,
+	auth_registry: Option<InferenceRegistry>,
 	scope: ChatScope<'_>,
 ) -> Result<(), ChatError> {
 	let parent = Arc::new(ChatParentHost::new(
@@ -481,6 +623,7 @@ async fn run_ui<C: TurnClient + Clone + 'static>(
 	eval_bridge
 		.bind_parent(parent.clone())
 		.map_err(|error| ChatError::EvalBridge(Str::from(error.to_string())))?;
+	let auth = auth_registry.map(ChatAuthWorker::start);
 	let mut app = chat_ui::start().await.map_err(ChatError::Ui)?;
 	loop {
 		parent.update(state.clone(), session.id.clone());
@@ -511,6 +654,7 @@ async fn run_ui<C: TurnClient + Clone + 'static>(
 			&mut app,
 			agent,
 			ChatUiSession { session_id: id, initial_items, context_window },
+			auth.as_ref().map(|worker| &worker.ui),
 			|| {
 				resume_choices(scope.sessions_dir, scope.root, &current_id).map_err(anyhow::Error::from)
 			},
@@ -518,7 +662,7 @@ async fn run_ui<C: TurnClient + Clone + 'static>(
 		.await
 		.map_err(ChatError::Ui)?;
 		match exit {
-			ChatUiExit::Quit => return Ok(()),
+			ChatUiExit::Quit => break,
 			ChatUiExit::Resume(id) => {
 				eval_control.request_reset();
 				let model = state.snapshot().turn.params.model.clone();
@@ -526,6 +670,7 @@ async fn run_ui<C: TurnClient + Clone + 'static>(
 					open_session(scope.root, scope.sessions_dir, Some(&id), scope.registry.as_ref())?;
 				state = AgentState::new(agent_snapshot(
 					&model,
+					scope.catalog,
 					scope.root,
 					&session.id,
 					Arc::clone(&scope.registry),
@@ -533,6 +678,10 @@ async fn run_ui<C: TurnClient + Clone + 'static>(
 			},
 		}
 	}
+	if let Some(auth) = auth {
+		auth.shutdown().await;
+	}
+	Ok(())
 }
 
 fn model_context_window(catalog: &omp_llm_catalog::snapshot::Catalog, model: &str) -> Option<u64> {
@@ -541,6 +690,19 @@ fn model_context_window(catalog: &omp_llm_catalog::snapshot::Catalog, model: &st
 		.model(&key)
 		.or_else(|| catalog.resolve_alias(model))
 		.and_then(|spec| spec.limits.context_window)
+}
+
+/// Returns whether the catalog proves the model cannot accept declared tools.
+///
+/// Unknown or missing capability evidence keeps tools advertised; only
+/// explicit `Unsupported` evidence (e.g. Apple's on-device model) strips them.
+fn model_rejects_tools(catalog: &omp_llm_catalog::snapshot::Catalog, model: &str) -> bool {
+	let key = omp_llm_catalog::ModelKey::from(model);
+	catalog
+		.model(&key)
+		.or_else(|| catalog.resolve_alias(model))
+		.and_then(|spec| spec.capabilities.chat.as_ref())
+		.is_some_and(|chat| chat.tools.is_unsupported())
 }
 
 fn canonical_project(path: &Path) -> Result<PathBuf, ChatError> {
@@ -726,14 +888,19 @@ fn strict_session_id(id: &Str) -> Result<Str, ChatError> {
 
 fn agent_snapshot(
 	model: &str,
+	catalog: &omp_llm_catalog::snapshot::Catalog,
 	root: &Path,
 	session_id: &Str,
 	registry: Arc<Registry>,
 ) -> Result<AgentSnapshot, ChatError> {
-	let advertised = registry.advertise(LoweringCaps {
-		strict_schema: true,
-		grammar:       GrammarBits::LARK | GrammarBits::REGEX | GrammarBits::EBNF,
-	});
+	let advertised = if model_rejects_tools(catalog, model) {
+		Vec::new()
+	} else {
+		registry.advertise(LoweringCaps {
+			strict_schema: true,
+			grammar:       GrammarBits::LARK | GrammarBits::REGEX | GrammarBits::EBNF,
+		})
+	};
 	let mut enabled_tools = Vec::with_capacity(advertised.len());
 	let mut tools = Vec::with_capacity(advertised.len());
 	for tool in advertised {

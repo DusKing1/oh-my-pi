@@ -1391,12 +1391,105 @@ mod tests {
 	use super::{
 		AppleFm, AppleFmAvailabilityEvidence, AppleFmError, AppleFmErrorCode, AppleFmEvent,
 		AppleFmFeatureEvidence, AppleFmGeneration, AppleFmOptions, AppleFmSupportState,
-		append_native_attempt, apple_discovered_model, native_attempt_error, validate_options,
+		append_native_attempt, apple_discovered_model, apple_prompt, native_attempt_error,
+		validate_options,
 	};
 	use crate::{
+		call::{
+			ChatRequest, ContentPart, Message, NegotiationPolicy, Role, Sampling, Setting,
+			ToolDefinition, ToolInputConstraint,
+		},
 		codec::{RawEvent, TransportAttempt},
+		error::ErrorKind,
 		id::RequestId,
 	};
+
+	fn chat_request(messages: &[(Role, &str)]) -> ChatRequest {
+		ChatRequest {
+			messages:          messages
+				.iter()
+				.map(|(role, text)| Message {
+					role:    *role,
+					content: [ContentPart::Text { text: (*text).into(), proof: None }].into(),
+					name:    None,
+				})
+				.collect(),
+			tools:             [].into(),
+			hosted_tools:      [].into(),
+			tool_choice:       Setting::Unset,
+			output:            Setting::Unset,
+			reasoning:         Setting::Unset,
+			verbosity:         Setting::Unset,
+			cache_retention:   Setting::Unset,
+			service_tier:      Setting::Unset,
+			sampling:          Sampling::default(),
+			max_output_tokens: None,
+			top_logprobs:      None,
+			safety:            [].into(),
+			negotiation:       NegotiationPolicy::default(),
+		}
+	}
+
+	fn prompt_of(
+		messages: &[(Role, &str)],
+	) -> Result<(omp_core::Str, Option<omp_core::Str>), ErrorKind> {
+		let attempt = attempt();
+		apple_prompt(&chat_request(messages), &attempt.request_id, &attempt.provider, &attempt.route)
+			.map_err(|error| error.kind)
+	}
+
+	#[test]
+	fn lone_user_message_stays_unlabeled_and_instructions_split_out() {
+		let (prompt, instructions) =
+			prompt_of(&[(Role::System, "be terse"), (Role::User, "hello")]).unwrap();
+		assert_eq!(prompt.as_str(), "hello");
+		assert_eq!(instructions.as_deref(), Some("be terse"));
+	}
+
+	#[test]
+	fn history_is_flattened_into_labeled_transcript() {
+		let (prompt, instructions) = prompt_of(&[
+			(Role::System, "be terse"),
+			(Role::User, "one"),
+			(Role::Assistant, "two"),
+			(Role::User, "three"),
+		])
+		.unwrap();
+		assert_eq!(prompt.as_str(), "User: one\n\nAssistant: two\n\nUser: three");
+		assert_eq!(instructions.as_deref(), Some("be terse"));
+	}
+
+	#[test]
+	fn trailing_assistant_or_empty_user_is_invalid() {
+		assert_eq!(
+			prompt_of(&[(Role::User, "one"), (Role::Assistant, "two")]).unwrap_err(),
+			ErrorKind::InvalidRequest,
+		);
+		assert_eq!(prompt_of(&[(Role::User, "  ")]).unwrap_err(), ErrorKind::InvalidRequest);
+	}
+
+	#[test]
+	fn tool_declarations_and_tool_results_stay_rejected() {
+		let attempt = attempt();
+		let mut request = chat_request(&[(Role::User, "hello")]);
+		request.tools = [ToolDefinition {
+			name:        omp_core::Str::new_static("read"),
+			description: None,
+			input:       ToolInputConstraint::JsonSchema {
+				parameters: crate::call::OpaqueJson::new(serde_json::json!({"type": "object"})),
+				strict:     false,
+			},
+		}]
+		.into();
+		let declared = apple_prompt(&request, &attempt.request_id, &attempt.provider, &attempt.route)
+			.unwrap_err();
+		assert_eq!(declared.kind, ErrorKind::CapabilityMismatch);
+
+		assert_eq!(
+			prompt_of(&[(Role::Tool, "result"), (Role::User, "next")]).unwrap_err(),
+			ErrorKind::CapabilityMismatch,
+		);
+	}
 
 	#[test]
 	fn request_validation_rejects_empty_or_invalid_limits() {

@@ -17,7 +17,7 @@ name = "omp"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["local-applefm", "local-embedding", "local-text", "local-stt", "local-tts"]
 local = ["omp-llm-inference/local"]
 local-applefm = ["local", "omp-llm-inference/local-applefm"]
 local-embedding = ["local", "omp-llm-inference/local-embedding"]
@@ -90,4 +90,5 @@ hyper.workspace = true
 hyper-util = { workspace = true, features = ["tokio"] }
 omp-llm-inference = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tonic-health.workspace = true

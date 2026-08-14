@@ -19,7 +19,7 @@ pub use eval::{EVAL_CHILD_ARG, ProcessError as EvalChildError, run_eval_child_en
 use miette::IntoDiagnostic as _;
 use omp_core::Str;
 use omp_env::EnvClient;
-use omp_proto::env::v1::ClientHello;
+use omp_proto::env::v1::{ClientHello, ServerHello};
 use omp_tool::Registry;
 pub use server::EnvdError;
 use tokio_util::sync::CancellationToken;
@@ -75,8 +75,33 @@ impl ProjectEnvironment {
 	) -> Result<Self, EnvdError> {
 		match EnvServer::connect_owner_uds(socket).await {
 			Ok((owner_probe, bridge)) => {
-				hello(&owner_probe).await?;
-				bridge.abort();
+				let owner_hello = hello(&owner_probe).await?;
+				if crate::build_id::is_stale(crate::build_id::current(), &owner_hello.server_build) {
+					let _ = owner_probe.retire().await;
+					bridge.abort();
+					let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+					loop {
+						match tokio::net::UnixStream::connect(socket).await {
+							Err(error)
+								if matches!(
+									error.kind(),
+									io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+								) =>
+							{
+								return Self::start(root, state_dir, socket, docserver_socket, py_eval)
+									.await;
+							},
+							_ if tokio::time::Instant::now() >= deadline => break,
+							_ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+						}
+					}
+					tracing::warn!(
+						socket = %socket.display(),
+						"stale-build environment daemon kept its socket; using an in-process environment"
+					);
+				} else {
+					bridge.abort();
+				}
 				let worker_config = worker_config(py_eval)?;
 				let server = EnvServer::open_project(
 					root,
@@ -84,6 +109,7 @@ impl ProjectEnvironment {
 					docserver_socket,
 					Registry::new(),
 					worker_config,
+					None,
 				)
 				.await?;
 				let server = Arc::new(server);
@@ -120,9 +146,15 @@ impl ProjectEnvironment {
 		py_eval: bool,
 	) -> Result<Self, EnvdError> {
 		let worker_config = worker_config(py_eval)?;
-		let server =
-			EnvServer::open_project(root, state_dir, docserver_socket, Registry::new(), worker_config)
-				.await?;
+		let server = EnvServer::open_project(
+			root,
+			state_dir,
+			docserver_socket,
+			Registry::new(),
+			worker_config,
+			None,
+		)
+		.await?;
 		let server = Arc::new(server);
 		let registry = server.registry();
 		let eval_bridge = server.eval_bridge();
@@ -137,7 +169,7 @@ impl ProjectEnvironment {
 		let uds_shutdown = shutdown.clone();
 		let socket = socket.to_path_buf();
 		let uds = tokio::spawn(async move {
-			let _ = uds_server.serve_uds(&socket, uds_shutdown).await;
+			let _ = uds_server.serve_uds(&socket, uds_shutdown, None).await;
 		});
 		let lifecycle = ProjectLifecycle {
 			shutdown: Some(shutdown),
@@ -177,13 +209,12 @@ fn worker_config(py_eval: bool) -> Result<ToolWorkerConfig, EnvdError> {
 	Ok(config)
 }
 
-async fn hello(client: &EnvClient) -> Result<(), EnvdError> {
-	client
+async fn hello(client: &EnvClient) -> Result<ServerHello, EnvdError> {
+	Ok(client
 		.hello(ClientHello {
 			client: "omp-chat".into(),
 			schema_rev: omp_proto::SCHEMA_REV,
 			..ClientHello::default()
 		})
-		.await?;
-	Ok(())
+		.await?)
 }

@@ -89,6 +89,20 @@ impl Status {
 
 	/// Appends a segment to the group.
 	pub fn segment(mut self, segment: Segment) -> Self {
+		self.push_segment(segment);
+		self
+	}
+
+	/// Replaces the segments while preserving this component's slot identity.
+	pub fn set_segments(&mut self, segments: impl IntoIterator<Item = Segment>) {
+		self.segments.clear();
+		self.text_widths.clear();
+		for segment in segments {
+			self.push_segment(segment);
+		}
+	}
+
+	fn push_segment(&mut self, segment: Segment) {
 		let width = self
 			.text_widths
 			.last()
@@ -97,7 +111,6 @@ impl Status {
 			.saturating_add(cell_width(&segment.label));
 		self.segments.push(segment);
 		self.text_widths.push(width);
-		self
 	}
 
 	/// Band chrome for this group's dock side.

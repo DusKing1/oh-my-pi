@@ -956,6 +956,9 @@ message ServerHello {
   // Opaque identity regenerated whenever the daemon loses its transaction
   // outcome ledger. Transaction idempotency is scoped to this epoch.
   bytes server_epoch = 5;
+  // Content hash identifying the build of the serving executable; empty when
+  // the server could not determine its own build identity.
+  string server_build = 6;
 }
 
 message CancelRequest {

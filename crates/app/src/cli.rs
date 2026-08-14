@@ -90,6 +90,9 @@ pub struct EnvdArgs {
 	/// is disabled unless explicitly requested.
 	#[arg(long)]
 	pub py_eval:          bool,
+	/// Seconds without connected apps before the daemon exits (0 disables).
+	#[arg(long, value_name = "SECONDS", default_value_t = 900)]
+	pub idle_timeout:     u64,
 }
 /// Interactive project-chat options.
 #[derive(Clone, Debug, Args)]

@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Context as _, Result};
 use omp_app::envd::docs::DocumentHost;
-use omp_docserver::daemon::{self, Transport};
+use omp_docserver::daemon::{self, ServeOptions, Transport};
 use tokio::{net::UnixStream, task::JoinHandle};
 
 use super::{DEFAULT_TIMEOUT, within};
@@ -36,7 +36,17 @@ impl DocServerTask {
 		}
 		let task_socket = socket.clone();
 		let task = tokio::spawn(async move {
-			daemon::run(project, Transport::Socket(task_socket), lsp_configs).await
+			daemon::serve(
+				project,
+				Transport::Socket(task_socket),
+				ServeOptions {
+					lsp_config_paths: lsp_configs,
+					shutdown: None,
+					server_build: Default::default(),
+					connections: None,
+				},
+			)
+			.await
 		});
 		let mut server = Self { socket, task };
 		within("docserver socket readiness", DEFAULT_TIMEOUT, async {

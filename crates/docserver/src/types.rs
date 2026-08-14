@@ -450,6 +450,7 @@ half_open_range!(LineRange, RangeKind::Line, "line count", "A zero-based half-op
 #[derive(Clone)]
 pub struct ServerConfig {
 	environment_root:   PathBuf,
+	server_build:       Str,
 	root:               Arc<Dir>,
 	authority_held:     Arc<AtomicBool>,
 	revision_capacity:  NonZeroUsize,
@@ -461,6 +462,7 @@ impl fmt::Debug for ServerConfig {
 		formatter
 			.debug_struct("ServerConfig")
 			.field("environment_root", &self.environment_root)
+			.field("server_build", &self.server_build)
 			.field("revision_capacity", &self.revision_capacity)
 			.field("max_document_bytes", &self.max_document_bytes)
 			.finish()
@@ -470,6 +472,7 @@ impl fmt::Debug for ServerConfig {
 impl PartialEq for ServerConfig {
 	fn eq(&self, other: &Self) -> bool {
 		self.environment_root == other.environment_root
+			&& self.server_build == other.server_build
 			&& self.revision_capacity == other.revision_capacity
 			&& self.max_document_bytes == other.max_document_bytes
 	}
@@ -533,6 +536,7 @@ impl ServerConfig {
 		}
 		Ok(Self {
 			environment_root:   canonical,
+			server_build:       Str::default(),
 			root:               Arc::new(root),
 			authority_held:     Arc::new(AtomicBool::new(false)),
 			revision_capacity:  NonZeroUsize::new(DEFAULT_REVISION_CAPACITY)
@@ -540,6 +544,19 @@ impl ServerConfig {
 			max_document_bytes: NonZeroU64::new(DEFAULT_MAX_DOCUMENT_BYTES)
 				.expect("default document limit is nonzero"),
 		})
+	}
+
+	/// Sets the build identity advertised to document clients.
+	#[must_use]
+	pub fn with_server_build(mut self, build: impl Into<Str>) -> Self {
+		self.server_build = build.into();
+		self
+	}
+
+	/// Returns the build identity advertised to document clients.
+	#[must_use]
+	pub fn server_build(&self) -> &Str {
+		&self.server_build
 	}
 
 	/// Returns the canonical absolute Environment root.

@@ -19,7 +19,7 @@ use omp_proto::{
 		ExecRequest, ExecStarted, ExitEvent, Interrupt, InvokeAccepted, InvokeTool, ListProcesses,
 		OpenSessionRequest, OpenSessionResponse, OutputAttached, OutputFrame, ProcessCommandAccepted,
 		ProcessList, ProcessOutput, ProcessStarted, ProcessStateEvent, ProtocolError, SendInput,
-		ServerFrame, ServerHello, SignalProcess, SignalRequest, StartProcess, StdinFrame,
+		Retire, ServerFrame, ServerHello, SignalProcess, SignalRequest, StartProcess, StdinFrame,
 		StopProcess, Update, Verdict, cancel_request, client_frame, server_frame,
 	},
 };
@@ -245,6 +245,20 @@ impl EnvClient {
 			Some(server_frame::Body::Hello(response)) => Ok(response),
 			Some(server_frame::Body::Error(error)) => Err(ClientError::Protocol(error)),
 			_ => Err(ClientError::UnexpectedResponse { expected: "ServerHello" }),
+		}
+	}
+
+	/// Asks the serving daemon to retire its listening socket.
+	///
+	/// The server stops accepting new connections and releases the endpoint.
+	/// Existing connections, including this one, continue until closed or
+	/// drained. This resolves once the server acknowledges with
+	/// `RetireStarted`. Pre-change servers reject the request with a protocol
+	/// error, which surfaces as [`ClientError::Protocol`].
+	pub async fn retire(&self) -> Result<(), ClientError> {
+		match self.one_shot(client_frame::Body::Retire(Retire::default())).await? {
+			server_frame::Body::RetireStarted(_) => Ok(()),
+			_ => Err(ClientError::UnexpectedResponse { expected: "RetireStarted" }),
 		}
 	}
 

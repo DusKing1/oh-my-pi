@@ -118,6 +118,23 @@ pub struct ServerIdentity {
 	pub server_epoch:   Bytes,
 	/// Human-readable server build version.
 	pub server_version: Str,
+	/// Build identity of the serving environment; empty means unknown.
+	pub server_build:   Str,
+}
+#[derive(Clone)]
+struct ConnectionPolicy {
+	allow_eval: bool,
+	retire:     Option<CancellationToken>,
+}
+
+impl ConnectionPolicy {
+	const fn in_process() -> Self {
+		Self { allow_eval: true, retire: None }
+	}
+
+	const fn external(retire: Option<CancellationToken>) -> Self {
+		Self { allow_eval: false, retire }
+	}
 }
 
 struct DocumentAuthority {
@@ -207,7 +224,8 @@ impl EnvServer {
 	) -> Result<Self, EnvdError> {
 		let workspace = WorkspaceHost::open(root)?;
 		let doc_config = omp_docserver::ServerConfig::new(root)
-			.map_err(|error| EnvdError::Document(Str::from(error.to_string())))?;
+			.map_err(|error| EnvdError::Document(Str::from(error.to_string())))?
+			.with_server_build(crate::build_id::current());
 		let environment = omp_docserver::Environment::new(doc_config)
 			.map_err(|error| EnvdError::Document(Str::from(error.to_string())))?;
 		let (document_client, document_server) = tokio::io::duplex(64 * 1024);
@@ -238,6 +256,7 @@ impl EnvServer {
 			root_uri:       hello.root_uri,
 			server_epoch:   hello.server_epoch,
 			server_version: Str::from(env!("CARGO_PKG_VERSION")),
+			server_build:   Str::from(crate::build_id::current()),
 		};
 		Ok(Self::new(
 			identity,
@@ -261,11 +280,12 @@ impl EnvServer {
 		docserver_socket: &Path,
 		registry: Registry,
 		worker_config: ToolWorkerConfig,
+		doc_connections: Option<tokio::sync::watch::Sender<usize>>,
 	) -> Result<Self, EnvdError> {
 		let workspace = WorkspaceHost::open(root)?;
 		let root = workspace.root().to_path_buf();
 		let (documents, document_authority) =
-			connect_or_start_docserver(&root, docserver_socket).await?;
+			connect_or_start_docserver(&root, docserver_socket, doc_connections).await?;
 		let hello = documents.hello().clone();
 		let exec = ExecHost::new();
 		let blobs = BlobHost::open(state_dir.join("blobs"))?;
@@ -284,6 +304,7 @@ impl EnvServer {
 			root_uri:       hello.root_uri,
 			server_epoch:   hello.server_epoch,
 			server_version: Str::from(env!("CARGO_PKG_VERSION")),
+			server_build:   Str::from(crate::build_id::current()),
 		};
 		Ok(Self::new(
 			identity,
@@ -377,7 +398,9 @@ impl EnvServer {
 	/// Serves the server half returned by [`omp_env::EnvClient::in_process`].
 	pub async fn serve_in_process(&self, transport: InProcessEnvTransport) {
 		let (requests, responses) = transport.into_parts();
-		self.serve_frames(requests, responses, true).await;
+		self
+			.serve_frames(requests, responses, ConnectionPolicy::in_process())
+			.await;
 	}
 
 	/// Serves one already-accepted byte stream with varint protobuf framing.
@@ -385,10 +408,24 @@ impl EnvServer {
 	where
 		S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 	{
+		self
+			.serve_io_with_policy(stream, ConnectionPolicy::external(None))
+			.await
+	}
+
+	async fn serve_io_with_policy<S>(
+		&self,
+		stream: S,
+		policy: ConnectionPolicy,
+	) -> Result<(), EnvdError>
+	where
+		S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+	{
 		let (mut reader, mut writer) = tokio::io::split(stream);
 		let (request_tx, requests) = flume::bounded(64);
 		let (responses, response_rx) = flume::bounded(64);
-		let dispatch = self.serve_frames(requests, responses, false);
+		let retire = policy.retire.clone();
+		let dispatch = self.serve_frames(requests, responses, policy);
 		let io_shutdown = CancellationToken::new();
 		let read_shutdown = io_shutdown.clone();
 		let read = async move {
@@ -409,6 +446,11 @@ impl EnvServer {
 				let mut scratch = BytesMut::new();
 				while let Ok(frame) = response_rx.recv_async().await {
 					write_server_frame(&mut writer, &frame, &mut scratch).await?;
+					if matches!(frame.body, Some(server_frame::Body::RetireStarted(_)))
+						&& let Some(retire) = &retire
+					{
+						retire.cancel();
+					}
 				}
 				Ok::<(), io::Error>(())
 			}
@@ -428,6 +470,7 @@ impl EnvServer {
 		self: Arc<Self>,
 		path: &Path,
 		shutdown: CancellationToken,
+		connection_gauge: Option<tokio::sync::watch::Sender<usize>>,
 	) -> Result<(), EnvdError> {
 		use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 
@@ -463,35 +506,75 @@ impl EnvServer {
 		let listener = tokio::net::UnixListener::bind(path)?;
 		tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
 		let socket_metadata = std::fs::symlink_metadata(path)?;
+		let retire = CancellationToken::new();
+		let mut listener = Some(listener);
 		let mut connections = tokio::task::JoinSet::new();
+		let mut abort_connections = false;
+		if let Some(gauge) = &connection_gauge {
+			gauge.send_replace(0);
+		}
 		loop {
+			if retire.is_cancelled() && listener.is_some() {
+				drop(listener.take());
+				if let Ok(metadata) = std::fs::symlink_metadata(path)
+					&& metadata.dev() == socket_metadata.dev()
+					&& metadata.ino() == socket_metadata.ino()
+				{
+					let _ = tokio::fs::remove_file(path).await;
+				}
+				if connections.is_empty() {
+					break;
+				}
+			}
 			tokio::select! {
-				() = shutdown.cancelled() => break,
-				accepted = listener.accept() => {
+				() = shutdown.cancelled() => {
+					abort_connections = true;
+					break;
+				},
+				() = retire.cancelled(), if listener.is_some() => {},
+				accepted = async {
+					listener.as_ref().expect("guarded listener").accept().await
+				}, if listener.is_some() => {
 					let (stream, _) = accepted?;
 					let server = Arc::clone(&self);
-					connections.spawn(async move { server.serve_io(stream).await });
+					let policy = ConnectionPolicy::external(Some(retire.clone()));
+					connections.spawn(async move {
+						server.serve_io_with_policy(stream, policy).await
+					});
+					if let Some(gauge) = &connection_gauge {
+						gauge.send_replace(connections.len());
+					}
 				},
 				completed = connections.join_next(), if !connections.is_empty() => {
-					if let Some(Err(error)) = completed {
-						return Err(error.into());
+					if let Some(gauge) = &connection_gauge {
+						gauge.send_replace(connections.len());
+					}
+					match completed {
+						Some(Ok(Ok(()))) | None => {},
+						Some(Ok(Err(error))) => return Err(error),
+						Some(Err(error)) => return Err(error.into()),
+					}
+					if listener.is_none() && connections.is_empty() {
+						break;
 					}
 				},
 			}
 		}
-		drop(listener);
-		if let Ok(metadata) = std::fs::symlink_metadata(path)
+		if listener.take().is_some()
+			&& let Ok(metadata) = std::fs::symlink_metadata(path)
 			&& metadata.dev() == socket_metadata.dev()
 			&& metadata.ino() == socket_metadata.ino()
 		{
 			let _ = tokio::fs::remove_file(path).await;
 		}
-		connections.abort_all();
-		while let Some(result) = connections.join_next().await {
-			if let Err(error) = result
-				&& !error.is_cancelled()
-			{
-				return Err(error.into());
+		if abort_connections {
+			connections.abort_all();
+			while let Some(result) = connections.join_next().await {
+				if let Err(error) = result
+					&& !error.is_cancelled()
+				{
+					return Err(error.into());
+				}
 			}
 		}
 		Ok(())
@@ -501,7 +584,7 @@ impl EnvServer {
 		&self,
 		requests: flume::Receiver<pb::ClientFrame>,
 		responses: flume::Sender<pb::ServerFrame>,
-		allow_eval: bool,
+		policy: ConnectionPolicy,
 	) {
 		let first = match tokio::time::timeout(HANDSHAKE_TIMEOUT, requests.recv_async()).await {
 			Ok(Ok(first)) => first,
@@ -541,7 +624,7 @@ impl EnvServer {
 						connection.finish(done);
 					}
 					self
-						.dispatch(*frame, &responses, &finished_tx, &mut connection, allow_eval)
+						.dispatch(*frame, &responses, &finished_tx, &mut connection, &policy)
 						.await;
 				},
 			}
@@ -604,6 +687,7 @@ impl EnvServer {
 					workspace_id:   self.identity.workspace_id.clone(),
 					root_uri:       self.identity.root_uri.to_string(),
 					server_epoch:   self.identity.server_epoch.clone(),
+					server_build:   self.identity.server_build.to_string(),
 					props:          Default::default(),
 				}),
 			))
@@ -617,7 +701,7 @@ impl EnvServer {
 		responses: &flume::Sender<pb::ServerFrame>,
 		finished: &flume::Sender<Finished>,
 		connection: &mut ConnectionState,
-		allow_eval: bool,
+		policy: &ConnectionPolicy,
 	) {
 		let Some(body) = frame.body else {
 			send_error(
@@ -629,7 +713,7 @@ impl EnvServer {
 			.await;
 			return;
 		};
-		if !allow_eval
+		if !policy.allow_eval
 			&& matches!(&body, client_frame::Body::InvokeTool(request) if request.name == "eval")
 		{
 			send_error(
@@ -698,6 +782,24 @@ impl EnvServer {
 					"the connection hello is already complete",
 				)
 				.await;
+			},
+			client_frame::Body::Retire(_) => {
+				if policy.retire.is_some() {
+					send_body(
+						responses,
+						frame.request_id,
+						server_frame::Body::RetireStarted(pb::RetireStarted::default()),
+					)
+					.await;
+				} else {
+					send_error(
+						responses,
+						frame.request_id,
+						pb::ProtocolErrorCode::Unsupported,
+						"retire is not available on this transport",
+					)
+					.await;
+				}
 			},
 			client_frame::Body::InvokeTool(request) => {
 				self
@@ -2676,12 +2778,21 @@ pub async fn run_with_registry(args: EnvdArgs, registry: Registry) -> Result<(),
 			.modules
 			.push(Str::new_static(crate::envd::worker::PY_EVAL_MODULE));
 	}
+	let (env_connections, env_connection_rx) = tokio::sync::watch::channel(0);
+	let (doc_connections, doc_connection_rx) = tokio::sync::watch::channel(0);
 	let server = Arc::new(
-		EnvServer::open_project(&root, &state_dir, &docserver_socket, registry, worker_config)
-			.await?,
+		EnvServer::open_project(
+			&root,
+			&state_dir,
+			&docserver_socket,
+			registry,
+			worker_config,
+			Some(doc_connections),
+		)
+		.await?,
 	);
-	let shutdown = CancellationToken::new();
-	let signal = shutdown.clone();
+	let process_shutdown = CancellationToken::new();
+	let signal = process_shutdown.clone();
 	let signal_task = tokio::spawn(async move {
 		let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
 		match terminate.as_mut() {
@@ -2697,9 +2808,82 @@ pub async fn run_with_registry(args: EnvdArgs, registry: Registry) -> Result<(),
 		}
 		signal.cancel();
 	});
-	server.serve_uds(&socket, shutdown).await?;
+	let listener_shutdown = CancellationToken::new();
+	let serve_shutdown = listener_shutdown.clone();
+	let serve_socket = socket.clone();
+	let serve_server = Arc::clone(&server);
+	let mut serve_task = tokio::spawn(async move {
+		serve_server
+			.serve_uds(&serve_socket, serve_shutdown, Some(env_connections))
+			.await
+	});
+	let idle_timeout = Duration::from_secs(args.idle_timeout);
+	let idle = async move {
+		if idle_timeout.is_zero() {
+			std::future::pending::<()>().await;
+		} else {
+			wait_idle(env_connection_rx, doc_connection_rx, 1, idle_timeout).await;
+		}
+	};
+	tokio::pin!(idle);
+	tokio::select! {
+		() = process_shutdown.cancelled() => {
+			listener_shutdown.cancel();
+			serve_task.await??;
+		},
+		() = &mut idle => {
+			listener_shutdown.cancel();
+			serve_task.await??;
+		},
+		result = &mut serve_task => {
+			result??;
+			tokio::select! {
+				() = process_shutdown.cancelled() => {},
+				() = &mut idle => {},
+			}
+		},
+	}
 	signal_task.abort();
 	Ok(())
+}
+
+#[cfg(unix)]
+async fn wait_idle(
+	mut env: tokio::sync::watch::Receiver<usize>,
+	mut docs: tokio::sync::watch::Receiver<usize>,
+	reserved_docs: usize,
+	timeout: Duration,
+) {
+	let mut env_open = true;
+	let mut docs_open = true;
+	loop {
+		while *env.borrow() != 0 || *docs.borrow() > reserved_docs {
+			tokio::select! {
+				result = env.changed(), if env_open => env_open = result.is_ok(),
+				result = docs.changed(), if docs_open => docs_open = result.is_ok(),
+				else => std::future::pending::<()>().await,
+			}
+		}
+		let idle = tokio::time::sleep(timeout);
+		tokio::pin!(idle);
+		loop {
+			tokio::select! {
+				() = &mut idle => return,
+				result = env.changed(), if env_open => {
+					env_open = result.is_ok();
+					if *env.borrow() != 0 || *docs.borrow() > reserved_docs {
+						break;
+					}
+				},
+				result = docs.changed(), if docs_open => {
+					docs_open = result.is_ok();
+					if *env.borrow() != 0 || *docs.borrow() > reserved_docs {
+						break;
+					}
+				},
+			}
+		}
+	}
 }
 /// Reports the Phase 1 transport limitation on platforms without Unix sockets.
 #[cfg(not(unix))]
@@ -2714,9 +2898,20 @@ pub async fn run(_args: EnvdArgs) -> Result<(), EnvdError> {
 async fn connect_or_start_docserver(
 	root: &Path,
 	socket: &Path,
+	connections: Option<tokio::sync::watch::Sender<usize>>,
 ) -> Result<(DocumentHost, Option<DocumentAuthority>), EnvdError> {
 	if let Ok(stream) = tokio::net::UnixStream::connect(socket).await {
-		return Ok((DocumentHost::connect(stream).await?, None));
+		let documents = DocumentHost::connect(stream).await?;
+		if crate::build_id::is_stale(
+			crate::build_id::current(),
+			documents.hello().server_build.as_str(),
+		) {
+			tracing::warn!(
+				socket = %socket.display(),
+				"stale-build document daemon owns the socket and will be replaced once it drains"
+			);
+		}
+		return Ok((documents, None));
 	}
 	if let Some(parent) = socket.parent() {
 		ensure_directory(parent)?;
@@ -2727,11 +2922,15 @@ async fn connect_or_start_docserver(
 	let task_root = root.to_path_buf();
 	let task_socket = socket.to_path_buf();
 	let task = tokio::spawn(async move {
-		omp_docserver::daemon::serve_until(
+		omp_docserver::daemon::serve(
 			task_root,
 			omp_docserver::daemon::Transport::Socket(task_socket),
-			Vec::new(),
-			task_shutdown,
+			omp_docserver::daemon::ServeOptions {
+				lsp_config_paths: Vec::new(),
+				shutdown: Some(task_shutdown),
+				server_build: Str::from(crate::build_id::current()),
+				connections,
+			},
 		)
 		.await
 	});
@@ -2760,4 +2959,94 @@ async fn connect_or_start_docserver(
 #[cfg(unix)]
 fn ensure_directory(path: &Path) -> io::Result<()> {
 	std::fs::create_dir_all(path)
+}
+#[cfg(all(test, unix))]
+mod tests {
+	use super::*;
+
+	#[tokio::test(start_paused = true)]
+	async fn idle_wait_requires_one_continuous_quiet_window() {
+		let (env_tx, env_rx) = tokio::sync::watch::channel(1);
+		let (docs_tx, docs_rx) = tokio::sync::watch::channel(2);
+		let busy = tokio::spawn(wait_idle(env_rx, docs_rx, 1, Duration::from_secs(10)));
+		tokio::task::yield_now().await;
+		tokio::time::advance(Duration::from_secs(20)).await;
+		tokio::task::yield_now().await;
+		assert!(!busy.is_finished(), "busy environment was considered idle");
+		env_tx.send_replace(0);
+		tokio::time::advance(Duration::from_secs(20)).await;
+		tokio::task::yield_now().await;
+		assert!(!busy.is_finished(), "external document client was considered idle");
+		docs_tx.send_replace(1);
+		tokio::task::yield_now().await;
+		tokio::time::advance(Duration::from_secs(9)).await;
+		tokio::task::yield_now().await;
+		assert!(!busy.is_finished(), "idle wait resolved before its full window");
+		tokio::time::advance(Duration::from_secs(1)).await;
+		busy.await.expect("idle wait task");
+
+		let (env_tx, env_rx) = tokio::sync::watch::channel(0);
+		let (_docs_tx, docs_rx) = tokio::sync::watch::channel(1);
+		let reset = tokio::spawn(wait_idle(env_rx, docs_rx, 1, Duration::from_secs(10)));
+		tokio::task::yield_now().await;
+		tokio::time::advance(Duration::from_secs(9)).await;
+		env_tx.send_replace(1);
+		tokio::task::yield_now().await;
+		env_tx.send_replace(0);
+		tokio::task::yield_now().await;
+		tokio::time::advance(Duration::from_secs(9)).await;
+		tokio::task::yield_now().await;
+		assert!(!reset.is_finished(), "activity did not reset the idle window");
+		tokio::time::advance(Duration::from_secs(1)).await;
+		reset.await.expect("reset idle wait task");
+	}
+
+	#[tokio::test]
+	async fn stale_document_authority_is_joined_without_replacement() {
+		let root = tempfile::tempdir().expect("document workspace");
+		let state = tempfile::tempdir().expect("document socket directory");
+		let socket = state.path().join("document.sock");
+		let shutdown = CancellationToken::new();
+		let serve_shutdown = shutdown.clone();
+		let serve_root = root.path().to_path_buf();
+		let serve_socket = socket.clone();
+		let task = tokio::spawn(async move {
+			omp_docserver::daemon::serve(
+				serve_root,
+				omp_docserver::daemon::Transport::Socket(serve_socket),
+				omp_docserver::daemon::ServeOptions {
+					lsp_config_paths: Vec::new(),
+					shutdown:         Some(serve_shutdown),
+					server_build:     Str::new_static("stale-build"),
+					connections:      None,
+				},
+			)
+			.await
+		});
+		tokio::time::timeout(Duration::from_secs(2), async {
+			loop {
+				if let Ok(stream) = tokio::net::UnixStream::connect(&socket).await
+					&& DocumentHost::connect(stream).await.is_ok()
+				{
+					break;
+				}
+				tokio::task::yield_now().await;
+			}
+		})
+		.await
+		.expect("stale document authority did not become ready");
+
+		let (documents, authority) = connect_or_start_docserver(root.path(), &socket, None)
+			.await
+			.expect("join stale document authority");
+		assert_eq!(documents.hello().server_build.as_str(), "stale-build");
+		assert!(authority.is_none(), "joined authority was incorrectly claimed");
+
+		drop(documents);
+		shutdown.cancel();
+		task
+			.await
+			.expect("stale authority task")
+			.expect("stale authority shutdown");
+	}
 }
