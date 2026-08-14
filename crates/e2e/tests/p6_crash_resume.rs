@@ -504,18 +504,27 @@ async fn real_chat_resume_replays_pending_turn_through_cli_startup() {
 	let scratch = Scratch::new().expect("binary resume scratch");
 	let project = std::fs::canonicalize(scratch.project()).expect("canonical scratch project");
 	let omp_dir = project.join(".omp");
-	let sessions = omp_dir.join("sessions");
+	fs::create_dir(&omp_dir).expect("create project metadata directory");
+	fs::set_permissions(&omp_dir, fs::Permissions::from_mode(0o755))
+		.expect("use standard .omp permissions");
+	let data_dir = project
+		.parent()
+		.expect("project parent")
+		.join("binary-home/data");
+	let state_dir =
+		omp_app::project_state::directory(&data_dir, &project).expect("project state directory");
+	let sessions = state_dir.join("sessions");
 	fs::create_dir_all(&sessions).expect("create chat session directory");
-	fs::set_permissions(&omp_dir, fs::Permissions::from_mode(0o700)).expect("secure .omp");
-	fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).expect("secure sessions");
+	fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o755))
+		.expect("use standard state permissions");
+	fs::set_permissions(&sessions, fs::Permissions::from_mode(0o755))
+		.expect("use standard sessions permissions");
 	fs::set_permissions(scratch.state(), fs::Permissions::from_mode(0o700))
 		.expect("secure binary-resume daemon state");
 	let docserver =
-		DocServerTask::spawn(project.clone(), scratch.socket("binary-docserver.sock"), Vec::new())
+		DocServerTask::spawn(project.clone(), state_dir.join("docserver.sock"), Vec::new())
 			.await
 			.expect("start real binary-resume document authority");
-	std::os::unix::fs::symlink(docserver.socket(), omp_dir.join("docserver.sock"))
-		.expect("link binary-resume document authority");
 	let journal_path = sessions.join(format!("{BINARY_SESSION}.jsonl"));
 	drop(
 		Journal::create(&journal_path, &Header {
@@ -526,8 +535,8 @@ async fn real_chat_resume_replays_pending_turn_through_cli_startup() {
 		})
 		.expect("create resumable binary journal"),
 	);
-	fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600))
-		.expect("secure binary journal");
+	fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o644))
+		.expect("use standard binary journal permissions");
 
 	let script = FakeScript::chat(vec![
 		Ok(ChatEvent::BlockStarted { index: 0, kind: BlockKind::Text }),

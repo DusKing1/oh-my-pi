@@ -856,22 +856,28 @@ async fn chat_tui_drives_real_pty_tools_interrupt_resize_and_clean_quit() {
 	let project = scratch.path().join("project");
 	std::fs::create_dir(&project).expect("project directory");
 	std::fs::write(project.join("scratch.txt"), "old\n").expect("write read/edit fixture");
-	let state_dir = project.join(".omp");
-	std::fs::create_dir(&state_dir).expect("project state directory");
+	let metadata_dir = project.join(".omp");
+	std::fs::create_dir(&metadata_dir).expect("project metadata directory");
+	std::fs::set_permissions(
+		&metadata_dir,
+		<std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+	)
+	.expect("use standard project metadata permissions");
+	let state_dir = omp_app::project_state::directory(&scratch.path().join("home/data"), &project)
+		.expect("project state directory");
+	std::fs::create_dir_all(&state_dir).expect("create project state directory");
 	std::fs::set_permissions(
 		&state_dir,
-		<std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+		<std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
 	)
-	.expect("secure project state directory");
+	.expect("use standard project state permissions");
 	let docserver = omp_e2e::support::DocServerTask::spawn(
 		project.clone(),
-		scratch.path().join("docserver.sock"),
+		state_dir.join("docserver.sock"),
 		Vec::new(),
 	)
 	.await
 	.expect("start real document authority");
-	std::os::unix::fs::symlink(docserver.socket(), state_dir.join("docserver.sock"))
-		.expect("link external document socket into project state");
 	let shell_release = scratch.path().join("release-shell");
 	let gateway_socket = scratch.path().join("gateway.sock");
 	let debug_socket = scratch.path().join("tui-debug.sock");

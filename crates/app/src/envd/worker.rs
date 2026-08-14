@@ -1,7 +1,7 @@
 //! Supervision and same-binary execution for Python tool workers.
 
 use std::{
-	collections::{HashSet, VecDeque},
+	collections::{BTreeMap, HashSet, VecDeque},
 	env,
 	ffi::CString,
 	io::{self, Read, Write},
@@ -1081,7 +1081,7 @@ fn load_tools(engine: &omp_py::Engine, modules: &[Str]) -> Result<Vec<PythonTool
 								.call1((schema,))?
 								.extract::<String>()?,
 						),
-						None => Bytes::from_static(br#"{"type":"object"}"#),
+						None => omp_tool::schema::<BTreeMap<String, serde_json::Value>>(),
 					};
 					let handler = dict.get_item("handler")?.ok_or_else(|| {
 						PyKeyError::new_err(format!("Python tool {name} has no handler"))
