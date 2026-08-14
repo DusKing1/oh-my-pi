@@ -1,25 +1,35 @@
 //! Durable project-chat composition.
 
 use std::{
+	fs::File,
+	io::{BufRead as _, BufReader},
 	path::{Path, PathBuf},
 	sync::Arc,
 	time::{SystemTime, UNIX_EPOCH},
 };
 
+use async_trait::async_trait;
+use futures::StreamExt as _;
 use omp_agent::{
-	Agent, AgentSnapshot, AgentState, InProcTurnClient, Journal, RpcTurnClient, TurnClient,
-	TurnOptions, WorkspaceInput, project_journal,
+	Agent, AgentSnapshot, AgentState, InProcTurnClient, Journal, RpcTurnClient, TurnClient, TurnId,
+	TurnInput, TurnOptions, TurnSession as _, WorkspaceInput, project_journal,
 };
-use omp_core::Str;
+use omp_core::{Str, fmts};
 use omp_llm_catalog::GrammarBits;
 use omp_llm_inference::ToolInputConstraint;
-use omp_proto::inference::v1 as inference_pb;
-use omp_storage::transcript::{Header, SessionId};
+use omp_proto::{
+	inference::v1 as inference_pb,
+	thread::v1::{Item, Message, Part, Role, Thread, item, part},
+};
+use omp_storage::transcript::{Header, Kind, SessionId, read_header, read_line};
 use omp_tool::{LoweringCaps, PromptCaps, Registry};
+use parking_lot::Mutex;
+use serde_json::{Value, json};
 use thiserror::Error;
+use xutf::IntoAnsiStripped as _;
 
 use crate::{
-	chat_ui::{self, ChatUiSession},
+	chat_ui::{self, ChatUiExit, ChatUiSession, ResumeChoice},
 	cli::ChatArgs,
 };
 
@@ -83,6 +93,9 @@ pub enum ChatError {
 	/// A tool schema could not be encoded for the turn protocol.
 	#[error("could not encode tool schema")]
 	ToolSchema(#[source] serde_json::Error),
+	/// The session-scoped eval parent bridge could not be bound.
+	#[error("eval session bridge failed: {0}")]
+	EvalBridge(Str),
 	/// The interactive terminal shell failed.
 	#[error("interactive chat shell failed")]
 	Ui(#[source] anyhow::Error),
@@ -95,6 +108,243 @@ struct Session {
 	id:            Str,
 	journal:       Journal,
 	initial_items: Vec<omp_proto::thread::v1::Item>,
+}
+
+struct ChatScope<'a> {
+	catalog:      &'a omp_llm_catalog::snapshot::Catalog,
+	root:         &'a Path,
+	sessions_dir: &'a Path,
+	registry:     Arc<Registry>,
+}
+
+#[derive(Clone)]
+struct ChatParentContext {
+	state:        AgentState,
+	session_id:   Str,
+	sessions_dir: PathBuf,
+	root:         PathBuf,
+}
+
+pub(crate) struct ChatParentHost<C: TurnClient + Clone + 'static> {
+	client:  C,
+	env:     omp_env::EnvClient,
+	context: Mutex<ChatParentContext>,
+}
+
+impl<C: TurnClient + Clone + 'static> ChatParentHost<C> {
+	pub(crate) fn new(
+		client: C,
+		env: omp_env::EnvClient,
+		state: AgentState,
+		session_id: Str,
+		sessions_dir: PathBuf,
+		root: PathBuf,
+	) -> Self {
+		Self {
+			client,
+			env,
+			context: Mutex::new(ChatParentContext { state, session_id, sessions_dir, root }),
+		}
+	}
+
+	pub(crate) fn update(&self, state: AgentState, session_id: Str) {
+		let mut context = self.context.lock();
+		context.state = state;
+		context.session_id = session_id;
+	}
+}
+
+fn bridge_message(role: Role, text: &str) -> Item {
+	Item {
+		seq:           0,
+		created_at_ms: now_ms(),
+		kind:          Some(item::Kind::Message(Message {
+			role:  i32::from(role),
+			parts: vec![Part { kind: Some(part::Kind::Text(text.to_owned())) }],
+		})),
+		props:         None,
+	}
+}
+
+fn bridge_outcome_text(outcome: &inference_pb::Outcome) -> String {
+	let mut text = String::new();
+	for item in &outcome.output {
+		if let Some(item::Kind::Message(message)) = &item.kind {
+			for part in &message.parts {
+				if let Some(part::Kind::Text(value)) = &part.kind {
+					text.push_str(value);
+				}
+			}
+		}
+	}
+	text
+}
+
+#[async_trait]
+impl<C: TurnClient + Clone + 'static> crate::envd::eval::ParentSessionHost for ChatParentHost<C> {
+	async fn completion(&self, args: Value) -> Result<Value, crate::envd::eval::BridgeHostError> {
+		let prompt = args.get("prompt").and_then(Value::as_str).ok_or_else(|| {
+			crate::envd::eval::BridgeHostError::message("completion prompt is required")
+		})?;
+		let context = self.context.lock().clone();
+		let snapshot = context.state.snapshot();
+		let mut params = snapshot.turn.params.clone();
+		params.tools.clear();
+		params.tool_choice = None;
+		params.model = match args
+			.get("model")
+			.and_then(Value::as_str)
+			.unwrap_or("default")
+		{
+			"default" => params.model,
+			model @ ("smol" | "slow") => format!("@{model}"),
+			other => {
+				return Err(crate::envd::eval::BridgeHostError::message(format!(
+					"unsupported completion model tier: {other}"
+				)));
+			},
+		};
+		if let Some(schema) = args.get("schema") {
+			let schema_json = serde_json::to_vec(schema)
+				.map_err(|error| crate::envd::eval::BridgeHostError::message(error.to_string()))?;
+			params.response_format = Some(inference_pb::ResponseFormat {
+				kind:           Some(inference_pb::response_format::Kind::JsonSchema(
+					inference_pb::response_format::JsonSchema {
+						name:        "eval_completion".to_owned(),
+						schema_json: schema_json.into(),
+						strict:      Some(true),
+					},
+				)),
+				on_unsupported: inference_pb::Fallback::Error as i32,
+			});
+		}
+		let mut items = Vec::new();
+		if let Some(system) = args.get("system").and_then(Value::as_str) {
+			items.push(bridge_message(Role::System, system));
+		}
+		items.push(bridge_message(Role::User, prompt));
+		let options = TurnOptions { context_id: None, params, executor: None, props: None };
+		let mut turn = self
+			.client
+			.turn(
+				TurnId::new(format!("eval-completion-{}", ulid::Ulid::generate())),
+				TurnInput::Full(Thread { items }),
+				&options,
+			)
+			.await
+			.map_err(|error| crate::envd::eval::BridgeHostError::message(error.to_string()))?;
+		let mut events = turn.events();
+		while let Some(event) = events.next().await {
+			let event = event
+				.map_err(|error| crate::envd::eval::BridgeHostError::message(error.to_string()))?;
+			match event.event {
+				Some(inference_pb::turn_event::Event::Outcome(outcome)) => {
+					return Ok(json!({ "text": bridge_outcome_text(&outcome) }));
+				},
+				Some(inference_pb::turn_event::Event::Error(error)) => {
+					return Err(crate::envd::eval::BridgeHostError::message(error.detail));
+				},
+				_ => {},
+			}
+		}
+		Err(crate::envd::eval::BridgeHostError::message("completion turn ended without an outcome"))
+	}
+
+	async fn agent(&self, args: Value) -> Result<Value, crate::envd::eval::BridgeHostError> {
+		let prompt = args
+			.get("prompt")
+			.and_then(Value::as_str)
+			.ok_or_else(|| crate::envd::eval::BridgeHostError::message("agent prompt is required"))?;
+		let kind = args.get("agent").and_then(Value::as_str).unwrap_or("task");
+		if kind != "task" {
+			return Err(crate::envd::eval::BridgeHostError::message(format!(
+				"agent type '{kind}' is not available in this session"
+			)));
+		}
+		for option in ["label", "isolated", "apply", "merge"] {
+			if args.get(option).is_some() {
+				return Err(crate::envd::eval::BridgeHostError::message(format!(
+					"agent option '{option}' is not supported by this session"
+				)));
+			}
+		}
+		if args.get("schema").is_some() || args.get("schemaMode").is_some() {
+			return Err(crate::envd::eval::BridgeHostError::message(
+				"structured subagent output is not supported by this session",
+			));
+		}
+		let context = self.context.lock().clone();
+		let id = Str::from(ulid::Ulid::generate().to_string());
+		let directory = context.sessions_dir.join("eval-agents");
+		std::fs::create_dir_all(&directory)
+			.map_err(|error| crate::envd::eval::BridgeHostError::message(error.to_string()))?;
+		let journal = Journal::create(&directory.join(format!("{id}.jsonl")), &Header {
+			v:       4,
+			id:      SessionId(id.clone()),
+			created: now_ms(),
+			cwd:     context.root,
+		})
+		.map_err(|error| crate::envd::eval::BridgeHostError::message(error.to_string()))?;
+		let mut child_snapshot = context.state.snapshot().as_ref().clone();
+		child_snapshot.enabled_tools = child_snapshot
+			.enabled_tools
+			.iter()
+			.filter(|name| name.as_str() != "eval")
+			.cloned()
+			.collect::<Vec<_>>()
+			.into();
+		child_snapshot
+			.turn
+			.params
+			.tools
+			.retain(|tool| tool.name != "eval");
+		let mut child = Agent::new(
+			self.client.clone(),
+			self.env.clone(),
+			AgentState::new(child_snapshot),
+			journal,
+			PROMPT_CAPS,
+		);
+		let summary = child
+			.submit(
+				[bridge_message(Role::User, prompt)],
+				TurnId::new(format!("eval-agent-{}", ulid::Ulid::generate())),
+			)
+			.await
+			.map_err(|error| crate::envd::eval::BridgeHostError::message(error.to_string()))?;
+		let text = bridge_outcome_text(&summary.outcome);
+		let artifact_dir = context.sessions_dir.join(context.session_id.as_str());
+		std::fs::create_dir_all(&artifact_dir)
+			.map_err(|error| crate::envd::eval::BridgeHostError::message(error.to_string()))?;
+		let artifact = artifact_dir.join(format!("{id}.md"));
+		let temporary = artifact_dir.join(format!(".{id}.tmp"));
+		std::fs::write(&temporary, text.as_bytes())
+			.map_err(|error| crate::envd::eval::BridgeHostError::message(error.to_string()))?;
+		std::fs::rename(&temporary, &artifact)
+			.map_err(|error| crate::envd::eval::BridgeHostError::message(error.to_string()))?;
+		Ok(json!({
+			"text": text,
+			"details": { "id": id, "agent": kind },
+		}))
+	}
+
+	async fn concurrency(&self, _args: Value) -> Result<Value, crate::envd::eval::BridgeHostError> {
+		Ok(json!({ "limit": 0 }))
+	}
+
+	async fn budget(&self, _args: Value) -> Result<Value, crate::envd::eval::BridgeHostError> {
+		let context = self.context.lock();
+		let budget = context.state.snapshot().turn.params.task_budget.clone();
+		let Some(budget) = budget else {
+			return Ok(json!({ "total": null, "spent": 0, "hard": false }));
+		};
+		let remaining = budget.remaining_tokens.unwrap_or(budget.total_tokens);
+		Ok(json!({
+			"total": budget.total_tokens,
+			"spent": budget.total_tokens.saturating_sub(remaining),
+			"hard": budget.remaining_tokens.is_some(),
+		}))
+	}
 }
 
 /// Runs one interactive durable project-chat session.
@@ -115,12 +365,13 @@ pub async fn run(args: ChatArgs) -> crate::Result<()> {
 	)
 	.await?;
 	let env = environment.client().clone();
+	let eval_bridge = environment.eval_bridge();
+	let eval_control = environment.eval_control();
 
 	let registry = environment.registry();
 	let catalog = omp_llm_catalog::snapshot::Catalog::try_embedded()?;
 	let session = open_session(&root, &sessions_dir, args.resume.as_ref(), registry.as_ref())?;
-	let snapshot = agent_snapshot(&args.model, &root, &session.id, Arc::clone(&registry))?;
-	let context_window = model_context_window(catalog, &args.model);
+	let snapshot = agent_snapshot(args.model.as_str(), &root, &session.id, Arc::clone(&registry))?;
 	let state = AgentState::new(snapshot);
 
 	if let Some(endpoint) = args.gateway {
@@ -130,7 +381,16 @@ pub async fn run(args: ChatArgs) -> crate::Result<()> {
 				endpoint: endpoint.clone(),
 				source,
 			})?;
-		run_ui(RpcTurnClient::new(channel), env, state, session, context_window).await?;
+		run_ui(
+			RpcTurnClient::new(channel),
+			env,
+			state,
+			session,
+			Arc::clone(&eval_bridge),
+			eval_control.clone(),
+			ChatScope { catalog, root: &root, sessions_dir: &sessions_dir, registry },
+		)
+		.await?;
 	} else {
 		let data_dir = crate::cli::data_dir(None)?;
 		let (_, inference) =
@@ -138,7 +398,13 @@ pub async fn run(args: ChatArgs) -> crate::Result<()> {
 		let client = InProcTurnClient::new(inference)
 			.await
 			.map_err(ChatError::from)?;
-		run_ui(client, env, state, session, context_window).await?;
+		run_ui(client, env, state, session, eval_bridge, eval_control, ChatScope {
+			catalog,
+			root: &root,
+			sessions_dir: &sessions_dir,
+			registry,
+		})
+		.await?;
 	}
 
 	// `environment` is deliberately retained until the agent and UI have been
@@ -154,28 +420,85 @@ pub async fn run(_args: ChatArgs) -> crate::Result<()> {
 	Err(ChatError::UnsupportedPlatform.into())
 }
 
-async fn run_ui<C: TurnClient + 'static>(
+async fn run_ui<C: TurnClient + Clone + 'static>(
 	client: C,
 	env: omp_env::EnvClient,
-	state: AgentState,
-	session: Session,
-	context_window: Option<u64>,
+	mut state: AgentState,
+	mut session: Session,
+	eval_bridge: Arc<crate::envd::eval::SessionBridgeHost>,
+	eval_control: omp_tools::eval::EvalSessionControl,
+	scope: ChatScope<'_>,
 ) -> Result<(), ChatError> {
-	let agent = Agent::new(client, env, state, session.journal, PROMPT_CAPS);
-	chat_ui::run(agent, ChatUiSession {
-		session_id: session.id,
-		initial_items: session.initial_items,
-		context_window,
-	})
-	.await
-	.map_err(ChatError::Ui)
+	let parent = Arc::new(ChatParentHost::new(
+		client.clone(),
+		env.clone(),
+		state.clone(),
+		session.id.clone(),
+		scope.sessions_dir.to_path_buf(),
+		scope.root.to_path_buf(),
+	));
+	eval_bridge
+		.bind_parent(parent.clone())
+		.map_err(|error| ChatError::EvalBridge(Str::from(error.to_string())))?;
+	let mut app = chat_ui::start().await.map_err(ChatError::Ui)?;
+	loop {
+		parent.update(state.clone(), session.id.clone());
+		let session_root = scope.sessions_dir.join(session.id.as_str());
+		secure_owner_directory(&session_root)?;
+		secure_owner_directory(&session_root.join("local"))?;
+		eval_bridge.set_session_config(crate::envd::eval::EvalSessionConfig {
+			local_roots_json: Str::from(
+				json!({ "local": session_root.join("local").to_string_lossy() }).to_string(),
+			),
+			artifacts_dir:    Str::from(session_root.to_string_lossy().as_ref()),
+			session_file:     Str::from(
+				scope
+					.sessions_dir
+					.join(format!("{}.jsonl", session.id))
+					.to_string_lossy()
+					.as_ref(),
+			),
+		});
+		let context_window = {
+			let current = state.snapshot();
+			model_context_window(scope.catalog, &current.turn.params.model)
+		};
+		let Session { id, journal, initial_items } = session;
+		let current_id = id.clone();
+		let agent = Agent::new(client.clone(), env.clone(), state.clone(), journal, PROMPT_CAPS);
+		let exit = chat_ui::run(
+			&mut app,
+			agent,
+			ChatUiSession { session_id: id, initial_items, context_window },
+			|| {
+				resume_choices(scope.sessions_dir, scope.root, &current_id).map_err(anyhow::Error::from)
+			},
+		)
+		.await
+		.map_err(ChatError::Ui)?;
+		match exit {
+			ChatUiExit::Quit => return Ok(()),
+			ChatUiExit::Resume(id) => {
+				eval_control.request_reset();
+				let model = state.snapshot().turn.params.model.clone();
+				session =
+					open_session(scope.root, scope.sessions_dir, Some(&id), scope.registry.as_ref())?;
+				state = AgentState::new(agent_snapshot(
+					&model,
+					scope.root,
+					&session.id,
+					Arc::clone(&scope.registry),
+				)?);
+			},
+		}
+	}
 }
 
-fn model_context_window(catalog: &omp_llm_catalog::snapshot::Catalog, model: &Str) -> Option<u64> {
-	let key = omp_llm_catalog::ModelKey::from(model.as_str());
+fn model_context_window(catalog: &omp_llm_catalog::snapshot::Catalog, model: &str) -> Option<u64> {
+	let key = omp_llm_catalog::ModelKey::from(model);
 	catalog
 		.model(&key)
-		.or_else(|| catalog.resolve_alias(model.as_str()))
+		.or_else(|| catalog.resolve_alias(model))
 		.and_then(|spec| spec.limits.context_window)
 }
 
@@ -234,6 +557,127 @@ fn open_session(
 	Ok(Session { id, journal, initial_items })
 }
 
+fn resume_choices(
+	sessions_dir: &Path,
+	root: &Path,
+	current_id: &Str,
+) -> Result<Vec<ResumeChoice>, ChatError> {
+	let entries = std::fs::read_dir(sessions_dir)
+		.map_err(|source| ChatError::InsecureState { path: sessions_dir.to_owned(), source })?;
+	let mut choices = Vec::new();
+	for entry in entries {
+		let Ok(entry) = entry else {
+			continue;
+		};
+		let path = entry.path();
+		if path.extension().and_then(std::ffi::OsStr::to_str) != Some("jsonl")
+			|| secure_session_file(&path).is_err()
+		{
+			continue;
+		}
+		let Some(stem) = path.file_stem().and_then(std::ffi::OsStr::to_str) else {
+			continue;
+		};
+		let id = Str::from(stem);
+		if strict_session_id(&id).is_err() {
+			continue;
+		}
+		let Some((header, label)) = session_metadata(&path) else {
+			continue;
+		};
+		if header.id.0 != id || header.cwd != root {
+			continue;
+		}
+		let modified = entry
+			.metadata()
+			.and_then(|metadata| metadata.modified())
+			.unwrap_or(UNIX_EPOCH);
+		let age = relative_time(modified);
+		let label = label.unwrap_or_else(|| Str::new_static("Untitled session"));
+		let detail = if &id == current_id {
+			fmts!("current · {age} · {id}")
+		} else {
+			fmts!("{age} · {id}")
+		};
+		choices.push((modified, ResumeChoice { id, label, detail }));
+	}
+	choices.sort_unstable_by(|left, right| right.0.cmp(&left.0));
+	Ok(choices.into_iter().map(|(_, choice)| choice).collect())
+}
+
+fn session_metadata(path: &Path) -> Option<(Header, Option<Str>)> {
+	let mut reader = BufReader::new(File::open(path).ok()?);
+	let mut line = Vec::new();
+	if reader.read_until(b'\n', &mut line).ok()? == 0 {
+		return None;
+	}
+	while line
+		.last()
+		.is_some_and(|byte| matches!(*byte, b'\n' | b'\r'))
+	{
+		line.pop();
+	}
+	let header = read_header(&line).ok()?;
+	let mut title = None;
+	let mut first_message = None;
+	loop {
+		line.clear();
+		if reader.read_until(b'\n', &mut line).ok()? == 0 {
+			break;
+		}
+		while line
+			.last()
+			.is_some_and(|byte| matches!(*byte, b'\n' | b'\r'))
+		{
+			line.pop();
+		}
+		let Ok(event) = read_line(&line) else {
+			continue;
+		};
+		match &event.kind {
+			Kind::Title { title: value, .. } => title = sanitize_session_label(value),
+			Kind::Item(record) if first_message.is_none() => {
+				let Some(item::Kind::Message(message)) = &record.item.kind else {
+					continue;
+				};
+				if !matches!(Role::try_from(message.role), Ok(Role::User)) {
+					continue;
+				}
+				first_message = message.parts.iter().find_map(|part| match &part.kind {
+					Some(part::Kind::Text(text)) => sanitize_session_label(text),
+					_ => None,
+				});
+			},
+			_ => {},
+		}
+	}
+	Some((header, title.or(first_message)))
+}
+
+fn sanitize_session_label(value: &str) -> Option<Str> {
+	let mut clean = value.to_owned().into_ansi_stripped();
+	if let Some(end) = clean.find(['\r', '\n']) {
+		clean.truncate(end);
+	}
+	clean.retain(|character| !character.is_control());
+	let clean = Str::from(clean).trim();
+	(!clean.is_empty()).then_some(clean)
+}
+
+fn relative_time(modified: SystemTime) -> Str {
+	let seconds = SystemTime::now()
+		.duration_since(modified)
+		.unwrap_or_default()
+		.as_secs();
+	match seconds {
+		0..60 => Str::new_static("just now"),
+		60..3_600 => fmts!("{}m ago", seconds / 60),
+		3_600..86_400 => fmts!("{}h ago", seconds / 3_600),
+		86_400..604_800 => fmts!("{}d ago", seconds / 86_400),
+		_ => fmts!("{}w ago", seconds / 604_800),
+	}
+}
+
 fn strict_session_id(id: &Str) -> Result<Str, ChatError> {
 	let parsed = id
 		.as_str()
@@ -246,7 +690,7 @@ fn strict_session_id(id: &Str) -> Result<Str, ChatError> {
 }
 
 fn agent_snapshot(
-	model: &Str,
+	model: &str,
 	root: &Path,
 	session_id: &Str,
 	registry: Arc<Registry>,
@@ -280,7 +724,7 @@ fn agent_snapshot(
 	let turn = TurnOptions {
 		context_id: Some(session_id.clone()),
 		params: inference_pb::ChatParams {
-			model: model.to_string(),
+			model: model.to_owned(),
 			tools,
 			..inference_pb::ChatParams::default()
 		},
@@ -363,4 +807,249 @@ fn secure_session_file(path: &Path) -> std::io::Result<()> {
 		));
 	}
 	Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_owner_file_permissions(_path: &Path) -> std::io::Result<()> {
+	Err(std::io::Error::new(
+		std::io::ErrorKind::Unsupported,
+		"owner-only session permissions require Unix",
+	))
+}
+
+#[cfg(not(unix))]
+fn secure_session_file(_path: &Path) -> std::io::Result<()> {
+	Err(std::io::Error::new(
+		std::io::ErrorKind::Unsupported,
+		"owner-only session verification requires Unix",
+	))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+	use std::collections::VecDeque;
+
+	use futures::{Stream, stream};
+	use omp_agent::{InvokeFrame, TurnSession};
+	use omp_env::EnvClient;
+	use omp_proto::thread::v1::{Item, Message, Part};
+	use omp_storage::transcript::{Event, ItemRecord, TitleSource, Writer};
+
+	use super::*;
+
+	#[derive(Clone)]
+	struct ScriptedParentClient {
+		outcomes: Arc<Mutex<VecDeque<inference_pb::Outcome>>>,
+		inputs:   Arc<Mutex<Vec<TurnInput>>>,
+		options:  Arc<Mutex<Vec<TurnOptions>>>,
+	}
+
+	struct ScriptedParentSession {
+		events: Vec<Result<inference_pb::TurnEvent, omp_agent::Error>>,
+	}
+
+	impl TurnSession for ScriptedParentSession {
+		fn events(
+			&mut self,
+		) -> impl Stream<Item = Result<inference_pb::TurnEvent, omp_agent::Error>> + Send + Unpin + '_
+		{
+			stream::iter(std::mem::take(&mut self.events))
+		}
+
+		async fn submit(&mut self, _frame: InvokeFrame) -> Result<(), omp_agent::Error> {
+			Ok(())
+		}
+	}
+
+	impl TurnClient for ScriptedParentClient {
+		type Session<'client> = ScriptedParentSession;
+
+		async fn turn<'client>(
+			&'client self,
+			_turn_id: TurnId,
+			input: TurnInput,
+			options: &'client TurnOptions,
+		) -> Result<Self::Session<'client>, omp_agent::Error> {
+			self.inputs.lock().push(input);
+			self.options.lock().push(options.clone());
+			let outcome = self
+				.outcomes
+				.lock()
+				.pop_front()
+				.expect("one scripted parent outcome");
+			Ok(ScriptedParentSession {
+				events: vec![Ok(inference_pb::TurnEvent {
+					event: Some(inference_pb::turn_event::Event::Outcome(outcome)),
+				})],
+			})
+		}
+	}
+
+	fn parent_outcome(text: &str) -> inference_pb::Outcome {
+		let mut output = bridge_message(Role::Assistant, text);
+		output.seq = 1;
+		inference_pb::Outcome {
+			output: vec![output],
+			stop: inference_pb::StopReason::StopEndTurn as i32,
+			..inference_pb::Outcome::default()
+		}
+	}
+
+	fn write_session(sessions_dir: &Path, root: &Path, prompt: &str, title: Option<&str>) -> Str {
+		let id = Str::from(ulid::Ulid::generate().to_string());
+		let path = sessions_dir.join(format!("{id}.jsonl"));
+		let mut writer = Writer::create(&path, &Header {
+			v:       4,
+			id:      SessionId(id.clone()),
+			created: 1,
+			cwd:     root.to_owned(),
+		})
+		.expect("create transcript");
+		writer
+			.append(&Event {
+				ts:   2,
+				kind: Kind::Item(ItemRecord {
+					item:        Item {
+						seq:           0,
+						created_at_ms: 2,
+						kind:          Some(item::Kind::Message(Message {
+							role:  i32::from(Role::User),
+							parts: vec![Part { kind: Some(part::Kind::Text(prompt.to_owned())) }],
+						})),
+						props:         None,
+					},
+					turn_id:     None,
+					prompt_hash: None,
+				}),
+			})
+			.expect("append prompt");
+		if let Some(title) = title {
+			writer
+				.append(&Event {
+					ts:   3,
+					kind: Kind::Title { title: Str::from(title), source: TitleSource::User },
+				})
+				.expect("append title");
+		}
+		drop(writer);
+		set_owner_file_permissions(&path).expect("secure transcript");
+		id
+	}
+
+	#[test]
+	fn resume_choices_use_titles_then_prompts_and_strip_terminal_controls() {
+		let scratch = tempfile::tempdir().expect("scratch directory");
+		let root = scratch.path().join("project");
+		let sessions_dir = root.join(".omp/sessions");
+		std::fs::create_dir_all(&sessions_dir).expect("session directory");
+		let prompt_id = write_session(&sessions_dir, &root, "  first prompt\nignored", None);
+		let titled_id = write_session(
+			&sessions_dir,
+			&root,
+			"unused prompt",
+			Some("\u{1b}[31mRenamed\u{1b}[0m\nignored"),
+		);
+
+		let choices = resume_choices(&sessions_dir, &root, &titled_id).expect("list sessions");
+		assert_eq!(choices.len(), 2);
+		let prompt = choices
+			.iter()
+			.find(|choice| choice.id == prompt_id)
+			.expect("prompt-named session");
+		assert_eq!(prompt.label, "first prompt");
+		let titled = choices
+			.iter()
+			.find(|choice| choice.id == titled_id)
+			.expect("title-named session");
+		assert_eq!(titled.label, "Renamed");
+		assert!(titled.detail.starts_with("current · "));
+	}
+
+	#[tokio::test]
+	async fn session_bound_parent_runs_live_completion_and_agent_turns() {
+		let scratch = tempfile::tempdir().expect("chat parent scratch");
+		let root = scratch.path().join("project");
+		let sessions_dir = root.join(".omp/sessions");
+		std::fs::create_dir_all(&sessions_dir).expect("session directory");
+		let inputs = Arc::new(Mutex::new(Vec::new()));
+		let options = Arc::new(Mutex::new(Vec::new()));
+		let client = ScriptedParentClient {
+			outcomes: Arc::new(Mutex::new(VecDeque::from([
+				parent_outcome("completion answer"),
+				parent_outcome("agent answer"),
+			]))),
+			inputs:   Arc::clone(&inputs),
+			options:  Arc::clone(&options),
+		};
+		let registry = Arc::new(Registry::new());
+		let mut snapshot = AgentSnapshot::new(
+			TurnOptions::default(),
+			WorkspaceInput::new(&root, Arc::from([])),
+			registry,
+		);
+		snapshot.enabled_tools = Arc::from([Str::new_static("eval")]);
+		let state = AgentState::new(snapshot);
+		let (env, _transport) = EnvClient::in_process(1);
+		let host = ChatParentHost::new(
+			client,
+			env,
+			state,
+			Str::new_static("parent-session"),
+			sessions_dir,
+			root,
+		);
+
+		let completion = crate::envd::eval::ParentSessionHost::completion(
+			&host,
+			json!({"prompt":"complete this","model":"default"}),
+		)
+		.await
+		.expect("live completion call");
+		assert_eq!(completion, json!({"text":"completion answer"}));
+
+		let agent = tokio::time::timeout(
+			std::time::Duration::from_secs(1),
+			crate::envd::eval::ParentSessionHost::agent(
+				&host,
+				json!({"prompt":"delegate this","agent":"task"}),
+			),
+		)
+		.await
+		.expect("child agent must not deadlock on the occupied parent eval kernel")
+		.expect("live agent call");
+		assert_eq!(agent["text"], "agent answer");
+		assert_eq!(agent["details"]["agent"], "task");
+		assert!(
+			agent["details"]["id"]
+				.as_str()
+				.is_some_and(|id| !id.is_empty()),
+			"agent bridge did not return its durable child id"
+		);
+
+		let options = options.lock();
+		assert_eq!(options.len(), 2);
+		assert!(
+			options[1]
+				.params
+				.tools
+				.iter()
+				.all(|tool| tool.name != "eval"),
+			"child agent must not advertise the parent's occupied eval kernel"
+		);
+		drop(options);
+		let inputs = inputs.lock();
+		assert_eq!(inputs.len(), 2);
+		assert!(matches!(&inputs[0], TurnInput::Full(thread)
+			if bridge_outcome_text(&inference_pb::Outcome {
+				output: thread.items.clone(),
+				..inference_pb::Outcome::default()
+			}) == "complete this"
+		));
+		assert!(matches!(&inputs[1], TurnInput::Full(thread)
+			if bridge_outcome_text(&inference_pb::Outcome {
+				output: thread.items.clone(),
+				..inference_pb::Outcome::default()
+			}) == "delegate this"
+		));
+	}
 }

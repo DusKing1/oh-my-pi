@@ -2907,8 +2907,10 @@ fn system_time_ms(time: SystemTime) -> u64 {
 
 #[cfg(test)]
 mod tests {
-	use futures::StreamExt as _;
-	use omp_llm_inference::receipt::{ExecutionReceipt, ReasonId, RecoveryKind, RecoveryRecord};
+	use omp_llm_inference::{
+		RouteId,
+		receipt::{ExecutionReceipt, ReasonId, RecoveryKind, RecoveryRecord},
+	};
 
 	use super::*;
 

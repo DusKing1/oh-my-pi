@@ -62,8 +62,10 @@ impl RendererRegistry {
 				("read", "", 1, render_read),
 				("edit", "hl", 1, render_edit),
 				("shell", "", 1, render_shell),
+				("eval", "", 1, render_eval),
 				("grep", "", 1, render_grep),
 				("glob", "", 1, render_glob),
+				("write", "", 1, render_write),
 			],
 		}
 	}
@@ -123,9 +125,9 @@ fn get_verdict<P: DeserializeOwned, F: DeserializeOwned>(
 	serde_json::from_value(json_val).ok()
 }
 
-fn render_verdict_fallback<P: DeserializeOwned>(
+fn render_verdict_fallback<P, F: serde::Serialize>(
 	c: &mut ToolCard,
-	verdict: &omp_tool::Verdict<P, serde_json::Value>,
+	verdict: &omp_tool::Verdict<P, F>,
 ) {
 	match verdict {
 		omp_tool::Verdict::Fault(f) => {
@@ -157,6 +159,22 @@ fn parse_diff_lines(diff: &mut DiffView, preview: &str) {
 		}
 	}
 }
+fn edit_input_path(input: &str) -> Option<&str> {
+	let header = input.lines().next()?.trim();
+	let body = header.strip_prefix('[')?.strip_suffix(']')?;
+	let (path, tag) = body.rsplit_once('#')?;
+	(!path.is_empty() && !tag.is_empty()).then_some(path)
+}
+fn append_edit_section(diff: &mut DiffView, section: &omp_tools::edit::SectionPayload) {
+	diff.push(DiffKind::Header, section.header.as_deref().unwrap_or(section.path.as_str()));
+	if let Some(destination) = &section.move_dest {
+		diff.push(DiffKind::Header, format!("Moved to {destination}"));
+	}
+	parse_diff_lines(diff, section.diff.as_str());
+	for warning in &section.warnings {
+		diff.push(DiffKind::Context, format!("Warning: {warning}"));
+	}
+}
 
 pub(crate) fn render_read(ui: &mut Ui, fold: &ToolFold) -> bool {
 	ui.update_component::<ToolCard>(&fold.call_id, |c| {
@@ -177,20 +195,12 @@ pub(crate) fn render_read(ui: &mut Ui, fold: &ToolFold) -> bool {
 				match &verdict {
 					omp_tool::Verdict::Ok(payload) => {
 						let mut col = Col::new();
-						match &payload.content {
-							omp_tools::read::Content::Text { slices, .. } => {
-								for slice in slices {
-									col = col.child(TextLeaf::new().text(slice.text.as_str()));
-								}
-							},
-							omp_tools::read::Content::Summary { segments, .. } => {
-								for segment in segments {
-									col = col.child(TextLeaf::new().text(segment.text.as_str()));
-								}
-							},
-							omp_tools::read::Content::Blob { fallback, .. } => {
-								col = col.child(TextLeaf::new().text(fallback.as_str()));
-							},
+						for part in &payload.parts {
+							let text = match part {
+								omp_tools::read::PayloadPart::Text { text } => text,
+								omp_tools::read::PayloadPart::Blob { alt, .. } => alt,
+							};
+							col = col.child(TextLeaf::new().text(text.as_str()));
 						}
 						c.replace_body(col);
 					},
@@ -210,30 +220,38 @@ pub(crate) fn render_edit(ui: &mut Ui, fold: &ToolFold) -> bool {
 			c.set_badge(format!("{}ms", fold.start_time.elapsed().as_millis()));
 		}
 
-		if let Some(path) = fold.parsed_args.get("path").and_then(|v| v.as_str()) {
+		if let Some(path) = fold
+			.parsed_args
+			.get("input")
+			.and_then(|value| value.as_str())
+			.and_then(edit_input_path)
+		{
 			c.set_intent(format!("edit {}", path));
 		}
 
 		if fold.state == ToolState::Streaming {
-			if let Some(last_update) = fold.updates.last() {
-				if let Some(preview) = last_update.get("preview").and_then(|v| v.as_str()) {
-					let mut diff = DiffView::new();
-					parse_diff_lines(&mut diff, preview);
-					c.replace_body(diff);
-				}
-			}
-		} else {
-			if let Some(verdict) =
-				get_verdict::<omp_tools::edit::Payload, serde_json::Value>(&fold.item)
+			if let Some(preview) = fold
+				.updates
+				.last()
+				.and_then(|update| update.get("preview"))
+				.and_then(|value| value.as_str())
 			{
-				match &verdict {
-					omp_tool::Verdict::Ok(payload) => {
-						let mut diff = DiffView::new();
-						parse_diff_lines(&mut diff, payload.diff.as_str());
-						c.replace_body(diff);
-					},
-					_ => render_verdict_fallback(c, &verdict),
-				}
+				let mut diff = DiffView::new();
+				parse_diff_lines(&mut diff, preview);
+				c.replace_body(diff);
+			}
+		} else if let Some(verdict) =
+			get_verdict::<omp_tools::edit::Payload, serde_json::Value>(&fold.item)
+		{
+			match &verdict {
+				omp_tool::Verdict::Ok(payload) => {
+					let mut diff = DiffView::new();
+					for section in &payload.sections {
+						append_edit_section(&mut diff, section);
+					}
+					c.replace_body(diff);
+				},
+				_ => render_verdict_fallback(c, &verdict),
 			}
 		}
 		true
@@ -286,16 +304,22 @@ pub(crate) fn render_shell(ui: &mut Ui, fold: &ToolFold) -> bool {
 				match &verdict {
 					omp_tool::Verdict::Ok(payload) => match payload.status.outcome {
 						omp_tools::shell::ExecOutcome::Exited => {
+							// Keep default/pre-set success state
+						},
+						omp_tools::shell::ExecOutcome::Failed => {
+							c.set_state(ToolState::Failure);
 							if let Some(code) = payload.status.exit_code {
-								if code != 0 {
-									c.set_badge(format!("exit {}", code));
-								}
+								c.set_badge(format!("exit {}", code));
+							} else {
+								c.set_badge("failed");
 							}
 						},
 						omp_tools::shell::ExecOutcome::Cancelled => {
+							c.set_state(ToolState::Failure);
 							c.set_badge("interrupted");
 						},
 						omp_tools::shell::ExecOutcome::Timeout => {
+							c.set_state(ToolState::Failure);
 							c.set_badge("timeout");
 						},
 						_ => {},
@@ -312,6 +336,151 @@ pub(crate) fn render_shell(ui: &mut Ui, fold: &ToolFold) -> bool {
 			c.replace_body(col);
 		} else {
 			c.replace_body(Col::new());
+		}
+		true
+	})
+}
+
+fn eval_payload_text(payload: &omp_tools::eval::Payload) -> String {
+	let mut bytes = Vec::new();
+	for frame in &payload.frames {
+		bytes.extend_from_slice(&frame.data);
+	}
+	let mut text = String::from_units(xutf::transcode::<Utf8, Utf8>(&bytes)).into_ansi_stripped();
+	if let Some(result) = &payload.result
+		&& !result.text.is_empty()
+	{
+		text.push_str(&result.text);
+		if !result.text.ends_with('\n') {
+			text.push('\n');
+		}
+	}
+	let json_count = payload
+		.display_outputs
+		.iter()
+		.filter(|output| matches!(output, omp_tools::eval::DisplayOutput::Json { .. }))
+		.count();
+	let mut json_index = 0usize;
+	for output in &payload.display_outputs {
+		match output {
+			omp_tools::eval::DisplayOutput::Json { data } => {
+				json_index += 1;
+				if !text.is_empty() && !text.ends_with('\n') {
+					text.push('\n');
+				}
+				if json_count > 1 {
+					text.push_str(&format!("display[{json_index}]\n"));
+				}
+				text.push_str(&serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string()));
+				text.push('\n');
+			},
+			omp_tools::eval::DisplayOutput::Markdown { text: markdown } => {
+				text.push_str(markdown);
+				if !markdown.ends_with('\n') {
+					text.push('\n');
+				}
+			},
+			omp_tools::eval::DisplayOutput::Image { .. }
+			| omp_tools::eval::DisplayOutput::Status { .. } => {},
+		}
+	}
+	if let Some(exception) = &payload.status.exception {
+		if exception.traceback.is_empty() {
+			text.push_str(&format!("{}: {}\n", exception.name, exception.message));
+		} else {
+			for line in &exception.traceback {
+				text.push_str(line);
+				if !line.ends_with('\n') {
+					text.push('\n');
+				}
+			}
+		}
+	}
+	if payload.truncated {
+		if let Some(blob) = &payload.spilled_output {
+			text.push_str(&format!("… output truncated; full output in blob {}\n", blob.hash));
+		} else {
+			text.push_str("… output truncated\n");
+		}
+	}
+	text.trim_end().to_owned()
+}
+
+fn eval_preview(text: &str, maximum_lines: usize) -> String {
+	let lines = text.lines().collect::<Vec<_>>();
+	let start = lines.len().saturating_sub(maximum_lines);
+	let mut preview = lines[start..].join("\n");
+	if start != 0 {
+		preview = format!("… {start} earlier lines\n{preview}");
+	}
+	preview
+}
+
+pub(crate) fn render_eval(ui: &mut Ui, fold: &ToolFold) -> bool {
+	ui.update_component::<ToolCard>(&fold.call_id, |c| {
+		c.set_name(fold.name.clone());
+		c.set_state(fold.state);
+		let title = fold
+			.parsed_args
+			.get("title")
+			.and_then(|value| value.as_str());
+		let code = fold
+			.parsed_args
+			.get("code")
+			.and_then(|value| value.as_str());
+		if let Some(intent) = title.or_else(|| code.and_then(|code| code.lines().next())) {
+			c.set_intent(intent);
+		} else {
+			c.set_intent("running Python");
+		}
+
+		if fold.state == ToolState::Streaming {
+			let mut bytes = Vec::new();
+			for update in &fold.updates {
+				append_shell_update(&mut bytes, update);
+			}
+			let text = String::from_units(xutf::transcode::<Utf8, Utf8>(&bytes)).into_ansi_stripped();
+			if !text.is_empty() {
+				c.replace_body(Col::new().child(TextLeaf::new().text(eval_preview(&text, 10))));
+			}
+			return true;
+		}
+
+		if let Some(verdict) =
+			get_verdict::<omp_tools::eval::Payload, omp_tools::eval::Fault>(&fold.item)
+		{
+			match &verdict {
+				omp_tool::Verdict::Ok(payload) => {
+					match payload.status.outcome {
+						omp_tools::eval::CellOutcome::Complete => {
+							c.set_badge(format!("{}ms", payload.status.duration_ms));
+						},
+						omp_tools::eval::CellOutcome::Error => {
+							c.set_state(ToolState::Failure);
+							if let Some(code) = payload.status.exit_code {
+								c.set_badge(format!("exit {code}"));
+							} else {
+								c.set_badge("failed");
+							}
+						},
+						omp_tools::eval::CellOutcome::Timeout => {
+							c.set_state(ToolState::Failure);
+							c.set_badge("timeout");
+						},
+						omp_tools::eval::CellOutcome::Cancelled => {
+							c.set_state(ToolState::Failure);
+							c.set_badge("interrupted");
+						},
+					}
+					let text = eval_payload_text(payload);
+					if !text.is_empty() {
+						c.replace_body(Col::new().child(TextLeaf::new().text(eval_preview(&text, 10))));
+					} else {
+						c.replace_body(Col::new());
+					}
+				},
+				_ => render_verdict_fallback(c, &verdict),
+			}
 		}
 		true
 	})
@@ -336,11 +505,16 @@ pub(crate) fn render_grep(ui: &mut Ui, fold: &ToolFold) -> bool {
 				match &verdict {
 					omp_tool::Verdict::Ok(payload) => {
 						let mut col = Col::new();
-						for m in &payload.matches {
-							col =
-								col.child(TextLeaf::new().text(format!("{}:{}", m.path.as_str(), m.line)));
+						for f in &payload.files {
+							for m in &f.matches {
+								col = col.child(TextLeaf::new().text(format!(
+									"{}:{}",
+									f.path.as_str(),
+									m.line_number
+								)));
+							}
 						}
-						if payload.truncated {
+						if payload.file_limit_reached || payload.per_file_limit_reached {
 							col = col.child(TextLeaf::new().text("..."));
 						}
 						c.replace_body(col);
@@ -361,13 +535,8 @@ pub(crate) fn render_glob(ui: &mut Ui, fold: &ToolFold) -> bool {
 			c.set_badge(format!("{}ms", fold.start_time.elapsed().as_millis()));
 		}
 
-		if let Some(pattern) = fold
-			.parsed_args
-			.get("pattern")
-			.or_else(|| fold.parsed_args.get("path"))
-			.and_then(|v| v.as_str())
-		{
-			c.set_intent(format!("glob {}", pattern));
+		if let Some(path) = fold.parsed_args.get("path").and_then(|v| v.as_str()) {
+			c.set_intent(format!("glob {}", path));
 		}
 
 		if fold.state != ToolState::Streaming {
@@ -377,13 +546,59 @@ pub(crate) fn render_glob(ui: &mut Ui, fold: &ToolFold) -> bool {
 				match &verdict {
 					omp_tool::Verdict::Ok(payload) => {
 						let mut col = Col::new();
-						for p in &payload.paths {
-							col = col.child(TextLeaf::new().text(p.as_str()));
+						for m in &payload.matches {
+							col = col.child(TextLeaf::new().text(m.path.as_str()));
 						}
 						if payload.truncated {
 							col = col.child(TextLeaf::new().text("..."));
 						}
 						c.replace_body(col);
+					},
+					_ => render_verdict_fallback(c, &verdict),
+				}
+			}
+		}
+		true
+	})
+}
+
+pub(crate) fn render_write(ui: &mut Ui, fold: &ToolFold) -> bool {
+	ui.update_component::<ToolCard>(&fold.call_id, |c| {
+		c.set_name(fold.name.clone());
+		c.set_state(fold.state);
+
+		if let Some(path) = fold
+			.parsed_args
+			.get("path")
+			.and_then(|value| value.as_str())
+		{
+			c.set_intent(format!("write {}", path));
+		}
+		if let Some(content) = fold
+			.parsed_args
+			.get("content")
+			.and_then(|value| value.as_str())
+		{
+			let lines = content.lines().count();
+			c.set_badge(format!("{lines} lines"));
+		} else if fold.state != ToolState::Streaming {
+			c.set_badge(format!("{}ms", fold.start_time.elapsed().as_millis()));
+		}
+
+		if fold.state != ToolState::Streaming {
+			if let Some(verdict) =
+				get_verdict::<omp_tools::write::Payload, serde_json::Value>(&fold.item)
+			{
+				match &verdict {
+					omp_tool::Verdict::Ok(payload) => {
+						let action = match payload.disposition {
+							omp_tools::write::WriteDisposition::Created => "created",
+							omp_tools::write::WriteDisposition::Overwrote => "overwrote",
+						};
+						c.replace_body(Col::new().child(TextLeaf::new().text(format!(
+							"{action} {} ({} bytes)",
+							payload.display_path, payload.reported_len
+						))));
 					},
 					_ => render_verdict_fallback(c, &verdict),
 				}
@@ -495,6 +710,66 @@ mod tests {
 			props:         None,
 		}
 	}
+	fn edit_payload(diff: &str) -> omp_tools::edit::Payload {
+		omp_tools::edit::Payload {
+			sections: vec![omp_tools::edit::SectionPayload {
+				path:               "test.rs".into(),
+				canonical_path:     "/workspace/test.rs".into(),
+				op:                 omp_tools::edit::SectionOp::Update,
+				move_dest:          None,
+				old_revision:       "a".into(),
+				new_revision:       Some("b".into()),
+				applied_ops:        Vec::new(),
+				rebased:            false,
+				before:             Bytes::from_static(b"old\n"),
+				after:              Bytes::from_static(b"new\n"),
+				header:             Some("[test.rs#A1B2]".into()),
+				diff:               diff.into(),
+				preview:            diff.into(),
+				first_changed_line: Some(1),
+				block_resolutions:  Vec::new(),
+				warnings:           Vec::new(),
+			}],
+		}
+	}
+
+	fn eval_payload(
+		outcome: omp_tools::eval::CellOutcome,
+		output: &'static [u8],
+	) -> omp_tools::eval::Payload {
+		omp_tools::eval::Payload {
+			session_id:      Bytes::from_static(b"session"),
+			cell_id:         Bytes::from_static(b"cell"),
+			language:        omp_tools::eval::Language::Py,
+			title:           Some("load config".into()),
+			code:            "print('loaded')".into(),
+			reset:           false,
+			frames:          vec![omp_tools::eval::OutputFrame {
+				channel:  omp_tools::eval::OutputChannel::Stdout,
+				data:     output.to_vec().into(),
+				sequence: 1,
+			}],
+			result:          Some(omp_tools::eval::CellValue {
+				text: "42".into(),
+				json: Some(serde_json::json!(42)),
+			}),
+			display_outputs: Vec::new(),
+			status:          omp_tools::eval::CellStatus {
+				outcome,
+				exit_code: if outcome == omp_tools::eval::CellOutcome::Error {
+					Some(1)
+				} else {
+					Some(0)
+				},
+				duration_ms: 17,
+				exception: None,
+			},
+			truncated:       false,
+			spilled_output:  None,
+			total_lines:     2,
+			total_bytes:     output.len(),
+		}
+	}
 
 	#[test]
 	fn generic_card_renders_name_and_argument_intent() {
@@ -513,14 +788,7 @@ mod tests {
 	fn unknown_revision_degrades_to_generic_card() {
 		let mut ui = tool_ui();
 		let verdict: Verdict<omp_tools::edit::Payload, omp_tools::edit::Fault> =
-			Verdict::Ok(omp_tools::edit::Payload {
-				path:         "test.rs".into(),
-				old_revision: "a".into(),
-				new_revision: "b".into(),
-				applied_ops:  Vec::new(),
-				rebased:      false,
-				diff:         "+added".into(),
-			});
+			Verdict::Ok(edit_payload("+added"));
 		let mut fold =
 			ToolFold::new("call".into(), "edit".into(), Rev { family: "hl".into(), n: 2 });
 		fold.state = ToolState::Success;
@@ -535,17 +803,18 @@ mod tests {
 		let mut ui = tool_ui();
 		let verdict: Verdict<omp_tools::read::Payload, omp_tools::read::Fault> =
 			Verdict::Ok(omp_tools::read::Payload {
-				path:       "test.txt".into(),
-				revision:   "hash".into(),
-				ranges:     Vec::new(),
-				structural: false,
-				elided:     Vec::new(),
-				content:    omp_tools::read::Content::Text {
-					slices: vec![omp_tools::read::TextSlice {
-						start_line: 1,
-						text:       "hello file content".into(),
-					}],
-				},
+				parts: vec![
+					omp_tools::read::PayloadPart::Text { text: "before blob".into() },
+					omp_tools::read::PayloadPart::Blob {
+						blob: omp_tool::BlobRef {
+							hash:       "blob-hash".into(),
+							media_type: "image/png".into(),
+							byte_len:   12,
+						},
+						alt:  "image description".into(),
+					},
+					omp_tools::read::PayloadPart::Text { text: "after blob".into() },
+				],
 			});
 		let mut fold =
 			ToolFold::new("call".into(), "read".into(), Rev { family: "".into(), n: 1 });
@@ -553,21 +822,109 @@ mod tests {
 		fold.item = Some(result_item("read", &verdict));
 
 		assert!(RendererRegistry::new().update(&mut ui, &fold));
-		assert!(frame_text(&ui).contains("hello file content"));
+		let frame = frame_text(&ui);
+		let before = frame.find("before blob").expect("leading text rendered");
+		let blob = frame.find("image description").expect("blob alt rendered");
+		let after = frame.find("after blob").expect("trailing text rendered");
+		assert!(before < blob && blob < after);
+	}
+	#[test]
+	fn edit_intent_comes_from_input_section_header() {
+		let mut ui = tool_ui();
+		let mut fold =
+			ToolFold::new("call".into(), "edit".into(), Rev { family: "hl".into(), n: 1 });
+		fold.set_args_view(omp_slopjson::parse_streaming(
+			r#"{"input":"[src/lib.rs#A1B2]\nPUT 1.=1:\n+replacement"}"#,
+		));
+
+		assert!(RendererRegistry::new().update(&mut ui, &fold));
+		assert!(frame_text(&ui).contains("edit src/lib.rs"));
+	}
+	#[test]
+	fn write_success_renders_typed_payload_and_content_line_badge() {
+		let mut ui = tool_ui();
+		let verdict: Verdict<omp_tools::write::Payload, omp_tools::write::Fault> =
+			Verdict::Ok(omp_tools::write::Payload {
+				resolved_path:    "/workspace/new.txt".into(),
+				display_path:     "new.txt".into(),
+				byte_len:         11,
+				reported_len:     11,
+				disposition:      omp_tools::write::WriteDisposition::Created,
+				stripped_wrapper: false,
+				made_executable:  false,
+				snapshot_tag:     Some("A1B2".into()),
+				operation:        omp_tools::write::WriteOperation::Plain,
+			});
+		let mut fold =
+			ToolFold::new("call".into(), "write".into(), Rev { family: "".into(), n: 1 });
+		fold.set_args_view(omp_slopjson::parse_streaming(
+			r#"{"path":"new.txt","content":"first\nsecond"}"#,
+		));
+		fold.state = ToolState::Success;
+		fold.item = Some(result_item("write", &verdict));
+
+		assert!(RendererRegistry::new().update(&mut ui, &fold));
+		let frame = frame_text(&ui);
+		assert!(frame.contains("write new.txt"));
+		assert!(frame.contains("2 lines"));
+		assert!(frame.contains("created new.txt (11 bytes)"));
+	}
+
+	#[test]
+	fn eval_success_card_renders_title_stdout_and_repl_result() {
+		let mut ui = tool_ui();
+		let verdict: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
+			Verdict::Ok(eval_payload(omp_tools::eval::CellOutcome::Complete, b"loaded\n"));
+		let mut fold =
+			ToolFold::new("call".into(), "eval".into(), Rev { family: "".into(), n: 1 });
+		fold.set_args_view(omp_slopjson::parse_streaming(
+			r#"{"language":"py","title":"load config","code":"print('loaded')"}"#,
+		));
+		fold.state = ToolState::Success;
+		fold.item = Some(result_item("eval", &verdict));
+
+		assert!(RendererRegistry::new().update(&mut ui, &fold));
+		let frame = frame_text(&ui);
+		assert!(frame.contains("eval"));
+		assert!(frame.contains("load config"));
+		assert!(frame.contains("17ms"));
+		assert!(frame.contains("loaded"));
+		assert!(frame.contains("42"));
+	}
+
+	#[test]
+	fn eval_error_card_renders_traceback_and_exit_badge() {
+		let mut ui = tool_ui();
+		let mut payload = eval_payload(omp_tools::eval::CellOutcome::Error, b"before\n");
+		payload.result = None;
+		payload.status.exception = Some(omp_tools::eval::PythonException {
+			name:      "ValueError".into(),
+			message:   "bad value".into(),
+			traceback: vec![
+				"Traceback (most recent call last):".into(),
+				"ValueError: bad value".into(),
+			],
+		});
+		let verdict: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> = Verdict::Ok(payload);
+		let mut fold =
+			ToolFold::new("call".into(), "eval".into(), Rev { family: "".into(), n: 1 });
+		fold.set_args_view(omp_slopjson::parse_streaming(
+			r#"{"language":"py","code":"raise ValueError('bad value')"}"#,
+		));
+		fold.state = ToolState::Success;
+		fold.item = Some(result_item("eval", &verdict));
+
+		assert!(RendererRegistry::new().update(&mut ui, &fold));
+		let frame = frame_text(&ui);
+		assert!(frame.contains("exit 1"));
+		assert!(frame.contains("ValueError: bad value"));
 	}
 
 	#[test]
 	fn edit_success_renders_diff_lines() {
 		let mut ui = tool_ui();
 		let verdict: Verdict<omp_tools::edit::Payload, omp_tools::edit::Fault> =
-			Verdict::Ok(omp_tools::edit::Payload {
-				path:         "test.rs".into(),
-				old_revision: "a".into(),
-				new_revision: "b".into(),
-				applied_ops:  Vec::new(),
-				rebased:      false,
-				diff:         "+added line\n-removed line\n context line".into(),
-			});
+			Verdict::Ok(edit_payload("+added line\n-removed line\n context line"));
 		let mut fold =
 			ToolFold::new("call".into(), "edit".into(), Rev { family: "hl".into(), n: 1 });
 		fold.state = ToolState::Success;
@@ -590,7 +947,7 @@ mod tests {
 				transcript:           Vec::new(),
 				transcript_truncated: false,
 				status:               omp_tools::shell::ExecStatus {
-					outcome:         omp_tools::shell::ExecOutcome::Exited,
+					outcome:         omp_tools::shell::ExecOutcome::Failed,
 					exit_code:       Some(42),
 					signal:          None,
 					wall_clock_ms:   100,

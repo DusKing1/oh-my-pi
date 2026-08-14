@@ -30,6 +30,7 @@ use tokio_util::sync::CancellationToken;
 use super::{
 	blobs::{BlobError, BlobHost},
 	docs::{DocumentError, DocumentHost},
+	eval::SessionBridgeHost,
 	exec::{ExecError, ExecEvent, ExecHost, ProcessEvent},
 	tools::production_registry,
 	worker::{CommittedToolCall, ToolWorkerConfig, ToolWorkerSupervisor, WorkerError, WorkerEvent},
@@ -60,6 +61,9 @@ pub enum EnvdError {
 	/// The content-addressed blob store could not be opened.
 	#[error("blob host failed: {0}")]
 	Blob(Str),
+	/// The embedded Python runtime used by `eval` could not be initialized.
+	#[error("eval runtime failed: {0}")]
+	Eval(Str),
 	/// The Python tool worker could not be started or supervised.
 	#[error(transparent)]
 	Worker(#[from] WorkerError),
@@ -120,13 +124,15 @@ pub struct ServerIdentity {
 /// Executors remain env-side beside these resources. The server never passes a
 /// capability/facet trait bundle through a tool signature.
 pub struct EnvServer {
-	identity:   ServerIdentity,
-	_documents: DocumentHost,
-	exec:       ExecHost,
-	_workspace: WorkspaceHost,
-	blobs:      BlobHost,
-	registry:   Arc<Registry>,
-	workers:    Arc<ToolWorkerSupervisor>,
+	identity:     ServerIdentity,
+	_documents:   DocumentHost,
+	exec:         ExecHost,
+	_workspace:   WorkspaceHost,
+	blobs:        BlobHost,
+	registry:     Arc<Registry>,
+	eval_bridge:  Arc<SessionBridgeHost>,
+	eval_control: omp_tools::eval::EvalSessionControl,
+	workers:      Arc<ToolWorkerSupervisor>,
 }
 
 impl EnvServer {
@@ -139,6 +145,8 @@ impl EnvServer {
 		workspace: WorkspaceHost,
 		blobs: BlobHost,
 		registry: Arc<Registry>,
+		eval_bridge: Arc<SessionBridgeHost>,
+		eval_control: omp_tools::eval::EvalSessionControl,
 		workers: ToolWorkerSupervisor,
 	) -> Self {
 		Self {
@@ -148,6 +156,8 @@ impl EnvServer {
 			_workspace: workspace,
 			blobs,
 			registry,
+			eval_bridge,
+			eval_control,
 			workers: Arc::new(workers),
 		}
 	}
@@ -183,7 +193,7 @@ impl EnvServer {
 		let exec = ExecHost::new();
 		let blobs = BlobHost::open(state_dir.join("blobs"))?;
 		let workers = ToolWorkerSupervisor::spawn(worker_config).await?;
-		let registry = production_registry(
+		let (registry, eval_bridge, eval_control) = production_registry(
 			&documents,
 			&blobs,
 			&exec,
@@ -198,7 +208,17 @@ impl EnvServer {
 			server_epoch:   hello.server_epoch,
 			server_version: Str::from(env!("CARGO_PKG_VERSION")),
 		};
-		Ok(Self::new(identity, documents, exec, workspace, blobs, registry, workers))
+		Ok(Self::new(
+			identity,
+			documents,
+			exec,
+			workspace,
+			blobs,
+			registry,
+			eval_bridge,
+			eval_control,
+			workers,
+		))
 	}
 
 	/// Opens project resources through the owner-local document authority.
@@ -220,7 +240,7 @@ impl EnvServer {
 		let exec = ExecHost::new();
 		let blobs = BlobHost::open(state_dir.join("blobs"))?;
 		let workers = ToolWorkerSupervisor::spawn(worker_config).await?;
-		let registry = production_registry(
+		let (registry, eval_bridge, eval_control) = production_registry(
 			&documents,
 			&blobs,
 			&exec,
@@ -235,12 +255,25 @@ impl EnvServer {
 			server_epoch:   hello.server_epoch,
 			server_version: Str::from(env!("CARGO_PKG_VERSION")),
 		};
-		Ok((Self::new(identity, documents, exec, workspace, blobs, registry, workers), docserver))
+		Ok((
+			Self::new(
+				identity,
+				documents,
+				exec,
+				workspace,
+				blobs,
+				registry,
+				eval_bridge,
+				eval_control,
+				workers,
+			),
+			docserver,
+		))
 	}
 
 	/// Connects an `EnvClient` transport to an owner-only environment socket.
 	#[cfg(unix)]
-	pub(crate) async fn connect_owner_uds(
+	pub async fn connect_owner_uds(
 		path: &Path,
 	) -> Result<(EnvClient, tokio::task::JoinHandle<Result<(), EnvdError>>), EnvdError> {
 		use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
@@ -304,10 +337,19 @@ impl EnvServer {
 		Arc::clone(&self.registry)
 	}
 
+	/// Returns the session bridge binding retained by this environment.
+	pub(crate) fn eval_bridge(&self) -> Arc<SessionBridgeHost> {
+		Arc::clone(&self.eval_bridge)
+	}
+
+	pub(crate) fn eval_control(&self) -> omp_tools::eval::EvalSessionControl {
+		self.eval_control.clone()
+	}
+
 	/// Serves the server half returned by [`omp_env::EnvClient::in_process`].
 	pub async fn serve_in_process(&self, transport: InProcessEnvTransport) {
 		let (requests, responses) = transport.into_parts();
-		self.serve_frames(requests, responses).await;
+		self.serve_frames(requests, responses, true).await;
 	}
 
 	/// Serves one already-accepted byte stream with varint protobuf framing.
@@ -318,7 +360,7 @@ impl EnvServer {
 		let (mut reader, mut writer) = tokio::io::split(stream);
 		let (request_tx, requests) = flume::bounded(64);
 		let (responses, response_rx) = flume::bounded(64);
-		let dispatch = self.serve_frames(requests, responses);
+		let dispatch = self.serve_frames(requests, responses, false);
 		let io_shutdown = CancellationToken::new();
 		let read_shutdown = io_shutdown.clone();
 		let read = async move {
@@ -431,6 +473,7 @@ impl EnvServer {
 		&self,
 		requests: flume::Receiver<pb::ClientFrame>,
 		responses: flume::Sender<pb::ServerFrame>,
+		allow_eval: bool,
 	) {
 		let first = match tokio::time::timeout(HANDSHAKE_TIMEOUT, requests.recv_async()).await {
 			Ok(Ok(first)) => first,
@@ -470,7 +513,7 @@ impl EnvServer {
 						connection.finish(done);
 					}
 					self
-						.dispatch(frame, &responses, &finished_tx, &mut connection)
+						.dispatch(frame, &responses, &finished_tx, &mut connection, allow_eval)
 						.await;
 				},
 			}
@@ -546,6 +589,7 @@ impl EnvServer {
 		responses: &flume::Sender<pb::ServerFrame>,
 		finished: &flume::Sender<Finished>,
 		connection: &mut ConnectionState,
+		allow_eval: bool,
 	) {
 		let Some(body) = frame.body else {
 			send_error(
@@ -557,6 +601,18 @@ impl EnvServer {
 			.await;
 			return;
 		};
+		if !allow_eval
+			&& matches!(&body, client_frame::Body::InvokeTool(request) if request.name == "eval")
+		{
+			send_error(
+				responses,
+				frame.request_id,
+				pb::ProtocolErrorCode::PermissionDenied,
+				"eval is available only through the session-local environment",
+			)
+			.await;
+			return;
+		}
 		if let client_frame::Body::Cancel(cancel) = body {
 			if frame.request_id != 0 {
 				send_error(

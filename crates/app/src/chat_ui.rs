@@ -19,8 +19,12 @@ use omp_proto::{
 };
 use omp_tool::{Rev, TOOL_REV_PROP};
 use omp_tui::{
-	AppEvent, AppOptions, Key, Prop, Ui,
-	components::{Markdown, Segment, Status, ToolCard, ToolState, TranscriptView},
+	App, AppEvent, AppOptions, Border, Dim, Key, OverlayAnchor, OverlayMargin, OverlayOptions, Prop,
+	Size, Ui,
+	components::{
+		Boxed, Col, Markdown, Segment, Select, SelectOption, Status, TextLeaf, ToolCard, ToolState,
+		TranscriptView,
+	},
 	dom,
 };
 
@@ -28,6 +32,28 @@ use crate::chat_ui::{
 	input::{ChatCommand, parse_input},
 	renderers::{RendererRegistry, ToolFold},
 };
+
+const RESUME_SELECT_ID: &str = "resume-session";
+
+/// One project-local durable session shown by the resume picker.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResumeChoice {
+	/// Stable session identity submitted by the picker.
+	pub id:     Str,
+	/// Human-readable session name.
+	pub label:  Str,
+	/// Recency and identity details shown beneath the name.
+	pub detail: Str,
+}
+
+/// Terminal-shell disposition returned to the chat composition owner.
+#[derive(Debug, Eq, PartialEq)]
+pub enum ChatUiExit {
+	/// End the interactive chat process.
+	Quit,
+	/// Reload another durable session in the existing shell.
+	Resume(Str),
+}
 
 /// Durable session facts required to initialize the inline chat shell.
 pub struct ChatUiSession {
@@ -45,16 +71,8 @@ struct ActivePart {
 	prefix: &'static str,
 }
 
-/// Runs the inline terminal shell over one transport-neutral agent.
-pub async fn run<C: TurnClient + 'static>(
-	mut agent: Agent<C>,
-	session: ChatUiSession,
-) -> anyhow::Result<()> {
-	let bus = agent.events().clone();
-	let mailbox = agent.mailbox();
-	let events = bus.subscribe_ui(256);
-	let agent_state = agent.state().clone();
-
+/// Starts the retained inline chat host shared across session reloads.
+pub async fn start() -> anyhow::Result<App> {
 	let mut app = AppOptions::new()
 		.keep_on_cancel()
 		.start(|env| {
@@ -70,10 +88,42 @@ pub async fn run<C: TurnClient + 'static>(
 		})
 		.await?;
 	app.ui_mut().focus_first();
+	Ok(app)
+}
+
+/// Drives one durable session inside an existing inline chat host.
+pub async fn run<C, R>(
+	app: &mut App,
+	mut agent: Agent<C>,
+	session: ChatUiSession,
+	mut list_sessions: R,
+) -> anyhow::Result<ChatUiExit>
+where
+	C: TurnClient + 'static,
+	R: FnMut() -> anyhow::Result<Vec<ResumeChoice>>,
+{
+	let bus = agent.events().clone();
+	let mailbox = agent.mailbox();
+	let events = bus.subscribe_ui(256);
+	let agent_state = agent.state().clone();
+
+	let replacing_session = app.ui().has_overlay();
+
+	while app.ui_mut().close_top_overlay().is_some() {}
+	app.ui_mut()
+		.update_component::<TranscriptView>("transcript", |view| {
+			view.clear();
+			true
+		});
+	app.ui_mut().set_text("input", "");
+	app.ui_mut().focus_first();
 
 	let renderers = RendererRegistry::new();
 	let mut tool_folds = HashMap::new();
 	render_history(app.ui_mut(), &session.initial_items, &renderers, &mut tool_folds);
+	if replacing_session {
+		app.rebuild_history();
+	}
 
 	let mut session_model = agent_state.snapshot().turn.params.model.clone();
 	let mut context_window = session.context_window;
@@ -122,6 +172,7 @@ pub async fn run<C: TurnClient + 'static>(
 			let _ = submit_ack_tx.send(());
 		}
 	});
+	let mut exit = ChatUiExit::Quit;
 	'ui: loop {
 		tokio::select! {
 			event = app.next() => {
@@ -154,10 +205,18 @@ pub async fn run<C: TurnClient + 'static>(
 								None => push_error(app.ui_mut(), format!("Unknown model: {requested}")),
 							}
 						},
-						Ok(ChatCommand::Resume) => push_error(
-							app.ui_mut(),
-							"Session already active; select another session with `omp chat --resume <id>`.",
-						),
+						Ok(ChatCommand::Resume) => {
+							if is_active {
+								push_error(app.ui_mut(), "Wait for the active turn to finish before resuming another session.");
+							} else {
+								match list_sessions() {
+									Ok(choices) => show_resume_picker(app.ui_mut(), &choices),
+									Err(error) => {
+										push_error(app.ui_mut(), format!("Could not list sessions: {error}"));
+									},
+								}
+							}
+						},
 						Ok(ChatCommand::Quit) => {
 							enqueue_shutdown_interrupt(&mailbox, is_active);
 							break 'ui;
@@ -197,6 +256,10 @@ pub async fn run<C: TurnClient + 'static>(
 						},
 						Err(error) => push_error(app.ui_mut(), error.to_string()),
 					}
+				},
+				Ok(Some(AppEvent::Changed { id, value })) if id.as_str() == RESUME_SELECT_ID => {
+					exit = ChatUiExit::Resume(value);
+					break 'ui;
 				},
 				Ok(Some(AppEvent::Key(Key::Esc))) => {
 					if is_active {
@@ -327,7 +390,51 @@ pub async fn run<C: TurnClient + 'static>(
 		agent_task.abort();
 		let _ = agent_task.await;
 	}
-	Ok(())
+	Ok(exit)
+}
+
+fn show_resume_picker(ui: &mut Ui, choices: &[ResumeChoice]) {
+	if choices.is_empty() {
+		push_error(ui, "No resumable sessions found in this project.");
+		return;
+	}
+
+	let rows = u16::try_from(choices.len())
+		.unwrap_or(u16::MAX)
+		.min(12)
+		.saturating_add(1);
+	let mut select = Select::new()
+		.with(Prop::Id, RESUME_SELECT_ID)
+		.with(Prop::Filter, true)
+		.with(Prop::H, rows);
+	for choice in choices {
+		select = select.option(
+			SelectOption::new()
+				.with(Prop::Value, choice.id.clone())
+				.with(Prop::Desc, choice.detail.clone())
+				.label(choice.label.clone()),
+		);
+	}
+	let content = Col::new().child(select).child(
+		TextLeaf::new()
+			.with(Prop::Dim, true)
+			.text("Type to filter · Enter resume · Esc cancel"),
+	);
+	let picker = Boxed::new()
+		.with(Prop::Border, Border::Round)
+		.with(Prop::Title, "Resume Session")
+		.with(Prop::PadX, 1_u16)
+		.child(content);
+	ui.show_overlay(
+		picker,
+		OverlayOptions::default()
+			.anchor(OverlayAnchor::Center)
+			.width(Dim::Pct(80))
+			.min_width(48)
+			.max_height(Dim::Pct(75))
+			.margin(OverlayMargin::uniform(1))
+			.min_viewport(Size::new(24, 6)),
+	);
 }
 
 fn select_model<'a>(
@@ -512,7 +619,7 @@ fn update_status(
 	context_tokens: u64,
 	context_window: Option<u64>,
 	dropped: u64,
-) {
+) -> bool {
 	ui.update_component::<Status>("status", |status| {
 		let mut next = Status::new().segment(Segment::new().label(format!("Session: {session_id}")));
 		if !model.is_empty() {
@@ -546,14 +653,16 @@ fn update_status(
 		if dropped > 0 {
 			next = next.segment(Segment::new().label(format!("Dropped: {dropped}")));
 		}
-		*status = next;
+		*status = next.with(Prop::Id, "status");
 		true
-	});
+	})
 }
 
 #[cfg(test)]
 mod tests {
 	use std::cell::RefCell;
+
+	use omp_tui::{UiContext, UiEvent};
 
 	use super::*;
 
@@ -598,18 +707,73 @@ mod tests {
 		assert!(chat_active(true, AgentPhase::Projecting));
 	}
 	#[test]
-	fn status_update_formats_all_metrics_including_context_percentage() {
-		let mut ui = Ui::from_root(dom! { <status id="status" /> }, 120, UiContext::default());
-		update_status(&mut ui, &Str::from("test"), "gpt-4o", 2, 3, 1_500_000_000, 450, Some(1000), 5);
+	fn status_updates_preserve_identity_and_replace_all_metrics() {
+		let root = Status::new().with(Prop::Id, "status");
+		let mut ui = Ui::from_root(root, 120, UiContext::default());
+		assert!(update_status(
+			&mut ui,
+			&Str::from("test1"),
+			"gpt-4o",
+			2,
+			3,
+			1_500_000_000,
+			450,
+			Some(1000),
+			5,
+		));
+		assert!(update_status(
+			&mut ui,
+			&Str::from("test2"),
+			"claude-3",
+			1,
+			0,
+			2_000_000_000,
+			200,
+			None,
+			0,
+		));
 
+		let mut renderer = omp_tui::Renderer::new(Vec::new());
+		ui.present(&mut renderer, 10, 0).unwrap();
 		let painted = omp_tui::test_support::frame_row_text(ui.frame(), 0);
-		assert!(painted.contains("test"));
-		assert!(painted.contains("gpt-4o"));
-		assert!(painted.contains("Attempt: 2"));
-		assert!(painted.contains("Jobs: 3"));
-		assert!(painted.contains("Cost: $1.5000"));
-		assert!(painted.contains("Ctx: 45%"));
-		assert!(painted.contains("Dropped: 5"));
+
+		assert!(painted.contains("test2"));
+		assert!(painted.contains("claude-3"));
+		assert!(painted.contains("Cost: $2.0000"));
+		assert!(painted.contains("Ctx: 200 tk"));
+		assert!(!painted.contains("Attempt:"));
+		assert!(!painted.contains("Jobs:"));
+		assert!(!painted.contains("Dropped:"));
+		assert!(!painted.contains("gpt-4o"));
+		assert!(!painted.contains("test1"));
+	}
+
+	#[test]
+	fn resume_picker_filters_and_submits_the_session_identity() {
+		let mut ui = Ui::from_root(TextLeaf::new().text("chat"), 80, UiContext::default());
+		let choices = [
+			ResumeChoice {
+				id:     Str::from("first"),
+				label:  Str::from("Alpha session"),
+				detail: Str::from("1h ago"),
+			},
+			ResumeChoice {
+				id:     Str::from("second"),
+				label:  Str::from("Beta session"),
+				detail: Str::from("2h ago"),
+			},
+		];
+		show_resume_picker(&mut ui, &choices);
+
+		assert_eq!(ui.handle_key(Key::Char('b')), UiEvent::Filtered {
+			id:    Str::from(RESUME_SELECT_ID),
+			query: Str::from("b"),
+			value: Some(Str::from("second")),
+		});
+		assert_eq!(ui.handle_key(Key::Enter), UiEvent::Changed {
+			id:    Str::from(RESUME_SELECT_ID),
+			value: Str::from("second"),
+		});
 	}
 
 	#[test]
@@ -625,8 +789,7 @@ mod tests {
 			true
 		});
 		assert!(updated, "TranscriptView resolves to concrete type and accepts children");
-
-		let mut renderer = omp_tui::Renderer::new(omp_tui::test_support::TestOut::new());
+		let mut renderer = omp_tui::Renderer::new(Vec::new());
 		ui.present(&mut renderer, 10, 0).unwrap();
 		let text = omp_tui::test_support::frame_row_text(ui.frame(), 0);
 		assert!(text.contains("Test Item"));

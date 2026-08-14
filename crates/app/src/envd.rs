@@ -2,9 +2,11 @@
 
 pub mod blobs;
 pub mod docs;
+pub(crate) mod eval;
 pub mod exec;
 pub mod server;
 mod tool_document;
+mod tool_read_sources;
 mod tool_search;
 mod tool_shell;
 mod tools;
@@ -37,23 +39,25 @@ pub async fn run(args: EnvdArgs) -> crate::Result<()> {
 pub(crate) struct ProjectEnvironment {
 	pub(crate) client:   EnvClient,
 	pub(crate) registry: Arc<Registry>,
+	eval_bridge:         Arc<eval::SessionBridgeHost>,
+	eval_control:        omp_tools::eval::EvalSessionControl,
 	_lifecycle:          ProjectLifecycle,
 }
 
 struct ProjectLifecycle {
-	shutdown:      Option<CancellationToken>,
-	_tasks:        Vec<tokio::task::JoinHandle<()>>,
-	remote_bridge: Option<tokio::task::JoinHandle<Result<(), EnvdError>>>,
-	_server:       Arc<EnvServer>,
-	_docserver:    Option<tokio::process::Child>,
+	shutdown:   Option<CancellationToken>,
+	_tasks:     Vec<tokio::task::JoinHandle<()>>,
+	_server:    Arc<EnvServer>,
+	_docserver: Option<tokio::process::Child>,
 }
 
 impl Drop for ProjectLifecycle {
 	fn drop(&mut self) {
 		if let Some(shutdown) = &self.shutdown {
 			shutdown.cancel();
-		} else if let Some(bridge) = &self.remote_bridge {
-			bridge.abort();
+		}
+		for task in &self._tasks {
+			task.abort();
 		}
 	}
 }
@@ -68,8 +72,9 @@ impl ProjectEnvironment {
 		py_eval: bool,
 	) -> Result<Self, EnvdError> {
 		match EnvServer::connect_owner_uds(socket).await {
-			Ok((client, bridge)) => {
-				hello(&client).await?;
+			Ok((owner_probe, bridge)) => {
+				hello(&owner_probe).await?;
+				bridge.abort();
 				let worker_config = worker_config(py_eval)?;
 				let (server, docserver) = EnvServer::open_project(
 					root,
@@ -81,14 +86,21 @@ impl ProjectEnvironment {
 				.await?;
 				let server = Arc::new(server);
 				let registry = server.registry();
+				let eval_bridge = server.eval_bridge();
+				let eval_control = server.eval_control();
+				let (client, transport) = EnvClient::in_process(64);
+				let in_process_server = Arc::clone(&server);
+				let in_process = tokio::spawn(async move {
+					in_process_server.serve_in_process(transport).await;
+				});
+				hello(&client).await?;
 				let lifecycle = ProjectLifecycle {
-					shutdown:      None,
-					_tasks:        Vec::new(),
-					remote_bridge: Some(bridge),
-					_server:       server,
-					_docserver:    docserver,
+					shutdown:   None,
+					_tasks:     vec![in_process],
+					_server:    server,
+					_docserver: docserver,
 				};
-				Ok(Self { client, registry, _lifecycle: lifecycle })
+				Ok(Self { client, registry, eval_bridge, eval_control, _lifecycle: lifecycle })
 			},
 			Err(EnvdError::Io(error))
 				if matches!(
@@ -115,6 +127,8 @@ impl ProjectEnvironment {
 				.await?;
 		let server = Arc::new(server);
 		let registry = server.registry();
+		let eval_bridge = server.eval_bridge();
+		let eval_control = server.eval_control();
 		let (client, transport) = EnvClient::in_process(64);
 		let in_process_server = Arc::clone(&server);
 		let in_process = tokio::spawn(async move {
@@ -128,14 +142,13 @@ impl ProjectEnvironment {
 			let _ = uds_server.serve_uds(&socket, uds_shutdown).await;
 		});
 		let lifecycle = ProjectLifecycle {
-			shutdown:      Some(shutdown),
-			_tasks:        vec![in_process, uds],
-			remote_bridge: None,
-			_server:       server,
-			_docserver:    docserver,
+			shutdown:   Some(shutdown),
+			_tasks:     vec![in_process, uds],
+			_server:    server,
+			_docserver: docserver,
 		};
 		hello(&client).await?;
-		Ok(Self { client, registry, _lifecycle: lifecycle })
+		Ok(Self { client, registry, eval_bridge, eval_control, _lifecycle: lifecycle })
 	}
 
 	#[must_use]
@@ -146,6 +159,16 @@ impl ProjectEnvironment {
 	#[must_use]
 	pub(crate) fn registry(&self) -> Arc<Registry> {
 		Arc::clone(&self.registry)
+	}
+
+	#[must_use]
+	pub(crate) fn eval_bridge(&self) -> Arc<eval::SessionBridgeHost> {
+		Arc::clone(&self.eval_bridge)
+	}
+
+	#[must_use]
+	pub(crate) fn eval_control(&self) -> omp_tools::eval::EvalSessionControl {
+		self.eval_control.clone()
 	}
 }
 

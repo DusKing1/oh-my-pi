@@ -29,6 +29,7 @@ const TCL_LIBS: [&str; 2] = ["tcl9.0", "tcl9tk9.0"];
 
 fn main() {
 	let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+	let target = std::env::var("TARGET").expect("Cargo must provide TARGET to omp-py/build.rs");
 
 	// pyo3-ffi configures itself from PYO3_CONFIG_FILE *before* this script
 	// has any say; if it is unset or points elsewhere, pyo3 silently
@@ -59,9 +60,13 @@ fn main() {
 	let json: serde_json::Value =
 		serde_json::from_str(&std::fs::read_to_string(vendor.join("PYTHON.json")).unwrap()).unwrap();
 
-	// compiler-rt: rustc links with -nodefaultlibs, so clang's runtime for
-	// `@available` checks (___isPlatformVersionAtLeast) must come from here.
-	let mut static_libs = BTreeSet::from(["clang_rt.osx".to_owned()]);
+	// macOS's `@available` checks require compiler-rt because rustc links with
+	// `-nodefaultlibs`; Linux archives do not ship or reference this Darwin
+	// runtime.
+	let mut static_libs = BTreeSet::new();
+	if target.ends_with("-apple-darwin") {
+		static_libs.insert("clang_rt.osx".to_owned());
+	}
 	let mut frameworks = BTreeSet::new();
 	let mut system_libs = BTreeSet::new();
 	let extensions = json["build_info"]["extensions"].as_object().unwrap();
@@ -82,7 +87,7 @@ fn main() {
 	// read; scripts/ld64.lld routes the link through a matching Homebrew lld.
 	// Emitted here, not in .cargo/config.toml, so no absolute checkout path is
 	// baked in and only this binary pays for the shim.
-	if std::env::var("TARGET").as_deref() == Ok("aarch64-apple-darwin") {
+	if target == "aarch64-apple-darwin" {
 		println!("cargo::rustc-link-arg=--ld-path={}", manifest.join("scripts/ld64.lld").display());
 	}
 

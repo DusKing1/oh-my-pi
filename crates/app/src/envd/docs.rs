@@ -15,6 +15,7 @@ use omp_docserver::{
 	connection::{PROTOCOL_MAJOR, PROTOCOL_MINOR},
 	wire::{self, FrameConfig},
 };
+use omp_hashline::{Clipboard, NoopLoopGuard, SnapshotStore};
 use omp_proto::document::v1 as pb;
 use parking_lot::Mutex;
 use thiserror::Error;
@@ -114,11 +115,14 @@ pub enum DocumentError {
 
 #[derive(Debug)]
 struct Inner {
-	hello:        DocumentHello,
-	writer:       flume::Sender<pb::ClientFrame>,
-	pending:      Arc<Mutex<HashMap<u64, flume::Sender<pb::ServerFrame>>>>,
-	next_request: AtomicU64,
-	shutdown:     CancellationToken,
+	hello:           DocumentHello,
+	writer:          flume::Sender<pb::ClientFrame>,
+	pending:         Arc<Mutex<HashMap<u64, flume::Sender<pb::ServerFrame>>>>,
+	next_request:    AtomicU64,
+	shutdown:        CancellationToken,
+	snapshot_store:  Mutex<SnapshotStore>,
+	clipboard:       Mutex<Clipboard>,
+	noop_loop_guard: Mutex<NoopLoopGuard>,
 }
 
 /// Concrete env-side owner of one multiplexed `document/v1` client connection.
@@ -189,6 +193,9 @@ impl DocumentHost {
 			pending: Arc::new(Mutex::new(HashMap::new())),
 			next_request: AtomicU64::new(1),
 			shutdown: CancellationToken::new(),
+			snapshot_store: Mutex::new(SnapshotStore::default()),
+			clipboard: Mutex::new(Clipboard::default()),
+			noop_loop_guard: Mutex::new(NoopLoopGuard::default()),
 		});
 
 		let writer_shutdown = inner.shutdown.clone();
@@ -249,6 +256,27 @@ impl DocumentHost {
 	/// Returns the negotiated server and workspace identity.
 	pub fn hello(&self) -> &DocumentHello {
 		&self.inner.hello
+	}
+
+	/// Returns the session-shared hashline snapshot store.
+	///
+	/// Callers should hold the lock only for synchronous snapshot operations,
+	/// never across an await point.
+	pub(crate) fn snapshot_store(&self) -> &Mutex<SnapshotStore> {
+		&self.inner.snapshot_store
+	}
+
+	/// Returns the session-shared hashline clipboard.
+	///
+	/// Named registers persist for the lifetime of this document connection.
+	/// Callers should not hold the lock across an await point.
+	pub(crate) fn clipboard(&self) -> &Mutex<Clipboard> {
+		&self.inner.clipboard
+	}
+
+	/// Returns the session-shared repeated no-op edit guard.
+	pub(crate) fn noop_loop_guard(&self) -> &Mutex<NoopLoopGuard> {
+		&self.inner.noop_loop_guard
 	}
 
 	/// Acquires a document lease and pins it to the returned immutable revision.
@@ -380,6 +408,30 @@ impl DocumentHost {
 		Ok(response)
 	}
 
+	/// Commits several already revision-bound mutations as one document-server
+	/// transaction. Operations are sent in declared order against the server's
+	/// transaction-local overlay.
+	pub async fn commit_transaction(
+		&self,
+		transaction_id: Bytes,
+		operations: Vec<pb::DocumentMutation>,
+		cancel: &CancellationToken,
+	) -> Result<pb::CommitTransactionResponse, DocumentError> {
+		let body = self
+			.request(
+				pb::client_frame::Body::CommitTransaction(pb::CommitTransactionRequest {
+					transaction_id,
+					operations,
+				}),
+				cancel,
+			)
+			.await?;
+		let pb::server_frame::Body::TransactionResult(response) = body else {
+			return Err(unexpected("CommitTransactionResponse"));
+		};
+		Ok(response)
+	}
+
 	/// Releases a connection-owned document lease.
 	pub async fn close(
 		&self,
@@ -491,7 +543,7 @@ fn ensure_pinned_head(
 	Ok(())
 }
 
-fn lease_target(lease: &DocumentLease) -> pb::DocumentTarget {
+pub(crate) fn lease_target(lease: &DocumentLease) -> pb::DocumentTarget {
 	pb::DocumentTarget { target: Some(pb::document_target::Target::LeaseId(lease.lease_id.clone())) }
 }
 

@@ -12,16 +12,30 @@
 #
 # Idempotent: re-running regenerates the derived artifacts only.
 #
-# The pgo+lto variant ships LLVM-22 LTO bitcode: linking requires an
+# The macOS pgo+lto variant ships LLVM-22 LTO bitcode: linking requires an
 # LLVM-22 lld (scripts/ld64.lld, `brew install lld`) plus -export_dynamic so
-# wheels can resolve the full C-API at dlopen. The freethreaded+debug
-# variant is the plain Mach-O fallback if that path regresses.
+# wheels can resolve the full C-API at dlopen. Linux uses the published
+# freethreaded+debug archive so its static libpython does not require a
+# producer-matched LTO linker.
 set -euo pipefail
 
 TAG=20260807
 VER=3.14.7
-TRIPLE=aarch64-apple-darwin
-NAME="cpython-${VER}+${TAG}-${TRIPLE}-freethreaded+pgo+lto-full"
+case "$(uname -s):$(uname -m)" in
+	Darwin:arm64)
+		TRIPLE=aarch64-apple-darwin
+		BUILD=freethreaded+pgo+lto
+		;;
+	Linux:x86_64)
+		TRIPLE=x86_64-unknown-linux-gnu
+		BUILD=freethreaded+debug
+		;;
+	*)
+		echo "error: no embedded Python archive configured for $(uname -s) $(uname -m)" >&2
+		exit 1
+		;;
+esac
+NAME="cpython-${VER}+${TAG}-${TRIPLE}-${BUILD}-full"
 URL="https://github.com/astral-sh/python-build-standalone/releases/download/${TAG}/${NAME}.tar.zst"
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -45,11 +59,17 @@ if [ ! -e "$VENDOR" ]; then
 	curl -fsSL "$URL" | zstd -d | tar -x -C "$DEST"
 fi
 
-# Derive layout facts from the archive: abiflags land in several names
-# (python3.14td for freethreaded+debug), so glob instead of hardcoding.
+# Derive layout facts from archive contents rather than target-specific
+# config-directory suffixes. Debug free-threaded builds use python3.14td;
+# optimized free-threaded builds use python3.14t.
 STDLIB_DIR=$(dirname "$(echo "$VENDOR"/install/lib/python3.14*/os.py)")
-CONFIG_DIR=$(echo "$STDLIB_DIR"/config-3.14*-darwin)
-LIB_NAME=$(basename "$CONFIG_DIR"/libpython3.14*.a .a | sed 's/^lib//')
+CONFIG_LIBS=("$STDLIB_DIR"/config-3.14*/libpython3.14*.a)
+if [ "${#CONFIG_LIBS[@]}" -ne 1 ] || [ ! -f "${CONFIG_LIBS[0]}" ]; then
+	echo "error: expected exactly one static libpython under $STDLIB_DIR/config-3.14*" >&2
+	exit 1
+fi
+CONFIG_DIR=$(dirname "${CONFIG_LIBS[0]}")
+LIB_NAME=$(basename "${CONFIG_LIBS[0]}" .a | sed 's/^lib//')
 EXECUTABLE="$VENDOR/install/bin/python3.14td"
 [ -x "$EXECUTABLE" ] || EXECUTABLE="$VENDOR/install/bin/python3.14t"
 

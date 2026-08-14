@@ -1,6 +1,6 @@
 //! Production built-in tool registry assembly.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use omp_core::Str;
 use omp_proto::toolhost::v1::{GrammarSyntax as WorkerGrammarSyntax, ToolDecl, tool_constraint};
@@ -8,8 +8,15 @@ use omp_tool::{Constraint, GrammarSyntax, Registry, Rev, ToolSpec};
 use omp_tools::edit::FormatPolicy;
 
 use super::{
-	EnvdError, blobs::BlobHost, docs::DocumentHost, exec::ExecHost,
-	tool_search::WorkspaceSearchAdapter, tool_shell::ShellExecHost, worker::ToolWorkerSupervisor,
+	EnvdError,
+	blobs::BlobHost,
+	docs::DocumentHost,
+	eval::{BridgeNamespaceInstaller, SessionBridgeHost},
+	exec::ExecHost,
+	tool_read_sources::ReadSourceAdapter,
+	tool_search::WorkspaceSearchAdapter,
+	tool_shell::ShellExecHost,
+	worker::ToolWorkerSupervisor,
 	workspace::WorkspaceHost,
 };
 
@@ -26,23 +33,51 @@ pub(crate) fn production_registry(
 	root_uri: &Str,
 	workers: &ToolWorkerSupervisor,
 	mut registry: Registry,
-) -> Result<Arc<Registry>, EnvdError> {
-	for name in ["read", "edit", "shell", "grep", "glob"] {
+) -> Result<(Arc<Registry>, Arc<SessionBridgeHost>, omp_tools::eval::EvalSessionControl), EnvdError>
+{
+	for name in ["read", "edit", "shell", "grep", "glob", "write", "eval"] {
 		ensure_name_absent(&registry, name)?;
 	}
-	registry.register(omp_tools::read::tool(documents.clone(), blobs.clone()))?;
+	let read_sources = ReadSourceAdapter::new(documents.clone(), workspace.clone());
+	registry.register(omp_tools::read::tool(read_sources, blobs.clone()))?;
 	registry.register(omp_tools::edit::tool(documents.clone(), FormatPolicy::Configured))?;
+	registry.register(omp_tools::write::tool(documents.clone()))?;
 	registry
 		.register(omp_tools::shell::shell(ShellExecHost::new(exec.clone(), root_uri.clone())))?;
-	let search = WorkspaceSearchAdapter::new(workspace.clone());
-	registry.register(omp_tools::grep::tool(search.clone()))?;
-	registry.register(omp_tools::glob::tool(search))?;
+	let search = WorkspaceSearchAdapter::new(workspace.clone(), documents.clone());
+	registry.register(omp_tools::grep::tool(search.clone(), blobs.clone()))?;
+	registry.register(omp_tools::glob::tool(search, blobs.clone()))?;
+	let eval_host = Arc::new(SessionBridgeHost::new());
+	let runtime = tokio::runtime::Handle::try_current()
+		.map_err(|error| EnvdError::Eval(Str::from(error.to_string())))?;
+	let installer = Arc::new(BridgeNamespaceInstaller::new(Arc::clone(&eval_host), runtime));
+	let (eval_tool, eval_control) = omp_tools::eval::eval_controlled(
+		omp_tools::eval::kernel::EmbeddedPython::with_installer(python_engine()?, installer),
+	);
+	registry.register(eval_tool)?;
 	for declaration in workers.registrations() {
 		let spec = worker_spec(declaration)?;
 		ensure_name_absent(&registry, &spec.name)?;
 		registry.register_worker(spec)?;
 	}
-	Ok(Arc::new(registry))
+	let registry = Arc::new(registry);
+	eval_host
+		.bind_registry(Arc::clone(&registry))
+		.map_err(|error| EnvdError::Eval(Str::from(error.to_string())))?;
+	Ok((registry, eval_host, eval_control))
+}
+
+pub(super) fn python_engine() -> Result<Arc<omp_py::Engine>, EnvdError> {
+	static ENGINE: LazyLock<Result<Arc<omp_py::Engine>, Str>> = LazyLock::new(|| {
+		omp_py::Engine::builder()
+			.init()
+			.map(Arc::new)
+			.map_err(|error| Str::from(error.to_string()))
+	});
+	ENGINE
+		.as_ref()
+		.map(Arc::clone)
+		.map_err(|error| EnvdError::Eval(error.clone()))
 }
 
 fn ensure_name_absent(registry: &Registry, name: &str) -> Result<(), EnvdError> {

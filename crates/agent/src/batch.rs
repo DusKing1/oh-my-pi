@@ -60,9 +60,40 @@ impl From<ClientError> for BatchError {
 
 enum PumpCommand {
 	ArgText { fragment: Str, ack: flume::Sender<Result<(), ClientError>> },
-	Commit { raw: Bytes, ack: flume::Sender<Result<(), ClientError>> },
+	Commit { raw: Bytes, ack: flume::Sender<Result<CommitState, ClientError>> },
 	Interrupt { reason: Str, ack: flume::Sender<Result<(), ClientError>> },
 	Cancel { ack: flume::Sender<()> },
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CommitState {
+	Sent,
+	DeliveryIndeterminate,
+}
+
+struct CommitReceipt(flume::Receiver<Result<CommitState, ClientError>>);
+
+impl CommitReceipt {
+	async fn wait(&self) -> Result<CommitState, BatchError> {
+		Ok(self
+			.0
+			.recv_async()
+			.await
+			.map_err(|_| InvocationPump::closed())??)
+	}
+}
+
+struct CommandReceipt(flume::Receiver<Result<(), ClientError>>);
+
+impl CommandReceipt {
+	async fn wait(&self) -> Result<(), BatchError> {
+		self
+			.0
+			.recv_async()
+			.await
+			.map_err(|_| InvocationPump::closed())??;
+		Ok(())
+	}
 }
 
 enum PumpTerminal {
@@ -91,18 +122,16 @@ impl InvocationPump {
 		Ok(())
 	}
 
-	async fn commit(&self, raw: Bytes) -> Result<(), BatchError> {
+	fn begin_commit(&self, raw: Bytes) -> Result<CommitReceipt, BatchError> {
 		let (ack, reply) = flume::bounded(1);
 		self.send(PumpCommand::Commit { raw, ack })?;
-		reply.recv_async().await.map_err(|_| Self::closed())??;
-		Ok(())
+		Ok(CommitReceipt(reply))
 	}
 
-	async fn interrupt(&self, reason: Str) -> Result<(), BatchError> {
+	fn begin_interrupt(&self, reason: Str) -> Result<CommandReceipt, BatchError> {
 		let (ack, reply) = flume::bounded(1);
 		self.send(PumpCommand::Interrupt { reason, ack })?;
-		reply.recv_async().await.map_err(|_| Self::closed())??;
-		Ok(())
+		Ok(CommandReceipt(reply))
 	}
 
 	async fn cancel(&self) -> Result<(), BatchError> {
@@ -125,6 +154,46 @@ impl InvocationPump {
 			.recv_async()
 			.await
 			.unwrap_or(PumpOutput::Terminal(PumpTerminal::Closed))
+	}
+}
+
+enum InterruptAction {
+	Sent(Result<(), ClientError>),
+	Cancel(flume::Sender<()>),
+	Unsupported,
+	Closed,
+}
+
+async fn handle_interrupt(
+	invocation: &mut Invocation,
+	reason: Str,
+	ack: flume::Sender<Result<(), ClientError>>,
+	command_rx: &flume::Receiver<PumpCommand>,
+) -> bool {
+	let action = {
+		let sent = invocation.interrupt(reason);
+		tokio::pin!(sent);
+		tokio::select! {
+			result = &mut sent => InterruptAction::Sent(result),
+			control = command_rx.recv_async() => match control {
+				Ok(PumpCommand::Cancel { ack }) => InterruptAction::Cancel(ack),
+				Ok(_) => InterruptAction::Unsupported,
+				Err(_) => InterruptAction::Closed,
+			},
+		}
+	};
+	match action {
+		InterruptAction::Sent(result) => {
+			let failed = result.is_err();
+			let _ = ack.send(result);
+			failed
+		},
+		InterruptAction::Cancel(cancel_ack) => {
+			invocation.guard().cancel();
+			let _ = cancel_ack.send(());
+			false
+		},
+		InterruptAction::Unsupported | InterruptAction::Closed => true,
 	}
 }
 
@@ -179,6 +248,7 @@ fn spawn_invocation_pump(
 							};
 							match action {
 								CommitAction::Sent(result) => {
+									let result = result.map(|()| CommitState::Sent);
 									let failed = result.is_err();
 									let _ = ack.send(result);
 									if failed {
@@ -189,18 +259,22 @@ fn spawn_invocation_pump(
 									reason,
 									ack: interrupt_ack,
 								}) => {
-									let result = invocation.interrupt(reason).await;
-									let failed = result.is_err();
-									let _ = interrupt_ack.send(result);
-									drop(ack);
-									if failed {
+									let _ = ack.send(Ok(CommitState::DeliveryIndeterminate));
+									if handle_interrupt(
+										&mut invocation,
+										reason,
+										interrupt_ack,
+										&command_rx,
+									)
+									.await
+									{
 										break;
 									}
 								},
 								CommitAction::Control(PumpCommand::Cancel { ack: cancel_ack }) => {
+									let _ = ack.send(Ok(CommitState::DeliveryIndeterminate));
 									invocation.guard().cancel();
 									let _ = cancel_ack.send(());
-									drop(ack);
 								},
 								CommitAction::Control(command) => {
 									drop(command);
@@ -211,10 +285,7 @@ fn spawn_invocation_pump(
 							}
 						},
 						PumpCommand::Interrupt { reason, ack } => {
-							let result = invocation.interrupt(reason).await;
-							let failed = result.is_err();
-							let _ = ack.send(result);
-							if failed {
+							if handle_interrupt(&mut invocation, reason, ack, &command_rx).await {
 								break;
 							}
 						},
@@ -516,24 +587,43 @@ async fn run_call(
 		let reason = format!("interrupted before execution: {reason}").to_str();
 		return (index, lower_abort_total(&call, Abort::Skipped { reason }));
 	}
+	let receipt = match call.pump.begin_commit(call.raw_args.clone()) {
+		Ok(receipt) => receipt,
+		Err(error) => {
+			let reason = format!("ArgsCommitted delivery failed: {error}").to_str();
+			return (index, lower_abort_total(&call, Abort::EffectsUnknown { reason }));
+		},
+	};
+	let mut pending_interrupt = None;
 	let commit = if let Some(receiver) = interrupt.as_mut() {
 		tokio::select! {
-			biased;
+			result = receipt.wait() => result,
 			reason = wait_for_interrupt(receiver) => {
-				let reason = format!("interrupted before execution: {reason}").to_str();
-				return (index, lower_abort_total(&call, Abort::Skipped { reason }));
+				match call.pump.begin_interrupt(reason) {
+					Ok(receipt) => pending_interrupt = Some(receipt),
+					Err(error) => {
+						let reason = format!("failed to interrupt pending ArgsCommitted: {error}").to_str();
+						return (index, lower_abort_total(&call, Abort::EffectsUnknown { reason }));
+					},
+				}
+				receipt.wait().await
 			},
-			result = call.pump.commit(call.raw_args.clone()) => result,
 		}
 	} else {
-		call.pump.commit(call.raw_args.clone()).await
+		receipt.wait().await
 	};
-	if let Err(error) = commit {
-		let reason = format!("ArgsCommitted delivery failed: {error}").to_str();
-		return (index, lower_abort_total(&call, Abort::EffectsUnknown { reason }));
-	}
+	let commit_indeterminate = match commit {
+		Ok(CommitState::Sent) => false,
+		Ok(CommitState::DeliveryIndeterminate) => true,
+		Err(error) => {
+			let reason = format!("ArgsCommitted delivery failed: {error}").to_str();
+			return (index, lower_abort_total(&call, Abort::EffectsUnknown { reason }));
+		},
+	};
 
-	let terminal = if let Some(receiver) = interrupt.as_mut() {
+	let terminal = if let Some(receipt) = pending_interrupt {
+		finish_interrupt_with_grace(&call, updates.as_ref(), receipt, grace).await
+	} else if let Some(receiver) = interrupt.as_mut() {
 		tokio::select! {
 			terminal = drain_pump(&call, updates.as_ref()) => terminal,
 			reason = wait_for_interrupt(receiver) => {
@@ -553,6 +643,13 @@ async fn run_call(
 		PumpTerminal::StreamError(error) => lower_abort_total(&call, Abort::EffectsUnknown {
 			reason: format!("environment invocation stream lost: {}", error.message).to_str(),
 		}),
+		PumpTerminal::Closed if commit_indeterminate => {
+			lower_abort_total(&call, Abort::EffectsUnknown {
+				reason: Str::new_static(
+					"ArgsCommitted delivery became indeterminate during interruption",
+				),
+			})
+		},
 		PumpTerminal::Closed => lower_abort_total(&call, Abort::MissingOutcome),
 		PumpTerminal::CancelUnobserved => lower_abort_total(&call, Abort::EffectsUnknown {
 			reason: Str::new_static(
@@ -592,25 +689,44 @@ async fn interrupt_pump_with_grace(
 	reason: Str,
 	grace: Duration,
 ) -> PumpTerminal {
+	let receipt = match call.pump.begin_interrupt(reason) {
+		Ok(receipt) => receipt,
+		Err(_) => return force_cancel_with_grace(call, updates, grace).await,
+	};
+	finish_interrupt_with_grace(call, updates, receipt, grace).await
+}
+
+async fn finish_interrupt_with_grace(
+	call: &CommittedCall,
+	updates: Option<&flume::Sender<BatchUpdate>>,
+	receipt: CommandReceipt,
+	grace: Duration,
+) -> PumpTerminal {
 	let cooperative = async {
-		call.pump.interrupt(reason).await?;
+		receipt.wait().await?;
 		Ok::<_, BatchError>(drain_pump(call, updates).await)
 	};
 	match tokio::time::timeout(grace, cooperative).await {
 		Ok(Ok(terminal)) => terminal,
-		Ok(Err(_)) | Err(_) => {
-			let forced = async {
-				let _ = call.pump.cancel().await;
-				drain_pump(call, updates).await
-			};
-			match tokio::time::timeout(grace, forced).await {
-				Ok(PumpTerminal::Verdict(verdict)) => PumpTerminal::Verdict(verdict),
-				Ok(PumpTerminal::StreamError(error)) => PumpTerminal::StreamError(error),
-				Ok(PumpTerminal::ClientError(error)) => PumpTerminal::ClientError(error),
-				Ok(PumpTerminal::Closed | PumpTerminal::CancelUnobserved) | Err(_) => {
-					PumpTerminal::CancelUnobserved
-				},
-			}
+		Ok(Err(_)) | Err(_) => force_cancel_with_grace(call, updates, grace).await,
+	}
+}
+
+async fn force_cancel_with_grace(
+	call: &CommittedCall,
+	updates: Option<&flume::Sender<BatchUpdate>>,
+	grace: Duration,
+) -> PumpTerminal {
+	let forced = async {
+		let _ = call.pump.cancel().await;
+		drain_pump(call, updates).await
+	};
+	match tokio::time::timeout(grace, forced).await {
+		Ok(PumpTerminal::Verdict(verdict)) => PumpTerminal::Verdict(verdict),
+		Ok(PumpTerminal::StreamError(error)) => PumpTerminal::StreamError(error),
+		Ok(PumpTerminal::ClientError(error)) => PumpTerminal::ClientError(error),
+		Ok(PumpTerminal::Closed | PumpTerminal::CancelUnobserved) | Err(_) => {
+			PumpTerminal::CancelUnobserved
 		},
 	}
 }
@@ -1068,5 +1184,92 @@ mod tests {
 		}
 		assert_eq!(finished, 1, "committed call must complete exactly once");
 		assert_eq!(update_count, 1, "speculative update must publish exactly once");
+	}
+
+	async fn run_backpressured_commit_race(send_verdict: bool) -> Vec<BatchResult> {
+		let (client, transport) = EnvClient::in_process(1);
+		let (requests, responses) = transport.into_parts();
+		let events = EventBus::new();
+		let call = SpeculativeCall::open(
+			&client,
+			&events,
+			Str::new_static("raced-commit"),
+			identity("raced_tool"),
+			Duration::from_secs(1),
+		)
+		.await
+		.expect("open call");
+		let opened = requests.recv_async().await.expect("first InvokeTool");
+		let request_id = opened.request_id;
+		assert!(matches!(opened.body, Some(client_frame::Body::InvokeTool(_))));
+
+		// Occupy the one-slot channel, then let the pump enqueue ArgsCommitted
+		// behind it. Receiving the blocker synchronously promotes that queued
+		// frame before the current-thread pump can observe send completion.
+		let blocker = SpeculativeCall::open(
+			&client,
+			&events,
+			Str::new_static("channel-blocker"),
+			identity("blocker_tool"),
+			Duration::from_secs(1),
+		)
+		.await
+		.expect("open channel blocker");
+		let (interrupt_tx, interrupt_rx) = watch::channel(None);
+		let drive = tokio::spawn(async move {
+			ToolBatch::new(vec![call.commit(Bytes::from_static(b"{}"))])
+				.drive_interruptible(&Registry::new(), &caps(), interrupt_rx, Duration::from_millis(25))
+				.await
+		});
+		tokio::task::yield_now().await;
+		tokio::task::yield_now().await;
+		let blocker_frame = requests.recv().expect("queued blocker InvokeTool");
+		assert!(matches!(blocker_frame.body, Some(client_frame::Body::InvokeTool(_))));
+		let committed_frame = requests
+			.try_recv()
+			.expect("receiver promoted the backpressured ArgsCommitted frame");
+		assert!(matches!(
+			&committed_frame.body,
+			Some(client_frame::Body::ArgsCommitted(committed))
+				if committed.invocation_id == "raced-commit"
+		));
+		interrupt_tx
+			.send(Some(Str::new_static("interrupt after receiver took commit")))
+			.expect("interrupt batch");
+		if send_verdict {
+			responses
+				.send(frame::ServerFrame {
+					request_id,
+					body: Some(server_frame::Body::Verdict(frame::Verdict {
+						invocation_id: "raced-commit".into(),
+						json: Bytes::from_static(br#"{"kind":"ok","value":{"committed":true}}"#),
+						parts: vec![ThreadPart { kind: Some(part::Kind::Text("committed".into())) }],
+						..Default::default()
+					})),
+					..Default::default()
+				})
+				.expect("authoritative verdict");
+		}
+		let results = tokio::time::timeout(Duration::from_secs(1), drive)
+			.await
+			.expect("commit race timeout")
+			.expect("batch task");
+		drop(blocker);
+		results
+	}
+
+	#[tokio::test(flavor = "current_thread")]
+	async fn interrupt_after_receiver_takes_backpressured_commit_is_effects_unknown() {
+		let results = run_backpressured_commit_race(false).await;
+		assert_eq!(results.len(), 1);
+		assert!(terminal_text(&results[0]).starts_with("aborted with effects unknown:"));
+		assert!(!terminal_text(&results[0]).starts_with("skipped:"));
+	}
+
+	#[tokio::test(flavor = "current_thread")]
+	async fn authoritative_verdict_wins_after_pending_commit_interrupt() {
+		let results = run_backpressured_commit_race(true).await;
+		assert_eq!(results.len(), 1);
+		assert_eq!(terminal_text(&results[0]), "committed");
 	}
 }

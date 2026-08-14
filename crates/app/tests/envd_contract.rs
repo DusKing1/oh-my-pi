@@ -40,9 +40,13 @@ struct EffectTool {
 
 impl EffectTool {
 	fn new(marker: PathBuf) -> Self {
+		Self::named("effect_probe", marker)
+	}
+
+	fn named(name: &'static str, marker: PathBuf) -> Self {
 		Self {
 			spec: ToolSpec {
-				name:        Str::new_static("effect_probe"),
+				name:        Str::new_static(name),
 				rev:         Rev { family: Str::new_static("test"), n: 1 },
 				description: Str::new_static("records a committed invocation"),
 				schema:      Bytes::from_static(br#"{"type":"object"}"#),
@@ -476,6 +480,29 @@ async fn invoke_builtin(
 }
 
 #[tokio::test]
+async fn write_name_is_reserved_before_production_registry_assembly() {
+	let root = tempfile::tempdir().expect("workspace scratch directory");
+	let state = tempfile::tempdir().expect("state scratch directory");
+	let marker = state.path().join("reserved-write-marker");
+	let mut registry = Registry::new();
+	registry
+		.register(EffectTool::named("write", marker))
+		.expect("register colliding caller write tool");
+	let result = EnvServer::open_local(
+		root.path(),
+		state.path(),
+		registry,
+		ToolWorkerConfig::new(PathBuf::from(env!("CARGO_BIN_EXE_omp"))),
+	)
+	.await;
+	let error = match result {
+		Ok(_) => panic!("production registry accepted a caller-owned write tool"),
+		Err(error) => error,
+	};
+	assert_eq!(error.to_string(), "duplicate production tool name: write");
+}
+
+#[tokio::test]
 async fn production_registry_advertises_and_dispatches_all_native_adapters() {
 	let harness = Harness::start(Registry::new()).await;
 	std::fs::write(harness.root.path().join("note.txt"), "before\n").expect("workspace fixture");
@@ -493,11 +520,150 @@ async fn production_registry_advertises_and_dispatches_all_native_adapters() {
 		.collect::<Vec<_>>();
 	assert_eq!(identities, [
 		("edit", "hl.1".to_owned()),
+		("eval", "1".to_owned()),
 		("glob", "1".to_owned()),
 		("grep", "1".to_owned()),
 		("read", "1".to_owned()),
 		("shell", "1".to_owned()),
+		("write", "1".to_owned()),
 	]);
+	let write_definition = advertised
+		.iter()
+		.find(|tool| tool.identity.name == "write")
+		.expect("advertised write definition");
+	assert_eq!(
+		write_definition.definition.description.as_deref(),
+		Some(
+			"Creates or overwrites file at specified path.\n\n<conditions>\n- Creating new files \
+			 explicitly required by task\n- Replacing entire file contents when editing would be \
+			 more complex\n- Supports `.tar`, `.tar.gz`, `.tgz`, `.zip`, and ZIP-based \
+			 `.jar`/`.war`/`.ear`/`.apk` archive entries via `archive.ext:path/inside/archive`\n- \
+			 Supports SQLite row operations via `db.sqlite:table` (insert), `db.sqlite:table:key` \
+			 (update with JSON content, delete with empty content)\n</conditions>\n\n<critical>\n- \
+			 You SHOULD use Edit tool for modifying existing files\n- You NEVER create documentation \
+			 files (*.md, README) unless explicitly requested\n- You NEVER use emojis unless \
+			 requested\n</critical>"
+		)
+	);
+	let (write_schema, write_strict) = write_definition
+		.definition
+		.input
+		.json_schema()
+		.expect("write uses JSON Schema grammar");
+	assert!(write_strict, "write schema must remain strict");
+	assert_eq!(
+		write_schema.as_value(),
+		&json!({
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["path", "content"],
+			"properties": {
+				"path": {"type": "string", "description": "file path"},
+				"content": {"type": "string", "description": "file content"}
+			}
+		})
+	);
+	let definition = |name: &str| {
+		advertised
+			.iter()
+			.find(|tool| tool.identity.name == name)
+			.unwrap_or_else(|| panic!("advertised {name} definition"))
+	};
+	let schema = |name: &str| {
+		definition(name)
+			.definition
+			.input
+			.json_schema()
+			.unwrap_or_else(|| panic!("{name} uses JSON Schema grammar"))
+			.0
+			.as_value()
+			.clone()
+	};
+	assert_eq!(
+		schema("grep"),
+		json!({
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["pattern"],
+			"properties": {
+				"pattern": {"type": "string", "description": "regex pattern"},
+				"path": {"type": "string", "description": "file, directory, glob, internal URL, or \"<file>:<lines>\" selector to search; pass several as a semicolon-delimited list (\"src; tests\"). Omitted -> searches the workspace root (\".\")"},
+				"case": {"type": "boolean", "description": "case-sensitive search"},
+				"gitignore": {"type": "boolean", "description": "respect gitignore"},
+				"skip": {"type": ["number", "null"], "description": "files to skip before collecting results — use to paginate when the prior call hit the file limit"}
+			}
+		})
+	);
+	assert_eq!(
+		schema("glob"),
+		json!({
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"path": {"type": "string", "description": "glob, file, or directory to search — a single path or a semicolon-delimited list (\"src/**/*.ts; test/**/*.ts\"). Omitted -> searches the workspace root (\".\")"},
+				"hidden": {"type": "boolean", "description": "include hidden files"},
+				"gitignore": {"type": "boolean", "description": "respect gitignore"},
+				"limit": {"type": "number", "description": "max results"}
+			}
+		})
+	);
+	assert_eq!(
+		schema("read"),
+		json!({
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["path"],
+			"properties": {
+				"path": {"type": "string", "description": "Local path, internal URI (e.g. skill://), or URL. Inline selectors are supported."}
+			}
+		})
+	);
+	assert_eq!(
+		schema("edit"),
+		json!({
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["input"],
+			"properties": {"input": {"type": "string"}}
+		})
+	);
+	let edit_description = definition("edit")
+		.definition
+		.description
+		.as_deref()
+		.expect("edit description");
+	assert!(edit_description.starts_with("Line-anchored patch language:"));
+	assert!(edit_description.contains("RE-GROUND AFTER EVERY EDIT"));
+	assert!(edit_description.ends_with("</critical>\n"));
+	let read_description = definition("read")
+		.definition
+		.description
+		.as_deref()
+		.expect("read description");
+	assert!(read_description.contains("Summary footer names elided ranges?"));
+	assert!(read_description.contains("NEVER guess `..`/`…` content."));
+	assert_eq!(
+		definition("grep").definition.description.as_deref(),
+		Some(
+			"Searches files/internal URLs: Rust regex, PCRE2 fallback.\n\n<instruction>\n- `path`: \
+			 known files, directories, globs, internal URLs; roots `;`-separated.\n- Broad searches \
+			 may time out → narrow scope or use `glob` first.\n- One-file line selector: \
+			 `src/foo.ts:50-100`; never selects search root.\n- Literal `\\n` or `\\\\n` enables \
+			 cross-line patterns.\n</instruction>\n\n<critical>\n- MUST use instead of shell \
+			 `grep`/`rg`.\n</critical>"
+		)
+	);
+	assert_eq!(
+		definition("glob").definition.description.as_deref(),
+		Some(
+			"Globs files and directories with fast pattern matching.\n\n<instruction>\n- `path`: \
+			 glob, file, or directory; separate targets with `;` (`src/**/*.ts; test/**/*.ts`).\n- \
+			 `gitignore` defaults `true`. Set `false` for ignored files such as `.env*`, logs, or \
+			 build output.\n- `hidden` defaults `true`; pair it with `gitignore: false` for ignored \
+			 dotfiles.\n</instruction>\n\n<output>\nMatches are newest-first and grouped by \
+			 directory; directories end in `/`.\n</output>"
+		)
+	);
 
 	let read =
 		invoke_builtin(harness.client(), "builtin-read", "read", "1", json!({"path":"note.txt"}))
@@ -508,21 +674,18 @@ async fn production_registry_advertises_and_dispatches_all_native_adapters() {
 	let Verdict::Ok(read_payload) = read_verdict else {
 		panic!("read did not return an ok payload");
 	};
+	let read_text = read_payload["parts"][0]["text"]
+		.as_str()
+		.expect("read text part");
 	assert!(
-		!read_payload["revision"]
-			.as_str()
-			.expect("read revision")
-			.is_empty()
+		read_text.starts_with("[note.txt#"),
+		"read must mint the edit anchor used by the shared document adapter: {read_text}"
 	);
-	let patch = "PUT 1.=1:\n+after\n";
-	let edit = invoke_builtin(
-		harness.client(),
-		"builtin-edit",
-		"edit",
-		"hl.1",
-		json!({"path":"note.txt","patch":patch}),
-	)
-	.await;
+	let tag = omp_hashline::compute_snapshot_tag(b"before\n");
+	let patch = format!("[note.txt#{tag}]\nPUT 1.=1:\n+after");
+	let edit =
+		invoke_builtin(harness.client(), "builtin-edit", "edit", "hl.1", json!({"input":patch}))
+			.await;
 	assert!(
 		!edit.is_error,
 		"edit adapter returned an error: {}",
@@ -532,6 +695,64 @@ async fn production_registry_advertises_and_dispatches_all_native_adapters() {
 		std::fs::read_to_string(harness.root.path().join("note.txt")).expect("edited fixture"),
 		"after\n"
 	);
+
+	let write = invoke_builtin(
+		harness.client(),
+		"builtin-write",
+		"write",
+		"1",
+		json!({"path":"nested/written.txt","content":"written through adapter\n"}),
+	)
+	.await;
+	assert!(
+		!write.is_error,
+		"write adapter returned an error: {}",
+		String::from_utf8_lossy(&write.json)
+	);
+	let write_verdict: Verdict<Value, Value> =
+		serde_json::from_slice(&write.json).expect("typed write verdict");
+	let Verdict::Ok(write_payload) = write_verdict else {
+		panic!("write did not return an ok payload");
+	};
+	assert_eq!(write_payload["display_path"], "nested/written.txt");
+	assert_eq!(write_payload["operation"], json!({"kind":"plain"}));
+	assert_eq!(write_payload["byte_len"], 24);
+	assert_eq!(write_payload["reported_len"], 24);
+	let write_tag = write_payload["snapshot_tag"]
+		.as_str()
+		.expect("plain write records a shared hashline snapshot");
+	let write_edit = invoke_builtin(
+		harness.client(),
+		"builtin-edit-written",
+		"edit",
+		"hl.1",
+		json!({"input":format!(
+			"[nested/written.txt#{write_tag}]\nPUT 1.=1:\n+changed through shared snapshot"
+		)}),
+	)
+	.await;
+	assert!(
+		!write_edit.is_error,
+		"write snapshot was not consumable by edit: {}",
+		String::from_utf8_lossy(&write_edit.json)
+	);
+	assert_eq!(
+		std::fs::read_to_string(harness.root.path().join("nested/written.txt"))
+			.expect("write/edit fixture"),
+		"changed through shared snapshot\n"
+	);
+	let written = invoke_builtin(
+		harness.client(),
+		"builtin-read-written",
+		"read",
+		"1",
+		json!({"path":"nested/written.txt:raw"}),
+	)
+	.await;
+	assert!(!written.is_error, "write/read round trip returned an error");
+	let written_verdict: Verdict<Value, Value> =
+		serde_json::from_slice(&written.json).expect("typed read-after-write verdict");
+	assert!(matches!(written_verdict, Verdict::Ok(_)));
 
 	let shell = invoke_builtin(
 		harness.client(),
@@ -547,7 +768,7 @@ async fn production_registry_advertises_and_dispatches_all_native_adapters() {
 		"builtin-grep",
 		"grep",
 		"1",
-		json!({"patterns":["after"],"limit":10}),
+		json!({"pattern":"after","path":"note.txt"}),
 	)
 	.await;
 	assert!(!grep.is_error, "grep adapter returned an error");
@@ -556,10 +777,324 @@ async fn production_registry_advertises_and_dispatches_all_native_adapters() {
 		"builtin-glob",
 		"glob",
 		"1",
-		json!({"patterns":["*.txt"],"limit":10}),
+		json!({"path":"*.txt","limit":10}),
 	)
 	.await;
 	assert!(!glob.is_error, "glob adapter returned an error");
+}
+
+#[tokio::test]
+async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_and_recovery() {
+	let harness = Harness::start(Registry::new()).await;
+	std::fs::write(harness.root.path().join("bridge-note.txt"), "bridge\n")
+		.expect("eval bridge fixture");
+
+	let seed = invoke_builtin(
+		harness.client(),
+		"eval-seed",
+		"eval",
+		"1",
+		json!({"language":"py","code":"state = 40\nprint('seeded')","title":"seed"}),
+	)
+	.await;
+	assert!(!seed.is_error, "embedded Python seed cell failed");
+	let seed: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
+		serde_json::from_slice(&seed.json).expect("typed eval seed verdict");
+	let Verdict::Ok(seed) = seed else {
+		panic!("embedded Python seed cell returned a fault");
+	};
+	assert_eq!(seed.frames.len(), 1);
+	assert_eq!(seed.frames[0].channel, omp_tools::eval::OutputChannel::Stdout);
+	assert_eq!(seed.frames[0].data.as_ref(), b"seeded\n");
+	assert_eq!(seed.status.outcome, omp_tools::eval::CellOutcome::Complete);
+
+	let bridged_glob = invoke_builtin(
+		harness.client(),
+		"eval-tool-bridge",
+		"eval",
+		"1",
+		json!({"language":"py","code":"tool.glob({'path': 'bridge-note.txt'})"}),
+	)
+	.await;
+	assert!(!bridged_glob.is_error, "eval tool bridge call failed");
+	let bridged_glob: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
+		serde_json::from_slice(&bridged_glob.json).expect("typed eval bridge verdict");
+	let Verdict::Ok(bridged_glob) = bridged_glob else {
+		panic!("eval tool bridge returned a fault");
+	};
+	assert_eq!(bridged_glob.status.outcome, omp_tools::eval::CellOutcome::Complete);
+	assert!(
+		bridged_glob
+			.result
+			.as_ref()
+			.and_then(|result| result.json.as_ref())
+			.and_then(Value::as_str)
+			.is_some_and(|output| output.contains("bridge-note.txt")),
+		"glob bridge result did not contain the fixture path"
+	);
+
+	let denied_completion = invoke_builtin(
+		harness.client(),
+		"eval-completion-denied",
+		"eval",
+		"1",
+		json!({
+			"language":"py",
+			"code":"try:\n    completion('no parent')\nexcept RuntimeError as error:\n    print(str(error))"
+		}),
+	)
+	.await;
+	assert!(!denied_completion.is_error, "completion denial cell failed");
+	let denied_completion: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
+		serde_json::from_slice(&denied_completion.json).expect("typed completion denial verdict");
+	let Verdict::Ok(denied_completion) = denied_completion else {
+		panic!("completion denial returned a resource fault");
+	};
+	assert_eq!(denied_completion.frames.len(), 1);
+	assert_eq!(
+		denied_completion.frames[0].data.as_ref(),
+		b"bridge capability denied: __completion__\n"
+	);
+
+	let continued = invoke_builtin(
+		harness.client(),
+		"eval-continued",
+		"eval",
+		"1",
+		json!({"language":"py","code":"state += 2\nprint(f'cell={state}')\nstate"}),
+	)
+	.await;
+	assert!(!continued.is_error, "embedded Python continuation cell failed");
+	let continued: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
+		serde_json::from_slice(&continued.json).expect("typed eval continuation verdict");
+	let Verdict::Ok(continued) = continued else {
+		panic!("embedded Python continuation cell returned a fault");
+	};
+	assert_eq!(continued.session_id, seed.session_id);
+	assert_eq!(continued.frames.len(), 1);
+	assert_eq!(continued.frames[0].data.as_ref(), b"cell=42\n");
+	assert_eq!(
+		continued.result,
+		Some(omp_tools::eval::CellValue { text: Str::from("42"), json: Some(json!(42)) })
+	);
+
+	let reset = invoke_builtin(
+		harness.client(),
+		"eval-reset",
+		"eval",
+		"1",
+		json!({"language":"py","code":"'state' in globals()","reset":true}),
+	)
+	.await;
+	assert!(!reset.is_error, "embedded Python reset cell failed");
+	let reset: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
+		serde_json::from_slice(&reset.json).expect("typed eval reset verdict");
+	let Verdict::Ok(reset) = reset else {
+		panic!("embedded Python reset cell returned a fault");
+	};
+	assert_eq!(reset.session_id, seed.session_id);
+	assert!(reset.reset);
+	assert_eq!(
+		reset.result,
+		Some(omp_tools::eval::CellValue { text: Str::from("False"), json: Some(json!(false)) })
+	);
+
+	let timed_out = invoke_builtin(
+		harness.client(),
+		"eval-timeout",
+		"eval",
+		"1",
+		json!({"language":"py","code":"while True:\n    pass","timeout":0.01}),
+	)
+	.await;
+	assert!(!timed_out.is_error, "timed-out Python cell did not return typed cell truth");
+	let timed_out: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
+		serde_json::from_slice(&timed_out.json).expect("typed eval timeout verdict");
+	let Verdict::Ok(timed_out) = timed_out else {
+		panic!("timed-out Python cell returned a resource fault");
+	};
+	assert_eq!(timed_out.status.outcome, omp_tools::eval::CellOutcome::Timeout);
+	assert_eq!(
+		timed_out
+			.status
+			.exception
+			.as_ref()
+			.map(|exception| exception.name.as_str()),
+		Some("TimeoutError")
+	);
+
+	let recovered = invoke_builtin(
+		harness.client(),
+		"eval-after-timeout",
+		"eval",
+		"1",
+		json!({"language":"py","code":"6 * 7"}),
+	)
+	.await;
+	assert!(!recovered.is_error, "Python kernel did not recover after timeout");
+	let recovered: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
+		serde_json::from_slice(&recovered.json).expect("typed post-timeout eval verdict");
+	let Verdict::Ok(recovered) = recovered else {
+		panic!("post-timeout Python cell returned a fault");
+	};
+	assert_eq!(recovered.session_id, seed.session_id);
+	assert_eq!(
+		recovered.result,
+		Some(omp_tools::eval::CellValue { text: Str::from("42"), json: Some(json!(42)) })
+	);
+
+	let started = harness.root.path().join("eval-cancel-started");
+	let started_literal =
+		serde_json::to_string(&started.to_string_lossy()).expect("encode cancellation marker path");
+	let code = format!(
+		"from pathlib import Path\nPath({started_literal}).write_text('started')\nwhile True:\n    \
+		 pass"
+	);
+	let mut cancelled = harness
+		.client()
+		.invoke(InvokeTool {
+			invocation_id: "eval-cancel".into(),
+			name: "eval".into(),
+			rev: "1".into(),
+			..InvokeTool::default()
+		})
+		.await
+		.expect("open cancellable eval invocation");
+	assert!(matches!(
+		cancelled
+			.next_event()
+			.await
+			.expect("eval cancellation accepted"),
+		Some(InvocationEvent::Accepted(_))
+	));
+	cancelled
+		.commit_args(Bytes::from(
+			serde_json::to_vec(&json!({"language":"py","code":code}))
+				.expect("encode cancellable eval arguments"),
+		))
+		.await
+		.expect("commit cancellable eval arguments");
+	tokio::time::timeout(Duration::from_secs(2), async {
+		while !started.exists() {
+			tokio::task::yield_now().await;
+		}
+	})
+	.await
+	.expect("embedded Python cancellation cell never became active");
+	cancelled.guard().cancel();
+	let terminal = tokio::time::timeout(Duration::from_secs(2), cancelled.next_event())
+		.await
+		.expect("eval cancellation terminal timeout")
+		.expect("eval cancellation terminal event")
+		.expect("eval cancellation stream closed");
+	let InvocationEvent::Verdict(terminal) = terminal else {
+		panic!("eval cancellation did not produce a verdict");
+	};
+	let verdict: Verdict<Value, Value> =
+		serde_json::from_slice(&terminal.json).expect("decode eval cancellation verdict");
+	assert!(matches!(verdict, Verdict::Aborted(Abort::EffectsUnknown { .. })));
+
+	let after_cancel = invoke_builtin(
+		harness.client(),
+		"eval-after-cancel",
+		"eval",
+		"1",
+		json!({"language":"py","code":"7 * 7"}),
+	)
+	.await;
+	assert!(!after_cancel.is_error, "Python kernel did not recover after cancellation");
+	let after_cancel: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
+		serde_json::from_slice(&after_cancel.json).expect("typed post-cancel eval verdict");
+	let Verdict::Ok(after_cancel) = after_cancel else {
+		panic!("post-cancel Python cell returned a fault");
+	};
+	assert_eq!(
+		after_cancel.result,
+		Some(omp_tools::eval::CellValue { text: Str::from("49"), json: Some(json!(49)) })
+	);
+}
+
+#[tokio::test]
+async fn uds_clients_cannot_invoke_session_local_eval_but_retain_ordinary_tools() {
+	let harness = Harness::start(Registry::new()).await;
+	std::fs::write(harness.root.path().join("uds-note.txt"), "uds read\n")
+		.expect("UDS read fixture");
+	let advertised = harness.server.registry().advertise(LoweringCaps {
+		strict_schema: true,
+		grammar:       omp_llm_catalog::GrammarBits::empty(),
+	});
+	assert!(
+		advertised.iter().any(|tool| tool.identity.name == "eval"),
+		"in-process registry did not advertise eval"
+	);
+	let local_eval = invoke_builtin(
+		harness.client(),
+		"local-eval-capability",
+		"eval",
+		"1",
+		json!({"language":"py","code":"2 + 3"}),
+	)
+	.await;
+	assert!(!local_eval.is_error, "session-local in-process eval was denied");
+
+	let socket = harness._state.path().join("env-remote.sock");
+	let shutdown = CancellationToken::new();
+	let server = Arc::clone(&harness.server);
+	let serve_shutdown = shutdown.clone();
+	let socket_for_server = socket.clone();
+	let server_task =
+		tokio::spawn(async move { server.serve_uds(&socket_for_server, serve_shutdown).await });
+	tokio::time::timeout(Duration::from_secs(2), async {
+		while !socket.exists() {
+			tokio::task::yield_now().await;
+		}
+	})
+	.await
+	.expect("UDS environment socket did not become ready");
+	let (remote, bridge_task) = EnvServer::connect_owner_uds(&socket)
+		.await
+		.expect("connect owner UDS client");
+	remote
+		.hello(ClientHello {
+			client: "envd-contract-uds".into(),
+			schema_rev: SCHEMA_REV,
+			..ClientHello::default()
+		})
+		.await
+		.expect("UDS environment hello");
+
+	let mut denied = remote
+		.invoke(InvokeTool {
+			invocation_id: "remote-eval-denied".into(),
+			name: "eval".into(),
+			rev: "1".into(),
+			..InvokeTool::default()
+		})
+		.await
+		.expect("open denied remote eval request");
+	let error = denied
+		.next_event()
+		.await
+		.expect_err("UDS eval unexpectedly produced an event");
+	let omp_env::ClientError::Protocol(error) = error else {
+		panic!("UDS eval denial was not a typed protocol error");
+	};
+	assert_eq!(error.code, omp_proto::env::v1::ProtocolErrorCode::PermissionDenied as i32);
+	assert_eq!(error.message, "eval is available only through the session-local environment");
+
+	let read = invoke_builtin(
+		&remote,
+		"remote-read-allowed",
+		"read",
+		"1",
+		json!({"path":"uds-note.txt:raw"}),
+	)
+	.await;
+	assert!(!read.is_error, "ordinary UDS read was denied");
+
+	shutdown.cancel();
+	bridge_task.abort();
+	let _ = server_task.await;
 }
 
 #[tokio::test]
@@ -572,7 +1107,7 @@ async fn opt_in_python_adds_one_worker_route_and_default_adds_none() {
 		strict_schema: true,
 		grammar:       omp_llm_catalog::GrammarBits::empty(),
 	});
-	assert_eq!(advertised.len(), 6);
+	assert_eq!(advertised.len(), 8);
 	assert_eq!(registry.route("py_eval").expect("python route"), ToolRoute::Worker);
 	assert_eq!(
 		registry

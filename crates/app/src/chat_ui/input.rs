@@ -8,8 +8,7 @@ use super::now_ms;
 pub enum ChatCommand {
 	/// Update the session model targeting the given identifier.
 	Model(Str),
-	/// Yields an error explaining that a session is already active.
-	/// Real session resumes must be selected via the CLI `--resume <id>` flag.
+	/// Open the project-local durable-session picker.
 	Resume,
 	/// Exit the application cleanly.
 	Quit,
