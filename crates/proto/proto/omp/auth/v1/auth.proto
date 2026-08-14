@@ -286,17 +286,80 @@ message UsageReport {
   string plan = 3;
   repeated UsageWindow windows = 4;
   uint64 fetched_at_ms = 5;
+  string account = 6;
+  string principal = 7;
+  AccountMetadata account_metadata = 8;
+  optional string source_label = 9;
+  repeated string notes = 10;
+  ResetCredits reset_credits = 11;
+  message AccountMetadata {
+    optional string provider_account_id = 1;
+    optional string email = 2;
+    optional string project_id = 3;
+    optional string organization_id = 4;
+    optional string organization_name = 5;
+  }
+  message ResetCredits {
+    uint64 available = 1;
+    repeated Credit credits = 2;
+    message Credit {
+      optional uint64 granted_at_ms = 1;
+      optional uint64 expires_at_ms = 2;
+      optional string status = 3;
+    }
+  }
   // Raw provider payload under namespaced keys, for surfaces that outgrow
   // the window model. Integer counters and ids retain their exact value.
   omp.inference.v1.ValueMap detail = 15;
 }
 
 message UsageWindow {
-  // "5h", "week", "opus-week", "chat", "spark" — provider-defined.
+  // Human-facing provider label.
   string label = 1;
-  // 0..100; may exceed 100 where providers overshoot.
+  // Retained compatibility projection; exact amounts are carried below.
   double used_percent = 2;
   uint64 resets_at_ms = 3;
+  string id = 4;
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_RATE_LIMIT = 1;
+    KIND_QUOTA = 2;
+    KIND_BILLING = 3;
+    KIND_BALANCE = 4;
+  }
+  Kind kind = 5;
+  string dimension = 6;
+  optional uint64 consumed = 7;
+  optional uint64 remaining = 8;
+  optional uint64 limit = 9;
+  enum Unit {
+    UNIT_UNSPECIFIED = 0;
+    UNIT_PERCENT = 1;
+    UNIT_TOKENS = 2;
+    UNIT_REQUESTS = 3;
+    UNIT_USD = 4;
+    UNIT_MINUTES = 5;
+    UNIT_BYTES = 6;
+    UNIT_UNKNOWN = 7;
+  }
+  Unit unit = 10;
+  uint32 consumed_decimal_exponent = 11;
+  optional string scope = 12;
+  optional uint64 duration_ms = 13;
+  optional string reset_label = 14;
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_OK = 1;
+    STATUS_WARNING = 2;
+    STATUS_EXHAUSTED = 3;
+    STATUS_UNKNOWN = 4;
+  }
+  optional Status status = 15;
+  repeated string notes = 16;
+  uint64 observed_at_ms = 17;
+  omp.inference.v1.Usage.Accuracy accuracy = 18;
+  uint32 remaining_decimal_exponent = 19;
+  uint32 limit_decimal_exponent = 20;
 }
 
 message GetUsageRequest {

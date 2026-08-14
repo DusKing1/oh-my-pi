@@ -756,6 +756,27 @@ message UsageResponse {
   string account = 2;
   string principal = 3;
   repeated Window windows = 4;
+  optional string plan = 5;
+  AccountMetadata account_metadata = 6;
+  optional string source_label = 7;
+  repeated string notes = 8;
+  ResetCredits reset_credits = 9;
+  message AccountMetadata {
+    optional string provider_account_id = 1;
+    optional string email = 2;
+    optional string organization_id = 4;
+    optional string organization_name = 5;
+    optional string project_id = 3;
+  }
+  message ResetCredits {
+    uint64 available = 1;
+    repeated Credit credits = 2;
+    message Credit {
+      optional uint64 granted_at_ms = 1;
+      optional uint64 expires_at_ms = 2;
+      optional string status = 3;
+    }
+  }
   message Window {
     enum Kind {
       KIND_UNSPECIFIED = 0;
@@ -763,6 +784,23 @@ message UsageResponse {
       KIND_QUOTA = 2;
       KIND_BILLING = 3;
       KIND_BALANCE = 4;
+    }
+    enum Unit {
+      UNIT_UNSPECIFIED = 0;
+      UNIT_PERCENT = 1;
+      UNIT_TOKENS = 2;
+      UNIT_REQUESTS = 3;
+      UNIT_USD = 4;
+      UNIT_MINUTES = 5;
+      UNIT_BYTES = 6;
+      UNIT_UNKNOWN = 7;
+    }
+    enum Status {
+      STATUS_UNSPECIFIED = 0;
+      STATUS_OK = 1;
+      STATUS_WARNING = 2;
+      STATUS_EXHAUSTED = 3;
+      STATUS_UNKNOWN = 4;
     }
     Kind kind = 1;
     string dimension = 2;
@@ -772,6 +810,17 @@ message UsageResponse {
     optional uint64 resets_at_ms = 6;
     Usage.Accuracy accuracy = 7;
     uint64 observed_at_ms = 8;
+    string id = 9;
+    optional string label = 10;
+    optional string scope = 11;
+    Unit unit = 12;
+    uint32 consumed_decimal_exponent = 13;
+    optional Status status = 14;
+    optional uint64 duration_ms = 15;
+    optional string reset_label = 16;
+    repeated string notes = 17;
+    uint32 remaining_decimal_exponent = 18;
+    uint32 limit_decimal_exponent = 19;
   }
 }
 
