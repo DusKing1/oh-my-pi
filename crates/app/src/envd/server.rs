@@ -87,6 +87,11 @@ pub enum EnvdError {
 	/// The embedded document authority exited before accepting a verified hello.
 	#[error("embedded document authority exited before its hello handshake")]
 	DocserverExited,
+	/// Another process already serves this project's document authority.
+	#[error(
+		"project document authority is already served by another process; retry after it drains"
+	)]
+	DocumentAuthorityHeld,
 }
 
 impl From<DocumentError> for EnvdError {
@@ -120,28 +125,6 @@ pub struct ServerIdentity {
 	pub server_version: Str,
 	/// Build identity of the serving environment; empty means unknown.
 	pub server_build:   Str,
-}
-
-/// Relationship between an owner socket path and the endpoint a probe
-/// connection actually reached, verified immediately after connecting.
-///
-/// Build takeover may unlink only a [`Self::Held`] endpoint: an already
-/// replaced or released path belongs to a concurrent successor and must be
-/// left untouched.
-#[cfg(unix)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SocketClaim {
-	/// The path still names the connected endpoint.
-	Held {
-		/// Device number of the endpoint when the probe connected.
-		dev: u64,
-		/// Inode of the endpoint when the probe connected.
-		ino: u64,
-	},
-	/// The path was removed while connecting; it is free to bind.
-	Released,
-	/// The path was concurrently replaced by another endpoint.
-	Replaced,
 }
 #[derive(Clone)]
 struct ConnectionPolicy {
@@ -343,15 +326,10 @@ impl EnvServer {
 	}
 
 	/// Connects an `EnvClient` transport to an owner-only environment socket.
-	///
-	/// The returned [`SocketClaim`] records whether the path still named the
-	/// connected endpoint once the connection was established; only a
-	/// [`SocketClaim::Held`] endpoint may later be evicted by build takeover.
 	#[cfg(unix)]
 	pub async fn connect_owner_uds(
 		path: &Path,
-	) -> Result<(EnvClient, tokio::task::JoinHandle<Result<(), EnvdError>>, SocketClaim), EnvdError>
-	{
+	) -> Result<(EnvClient, tokio::task::JoinHandle<Result<(), EnvdError>>), EnvdError> {
 		use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 
 		let metadata = tokio::fs::symlink_metadata(path).await?;
@@ -367,16 +345,7 @@ impl EnvServer {
 				.into(),
 			);
 		}
-		let expected = (metadata.dev(), metadata.ino());
 		let stream = tokio::net::UnixStream::connect(path).await?;
-		let claim = match tokio::fs::symlink_metadata(path).await {
-			Ok(current) if (current.dev(), current.ino()) == expected => {
-				SocketClaim::Held { dev: expected.0, ino: expected.1 }
-			},
-			Ok(_) => SocketClaim::Replaced,
-			Err(error) if error.kind() == io::ErrorKind::NotFound => SocketClaim::Released,
-			Err(error) => return Err(error.into()),
-		};
 		let (client, transport) = EnvClient::in_process(64);
 		let (requests, responses) = transport.into_parts();
 		let task = tokio::spawn(async move {
@@ -413,7 +382,7 @@ impl EnvServer {
 			write_result?;
 			Ok(())
 		});
-		Ok((client, task, claim))
+		Ok((client, task))
 	}
 
 	/// Returns the exact registry shared by this server's dispatch paths.
@@ -501,6 +470,11 @@ impl EnvServer {
 	}
 
 	/// Binds and serves an owner-only project Unix socket until cancellation.
+	///
+	/// Retirement unlinks the path immediately and drains accepted
+	/// connections; external shutdown aborts them. A stale non-accepting
+	/// socket file is replaced; a live listener yields
+	/// [`io::ErrorKind::AddrInUse`].
 	#[cfg(unix)]
 	pub async fn serve_uds(
 		self: Arc<Self>,
@@ -1243,7 +1217,8 @@ impl EnvServer {
 				cancel,
 				responses.clone(),
 				finished.clone(),
-			);
+			)
+			.await;
 		} else if route == ToolRoute::Worker && self.worker_decl(&request.name, &request.rev) {
 			let (interrupt, interrupts) = flume::unbounded();
 			connection.requests.insert(
@@ -1908,7 +1883,7 @@ enum NativeForward {
 	Backpressure,
 }
 
-fn spawn_native_invocation(
+async fn spawn_native_invocation(
 	request_id: u64,
 	invocation_id: Str,
 	name: Str,
@@ -1921,8 +1896,10 @@ fn spawn_native_invocation(
 	responses: flume::Sender<pb::ServerFrame>,
 	finished: flume::Sender<Finished>,
 ) {
+	let (started, start) = flume::bounded(1);
 	tokio::spawn(async move {
 		let result = registry.invoke(&name, params);
+		let _ = started.send(());
 		match result {
 			Ok(mut stream) => {
 				let mut deadline = Box::pin(tokio::time::sleep(deadline));
@@ -2068,6 +2045,7 @@ fn spawn_native_invocation(
 			.send_async(Finished { request_id, invocation_id: Some(invocation_id) })
 			.await;
 	});
+	let _ = start.recv_async().await;
 }
 
 async fn forward_native_event(
@@ -2345,6 +2323,7 @@ fn spawn_exec(
 				event = run.next_event() => event,
 			};
 			match event {
+				Some(ExecEvent::Started { .. }) => {},
 				Some(ExecEvent::Output(output)) => {
 					send_body(&responses, request_id, server_frame::Body::Output(output)).await;
 				},
@@ -2805,9 +2784,13 @@ pub async fn run_with_registry(args: EnvdArgs, registry: Registry) -> Result<(),
 	let socket = args
 		.socket
 		.unwrap_or_else(|| crate::project_state::environment_socket(&state_dir));
-	let docserver_socket = args
-		.docserver_socket
-		.unwrap_or_else(|| crate::project_state::document_socket(&state_dir));
+	let docserver_socket = if let Some(socket) = args.docserver_socket {
+		socket
+	} else {
+		let socket = crate::project_state::document_socket(&state_dir);
+		ensure_document_socket_free(&socket).await?;
+		socket
+	};
 	let mut worker_config = ToolWorkerConfig::current()?;
 	if args.py_eval {
 		worker_config
@@ -2992,6 +2975,20 @@ async fn connect_or_start_docserver(
 	}
 }
 
+/// Refuses standalone-daemon startup while another process serves the project
+/// document authority.
+///
+/// A daemon must own its document authority: joining a foreign authority as a
+/// client would chain daemon lifetimes across builds, keeping a draining
+/// generation alive forever through the successor's own connection.
+#[cfg(unix)]
+async fn ensure_document_socket_free(socket: &Path) -> Result<(), EnvdError> {
+	match tokio::net::UnixStream::connect(socket).await {
+		Ok(_) => Err(EnvdError::DocumentAuthorityHeld),
+		Err(_) => Ok(()),
+	}
+}
+
 #[cfg(unix)]
 fn ensure_directory(path: &Path) -> io::Result<()> {
 	std::fs::create_dir_all(path)
@@ -3000,6 +2997,35 @@ fn ensure_directory(path: &Path) -> io::Result<()> {
 mod tests {
 	use super::*;
 
+	#[tokio::test]
+	async fn standalone_daemon_refuses_a_served_document_socket() {
+		let scratch = tempfile::tempdir().expect("scratch socket directory");
+		let socket = scratch.path().join("doc.sock");
+
+		assert!(ensure_document_socket_free(&socket).await.is_ok(), "absent socket must be free");
+
+		let listener = tokio::net::UnixListener::bind(&socket).expect("bind document socket");
+		assert!(
+			matches!(
+				ensure_document_socket_free(&socket).await,
+				Err(EnvdError::DocumentAuthorityHeld)
+			),
+			"live authority must refuse a second daemon"
+		);
+
+		// A stale socket file without a listener no longer refuses startup.
+		drop(listener);
+		tokio::time::timeout(Duration::from_secs(1), async {
+			loop {
+				if ensure_document_socket_free(&socket).await.is_ok() {
+					break;
+				}
+				tokio::time::sleep(Duration::from_millis(1)).await;
+			}
+		})
+		.await
+		.expect("stale socket file did not become free");
+	}
 	#[tokio::test(start_paused = true)]
 	async fn idle_wait_requires_one_continuous_quiet_window() {
 		let (env_tx, env_rx) = tokio::sync::watch::channel(1);

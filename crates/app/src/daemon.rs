@@ -14,12 +14,14 @@ use omp_llm_inference::{
 		AccountPool, AccountStateStore, AccountStateStoreError, RefreshCoordinator, RefreshPolicy,
 	},
 	auth::{
-		AuthLoginEngine, AuthManager, AuthManagerBuildError, CredentialAcquisitionLoginEngine,
+		AlibabaTokenPlanLoginEngine, AlibabaTokenPlanShaper, AuthLoginEngine, AuthManager,
+		AuthManagerBuildError, CredentialAcquisitionLoginEngine,
 		CredentialAcquisitionLoginEngineError, CredentialBroker, CredentialBrokerEngines,
-		CredentialStore, KeyError, KeySource, OAuthCustomDispatcher, OAuthLoginEngine,
-		OAuthLoginEngineError, OsCredentialKeySource, SecretLoginEngine, SecretLoginEngineError,
-		StoreError, StoredCredentialSource, StoredOAuthRefreshEngine, SystemOAuthClock,
-		SystemOAuthHttpClient, UnavailableKeySource,
+		CredentialShaperRegistry, CredentialStore, GithubCopilotShaper, KeyError, KeySource,
+		OAuthCustomDispatcher, OAuthLoginEngine, OAuthLoginEngineError, OsCredentialKeySource,
+		ProviderShaper, SecretLoginEngine, SecretLoginEngineError, StoreError,
+		StoredCredentialSource, StoredOAuthRefreshEngine, SystemOAuthClock, SystemOAuthHttpClient,
+		UnavailableKeySource,
 	},
 	call::AuthMethod,
 	codec::google_cca::{
@@ -30,6 +32,16 @@ use omp_llm_inference::{
 		admission::AdmissionController,
 		observe::{ExecutionFinished, ExecutionStarted, Observer},
 		stack::BuiltinConfig,
+	},
+	operation::usage::{
+		ConsoleUsageFetcher, ConsoleUsageManager, UsageFetcherRegistry,
+		alibaba_token_plan::AlibabaTokenPlanUsageFetcher, claude::ClaudeUsageFetcher,
+		cursor::CursorUsageFetcher, gemini::GeminiUsageFetcher,
+		github_copilot::GithubCopilotUsageFetcher, google_antigravity::GoogleAntigravityUsageFetcher,
+		kimi::KimiUsageFetcher, minimax_code::MiniMaxCodeUsageFetcher, ollama::OllamaUsageFetcher,
+		openai_codex::OpenAiCodexUsageFetcher, opencode_go::OpenCodeGoUsageFetcher,
+		synthetic::SyntheticUsageFetcher, umans::UmansUsageFetcher, xai_oauth::XaiOauthUsageFetcher,
+		zai::ZaiUsageFetcher,
 	},
 	provider::builtin::{
 		AuthApplicationConfig, GoogleCcaConfig, ProductionDependencies, discover_antigravity_version,
@@ -161,6 +173,9 @@ pub enum DaemonError {
 	/// An OAuth login engine was configured with an unsupported method.
 	#[error(transparent)]
 	OAuthLogin(#[from] OAuthLoginEngineError),
+	/// A built-in custom OAuth exchange handler could not be registered.
+	#[error(transparent)]
+	OAuthCustom(#[from] omp_llm_inference::auth::oauth::OAuthCustomDispatchError),
 	/// Refresh coordination policy was invalid.
 	#[error(transparent)]
 	RefreshPolicy(#[from] omp_llm_inference::account::RefreshPolicyError),
@@ -290,10 +305,18 @@ async fn production_assembly(
 	// bounded manifest probe must settle before `GoogleCcaConfig` is built.
 	let antigravity_version = antigravity_version_task(data_dir, oauth_http.clone());
 	let oauth_clock = Arc::new(SystemOAuthClock);
-	let oauth_custom = Arc::new(OAuthCustomDispatcher::new());
+	let oauth_custom =
+		Arc::new(OAuthCustomDispatcher::builtin(oauth_http.clone(), oauth_clock.clone())?);
 	let refresh_coordinator =
 		Arc::new(RefreshCoordinator::new("omp-auth-refresh", RefreshPolicy::default())?);
 	let login_engines: Vec<Arc<dyn AuthLoginEngine>> = vec![
+		// Provider-scoped engines must precede generic engines for the same method.
+		Arc::new(AlibabaTokenPlanLoginEngine::new(
+			catalog.clone(),
+			credential_store.clone(),
+			accounts.clone(),
+			oauth_http.clone(),
+		)),
 		Arc::new(SecretLoginEngine::new(
 			AuthMethod::ApiKey,
 			Str::from("api-key"),
@@ -338,15 +361,16 @@ async fn production_assembly(
 			accounts.clone(),
 			oauth_http.clone(),
 			oauth_clock.clone(),
-			oauth_custom,
+			oauth_custom.clone(),
 		)?),
 	];
 	let refresh = Arc::new(StoredOAuthRefreshEngine::new(
 		catalog.clone(),
 		credential_store.clone(),
 		accounts.clone(),
-		oauth_http,
+		oauth_http.clone(),
 		oauth_clock,
+		oauth_custom,
 		refresh_coordinator,
 	));
 	let auth_manager = AuthManager::new(
@@ -357,6 +381,39 @@ async fn production_assembly(
 		login_engines,
 		refresh,
 	)?;
+	let usage_fetchers = UsageFetcherRegistry::new([
+		Arc::new(AlibabaTokenPlanUsageFetcher::new(oauth_http.clone()))
+			as Arc<dyn ConsoleUsageFetcher>,
+		Arc::new(ClaudeUsageFetcher::new(oauth_http.clone())),
+		Arc::new(OpenAiCodexUsageFetcher::new(oauth_http.clone())),
+		Arc::new(GithubCopilotUsageFetcher::new(oauth_http.clone())),
+		Arc::new(CursorUsageFetcher::new(oauth_http.clone())),
+		Arc::new(XaiOauthUsageFetcher::new(oauth_http.clone())),
+		Arc::new(GoogleAntigravityUsageFetcher::new(oauth_http.clone())),
+		Arc::new(GeminiUsageFetcher::new(oauth_http.clone())),
+		Arc::new(KimiUsageFetcher::new(oauth_http.clone())),
+		Arc::new(ZaiUsageFetcher::new(oauth_http.clone())),
+		Arc::new(MiniMaxCodeUsageFetcher::new(oauth_http.clone())),
+		Arc::new(MiniMaxCodeUsageFetcher::china(oauth_http.clone())),
+		Arc::new(UmansUsageFetcher::new(oauth_http.clone())),
+		Arc::new(SyntheticUsageFetcher::new(oauth_http.clone())),
+		Arc::new(OpenCodeGoUsageFetcher::new(oauth_http.clone())),
+		Arc::new(OllamaUsageFetcher::new()),
+		Arc::new(OllamaUsageFetcher::cloud()),
+	]);
+	let usage_manager = ConsoleUsageManager::new(
+		catalog.clone(),
+		credentials.clone(),
+		accounts.clone(),
+		usage_fetchers,
+	);
+	let mut credential_shapers = CredentialShaperRegistry::new();
+	credential_shapers
+		.register(ProviderShaper::AlibabaTokenPlan(AlibabaTokenPlanShaper::new()))
+		.expect("Alibaba Token Plan credential shaper registered once");
+	credential_shapers
+		.register(ProviderShaper::GithubCopilot(GithubCopilotShaper::new(oauth_http)))
+		.expect("GitHub Copilot credential shaper registered once");
 	let sessions = ConversationSessionPlanner::open(&database, catalog.clone())?;
 	let auth_application = AuthApplicationConfig { signing_regions: Arc::new(BTreeMap::new()) };
 	let antigravity_fingerprint = AntigravityFingerprint {
@@ -386,7 +443,9 @@ async fn production_assembly(
 		AdmissionController::new(32, 128),
 		Duration::from_secs(60),
 		Arc::new(BTreeMap::new()),
+		Arc::new(credential_shapers),
 	);
+	let dependencies = dependencies.with_usage_manager(usage_manager);
 	#[cfg(feature = "local-applefm")]
 	let dependencies = {
 		use omp_llm_inference::local::applefm::{AppleFmCodec, AppleFmTransport, FRAMEWORK_TIMEOUT};

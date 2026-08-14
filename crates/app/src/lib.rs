@@ -21,6 +21,7 @@ pub mod envd;
 pub mod project_state;
 pub mod rpc_adapter;
 pub mod settings;
+pub mod wizard;
 
 pub use miette::{IntoDiagnostic, Report, Result};
 

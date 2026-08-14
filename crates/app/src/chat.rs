@@ -155,13 +155,13 @@ struct ChatScope<'a> {
 	sessions_dir: &'a Path,
 	registry:     Arc<Registry>,
 }
-struct ChatAuthWorker {
+pub(crate) struct ChatAuthWorker {
 	ui:   ChatAuth,
 	task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl ChatAuthWorker {
-	fn start(registry: InferenceRegistry) -> Self {
+	pub(crate) fn start(registry: InferenceRegistry) -> Self {
 		let (request_tx, request_rx) = flume::bounded(1);
 		let (answer_tx, answer_rx) = flume::bounded(1);
 		let (event_tx, event_rx) = flume::unbounded();
@@ -182,7 +182,12 @@ impl ChatAuthWorker {
 		Self { ui: ChatAuth::new(request_tx, answer_tx, event_rx, active), task: Some(task) }
 	}
 
-	async fn shutdown(mut self) {
+	/// Returns the UI-facing handle for the worker.
+	pub(crate) const fn ui(&self) -> &ChatAuth {
+		&self.ui
+	}
+
+	pub(crate) async fn shutdown(mut self) {
 		if let Some(task) = self.task.take() {
 			task.abort();
 			let _ = task.await;
@@ -221,6 +226,15 @@ fn auth_error_message(error: &omp_llm_inference::Error) -> Str {
 		(None, ..) => Str::from(error.to_string()),
 	}
 }
+fn chat_login_failure(
+	provider: &omp_llm_catalog::ProviderId,
+	error: &omp_llm_inference::Error,
+) -> Str {
+	fmts!(
+		"Authentication failed for provider `{provider}`. Use `/login {provider}` to try again. {}",
+		auth_error_message(error)
+	)
+}
 
 async fn run_chat_login(
 	registry: &InferenceRegistry,
@@ -241,12 +255,15 @@ async fn run_chat_login(
 	let answer = client
 		.execute(AuthRequest::Login(LoginRequest { provider: provider.clone(), method: None }))
 		.await
-		.map_err(|error| auth_error_message(&error))?;
+		.map_err(|error| chat_login_failure(&provider, &error))?;
 	let AuthAnswer::Session(session) = answer else {
-		return Err(fmts!("provider `{provider}` did not start an interactive login"));
+		return Err(fmts!(
+			"Provider `{provider}` did not start an interactive login. Use `/login {provider}` to \
+			 try again."
+		));
 	};
 	while let Ok(event) = session.events.recv_async().await {
-		let event = event.map_err(|error| auth_error_message(&error))?;
+		let event = event.map_err(|error| chat_login_failure(&provider, &error))?;
 		match event {
 			AuthEvent::OpenUrl(url) => {
 				events
@@ -266,6 +283,8 @@ async fn run_chat_login(
 					InferenceAuthPromptKind::ApiKey => AuthPromptKind::ApiKey,
 					InferenceAuthPromptKind::AuthorizationCode => AuthPromptKind::AuthorizationCode,
 					InferenceAuthPromptKind::SessionToken => AuthPromptKind::SessionToken,
+					InferenceAuthPromptKind::PlainText => AuthPromptKind::PlainText,
+					InferenceAuthPromptKind::OptionalSecret => AuthPromptKind::OptionalSecret,
 					InferenceAuthPromptKind::Confirmation => AuthPromptKind::Confirmation,
 				};
 				events
@@ -279,11 +298,16 @@ async fn run_chat_login(
 					.responses
 					.send_async(AuthResponse { session: session.id.clone(), input })
 					.await
-					.map_err(|_| Str::new_static("authentication provider stopped accepting input"))?;
+					.map_err(|_| {
+						fmts!(
+							"Authentication provider `{provider}` stopped accepting input. Use `/login \
+							 {provider}` to try again."
+						)
+					})?;
 			},
 			AuthEvent::Waiting => {
 				events
-					.send(ChatAuthEvent::Notice(Str::new_static("Waiting for provider authorization…")))
+					.send(ChatAuthEvent::Notice(fmts!("Waiting for `{provider}` authorization…")))
 					.map_err(|_| Str::new_static("chat authentication view closed"))?;
 			},
 			AuthEvent::Complete(account) => {
@@ -291,7 +315,10 @@ async fn run_chat_login(
 			},
 		}
 	}
-	Err(fmts!("authentication for `{provider}` ended without completing"))
+	Err(fmts!(
+		"Authentication for provider `{provider}` ended without completing. Use `/login {provider}` \
+		 to try again."
+	))
 }
 
 #[derive(Clone)]
@@ -537,15 +564,17 @@ pub async fn run(args: ChatArgs) -> miette::Result<()> {
 	use miette::{Context as _, IntoDiagnostic as _};
 	let root = canonical_project(&args.project).into_diagnostic()?;
 	let data_dir = crate::cli::data_dir(None)?;
-	let model = args
-		.model
-		.clone()
-		.or_else(|| {
-			crate::settings::Settings::load(&data_dir)
-				.default_model
-				.map(Str::from)
-		})
-		.ok_or_else(|| miette::miette!("no model configured — run `omp` again to finish setup"))?;
+	let catalog = omp_llm_catalog::snapshot::Catalog::try_embedded().into_diagnostic()?;
+	let model = match args.model.clone().or_else(|| {
+		crate::settings::Settings::load(&data_dir)
+			.default_model
+			.map(Str::from)
+	}) {
+		Some(model) => model,
+		None => crate::wizard::run(&data_dir, catalog)
+			.await?
+			.ok_or_else(|| miette::miette!("no model configured — run `omp` again to finish setup"))?,
+	};
 	let state_dir = crate::project_state::directory(&data_dir, &root).into_diagnostic()?;
 	let sessions_dir = state_dir.join("sessions");
 	ensure_state_directory(&state_dir).into_diagnostic()?;
@@ -566,7 +595,6 @@ pub async fn run(args: ChatArgs) -> miette::Result<()> {
 	let eval_control = environment.eval_control();
 
 	let registry = environment.registry();
-	let catalog = omp_llm_catalog::snapshot::Catalog::try_embedded().into_diagnostic()?;
 	let session = open_session(&root, &sessions_dir, args.resume.as_ref(), registry.as_ref())
 		.into_diagnostic()?;
 	let snapshot =
@@ -1108,6 +1136,31 @@ mod tests {
 		}
 		drop(writer);
 		id
+	}
+
+	#[test]
+	fn chat_login_failure_names_provider_command_and_sanitized_detail() {
+		use omp_llm_inference::{
+			error::{Error, ErrorKind, ErrorPhase, RetryAction},
+			receipt::ExecutionReceipt,
+		};
+
+		let provider = omp_llm_catalog::ProviderId::from("kimi-code");
+		let error = Error::new(
+			ErrorKind::Authentication,
+			ErrorPhase::Authentication,
+			RetryAction::Never,
+			ExecutionReceipt::default(),
+		)
+		.status(Some(401))
+		.code(Str::from("invalid_grant"))
+		.detail(ErrorDetail::provider(Str::from("device authorization expired")));
+		let message = chat_login_failure(&provider, &error);
+		assert!(message.contains("provider `kimi-code`"));
+		assert!(message.contains("`/login kimi-code`"));
+		assert!(message.contains("device authorization expired"));
+		assert!(message.contains("401"));
+		assert!(message.contains("invalid_grant"));
 	}
 
 	#[test]

@@ -4,16 +4,73 @@ use omp_tui::Command;
 
 use super::now_ms;
 
+/// Metadata shared by slash-command completion and `/help`.
+struct CommandSpec {
+	name:        &'static str,
+	description: &'static str,
+	usage:       &'static str,
+}
+
+const COMMANDS: &[CommandSpec] = &[
+	CommandSpec {
+		name:        "help",
+		description: "Show commands and keyboard controls",
+		usage:       "",
+	},
+	CommandSpec {
+		name:        "login",
+		description: "Authenticate a provider",
+		usage:       "[provider]",
+	},
+	CommandSpec {
+		name:        "model",
+		description: "Change the selected model",
+		usage:       "<model>",
+	},
+	CommandSpec { name: "models", description: "Browse available models", usage: "" },
+	CommandSpec {
+		name:        "resume",
+		description: "Open another project session",
+		usage:       "",
+	},
+	CommandSpec { name: "quit", description: "Exit the application", usage: "" },
+];
+
 /// Slash commands offered by the chat composer's completion palette.
 pub(crate) fn commands() -> Vec<Command> {
-	vec![
-		Command::new("help", "Show commands and keyboard controls", &[]),
-		Command::new("login", "Authenticate a provider", &[]).with_hint("[provider]"),
-		Command::new("model", "Change the selected model", &[]).with_hint("<model>"),
-		Command::new("models", "Browse available models", &[]),
-		Command::new("resume", "Open another project session", &[]),
-		Command::new("quit", "Exit the application", &[]),
-	]
+	COMMANDS
+		.iter()
+		.map(|spec| {
+			let command = Command::new(spec.name, spec.description, &[]);
+			if spec.usage.is_empty() {
+				command
+			} else {
+				command.with_hint(spec.usage)
+			}
+		})
+		.collect()
+}
+
+/// Renders the discoverable slash-command reference from the completion
+/// vocabulary.
+pub(crate) fn help_text() -> String {
+	let mut help = String::from("**Commands**\n");
+	for spec in COMMANDS {
+		help.push_str("- `/");
+		help.push_str(spec.name);
+		if !spec.usage.is_empty() {
+			help.push(' ');
+			help.push_str(spec.usage);
+		}
+		help.push_str("` — ");
+		help.push_str(spec.description);
+		help.push('\n');
+	}
+	help.push_str(
+		"\n**Keys**\nesc interrupt · esc esc rewind · enter enter interrupt+send · alt+enter \
+		 follow-up",
+	);
+	help
 }
 
 /// Actions parsed from user input in the chat shell.
@@ -60,7 +117,10 @@ pub fn parse_input(text: &str) -> Result<ChatCommand, InputError> {
 		return Ok(ChatCommand::Nothing);
 	}
 
-	if text.starts_with('/') {
+	// A command token never contains a second `/`: an expanded attachment
+	// payload like `/tmp/pic.png describe this` is a message, not a command.
+	let first = text.trim().split_whitespace().next().unwrap_or_default();
+	if text.starts_with('/') && !first[1..].contains('/') {
 		let text = text.trim();
 		if let Some(rest) = text.strip_prefix("/model ") {
 			let model = rest.trim();
@@ -92,15 +152,20 @@ pub fn parse_input(text: &str) -> Result<ChatCommand, InputError> {
 		return Err(InputError::UnknownCommand(Str::from(cmd)));
 	}
 
-	Ok(ChatCommand::Submit(Box::new(Item {
+	Ok(ChatCommand::Submit(Box::new(user_message(text))))
+}
+
+/// Builds the canonical user-message item used by submissions and steering.
+pub(super) fn user_message(text: impl Into<String>) -> Item {
+	Item {
 		seq:           0,
 		created_at_ms: now_ms(),
 		kind:          Some(item::Kind::Message(Message {
 			role:  i32::from(Role::User),
-			parts: vec![Part { kind: Some(part::Kind::Text(text.to_owned())) }],
+			parts: vec![Part { kind: Some(part::Kind::Text(text.into())) }],
 		})),
 		props:         None,
-	})))
+	}
 }
 
 #[cfg(test)]
@@ -124,10 +189,39 @@ mod tests {
 	}
 
 	#[test]
+	fn help_uses_the_completion_vocabulary_and_usages() {
+		let help = help_text();
+		for spec in COMMANDS {
+			let usage = if spec.usage.is_empty() {
+				format!("/{}", spec.name)
+			} else {
+				format!("/{} {}", spec.name, spec.usage)
+			};
+			assert!(help.contains(&usage), "help omitted {usage}");
+			assert!(help.contains(spec.description), "help omitted description for {}", spec.name);
+		}
+	}
+
+	#[test]
 	fn test_invalid_slash_commands() {
 		assert_eq!(
 			parse_input("/unknown arg"),
 			Err(InputError::UnknownCommand(Str::from("/unknown")))
+		);
+	}
+
+	#[test]
+	fn path_payloads_submit_as_plain_messages() {
+		let parsed = parse_input("/tmp/pic.png describe this image");
+		let Ok(ChatCommand::Submit(item)) = parsed else {
+			panic!("expanded attachment payload parsed as {parsed:?}");
+		};
+		let Some(item::Kind::Message(message)) = item.kind else {
+			panic!("submit item lost its message");
+		};
+		assert_eq!(
+			message.parts[0].kind,
+			Some(part::Kind::Text("/tmp/pic.png describe this image".to_owned()))
 		);
 	}
 

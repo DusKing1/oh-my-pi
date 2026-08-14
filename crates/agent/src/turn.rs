@@ -155,7 +155,13 @@ impl fmt::Display for Error {
 				}
 				Ok(())
 			},
-			Self::Rpc(status) => write!(formatter, "turn RPC failed ({:?})", status.code()),
+			Self::Rpc(status) => {
+				write!(formatter, "turn RPC failed ({:?})", status.code())?;
+				if !status.message().is_empty() {
+					write!(formatter, ": {}", status.message())?;
+				}
+				Ok(())
+			},
 			Self::Connect(_) => formatter.write_str("turn RPC connection failed"),
 			Self::Protocol(message) => write!(formatter, "turn protocol error: {message}"),
 			Self::Invalid(message) => write!(formatter, "invalid turn: {message}"),

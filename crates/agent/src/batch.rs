@@ -3,7 +3,7 @@
 use std::{fmt, sync::Arc, time::Duration};
 
 use bytes::Bytes;
-use futures::{StreamExt, stream::FuturesUnordered};
+use futures::future::join_all;
 use omp_core::{IntoStr, Str, StrMut};
 use omp_env::{ClientError, EnvClient, Invocation, InvocationEvent};
 use omp_proto::{
@@ -107,6 +107,10 @@ enum PumpTerminal {
 enum PumpOutput {
 	Update(Bytes),
 	Terminal(PumpTerminal),
+}
+struct InterruptRequest {
+	reason:       Str,
+	acknowledged: flume::Sender<()>,
 }
 
 struct InvocationPump {
@@ -541,33 +545,42 @@ impl ToolBatch {
 		self,
 		registry: &Registry,
 		caps: &PromptCaps,
-		interrupt: Option<watch::Receiver<Option<Str>>>,
+		mut interrupt: Option<watch::Receiver<Option<Str>>>,
 		grace: Duration,
 		updates: Option<flume::Sender<BatchUpdate>>,
 	) -> Vec<BatchResult> {
-		let count = self.calls.len();
-		let mut running = FuturesUnordered::new();
-		for (index, call) in self.calls.into_iter().enumerate() {
-			running.push(run_call(
-				index,
-				call,
-				registry,
-				caps,
-				interrupt.clone(),
-				grace,
-				updates.clone(),
-			));
+		if let Some(reason) = interrupt
+			.as_mut()
+			.and_then(|receiver| receiver.borrow_and_update().clone())
+		{
+			let reason = format!("interrupted before execution: {reason}").to_str();
+			return self
+				.calls
+				.iter()
+				.map(|call| lower_abort_total(call, Abort::Skipped { reason: reason.clone() }))
+				.collect();
 		}
 
-		let mut ordered = Vec::with_capacity(count);
-		ordered.resize_with(count, || None);
-		while let Some((index, result)) = running.next().await {
-			ordered[index] = Some(result);
+		let mut interrupt_senders = Vec::with_capacity(self.calls.len());
+		let mut calls = Vec::with_capacity(self.calls.len());
+		for (index, call) in self.calls.into_iter().enumerate() {
+			let (interrupt_tx, interrupt_rx) = flume::bounded(1);
+			interrupt_senders.push(interrupt_tx);
+			calls.push(run_call(index, call, registry, caps, interrupt_rx, grace, updates.clone()));
 		}
-		ordered
-			.into_iter()
-			.map(|result| result.expect("every batch call produced exactly one completion"))
-			.collect()
+
+		let drive = join_all(calls);
+		let results = if let Some(mut interrupt) = interrupt {
+			let coordinate = coordinate_interrupts(&mut interrupt, &interrupt_senders, grace);
+			tokio::pin!(drive, coordinate);
+			tokio::select! {
+				results = &mut drive => results,
+				() = &mut coordinate => drive.await,
+			}
+		} else {
+			drive.await
+		};
+		results.into_iter().map(|(_, result)| result).collect()
 	}
 }
 
@@ -576,17 +589,10 @@ async fn run_call(
 	call: CommittedCall,
 	registry: &Registry,
 	caps: &PromptCaps,
-	mut interrupt: Option<watch::Receiver<Option<Str>>>,
+	interrupt: flume::Receiver<InterruptRequest>,
 	grace: Duration,
 	updates: Option<flume::Sender<BatchUpdate>>,
 ) -> (usize, BatchResult) {
-	if let Some(reason) = interrupt
-		.as_mut()
-		.and_then(|receiver| receiver.borrow_and_update().clone())
-	{
-		let reason = format!("interrupted before execution: {reason}").to_str();
-		return (index, lower_abort_total(&call, Abort::Skipped { reason }));
-	}
 	let receipt = match call.pump.begin_commit(call.raw_args.clone()) {
 		Ok(receipt) => receipt,
 		Err(error) => {
@@ -595,43 +601,49 @@ async fn run_call(
 		},
 	};
 	let mut pending_interrupt = None;
-	let commit = if let Some(receiver) = interrupt.as_mut() {
-		tokio::select! {
-			result = receipt.wait() => result,
-			reason = wait_for_interrupt(receiver) => {
-				match call.pump.begin_interrupt(reason) {
-					Ok(receipt) => pending_interrupt = Some(receipt),
-					Err(error) => {
-						let reason = format!("failed to interrupt pending ArgsCommitted: {error}").to_str();
-						return (index, lower_abort_total(&call, Abort::EffectsUnknown { reason }));
-					},
-				}
-				receipt.wait().await
-			},
-		}
-	} else {
-		receipt.wait().await
+	let mut terminal_during_commit = None;
+	let mut commit_failure = None;
+	let commit = tokio::select! {
+		biased;
+		request = wait_for_ordered_interrupt(&interrupt) => {
+			match call.pump.begin_interrupt(request.reason) {
+				Ok(interrupt_receipt) => {
+					pending_interrupt = Some((interrupt_receipt, request.acknowledged));
+					receipt.wait().await
+				},
+				Err(error) => {
+					drop(request.acknowledged);
+					commit_failure =
+						Some(format!("failed to interrupt pending ArgsCommitted: {error}").to_str());
+					terminal_during_commit = Some(drain_pump(&call, updates.as_ref()).await);
+					Ok(CommitState::DeliveryIndeterminate)
+				},
+			}
+		},
+		result = receipt.wait() => result,
 	};
 	let commit_indeterminate = match commit {
 		Ok(CommitState::Sent) => false,
 		Ok(CommitState::DeliveryIndeterminate) => true,
 		Err(error) => {
-			let reason = format!("ArgsCommitted delivery failed: {error}").to_str();
-			return (index, lower_abort_total(&call, Abort::EffectsUnknown { reason }));
+			commit_failure = Some(format!("ArgsCommitted delivery failed: {error}").to_str());
+			terminal_during_commit = Some(drain_pump(&call, updates.as_ref()).await);
+			true
 		},
 	};
 
-	let terminal = if let Some(receipt) = pending_interrupt {
-		finish_interrupt_with_grace(&call, updates.as_ref(), receipt, grace).await
-	} else if let Some(receiver) = interrupt.as_mut() {
-		tokio::select! {
-			terminal = drain_pump(&call, updates.as_ref()) => terminal,
-			reason = wait_for_interrupt(receiver) => {
-				interrupt_pump_with_grace(&call, updates.as_ref(), reason, grace).await
-			},
-		}
+	let terminal = if let Some(terminal) = terminal_during_commit {
+		terminal
+	} else if let Some((receipt, acknowledged)) = pending_interrupt {
+		finish_interrupt_with_grace(&call, updates.as_ref(), receipt, acknowledged, grace).await
 	} else {
-		drain_pump(&call, updates.as_ref()).await
+		tokio::select! {
+			biased;
+			request = wait_for_ordered_interrupt(&interrupt) => {
+				interrupt_pump_with_grace(&call, updates.as_ref(), request, grace).await
+			},
+			terminal = drain_pump(&call, updates.as_ref()) => terminal,
+		}
 	};
 	let result = match terminal {
 		PumpTerminal::Verdict(verdict) => lower_verdict(&call, registry, *caps, verdict)
@@ -643,14 +655,19 @@ async fn run_call(
 		PumpTerminal::StreamError(error) => lower_abort_total(&call, Abort::EffectsUnknown {
 			reason: format!("environment invocation stream lost: {}", error.message).to_str(),
 		}),
-		PumpTerminal::Closed if commit_indeterminate => {
-			lower_abort_total(&call, Abort::EffectsUnknown {
-				reason: Str::new_static(
-					"ArgsCommitted delivery became indeterminate during interruption",
-				),
-			})
+		PumpTerminal::Closed => {
+			if let Some(reason) = commit_failure {
+				lower_abort_total(&call, Abort::EffectsUnknown { reason })
+			} else if commit_indeterminate {
+				lower_abort_total(&call, Abort::EffectsUnknown {
+					reason: Str::new_static(
+						"ArgsCommitted delivery became indeterminate during interruption",
+					),
+				})
+			} else {
+				lower_abort_total(&call, Abort::MissingOutcome)
+			}
 		},
-		PumpTerminal::Closed => lower_abort_total(&call, Abort::MissingOutcome),
 		PumpTerminal::CancelUnobserved => lower_abort_total(&call, Abort::EffectsUnknown {
 			reason: Str::new_static(
 				"environment owner did not report terminal truth after cancellation",
@@ -686,23 +703,27 @@ async fn drain_pump(
 async fn interrupt_pump_with_grace(
 	call: &CommittedCall,
 	updates: Option<&flume::Sender<BatchUpdate>>,
-	reason: Str,
+	request: InterruptRequest,
 	grace: Duration,
 ) -> PumpTerminal {
-	let Ok(receipt) = call.pump.begin_interrupt(reason) else {
+	let Ok(receipt) = call.pump.begin_interrupt(request.reason) else {
+		drop(request.acknowledged);
 		return force_cancel_with_grace(call, updates, grace).await;
 	};
-	finish_interrupt_with_grace(call, updates, receipt, grace).await
+	finish_interrupt_with_grace(call, updates, receipt, request.acknowledged, grace).await
 }
 
 async fn finish_interrupt_with_grace(
 	call: &CommittedCall,
 	updates: Option<&flume::Sender<BatchUpdate>>,
 	receipt: CommandReceipt,
+	acknowledged: flume::Sender<()>,
 	grace: Duration,
 ) -> PumpTerminal {
 	let cooperative = async {
-		receipt.wait().await?;
+		let result = receipt.wait().await;
+		let _ = acknowledged.send(());
+		result?;
 		Ok::<_, BatchError>(drain_pump(call, updates).await)
 	};
 	match tokio::time::timeout(grace, cooperative).await {
@@ -727,6 +748,38 @@ async fn force_cancel_with_grace(
 		Ok(PumpTerminal::Closed | PumpTerminal::CancelUnobserved) | Err(_) => {
 			PumpTerminal::CancelUnobserved
 		},
+	}
+}
+
+async fn coordinate_interrupts(
+	source: &mut watch::Receiver<Option<Str>>,
+	targets: &[flume::Sender<InterruptRequest>],
+	grace: Duration,
+) {
+	let reason = wait_for_interrupt(source).await;
+	for target in targets.iter().rev() {
+		let (acknowledged, acknowledgement) = flume::bounded(1);
+		if target
+			.send_async(InterruptRequest { reason: reason.clone(), acknowledged })
+			.await
+			.is_err()
+		{
+			continue;
+		}
+		if grace.is_zero() {
+			tokio::task::yield_now().await;
+		} else {
+			let _ = tokio::time::timeout(grace, acknowledgement.recv_async()).await;
+		}
+	}
+}
+
+async fn wait_for_ordered_interrupt(
+	receiver: &flume::Receiver<InterruptRequest>,
+) -> InterruptRequest {
+	match receiver.recv_async().await {
+		Ok(request) => request,
+		Err(_) => std::future::pending().await,
 	}
 }
 
@@ -1256,6 +1309,37 @@ mod tests {
 			.expect("batch task");
 		drop(blocker);
 		results
+	}
+
+	#[tokio::test]
+	async fn interrupt_coordinator_orders_queued_calls_before_active_call() {
+		let (source_tx, mut source_rx) = watch::channel::<Option<Str>>(None);
+		let mut targets = Vec::new();
+		let mut receivers = Vec::new();
+		for _ in 0..3 {
+			let (target, receiver) = flume::bounded(1);
+			targets.push(target);
+			receivers.push(receiver);
+		}
+		let coordinator = tokio::spawn(async move {
+			coordinate_interrupts(&mut source_rx, &targets, Duration::from_secs(1)).await;
+		});
+		source_tx
+			.send(Some(Str::new_static("stop every call")))
+			.expect("interrupt coordinator");
+
+		let third = receivers[2].recv_async().await.expect("third interrupt");
+		assert!(receivers[1].try_recv().is_err());
+		assert!(receivers[0].try_recv().is_err());
+		third.acknowledged.send(()).expect("acknowledge third");
+
+		let second = receivers[1].recv_async().await.expect("second interrupt");
+		assert!(receivers[0].try_recv().is_err());
+		second.acknowledged.send(()).expect("acknowledge second");
+
+		let first = receivers[0].recv_async().await.expect("first interrupt");
+		first.acknowledged.send(()).expect("acknowledge first");
+		coordinator.await.expect("coordinator task");
 	}
 
 	#[tokio::test(flavor = "current_thread")]

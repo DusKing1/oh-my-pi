@@ -160,10 +160,22 @@ fn parse_diff_lines(diff: &mut DiffView, preview: &str) {
 	}
 }
 fn edit_input_path(input: &str) -> Option<&str> {
-	let header = input.lines().next()?.trim();
-	let body = header.strip_prefix('[')?.strip_suffix(']')?;
-	let (path, tag) = body.rsplit_once('#')?;
-	(!path.is_empty() && !tag.is_empty()).then_some(path)
+	for line in input.lines() {
+		let header = line.trim();
+		let Some(body) = header
+			.strip_prefix('[')
+			.and_then(|value| value.strip_suffix(']'))
+		else {
+			continue;
+		};
+		let Some((path, tag)) = body.rsplit_once('#') else {
+			continue;
+		};
+		if !path.is_empty() && !tag.is_empty() {
+			return Some(path);
+		}
+	}
+	None
 }
 fn append_edit_section(diff: &mut DiffView, section: &omp_tools::edit::SectionPayload) {
 	diff.push(DiffKind::Header, section.header.as_deref().unwrap_or(section.path.as_str()));
@@ -229,12 +241,18 @@ pub fn render_edit(ui: &mut Ui, fold: &ToolFold) -> bool {
 		}
 
 		if fold.state == ToolState::Streaming {
-			if let Some(preview) = fold
+			let preview = fold
 				.updates
 				.last()
 				.and_then(|update| update.get("preview"))
 				.and_then(|value| value.as_str())
-			{
+				.or_else(|| {
+					fold
+						.parsed_args
+						.get("input")
+						.and_then(|value| value.as_str())
+				});
+			if let Some(preview) = preview {
 				let mut diff = DiffView::new();
 				parse_diff_lines(&mut diff, preview);
 				c.replace_body(diff);
@@ -296,6 +314,7 @@ pub fn render_shell(ui: &mut Ui, fold: &ToolFold) -> bool {
 		let tail_text =
 			String::from_units(xutf::transcode::<Utf8, Utf8>(&tail_bytes)).into_ansi_stripped();
 
+		let mut rendered_fallback = false;
 		if fold.state != ToolState::Streaming
 			&& let Some(verdict) =
 				get_verdict::<omp_tools::shell::Payload, serde_json::Value>(fold.item.as_ref())
@@ -323,12 +342,17 @@ pub fn render_shell(ui: &mut Ui, fold: &ToolFold) -> bool {
 					},
 					_ => {},
 				},
-				_ => render_verdict_fallback(c, &verdict),
+				_ => {
+					render_verdict_fallback(c, &verdict);
+					rendered_fallback = true;
+				},
 			}
 		}
 
 		if tail_text.is_empty() {
-			c.replace_body(Col::new());
+			if !rendered_fallback {
+				c.replace_body(Col::new());
+			}
 		} else {
 			let lines = tail_text.lines();
 			let first_preview_line = lines.clone().count().saturating_sub(5);
@@ -978,6 +1002,24 @@ mod tests {
 		assert!(frame.contains("live-tail"));
 		assert!(frame.contains("界"));
 		assert!(!frame.contains('\u{1b}'));
+	}
+
+	#[test]
+	fn skipped_shell_retains_abort_reason() {
+		let mut ui = tool_ui();
+		let verdict: Verdict<omp_tools::shell::Payload, omp_tools::shell::Fault> =
+			Verdict::Aborted(omp_tool::Abort::Skipped {
+				reason: "interrupted before execution".into(),
+			});
+		let mut fold =
+			ToolFold::new("call".into(), "shell".into(), Rev { family: "".into(), n: 1 });
+		fold.state = ToolState::Failure;
+		fold.item = Some(result_item("shell", &verdict));
+
+		assert!(RendererRegistry::new().update(&mut ui, &fold));
+		let frame = frame_text(&ui);
+		assert!(frame.contains("skipped"));
+		assert!(frame.contains("interrupted before execution"));
 	}
 
 	#[test]

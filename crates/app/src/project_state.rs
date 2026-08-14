@@ -21,14 +21,25 @@ pub fn directory(data_dir: &Path, project_root: &Path) -> io::Result<PathBuf> {
 }
 
 /// Returns the short owner-local environment socket path for `state_dir`.
+///
+/// The path is keyed by the running executable's build identity: a rebuilt
+/// `omp` binds its own listener immediately while stale-build listeners drain
+/// and idle-exit, with no takeover protocol. The document socket stays
+/// build-stable because its authority must remain singular per project.
 #[cfg(unix)]
 pub(crate) fn environment_socket(state_dir: &Path) -> PathBuf {
-	socket_path(state_dir, "env")
+	let build = crate::build_id::current();
+	let key = if build.is_empty() {
+		"unknown"
+	} else {
+		&build[..8]
+	};
+	socket_path(state_dir, &format!("{key}-env"))
 }
 
 /// Returns the short owner-local document socket path for `state_dir`.
 #[cfg(unix)]
-pub(crate) fn document_socket(state_dir: &Path) -> PathBuf {
+pub fn document_socket(state_dir: &Path) -> PathBuf {
 	socket_path(state_dir, "doc")
 }
 

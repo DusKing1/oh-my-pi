@@ -1476,7 +1476,6 @@ fn widget_editor_delegates_power_editing_and_visual_motion_to_edit_buffer() {
 
 	editor_pane_mut(ui.root_mut())
 		.unwrap()
-		.buffer_mut()
 		.replace_external("abcdef abcdef abcdef\nx\nabcdef", true);
 	ui.handle_key(Key::Ctrl(']'));
 	ui.handle_key(Key::Char('f'));

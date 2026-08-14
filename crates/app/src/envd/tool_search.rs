@@ -10,10 +10,12 @@ use std::{
 
 use bytes::Bytes;
 use omp_core::Str;
-use omp_hashline::{RevisionToken, SnapshotStore};
+use omp_hashline::{RevisionToken, compute_snapshot_tag};
 use omp_tools::{
 	glob::{self, WalkMatch, WalkResult},
-	grep::{self, SearchMatch, SearchResult, SearchRoot, SearchRootKind, WorkspaceSearch},
+	grep::{
+		self, SearchMatch, SearchResult, SearchRoot, SearchRootKind, SearchSnapshot, WorkspaceSearch,
+	},
 	read::{ReadSources as _, archive, web},
 };
 use omp_walker::{
@@ -43,11 +45,6 @@ impl WorkspaceSearchAdapter {
 		let read_sources = ReadSourceAdapter::new(documents.clone(), host.clone());
 		Self { host, documents, read_sources }
 	}
-
-	/// Returns the document host that owns this session's shared hashline state.
-	pub(crate) const fn documents(&self) -> &DocumentHost {
-		&self.documents
-	}
 }
 
 impl WorkspaceSearch for WorkspaceSearchAdapter {
@@ -56,7 +53,6 @@ impl WorkspaceSearch for WorkspaceSearchAdapter {
 		request: grep::SearchRequest,
 	) -> impl Future<Output = Result<SearchResult, grep::Fault>> + Send + '_ {
 		let host = self.host.clone();
-		let documents = self.documents().clone();
 		let read_sources = self.read_sources.clone();
 		async move {
 			let cancel = CancellationToken::new();
@@ -67,7 +63,7 @@ impl WorkspaceSearch for WorkspaceSearchAdapter {
 			let external =
 				materialize_external_roots(&host, &read_sources, &request, deadline, &cancel).await?;
 			let operation = tokio::task::spawn_blocking(move || {
-				search_blocking(&host, &documents, request, external, deadline, &cancel)
+				search_blocking(&host, request, external, deadline, &cancel)
 			});
 			let result = operation.await.map_err(|error| grep::Fault::Workspace {
 				message: Str::from(format!("workspace search task failed: {error}")),
@@ -75,6 +71,21 @@ impl WorkspaceSearch for WorkspaceSearchAdapter {
 			drop(cancel_on_drop);
 			result
 		}
+	}
+
+	fn record_snapshots(&self, records: Vec<grep::SnapshotRecord>) -> Result<(), grep::Fault> {
+		let mut store = self.documents.snapshot_store().lock();
+		for record in records {
+			store
+				.record(
+					record.source_key,
+					RevisionToken::new(&record.revision),
+					record.bytes,
+					record.seen_lines,
+				)
+				.map_err(grep_workspace_message)?;
+		}
+		Ok(())
 	}
 
 	fn glob(
@@ -290,13 +301,11 @@ async fn materialize_url_root<C: web::types::HttpClient + Sync>(
 
 #[derive(Debug)]
 struct PendingSnapshot {
-	path:       PathBuf,
-	seen_lines: HashSet<usize>,
+	path: PathBuf,
 }
 
 fn search_blocking(
 	host: &WorkspaceHost,
-	documents: &DocumentHost,
 	request: grep::SearchRequest,
 	mut external: ExternalMaterialization,
 	deadline: Instant,
@@ -440,18 +449,9 @@ fn search_blocking(
 					};
 					let canonical = std::fs::canonicalize(&source_path).unwrap_or(source_path);
 					let source_key = Str::from(canonical.to_string_lossy().into_owned());
-					let pending = pending_snapshots
+					pending_snapshots
 						.entry(source_key.clone())
-						.or_insert_with(|| PendingSnapshot {
-							path:       canonical.clone(),
-							seen_lines: HashSet::new(),
-						});
-					retain_snapshot_lines(
-						&mut pending.seen_lines,
-						matched.line_number,
-						&context_before,
-						&context_after,
-					);
+						.or_insert_with(|| PendingSnapshot { path: canonical.clone() });
 					(source_key, workspace_relative(host.root(), &canonical)?, *root_index)
 				},
 				GrepTarget::Memory(memory) => {
@@ -471,21 +471,25 @@ fn search_blocking(
 			});
 		}
 	}
-	let snapshot_tags: HashMap<_, _> = pending_snapshots
-		.into_iter()
-		.map(|(source_key, pending)| {
-			let tag = record_grep_snapshot(documents, &pending.path, pending.seen_lines);
-			(source_key, tag)
-		})
-		.collect();
+	let mut pending_snapshots: Vec<_> = pending_snapshots.into_iter().collect();
+	pending_snapshots.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+	let mut snapshots = Vec::with_capacity(pending_snapshots.len());
+	let mut snapshot_tags = HashMap::with_capacity(pending_snapshots.len());
+	for (source_key, pending) in pending_snapshots {
+		if let Some(snapshot) = prepare_grep_snapshot(source_key.clone(), &pending.path) {
+			snapshot_tags.insert(source_key, compute_snapshot_tag(&snapshot.bytes));
+			snapshots.push(snapshot);
+		}
+	}
 	for matched in &mut matches {
-		matched.snapshot_tag = snapshot_tags.get(&matched.source_key).cloned().flatten();
+		matched.snapshot_tag = snapshot_tags.get(&matched.source_key).cloned();
 	}
 	check_grep_cancel(cancel)?;
 	oversized_files.sort_unstable();
 	oversized_files.dedup();
 	Ok(SearchResult {
 		matches,
+		snapshots,
 		multi_scope,
 		limit_reached,
 		skipped_oversized,
@@ -555,51 +559,14 @@ fn resolve_grep_target(
 	}))
 }
 
-fn retain_snapshot_lines(
-	seen_lines: &mut HashSet<usize>,
-	match_line: u32,
-	context_before: &[grep::ContextLine],
-	context_after: &[grep::ContextLine],
-) {
-	seen_lines.extend(
-		std::iter::once(match_line)
-			.chain(context_before.iter().map(|line| line.line_number))
-			.chain(context_after.iter().map(|line| line.line_number))
-			.filter_map(|line| usize::try_from(line).ok())
-			.filter(|line| *line != 0),
-	);
-}
-
-fn record_grep_snapshot(
-	documents: &DocumentHost,
-	path: &Path,
-	seen_lines: impl IntoIterator<Item = usize>,
-) -> Option<Str> {
+fn prepare_grep_snapshot(source_key: Str, path: &Path) -> Option<SearchSnapshot> {
 	let metadata = std::fs::metadata(path).ok()?;
 	if metadata.len() > SNAPSHOT_MAX_BYTES {
 		return None;
 	}
-	let bytes = std::fs::read(path).ok()?;
-	let revision = RevisionToken::new(blake3::hash(&bytes).as_bytes());
-	record_snapshot(
-		&mut documents.snapshot_store().lock(),
-		path,
-		revision,
-		Bytes::from(bytes),
-		seen_lines,
-	)
-}
-
-fn record_snapshot(
-	store: &mut SnapshotStore,
-	path: &Path,
-	revision: RevisionToken,
-	bytes: Bytes,
-	seen_lines: impl IntoIterator<Item = usize>,
-) -> Option<Str> {
-	store
-		.record(Str::from(path.to_string_lossy().into_owned()), revision, bytes, seen_lines)
-		.ok()
+	let bytes = Bytes::from(std::fs::read(path).ok()?);
+	let revision = Bytes::copy_from_slice(blake3::hash(&bytes).as_bytes());
+	Some(SearchSnapshot { source_key, revision, bytes })
 }
 
 fn map_native_grep_fault(error: omp_grep::GrepError) -> grep::Fault {
@@ -732,6 +699,14 @@ fn glob_blocking(
 			Err(error) => return Err(glob_workspace_message(error)),
 		};
 		let canonical = std::fs::canonicalize(&target_path).map_err(glob_workspace_message)?;
+		// Walk the canonical root, but retain an external absolute root's
+		// caller-visible spelling (notably `/var` versus `/private/var` on macOS) for
+		// result projection. Normalize only lexical `.`/`..` components so equivalent
+		// authored targets project and deduplicate identically without resolving
+		// symlinks.
+		let visible_root = (Path::new(&parsed.base).is_absolute()
+			&& canonical.strip_prefix(host.root()).is_err())
+		.then(|| lexical_normalize_absolute(&target_path));
 		found_paths = found_paths.saturating_add(1);
 		if (!metadata.is_file() && !metadata.is_dir()) || (parsed.has_glob && !metadata.is_dir()) {
 			if multi_target {
@@ -739,7 +714,7 @@ fn glob_blocking(
 			}
 			return Err(glob::Fault::PathNotDirectory { path: Str::from(input) });
 		}
-		targets.push(GlobTarget { parsed, metadata, canonical });
+		targets.push(GlobTarget { parsed, metadata, canonical, visible_root });
 	}
 	if targets.is_empty() && found_paths == 0 {
 		return Err(glob::Fault::PathNotFound { paths: missing_paths });
@@ -759,7 +734,14 @@ fn glob_blocking(
 		}
 		if !target.parsed.has_glob && target.metadata.is_file() {
 			matches.push(WalkMatch {
-				path:        workspace_relative_glob(host.root(), &target.canonical)?,
+				path:        glob_display_path(
+					host.root(),
+					&target.canonical,
+					target.visible_root.as_deref(),
+					&target.canonical,
+				)
+				.map(Str::from)
+				.map_err(glob_workspace_message)?,
 				modified_ms: modified_millis(&target.metadata),
 				is_dir:      false,
 			});
@@ -786,7 +768,15 @@ fn glob_blocking(
 			.depth(1, max_depth)
 			.filter(WalkFilter::all().glob(compiled))
 			.cache(false);
-		let outcome = walk_glob_target(host.root(), &walk, request.limit, deadline, cancel)?;
+		let outcome = walk_glob_target(
+			host.root(),
+			&target.canonical,
+			target.visible_root.as_deref(),
+			&walk,
+			request.limit,
+			deadline,
+			cancel,
+		)?;
 		matches.extend(outcome.matches);
 		truncated |= outcome.truncated;
 		if outcome.timed_out {
@@ -813,9 +803,10 @@ fn glob_blocking(
 
 #[derive(Debug)]
 struct GlobTarget {
-	parsed:    FindPattern,
-	metadata:  std::fs::Metadata,
-	canonical: PathBuf,
+	parsed:       FindPattern,
+	metadata:     std::fs::Metadata,
+	canonical:    PathBuf,
+	visible_root: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -844,6 +835,8 @@ impl fmt::Display for WalkStop {
 
 fn walk_glob_target(
 	workspace_root: &Path,
+	canonical_root: &Path,
+	visible_root: Option<&Path>,
 	request: &WalkRequest,
 	limit: u64,
 	deadline: Instant,
@@ -862,8 +855,9 @@ fn walk_glob_target(
 			}
 		},
 		|entry| {
-			let mut path = workspace_relative_raw(workspace_root, &entry.absolute_path)
-				.map_err(|error| WalkStop::Workspace(Str::from(error.to_string())))?;
+			let mut path =
+				glob_display_path(workspace_root, canonical_root, visible_root, &entry.absolute_path)
+					.map_err(|error| WalkStop::Workspace(Str::from(error.to_string())))?;
 			let is_dir = entry.file_type == FileType::Dir;
 			if is_dir {
 				path.push('/');
@@ -986,6 +980,25 @@ fn resolve_input_path(root: &Path, input: &str) -> PathBuf {
 	}
 }
 
+fn lexical_normalize_absolute(path: &Path) -> PathBuf {
+	debug_assert!(path.is_absolute());
+	let mut normalized = PathBuf::new();
+	for component in path.components() {
+		match component {
+			Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+				normalized.push(component.as_os_str());
+			},
+			Component::CurDir => {},
+			Component::ParentDir => {
+				if matches!(normalized.components().next_back(), Some(Component::Normal(_))) {
+					normalized.pop();
+				}
+			},
+		}
+	}
+	normalized
+}
+
 fn is_missing(error: &std::io::Error) -> bool {
 	matches!(
 		error.kind(),
@@ -1001,10 +1014,28 @@ fn workspace_relative(root: &Path, path: &Path) -> Result<Str, grep::Fault> {
 		.map_err(grep_workspace_message)
 }
 
-fn workspace_relative_glob(root: &Path, path: &Path) -> Result<Str, glob::Fault> {
-	workspace_relative_raw(root, path)
-		.map(Str::from)
-		.map_err(glob_workspace_message)
+fn glob_display_path(
+	workspace_root: &Path,
+	canonical_root: &Path,
+	visible_root: Option<&Path>,
+	path: &Path,
+) -> Result<String, std::io::Error> {
+	if path.strip_prefix(workspace_root).is_ok() {
+		return workspace_relative_raw(workspace_root, path);
+	}
+	let Some(visible_root) = visible_root else {
+		return workspace_relative_raw(workspace_root, path);
+	};
+	let relative = path.strip_prefix(canonical_root).map_err(|_| {
+		std::io::Error::new(
+			std::io::ErrorKind::PermissionDenied,
+			"glob result escaped the canonical traversal root",
+		)
+	})?;
+	Ok(visible_root
+		.join(relative)
+		.to_string_lossy()
+		.replace('\\', "/"))
 }
 
 fn workspace_relative_raw(root: &Path, path: &Path) -> Result<String, std::io::Error> {
@@ -1202,35 +1233,47 @@ mod tests {
 		assert_eq!(result.matches[0].path, Str::from(source.to_string_lossy().replace('\\', "/")),);
 	}
 
-	#[test]
-	fn grep_snapshot_retains_match_and_context_line_provenance() {
-		let before =
-			[grep::ContextLine { line_number: 3, line: Str::from("before one") }, grep::ContextLine {
-				line_number: 4,
-				line:        Str::from("before two"),
-			}];
-		let after = [grep::ContextLine { line_number: 6, line: Str::from("after") }];
-		let mut seen_lines = HashSet::new();
-		retain_snapshot_lines(&mut seen_lines, 5, &before, &after);
+	#[tokio::test]
+	async fn grep_defers_line_authorization_until_final_visibility_is_supplied() {
+		let directory = tempfile::tempdir().expect("temp directory");
+		let source = directory.path().join("file.rs");
+		std::fs::write(&source, "before\nneedle\nafter\n").expect("write grep source");
+		let adapter = connected_search_adapter(directory.path()).await;
+		let result = WorkspaceSearch::search(
+			&adapter,
+			search_request("file.rs", SearchRootKind::Filesystem, 5_000),
+		)
+		.await
+		.expect("search file");
+		let canonical = std::fs::canonicalize(source).expect("canonical grep source");
+		let source_key = Str::from(canonical.to_string_lossy().into_owned());
+		assert!(
+			adapter
+				.documents
+				.snapshot_store()
+				.lock()
+				.head(source_key.as_str())
+				.is_none(),
+			"native overfetch must not authorize lines before final projection"
+		);
+		let [snapshot] = result.snapshots.as_slice() else {
+			panic!("one editable snapshot candidate expected: {:?}", result.snapshots);
+		};
+		WorkspaceSearch::record_snapshots(&adapter, vec![grep::SnapshotRecord {
+			source_key: snapshot.source_key.clone(),
+			revision:   snapshot.revision.clone(),
+			bytes:      snapshot.bytes.clone(),
+			seen_lines: vec![2],
+		}])
+		.expect("record final visible line");
+		let retained = adapter
+			.documents
+			.snapshot_store()
+			.lock()
+			.head(source_key.as_str())
+			.expect("visible snapshot retained");
 
-		let path = Path::new("/workspace/file.rs");
-		let bytes = Bytes::from_static(b"one\ntwo\nthree\nfour\nmatch\nsix\nseven\n");
-		let revision = RevisionToken::new(blake3::hash(&bytes).as_bytes());
-		let mut store = SnapshotStore::default();
-		let tag = record_snapshot(&mut store, path, revision.clone(), bytes.clone(), seen_lines)
-			.expect("snapshot tag");
-		let snapshot = store
-			.resolve(path.to_str().expect("UTF-8 test path"), &tag, Some(&revision))
-			.expect("retained snapshot");
-
-		assert_eq!(snapshot.path(), "/workspace/file.rs");
-		assert_eq!(snapshot.revision(), &revision);
-		assert_eq!(snapshot.bytes(), &bytes);
-		assert!(snapshot.seen_lines().contains(&3));
-		assert!(snapshot.seen_lines().contains(&4));
-		assert!(snapshot.seen_lines().contains(&5));
-		assert!(snapshot.seen_lines().contains(&6));
-		assert!(!snapshot.seen_lines().contains(&7));
+		assert_eq!(retained.seen_lines().iter().copied().collect::<Vec<_>>(), vec![2]);
 	}
 
 	#[test]
@@ -1396,6 +1439,66 @@ mod tests {
 			assert_eq!(result.matches[0].snapshot_tag, None);
 			assert_eq!(result.archive_unreadable, [] as [omp_core::Str; 0]);
 		}
+	}
+
+	#[tokio::test]
+	async fn external_absolute_globs_normalize_projection_and_deduplicate() {
+		let parent = tempfile::tempdir().expect("parent directory");
+		let workspace = parent.path().join("workspace");
+		let external = parent.path().join("external");
+		std::fs::create_dir(&workspace).expect("workspace directory");
+		std::fs::create_dir_all(external.join("a")).expect("lexical parent directory");
+		std::fs::create_dir_all(external.join("b")).expect("external target directory");
+		std::fs::write(external.join("b/x.rs"), "fn external() {}\n").expect("external source");
+		let external = external.to_string_lossy().replace('\\', "/");
+		let authored = format!("{external}/a/../b/**/*.rs;{external}/b/**/*.rs");
+		let adapter = connected_search_adapter(&workspace).await;
+
+		let result = WorkspaceSearch::glob(&adapter, glob::WalkRequest {
+			path:       Str::from(authored),
+			hidden:     true,
+			gitignore:  false,
+			limit:      200,
+			timeout_ms: 5_000,
+		})
+		.await
+		.expect("glob equivalent external absolute targets");
+
+		assert_eq!(result.matches.len(), 1);
+		assert_eq!(result.matches[0].path, format!("{external}/b/x.rs"));
+		assert!(!result.matches[0].is_dir);
+		assert!(!result.timed_out);
+		assert!(!result.truncated);
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn external_absolute_glob_preserves_authored_symlink_alias() {
+		use std::os::unix::fs::symlink;
+
+		let parent = tempfile::tempdir().expect("parent directory");
+		let workspace = parent.path().join("workspace");
+		let real = parent.path().join("real");
+		let alias = parent.path().join("alias");
+		std::fs::create_dir(&workspace).expect("workspace directory");
+		std::fs::create_dir(&real).expect("external real directory");
+		std::fs::write(real.join("x.rs"), "fn external() {}\n").expect("external source");
+		symlink(&real, &alias).expect("external directory symlink");
+		let alias = alias.to_string_lossy().replace('\\', "/");
+		let adapter = connected_search_adapter(&workspace).await;
+
+		let result = WorkspaceSearch::glob(&adapter, glob::WalkRequest {
+			path:       Str::from(format!("{alias}/**/*.rs")),
+			hidden:     true,
+			gitignore:  false,
+			limit:      200,
+			timeout_ms: 5_000,
+		})
+		.await
+		.expect("glob authored external symlink alias");
+
+		assert_eq!(result.matches.len(), 1);
+		assert_eq!(result.matches[0].path, format!("{alias}/x.rs"));
 	}
 
 	#[tokio::test]

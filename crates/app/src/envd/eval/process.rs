@@ -60,7 +60,7 @@ struct ProcessEvalInner {
 struct ProcessSession {
 	id:          Bytes,
 	child:       AsyncMutex<Option<EvalChild>>,
-	run_gate:    AsyncMutex<()>,
+	run_gate:    Arc<AsyncMutex<()>>,
 	needs_reset: AtomicBool,
 }
 
@@ -103,40 +103,37 @@ impl EvalExec for ProcessEvalExec {
 			Arc::new(ProcessSession {
 				id:          id.clone(),
 				child:       AsyncMutex::new(None),
-				run_gate:    AsyncMutex::new(()),
+				run_gate:    Arc::new(AsyncMutex::new(())),
 				needs_reset: AtomicBool::new(false),
 			}),
 		);
 		std::future::ready(Ok(Session { id }))
 	}
 
-	fn run<'a>(
+	async fn run<'a>(
 		&'a self,
 		session: &'a Session,
 		mut request: RunRequest,
-	) -> impl Future<Output = Result<Self::Run, Fault>> + Send + 'a {
+	) -> Result<Self::Run, Fault> {
 		let owned = {
 			let sessions = self.inner.sessions.lock();
 			sessions.get(&session.id).cloned()
-		};
-		let Some(owned) = owned else {
-			return std::future::ready(Err(Fault::SessionLost {
-				message: Str::from("unknown Python process session"),
-			}));
-		};
-		let number = self.inner.next_cell.fetch_add(1, Ordering::Relaxed);
-		let cell_id =
-			Bytes::from(format!("{}:cell-{number}", String::from_utf8_lossy(session.id.as_ref())));
+		}
+		.ok_or_else(|| Fault::SessionLost { message: Str::from("unknown Python process session") })?;
+		let gate = Arc::clone(&owned.run_gate).lock_owned().await;
 		let forced_reset = owned.needs_reset.swap(false, Ordering::AcqRel);
 		request.reset |= forced_reset;
 		let effective_reset = request.reset;
+		let number = self.inner.next_cell.fetch_add(1, Ordering::Relaxed);
+		let cell_id =
+			Bytes::from(format!("{}:cell-{number}", String::from_utf8_lossy(session.id.as_ref())));
 		let (events_tx, events) = flume::unbounded();
 		let cancelled = CancellationToken::new();
 		let task_cancelled = cancelled.clone();
 		let executable = self.inner.executable.clone();
 		let host = Arc::clone(&self.inner.host);
 		tokio::spawn(async move {
-			let _gate = owned.run_gate.lock().await;
+			let _gate = gate;
 			if task_cancelled.is_cancelled() {
 				owned.needs_reset.store(true, Ordering::Release);
 				return;
@@ -172,7 +169,7 @@ impl EvalExec for ProcessEvalExec {
 				owned.needs_reset.store(true, Ordering::Release);
 			}
 		});
-		std::future::ready(Ok(ProcessEvalRun { events, cancelled, terminal: false, effective_reset }))
+		Ok(ProcessEvalRun { events, cancelled, terminal: false, effective_reset })
 	}
 }
 
@@ -446,7 +443,7 @@ impl EvalChild {
 	}
 
 	async fn terminate(&mut self) {
-		let pid = self.process_group;
+		let pid = self.process_group.take();
 		#[cfg(unix)]
 		if let Some(pid) = pid {
 			let _ = nix::sys::signal::killpg(
@@ -466,7 +463,7 @@ impl EvalChild {
 
 		if tokio::time::timeout(TERMINATE_GRACE, self.child.wait())
 			.await
-			.is_ok()
+			.is_ok_and(|status| status.is_ok())
 		{
 			return;
 		}

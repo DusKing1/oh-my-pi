@@ -20,7 +20,7 @@ use omp_agent::{
 	RewindTarget, TurnClient,
 };
 use omp_core::{Str, StrMut, fmts};
-use omp_llm_catalog::{ModelKey, ModelSpec, snapshot::Catalog};
+use omp_llm_catalog::{ModelKey, ModelSpec, ProviderId, provider::AuthSpecKind, snapshot::Catalog};
 use omp_llm_inference::{call::AuthInput, id::TurnId};
 use omp_proto::{
 	inference::v1::{part_start, turn_event::Event, value},
@@ -40,7 +40,7 @@ use secrecy::SecretString;
 
 use crate::{
 	chat_ui::{
-		input::{ChatCommand, commands, parse_input},
+		input::{ChatCommand, commands, help_text, parse_input, user_message},
 		login::{PROVIDER_SELECT_ID, show_provider_picker_for},
 		models::{MODEL_SELECT_ID, show_model_picker},
 		renderers::{RendererRegistry, ToolFold},
@@ -50,17 +50,6 @@ use crate::{
 
 const RESUME_SELECT_ID: &str = "resume-session";
 const REWIND_SELECT_ID: &str = "rewind-target";
-const HELP_TEXT: &str = "\
-**Commands**
-- `/help` — show this help
-- `/login [provider]` — authenticate the selected or named provider
-- `/model <model>` — change the selected model
-- `/models` — browse available models
-- `/resume` — open another project session
-- `/quit` — exit
-
-**Keys**
-esc interrupt · esc esc rewind · enter enter interrupt+send · alt+enter follow-up";
 
 /// Kind of caller response requested by an authentication provider.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,11 +60,16 @@ pub(crate) enum AuthPromptKind {
 	AuthorizationCode,
 	/// Provider session token.
 	SessionToken,
+	/// Visible plain text, including an empty default selection.
+	PlainText,
+	/// Optional secret text for which an empty response means skip.
+	OptionalSecret,
 	/// Confirmation that an external device step is complete.
 	Confirmation,
 }
 
 /// User-visible progress from the asynchronous provider login worker.
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) enum ChatAuthEvent {
 	/// Public browser authorization URL.
 	Url(Str),
@@ -138,6 +132,11 @@ impl ChatAuth {
 	/// Reports whether the worker currently owns a login flow.
 	pub(crate) fn is_active(&self) -> bool {
 		self.active.load(Ordering::Acquire)
+	}
+
+	/// Receives the next secret-free worker event.
+	pub(crate) async fn next_event(&self) -> Option<ChatAuthEvent> {
+		self.events.recv_async().await.ok()
 	}
 }
 
@@ -277,6 +276,7 @@ where
 		agent.journal().pending_input_submission().is_some(),
 	);
 	let mut active_parts: HashMap<u32, ActivePart> = HashMap::new();
+	let mut replaying_turn = false;
 	let mut part_serial = 0_u64;
 
 	update_status(
@@ -395,7 +395,7 @@ where
 								abort.abort();
 							}
 						},
-						Ok(ChatCommand::Help) => push_notice(app.ui_mut(), HELP_TEXT),
+						Ok(ChatCommand::Help) => push_notice(app.ui_mut(), help_text()),
 						Ok(ChatCommand::Login(requested)) => {
 							if is_active {
 								push_error(
@@ -403,8 +403,13 @@ where
 									"Wait for the active turn to finish before logging in.",
 								);
 							} else if let Some(auth) = auth {
-								if let Some(provider) = requested {
-									start_provider_login(app.ui_mut(), auth, provider);
+								if let Some(requested) = requested {
+									match resolve_login_provider(Catalog::embedded(), &requested) {
+										Ok(provider) => {
+											start_provider_login(app.ui_mut(), auth, provider);
+										},
+										Err(error) => push_error(app.ui_mut(), error),
+									}
 								} else {
 									let current =
 										model_provider(Catalog::embedded(), &session_model);
@@ -691,7 +696,36 @@ where
 				Ok(Some(AppEvent::Key(Key::Esc))) => {
 					if is_active {
 						last_esc = None;
+						let item = user_message("User interrupted via Esc.");
+						let enqueued = render_then_deliver(
+							item,
+							|item| render_submitted_item(app.ui_mut(), item),
+							|item| {
+								mailbox
+									.try_enqueue(Interrupt {
+										class: InterruptClass::Immediate,
+										item,
+										source: InterruptSource::Producer(Str::new_static("user")),
+									})
+									.is_ok()
+							},
+						);
 						abort.abort();
+						if enqueued {
+							queued = queued.saturating_add(1);
+							update_status(
+								app.ui_mut(),
+								&session.session_id,
+								&session_model,
+								attempt_indicator,
+								live_jobs.len(),
+								session_cost_nanos,
+								context_tokens,
+								context_window,
+								queued,
+								events.dropped(),
+							);
+						}
 					} else if app.ui().values()["input"].as_str().unwrap_or("").is_empty() {
 						let now = Instant::now();
 						let is_double = last_esc.is_some_and(|previous| {
@@ -780,7 +814,17 @@ where
 			Ok(agent_event) = events.recv() => {
 				match &*agent_event {
 					AgentEvent::Turn { event: turn_event, .. } => match &turn_event.event {
+						Some(Event::Accepted(accepted)) => replaying_turn = accepted.replay,
 						Some(Event::Outcome(outcome)) => {
+							if replaying_turn {
+								render_history(
+									app.ui_mut(),
+									&outcome.output,
+									&renderers,
+									&mut tool_folds,
+								);
+								replaying_turn = false;
+							}
 							queued = 0;
 							session_model.clone_from(&outcome.model);
 							if let Some(spec) = resolve_model(Catalog::embedded(), &outcome.model) {
@@ -1016,34 +1060,62 @@ fn model_provider(catalog: &Catalog, selector: &str) -> Option<Str> {
 	let route = catalog.route(model.routes.first()?)?;
 	Some(Str::from(route.provider.as_str()))
 }
+fn resolve_login_provider(catalog: &Catalog, requested: &Str) -> Result<Str, Str> {
+	let provider_id = ProviderId::from(requested.as_str());
+	let Some(provider) = catalog.provider(&provider_id) else {
+		return Err(fmts!(
+			"Unknown provider `{requested}`. Use `/login` to choose an available provider."
+		));
+	};
+	let supports_login = provider
+		.auth
+		.iter()
+		.filter_map(|auth_id| catalog.auth_spec(auth_id))
+		.any(|auth| auth.kind != AuthSpecKind::None);
+	if !supports_login {
+		return Err(fmts!(
+			"Provider `{}` does not support interactive authentication. Use `/login` to choose \
+			 another provider.",
+			provider.id
+		));
+	}
+	Ok(Str::from(provider.id.as_str()))
+}
 
 fn start_provider_login(ui: &mut Ui, auth: &ChatAuth, provider: Str) {
 	match auth.start(provider.clone()) {
 		Ok(()) => push_notice(ui, fmts!("Starting authentication for `{provider}`…")),
-		Err(error) => push_error(ui, error),
+		Err(error) => push_error(
+			ui,
+			fmts!(
+				"Could not start authentication for provider `{provider}`: {error}. Use `/login \
+				 {provider}` to try again."
+			),
+		),
 	}
 }
 
-fn auth_input(kind: AuthPromptKind, value: String) -> AuthInput {
+pub(crate) fn auth_input(kind: AuthPromptKind, value: String) -> AuthInput {
 	match kind {
 		AuthPromptKind::ApiKey => AuthInput::ApiKey(SecretString::from(value)),
 		AuthPromptKind::AuthorizationCode => AuthInput::AuthorizationCode(SecretString::from(value)),
 		AuthPromptKind::SessionToken => AuthInput::SessionToken(SecretString::from(value)),
+		AuthPromptKind::PlainText => AuthInput::PlainText(Str::from(value)),
+		AuthPromptKind::OptionalSecret => AuthInput::OptionalSecret(SecretString::from(value)),
 		AuthPromptKind::Confirmation => AuthInput::DeviceConfirmed,
 	}
 }
 
-fn show_auth_prompt(ui: &mut Ui, message: Str, kind: AuthPromptKind) {
-	let confirmation = kind == AuthPromptKind::Confirmation;
-	let placeholder = if confirmation {
-		"Press Enter to confirm"
-	} else {
-		"Enter provider response"
+pub(crate) fn show_auth_prompt(ui: &mut Ui, message: Str, kind: AuthPromptKind) {
+	let placeholder = match kind {
+		AuthPromptKind::Confirmation => "Press Enter to confirm",
+		AuthPromptKind::OptionalSecret => "Enter optional provider response or press Enter to skip",
+		_ => "Enter provider response",
 	};
 	let input = Input::new()
 		.with(Prop::Id, "auth-secret")
 		.with(Prop::Placeholder, placeholder)
-		.with(Prop::Mask, !confirmation)
+		.with(Prop::Mask, login::prompt_masks_input(kind))
 		.with(Prop::Submit, true);
 	let content = Col::new()
 		.with(Prop::Gap, 1_u16)
@@ -1301,7 +1373,7 @@ mod tests {
 			panic!("plain input must be a submission");
 		};
 		render_then_deliver(
-			item,
+			*item,
 			|item| {
 				let Some(item::Kind::Message(message)) = &item.kind else {
 					panic!("submission must be a message");
@@ -1338,15 +1410,22 @@ mod tests {
 	}
 
 	#[test]
-	fn help_lists_every_implemented_command() {
-		for command in ["/help", "/login", "/model", "/models", "/resume", "/quit"] {
-			assert!(HELP_TEXT.contains(command), "help omitted {command}");
-		}
-	}
-
-	#[test]
 	fn selected_model_resolves_its_login_provider() {
 		assert_eq!(model_provider(Catalog::embedded(), "kimi-code/k3").as_deref(), Some("kimi-code"));
+	}
+	#[test]
+	fn explicit_login_provider_resolves_through_catalog_auth_specs() {
+		assert_eq!(
+			resolve_login_provider(Catalog::embedded(), &Str::from("kimi-code"))
+				.expect("Kimi provider with interactive auth")
+				.as_str(),
+			"kimi-code"
+		);
+		let error =
+			resolve_login_provider(Catalog::embedded(), &Str::from("provider-that-is-not-cataloged"))
+				.expect_err("unknown provider");
+		assert!(error.contains("Unknown provider `provider-that-is-not-cataloged`"));
+		assert!(error.contains("`/login`"));
 	}
 
 	#[test]
@@ -1361,6 +1440,56 @@ mod tests {
 		assert_eq!(auth.start(Str::from("openai")), Err("authentication is already in progress"));
 		active.store(false, Ordering::Release);
 		assert!(!auth.is_active());
+	}
+
+	#[tokio::test]
+	async fn auth_handle_delivers_device_prompt_url_and_terminal_progress() {
+		let (request_tx, _request_rx) = flume::bounded(1);
+		let (answer_tx, _answer_rx) = flume::bounded(1);
+		let (event_tx, event_rx) = flume::unbounded();
+		let auth = ChatAuth::new(request_tx, answer_tx, event_rx, Arc::new(AtomicBool::new(true)));
+		let progress = [
+			ChatAuthEvent::Notice(Str::from("Waiting for provider authorization…")),
+			ChatAuthEvent::DeviceCode {
+				code: Str::from("ABCD-1234"),
+				url:  Str::from("https://kimi.example/device"),
+			},
+			ChatAuthEvent::Url(Str::from("https://kimi.example/authorize")),
+			ChatAuthEvent::Prompt {
+				message: Str::from("Confirm authorization"),
+				kind:    AuthPromptKind::Confirmation,
+			},
+			ChatAuthEvent::Complete(Str::from("Authenticated Kimi.")),
+			ChatAuthEvent::Failed(Str::from(
+				"Authentication failed for provider `kimi-code`. Use `/login kimi-code`.",
+			)),
+		];
+		for event in progress {
+			event_tx.send(event).expect("auth progress receiver");
+		}
+
+		assert!(matches!(
+			auth.next_event().await,
+			Some(ChatAuthEvent::Notice(message)) if message.contains("Waiting")
+		));
+		assert!(matches!(
+			auth.next_event().await,
+			Some(ChatAuthEvent::DeviceCode { code, url })
+				if code == "ABCD-1234" && url.contains("device")
+		));
+		assert!(matches!(
+			auth.next_event().await,
+			Some(ChatAuthEvent::Url(url)) if url.contains("authorize")
+		));
+		assert!(matches!(
+			auth.next_event().await,
+			Some(ChatAuthEvent::Prompt { kind: AuthPromptKind::Confirmation, .. })
+		));
+		assert!(matches!(auth.next_event().await, Some(ChatAuthEvent::Complete(_))));
+		assert!(matches!(
+			auth.next_event().await,
+			Some(ChatAuthEvent::Failed(message)) if message.contains("/login kimi-code")
+		));
 	}
 	#[test]
 	fn status_updates_preserve_identity_and_replace_all_metrics() {

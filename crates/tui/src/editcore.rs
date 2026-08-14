@@ -1570,10 +1570,19 @@ impl Editor {
 		self.completion = Some(completion);
 		self.refresh();
 	}
+
 	/// Replaces the editor text without adding an undo entry, preserving
 	/// completion and history configuration.
 	pub fn set_text(&mut self, text: &str) {
 		self.buffer.replace_external(text, false);
+		self.refresh();
+	}
+
+	/// Replaces the editor text without an undo entry, optionally parking the
+	/// cursor at the start, keeping completion and popup state consistent.
+	#[cfg(test)]
+	pub(crate) fn replace_external(&mut self, text: &str, cursor_at_start: bool) {
+		self.buffer.replace_external(text, cursor_at_start);
 		self.refresh();
 	}
 
@@ -1630,10 +1639,15 @@ impl Editor {
 		u16::try_from(self.buffer.visual_height(width.max(1), MAX_INPUT_ROWS)).unwrap_or(u16::MAX)
 	}
 
+	/// Returns up to `max_rows` cursor-centered visible input rows at `width`.
+	pub fn view_rows(&self, width: u16, max_rows: usize) -> SmallVec<VisualRow<'_>, 8> {
+		self.last_layout_width.set(width.max(1));
+		self.buffer.rows(width, max_rows)
+	}
+
 	/// Returns the cursor-centered visible input rows at `width`.
 	pub fn view(&self, width: u16) -> SmallVec<VisualRow<'_>, 8> {
-		self.last_layout_width.set(width.max(1));
-		self.buffer.rows(width, MAX_INPUT_ROWS)
+		self.view_rows(width, MAX_INPUT_ROWS)
 	}
 
 	/// Places the cursor on a visual input row and refreshes derived editor
@@ -2079,6 +2093,12 @@ impl SlashCommands {
 		}
 		let prefix_start = line_start + line.len() - trimmed.len();
 		let query = body.to_ascii_lowercase();
+		if self
+			.find(body)
+			.is_some_and(|command| command.args.is_empty() && command.hint.is_none())
+		{
+			return None;
+		}
 		let mut ranked: SmallVec<(u16, Suggestion), 8> = SmallVec::new();
 		for command in &self.commands {
 			let mut selected_name = &command.name;
@@ -2418,6 +2438,17 @@ mod tests {
 		assert_eq!(editor.handle_key(key(Key::Down)), EditOutcome::Changed);
 		assert_eq!(editor.handle_key(key(Key::Enter)), EditOutcome::Changed);
 		assert_eq!(editor.text(), "/settings ");
+	}
+
+	#[test]
+	fn exact_no_argument_command_submits_without_completion_acceptance() {
+		let mut editor = editor();
+		type_text(&mut editor, "/settings");
+		assert!(editor.picker().is_none());
+		assert_eq!(
+			editor.handle_key(key(Key::Enter)),
+			EditOutcome::Submitted("/settings".to_owned())
+		);
 	}
 
 	#[test]

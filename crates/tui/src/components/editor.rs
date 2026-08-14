@@ -92,11 +92,11 @@ impl EditInput {
 	pub fn with_str(self, prop: Prop, value: &str) -> Self {
 		self.with(prop, value)
 	}
+
 	/// Registers the completion engine used by this editable leaf.
 	pub fn set_completion(&mut self, completion: Box<dyn Completion>) {
 		self.editor.set_completion(completion);
 	}
-
 
 	fn text_width(width: u16) -> u16 {
 		width.saturating_sub(2).max(1)
@@ -105,6 +105,7 @@ impl EditInput {
 	fn page_rows(ec: &EventCtx<'_>) -> usize {
 		usize::from(ec.view_rows.max(1))
 	}
+
 	fn paint_picker(&self, pc: &mut PaintCtx<'_>, rect: Rect, y: u16) {
 		let Some(picker) = self.editor.picker() else {
 			return;
@@ -127,7 +128,11 @@ impl EditInput {
 			let mut x = pc.frame.put(
 				rect.x,
 				row,
-				if selected { pc.ctx.charset.cursor() } else { "  " },
+				if selected {
+					pc.ctx.charset.cursor()
+				} else {
+					"  "
+				},
 				style,
 			);
 			x = match suggestion.display() {
@@ -172,11 +177,8 @@ impl Component for EditInput {
 		(20, 40)
 	}
 
-	fn height(&mut self, _ctx: &UiContext, width: u16) -> u16 {
-		self
-			.editor
-			.input_height_for(Self::text_width(width))
-			.saturating_add(self.editor.picker_height())
+	fn height(&mut self, _ctx: &UiContext, _width: u16) -> u16 {
+		4_u16.saturating_add(self.editor.picker_height())
 	}
 
 	fn paint(&mut self, pc: &mut PaintCtx<'_>, rect: Rect) {
@@ -186,8 +188,11 @@ impl Component for EditInput {
 		let text = self.editor.text();
 		let atoms = self.editor.atom_ranges();
 		let input_width = Self::text_width(rect.width);
-		let input_height = self.editor.input_height_for(input_width);
-		let rows = self.editor.view(input_width);
+		let picker_height = self.editor.picker_height();
+		let input_height = rect.height.saturating_sub(picker_height);
+		let rows = self
+			.editor
+			.view_rows(input_width, usize::from(input_height.max(1)));
 		let rail = if focused {
 			Style::new().fg(pc.ctx.theme.accent)
 		} else {
@@ -258,10 +263,7 @@ impl Component for EditInput {
 	}
 
 	fn key(&mut self, ec: &mut EventCtx<'_>, key: Key) -> Flow {
-		if key == Key::Enter
-			&& self.props.flag(Prop::Submit)
-			&& self.editor.picker().is_none()
-		{
+		if key == Key::Enter && self.props.flag(Prop::Submit) && self.editor.picker().is_none() {
 			if !self.editor.text().trim().is_empty() {
 				return Flow::Event(UiEvent::Submit);
 			}
@@ -274,9 +276,14 @@ impl Component for EditInput {
 		{
 			return Flow::Skip;
 		}
+		let key =
+			if key == Key::Enter && !self.props.flag(Prop::Submit) && self.editor.picker().is_none() {
+				Key::ShiftEnter
+			} else {
+				key
+			};
 		match self.editor.handle(key) {
 			EditOutcome::Changed => {
-				ec.request_layout();
 				if self.reconcile(ec.ctx) {
 					// The pane's attachment band changed height outside this
 					// leaf's own box.
@@ -744,6 +751,7 @@ impl EditorPane {
 		self.children[0] = Cached::new(input.into_component());
 		self
 	}
+
 	/// Sets the composer's completion source (for example, slash commands).
 	#[must_use]
 	pub fn completion(mut self, completion: Box<dyn Completion>) -> Self {
@@ -759,7 +767,6 @@ impl EditorPane {
 			.expect("completion requires the default editor input")
 			.set_completion(completion);
 	}
-
 
 	/// Adds or replaces the status band above the editable content.
 	pub fn status(mut self, status: impl IntoComponent) -> Self {
@@ -912,12 +919,19 @@ impl EditorPane {
 				.comp_mut()
 				.props_mut()
 				.set(prop, value.clone());
-			if prop == Prop::Value
-				&& let PropValue::Str(text) = &value
-			{
-				self.children[0]
-					.comp_mut()
-					.set_text(&UiContext::default(), text.clone());
+			match prop {
+				// The shell mirrors the input's id so id-based typed lookups
+				// (`Ui::update_component::<EditorPane>`) resolve the pane;
+				// the input keeps it for focus, value, and submit routing.
+				Prop::Id => self.props.set(prop, value),
+				Prop::Value => {
+					if let PropValue::Str(text) = &value {
+						self.children[0]
+							.comp_mut()
+							.set_text(&UiContext::default(), text.clone());
+					}
+				},
+				_ => {},
 			}
 		} else {
 			self.props.set(prop, value);
@@ -939,6 +953,15 @@ impl EditorPane {
 			.buffer()
 	}
 
+	#[cfg(test)]
+	pub(crate) fn replace_external(&mut self, text: &str, cursor_at_start: bool) {
+		self.children[0]
+			.comp_mut()
+			.downcast_mut::<EditInput>()
+			.expect("default editor input was replaced")
+			.editor
+			.replace_external(text, cursor_at_start);
+	}
 }
 
 impl Default for EditorPane {
@@ -1065,7 +1088,12 @@ impl Component for EditorPane {
 	}
 
 	fn set_text(&mut self, ctx: &UiContext, text: Str) -> bool {
-		self.children[0].comp_mut().set_text(ctx, text)
+		let input = &mut self.children[0];
+		let changed = input.comp_mut().set_text(ctx, text);
+		if changed {
+			input.invalidate();
+		}
+		changed
 	}
 }
 
@@ -1359,6 +1387,28 @@ mod tests {
 			.buffer()
 			.text();
 		assert_eq!(text, " \na", "buffer should not be cleared on submit");
+	}
+
+	#[test]
+	fn editor_pane_id_resolves_typed_pane_lookup() {
+		let pane = EditorPane::new()
+			.with(Prop::Id, "input")
+			.with(Prop::Submit, true);
+		assert_eq!(pane.props().id().map(Str::as_str), Some("input"));
+		assert_eq!(pane.children[0].comp().props().id().map(Str::as_str), Some("input"));
+
+		let mut ui = Ui::from_root(pane, 40, UiContext::default());
+		let mut attachments = None;
+		ui.update_component::<EditorPane>("input", |pane| {
+			attachments = Some(pane.attachments());
+			false
+		});
+		assert!(attachments.is_some(), "id lookup must resolve the pane, not its input");
+
+		ui.focus_first();
+		ui.handle_key(Key::Char('a'));
+		assert!(ui.set_text("input", "hi"), "set_text still routes through the pane to the input");
+		assert_eq!(ui.values()["input"], "hi");
 	}
 
 	#[test]

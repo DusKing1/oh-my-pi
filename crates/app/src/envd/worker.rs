@@ -1259,12 +1259,16 @@ fn completion_from_dict(
 		None => Vec::new(),
 	};
 	let details_json = match dict.get_item("details")? {
-		Some(details) => Bytes::from(
-			json
-				.getattr("dumps")?
-				.call1((details,))?
-				.extract::<String>()?,
-		),
+		Some(details) => {
+			let options = PyDict::new(dict.py());
+			options.set_item("separators", (",", ":"))?;
+			Bytes::from(
+				json
+					.getattr("dumps")?
+					.call((&details,), Some(&options))?
+					.extract::<String>()?,
+			)
+		},
 		None => Bytes::from_static(b"null"),
 	};
 	let is_error = dict

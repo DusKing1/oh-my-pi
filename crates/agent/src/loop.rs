@@ -38,7 +38,8 @@ const EMPTY_OUTPUT_RETRY_DETAIL: &str =
 /// follow-ups.
 #[derive(Clone, Debug)]
 pub struct AgentRunSummary {
-	/// Authoritative terminal gateway outcome of the last committed turn, if any.
+	/// Authoritative terminal gateway outcome of the last committed turn, if
+	/// any.
 	pub outcome:         Option<Outcome>,
 	/// Committed turn count for this submission.
 	pub committed_turns: u32,
@@ -55,7 +56,6 @@ pub struct RewindTarget {
 	/// Concatenated text content of the user message.
 	pub text:  Str,
 }
-
 
 /// Failure while projecting, submitting, recovering, journaling, or executing
 /// tools.
@@ -107,7 +107,9 @@ pub struct AbortHandle {
 impl AbortHandle {
 	/// Aborts the active submission, if any.
 	pub fn abort(&self) {
-		self.tx.send_modify(|generation| *generation = generation.wrapping_add(1));
+		self
+			.tx
+			.send_modify(|generation| *generation = generation.wrapping_add(1));
 	}
 }
 
@@ -212,11 +214,11 @@ impl<C: TurnClient> Agent<C> {
 	pub fn mailbox(&self) -> MailboxSender {
 		self.mailbox.sender()
 	}
+
 	/// Returns a cloneable out-of-band stop signal.
 	pub fn abort_handle(&self) -> AbortHandle {
 		AbortHandle { tx: Arc::clone(&self.abort_tx) }
 	}
-
 
 	/// Returns detached-job settlement state.
 	pub const fn jobs(&self) -> &Arc<JobBoard> {
@@ -227,21 +229,21 @@ impl<C: TurnClient> Agent<C> {
 	pub const fn journal(&self) -> &Journal {
 		&self.journal
 	}
-	/// Rewinds the durable session to a live prefix and returns the fresh projection.
+
+	/// Rewinds the durable session to a live prefix and returns the fresh
+	/// projection.
 	pub fn rewind(&mut self, to: Option<u64>) -> Result<Vec<Item>, AgentError> {
 		self.journal.rewind(now_ms(), to)?;
 		self.context = None;
 		self.prompt_hash = None;
 		self.prompt_head_events.clear();
 		self.last_toolset_hash = None;
-		Ok(
-			project_journal(
-				&self.journal.load()?,
-				self.state.snapshot().registry.as_ref(),
-				&self.caps,
-			)?
-			.items,
-		)
+		Ok(project_journal(
+			&self.journal.load()?,
+			self.state.snapshot().registry.as_ref(),
+			&self.caps,
+		)?
+		.items)
 	}
 
 	/// Lists live user messages from oldest to newest for rewind selection.
@@ -259,9 +261,10 @@ impl<C: TurnClient> Agent<C> {
 				previous = Some(event);
 				continue;
 			}
-			let synthetic = item.props.as_ref().is_some_and(|props| {
-				props.fields.contains_key(omp_tool::TOOL_REV_PROP)
-			});
+			let synthetic = item
+				.props
+				.as_ref()
+				.is_some_and(|props| props.fields.contains_key(omp_tool::TOOL_REV_PROP));
 			let mut text = String::new();
 			for part in &message.parts {
 				if let Some(thread::part::Kind::Text(part)) = part.kind.as_ref() {
@@ -269,17 +272,12 @@ impl<C: TurnClient> Agent<C> {
 				}
 			}
 			if !synthetic && !text.starts_with("<system-injection>") {
-				targets.push(RewindTarget {
-					event,
-					keep: previous,
-					text: Str::from(text),
-				});
+				targets.push(RewindTarget { event, keep: previous, text: Str::from(text) });
 			}
 			previous = Some(event);
 		}
 		Ok(targets)
 	}
-
 
 	/// Submits caller-authored canonical items and runs every tool follow-up.
 	pub async fn submit(
@@ -385,11 +383,9 @@ impl<C: TurnClient> Agent<C> {
 					turn
 				},
 				Err(AgentError::Interrupted) => {
-					self.journal.abort_turn(
-						now_ms(),
-						turn_id.as_str(),
-						AbortDisposition::Exhausted,
-					)?;
+					self
+						.journal
+						.abort_turn(now_ms(), turn_id.as_str(), AbortDisposition::Exhausted)?;
 					self.context = None;
 					self.abort_rx.mark_unchanged();
 					let snapshot = self.state.snapshot();
@@ -551,9 +547,9 @@ impl<C: TurnClient> Agent<C> {
 				}
 				let next_turn_id = follow_up_id(&turn_id, committed_turns);
 				pending_indexes = self.append_pending(&next_turn_id, next)?;
-				let has_producer = boundary.iter().any(|interrupt| {
-					matches!(&interrupt.source, crate::InterruptSource::Producer(_))
-				});
+				let has_producer = boundary
+					.iter()
+					.any(|interrupt| matches!(&interrupt.source, crate::InterruptSource::Producer(_)));
 				pending_indexes
 					.extend(self.stage_interrupts(&next_turn_id, std::mem::take(&mut boundary))?);
 				if deadline_elapsed {
@@ -1242,7 +1238,10 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-	use std::{collections::{BTreeMap, VecDeque}, sync::Arc};
+	use std::{
+		collections::{BTreeMap, VecDeque},
+		sync::Arc,
+	};
 
 	use bytes::Bytes;
 	use futures::stream;
@@ -1300,9 +1299,7 @@ mod tests {
 	}
 
 	fn outcome_script(outcome: Outcome) -> Vec<Result<pb::TurnEvent, TurnError>> {
-		vec![Ok(pb::TurnEvent {
-			event: Some(pb::turn_event::Event::Outcome(outcome)),
-		})]
+		vec![Ok(pb::TurnEvent { event: Some(pb::turn_event::Event::Outcome(outcome)) })]
 	}
 
 	fn pending_text_script() -> Vec<Result<pb::TurnEvent, TurnError>> {
@@ -1326,13 +1323,13 @@ mod tests {
 	fn pending_tool_script(identity: &ToolIdentity) -> Vec<Result<pb::TurnEvent, TurnError>> {
 		let call_id = "pending-call";
 		let call = thread::ToolCall {
-			id:        call_id.to_owned(),
-			name:      identity.name.to_string(),
+			id: call_id.to_owned(),
+			name: identity.name.to_string(),
 			args_json: Bytes::from_static(b"{}"),
 			..thread::ToolCall::default()
 		};
 		let item = Item {
-			kind:  Some(thread::item::Kind::ToolCall(call)),
+			kind: Some(thread::item::Kind::ToolCall(call)),
 			props: Some(pb::ValueMap {
 				fields: BTreeMap::from([(omp_tool::TOOL_REV_PROP.to_owned(), pb::Value {
 					kind: Some(pb::value::Kind::String(identity.rev.to_string())),
@@ -1371,14 +1368,11 @@ mod tests {
 		]
 	}
 
-
 	fn message(role: thread::Role, text: &str) -> Item {
 		Item {
 			kind: Some(thread::item::Kind::Message(thread::Message {
-				role: i32::from(role),
-				parts: vec![thread::Part {
-					kind: Some(thread::part::Kind::Text(text.to_owned())),
-				}],
+				role:  i32::from(role),
+				parts: vec![thread::Part { kind: Some(thread::part::Kind::Text(text.to_owned())) }],
 			})),
 			..Item::default()
 		}
@@ -1585,10 +1579,7 @@ mod tests {
 			abort.abort();
 		};
 		let (summary, ()) = tokio::join!(
-			agent.submit(
-				[message(thread::Role::User, "before abort")],
-				TurnId::new("abort-turn"),
-			),
+			agent.submit([message(thread::Role::User, "before abort")], TurnId::new("abort-turn"),),
 			aborting,
 		);
 		let summary = summary.expect("abort returns a summary");
@@ -1606,10 +1597,7 @@ mod tests {
 		}));
 
 		let follow_up = agent
-			.submit(
-				[message(thread::Role::User, "after abort")],
-				TurnId::new("post-abort-turn"),
-			)
+			.submit([message(thread::Role::User, "after abort")], TurnId::new("post-abort-turn"))
 			.await
 			.expect("follow-up submission succeeds");
 		assert!(!follow_up.interrupted);
@@ -1678,10 +1666,8 @@ mod tests {
 	#[tokio::test]
 	async fn caller_abort_interrupts_tool_batch_and_stages_results() {
 		let (journal, path) = test_journal("batch-abort");
-		let identity = ToolIdentity {
-			name: Str::from("pending"),
-			rev:  Rev { family: Str::from("test"), n: 1 },
-		};
+		let identity =
+			ToolIdentity { name: Str::from("pending"), rev: Rev { family: Str::from("test"), n: 1 } };
 		let mut registry = ToolRegistry::new();
 		registry
 			.register_worker(worker(identity.name.as_str()))
@@ -1708,11 +1694,9 @@ mod tests {
 		let events = agent.events().subscribe_lossless();
 		let aborting = async {
 			loop {
-				let event = events.recv_async().await.expect("agent event");
-				if matches!(
-					event.as_ref(),
-					AgentEvent::PhaseChanged { to: AgentPhase::ToolBatch, .. }
-				) {
+				let event = events.recv().await.expect("agent event");
+				if matches!(event.as_ref(), AgentEvent::PhaseChanged { to: AgentPhase::ToolBatch, .. })
+				{
 					abort.abort();
 					break;
 				}
@@ -1760,22 +1744,19 @@ mod tests {
 			test_caps(),
 		);
 		agent
-			.submit(
-				[message(thread::Role::User, "turn one")],
-				TurnId::new("rewind-one"),
-			)
+			.submit([message(thread::Role::User, "turn one")], TurnId::new("rewind-one"))
 			.await
 			.expect("first turn");
 		agent
-			.submit(
-				[message(thread::Role::User, "turn two")],
-				TurnId::new("rewind-two"),
-			)
+			.submit([message(thread::Role::User, "turn two")], TurnId::new("rewind-two"))
 			.await
 			.expect("second turn");
 		let targets = agent.rewind_targets().expect("list rewind targets");
 		assert_eq!(
-			targets.iter().map(|target| target.text.as_str()).collect::<Vec<_>>(),
+			targets
+				.iter()
+				.map(|target| target.text.as_str())
+				.collect::<Vec<_>>(),
 			vec!["turn one", "turn two"]
 		);
 		let second = targets.last().expect("second rewind target").clone();
@@ -1805,10 +1786,7 @@ mod tests {
 			)
 		}));
 		agent
-			.submit(
-				[message(thread::Role::User, "replacement")],
-				TurnId::new("rewind-replacement"),
-			)
+			.submit([message(thread::Role::User, "replacement")], TurnId::new("rewind-replacement"))
 			.await
 			.expect("post-rewind turn");
 		assert!(agent.prompt_hash.is_some(), "post-rewind turn re-rendered prompt head");

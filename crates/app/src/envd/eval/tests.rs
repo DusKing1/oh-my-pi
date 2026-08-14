@@ -9,7 +9,6 @@ use std::{
 use async_trait::async_trait;
 use omp_core::Str;
 use omp_tools::eval::idle_timeout::TimeoutHandle;
-use parking_lot::Mutex;
 use pyo3::{
 	prelude::*,
 	types::{PyDict, PyModule},
@@ -19,8 +18,6 @@ use tempfile::tempdir;
 use tokio::runtime::Runtime;
 
 use super::*;
-
-static PYTHON_TEST: Mutex<()> = Mutex::new(());
 
 struct PreludeHost {
 	calls:             parking_lot::Mutex<Vec<(String, Value)>>,
@@ -87,7 +84,6 @@ fn run(py: Python<'_>, globals: &Bound<'_, PyDict>, source: String) -> PyResult<
 
 #[test]
 fn complete_prelude_persists_and_bridges_host_helpers() {
-	let _serial = PYTHON_TEST.lock();
 	let root = tempdir().expect("temp root");
 	let artifacts = root.path().join("artifacts");
 	let local = root.path().join("local");
@@ -261,7 +257,6 @@ def _observed_parallel_width(item_count):
 
 #[test]
 fn python_bridge_propagates_host_errors_and_capability_denial() {
-	let _serial = PYTHON_TEST.lock();
 	let runtime = Runtime::new().expect("test runtime");
 	let dispatcher = BridgeDispatcher::new();
 	let registration = dispatcher

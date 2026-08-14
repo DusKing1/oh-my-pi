@@ -7,6 +7,7 @@ use std::{
 
 use miette::{IntoDiagnostic as _, Result, miette};
 use nix::sys::termios::{LocalFlags, SetArg, tcgetattr, tcsetattr};
+use omp_core::Str;
 use omp_llm_catalog::ProviderId;
 use omp_llm_inference::{
 	Client,
@@ -117,7 +118,9 @@ fn read_prompt(prompt: &AuthPrompt) -> Result<AuthInput> {
 	drop(stdout);
 
 	let stdin = io::stdin();
-	let hide_input = !matches!(prompt.input, AuthPromptKind::Confirmation) && stdin.is_terminal();
+	let hide_input =
+		!matches!(prompt.input, AuthPromptKind::Confirmation | AuthPromptKind::PlainText)
+			&& stdin.is_terminal();
 	let original = if hide_input {
 		let original = tcgetattr(&stdin).into_diagnostic()?;
 		let mut hidden = original.clone();
@@ -140,22 +143,32 @@ fn read_prompt(prompt: &AuthPrompt) -> Result<AuthInput> {
 }
 
 fn auth_input(prompt: &AuthPrompt, value: &str) -> Result<AuthInput> {
-	if matches!(prompt.input, AuthPromptKind::Confirmation) {
-		return Ok(AuthInput::DeviceConfirmed);
-	}
-	if value.is_empty() {
-		return Err(miette!("authentication input must not be empty"));
-	}
-	let value = SecretString::from(value.to_owned());
-	Ok(match prompt.input {
-		AuthPromptKind::AuthorizationCode if prompt.id == "oauth-callback-url" => {
-			AuthInput::CallbackUrl(value)
+	match prompt.input {
+		AuthPromptKind::Confirmation => Ok(AuthInput::DeviceConfirmed),
+		AuthPromptKind::PlainText => Ok(AuthInput::PlainText(Str::from(value))),
+		AuthPromptKind::OptionalSecret => {
+			Ok(AuthInput::OptionalSecret(SecretString::from(value.to_owned())))
 		},
-		AuthPromptKind::AuthorizationCode => AuthInput::AuthorizationCode(value),
-		AuthPromptKind::ApiKey => AuthInput::ApiKey(value),
-		AuthPromptKind::SessionToken => AuthInput::SessionToken(value),
-		AuthPromptKind::Confirmation => unreachable!("confirmation returned above"),
-	})
+		AuthPromptKind::AuthorizationCode if prompt.id == "oauth-callback-url" => {
+			if value.is_empty() {
+				Err(miette!("authentication input must not be empty"))
+			} else {
+				Ok(AuthInput::CallbackUrl(SecretString::from(value.to_owned())))
+			}
+		},
+		AuthPromptKind::AuthorizationCode | AuthPromptKind::ApiKey | AuthPromptKind::SessionToken => {
+			if value.is_empty() {
+				return Err(miette!("authentication input must not be empty"));
+			}
+			let value = SecretString::from(value.to_owned());
+			Ok(match prompt.input {
+				AuthPromptKind::AuthorizationCode => AuthInput::AuthorizationCode(value),
+				AuthPromptKind::ApiKey => AuthInput::ApiKey(value),
+				AuthPromptKind::SessionToken => AuthInput::SessionToken(value),
+				_ => unreachable!("matched required secret prompt"),
+			})
+		},
+	}
 }
 
 #[cfg(test)]
@@ -185,5 +198,30 @@ mod tests {
 			input:   AuthPromptKind::Confirmation,
 		};
 		assert!(matches!(auth_input(&prompt, "").unwrap(), AuthInput::DeviceConfirmed));
+	}
+
+	#[test]
+	fn plain_text_is_visible_and_may_select_the_empty_default() {
+		let prompt = AuthPrompt {
+			id:      "region".into(),
+			message: "region".into(),
+			input:   AuthPromptKind::PlainText,
+		};
+		assert!(
+			matches!(auth_input(&prompt, "").unwrap(), AuthInput::PlainText(value) if value.is_empty())
+		);
+	}
+
+	#[test]
+	fn optional_secret_accepts_empty_as_skip() {
+		let prompt = AuthPrompt {
+			id:      "cookie".into(),
+			message: "cookie".into(),
+			input:   AuthPromptKind::OptionalSecret,
+		};
+		assert!(matches!(
+			auth_input(&prompt, "").unwrap(),
+			AuthInput::OptionalSecret(value) if value.expose_secret().is_empty()
+		));
 	}
 }

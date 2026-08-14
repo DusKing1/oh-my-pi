@@ -4,15 +4,22 @@ use omp_tui::{
 	components::{Boxed, Col, Select, SelectOption, TextLeaf},
 };
 
+use super::AuthPromptKind;
+
+/// Returns whether the login prompt must suppress terminal echo.
+pub(crate) const fn prompt_masks_input(kind: AuthPromptKind) -> bool {
+	!matches!(kind, AuthPromptKind::Confirmation | AuthPromptKind::PlainText)
+}
+
 pub(crate) const PROVIDER_SELECT_ID: &str = "login-provider";
 
-/// Opens the authentication-provider picker.
+/// Opens the provider picker without preselecting a provider.
 pub(crate) fn show_provider_picker(ui: &mut Ui, catalog: &Catalog) {
 	show_provider_picker_for(ui, catalog, None);
 }
 
 /// Opens the provider picker with the current model's provider highlighted.
-pub(super) fn show_provider_picker_for(ui: &mut Ui, catalog: &Catalog, current: Option<&str>) {
+pub(crate) fn show_provider_picker_for(ui: &mut Ui, catalog: &Catalog, current: Option<&str>) {
 	let mut providers = catalog
 		.providers()
 		.iter()
@@ -67,4 +74,15 @@ fn provider_uses_oauth(catalog: &Catalog, provider: &ProviderDef) -> bool {
 			.and_then(|auth| auth.oauth.as_ref())
 			.is_some_and(|oauth_id| catalog.oauth_spec(oauth_id).is_some())
 	})
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn plain_text_is_visible_and_optional_secrets_are_masked() {
+		assert!(!prompt_masks_input(AuthPromptKind::PlainText));
+		assert!(prompt_masks_input(AuthPromptKind::OptionalSecret));
+	}
 }

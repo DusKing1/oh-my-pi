@@ -3,7 +3,10 @@
 use std::{
 	future::{Future, ready},
 	path::{Component, Path, PathBuf},
-	sync::atomic::{AtomicU64, Ordering},
+	sync::{
+		Arc,
+		atomic::{AtomicBool, AtomicU64, Ordering},
+	},
 	time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -22,10 +25,11 @@ use omp_tools::{
 	},
 	read::{Fault as ReadFault, ReadBlobs, SNAPSHOT_MAX_BYTES},
 	write::{
-		Fault as WriteFault, PlainWriteRequest, PlainWriteResult, WriteCommitError, WriteDisposition,
-		WriteDocuments,
+		Fault as WriteFault, PlainWriteRequest, PlainWriteResult, SpecialWriteControl,
+		WriteCommitError, WriteDisposition, WriteDocuments,
 	},
 };
+use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -1247,6 +1251,61 @@ struct ResolvedPlainWrite {
 	display_path:      Str,
 	use_document_host: bool,
 }
+struct CancelSpecialWriteOnDrop(Option<SpecialWriteControl>);
+
+impl CancelSpecialWriteOnDrop {
+	fn disarm(&mut self) {
+		self.0 = None;
+	}
+}
+
+impl Drop for CancelSpecialWriteOnDrop {
+	fn drop(&mut self) {
+		if let Some(control) = self.0.take() {
+			control.cancel();
+		}
+	}
+}
+
+#[derive(Default)]
+struct SqliteWriteInterrupt {
+	interrupted: AtomicBool,
+	handle:      Mutex<Option<rusqlite::InterruptHandle>>,
+}
+
+impl SqliteWriteInterrupt {
+	fn install(&self, connection: &rusqlite::Connection) {
+		let handle = connection.get_interrupt_handle();
+		let mut published = self.handle.lock();
+		if self.interrupted.load(Ordering::Acquire) {
+			handle.interrupt();
+		}
+		*published = Some(handle);
+	}
+
+	fn interrupt(&self) {
+		self.interrupted.store(true, Ordering::Release);
+		if let Some(handle) = self.handle.lock().as_ref() {
+			handle.interrupt();
+		}
+	}
+}
+
+async fn run_special_write_blocking<T, F>(
+	control: SpecialWriteControl,
+	task_name: &'static str,
+	worker: F,
+) -> Result<T, omp_tools::write::backends::Fault>
+where
+	T: Send + 'static,
+	F: FnOnce(&SpecialWriteControl) -> Result<T, omp_tools::write::backends::Fault> + Send + 'static,
+{
+	let task_control = control.clone();
+	let mut cancel_on_drop = CancelSpecialWriteOnDrop(Some(control));
+	let result = tokio::task::spawn_blocking(move || worker(&task_control)).await;
+	cancel_on_drop.disarm();
+	result.map_err(|error| special_fault(format!("{task_name} write task failed: {error}")))?
+}
 
 impl WriteDocuments for DocumentHost {
 	fn probe_literal(
@@ -1412,32 +1471,41 @@ impl WriteDocuments for DocumentHost {
 		})
 	}
 
-	fn write_archive_member(
+	async fn write_archive_member(
 		&self,
 		display_path: Str,
 		content: Bytes,
-	) -> impl Future<
-		Output = Result<
-			Option<omp_tools::write::backends::ResultPayload>,
-			omp_tools::write::backends::Fault,
-		>,
-	> + Send
-	+ '_ {
-		ready(write_archive_member(self, &display_path, content))
+		control: SpecialWriteControl,
+	) -> Result<Option<omp_tools::write::backends::ResultPayload>, omp_tools::write::backends::Fault>
+	{
+		let host = self.clone();
+		run_special_write_blocking(control, "archive", move |task_control| {
+			write_archive_member_blocking(&host, &display_path, content, task_control)
+		})
+		.await
 	}
 
-	fn write_sqlite_row(
+	async fn write_sqlite_row(
 		&self,
 		display_path: Str,
 		content: Str,
-	) -> impl Future<
-		Output = Result<
-			Option<omp_tools::write::backends::ResultPayload>,
-			omp_tools::write::backends::Fault,
-		>,
-	> + Send
-	+ '_ {
-		ready(write_sqlite_row(self, &display_path, &content))
+		control: SpecialWriteControl,
+	) -> Result<Option<omp_tools::write::backends::ResultPayload>, omp_tools::write::backends::Fault>
+	{
+		let host = self.clone();
+		let interrupt = Arc::new(SqliteWriteInterrupt::default());
+		let task_interrupt = Arc::clone(&interrupt);
+		let wait_control = control.clone();
+		let interrupt_waiter = tokio::spawn(async move {
+			wait_control.cancelled().await;
+			interrupt.interrupt();
+		});
+		let result = run_special_write_blocking(control, "SQLite", move |task_control| {
+			write_sqlite_row_blocking(&host, &display_path, &content, task_control, &task_interrupt)
+		})
+		.await;
+		interrupt_waiter.abort();
+		result
 	}
 }
 
@@ -1489,12 +1557,19 @@ fn resolve_plain_write_from_root(root: &Path, input: &str) -> Result<ResolvedPla
 	let suffix = candidate
 		.strip_prefix(ancestor)
 		.map_err(|_| "document path could not be resolved from its existing ancestor")?;
-	let path = canonical_ancestor.join(suffix);
+	let path = join_nonempty_suffix(canonical_ancestor, suffix);
 	let use_document_host = path != canonical_root && path.starts_with(&canonical_root);
 	let uri = Url::from_file_path(&path)
 		.map_err(|()| "document path cannot be represented as a file URI".to_owned())?;
 	let display_path = display_write_path(&path, &canonical_root);
 	Ok(ResolvedPlainWrite { uri: Str::from(uri.as_str()), path, display_path, use_document_host })
+}
+
+fn join_nonempty_suffix(mut base: PathBuf, suffix: &Path) -> PathBuf {
+	if !suffix.as_os_str().is_empty() {
+		base.push(suffix);
+	}
+	base
 }
 
 fn display_write_path(path: &Path, workspace_root: &Path) -> Str {
@@ -1730,6 +1805,11 @@ mod tests {
 		let sandbox = tempfile::tempdir().expect("sandbox");
 		let root = sandbox.path().join("workspace");
 		std::fs::create_dir_all(&root).expect("workspace");
+		let existing = root.join("existing.txt");
+		std::fs::write(&existing, "existing").expect("existing file");
+		let resolved = resolve_plain_write_from_root(&root, "existing.txt").expect("existing target");
+		assert_eq!(resolved.path, std::fs::canonicalize(&existing).expect("canonical existing file"));
+		assert!(resolved.use_document_host);
 		let absolute = sandbox.path().join("outside").join("file.txt");
 		let canonical_sandbox = std::fs::canonicalize(sandbox.path()).expect("canonical sandbox");
 		let resolved = resolve_plain_write_from_root(&root, absolute.to_str().expect("UTF-8 path"))
@@ -1796,6 +1876,7 @@ mod tests {
 		let a_uri = Url::from_file_path(&a_path).expect("a URI").to_string();
 		let b_uri = Url::from_file_path(&b_path).expect("b URI").to_string();
 		let (client, server) = tokio::io::duplex(64 * 1024);
+		let (server_release, server_hold) = tokio::sync::oneshot::channel();
 		let server_task = tokio::spawn({
 			let root_uri = root_uri.clone();
 			let a_uri = a_uri.clone();
@@ -1840,7 +1921,7 @@ mod tests {
 							request_id: open.request_id,
 							body:       Some(pb::server_frame::Body::DocumentOpened(
 								pb::OpenDocumentResponse {
-									lease_id: Bytes::from(vec![index as u8 + 1]),
+									lease_id: Bytes::from(vec![index as u8 + 1; 16]),
 									head:     Some(test_document_head(
 										uri,
 										index as u8 + 1,
@@ -1945,6 +2026,7 @@ mod tests {
 				)
 				.await
 				.expect("write rollback outcome");
+				server_hold.await.expect("test releases fake server");
 			}
 		});
 
@@ -1958,6 +2040,16 @@ mod tests {
 			.open(b_uri.clone().into(), None, &cancel)
 			.await
 			.expect("b lease");
+		assert_eq!(a_lease.id().as_ref(), &[1; 16]);
+		assert_eq!(b_lease.id().as_ref(), &[2; 16]);
+		assert_eq!(
+			a_lease.head().revision.as_ref(),
+			Some(&pb::Revision { sequence: 1, content_hash: Bytes::from(vec![10; 32]) })
+		);
+		assert_eq!(
+			b_lease.head().revision.as_ref(),
+			Some(&pb::Revision { sequence: 1, content_hash: Bytes::from(vec![11; 32]) })
+		);
 		let mut a = prepared_for_test(a_lease, &a_path);
 		let mut b = prepared_for_test(b_lease, &b_path);
 		let proposals = [&a, &b]
@@ -1983,8 +2075,14 @@ mod tests {
 		.expect("populate batch register");
 		assert!(batch.named("carry").is_some());
 		let result = EditDocuments::commit(&host, vec![&mut a, &mut b], proposals, batch).await;
-		assert!(matches!(result, Err(EditCommitError::Rejected(_))));
+		assert!(
+			matches!(result, Err(EditCommitError::Rejected(_))),
+			"unexpected partial-commit result: {result:?}"
+		);
 		assert!(host.start_clipboard_batch().named("carry").is_none());
+		server_release
+			.send(())
+			.expect("release fake document server");
 		server_task.await.expect("fake document server");
 	}
 
@@ -1996,7 +2094,7 @@ mod tests {
 		byte_length: usize,
 	) -> pb::DocumentHead {
 		pb::DocumentHead {
-			document:    Some(pb::DocumentRef { id: Bytes::from(vec![id]), uri }),
+			document:    Some(pb::DocumentRef { id: Bytes::from(vec![id; 16]), uri }),
 			revision:    Some(pb::Revision { sequence, content_hash: Bytes::from(vec![hash; 32]) }),
 			presence:    pb::DocumentPresence::Present as i32,
 			kind:        pb::DocumentKind::Text as i32,
@@ -2021,10 +2119,11 @@ mod tests {
 	}
 }
 
-fn write_archive_member(
+fn write_archive_member_blocking(
 	host: &DocumentHost,
 	display_path: &str,
 	content: Bytes,
+	control: &SpecialWriteControl,
 ) -> Result<Option<omp_tools::write::backends::ResultPayload>, omp_tools::write::backends::Fault> {
 	use omp_tools::{
 		read::archive::ArchiveFormat,
@@ -2073,6 +2172,9 @@ fn write_archive_member(
 		empty_archive_selector_misfire(display_path, content.is_empty(), member_existed)
 	{
 		return Err(fault);
+	}
+	if !control.begin_effects() {
+		return Err(special_write_cancelled());
 	}
 	if let Some(parent) = final_path.parent() {
 		std::fs::create_dir_all(parent).map_err(|error| special_fault(error.to_string()))?;
@@ -2176,10 +2278,12 @@ fn archive_member_exists(
 		.is_some_and(|entry| !entry.is_directory()))
 }
 
-fn write_sqlite_row(
+fn write_sqlite_row_blocking(
 	host: &DocumentHost,
 	display_path: &str,
 	content: &str,
+	control: &SpecialWriteControl,
+	interrupt: &SqliteWriteInterrupt,
 ) -> Result<Option<omp_tools::write::backends::ResultPayload>, omp_tools::write::backends::Fault> {
 	use omp_tools::{
 		read::looks_like_sqlite,
@@ -2221,11 +2325,22 @@ fn write_sqlite_row(
 		let _ = fallback;
 		return Err(special_fault(format!("SQLite database '{display_path}' not found")));
 	};
+	if !control.begin_effects() {
+		return Err(special_write_cancelled());
+	}
 	let mut connection = rusqlite::Connection::open_with_flags(
 		&absolute,
 		OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI,
 	)
 	.map_err(|error| special_fault(error.to_string()))?;
+	let progress = control.clone();
+	connection
+		.progress_handler(1_000, Some(move || progress.is_cancelled()))
+		.map_err(|error| special_fault(error.to_string()))?;
+	interrupt.install(&connection);
+	if control.is_cancelled() {
+		interrupt.interrupt();
+	}
 	let mutation = mutate_sqlite_row(&mut connection, &target, content)?;
 	drop(connection);
 	let canonical = std::fs::canonicalize(&absolute).unwrap_or(absolute);
@@ -2281,7 +2396,7 @@ fn resolve_special_write_path(
 	let suffix = candidate
 		.strip_prefix(ancestor)
 		.map_err(|_| special_fault("write path could not be resolved from its existing ancestor"))?;
-	Ok(canonical_ancestor.join(suffix))
+	Ok(join_nonempty_suffix(canonical_ancestor, suffix))
 }
 
 fn atomic_replace(
@@ -2315,15 +2430,161 @@ fn unique_temp_path(path: &Path) -> PathBuf {
 	path.with_file_name(format!(".{name}.tmp-{}-{sequence}", std::process::id()))
 }
 
+fn special_write_cancelled() -> omp_tools::write::backends::Fault {
+	special_fault("special write cancelled before mutation began")
+}
+
 fn special_fault(message: impl Into<Str>) -> omp_tools::write::backends::Fault {
 	omp_tools::write::backends::Fault { message: message.into() }
 }
 
 #[cfg(test)]
 mod special_write_tests {
-	use std::io::Write as _;
+	use std::{
+		io::Write as _,
+		sync::{
+			Arc,
+			atomic::{AtomicBool, Ordering},
+		},
+		time::Duration,
+	};
 
-	use super::{atomic_replace, special_fault};
+	use omp_tools::write::{SpecialWriteCancellation, SpecialWriteControl};
+
+	use super::{
+		atomic_replace, run_special_write_blocking, special_fault, special_write_cancelled,
+	};
+
+	#[tokio::test(flavor = "current_thread")]
+	async fn stalled_blocking_write_keeps_runtime_responsive_and_cancels_before_effects() {
+		let (started_tx, started_rx) = flume::bounded(1);
+		let (release_tx, release_rx) = flume::bounded(1);
+		let mutated = Arc::new(AtomicBool::new(false));
+		let worker_mutated = Arc::clone(&mutated);
+		let control = SpecialWriteControl::new();
+		let task_control = control.clone();
+		let task = tokio::spawn(async move {
+			run_special_write_blocking(task_control, "injected", move |control| {
+				started_tx.send(()).expect("test receives worker start");
+				release_rx.recv().expect("test releases stalled worker");
+				if !control.begin_effects() {
+					return Err(special_write_cancelled());
+				}
+				worker_mutated.store(true, Ordering::Release);
+				Ok(())
+			})
+			.await
+		});
+
+		tokio::time::timeout(Duration::from_secs(1), started_rx.recv_async())
+			.await
+			.expect("blocking worker starts without pinning the runtime")
+			.expect("worker start channel remains live");
+		let heartbeat = tokio::spawn(async {
+			tokio::task::yield_now().await;
+		});
+		tokio::time::timeout(Duration::from_secs(1), heartbeat)
+			.await
+			.expect("runtime remains responsive while worker is stalled")
+			.expect("heartbeat joins");
+		assert_eq!(control.cancel(), SpecialWriteCancellation::BeforeEffects);
+		release_tx.send(()).expect("release worker");
+		let result = tokio::time::timeout(Duration::from_secs(1), task)
+			.await
+			.expect("cancelled worker finishes")
+			.expect("worker task joins");
+		assert_eq!(
+			result
+				.expect_err("pre-effect cancellation rejects")
+				.message
+				.as_str(),
+			"special write cancelled before mutation began"
+		);
+		assert!(!mutated.load(Ordering::Acquire));
+	}
+
+	#[tokio::test(flavor = "current_thread")]
+	async fn cancellation_after_blocking_worker_starts_effects_is_unknown() {
+		let (started_tx, started_rx) = flume::bounded(1);
+		let (release_tx, release_rx) = flume::bounded(1);
+		let control = SpecialWriteControl::new();
+		let task_control = control.clone();
+		let task = tokio::spawn(async move {
+			run_special_write_blocking(task_control, "injected", move |control| {
+				assert!(control.begin_effects());
+				started_tx.send(()).expect("test receives effect boundary");
+				release_rx.recv().expect("test releases stalled worker");
+				Ok(())
+			})
+			.await
+		});
+
+		tokio::time::timeout(Duration::from_secs(1), started_rx.recv_async())
+			.await
+			.expect("worker reaches effect boundary")
+			.expect("effect boundary channel remains live");
+		assert_eq!(control.cancel(), SpecialWriteCancellation::EffectsUnknown);
+		release_tx.send(()).expect("release worker");
+		tokio::time::timeout(Duration::from_secs(1), task)
+			.await
+			.expect("worker finishes")
+			.expect("worker task joins")
+			.expect("injected worker succeeds");
+	}
+
+	#[tokio::test(flavor = "current_thread")]
+	async fn sqlite_interrupt_handle_stops_an_active_operation() {
+		let (started_tx, started_rx) = flume::bounded(1);
+		let control = SpecialWriteControl::new();
+		let interrupt = Arc::new(super::SqliteWriteInterrupt::default());
+		let task_control = control.clone();
+		let task_interrupt = Arc::clone(&interrupt);
+		let worker = tokio::task::spawn_blocking(move || {
+			let connection = rusqlite::Connection::open_in_memory().expect("open SQLite fixture");
+			let progress = task_control.clone();
+			connection
+				.progress_handler(1_000, Some(move || progress.is_cancelled()))
+				.expect("install SQLite progress handler");
+			task_interrupt.install(&connection);
+			assert!(task_control.begin_effects());
+			started_tx
+				.send(())
+				.expect("test observes active SQLite operation");
+			connection
+				.query_row(
+					"WITH RECURSIVE count(x) AS (VALUES(0) UNION ALL SELECT x + 1 FROM count) SELECT \
+					 sum(x) FROM count",
+					[],
+					|row| row.get::<_, i64>(0),
+				)
+				.expect_err("active SQLite operation is interrupted")
+		});
+		let waiter_control = control.clone();
+		let waiter_interrupt = Arc::clone(&interrupt);
+		let waiter = tokio::spawn(async move {
+			waiter_control.cancelled().await;
+			waiter_interrupt.interrupt();
+		});
+
+		tokio::time::timeout(Duration::from_secs(1), started_rx.recv_async())
+			.await
+			.expect("SQLite worker starts")
+			.expect("SQLite start channel remains live");
+		assert_eq!(control.cancel(), SpecialWriteCancellation::EffectsUnknown);
+		let error = tokio::time::timeout(Duration::from_secs(1), worker)
+			.await
+			.expect("SQLite interrupt stops active operation promptly")
+			.expect("SQLite worker joins");
+		waiter.await.expect("interrupt waiter joins");
+		assert!(
+			matches!(
+				&error,
+				rusqlite::Error::SqliteFailure(failure, _)
+					if failure.code == rusqlite::ErrorCode::OperationInterrupted
+			),
+			"unexpected SQLite interruption error: {error}"
+		);
+	}
 
 	#[test]
 	fn atomic_archive_swap_commits_complete_output() {

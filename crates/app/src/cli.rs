@@ -77,7 +77,8 @@ pub struct EnvdArgs {
 	/// Owner-only environment socket. Defaults to `<state-dir>/env.sock`.
 	#[arg(long, value_name = "PATH")]
 	pub socket:           Option<PathBuf>,
-	/// Document-server socket. Defaults to `<state-dir>/docserver.sock`.
+	/// Document-server socket. An explicit live socket is attached; the default
+	/// `<state-dir>/docserver.sock` must be unowned.
 	#[arg(long, value_name = "PATH")]
 	pub docserver_socket: Option<PathBuf>,
 	/// Environment state directory. Defaults to a project-keyed directory under
@@ -558,7 +559,6 @@ mod tests {
 	fn rejects_incomplete_commands() {
 		for arguments in [
 			&["omp", "serve"][..],
-			&["omp", "chat", "--gateway"][..],
 			&["omp", "infer", "--model", "provider/model"][..],
 			&["omp", "local", "infer"][..],
 			&["omp", "catalog", "import", "--providers", "providers.toml", "--oauth", "oauth.toml"][..],
@@ -571,5 +571,13 @@ mod tests {
 				ErrorKind::MissingRequiredArgument
 			);
 		}
+		// `--model` is optional now; a dangling `--gateway` fails on its
+		// missing value instead of a missing required argument.
+		assert_eq!(
+			OmpCli::try_parse_from(["omp", "chat", "--gateway"])
+				.expect_err("dangling gateway endpoint must be rejected")
+				.kind(),
+			ErrorKind::InvalidValue
+		);
 	}
 }

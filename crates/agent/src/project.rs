@@ -401,9 +401,7 @@ mod tests {
 	use bytes::Bytes;
 	use omp_core::Str;
 	use omp_proto::thread::v1 as thread_pb;
-	use omp_storage::transcript::{
-		Event, Header, ItemRecord, Kind, SessionId, Writer, load,
-	};
+	use omp_storage::transcript::{Event, Header, ItemRecord, Kind, SessionId, Writer, load};
 	use omp_tool::PromptCaps;
 
 	use super::project_journal;
@@ -417,15 +415,12 @@ mod tests {
 			std::process::id(),
 			NEXT_PATH.fetch_add(1, Ordering::Relaxed)
 		));
-		let mut writer = Writer::create(
-			&path,
-			&Header {
-				v:       4,
-				id:      SessionId(Str::from("user-blob")),
-				created: 1,
-				cwd:     std::env::temp_dir(),
-			},
-		)
+		let mut writer = Writer::create(&path, &Header {
+			v:       4,
+			id:      SessionId(Str::from("user-blob")),
+			created: 1,
+			cwd:     std::env::temp_dir(),
+		})
 		.expect("create transcript");
 		let blob = thread_pb::Blob {
 			hash:   Bytes::from_static(&[7; 32]),
@@ -437,9 +432,7 @@ mod tests {
 		let item = thread_pb::Item {
 			kind: Some(thread_pb::item::Kind::Message(thread_pb::Message {
 				role:  thread_pb::Role::User as i32,
-				parts: vec![thread_pb::Part {
-					kind: Some(thread_pb::part::Kind::Blob(blob)),
-				}],
+				parts: vec![thread_pb::Part { kind: Some(thread_pb::part::Kind::Blob(blob)) }],
 			})),
 			..Default::default()
 		};
@@ -447,8 +440,8 @@ mod tests {
 			.append(&Event {
 				ts:   2,
 				kind: Kind::Item(ItemRecord {
-					item: item.clone(),
-					turn_id: None,
+					item:        item.clone(),
+					turn_id:     None,
 					prompt_hash: None,
 				}),
 			})

@@ -539,11 +539,12 @@ impl ReadSources for ReadSourceAdapter {
 
 	async fn open(&self, path: Str) -> Result<Self::Lease, Fault> {
 		let stat = self.stat_path(&path).await?;
-		if !Path::new(stat.canonical_path.as_str()).starts_with(self.workspace.root()) {
+		let canonical = Path::new(stat.canonical_path.as_str());
+		let Ok(relative) = canonical.strip_prefix(self.workspace.root()) else {
 			return open_filesystem_lease(stat.canonical_path).await;
-		}
-		let resolved =
-			resolve_read_document(&self.documents, &stat.canonical_path).map_err(Fault::source)?;
+		};
+		let relative = utf8_path(relative)?;
+		let resolved = resolve_read_document(&self.documents, &relative).map_err(Fault::source)?;
 		let cancel = CancellationToken::new();
 		let lease = DocumentHost::open(&self.documents, resolved.uri, None, &cancel)
 			.await

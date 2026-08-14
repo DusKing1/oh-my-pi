@@ -569,6 +569,7 @@ impl Journal {
 		self.aborted.insert(turn_id, (index, disposition));
 		Ok(index)
 	}
+
 	/// Moves the live chain point to `to`, or to the transcript root.
 	///
 	/// Rewinding is rejected while a started turn lacks a terminal receipt.
@@ -576,9 +577,10 @@ impl Journal {
 		if self.pending_turn().is_some() {
 			return Err(JournalError::RewindWhilePending);
 		}
-		Ok(self.writer.append(&Event { ts, kind: Kind::Rewind { to } })?)
+		Ok(self
+			.writer
+			.append(&Event { ts, kind: Kind::Rewind { to } })?)
 	}
-
 
 	/// Returns the earliest live turn start that lacks a terminal receipt.
 	pub fn pending_turn(&self) -> Option<&TurnStart> {
@@ -1961,12 +1963,8 @@ mod tests {
 				},
 			})
 			.expect("start pending turn");
-		assert!(matches!(
-			journal.rewind(4, None),
-			Err(JournalError::RewindWhilePending)
-		));
+		assert!(matches!(journal.rewind(4, None), Err(JournalError::RewindWhilePending)));
 		drop(journal);
 		std::fs::remove_file(path).expect("remove journal");
 	}
-
 }

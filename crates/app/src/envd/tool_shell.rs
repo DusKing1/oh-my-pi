@@ -34,15 +34,11 @@ impl ShellExecHost {
 
 /// Foreground shell run retaining the concrete host's process-tree guard.
 pub struct HostShellRun {
-	started: Option<bytes::Bytes>,
-	run:     ExecRun,
+	run: ExecRun,
 }
 
 impl ShellRun for HostShellRun {
 	async fn next_event(&mut self) -> Result<Option<RunEvent>, Fault> {
-		if let Some(exec_id) = self.started.take() {
-			return Ok(Some(RunEvent::Started { exec_id }));
-		}
 		let Some(event) = self.run.next_event().await else {
 			return Ok(None);
 		};
@@ -76,7 +72,7 @@ impl ShellExec for ShellExecHost {
 		session: &'a Session,
 		request: RunRequest,
 	) -> Result<Self::Run, Fault> {
-		let (started, run) = self
+		let (_, run) = self
 			.host
 			.exec(
 				ExecRequest {
@@ -88,7 +84,7 @@ impl ShellExec for ShellExecHost {
 			)
 			.await
 			.map_err(|error| resource_fault("run", error))?;
-		Ok(HostShellRun { started: Some(started.exec), run })
+		Ok(HostShellRun { run })
 	}
 
 	async fn detach(&self, request: DetachRequest) -> Result<DetachedJob, Fault> {
@@ -122,6 +118,7 @@ impl ShellExec for ShellExecHost {
 
 fn map_event(event: ExecEvent) -> Result<RunEvent, Fault> {
 	match event {
+		ExecEvent::Started { exec_id } => Ok(RunEvent::Started { exec_id }),
 		ExecEvent::Output(frame) => {
 			let channel = match EnvOutputChannel::try_from(frame.channel) {
 				Ok(EnvOutputChannel::Stdout) => OutputChannel::Stdout,

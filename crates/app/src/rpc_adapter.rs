@@ -19,7 +19,8 @@ use omp_llm_inference::{
 	answer::{
 		Artifact, ArtifactBody, AudioChunk, ChatControl, ChatControlError, GenerationEvent,
 		ImageArtifact, NativeResponse, NativeResponseBody, RealtimeEvent as CanonicalRealtimeEvent,
-		RealtimeInput, SearchResults, TranscriptEvent, UsageReport, UsageWindowKind, VideoArtifact,
+		RealtimeInput, SearchResults, TranscriptEvent, UsageReport, UsageStatus, UsageUnit,
+		UsageWindowKind, VideoArtifact,
 	},
 	call::{
 		AudioFormat, Background, CallMeta, ContentPart, ContextStrategy, CountAccuracy,
@@ -31,7 +32,7 @@ use omp_llm_inference::{
 		ToolChoice, ToolDefinition, ToolInputConstraint, TranscriptionRequest, TruncationPolicy,
 		UsageRequest, UsageScope, VideoRequest,
 	},
-	error::{Error, ErrorKind},
+	error::{Error, ErrorDetail, ErrorKind},
 	event::{
 		BlockKind, ChatEvent, Completion, FinishReason, InvokeComplete, InvokeInput,
 		WorkflowActionResponse, WorkflowResponse, WorkflowResponseKind,
@@ -1444,7 +1445,7 @@ fn inference_turn_error(error: Error) -> pb::TurnEvent {
 		_ => pb::turn_error::Kind::Upstream,
 	};
 	let detail = if error.kind == ErrorKind::Authentication {
-		error.provider.as_ref().map_or_else(
+		let mut detail = error.provider.as_ref().map_or_else(
 			|| {
 				"Authentication failed. Use `/login <provider>` in chat or run `omp auth login \
 				 <provider>`."
@@ -1456,7 +1457,14 @@ fn inference_turn_error(error: Error) -> pb::TurnEvent {
 					 or run `omp auth login {provider}`."
 				)
 			},
-		)
+		);
+		if let Some(ErrorDetail::Provider { sanitized_message }) = error.detail_ref()
+			&& !sanitized_message.trim().is_empty()
+		{
+			detail.push_str(" Provider detail: ");
+			detail.push_str(sanitized_message.as_str());
+		}
+		detail
 	} else {
 		format!("{:?} during {:?}", error.kind, error.phase)
 	};
@@ -2570,33 +2578,118 @@ fn search_response(answer: SearchResults) -> pb::SearchResponse {
 }
 fn usage_response(report: UsageReport) -> pb::UsageResponse {
 	pb::UsageResponse {
-		provider:  report.provider.as_str().to_owned(),
-		account:   report.account.as_str().to_owned(),
-		principal: report
+		provider:         report.provider.as_str().to_owned(),
+		account:          report.account.as_str().to_owned(),
+		principal:        report
 			.principal
 			.map_or_else(String::new, |value| value.as_str().to_owned()),
-		windows:   report
+		plan:             report.plan.map(|value| value.as_str().to_owned()),
+		account_metadata: Some(pb::usage_response::AccountMetadata {
+			provider_account_id: report
+				.account_meta
+				.provider_account_id
+				.map(|value| value.as_str().to_owned()),
+			email:               report
+				.account_meta
+				.email
+				.map(|value| value.as_str().to_owned()),
+			project_id:          report
+				.account_meta
+				.project_id
+				.map(|value| value.as_str().to_owned()),
+			organization_id:     report
+				.account_meta
+				.organization_id
+				.map(|value| value.as_str().to_owned()),
+			organization_name:   report
+				.account_meta
+				.organization_name
+				.map(|value| value.as_str().to_owned()),
+		}),
+		source_label:     report.source_label.map(|value| value.as_str().to_owned()),
+		notes:            report
+			.notes
+			.into_vec()
+			.into_iter()
+			.map(|value| value.as_str().to_owned())
+			.collect(),
+		reset_credits:    report
+			.reset_credits
+			.map(|reset| pb::usage_response::ResetCredits {
+				available: reset.available,
+				credits:   reset
+					.credits
+					.into_vec()
+					.into_iter()
+					.map(|credit| pb::usage_response::reset_credits::Credit {
+						granted_at_ms: credit.granted_at.map(system_time_ms),
+						expires_at_ms: credit.expires_at.map(system_time_ms),
+						status:        credit.status.map(|value| value.as_str().to_owned()),
+					})
+					.collect(),
+			}),
+		windows:          report
 			.windows
 			.into_iter()
 			.map(|window| pb::usage_response::Window {
-				kind:           match window.kind {
+				kind: match window.kind {
 					UsageWindowKind::RateLimit => pb::usage_response::window::Kind::RateLimit,
 					UsageWindowKind::Quota => pb::usage_response::window::Kind::Quota,
 					UsageWindowKind::Billing => pb::usage_response::window::Kind::Billing,
 					UsageWindowKind::Balance => pb::usage_response::window::Kind::Balance,
 				} as i32,
-				dimension:      window.dimension.as_str().to_owned(),
-				consumed:       window.consumed,
-				remaining:      window.remaining,
-				limit:          window.limit,
-				resets_at_ms:   window.resets_at.map(system_time_ms),
-				accuracy:       match window.source {
+				dimension: window.dimension.as_str().to_owned(),
+				consumed: window.amount.consumed.map(|value| value.units),
+				remaining: window.amount.remaining.map(|value| value.units),
+				limit: window.amount.limit.map(|value| value.units),
+				resets_at_ms: window.resets_at.map(system_time_ms),
+				accuracy: match window.source {
 					UsageSource::Provider | UsageSource::Measured => pb::usage::Accuracy::Exact,
 					UsageSource::Estimated => pb::usage::Accuracy::Estimated,
 					UsageSource::Mixed => pb::usage::Accuracy::Mixed,
 					UsageSource::Unknown => pb::usage::Accuracy::Unspecified,
 				} as i32,
 				observed_at_ms: system_time_ms(window.observed_at),
+				id: window.id.as_str().to_owned(),
+				label: window.label.map(|value| value.as_str().to_owned()),
+				scope: window.scope.map(|value| value.as_str().to_owned()),
+				unit: match window.amount.unit {
+					UsageUnit::Percent => pb::usage_response::window::Unit::Percent,
+					UsageUnit::Tokens => pb::usage_response::window::Unit::Tokens,
+					UsageUnit::Requests => pb::usage_response::window::Unit::Requests,
+					UsageUnit::Usd => pb::usage_response::window::Unit::Usd,
+					UsageUnit::Minutes => pb::usage_response::window::Unit::Minutes,
+					UsageUnit::Bytes => pb::usage_response::window::Unit::Bytes,
+					UsageUnit::Unknown => pb::usage_response::window::Unit::Unknown,
+				} as i32,
+				consumed_decimal_exponent: window
+					.amount
+					.consumed
+					.map_or(0, |value| u32::from(value.decimal_exponent)),
+				remaining_decimal_exponent: window
+					.amount
+					.remaining
+					.map_or(0, |value| u32::from(value.decimal_exponent)),
+				limit_decimal_exponent: window
+					.amount
+					.limit
+					.map_or(0, |value| u32::from(value.decimal_exponent)),
+				status: window.status.map(|status| match status {
+					UsageStatus::Ok => pb::usage_response::window::Status::Ok,
+					UsageStatus::Warning => pb::usage_response::window::Status::Warning,
+					UsageStatus::Exhausted => pb::usage_response::window::Status::Exhausted,
+					UsageStatus::Unknown => pb::usage_response::window::Status::Unknown,
+				} as i32),
+				duration_ms: window
+					.duration
+					.map(|value| value.as_millis().try_into().unwrap_or(u64::MAX)),
+				reset_label: window.reset_label.map(|value| value.as_str().to_owned()),
+				notes: window
+					.notes
+					.into_vec()
+					.into_iter()
+					.map(|value| value.as_str().to_owned())
+					.collect(),
 			})
 			.collect(),
 	}
@@ -3050,14 +3143,15 @@ mod tests {
 	}
 
 	#[test]
-	fn authentication_turn_error_names_the_login_command_and_provider() {
+	fn authentication_turn_error_names_the_login_command_provider_and_safe_detail() {
 		let authentication = Error::new(
 			ErrorKind::Authentication,
 			ErrorPhase::Authentication,
 			RetryAction::Never,
 			ExecutionReceipt::default(),
 		)
-		.provider(ProviderId::from("kimi-code"));
+		.provider(ProviderId::from("kimi-code"))
+		.detail(ErrorDetail::provider(Str::from("device authorization expired")));
 		let Some(pb::turn_event::Event::Error(error)) = inference_turn_error(authentication).event
 		else {
 			panic!("authentication failure must project a turn error");
@@ -3065,6 +3159,7 @@ mod tests {
 		assert_eq!(error.kind, pb::turn_error::Kind::Auth as i32);
 		assert!(error.detail.contains("/login kimi-code"));
 		assert!(error.detail.contains("omp auth login kimi-code"));
+		assert!(error.detail.contains("device authorization expired"));
 	}
 
 	#[test]

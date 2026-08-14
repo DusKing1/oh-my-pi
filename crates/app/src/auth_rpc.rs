@@ -15,12 +15,15 @@ use futures::Stream;
 use omp_llm_catalog::ProviderId;
 use omp_llm_inference::{
 	Client, Registry,
-	answer::{AccountState, AccountSummary, AuthAnswer, AuthEvent, AuthSession, UsageReport},
+	answer::{
+		AccountState, AccountSummary, AuthAnswer, AuthEvent, AuthSession, UsageQuantity, UsageReport,
+		UsageStatus, UsageUnit, UsageWindowKind,
+	},
 	call::{
 		AuthInput, AuthMethod, AuthRequest, CallMeta, LoginRequest, Target, UsageRequest, UsageScope,
 	},
 	id::{AccountId, LoginSessionId, RequestId},
-	receipt::ExecutionBudget,
+	receipt::{ExecutionBudget, UsageSource},
 	router::Router,
 };
 use omp_proto::omp::auth::v1 as pb;
@@ -422,30 +425,167 @@ fn parse_account_id(account: &AccountId) -> Result<u64, Status> {
 }
 
 fn usage_report(report: UsageReport) -> pb::UsageReport {
+	let fetched_at_ms = report
+		.windows
+		.iter()
+		.map(|window| usage_time_ms(window.observed_at))
+		.max()
+		.unwrap_or_default();
 	pb::UsageReport {
 		credential_id: report.account.as_str().parse().unwrap_or(0),
-		provider:      report.provider.as_str().to_owned(),
-		plan:          String::new(),
-		windows:       report
+		provider: report.provider.as_str().to_owned(),
+		plan: report
+			.plan
+			.map_or_else(String::new, |value| value.as_str().to_owned()),
+		account: report.account.as_str().to_owned(),
+		principal: report
+			.principal
+			.map_or_else(String::new, |value| value.as_str().to_owned()),
+		account_metadata: Some(pb::usage_report::AccountMetadata {
+			provider_account_id: report
+				.account_meta
+				.provider_account_id
+				.map(|value| value.as_str().to_owned()),
+			email:               report
+				.account_meta
+				.email
+				.map(|value| value.as_str().to_owned()),
+			project_id:          report
+				.account_meta
+				.project_id
+				.map(|value| value.as_str().to_owned()),
+			organization_id:     report
+				.account_meta
+				.organization_id
+				.map(|value| value.as_str().to_owned()),
+			organization_name:   report
+				.account_meta
+				.organization_name
+				.map(|value| value.as_str().to_owned()),
+		}),
+		source_label: report.source_label.map(|value| value.as_str().to_owned()),
+		notes: report
+			.notes
+			.into_vec()
+			.into_iter()
+			.map(|value| value.as_str().to_owned())
+			.collect(),
+		reset_credits: report
+			.reset_credits
+			.map(|reset| pb::usage_report::ResetCredits {
+				available: reset.available,
+				credits:   reset
+					.credits
+					.into_vec()
+					.into_iter()
+					.map(|credit| pb::usage_report::reset_credits::Credit {
+						granted_at_ms: credit.granted_at.map(usage_time_ms),
+						expires_at_ms: credit.expires_at.map(usage_time_ms),
+						status:        credit.status.map(|value| value.as_str().to_owned()),
+					})
+					.collect(),
+			}),
+		windows: report
 			.windows
 			.into_iter()
-			.map(|window| pb::UsageWindow {
-				label:        window.dimension.as_str().to_owned(),
-				used_percent: match (window.consumed, window.limit) {
-					(Some(used), Some(limit)) if limit != 0 => (used as f64 / limit as f64) * 100.0,
+			.map(|window| {
+				let used_percent = match (window.amount.consumed, window.amount.limit) {
+					(Some(used), Some(limit)) if limit.units != 0 => {
+						(usage_quantity_f64(used) / usage_quantity_f64(limit)) * 100.0
+					},
+					(Some(used), None) if window.amount.unit == UsageUnit::Percent => {
+						usage_quantity_f64(used)
+					},
 					_ => 0.0,
-				},
-				resets_at_ms: window
-					.resets_at
-					.and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-					.map_or(0, |duration| duration.as_millis().try_into().unwrap_or(u64::MAX)),
+				};
+				pb::UsageWindow {
+					label: window
+						.label
+						.as_ref()
+						.unwrap_or(&window.dimension)
+						.as_str()
+						.to_owned(),
+					used_percent,
+					resets_at_ms: window.resets_at.map_or(0, usage_time_ms),
+					id: window.id.as_str().to_owned(),
+					kind: match window.kind {
+						UsageWindowKind::RateLimit => pb::usage_window::Kind::RateLimit,
+						UsageWindowKind::Quota => pb::usage_window::Kind::Quota,
+						UsageWindowKind::Billing => pb::usage_window::Kind::Billing,
+						UsageWindowKind::Balance => pb::usage_window::Kind::Balance,
+					} as i32,
+					dimension: window.dimension.as_str().to_owned(),
+					consumed: window.amount.consumed.map(|value| value.units),
+					remaining: window.amount.remaining.map(|value| value.units),
+					limit: window.amount.limit.map(|value| value.units),
+					unit: match window.amount.unit {
+						UsageUnit::Percent => pb::usage_window::Unit::Percent,
+						UsageUnit::Tokens => pb::usage_window::Unit::Tokens,
+						UsageUnit::Requests => pb::usage_window::Unit::Requests,
+						UsageUnit::Usd => pb::usage_window::Unit::Usd,
+						UsageUnit::Minutes => pb::usage_window::Unit::Minutes,
+						UsageUnit::Bytes => pb::usage_window::Unit::Bytes,
+						UsageUnit::Unknown => pb::usage_window::Unit::Unknown,
+					} as i32,
+					consumed_decimal_exponent: window
+						.amount
+						.consumed
+						.map_or(0, |value| u32::from(value.decimal_exponent)),
+					remaining_decimal_exponent: window
+						.amount
+						.remaining
+						.map_or(0, |value| u32::from(value.decimal_exponent)),
+					limit_decimal_exponent: window
+						.amount
+						.limit
+						.map_or(0, |value| u32::from(value.decimal_exponent)),
+					scope: window.scope.map(|value| value.as_str().to_owned()),
+					duration_ms: window
+						.duration
+						.map(|value| value.as_millis().try_into().unwrap_or(u64::MAX)),
+					reset_label: window.reset_label.map(|value| value.as_str().to_owned()),
+					status: window.status.map(|status| match status {
+						UsageStatus::Ok => pb::usage_window::Status::Ok,
+						UsageStatus::Warning => pb::usage_window::Status::Warning,
+						UsageStatus::Exhausted => pb::usage_window::Status::Exhausted,
+						UsageStatus::Unknown => pb::usage_window::Status::Unknown,
+					} as i32),
+					notes: window
+						.notes
+						.into_vec()
+						.into_iter()
+						.map(|value| value.as_str().to_owned())
+						.collect(),
+					observed_at_ms: usage_time_ms(window.observed_at),
+					accuracy: match window.source {
+						UsageSource::Provider | UsageSource::Measured => {
+							omp_proto::omp::inference::v1::usage::Accuracy::Exact
+						},
+						UsageSource::Estimated => {
+							omp_proto::omp::inference::v1::usage::Accuracy::Estimated
+						},
+						UsageSource::Mixed => omp_proto::omp::inference::v1::usage::Accuracy::Mixed,
+						UsageSource::Unknown => {
+							omp_proto::omp::inference::v1::usage::Accuracy::Unspecified
+						},
+					} as i32,
+				}
 			})
 			.collect(),
-		fetched_at_ms: 0,
-		detail:        None,
+		fetched_at_ms,
+		detail: None,
 	}
 }
 
+fn usage_time_ms(time: std::time::SystemTime) -> u64 {
+	time
+		.duration_since(std::time::UNIX_EPOCH)
+		.map_or(0, |duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
+}
+
+fn usage_quantity_f64(quantity: UsageQuantity) -> f64 {
+	quantity.units as f64 / 10_f64.powi(i32::from(quantity.decimal_exponent))
+}
 fn not_available(capability: &str) -> Status {
 	Status::failed_precondition(format!(
 		"{capability} is not exposed by any constructed canonical auth operation"

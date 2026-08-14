@@ -65,6 +65,11 @@ pub enum ExecError {
 /// One ordered event emitted by an execution.
 #[derive(Clone, Debug)]
 pub enum ExecEvent {
+	/// The session dequeued this command and entered execution.
+	Started {
+		/// Opaque execution identifier assigned when the command was queued.
+		exec_id: Bytes,
+	},
 	/// Bytes written by stdout, stderr, or the PTY.
 	Output(OutputFrame),
 	/// The terminal execution status. No output follows it.
@@ -596,13 +601,54 @@ impl SpawnBook {
 }
 
 async fn session_loop(mut shell: Shell, commands: flume::Receiver<SessionCommand>) {
-	while let Ok(command) = commands.recv_async().await {
-		run_session_command(&mut shell, command).await;
+	let mut cancellation_deadline = None;
+	loop {
+		let command = if let Some(deadline) = cancellation_deadline {
+			tokio::select! {
+				command = commands.recv_async() => match command {
+					Ok(command) => command,
+					Err(_) => break,
+				},
+				() = tokio::time::sleep_until(deadline) => {
+					cancellation_deadline = None;
+					continue;
+				},
+			}
+		} else {
+			match commands.recv_async().await {
+				Ok(command) => command,
+				Err(_) => break,
+			}
+		};
+
+		if let Some(deadline) = cancellation_deadline {
+			match tokio::time::timeout_at(deadline, command.cancel_rx.recv_async()).await {
+				Ok(Ok(_) | Err(_)) => {
+					finish_session_command(&command, RunTerminal::Cancelled, Duration::ZERO);
+					cancellation_deadline = Some(tokio::time::Instant::now() + CANCEL_GRACE);
+					continue;
+				},
+				Err(_) => cancellation_deadline = None,
+			}
+		}
+		if run_session_command(&mut shell, command).await {
+			cancellation_deadline = Some(tokio::time::Instant::now() + CANCEL_GRACE);
+		}
 	}
 }
 
-async fn run_session_command(shell: &mut Shell, command: SessionCommand) {
+async fn run_session_command(shell: &mut Shell, command: SessionCommand) -> bool {
 	let started_at = Instant::now();
+	match command.cancel_rx.try_recv() {
+		Ok(_) | Err(flume::TryRecvError::Disconnected) => {
+			finish_session_command(&command, RunTerminal::Cancelled, started_at.elapsed());
+			return true;
+		},
+		Err(flume::TryRecvError::Empty) => {},
+	}
+	let _ = command
+		.events
+		.send(ExecEvent::Started { exec_id: command.exec.clone() });
 	let cancel_rx = command.cancel_rx.clone();
 	let setup = setup_io(
 		command.pty.as_ref(),
@@ -611,14 +657,8 @@ async fn run_session_command(shell: &mut Shell, command: SessionCommand) {
 		command.events.clone(),
 	);
 	let Ok((mut params, readers)) = setup else {
-		command.control.finished.store(true, Ordering::Release);
-		let status = failed_status(started_at, "I/O setup failed");
-		let _ = command.events.send(ExecEvent::Exit(ExitEvent {
-			exec:   command.exec,
-			status: Some(status),
-			props:  Default::default(),
-		}));
-		return;
+		finish_session_command(&command, RunTerminal::Failed, started_at.elapsed());
+		return false;
 	};
 	params.process_group_policy = omp_shell_engine::ProcessGroupPolicy::NewProcessGroup;
 	params.set_spawn_observer(command.control.spawns.clone());
@@ -654,15 +694,22 @@ async fn run_session_command(shell: &mut Shell, command: SessionCommand) {
 	for reader in readers {
 		let _ = reader.await;
 	}
+	let cancelled = result == RunTerminal::Cancelled;
+	finish_session_command(&command, result, started_at.elapsed());
+	cancelled
+}
+
+fn finish_session_command(command: &SessionCommand, result: RunTerminal, elapsed: Duration) {
 	command.control.finished.store(true, Ordering::Release);
-	let status = result.status(started_at.elapsed());
+	let status = result.status(elapsed);
 	let _ = command.events.send(ExecEvent::Exit(ExitEvent {
-		exec:   command.exec,
+		exec:   command.exec.clone(),
 		status: Some(status),
 		props:  Default::default(),
 	}));
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum RunTerminal {
 	Exited(i32),
 	Failed,
@@ -705,10 +752,6 @@ fn write_input(control: &RunControl, data: Option<&[u8]>) -> Result<(), ExecErro
 		input.take();
 	}
 	Ok(())
-}
-
-fn failed_status(started: Instant, _message: &str) -> ExecStatusMsg {
-	RunTerminal::Failed.status(started.elapsed())
 }
 
 fn setup_io(
@@ -787,6 +830,7 @@ fn spawn_reader<R: Read + Send + 'static>(
 async fn forward_named_process(process: Arc<NamedProcess>, run: ExecRun, _exec: Bytes) {
 	while let Some(event) = run.next_event().await {
 		match event {
+			ExecEvent::Started { .. } => {},
 			ExecEvent::Output(output) => {
 				let output = ProcessOutput {
 					name:       process.name.to_string(),
