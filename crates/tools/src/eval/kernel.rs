@@ -1254,21 +1254,6 @@ mod tests {
 		EmbeddedPython::new(Arc::clone(&ENGINE))
 	}
 
-	#[tokio::test]
-	async fn probe_seed_frames() {
-		let runtime = runtime();
-		let session = runtime.open_session().await.expect("session opens");
-		let (updates, done) = run_to_completion(
-			&runtime,
-			&session,
-			"import threading\ndef _leaked():\n    while True:\n        pass\nthreading.\
-			 Thread(target=_leaked, daemon=False).start()\nprint('seeded')",
-			false,
-		)
-		.await;
-		panic!("updates: {updates:?} outcome: {:?}", done.status.outcome);
-	}
-
 	async fn run_to_completion(
 		runtime: &EmbeddedPython,
 		session: &Session,

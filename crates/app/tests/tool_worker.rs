@@ -323,7 +323,7 @@ async fn opt_in_py_eval_survives_cancel_and_respawn() {
 		serde_json::from_slice::<Value>(&second.details_json).expect("respawn result JSON"),
 		json!({ "result": 42 })
 	);
-	assert_eq!(supervisor.registrations(), [declaration.clone()]);
+	assert_eq!(supervisor.registrations(), std::slice::from_ref(declaration));
 	supervisor.shutdown().await;
 }
 

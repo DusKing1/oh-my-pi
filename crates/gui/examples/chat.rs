@@ -67,7 +67,7 @@ struct ChatScene {
 }
 
 enum Phase {
-	Welcome(Welcome),
+	Welcome(Box<Welcome>),
 	Chat(Box<ChatState>),
 }
 
@@ -105,7 +105,7 @@ impl ChatScene {
 		Self {
 			ctx:      ctx.clone(),
 			started:  Instant::now(),
-			phase:    Phase::Welcome(Welcome::new(ctx.charset)),
+			phase:    Phase::Welcome(Box::new(Welcome::new(ctx.charset))),
 			viewport: Size::new(0, 0),
 		}
 	}

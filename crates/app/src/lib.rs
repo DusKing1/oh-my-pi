@@ -23,6 +23,10 @@ pub mod rpc_adapter;
 pub use miette::{IntoDiagnostic, Report, Result};
 
 /// Parses process arguments and runs the selected production operation.
+#[expect(
+	clippy::future_not_send,
+	reason = "the chat command runs a thread-confined terminal UI future"
+)]
 pub async fn run() -> Result<()> {
 	cli::dispatch(cli::OmpCli::parse()).await
 }

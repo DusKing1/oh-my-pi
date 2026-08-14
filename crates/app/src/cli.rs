@@ -1,7 +1,6 @@
 //! Command parsing and production dispatch for the `omp` executable.
 
 use std::{
-	future::Future,
 	path::{Path, PathBuf},
 	sync::Arc,
 	time::{SystemTime, UNIX_EPOCH},
@@ -243,21 +242,21 @@ const fn dispatch_target(command: &Command) -> DispatchTarget {
 }
 
 /// Dispatches one parsed command to its production implementation.
-pub fn dispatch(cli: OmpCli) -> impl Future<Output = miette::Result<()>> {
-	async move {
-		match cli.command {
-			Command::Serve(args) => serve(args).await,
-			Command::Envd(args) => crate::envd::run(args).await,
-			Command::Chat(args) => Box::pin(crate::chat::run(args)).await,
-			Command::Infer(args) => infer(args).await,
-			Command::Auth(args) => auth(args).await,
-			Command::Catalog(CatalogArgs { command: CatalogCommand::Import(args) }) => {
-				catalog_import(&args)
-			},
-			Command::Local(LocalArgs { command: LocalCommand::Infer(args) }) => {
-				local_infer(args).await
-			},
-		}
+#[expect(
+	clippy::future_not_send,
+	reason = "chat dispatch preserves the thread-confined omp_tui::App future"
+)]
+pub async fn dispatch(cli: OmpCli) -> miette::Result<()> {
+	match cli.command {
+		Command::Serve(args) => serve(args).await,
+		Command::Envd(args) => crate::envd::run(args).await,
+		Command::Chat(args) => Box::pin(crate::chat::run(args)).await,
+		Command::Infer(args) => infer(args).await,
+		Command::Auth(args) => auth(args).await,
+		Command::Catalog(CatalogArgs { command: CatalogCommand::Import(args) }) => {
+			catalog_import(&args)
+		},
+		Command::Local(LocalArgs { command: LocalCommand::Infer(args) }) => local_infer(args).await,
 	}
 }
 

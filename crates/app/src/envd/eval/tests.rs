@@ -211,7 +211,7 @@ assert __omp_timeout_events.count("pause") > 0
 # Namespace and one-time prelude guard persist across cells.
 persisted_value = 73
 "#.to_owned())?;
-		run(py, &globals, r#"
+		run(py, &globals, r"
 import concurrent.futures as _omp_test_futures
 
 def _observed_parallel_width(item_count):
@@ -228,7 +228,7 @@ def _observed_parallel_width(item_count):
     finally:
         _omp_test_futures.ThreadPoolExecutor = original
     return observed
-"#.to_owned())?;
+".to_owned())?;
 		host.set_concurrency_limit(0);
 		run(
 			py,

@@ -374,6 +374,10 @@ impl<C: TurnClient + Clone + 'static> crate::envd::eval::ParentSessionHost for C
 
 /// Runs one interactive durable project-chat session.
 #[cfg(unix)]
+#[expect(
+	clippy::future_not_send,
+	reason = "the interactive chat future owns a thread-confined omp_tui::App"
+)]
 pub async fn run(args: ChatArgs) -> miette::Result<()> {
 	use miette::{Context as _, IntoDiagnostic as _};
 	let root = canonical_project(&args.project).into_diagnostic()?;
@@ -453,6 +457,10 @@ pub async fn run(_args: ChatArgs) -> miette::Result<()> {
 	Err(ChatError::UnsupportedPlatform).into_diagnostic()
 }
 
+#[expect(
+	clippy::future_not_send,
+	reason = "omp_tui::App is deliberately confined to its terminal event-loop thread"
+)]
 async fn run_ui<C: TurnClient + Clone + 'static>(
 	client: C,
 	env: omp_env::EnvClient,

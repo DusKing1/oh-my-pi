@@ -374,7 +374,7 @@ fn eval_payload_text(payload: &omp_tools::eval::Payload) -> String {
 					text.push('\n');
 				}
 				if json_count > 1 {
-					writeln!(text, "display[{json_index}]",).expect("writing to a String cannot fail");
+					writeln!(text, "display[{json_index}]").expect("writing to a String cannot fail");
 				}
 				text.push_str(&serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string()));
 				text.push('\n');

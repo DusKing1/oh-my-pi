@@ -1074,6 +1074,35 @@ async fn production_eval_covers_bridge_persistence_reset_timeout_cancellation_an
 		after_cancel.result,
 		Some(omp_tools::eval::CellValue { text: Str::from("49"), json: Some(json!(49)) })
 	);
+
+	let crashed = invoke_builtin(
+		harness.client(),
+		"eval-child-crash",
+		"eval",
+		"1",
+		json!({"language":"py","code":"import os\nos._exit(17)"}),
+	)
+	.await;
+	assert!(crashed.is_error, "eval child crash was reported as a successful cell");
+	let crashed: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
+		serde_json::from_slice(&crashed.json).expect("typed eval crash verdict");
+	assert!(matches!(crashed, Verdict::Fault(omp_tools::eval::Fault::SessionLost { .. })));
+
+	let after_crash = invoke_builtin(
+		harness.client(),
+		"eval-after-crash",
+		"eval",
+		"1",
+		json!({"language":"py","code":"8 * 8"}),
+	)
+	.await;
+	let after_crash: Verdict<omp_tools::eval::Payload, omp_tools::eval::Fault> =
+		serde_json::from_slice(&after_crash.json).expect("typed post-crash eval verdict");
+	let Verdict::Ok(after_crash) = after_crash else {
+		panic!("post-crash Python cell returned a fault");
+	};
+	assert!(after_crash.reset, "respawn after crash was not reported as a reset");
+	assert_eq!(after_crash.result.and_then(|result| result.json), Some(json!(64)));
 }
 
 #[tokio::test]

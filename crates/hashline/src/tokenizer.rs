@@ -523,9 +523,27 @@ fn parse_locator_range(text: &str) -> Option<(ParsedRange, bool, bool)> {
 		return Some((ParsedRange { start: anchor, end: anchor }, false, false));
 	}
 	let rest = &trimmed[first_end..];
-	let second_start = rest
+	let Some(second_start) = rest
 		.char_indices()
-		.find_map(|(index, ch)| ch.is_ascii_digit().then_some(index))?;
+		.find_map(|(index, ch)| ch.is_ascii_digit().then_some(index))
+	else {
+		// A dangling range separator (`2.=`, `5-`, `12..`) is written intending an
+		// open range; recover it as the single-line range `N.=N`. Any other
+		// trailing token keeps the header on the strict rejection path.
+		let mut saw_separator = false;
+		for ch in rest.chars() {
+			match ch {
+				'-' | '.' | '=' | '…' => saw_separator = true,
+				ch if ch.is_whitespace() => {},
+				_ => return None,
+			}
+		}
+		if !saw_separator {
+			return None;
+		}
+		let anchor = Anchor { line: start };
+		return Some((ParsedRange { start: anchor, end: anchor }, true, false));
+	};
 	let separator = &rest[..second_start];
 	if separator.is_empty()
 		|| !separator
@@ -621,18 +639,12 @@ mod tests {
 	}
 
 	#[test]
-	fn rejects_dangling_range_separators() {
+	fn recovers_dangling_range_separators_as_single_line_ranges() {
 		let tokenizer = Tokenizer::new();
-		for header in [
-			"PUT 2.=:",
-			"PUT 2-:",
-			"CUT 2.=",
-			"PUT 2.. @r",
-			"CUT 5-",
-			"PUT 2.= junk:",
-			"CUT 2.=junk",
-			"PUT 2*.:",
-		] {
+		for header in ["PUT 2.=:", "PUT 2-:", "CUT 2.=", "PUT 2.. @r", "CUT 5-"] {
+			assert!(tokenizer.is_op(header), "{header}");
+		}
+		for header in ["PUT 2.= junk:", "CUT 2.=junk", "PUT 2*.:"] {
 			assert!(!tokenizer.is_op(header), "{header}");
 		}
 	}

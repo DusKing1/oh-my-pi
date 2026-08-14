@@ -4,6 +4,7 @@
 
 use std::{
 	collections::BTreeSet,
+	fmt::Write as _,
 	fs,
 	os::unix::fs::PermissionsExt as _,
 	path::{Path, PathBuf},
@@ -59,7 +60,7 @@ struct CommitRecord {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> Result<()> {
-	within("complete P1 race proof", Duration::from_secs(90), async {
+	Box::pin(within("complete P1 race proof", Duration::from_secs(90), async {
 		let scratch = Scratch::new().context("create scratch project")?;
 		fs::set_permissions(scratch.state(), fs::Permissions::from_mode(0o700))
 			.context("secure scratch daemon state")?;
@@ -199,7 +200,7 @@ async fn p1_real_docserver_rebases_two_agent_loops_and_survives_the_storm() -> R
 		drop(direct_a);
 		docserver.shutdown().await?;
 		Ok(())
-	})
+	}))
 	.await?
 }
 
@@ -427,10 +428,11 @@ fn committed_revision(section: &edit::SectionPayload) -> Result<&Str> {
 }
 
 async fn storm(scratch: &Scratch, docserver: &DocServerTask, lsp_log: &Path) -> Result<()> {
-	let initial = (0..STORM_COUNT)
-		.map(|index| format!("old-{index:03}\n"))
-		.collect::<String>()
-		.into_bytes();
+	let mut initial = String::with_capacity(STORM_COUNT * 8);
+	for index in 0..STORM_COUNT {
+		let _ = writeln!(initial, "old-{index:03}");
+	}
+	let initial = initial.into_bytes();
 	scratch.write("storm.rs", &initial)?;
 
 	let uri = file_uri(scratch, "storm.rs")?;

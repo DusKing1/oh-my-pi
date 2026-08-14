@@ -1920,6 +1920,7 @@ struct PendingInvocation {
 	tool_props: Option<pb::ValueMap>,
 }
 
+#[expect(clippy::large_enum_variant, reason = "keeps per-frame dispatch allocation-free")]
 enum TurnMux {
 	Event(Option<Result<ChatEvent, Error>>),
 	Frame(Result<Option<pb::TurnFrame>, Status>),

@@ -1150,7 +1150,7 @@ impl<F: FormatCoordinator + 'static> TransactionCoordinator<F> {
 								.reservation
 								.take()
 								.expect("prepared plan owns reservation"),
-							prepared,
+							*prepared,
 							path,
 						)
 						.await
@@ -1764,7 +1764,7 @@ impl<F: FormatCoordinator + 'static> TransactionCoordinator<F> {
 				.await
 				.map_err(join_failure)?
 				.map_err(|error| PlanningFailure::from_error(operation_index, error))?;
-				PreparedAction::Move(move_capability, path_claim)
+				PreparedAction::Move(Box::new(move_capability), path_claim)
 			} else if plan.presence == DocumentPresence::Missing {
 				if plan.reserved.snapshot.head().presence() == DocumentPresence::Missing {
 					PreparedAction::Noop
@@ -1958,7 +1958,7 @@ struct PreparedPlan {
 enum PreparedAction {
 	Write(PreparedWrite),
 	Delete(PreparedDelete),
-	Move(PreparedMove, PathReservation),
+	Move(Box<PreparedMove>, PathReservation),
 	Noop,
 }
 

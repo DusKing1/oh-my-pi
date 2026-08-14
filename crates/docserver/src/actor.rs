@@ -950,7 +950,12 @@ impl ActorHandle {
 	) -> Result<DocumentHead> {
 		let (reply, receive) = oneshot::channel();
 		self
-			.send(Command::CommitPreparedMove { reservation, prepared, path, reply })
+			.send(Command::CommitPreparedMove {
+				reservation,
+				prepared: Box::new(prepared),
+				path,
+				reply,
+			})
 			.await?;
 		receive.await.map_err(|_| actor_unavailable())?
 	}
@@ -1055,7 +1060,7 @@ enum Command {
 	},
 	CommitPreparedMove {
 		reservation: DocumentReservation,
-		prepared:    PreparedMove,
+		prepared:    Box<PreparedMove>,
 		path:        PathReservation,
 		reply:       oneshot::Sender<Result<DocumentHead>>,
 	},
@@ -1333,7 +1338,7 @@ impl DocumentActor {
 				self.start_delete(reservation, prepared, reply);
 			},
 			Command::CommitPreparedMove { reservation, prepared, path, reply } => {
-				self.start_move(reservation, prepared, path, reply);
+				self.start_move(reservation, *prepared, path, reply);
 			},
 			Command::MoveComplete(completion) => self.finish_move(completion),
 			Command::CommitComplete(completion) => self.finish_commit(completion),
