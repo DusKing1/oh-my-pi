@@ -7,7 +7,7 @@
 //! composition overlays (pi-openai-chat:012–015) — nothing else. Thinking
 //! verification is exact against `thinking-profiles.json`, resolved over all
 //! 4,227 catalog models with the catalog's reasoning capability as the gate,
-//! which proves family and `on` thinking rules never leak onto non-reasoning
+//! which proves class and `on` thinking rules never leak onto non-reasoning
 //! siblings. Every `ready` quirk-census case executes against the real
 //! machinery.
 
@@ -49,7 +49,8 @@ struct NormalizedModel {
 	id:       String,
 	provider: String,
 	model:    String,
-	family:   String,
+	#[serde(rename = "family")]
+	class:    String,
 	#[serde(default)]
 	behavior: Option<Behavior>,
 }
@@ -100,25 +101,25 @@ fn profile_shapes(raw: &str, strip: Option<&str>) -> BTreeMap<String, BTreeMap<S
 	shapes
 }
 
-/// Census wire overlay beyond the archived oracle slice: the family×host
+/// Census wire overlay beyond the archived oracle slice: the class×host
 /// `thinking_format` compositions from pi-openai-chat:012–015. Applies only
 /// where the oracle is silent on the axis.
-fn census_thinking_format(provider: &str, family: &str) -> Option<&'static str> {
+fn census_thinking_format(provider: &str, class: &str) -> Option<&'static str> {
 	match provider {
 		"openrouter" => Some("openrouter"),
 		"alibaba-token-plan" | "alibaba-coding-plan" => Some("qwen"),
-		"nvidia" if family == "qwen" => Some("qwen-chat-template"),
-		"fireworks" if family == "qwen" => Some("openai"),
-		_ if family == "qwen" => Some("qwen"),
+		"nvidia" if class == "qwen" => Some("qwen-chat-template"),
+		"fireworks" if class == "qwen" => Some("openai"),
+		_ if class == "qwen" => Some("qwen"),
 		_ => None,
 	}
 }
 
-fn family_of(model: &NormalizedModel) -> &str {
-	if model.family.is_empty() {
+fn class_of(model: &NormalizedModel) -> &str {
+	if model.class.is_empty() {
 		"unknown"
 	} else {
-		model.family.as_str()
+		model.class.as_str()
 	}
 }
 
@@ -126,7 +127,7 @@ fn family_of(model: &NormalizedModel) -> &str {
 fn bundled_sources_match_the_compat_tree() {
 	let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("compat");
 	let mut on_disk = Vec::new();
-	for group in ["families", "providers"] {
+	for group in ["classes", "providers"] {
 		for entry in fs::read_dir(root.join(group)).expect("compat group exists") {
 			let path = entry.expect("readable dir entry").path();
 			if path.extension().is_some_and(|extension| extension == "kdl") {
@@ -146,7 +147,7 @@ fn bundled_sources_match_the_compat_tree() {
 		.map(|&(name, _)| name.to_owned())
 		.collect();
 	bundled.sort();
-	assert_eq!(bundled, on_disk, "BUNDLED_COMPAT must list exactly compat/{{families,providers}}");
+	assert_eq!(bundled, on_disk, "BUNDLED_COMPAT must list exactly compat/{{classes,providers}}");
 }
 
 #[test]
@@ -193,19 +194,19 @@ fn cascade_resolves_every_catalog_model_to_oracle_plus_census_overlay() {
 	let mut thinking_profiled = 0_usize;
 	let mut overlay_applied = 0_usize;
 	for model in &normalized.models {
-		let family = family_of(model);
+		let class = class_of(model);
 		let reasoning = model
 			.behavior
 			.as_ref()
 			.is_some_and(|b| b.thinking.is_some());
 		let resolved = cascade
-			.resolve(&model.provider, family, &model.model, reasoning)
+			.resolve(&model.provider, class, &model.model, reasoning)
 			.unwrap_or_else(|error| panic!("{}: {error}", model.id));
 
 		// Wire: oracle-pinned axes exact; additions only from the census overlay.
 		let mut expected = wire_oracle.get(&model.id).cloned().unwrap_or_default();
 		if !expected.contains_key("thinking_format") {
-			if let Some(format) = census_thinking_format(&model.provider, family) {
+			if let Some(format) = census_thinking_format(&model.provider, class) {
 				expected.insert("thinking_format".into(), Value::from(format));
 				overlay_applied += 1;
 			}
@@ -287,9 +288,9 @@ fn run_identity_case(case: &Case) {
 		match key.as_str() {
 			"family" => {
 				assert_eq!(
-					classification.family.as_str(),
-					want.as_str().expect("family string"),
-					"{}: family",
+					classification.class.as_str(),
+					want.as_str().expect("class string"),
+					"{}: class",
 					case.id
 				);
 			},
@@ -333,10 +334,10 @@ fn run_policy_case(cascade: &CompatCascade, case: &Case) {
 	let model = case.input["model_id"]
 		.as_str()
 		.expect("policy input model_id");
-	let family = case.input["family"].as_str().unwrap_or("unknown");
+	let class = case.input["family"].as_str().unwrap_or("unknown");
 	let reasoning = case.input["reasoning"].as_bool().unwrap_or(false);
 	let resolved = cascade
-		.resolve(provider, family, model, reasoning)
+		.resolve(provider, class, model, reasoning)
 		.expect("policy resolves");
 	let overrides = case.expected["overrides"]
 		.as_object()
@@ -361,7 +362,7 @@ fn run_policy_case(cascade: &CompatCascade, case: &Case) {
 			.map(|(key, value)| (key.as_str(), value))
 			.collect();
 		// Census overlay applies on top of the archived expectations.
-		let overlay = census_thinking_format(provider, family).map(Value::from);
+		let overlay = census_thinking_format(provider, class).map(Value::from);
 		if let Some(overlay) = overlay.as_ref() {
 			expected.entry("thinking_format").or_insert(overlay);
 		}

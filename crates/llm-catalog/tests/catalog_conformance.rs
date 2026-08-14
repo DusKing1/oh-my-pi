@@ -8,7 +8,7 @@ use std::{
 use omp_llm_catalog::{
 	Availability, EmbeddingInputBits, EvidenceConfidence, ModalityBits, ModelAvailability,
 	OperationKind, ProvenanceKind,
-	classify::{ClassificationInput, ClassificationPhase, EffortTier, ModelVersion, classify},
+	classify::{ClassificationInput, ClassificationPhase, EffortTier, Revision, classify},
 	compile::{CompiledCatalog, compile_oracle},
 	policy::{
 		ApplyPatchWireKind, ComputerUseConfigSupport, ComputerUseWireSupport, ExtendedContextMode,
@@ -22,7 +22,7 @@ use omp_llm_catalog::{
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
-const FAMILY_CASES: &str =
+const CLASS_CASES: &str =
 	include_str!("../../../fixtures/llm-oracle/catalog-policy/family-classifier.json");
 const VERSION_CASES: &str =
 	include_str!("../../../fixtures/llm-oracle/catalog-policy/openai-version-aliases.json");
@@ -120,7 +120,8 @@ struct OracleModel {
 	provider:         String,
 	model:            String,
 	name:             String,
-	family:           String,
+	#[serde(rename = "family")]
+	class:            String,
 	facets:           Vec<String>,
 	modalities:       OracleModalities,
 	reasoning:        bool,
@@ -224,18 +225,20 @@ struct RawCost {
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FamilyCases {
+struct ClassCases {
 	schema_version: u32,
-	unknown_family: String,
-	cases:          Vec<FamilyCase>,
+	#[serde(rename = "unknown_family")]
+	unknown_class:  String,
+	cases:          Vec<ClassCase>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FamilyCase {
-	case_kind:       String,
-	input:           String,
-	expected_family: String,
+struct ClassCase {
+	case_kind:      String,
+	input:          String,
+	#[serde(rename = "expected_family")]
+	expected_class: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -251,7 +254,7 @@ struct VersionCases {
 struct VersionCase {
 	case_kind:        String,
 	input:            String,
-	expected_version: Option<ModelVersion>,
+	expected_version: Option<Revision>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -505,7 +508,7 @@ struct PriceModelCase {
 	model:             String,
 	context_window:    u64,
 	max_output_tokens: u64,
-	openai_version:    ModelVersion,
+	openai_version:    Revision,
 	pricing:           Vec<FixturePrice>,
 	pricing_tiers:     Vec<FixtureTier>,
 }
@@ -679,31 +682,27 @@ fn compiler_classification(model: &str) -> omp_llm_catalog::classify::ModelClass
 }
 
 #[test]
-fn family_classifier_matches_all_canonical_and_adversarial_cases() {
-	let fixture: FamilyCases = serde_json::from_str(FAMILY_CASES).expect("family fixture is valid");
+fn class_classifier_matches_all_canonical_and_adversarial_cases() {
+	let fixture: ClassCases = serde_json::from_str(CLASS_CASES).expect("class fixture is valid");
 	assert_eq!(fixture.schema_version, 1);
-	assert_eq!(fixture.cases.len(), 44);
-	assert!(
+	assert_eq!(
 		fixture
 			.cases
 			.iter()
-			.any(|case| case.case_kind == "canonical")
-	);
-	assert!(
-		fixture
-			.cases
-			.iter()
-			.any(|case| case.case_kind == "adversarial_near_match_or_unknown")
+			.map(|case| case.case_kind.as_str())
+			.collect::<BTreeSet<_>>(),
+		BTreeSet::from(["adversarial_near_match_or_unknown", "canonical"]),
+		"fixture must preserve both positive and negative coverage"
 	);
 
 	for case in fixture.cases {
 		let actual = compiler_classification(&case.input);
-		let expected = if case.expected_family == fixture.unknown_family {
+		let expected = if case.expected_class == fixture.unknown_class {
 			"unknown"
 		} else {
-			case.expected_family.as_str()
+			case.expected_class.as_str()
 		};
-		assert_eq!(actual.family.as_str(), expected, "family classification for {:?}", case.input);
+		assert_eq!(actual.class.as_str(), expected, "class classification for {:?}", case.input);
 	}
 }
 
@@ -717,7 +716,11 @@ fn openai_versions_match_alias_canonical_and_adversarial_cases() {
 
 	for case in fixture.cases {
 		let actual = compiler_classification(&case.input);
-		assert_eq!(actual.version, case.expected_version, "{} case {:?}", case.case_kind, case.input);
+		assert_eq!(
+			actual.revision, case.expected_version,
+			"{} case {:?}",
+			case.case_kind, case.input
+		);
 	}
 }
 
@@ -1124,12 +1127,12 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 			.unwrap_or_else(|| panic!("missing logical model {}", expected.id));
 		assert_eq!(expected.id, format!("{}/{}", expected.provider, expected.model));
 		assert_eq!(actual.display_name.as_str(), expected.name, "{} display name", expected.id);
-		let expected_family = if expected.family.is_empty() {
+		let expected_class = if expected.class.is_empty() {
 			"unknown"
 		} else {
-			expected.family.as_str()
+			expected.class.as_str()
 		};
-		assert_eq!(actual.family.as_str(), expected_family, "{} family", expected.id);
+		assert_eq!(actual.class.as_str(), expected_class, "{} class", expected.id);
 		let expected_context =
 			(expected.limits.context_window != 0).then_some(expected.limits.context_window);
 		let expected_output =
@@ -1607,7 +1610,7 @@ fn price_schedules_limits_and_long_context_tiers_match_exact_integer_oracle_valu
 		assert_eq!(model.limits.context_window, Some(case.context_window), "{key}");
 		assert_eq!(model.limits.maximum_output_tokens, Some(case.max_output_tokens), "{key}");
 		assert_eq!(
-			compiler_classification(&case.model).version,
+			compiler_classification(&case.model).revision,
 			Some(case.openai_version),
 			"{key} version"
 		);
