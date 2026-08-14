@@ -3071,12 +3071,12 @@
       "credential_sources": [
         {
           "oauth": {
-            "flow": "oauth-5baed4b6b1db62237f0b493bf07675e128f5eabc8a9fc9dba9e138ce040ed413"
+            "flow": "oauth-3f575efb2908c0e6f852796c202ecdace8e631790261284ddd597579de2d7736"
           }
         },
         "stored"
       ],
-      "oauth": "oauth-5baed4b6b1db62237f0b493bf07675e128f5eabc8a9fc9dba9e138ce040ed413",
+      "oauth": "oauth-3f575efb2908c0e6f852796c202ecdace8e631790261284ddd597579de2d7736",
       "signing": null
     },
     {
@@ -3159,12 +3159,12 @@
       "credential_sources": [
         {
           "oauth": {
-            "flow": "oauth-5283e5f5b6120e004a326a34103ab5e79e322157825b4efe11cd159dff1a90dc"
+            "flow": "oauth-b1b618aca752b53be3b1c9dd57259d702b4b425b343499137e2177c47c590888"
           }
         },
         "stored"
       ],
-      "oauth": "oauth-5283e5f5b6120e004a326a34103ab5e79e322157825b4efe11cd159dff1a90dc",
+      "oauth": "oauth-b1b618aca752b53be3b1c9dd57259d702b4b425b343499137e2177c47c590888",
       "signing": null
     },
     {
@@ -3524,12 +3524,12 @@
       "credential_sources": [
         {
           "oauth": {
-            "flow": "oauth-1bd99f38145b29534291d6dcb29f1f8d4b8d605a75a1653ad891db8884624cab"
+            "flow": "oauth-65576fcbfb4f2bcad3d8e70c6b37218ccf61f5f3ebc64f119d44df88b2eb1abb"
           }
         },
         "stored"
       ],
-      "oauth": "oauth-1bd99f38145b29534291d6dcb29f1f8d4b8d605a75a1653ad891db8884624cab",
+      "oauth": "oauth-65576fcbfb4f2bcad3d8e70c6b37218ccf61f5f3ebc64f119d44df88b2eb1abb",
       "signing": null
     },
     {
@@ -3614,12 +3614,12 @@
       "credential_sources": [
         {
           "oauth": {
-            "flow": "oauth-c669c03616f54bcfaa9ef261be128ef5ed9dd6748908db46d31ce91cb4a4b573"
+            "flow": "oauth-0ef08ab73828e1d2b8d9d505fb8c12288d4101be9f734ca5a5b665350eb75794"
           }
         },
         "stored"
       ],
-      "oauth": "oauth-c669c03616f54bcfaa9ef261be128ef5ed9dd6748908db46d31ce91cb4a4b573",
+      "oauth": "oauth-0ef08ab73828e1d2b8d9d505fb8c12288d4101be9f734ca5a5b665350eb75794",
       "signing": null
     },
     {
@@ -4035,12 +4035,12 @@
       "credential_sources": [
         {
           "oauth": {
-            "flow": "oauth-3c458e7bd2a966e6ffb251d9ff8da2a46aab228603b67fcb1b035055cda39ec7"
+            "flow": "oauth-8d3676f030d258e693d13bf9dc1b900dc87e0cdd05e3ffe7841bac9269786ccb"
           }
         },
         "stored"
       ],
-      "oauth": "oauth-3c458e7bd2a966e6ffb251d9ff8da2a46aab228603b67fcb1b035055cda39ec7",
+      "oauth": "oauth-8d3676f030d258e693d13bf9dc1b900dc87e0cdd05e3ffe7841bac9269786ccb",
       "signing": null
     },
     {
@@ -4217,12 +4217,12 @@
       "credential_sources": [
         {
           "oauth": {
-            "flow": "oauth-b5b98448615327bba00d6fcf0e9de6b7c388f96c1c02be49ce1943e8b7c34f73"
+            "flow": "oauth-b63c0d8d081f5572c686e7deae999a3cccc2ed2c85b1e0a1dab71f293c410888"
           }
         },
         "stored"
       ],
-      "oauth": "oauth-b5b98448615327bba00d6fcf0e9de6b7c388f96c1c02be49ce1943e8b7c34f73",
+      "oauth": "oauth-b63c0d8d081f5572c686e7deae999a3cccc2ed2c85b1e0a1dab71f293c410888",
       "signing": null
     },
     {
@@ -4328,12 +4328,12 @@
       "credential_sources": [
         {
           "oauth": {
-            "flow": "oauth-4bb26037332659f10485a6eaa81e350519b30685110545915e3fe4afbbe7817d"
+            "flow": "oauth-4e7544736c3f56097c6505eaf446338dce025976e52d3ba13c3a1c0914463d0d"
           }
         },
         "stored"
       ],
-      "oauth": "oauth-4bb26037332659f10485a6eaa81e350519b30685110545915e3fe4afbbe7817d",
+      "oauth": "oauth-4e7544736c3f56097c6505eaf446338dce025976e52d3ba13c3a1c0914463d0d",
       "signing": null
     },
     {
@@ -4349,12 +4349,12 @@
       "credential_sources": [
         {
           "oauth": {
-            "flow": "oauth-c0253b825be8dc0eac06f462b7b9bf4a0676bfb530baef4f08b98ab5f22fe9d7"
+            "flow": "oauth-87c6929ee2070e5e6f015f774fd09acb1f81a70683f7d03a4fbb7a229401b42f"
           }
         },
         "stored"
       ],
-      "oauth": "oauth-c0253b825be8dc0eac06f462b7b9bf4a0676bfb530baef4f08b98ab5f22fe9d7",
+      "oauth": "oauth-87c6929ee2070e5e6f015f774fd09acb1f81a70683f7d03a4fbb7a229401b42f",
       "signing": null
     },
     {
@@ -4484,12 +4484,12 @@
       "credential_sources": [
         {
           "oauth": {
-            "flow": "oauth-f9098ec525c6472273ba063aa387c629cf7d07323404778552d40d80cfa04528"
+            "flow": "oauth-94e4f72f5a0bd5ab2c87a21e993b1af520b0c2fe377e90d30f28dfbb36cf4824"
           }
         },
         "stored"
       ],
-      "oauth": "oauth-f9098ec525c6472273ba063aa387c629cf7d07323404778552d40d80cfa04528",
+      "oauth": "oauth-94e4f72f5a0bd5ab2c87a21e993b1af520b0c2fe377e90d30f28dfbb36cf4824",
       "signing": null
     },
     {
@@ -4660,12 +4660,12 @@
       "credential_sources": [
         {
           "oauth": {
-            "flow": "oauth-367c6634369495046c5254a7a1790c967fd151ca6cbdaabd8c386935423f9f6c"
+            "flow": "oauth-da68e5500b682aec1d2884f8e8920b87a5dc6e2f1e784cd8dd1d49ac2a29bf4d"
           }
         },
         "stored"
       ],
-      "oauth": "oauth-367c6634369495046c5254a7a1790c967fd151ca6cbdaabd8c386935423f9f6c",
+      "oauth": "oauth-da68e5500b682aec1d2884f8e8920b87a5dc6e2f1e784cd8dd1d49ac2a29bf4d",
       "signing": null
     },
     {
@@ -5080,16 +5080,11 @@
   ],
   "oauth_specs": [
     {
-      "id": "oauth-1bd99f38145b29534291d6dcb29f1f8d4b8d605a75a1653ad891db8884624cab",
-      "client_id": "<redacted-client-id>",
-      "token_url": "https://api.anthropic.com/v1/oauth/token",
+      "id": "oauth-0ef08ab73828e1d2b8d9d505fb8c12288d4101be9f734ca5a5b665350eb75794",
+      "client_id": "Ov23li8tweQw6odWQebz",
+      "token_url": "https://github.com/login/oauth/access_token",
       "scopes": [
-        "org:create_api_key",
-        "user:profile",
-        "user:inference",
-        "user:sessions:claude_code",
-        "user:mcp_servers",
-        "user:file_upload"
+        "read:user"
       ],
       "audience": null,
       "placement": {
@@ -5098,47 +5093,15 @@
           "prefix": "Bearer "
         }
       },
-      "token_parameters": [
-        {
-          "name": "code",
-          "value": "true"
-        },
-        {
-          "name": "refresh_beta",
-          "value": "oauth-2025-04-20"
-        },
-        {
-          "name": "refresh_user_agent",
-          "value": "anthropic-sdk-typescript/0.94.0 userOAuthProvider"
-        },
-        {
-          "name": "token_encoding",
-          "value": "json"
-        }
-      ],
+      "token_parameters": [],
       "flow": {
-        "pkce": {
-          "authorize_url": "https://claude.ai/oauth/authorize",
-          "redirect_uri": "http://localhost:54545/callback",
-          "completion": "callback_url",
-          "authorize_parameters": [
-            {
-              "name": "code",
-              "value": "true"
-            },
-            {
-              "name": "refresh_beta",
-              "value": "oauth-2025-04-20"
-            },
-            {
-              "name": "refresh_user_agent",
-              "value": "anthropic-sdk-typescript/0.94.0 userOAuthProvider"
-            },
-            {
-              "name": "token_encoding",
-              "value": "json"
-            }
-          ]
+        "device_code": {
+          "device_authorization_url": "https://github.com/login/device/code",
+          "polling": {
+            "maximum_polls": 120,
+            "default_interval_ms": 5000,
+            "maximum_interval_ms": 30000
+          }
         }
       },
       "refresh": "token_endpoint",
@@ -5216,38 +5179,10 @@
       "principal_resolution": null
     },
     {
-      "id": "oauth-367c6634369495046c5254a7a1790c967fd151ca6cbdaabd8c386935423f9f6c",
-      "client_id": "17e5f671-d194-4dfb-9706-5516cb48c098",
-      "token_url": "https://auth.kimi.com/api/oauth/token",
+      "id": "oauth-3f575efb2908c0e6f852796c202ecdace8e631790261284ddd597579de2d7736",
+      "client_id": "client_P8X5CMWmlaRO9gyO-KSqtg",
+      "token_url": "https://zcode.z.ai/api/v1/oauth/token",
       "scopes": [],
-      "audience": null,
-      "placement": {
-        "header": {
-          "name": "authorization",
-          "prefix": "Bearer "
-        }
-      },
-      "token_parameters": [],
-      "flow": {
-        "device_code": {
-          "device_authorization_url": "https://auth.kimi.com/api/oauth/device_authorization",
-          "polling": {
-            "maximum_polls": 120,
-            "default_interval_ms": 5000,
-            "maximum_interval_ms": 30000
-          }
-        }
-      },
-      "refresh": "token_endpoint",
-      "principal_resolution": null
-    },
-    {
-      "id": "oauth-3c458e7bd2a966e6ffb251d9ff8da2a46aab228603b67fcb1b035055cda39ec7",
-      "client_id": "<redacted-client-id>",
-      "token_url": "https://gitlab.com/oauth/token",
-      "scopes": [
-        "api"
-      ],
       "audience": null,
       "placement": {
         "header": {
@@ -5257,18 +5192,26 @@
       },
       "token_parameters": [
         {
-          "name": "redirect_uri",
-          "value": "vscode://gitlab.gitlab-workflow/authentication"
+          "name": "business_login_url",
+          "value": "https://api.z.ai/api/auth/z/login"
+        },
+        {
+          "name": "key_name",
+          "value": "omp"
         }
       ],
       "flow": {
         "custom": {
-          "authorize_url": "https://gitlab.com/oauth/authorize",
-          "exchange": "external-redirect-pkce",
+          "authorize_url": "https://chat.z.ai/api/oauth/authorize",
+          "exchange": "zai-api-key",
           "parameters": [
             {
-              "name": "redirect_uri",
-              "value": "vscode://gitlab.gitlab-workflow/authentication"
+              "name": "business_login_url",
+              "value": "https://api.z.ai/api/auth/z/login"
+            },
+            {
+              "name": "key_name",
+              "value": "omp"
             }
           ],
           "polling": null
@@ -5312,8 +5255,8 @@
       "principal_resolution": null
     },
     {
-      "id": "oauth-4bb26037332659f10485a6eaa81e350519b30685110545915e3fe4afbbe7817d",
-      "client_id": "<redacted-client-id>",
+      "id": "oauth-4e7544736c3f56097c6505eaf446338dce025976e52d3ba13c3a1c0914463d0d",
+      "client_id": "b1a00492-073a-47ea-816f-4c329264a828",
       "token_url": "https://auth.x.ai/oauth2/token",
       "scopes": [
         "openid",
@@ -5344,32 +5287,6 @@
             "default_interval_ms": 5000,
             "maximum_interval_ms": 30000
           }
-        }
-      },
-      "refresh": "token_endpoint",
-      "principal_resolution": null
-    },
-    {
-      "id": "oauth-5283e5f5b6120e004a326a34103ab5e79e322157825b4efe11cd159dff1a90dc",
-      "client_id": "<redacted-client-id>",
-      "token_url": "https://gitlab.com/oauth/token",
-      "scopes": [
-        "api"
-      ],
-      "audience": null,
-      "placement": {
-        "header": {
-          "name": "authorization",
-          "prefix": "Bearer "
-        }
-      },
-      "token_parameters": [],
-      "flow": {
-        "pkce": {
-          "authorize_url": "https://gitlab.com/oauth/authorize",
-          "redirect_uri": "http://localhost:8080/callback",
-          "completion": "callback_url",
-          "authorize_parameters": []
         }
       },
       "refresh": "token_endpoint",
@@ -5410,10 +5327,17 @@
       "principal_resolution": null
     },
     {
-      "id": "oauth-5baed4b6b1db62237f0b493bf07675e128f5eabc8a9fc9dba9e138ce040ed413",
-      "client_id": "<redacted-client-id>",
-      "token_url": "https://zcode.z.ai/api/v1/oauth/token",
-      "scopes": [],
+      "id": "oauth-65576fcbfb4f2bcad3d8e70c6b37218ccf61f5f3ebc64f119d44df88b2eb1abb",
+      "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+      "token_url": "https://api.anthropic.com/v1/oauth/token",
+      "scopes": [
+        "org:create_api_key",
+        "user:profile",
+        "user:inference",
+        "user:sessions:claude_code",
+        "user:mcp_servers",
+        "user:file_upload"
+      ],
       "audience": null,
       "placement": {
         "header": {
@@ -5423,29 +5347,45 @@
       },
       "token_parameters": [
         {
-          "name": "business_login_url",
-          "value": "https://api.z.ai/api/auth/z/login"
+          "name": "code",
+          "value": "true"
         },
         {
-          "name": "key_name",
-          "value": "omp"
+          "name": "refresh_beta",
+          "value": "oauth-2025-04-20"
+        },
+        {
+          "name": "refresh_user_agent",
+          "value": "anthropic-sdk-typescript/0.94.0 userOAuthProvider"
+        },
+        {
+          "name": "token_encoding",
+          "value": "json"
         }
       ],
       "flow": {
-        "custom": {
-          "authorize_url": "https://chat.z.ai/api/oauth/authorize",
-          "exchange": "zai-api-key",
-          "parameters": [
+        "pkce": {
+          "authorize_url": "https://claude.ai/oauth/authorize",
+          "redirect_uri": "http://localhost:54545/callback",
+          "completion": "callback_url",
+          "authorize_parameters": [
             {
-              "name": "business_login_url",
-              "value": "https://api.z.ai/api/auth/z/login"
+              "name": "code",
+              "value": "true"
             },
             {
-              "name": "key_name",
-              "value": "omp"
+              "name": "refresh_beta",
+              "value": "oauth-2025-04-20"
+            },
+            {
+              "name": "refresh_user_agent",
+              "value": "anthropic-sdk-typescript/0.94.0 userOAuthProvider"
+            },
+            {
+              "name": "token_encoding",
+              "value": "json"
             }
-          ],
-          "polling": null
+          ]
         }
       },
       "refresh": "token_endpoint",
@@ -5510,80 +5450,8 @@
       "principal_resolution": null
     },
     {
-      "id": "oauth-998d54550ef35b7754a66390aa4eb0009e9d660eda66d3d48935c2f8cf796216",
-      "client_id": "",
-      "token_url": "https://pass.wafer.ai/v1/models",
-      "scopes": [],
-      "audience": null,
-      "placement": {
-        "header": {
-          "name": "authorization",
-          "prefix": "Bearer "
-        }
-      },
-      "token_parameters": [],
-      "flow": {
-        "custom": {
-          "authorize_url": "https://app.wafer.ai/usage",
-          "exchange": "api-key-paste",
-          "parameters": [],
-          "polling": null
-        }
-      },
-      "refresh": "token_endpoint",
-      "principal_resolution": null
-    },
-    {
-      "id": "oauth-b5b98448615327bba00d6fcf0e9de6b7c388f96c1c02be49ce1943e8b7c34f73",
-      "client_id": "<redacted-client-id>",
-      "token_url": "https://oauth2.googleapis.com/token",
-      "scopes": [
-        "https://www.googleapis.com/auth/cloud-platform",
-        "https://www.googleapis.com/auth/userinfo.email",
-        "https://www.googleapis.com/auth/userinfo.profile",
-        "https://www.googleapis.com/auth/cclog",
-        "https://www.googleapis.com/auth/experimentsandconfigs"
-      ],
-      "audience": null,
-      "placement": {
-        "header": {
-          "name": "authorization",
-          "prefix": "Bearer "
-        }
-      },
-      "token_parameters": [
-        {
-          "name": "access_type",
-          "value": "offline"
-        },
-        {
-          "name": "prompt",
-          "value": "consent"
-        }
-      ],
-      "flow": {
-        "pkce": {
-          "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
-          "redirect_uri": "http://127.0.0.1:51121/oauth-callback",
-          "completion": "callback_url",
-          "authorize_parameters": [
-            {
-              "name": "access_type",
-              "value": "offline"
-            },
-            {
-              "name": "prompt",
-              "value": "consent"
-            }
-          ]
-        }
-      },
-      "refresh": "token_endpoint",
-      "principal_resolution": null
-    },
-    {
-      "id": "oauth-c0253b825be8dc0eac06f462b7b9bf4a0676bfb530baef4f08b98ab5f22fe9d7",
-      "client_id": "<redacted-client-id>",
+      "id": "oauth-87c6929ee2070e5e6f015f774fd09acb1f81a70683f7d03a4fbb7a229401b42f",
+      "client_id": "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
       "token_url": "https://oauth2.googleapis.com/token",
       "scopes": [
         "https://www.googleapis.com/auth/cloud-platform",
@@ -5628,11 +5496,11 @@
       "principal_resolution": null
     },
     {
-      "id": "oauth-c669c03616f54bcfaa9ef261be128ef5ed9dd6748908db46d31ce91cb4a4b573",
-      "client_id": "<redacted-client-id>",
-      "token_url": "https://github.com/login/oauth/access_token",
+      "id": "oauth-8d3676f030d258e693d13bf9dc1b900dc87e0cdd05e3ffe7841bac9269786ccb",
+      "client_id": "36f2a70cddeb5a0889d4fd8295c241b7e9848e89cf9e599d0eed2d8e5350fbf5",
+      "token_url": "https://gitlab.com/oauth/token",
       "scopes": [
-        "read:user"
+        "api"
       ],
       "audience": null,
       "placement": {
@@ -5641,38 +5509,22 @@
           "prefix": "Bearer "
         }
       },
-      "token_parameters": [],
-      "flow": {
-        "device_code": {
-          "device_authorization_url": "https://github.com/login/device/code",
-          "polling": {
-            "maximum_polls": 120,
-            "default_interval_ms": 5000,
-            "maximum_interval_ms": 30000
-          }
+      "token_parameters": [
+        {
+          "name": "redirect_uri",
+          "value": "vscode://gitlab.gitlab-workflow/authentication"
         }
-      },
-      "refresh": "token_endpoint",
-      "principal_resolution": null
-    },
-    {
-      "id": "oauth-ec6ccca4177ec42e63a85d80cfe526bcf1f581b9a18ca94320b944d37b94d84a",
-      "client_id": "",
-      "token_url": "https://api.minimaxi.com/v1",
-      "scopes": [],
-      "audience": null,
-      "placement": {
-        "header": {
-          "name": "authorization",
-          "prefix": "Bearer "
-        }
-      },
-      "token_parameters": [],
+      ],
       "flow": {
         "custom": {
-          "authorize_url": "https://platform.minimaxi.com/subscribe/token-plan",
-          "exchange": "api-key-paste",
-          "parameters": [],
+          "authorize_url": "https://gitlab.com/oauth/authorize",
+          "exchange": "external-redirect-pkce",
+          "parameters": [
+            {
+              "name": "redirect_uri",
+              "value": "vscode://gitlab.gitlab-workflow/authentication"
+            }
+          ],
           "polling": null
         }
       },
@@ -5680,8 +5532,8 @@
       "principal_resolution": null
     },
     {
-      "id": "oauth-f9098ec525c6472273ba063aa387c629cf7d07323404778552d40d80cfa04528",
-      "client_id": "<redacted-client-id>",
+      "id": "oauth-94e4f72f5a0bd5ab2c87a21e993b1af520b0c2fe377e90d30f28dfbb36cf4824",
+      "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
       "token_url": "https://auth.openai.com/oauth/token",
       "scopes": [
         "openid",
@@ -5739,6 +5591,158 @@
           "claim": "https://api.openai.com/auth/chatgpt_account_id"
         }
       }
+    },
+    {
+      "id": "oauth-998d54550ef35b7754a66390aa4eb0009e9d660eda66d3d48935c2f8cf796216",
+      "client_id": "",
+      "token_url": "https://pass.wafer.ai/v1/models",
+      "scopes": [],
+      "audience": null,
+      "placement": {
+        "header": {
+          "name": "authorization",
+          "prefix": "Bearer "
+        }
+      },
+      "token_parameters": [],
+      "flow": {
+        "custom": {
+          "authorize_url": "https://app.wafer.ai/usage",
+          "exchange": "api-key-paste",
+          "parameters": [],
+          "polling": null
+        }
+      },
+      "refresh": "token_endpoint",
+      "principal_resolution": null
+    },
+    {
+      "id": "oauth-b1b618aca752b53be3b1c9dd57259d702b4b425b343499137e2177c47c590888",
+      "client_id": "da4edff2e6ebd2bc3208611e2768bc1c1dd7be791dc5ff26ca34ca9ee44f7d4b",
+      "token_url": "https://gitlab.com/oauth/token",
+      "scopes": [
+        "api"
+      ],
+      "audience": null,
+      "placement": {
+        "header": {
+          "name": "authorization",
+          "prefix": "Bearer "
+        }
+      },
+      "token_parameters": [],
+      "flow": {
+        "pkce": {
+          "authorize_url": "https://gitlab.com/oauth/authorize",
+          "redirect_uri": "http://localhost:8080/callback",
+          "completion": "callback_url",
+          "authorize_parameters": []
+        }
+      },
+      "refresh": "token_endpoint",
+      "principal_resolution": null
+    },
+    {
+      "id": "oauth-b63c0d8d081f5572c686e7deae999a3cccc2ed2c85b1e0a1dab71f293c410888",
+      "client_id": "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
+      "token_url": "https://oauth2.googleapis.com/token",
+      "scopes": [
+        "https://www.googleapis.com/auth/cloud-platform",
+        "https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/userinfo.profile",
+        "https://www.googleapis.com/auth/cclog",
+        "https://www.googleapis.com/auth/experimentsandconfigs"
+      ],
+      "audience": null,
+      "placement": {
+        "header": {
+          "name": "authorization",
+          "prefix": "Bearer "
+        }
+      },
+      "token_parameters": [
+        {
+          "name": "access_type",
+          "value": "offline"
+        },
+        {
+          "name": "prompt",
+          "value": "consent"
+        }
+      ],
+      "flow": {
+        "pkce": {
+          "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+          "redirect_uri": "http://127.0.0.1:51121/oauth-callback",
+          "completion": "callback_url",
+          "authorize_parameters": [
+            {
+              "name": "access_type",
+              "value": "offline"
+            },
+            {
+              "name": "prompt",
+              "value": "consent"
+            }
+          ]
+        }
+      },
+      "refresh": "token_endpoint",
+      "principal_resolution": null
+    },
+    {
+      "id": "oauth-da68e5500b682aec1d2884f8e8920b87a5dc6e2f1e784cd8dd1d49ac2a29bf4d",
+      "client_id": "17e5f671-d194-4dfb-9706-5516cb48c098",
+      "token_url": "https://auth.kimi.com/api/oauth/token",
+      "scopes": [],
+      "audience": null,
+      "placement": {
+        "header": {
+          "name": "authorization",
+          "prefix": "Bearer "
+        }
+      },
+      "token_parameters": [],
+      "flow": {
+        "device_code": {
+          "device_authorization_url": "https://auth.kimi.com/api/oauth/device_authorization",
+          "polling": {
+            "maximum_polls": 120,
+            "default_interval_ms": 5000,
+            "maximum_interval_ms": 30000
+          }
+        }
+      },
+      "refresh": "token_endpoint",
+      "principal_resolution": {
+        "static_label": {
+          "label": "kimi-code"
+        }
+      }
+    },
+    {
+      "id": "oauth-ec6ccca4177ec42e63a85d80cfe526bcf1f581b9a18ca94320b944d37b94d84a",
+      "client_id": "",
+      "token_url": "https://api.minimaxi.com/v1",
+      "scopes": [],
+      "audience": null,
+      "placement": {
+        "header": {
+          "name": "authorization",
+          "prefix": "Bearer "
+        }
+      },
+      "token_parameters": [],
+      "flow": {
+        "custom": {
+          "authorize_url": "https://platform.minimaxi.com/subscribe/token-plan",
+          "exchange": "api-key-paste",
+          "parameters": [],
+          "polling": null
+        }
+      },
+      "refresh": "token_endpoint",
+      "principal_resolution": null
     }
   ],
   "header_profiles": [

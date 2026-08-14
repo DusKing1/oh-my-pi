@@ -2,7 +2,7 @@
   "schema_version": 1,
   "corpus": "llm-oracle",
   "hash_algorithm": "sha256",
-  "corpus_sha256": "d08fdbdfe41bb0199e0040d0c532164f1af6ef9224676c09491c06f1a6427348",
+  "corpus_sha256": "add529235346247cc3a821b39a42d56c1d5e6bc029ecbf142cbb7e05f5235309",
   "category_count": 14,
   "manifest_count": 14,
   "artifact_count": 265,
@@ -1141,7 +1141,7 @@
       "path": "catalog/manifest.json",
       "provenance_category": "catalog",
       "secret_free": true,
-      "sha256": "fe73cd6b99e2435cf1860018b6e360f11d315403c49b4d58b90dbd17bbcc38e4"
+      "sha256": "4ba9cdc205f6ad8843d0184323dd9f95b9f21805744d794514ddc81cb2e1a79a"
     },
     {
       "id": "catalog.models.compressed.v1",
@@ -1173,7 +1173,7 @@
       "path": "catalog/oauth.toml",
       "provenance_category": "catalog",
       "secret_free": true,
-      "sha256": "775ea37ea3e97de177cdac3b6109fd62e08ae25131b486af89cd5b9291cde9b2"
+      "sha256": "c906f9402f9f13891f1dcf47e20a8bce4a0e9f06a97cca421e59d371c080c3ae"
     },
     {
       "id": "catalog.models.normalized.projector.v1",

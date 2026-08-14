@@ -65,24 +65,10 @@
       "id": "catalog.oauth.source.v1",
       "path": "oauth.toml",
       "provenance": {
-        "kind": "sanitized-source-snapshot"
+        "kind": "source-snapshot"
       },
-      "redactions": [
-        {
-          "count": 10,
-          "field": "provider[].client_id",
-          "reason": "installed-application credential/account identifier",
-          "replacement": "<redacted-client-id>"
-        },
-        {
-          "count": 2,
-          "field": "provider[].extra_auth_params.client_secret",
-          "reason": "installed-application credential",
-          "replacement": "<redacted-client-secret>"
-        }
-      ],
       "secret_free": true,
-      "sha256": "775ea37ea3e97de177cdac3b6109fd62e08ae25131b486af89cd5b9291cde9b2",
+      "sha256": "c906f9402f9f13891f1dcf47e20a8bce4a0e9f06a97cca421e59d371c080c3ae",
       "source": "archive/llm-legacy/llm-catalog/oauth.toml"
     },
     {

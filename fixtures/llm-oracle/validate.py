@@ -49,6 +49,10 @@ CANARY_FINGERPRINTS = {
     "b96e122528b7050b1872e0c93d2c5617746d3a348cf4dba58b2efe0ad310152f": "broker-kimi-access",
     "f0fc08457eca7a6676c9e27aaee5ca598012c223894fa19fa213bf47fba87f76": "broker-kimi-refresh",
 }
+# Installed-application credentials exposed by upstream clients are allowed only in this fixture.
+PUBLIC_OAUTH_CLIENT_CREDENTIAL_CANARIES = frozenset(
+    {"catalog-google-gemini-client-secret", "catalog-google-antigravity-client-secret"}
+)
 PRIVATE_KEY_MARKERS = (
     b"-----BEGIN " + b"PRIVATE KEY-----",
     b"-----BEGIN " + b"RSA PRIVATE KEY-----",
@@ -123,6 +127,11 @@ def scan_secrets(relative: str, payload: bytes, errors: list[str]) -> None:
         for candidate in candidates:
             fingerprint = sha256_bytes(candidate)
             label = CANARY_FINGERPRINTS.get(fingerprint)
+            if (
+                relative == "catalog/oauth.toml"
+                and label in PUBLIC_OAUTH_CLIENT_CREDENTIAL_CANARIES
+            ):
+                continue
             if label is not None:
                 errors.append(f"archived credential canary {label} found in {relative}")
 

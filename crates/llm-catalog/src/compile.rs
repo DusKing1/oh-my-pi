@@ -718,18 +718,19 @@ struct SourceOAuthDocument {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SourceOAuthSpec {
-	provider:            Str,
-	credential_provider: Str,
-	kind:                SourceOAuthKind,
-	client_id:           Str,
-	authorize_url:       Str,
-	token_url:           Str,
+	provider:             Str,
+	credential_provider:  Str,
+	kind:                 SourceOAuthKind,
+	client_id:            Str,
+	authorize_url:        Str,
+	token_url:            Str,
 	#[serde(default)]
-	scopes:              Vec<Str>,
-	callback_port:       Option<u16>,
+	scopes:               Vec<Str>,
+	callback_port:        Option<u16>,
 	#[serde(default)]
-	extra_auth_params:   BTreeMap<Str, Str>,
-	exchange:            Option<OAuthExchangeKind>,
+	extra_auth_params:    BTreeMap<Str, Str>,
+	exchange:             Option<OAuthExchangeKind>,
+	principal_resolution: Option<SourcePrincipalResolution>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -738,6 +739,30 @@ enum SourceOAuthKind {
 	Pkce,
 	DeviceCode,
 	CustomExchange,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+enum SourcePrincipalResolution {
+	IdTokenClaim { claim: Str },
+	TokenResponseField { pointer: Str },
+	UserinfoEndpoint { url: Str, field: Str },
+	StaticLabel { label: Str },
+}
+
+impl From<SourcePrincipalResolution> for PrincipalResolution {
+	fn from(source: SourcePrincipalResolution) -> Self {
+		match source {
+			SourcePrincipalResolution::IdTokenClaim { claim } => Self::IdTokenClaim { claim },
+			SourcePrincipalResolution::TokenResponseField { pointer } => {
+				Self::TokenResponseField { pointer }
+			},
+			SourcePrincipalResolution::UserinfoEndpoint { url, field } => {
+				Self::UserinfoEndpoint { url, field }
+			},
+			SourcePrincipalResolution::StaticLabel { label } => Self::StaticLabel { label },
+		}
+	}
 }
 
 /// Stable alias emitted by normalization.
@@ -2751,12 +2776,15 @@ fn compile_oauth_specs(
 			None if source.token_url.is_empty() => OAuthRefreshBehavior::Unsupported,
 			None => OAuthRefreshBehavior::TokenEndpoint,
 		};
-		let principal_resolution = match source.exchange {
-			Some(OAuthExchangeKind::OpenAiCodexClaims) => Some(PrincipalResolution::IdTokenClaim {
-				claim: Str::from("https://api.openai.com/auth/chatgpt_account_id"),
-			}),
-			_ => None,
-		};
+		let principal_resolution = source
+			.principal_resolution
+			.map(PrincipalResolution::from)
+			.or_else(|| match source.exchange {
+				Some(OAuthExchangeKind::OpenAiCodexClaims) => Some(PrincipalResolution::IdTokenClaim {
+					claim: Str::from("https://api.openai.com/auth/chatgpt_account_id"),
+				}),
+				_ => None,
+			});
 		let canonical = serde_json::to_vec(&(
 			&source.client_id,
 			&source.token_url,
