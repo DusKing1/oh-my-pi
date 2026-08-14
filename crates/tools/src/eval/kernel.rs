@@ -185,6 +185,7 @@ struct Worker {
 }
 
 struct WorkerState {
+	engine:    Arc<Engine>,
 	thread_id: AtomicI64,
 	epoch:     AtomicU64,
 	alive:     AtomicBool,
@@ -236,17 +237,20 @@ impl WorkerState {
 		if id == 0 {
 			return Ok(());
 		}
-		// SAFETY: `id` is CPython's identifier for this live worker thread and
-		// `PyExc_KeyboardInterrupt` is an immortal runtime-owned exception type.
-		// CPython owns delivery at the next bytecode checkpoint.
-		let changed =
-			unsafe { ffi::PyThreadState_SetAsyncExc(id as c_long, ffi::PyExc_KeyboardInterrupt) };
+		let changed = self.engine.attach(|_| {
+			// SAFETY: `id` is CPython's identifier for this live worker thread and
+			// `PyExc_KeyboardInterrupt` is an immortal runtime-owned exception type.
+			// The caller is attached while CPython selects the target thread state.
+			let changed =
+				unsafe { ffi::PyThreadState_SetAsyncExc(id as c_long, ffi::PyExc_KeyboardInterrupt) };
+			if changed > 1 {
+				// SAFETY: passing NULL clears the exception set by the preceding call.
+				unsafe { ffi::PyThreadState_SetAsyncExc(id as c_long, std::ptr::null_mut()) };
+			}
+			changed
+		});
 		if changed == 1 {
 			return Ok(());
-		}
-		if changed > 1 {
-			// Roll back an impossible multi-match rather than corrupting peers.
-			unsafe { ffi::PyThreadState_SetAsyncExc(id as c_long, std::ptr::null_mut()) };
 		}
 		Err(Fault::Resource {
 			operation: Str::from("cancel"),
@@ -538,8 +542,10 @@ impl EmbeddedPython {
 
 	fn spawn_worker(&self, label: &str) -> Result<Arc<Worker>, Fault> {
 		let (commands, receiver) = flume::unbounded();
+		let engine = Arc::clone(&self.inner.engine);
 		let installer = Arc::clone(&self.inner.installer);
 		let state = Arc::new(WorkerState {
+			engine:    Arc::clone(&engine),
 			thread_id: AtomicI64::new(0),
 			epoch:     AtomicU64::new(0),
 			alive:     AtomicBool::new(true),
@@ -548,7 +554,6 @@ impl EmbeddedPython {
 		});
 		let worker =
 			Arc::new(Worker { commands, state: Arc::clone(&state), enqueue: AsyncMutex::new(()) });
-		let engine = Arc::clone(&self.inner.engine);
 		thread::Builder::new()
 			.name(format!("omp-eval-py-{label}"))
 			.spawn(move || worker_main(&engine, &state, receiver, installer.as_ref()))
@@ -727,6 +732,11 @@ fn worker_main(
 			match result {
 				Ok(completion) => {
 					let _ = command.events.send(Ok(RunEvent::Completed(completion)));
+				},
+				Err(_) if command.cancelled.load(Ordering::Acquire) => {
+					let _ = command
+						.events
+						.send(Ok(RunEvent::Completed(cancelled_completion())));
 				},
 				Err(error) => {
 					state.alive.store(false, Ordering::Release);
@@ -1257,11 +1267,13 @@ mod tests {
 		let session = runtime.open_session().await.expect("session opens");
 		let mut run = runtime
 			.run(&session, RunRequest {
-				code:    Str::new_static(
-					"import time\n__omp_timeout_pause__()\ntime.sleep(0.075)\n__omp_timeout_resume__()\\
-					 \
-					 n7",
-				),
+				code:    Str::new_static(concat!(
+					"import time\n",
+					"__omp_timeout_pause__()\n",
+					"time.sleep(0.075)\n",
+					"__omp_timeout_resume__()\n",
+					"7",
+				)),
 				timeout: Some(Duration::from_millis(30)),
 				reset:   false,
 			})

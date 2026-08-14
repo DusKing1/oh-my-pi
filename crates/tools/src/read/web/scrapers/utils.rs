@@ -3,46 +3,8 @@
 use html_to_markdown_rs::convert;
 use omp_core::Str;
 use serde::de::DeserializeOwned;
-use serde_json::{Map, Value};
-use url::Url;
 
-use crate::read::web::types::{HttpClient, HttpRequest, HttpResponse, RenderResult, WebError};
-
-/// Fetches a URL and requires a successful HTTP status.
-pub(super) async fn get<C: HttpClient + Sync>(
-	client: &C,
-	url: &Url,
-) -> Result<HttpResponse, WebError> {
-	get_request(client, HttpRequest::new(url.as_str())).await
-}
-
-/// Executes a scraper request and requires a successful HTTP status.
-pub(super) async fn get_request<C: HttpClient + Sync>(
-	client: &C,
-	request: HttpRequest,
-) -> Result<HttpResponse, WebError> {
-	let response = client.get(request).await?;
-	if response.is_success() {
-		Ok(response)
-	} else {
-		Err(WebError::HttpStatus { url: response.final_url.clone(), status: response.status })
-	}
-}
-
-/// Fetches and UTF-8-decodes a successful response.
-pub(super) async fn get_text<C: HttpClient + Sync>(client: &C, url: &Url) -> Result<Str, WebError> {
-	Ok(get(client, url).await?.text())
-}
-
-/// Fetches and JSON-decodes a successful response.
-pub(super) async fn get_json<C, T>(client: &C, url: &Url) -> Result<T, WebError>
-where
-	C: HttpClient + Sync,
-	T: DeserializeOwned,
-{
-	let response = get(client, url).await?;
-	serde_json::from_slice(&response.body).map_err(|error| WebError::decode(error.to_string()))
-}
+use crate::read::web::types::{HttpResponse, RenderResult, WebError};
 
 /// JSON-decodes a response that has already been fetched.
 pub(super) fn decode_json<T: DeserializeOwned>(response: &HttpResponse) -> Result<T, WebError> {
@@ -101,27 +63,6 @@ const fn hex_digit(byte: u8) -> Option<u8> {
 		b'A'..=b'F' => Some(byte - b'A' + 10),
 		_ => None,
 	}
-}
-
-/// Returns a JSON object without cloning it.
-#[must_use]
-pub(super) fn as_record(value: &Value) -> Option<&Map<String, Value>> {
-	value.as_object()
-}
-
-/// Returns a non-empty, trimmed JSON string.
-#[must_use]
-pub(super) fn as_string(value: &Value) -> Option<&str> {
-	value
-		.as_str()
-		.map(str::trim)
-		.filter(|value| !value.is_empty())
-}
-
-/// Returns a finite JSON number.
-#[must_use]
-pub(super) fn as_number(value: &Value) -> Option<f64> {
-	value.as_f64().filter(|value| value.is_finite())
 }
 
 /// Builds a cleaned, capped markdown render result.
@@ -273,21 +214,6 @@ fn format_tenths(number: u64, divisor: u64, suffix: char) -> String {
 
 fn round_units(number: u64, divisor: u64) -> u64 {
 	((u128::from(number) + u128::from(divisor / 2)) / u128::from(divisor)) as u64
-}
-
-/// Checks whether content begins with a recognizable HTML document tag.
-#[must_use]
-pub(super) fn looks_like_html(content: &str) -> bool {
-	let trimmed = content.trim_start();
-	["<!doctype", "<html", "<head", "<body"]
-		.iter()
-		.any(|prefix| starts_with_ignore_ascii_case(trimmed, prefix))
-}
-
-fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
-	value
-		.get(..prefix.len())
-		.is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
 #[cfg(test)]

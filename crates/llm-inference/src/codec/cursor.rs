@@ -34,6 +34,22 @@ use crate::{
 
 /// Prost bindings generated from the verified Cursor Agent schema.
 pub mod wire {
+	#![allow(
+		missing_docs,
+		clippy::pedantic,
+		clippy::nursery,
+		reason = "prost output is machine-generated and cannot follow handwritten documentation \
+		          and style conventions"
+	)]
+	#![allow(
+		clippy::allow_attributes_without_reason,
+		reason = "prost emits compatibility allow attributes without Rust reason metadata"
+	)]
+	#![allow(
+		clippy::large_enum_variant,
+		reason = "prost maps protobuf oneofs directly to enums; boxing would change the generated \
+		          Rust API"
+	)]
 	include!(concat!(env!("OUT_DIR"), "/agent.v1.rs"));
 }
 
