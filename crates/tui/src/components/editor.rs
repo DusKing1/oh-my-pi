@@ -254,6 +254,13 @@ impl Component for EditInput {
 				cursor,
 				cursor_style,
 			);
+			if row == 0
+				&& text.is_empty()
+				&& let Some(placeholder) = self.props.str_of(Prop::Placeholder)
+			{
+				pc.frame
+					.put(x, y, placeholder, Style::new().fg(pc.ctx.theme.muted).dim().italic());
+			}
 		}
 		self.paint_picker(pc, rect, rect.y.saturating_add(input_height));
 	}
@@ -914,7 +921,7 @@ impl EditorPane {
 	/// Sets one editor-shell property.
 	pub fn with(mut self, prop: Prop, value: impl Into<PropValue>) -> Self {
 		let value = value.into();
-		if matches!(prop, Prop::Id | Prop::Value | Prop::Submit) {
+		if matches!(prop, Prop::Id | Prop::Value | Prop::Submit | Prop::Placeholder) {
 			self.children[0]
 				.comp_mut()
 				.props_mut()
@@ -1409,6 +1416,26 @@ mod tests {
 		ui.handle_key(Key::Char('a'));
 		assert!(ui.set_text("input", "hi"), "set_text still routes through the pane to the input");
 		assert_eq!(ui.values()["input"], "hi");
+	}
+
+	#[test]
+	fn editor_pane_placeholder_disappears_after_input() {
+		let pane = EditorPane::new().with(Prop::Placeholder, "Ask anything");
+		let mut ui = Ui::from_root(pane, 40, UiContext::default());
+		ui.focus_first();
+
+		let mut renderer = crate::Renderer::new(Vec::new());
+		ui.present(&mut renderer, 10, 0).unwrap();
+		assert!(
+			crate::test_support::frame_row_text(ui.frame(), 0).contains("Ask anything"),
+			"empty focused editor should paint its placeholder"
+		);
+
+		ui.handle_key(Key::Char('x'));
+		ui.present(&mut renderer, 10, 0).unwrap();
+		let painted = crate::test_support::frame_row_text(ui.frame(), 0);
+		assert!(painted.contains('x'));
+		assert!(!painted.contains("Ask anything"));
 	}
 
 	#[test]

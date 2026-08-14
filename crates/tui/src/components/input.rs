@@ -5,7 +5,7 @@ use crate::{
 	context::{Theme, UiContext},
 	frame::{Rect, Style},
 	input::{
-		Key, Mouse, byte_at_column, sanitize_paste, word_left_column, word_right_column,
+		Key, Mouse, UiEvent, byte_at_column, sanitize_paste, word_left_column, word_right_column,
 		word_rubout_start,
 	},
 	props::{Prop, PropValue, Props},
@@ -247,7 +247,9 @@ impl Component for Input {
 	}
 
 	fn key(&mut self, _ec: &mut EventCtx<'_>, key: Key) -> Flow {
-		if self.edit(key) {
+		if key == Key::Enter && self.props.flag(Prop::Submit) {
+			Flow::Event(UiEvent::Submit)
+		} else if self.edit(key) {
 			Flow::Consumed
 		} else {
 			Flow::Skip

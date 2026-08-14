@@ -342,6 +342,9 @@ impl Component for Row {
 	}
 
 	fn paint(&mut self, pc: &mut PaintCtx<'_>, _rect: Rect) {
+		if _rect.height == 0 || _rect.width == 0 {
+			return;
+		}
 		for child in self.children.iter_mut().filter(|child| child.visible) {
 			child.paint(pc);
 		}

@@ -14,7 +14,7 @@ use omp_tui::{
 const SCROLL_ID: &str = "login-providers";
 const HUD_ID: &str = "paint-hud";
 const CHROME_ROWS: u16 = 5;
-const ASSET_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/assets/login");
+const ASSET_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/login");
 /// Card cell: rounded border (2) + 1-cell side padding around a 12-wide
 /// body that fits the 4-cell logo and every shortened name.
 ///
@@ -113,7 +113,7 @@ fn build_ui(viewport: Size, context: UiContext) -> Ui {
 		})
 		.collect::<HashMap<_, _>>();
 	let elements = Elements::builder()
-		.with("logo", move |_: &str, props: Props, _: Vec<Cached>| {
+		.with("provider-logo", move |_: &str, props: Props, _: Vec<Cached>| {
 			let source = props.str_of(Prop::Src).map_or("", |value| value.as_str());
 			let id = ids.get(source).copied().unwrap_or(1);
 			Box::new(
@@ -137,7 +137,7 @@ fn build_ui(viewport: Size, context: UiContext) -> Ui {
 						<box focus id={provider.id} w={CARD_W} border=round bc="muted..muted"
 							hover="#38bdf8..#c084fc" lift=1 anim=220 ease=in-out
 							align=center pad-x=1>
-							<logo src={format!("{ASSET_DIR}/{}.png", provider.id)}/>
+							<provider-logo src={format!("{ASSET_DIR}/{}.png", provider.id)}/>
 							<text bold truncate align=center>{provider.name}</text>
 						</box>
 					}

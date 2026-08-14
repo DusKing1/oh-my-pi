@@ -399,8 +399,8 @@ fn trim_transparent(pixels: Vec<Vec<[u8; 4]>>) -> Vec<Vec<[u8; 4]>> {
 		.collect()
 }
 
-fn decode_image(path: &str) -> Option<DecodedImage> {
-	let bytes = std::fs::read(path).ok()?;
+fn decode_image(source: &str) -> Option<DecodedImage> {
+	let bytes = crate::imagereg::source_bytes(source)?;
 	if bytes.starts_with(b"P6") {
 		return decode_ppm(&bytes).map(DecodedImage::Pixels);
 	}
@@ -727,8 +727,8 @@ mod tests {
 	}
 
 	#[test]
-	fn png_src_auto_interns_placeholder_cells_without_registration() {
-		let logo = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/assets/login/anthropic.png");
+	fn packaged_png_asset_interns_and_decodes_without_filesystem_access() {
+		let logo = "asset://login/anthropic";
 		let mut image = Img::new()
 			.with(Prop::Src, logo)
 			.with(Prop::W, 2_u16)
@@ -745,6 +745,13 @@ mod tests {
 			panic!("src image paints typed placeholder cells: {:?}", frame.cell(1, 0).content);
 		};
 		assert!(id > 0x00f0_0000, "registry IDs allocate from the top of the 24-bit range");
+		let embedded = crate::assets::provider_logo("anthropic").expect("packaged test logo");
+		let registered = crate::imagereg::bytes(id).expect("interned image bytes");
+		assert_eq!(
+			registered.as_ptr(),
+			embedded.as_ptr(),
+			"interning must not copy embedded logo bytes",
+		);
 
 		// The same source in a second component shares the interned ID.
 		let mut sibling = Img::new()
@@ -760,12 +767,21 @@ mod tests {
 			matches!(second.cell(0, 0).content, CellContent::Image { id: other, .. } if other == id)
 		);
 
-		// Cells tier ignores the interned box and keeps the half-block path.
+		// Cells tier ignores the interned box and decodes the same embedded
+		// bytes into visible half-block cells.
 		let cells_ctx = UiContext::default();
 		let mut fallback = Img::new()
 			.with(Prop::Src, logo)
 			.with(Prop::W, 2_u16)
-			.with(Prop::H, 1_u16);
+			.with(Prop::H, 1_u16)
+			.with(Prop::Trim, true);
 		assert_eq!(fallback.height(&cells_ctx, 2), 1);
+		assert_eq!(fallback.state.phase, Load::Ready);
+		let mut cells = Frame::new(Size::new(2, 1));
+		fallback.paint(
+			&mut PaintCtx::new(&mut cells, &cells_ctx, &mut Vec::new(), &mut Vec::new()),
+			Rect::new(0, 0, 2, 1),
+		);
+		assert_ne!(frame_row_text(&cells, 0), "", "embedded logo paints half-block cells");
 	}
 }

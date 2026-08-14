@@ -398,6 +398,11 @@ pub struct Theme {
 	pub selection: Color,
 	/// Drop-shadow tint painted under lifted (elevated) surfaces.
 	pub shadow:    Color,
+	/// Elevated panel fill (composer, overlay cards); darker than `surface`.
+	pub panel:     Color,
+	/// Secondary accent (cost figures, alternate roles); distinct from
+	/// `accent` without carrying ok/warn/err semantics.
+	pub secondary: Color,
 	/// Text painted on top of accent/warn fills.
 	pub contrast:  Color,
 }
@@ -417,6 +422,8 @@ impl Default for Theme {
 			hover:     Color::Rgb(0x2c, 0x31, 0x3a),
 			selection: Color::Rgb(0x36, 0x4c, 0x61),
 			shadow:    Color::Rgb(0x05, 0x07, 0x0c),
+			panel:     Color::Rgb(0x0c, 0x0f, 0x12),
+			secondary: Color::Rgb(0xab, 0x77, 0xe6),
 			contrast:  Color::Rgb(0x10, 0x12, 0x16),
 		}
 	}
@@ -439,6 +446,8 @@ impl Theme {
 				hover:     Color::Rgb(0x2c, 0x31, 0x3a),
 				selection: Color::Rgb(0x36, 0x4c, 0x61),
 				shadow:    Color::Rgb(0x05, 0x07, 0x0c),
+				panel:     Color::Rgb(0x0c, 0x0f, 0x12),
+				secondary: Color::Rgb(0xab, 0x77, 0xe6),
 				contrast:  Color::Rgb(0x10, 0x12, 0x16),
 			},
 			Appearance::Light => Self {
@@ -454,6 +463,8 @@ impl Theme {
 				hover:     Color::Rgb(0xed, 0xef, 0xf2),
 				selection: Color::Rgb(0xc2, 0xda, 0xed),
 				shadow:    Color::Rgb(0xb8, 0xbd, 0xc7),
+				panel:     Color::Rgb(0xee, 0xf0, 0xf3),
+				secondary: Color::Rgb(0x6f, 0x42, 0xc1),
 				contrast:  Color::Rgb(0xff, 0xff, 0xff),
 			},
 		}
@@ -466,6 +477,7 @@ impl Theme {
 			"fg" => self.fg,
 			"accent" => self.accent,
 			"info" => self.info,
+			"secondary" => self.secondary,
 			"ok" => self.ok,
 			"warn" => self.warn,
 			"err" => self.err,
@@ -475,6 +487,7 @@ impl Theme {
 			"hover" => self.hover,
 			"selection" => self.selection,
 			"shadow" => self.shadow,
+			"panel" => self.panel,
 			"contrast" => self.contrast,
 			_ => return SystemColor::parse(name).map(|system| system.resolve(self)),
 		})
@@ -489,6 +502,8 @@ impl Theme {
 				| "info" | "ok"
 				| "warn" | "err"
 				| "muted"
+				| "panel"
+				| "secondary"
 				| "border"
 				| "surface"
 				| "hover"

@@ -640,6 +640,7 @@ fn lower_constructor(element: &Element) -> TokenStream2 {
 		"form" => Some("Form"),
 		"progress" => Some("Progress"),
 		"img" => Some("Img"),
+		"logo" => Some("Logo"),
 		"editor" => Some("EditorPane"),
 		"wizard" => Some("Wizard"),
 		"icon" => {
@@ -1088,6 +1089,7 @@ fn prop_variant(name: &str) -> Option<&'static str> {
 		"filter" => "Filter",
 		"custom" => "Custom",
 		"mask" => "Mask",
+		"noselect" => "NoSelect",
 		"recommended" => "Recommended",
 		"open" => "Open",
 		"required" => "Required",

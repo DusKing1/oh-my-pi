@@ -1346,6 +1346,31 @@ mod tests {
 	}
 
 	#[test]
+	fn overlay_submit_input_surfaces_submitted_app_event_without_editing() {
+		use super::{AppEvent, Routed, route_key_event};
+		use crate::{Key, OverlayOptions, Prop, components::Input};
+
+		let mut ui = Ui::from_markup("<text>base</text>", 40, UiContext::default()).unwrap();
+		let overlay = ui.show_overlay(
+			Input::new()
+				.with(Prop::Id, "token")
+				.with(Prop::Value, "sk-live")
+				.with(Prop::Submit, true),
+			OverlayOptions::default(),
+		);
+
+		assert_eq!(
+			route_key_event(&mut ui, Key::Enter, &[], &[], true),
+			Routed::Event(AppEvent::Submitted),
+		);
+		assert_eq!(
+			ui.overlay(overlay).expect("input overlay").values()["token"],
+			"sk-live",
+			"submitting preserves the value and inserts no newline"
+		);
+	}
+
+	#[test]
 	fn overlay_cancel_dismisses_the_visible_layer_before_quit_policy() {
 		use super::{AppEvent, Routed, route_key_event};
 		use crate::{Key, OverlayOptions, dom};

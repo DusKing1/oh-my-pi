@@ -27,8 +27,8 @@ pub struct InternedImage {
 
 #[derive(Default)]
 struct Registry {
-	/// Source path → interned entry; failures cache as `None` so missing
-	/// files are probed once, not every rebuild.
+	/// Source URI or path → interned entry; failures cache as `None` so
+	/// missing sources are probed once, not every rebuild.
 	by_source: HashMap<Str, Option<InternedImage>>,
 	by_id:     HashMap<u32, CowBytes<'static>>,
 	allocated: u32,
@@ -36,9 +36,10 @@ struct Registry {
 
 static IMAGES: LazyLock<Mutex<Registry>> = LazyLock::new(|| Mutex::new(Registry::default()));
 
-/// Interns a PNG file source, returning its stable terminal image ID and
-/// pixel dimensions. Non-PNG or unreadable sources return `None` (the
-/// half-block decoder handles those tiers separately).
+/// Interns a PNG filesystem path or packaged `asset://login/<provider>`
+/// source, returning its stable terminal image ID and pixel dimensions.
+/// Non-PNG or unreadable sources return `None` (the half-block decoder
+/// handles those tiers separately).
 pub fn intern(source: &str) -> Option<InternedImage> {
 	let mut registry = IMAGES.lock();
 	if let Some(cached) = registry.by_source.get(source) {
@@ -65,11 +66,22 @@ pub fn bytes(id: u32) -> Option<CowBytes<'static>> {
 
 fn load(source: &str, allocated: u32) -> Option<InternedImage> {
 	let id = 0x00ff_ffff_u32.checked_sub(allocated)?;
-	let png = std::fs::read(source).ok()?;
+	let png = source_bytes(source)?;
 	// Kitty transmissions are sent as `f=100`: PNG only.
 	if !png.starts_with(b"\x89PNG\r\n\x1a\n") {
 		return None;
 	}
 	let dimensions = imagefmt::dimensions(&png)?;
-	Some(InternedImage { id, png: CowBytes::from(png), dimensions })
+	Some(InternedImage { id, png, dimensions })
+}
+
+/// Loads bytes from a filesystem path or packaged provider-logo URI.
+///
+/// Embedded assets stay backed directly by executable static data; file
+/// sources retain their owned read buffer.
+pub fn source_bytes(source: &str) -> Option<CowBytes<'static>> {
+	if let Some(provider_id) = source.strip_prefix("asset://login/") {
+		return crate::assets::provider_logo(provider_id).map(CowBytes::from_static);
+	}
+	std::fs::read(source).ok().map(CowBytes::from)
 }

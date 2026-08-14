@@ -4,7 +4,7 @@
 use serde_json::json;
 
 use crate::{
-	Color, Rect, Ui, UiContext,
+	Color, OverlayOptions, Prop, Rect, Ui, UiContext,
 	component::{Cached, HitTag, Slot},
 	components::{Button, EditInput, EditorPane, Form, Input, Radio, Select, Tabs, Tree, Wizard},
 	input::{Key, Mouse, UiEvent},
@@ -1442,6 +1442,33 @@ fn editor_vertical_motion_preserves_sticky_column_and_snaps_at_top() {
 	assert_eq!((state.buffer().cursor_line(), state.buffer().cursor_column()), (0, 0));
 	ui.handle_key(Key::Up);
 	assert_eq!(ui.focus_slot(), Some(editor), "released Up wraps the single-item focus ring");
+}
+
+#[test]
+fn submit_input_in_overlay_emits_submit_without_editing_its_value() {
+	let mut ui = Ui::from_markup("<text>base</text>", 40, UiContext::default()).unwrap();
+	let overlay = ui.show_overlay(
+		Input::new()
+			.with(Prop::Id, "token")
+			.with(Prop::Value, "sk-live")
+			.with(Prop::Submit, true),
+		OverlayOptions::default(),
+	);
+
+	assert_eq!(ui.handle_key(Key::Enter), UiEvent::Submit);
+	assert_eq!(
+		ui.overlay(overlay).expect("input overlay").values()["token"],
+		json!("sk-live"),
+		"submitting preserves the value and inserts no newline"
+	);
+}
+
+#[test]
+fn editor_without_submit_inserts_newline_on_enter() {
+	let mut ui = Ui::from_markup("<editor id=e value=line/>", 40, UiContext::default()).unwrap();
+
+	assert_eq!(ui.handle_key(Key::Enter), UiEvent::None);
+	assert_eq!(ui.values()["e"], json!("line\n"));
 }
 
 #[test]

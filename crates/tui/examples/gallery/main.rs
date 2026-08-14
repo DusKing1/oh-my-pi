@@ -8,33 +8,21 @@
 //! PageUp/PageDown scroll the active pane, and the Live tab re-renders the
 //! preview as you type. The `Anim` tab autoplays its prop tweens and takes
 //! scene keys, the `Overlay` tab opens modal layers (`Ctrl+K`/`Ctrl+G`),
-//! `Eclipse` runs the fullscreen shader, and `Picker` hosts the chat
-//! example's model switcher inline. Ctrl-C or Ctrl-Q quits.
+//! and `Eclipse` runs the fullscreen shader. Ctrl-C or Ctrl-Q quits.
 
 mod anim;
 mod eclipse;
 mod overlay;
 mod render;
 
-#[allow(
-	dead_code,
-	reason = "the shared picker module also carries the chat example's overlay driver"
-)]
-#[path = "../chat/picker.rs"]
-mod picker;
-
 use std::io;
 
 use omp_tui::{AppEvent, AppOptions, Key, OverlayId, Size, Ui, UiContext, dom};
-
-/// List rows granted to the inline picker tab.
-const PICKER_ROWS: u16 = 8;
 
 fn build_ui(viewport: Size, context: UiContext) -> Ui {
 	// keep panes inside the viewport so switching tabs never strands
 	// stale rows in scrollback
 	let pane_height = render::pane_height(viewport);
-	let charset = context.charset;
 
 	Ui::from_root(
 		dom! {
@@ -84,9 +72,6 @@ fn build_ui(viewport: Size, context: UiContext) -> Ui {
 					<tab title="Anim">{anim::pane()}</tab>
 					<tab title="Overlay">{overlay::pane()}</tab>
 					<tab title="Eclipse">{eclipse::pane(viewport, pane_height)}</tab>
-					<tab title="Picker">
-						{picker::models_pane(0, PICKER_ROWS, viewport.width, charset)}
-					</tab>
 				</tabs>
 				<text dim>{"Tab focus · ←/→ switch tabs · ↑/↓ PgUp/PgDn scroll · Ctrl-C quit"}</text>
 			</col>
@@ -115,9 +100,6 @@ async fn main() -> io::Result<()> {
 		.quit([Key::Ctrl('c'), Key::Ctrl('q')])
 		.start(|env| build_ui(env.viewport, env.ctx))
 		.await?;
-	// The picker tab opens with the first model's details, like the chat
-	// overlay does.
-	picker::show_detail_on(app.ui_mut(), Some(0));
 
 	let mut synced = String::new();
 	let mut lab = anim::Lab::new();
@@ -170,15 +152,6 @@ async fn main() -> io::Result<()> {
 					app.ui_mut().set_text("status", format!("model: {label}"));
 					app.ui_mut().close_overlay(overlay);
 				}
-			},
-			// The Picker tab's select moved: mirror the chat picker's
-			// facts-and-chips detail line.
-			AppEvent::Highlighted { id, value } if id == "models" => {
-				picker::show_detail_on(app.ui_mut(), value.as_str().parse().ok());
-			},
-			AppEvent::Filtered { id, value, .. } if id == "models" => {
-				let model = value.and_then(|value| value.as_str().parse().ok());
-				picker::show_detail_on(app.ui_mut(), model);
 			},
 			AppEvent::OverlayClosed(id) => {
 				if layers.picker == Some(id) {

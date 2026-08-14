@@ -8,6 +8,8 @@ extern crate self as omp_tui;
 
 /// Time-driven animation primitives: easing, tweens, and frame cycles.
 pub mod anim;
+/// Packaged assets.
+pub mod assets;
 mod color;
 mod component;
 /// Built-in layout, text, navigation, data, and input components.
