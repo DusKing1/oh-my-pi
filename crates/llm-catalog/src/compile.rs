@@ -727,8 +727,15 @@ struct SourceOAuthSpec {
 	#[serde(default)]
 	scopes:               Vec<Str>,
 	callback_port:        Option<u16>,
+	callback_host:        Option<Str>,
+	callback_path:        Option<Str>,
 	#[serde(default)]
-	extra_auth_params:    BTreeMap<Str, Str>,
+	authorize_params:     BTreeMap<Str, Str>,
+	#[serde(default)]
+	token_params:         BTreeMap<Str, Str>,
+	#[serde(default)]
+	custom_params:        BTreeMap<Str, Str>,
+	refresh_url:          Option<Str>,
 	exchange:             Option<OAuthExchangeKind>,
 	principal_resolution: Option<SourcePrincipalResolution>,
 }
@@ -2709,32 +2716,21 @@ fn compile_oauth_specs(
 		if !source.token_url.is_empty() {
 			validate_url(&source.token_url)?;
 		}
-		let mut parameters = source
-			.extra_auth_params
-			.iter()
-			.filter(|(name, _)| {
-				!matches!(
-					name.as_str(),
-					"callback_host" | "callback_path" | "client_secret" | "refresh_url"
-				)
-			})
-			.map(|(name, value)| OAuthParameter { name: name.clone(), value: value.clone() })
-			.collect::<Vec<_>>();
-		parameters.sort_by(|left, right| {
-			left
-				.name
-				.cmp(&right.name)
-				.then_with(|| left.value.cmp(&right.value))
-		});
+		if let Some(url) = &source.refresh_url {
+			validate_url(url)?;
+		}
+		let authorize_parameters = oauth_parameters(&source.authorize_params);
+		let token_parameters = oauth_parameters(&source.token_params);
+		let custom_parameters = oauth_parameters(&source.custom_params);
 		let flow = match source.kind {
 			SourceOAuthKind::Pkce => {
 				let host = source
-					.extra_auth_params
-					.get("callback_host")
+					.callback_host
+					.as_ref()
 					.map_or("127.0.0.1", Str::as_str);
 				let path = source
-					.extra_auth_params
-					.get("callback_path")
+					.callback_path
+					.as_ref()
 					.map_or("/callback", Str::as_str);
 				let port = source.callback_port.ok_or_else(|| {
 					CompileError::Invariant(Str::from(format!(
@@ -2743,10 +2739,10 @@ fn compile_oauth_specs(
 					)))
 				})?;
 				OAuthFlowSpec::Pkce {
-					authorize_url:        source.authorize_url.clone(),
-					redirect_uri:         Str::from(format!("http://{host}:{port}{path}")),
-					completion:           OAuthCompletion::CallbackUrl,
-					authorize_parameters: parameters.clone().into_boxed_slice(),
+					authorize_url: source.authorize_url.clone(),
+					redirect_uri: Str::from(format!("http://{host}:{port}{path}")),
+					completion: OAuthCompletion::PasteCallbackUrl,
+					authorize_parameters,
 				}
 			},
 			SourceOAuthKind::DeviceCode => OAuthFlowSpec::DeviceCode {
@@ -2765,30 +2761,21 @@ fn compile_oauth_specs(
 						source.provider
 					)))
 				})?,
-				parameters:    parameters.clone().into_boxed_slice(),
+				parameters:    custom_parameters,
 				polling:       None,
 			},
 		};
-		let refresh = match source.extra_auth_params.get("refresh_url") {
-			Some(url) => {
-				OAuthRefreshBehavior::Endpoint { url: url.clone(), parameters: Box::new([]) }
-			},
+		let refresh = match source.refresh_url {
+			Some(url) => OAuthRefreshBehavior::Endpoint { url, parameters: Box::new([]) },
 			None if source.token_url.is_empty() => OAuthRefreshBehavior::Unsupported,
 			None => OAuthRefreshBehavior::TokenEndpoint,
 		};
-		let principal_resolution = source
-			.principal_resolution
-			.map(PrincipalResolution::from)
-			.or_else(|| match source.exchange {
-				Some(OAuthExchangeKind::OpenAiCodexClaims) => Some(PrincipalResolution::IdTokenClaim {
-					claim: Str::from("https://api.openai.com/auth/chatgpt_account_id"),
-				}),
-				_ => None,
-			});
+		let principal_resolution = source.principal_resolution.map(PrincipalResolution::from);
 		let canonical = serde_json::to_vec(&(
 			&source.client_id,
 			&source.token_url,
 			&source.scopes,
+			&token_parameters,
 			&flow,
 			&refresh,
 			&principal_resolution,
@@ -2810,7 +2797,7 @@ fn compile_oauth_specs(
 				name:   Str::from("authorization"),
 				prefix: Str::from("Bearer "),
 			},
-			token_parameters: parameters.into_boxed_slice(),
+			token_parameters,
 			flow,
 			refresh,
 			principal_resolution,
@@ -2818,6 +2805,13 @@ fn compile_oauth_specs(
 	}
 	specs.sort_by(|left, right| left.id.cmp(&right.id));
 	Ok((specs, ids))
+}
+
+fn oauth_parameters(parameters: &BTreeMap<Str, Str>) -> Box<[OAuthParameter]> {
+	parameters
+		.iter()
+		.map(|(name, value)| OAuthParameter { name: name.clone(), value: value.clone() })
+		.collect()
 }
 
 fn facet_operations(facets: &[SourceFacet]) -> OperationBits {
@@ -2876,12 +2870,33 @@ fn compile_providers(
 		let auth = compile_auth(&source.auth, oauth_ids)?;
 		let auth_id = auth.id.clone();
 		auth_by_id.entry(auth_id.clone()).or_insert(auth);
-		let mut provider_auth_ids = vec![auth_id.clone()];
-		if let Some(flow) = source.oauth_flow.as_ref()
+		let mut provider_auth_ids = Vec::with_capacity(2);
+		let login_auth = if let Some(flow) = source.oauth_flow.as_ref()
 			&& !matches!(&source.auth, SourceAuth::Oauth { flow: request_flow } if request_flow == flow)
 		{
-			let login_auth = compile_auth(&SourceAuth::Oauth { flow: flow.clone() }, oauth_ids)?;
+			Some(compile_auth(&SourceAuth::Oauth { flow: flow.clone() }, oauth_ids)?)
+		} else {
+			None
+		};
+		let prefer_login = source.oauth_flow.as_ref().is_some_and(|flow| {
+			oauth_ids
+				.get(flow)
+				.and_then(|id| oauth_specs.iter().find(|spec| &spec.id == id))
+				.is_some_and(|spec| {
+					spec.principal_resolution.is_some()
+						&& !matches!(spec.flow, OAuthFlowSpec::Custom { .. })
+				})
+		});
+		if let Some(login_auth) = &login_auth
+			&& prefer_login
+		{
 			provider_auth_ids.push(login_auth.id.clone());
+		}
+		provider_auth_ids.push(auth_id.clone());
+		if let Some(login_auth) = login_auth {
+			if !prefer_login {
+				provider_auth_ids.push(login_auth.id.clone());
+			}
 			auth_by_id
 				.entry(login_auth.id.clone())
 				.or_insert(login_auth);

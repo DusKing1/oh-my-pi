@@ -446,7 +446,20 @@ where
 		spec: &OAuthDeviceSpec,
 		driver: &LoginDriver,
 	) -> Result<DevicePending, OAuthError> {
-		let fields = vec![("client_id", FormValue::Public(&spec.client.client_id))];
+		let scope = (!spec.client.scopes.is_empty()).then(|| {
+			spec
+				.client
+				.scopes
+				.iter()
+				.map(Str::as_str)
+				.collect::<Vec<_>>()
+				.join(" ")
+		});
+		let mut fields = Vec::with_capacity(usize::from(scope.is_some()) + 1);
+		fields.push(("client_id", FormValue::Public(&spec.client.client_id)));
+		if let Some(scope) = &scope {
+			fields.push(("scope", FormValue::Public(scope)));
+		}
 		let response = self
 			.http
 			.execute(form_request(&spec.device_authorization_url, &fields, &spec.client.token_params)?)
@@ -862,7 +875,11 @@ impl OAuthTokenSet {
 				);
 				let claims =
 					std::str::from_utf8(&decoded).map_err(|_| OAuthError::PrincipalUnresolved)?;
-				json_object_string(claims, claim)?
+				if claim.starts_with('/') {
+					json_string_at(claims, claim)?
+				} else {
+					json_object_string(claims, claim)?
+				}
 			},
 			PrincipalResolution::UserinfoEndpoint { url, field } => {
 				let mut headers = HeaderMap::new();
