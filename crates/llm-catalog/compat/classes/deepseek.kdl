@@ -1,47 +1,77 @@
-// Model-lineage compat for the "deepseek" class (census: model-class predicates in pi
-// dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
+// Model-lineage compat for "deepseek"; regenerated from the frozen census using class taxonomy selectors.
 
 class "deepseek" {
-	models "DeepSeek-V4-Flash-0731-Fast" "DeepSeek-V4-Pro" "TEE/deepseek-v4-pro" "TEE/deepseek-v4-pro:thinking" \
-		"deepseek-ai/DeepSeek-R1" "deepseek-ai/DeepSeek-R1-0528" "deepseek-ai/DeepSeek-V3-1" "deepseek-ai/DeepSeek-V3.2" \
-		"deepseek-ai/DeepSeek-V4-Flash" "deepseek-ai/DeepSeek-V4-Pro" "deepseek-ai/deepseek-r1-0528" "deepseek-ai/deepseek-v3.1" \
-		"deepseek-ai/deepseek-v3.1-terminus" "deepseek-ai/deepseek-v3.2" "deepseek-ai/deepseek-v3.2-exp" "deepseek-ai/deepseek-v4-flash" \
-		"deepseek-ai/deepseek-v4-pro" "deepseek-r1-distill-llama-70b" "deepseek-v3.1:671b" "deepseek-v3.2" \
-		"deepseek-v32" "deepseek-v4-flash" "deepseek-v4-flash-0731" "deepseek-v4-flash-free" \
-		"deepseek-v4-flash:0731" "deepseek-v4-flash:preview" "deepseek-v4-pro" "deepseek.v3-v1:0" \
-		"deepseek.v3.2" "deepseek.v3.2-v1:0" "deepseek/deepseek-latest" "deepseek/deepseek-r1-turbo" \
-		"deepseek/deepseek-r1/community" "deepseek/deepseek-reasoner" "deepseek/deepseek-v3.1" "deepseek/deepseek-v3.2-thinking" \
-		"deepseek/deepseek-v3.2:thinking" "deepseek/deepseek-v4-flash-0731-cheaper" "deepseek/deepseek-v4-flash-0731-cheaper:thinking" "deepseek/deepseek-v4-flash-0731:thinking" \
-		"deepseek/deepseek-v4-flash-free" "deepseek/deepseek-v4-flash-latest" "deepseek/deepseek-v4-flash:discounted" "deepseek/deepseek-v4-flash:thinking" \
-		"deepseek/deepseek-v4-pro-cheaper" "deepseek/deepseek-v4-pro-cheaper:thinking" "deepseek/deepseek-v4-pro-free" "deepseek/deepseek-v4-pro:discounted" \
-		"deepseek/deepseek-v4-pro:thinking" "umans-deepseek-v4-flash-0731" "umans-deepseek-v4-flash-0731-lab" "us.deepseek.r1-v1:0" {
-		requires-reasoning-content-for-all-assistant-turns #true
+	on "aiand" "aimlapi" "alibaba-token-plan" "baseten" "coreweave" "deepseek" "fireworks" \
+		"huggingface" "kilo" "nanogpt" "novita" "nvidia" "opencode-go" "opencode-zen" "together" \
+		"venice" "vercel-ai-gateway" "wafer-serverless" "zenmux" {
+		family "pro" {
+			requires-reasoning-content-for-all-assistant-turns #true
+		}
 	}
-	models "DeepSeek-V4-Flash-0731-Fast" "deepseek-ai/DeepSeek-V4-Flash" "deepseek-ai/DeepSeek-V4-Flash-0731" "deepseek-ai/deepseek-v4-flash" \
-		"deepseek-v4-flash-0731" "deepseek-v4-flash-free" "deepseek-v4-flash:0731" "deepseek-v4-flash:preview" \
-		"deepseek-v4-pro:preview" "deepseek/deepseek-v4-flash-0731-cheaper" "deepseek/deepseek-v4-flash-0731-cheaper:thinking" "deepseek/deepseek-v4-flash-0731:thinking" \
-		"deepseek/deepseek-v4-flash-free" "deepseek/deepseek-v4-flash-latest" "deepseek/deepseek-v4-flash:discounted" "deepseek/deepseek-v4-flash:free" \
-		"deepseek/deepseek-v4-flash:thinking" "~deepseek/deepseek-v4-flash-latest" {
-		thinking-efforts "low" "high" "max"
+	on "aiand" "aimlapi" "alibaba-token-plan" "baseten" "coreweave" "deepseek" "fireworks" \
+		"huggingface" "kilo" "nanogpt" "novita" "nvidia" "opencode-go" "opencode-zen" "together" \
+		"venice" "wafer-serverless" "zenmux" {
+		family "pro" {
+			thinking-efforts "high" "max"
+		}
 	}
-	models "DeepSeek-V4-Pro" "TEE/deepseek-v4-pro" "TEE/deepseek-v4-pro:thinking" "deepseek-ai/DeepSeek-R1" \
-		"deepseek-ai/DeepSeek-R1-0528" "deepseek-ai/DeepSeek-V3-1" "deepseek-ai/DeepSeek-V3.1" "deepseek-ai/DeepSeek-V3.2" \
-		"deepseek-ai/DeepSeek-V4-Pro" "deepseek-ai/deepseek-r1-0528" "deepseek-ai/deepseek-v3.1" "deepseek-ai/deepseek-v3.1-terminus" \
-		"deepseek-ai/deepseek-v3.2" "deepseek-ai/deepseek-v3.2-exp" "deepseek-ai/deepseek-v4-pro" "deepseek-r1-distill-llama-70b" \
-		"deepseek-v3.1:671b" "deepseek-v3.2" "deepseek-v32" "deepseek-v4-pro" \
-		"deepseek/deepseek-latest" "deepseek/deepseek-r1-distill-llama-70b" "deepseek/deepseek-r1-turbo" "deepseek/deepseek-r1/community" \
-		"deepseek/deepseek-reasoner" "deepseek/deepseek-v3.2:thinking" "deepseek/deepseek-v4-pro-cheaper" "deepseek/deepseek-v4-pro-cheaper:thinking" \
-		"deepseek/deepseek-v4-pro-free" "deepseek/deepseek-v4-pro:discounted" "deepseek/deepseek-v4-pro:thinking" {
-		thinking-efforts "high" "max"
+	on "aiand" "aimlapi" "coreweave" "deepseek" "fireworks" "gmi-cloud" "huggingface" "kilo" \
+		"nanogpt" "novita" "nvidia" "ollama-cloud" "opencode-zen" "openrouter" "together" "venice" \
+		"wafer-serverless" "zenmux" {
+		family "flash" {
+			thinking-efforts "low" "high" "max"
+		}
 	}
-	models "deepseek/deepseek-reasoner" "deepseek/deepseek-v3.2-thinking" {
-		thinking-requires-effort #true
+	on "aiand" "aimlapi" "coreweave" "deepseek" "fireworks" "gmi-cloud" "huggingface" "novita" \
+		"nvidia" "ollama-cloud" "opencode-go" "opencode-zen" "together" "umans" "vercel-ai-gateway" \
+		"wafer-serverless" "zenmux" {
+		family "flash" {
+			requires-reasoning-content-for-all-assistant-turns #true
+		}
 	}
-	on "aiand" "aimlapi" "alibaba-token-plan" "baseten" "coreweave" "deepseek" "fireworks" "friendli" "gmi-cloud" "groq" "huggingface" "kilo" "nanogpt" "novita" "nvidia" "ollama-cloud" "opencode-go" "opencode-zen" "openrouter" "qianfan" "together" "venice" "wafer-serverless" "yandex" "zenmux" {
-		thinking-mode "effort"
+	on "aimlapi" "groq" "huggingface" "kilo" "nanogpt" "novita" "nvidia" "together" "zenmux" {
+		family "r1" {
+			thinking-efforts "high" "max"
+		}
+	}
+	on "aimlapi" "groq" "huggingface" "novita" "nvidia" "together" "vercel-ai-gateway" "zenmux" {
+		family "r1" {
+			requires-reasoning-content-for-all-assistant-turns #true
+		}
+	}
+	on "alibaba-token-plan" "deepseek" {
+		supports-developer-role #false
 	}
 	on "amazon-bedrock" "umans" "vercel-ai-gateway" {
 		thinking-mode "budget"
+	}
+	on "deepseek" "fireworks" {
+		family "pro" {
+			requires-assistant-content-for-tool-calls #true
+		}
+	}
+	on "deepseek" "fireworks" "opencode-go" {
+		family "pro" {
+			supports-tool-choice #false
+		}
+	}
+	on "deepseek" "opencode-go" {
+		family "pro" {
+			max-tokens-field "max_tokens"
+			reasoning-content-field "reasoning_content"
+			requires-reasoning-content-for-tool-calls #true
+		}
+	}
+	on "friendli" "huggingface" "kilo" "nanogpt" "novita" "nvidia" "ollama-cloud" "qianfan" \
+		"together" "venice" "yandex" "zenmux" {
+		family "v3" {
+			thinking-efforts "high" "max"
+		}
+	}
+	on "friendli" "nvidia" "ollama-cloud" "qianfan" "venice" "yandex" "zenmux" {
+		family "v3" {
+			requires-reasoning-content-for-all-assistant-turns #true
+		}
 	}
 	on "umans" "vercel-ai-gateway" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"

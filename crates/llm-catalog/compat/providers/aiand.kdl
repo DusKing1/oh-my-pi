@@ -1,8 +1,5 @@
-// Deployment compat for provider "aiand": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "aiand"; regenerated from the frozen census using deployment contract selectors.
 
 provider "aiand" {
-	models "moonshotai/kimi-k2.7-code" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-	}
+	thinking-mode "effort"
 }

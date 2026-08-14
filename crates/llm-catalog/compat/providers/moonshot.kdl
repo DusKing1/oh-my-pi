@@ -1,8 +1,7 @@
-// Deployment compat for provider "moonshot": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "moonshot"; regenerated from the frozen census using deployment contract selectors.
 
 provider "moonshot" {
-	models "kimi-k2-thinking" "kimi-k2.5" "kimi-k2.6" "kimi-k2.7-code" {
-		thinking-efforts "minimal" "low" "medium" "high"
+	class "kimi" {
+		thinking-mode "effort"
 	}
 }

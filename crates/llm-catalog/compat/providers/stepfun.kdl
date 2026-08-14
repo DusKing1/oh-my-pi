@@ -1,7 +1,9 @@
-// Deployment compat for provider "stepfun": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "stepfun"; regenerated from the frozen census using deployment contract selectors.
 
 provider "stepfun" {
-	supports-developer-role #true
-	supports-reasoning-effort #true
+	class "stepfun" {
+		family "step" {
+			thinking-mode "effort"
+		}
+	}
 }

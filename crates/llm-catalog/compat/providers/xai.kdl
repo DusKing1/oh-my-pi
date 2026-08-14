@@ -1,0 +1,13 @@
+// Provider-wire compat for "xai"; regenerated from the frozen census using deployment contract selectors.
+
+provider "xai" {
+	class "xai" {
+		family "grok" {
+			thinking-mode "effort"
+		}
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "grok-4.20-0309-reasoning" "grok-4.20-beta-latest-reasoning" {
+		thinking-requires-effort #true
+	}
+}

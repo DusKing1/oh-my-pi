@@ -1,52 +1,61 @@
-// Model-lineage compat for the "gemini" class (census: model-class predicates in pi
-// dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
+// Model-lineage compat for "gemini"; regenerated from the frozen census using class taxonomy selectors.
 
 class "gemini" {
-	models "gemini-2.5-computer-use-preview-10-2025" "gemini-2.5-flash" "gemini-2.5-flash-lite" "gemini-2.5-flash-lite-preview-06-17" \
-		"gemini-2.5-flash-lite-preview-09-2025" "gemini-2.5-flash-preview-04-17" "gemini-2.5-flash-preview-05-20" "gemini-2.5-flash-preview-09-2025" \
-		"gemini-2.5-pro" "gemini-2.5-pro-preview-05-06" "gemini-2.5-pro-preview-06-05" "gemini-3-flash" \
-		"gemini-3-flash-preview" "gemini-3.1-flash-lite" "gemini-3.1-flash-lite-image" "gemini-3.1-flash-lite-preview" \
-		"gemini-3.1-flash-live-preview" "gemini-3.5-flash" "gemini-3.5-flash-lite" "gemini-3.6-flash" \
-		"gemini-3.7-flash" "gemini-flash-latest" "gemini-flash-lite-latest" "gemini-live-2.5-flash" \
-		"gemini-live-2.5-flash-preview-native-audio" "gemini-robotics-er-1.6-preview" "google/gemini-2.5-flash" "google/gemini-2.5-flash-lite" \
-		"google/gemini-2.5-flash-lite-preview-09-2025" "google/gemini-2.5-flash-lite:batch" "google/gemini-2.5-flash-preview-09-2025" "google/gemini-2.5-flash:batch" \
-		"google/gemini-2.5-pro" "google/gemini-2.5-pro-preview" "google/gemini-2.5-pro-preview-05-06" "google/gemini-2.5-pro:batch" \
-		"google/gemini-3-flash" "google/gemini-3-flash-preview" "google/gemini-3-flash-preview:batch" "google/gemini-3.1-flash-lite" \
-		"google/gemini-3.1-flash-lite-preview" "google/gemini-3.1-flash-lite:batch" "google/gemini-3.5-flash" "google/gemini-3.5-flash-free" \
-		"google/gemini-3.5-flash-lite" "google/gemini-3.5-flash-lite:batch" "google/gemini-3.5-flash:batch" "google/gemini-3.6-flash" \
-		"google/gemini-3.6-flash:batch" "google/gemini-3.7-flash" "google/gemini-3.7-flash:batch" {
-		thinking-efforts "minimal" "low" "medium" "high"
+	on "aimlapi" "cursor" "github-copilot" "google" "google-antigravity" "google-gemini-cli" \
+		"google-vertex" "kilo" "nanogpt" "ollama-cloud" "opencode-zen" "openrouter" "vercel-ai-gateway" \
+		"zenmux" {
+		family "flash" {
+			revision ">=2.5 <3.8" {
+				thinking-efforts "minimal" "low" "medium" "high"
+			}
+		}
 	}
-	models "gemini-2.5-computer-use-preview-10-2025" "gemini-flash-latest" "gemini-flash-lite-latest" "gemini-live-2.5-flash" \
-		"gemini-live-2.5-flash-preview-native-audio" "gemini-robotics-er-1.6-preview" "google/gemini-3-flash" {
-		thinking-mode "budget"
+	on "aimlapi" "cursor" "github-copilot" "google" "google-antigravity" "google-gemini-cli" \
+		"google-vertex" "kilo" "nanogpt" "opencode-zen" "openrouter" "vercel-ai-gateway" "zenmux" {
+		family "pro" {
+			revision ">=3 <3.2" {
+				thinking-efforts "low" "high"
+			}
+		}
 	}
-	models "gemini-2.5-pro" "gemini-2.5-pro-preview-05-06" "gemini-2.5-pro-preview-06-05" "gemini-3-flash-preview" \
-		"gemini-3-pro-preview" "gemini-3.1-flash-lite" "gemini-3.1-flash-lite-image" "gemini-3.1-flash-lite-preview" \
-		"gemini-3.1-flash-live-preview" "gemini-3.1-pro-preview" "gemini-3.1-pro-preview-customtools" "gemini-3.5-flash-lite" \
-		"gemini-3.6-flash" "gemini-3.7-flash" "google/gemini-2.5-pro" "google/gemini-2.5-pro-preview" \
-		"google/gemini-2.5-pro-preview-05-06" "google/gemini-2.5-pro:batch" "google/gemini-3-flash" "google/gemini-3-flash-preview" \
-		"google/gemini-3-flash-preview:batch" "google/gemini-3-pro-image" "google/gemini-3-pro-image-preview" "google/gemini-3-pro-preview" \
-		"google/gemini-3.1-flash-lite" "google/gemini-3.1-flash-lite-preview" "google/gemini-3.1-flash-lite:batch" "google/gemini-3.1-pro-preview" \
-		"google/gemini-3.1-pro-preview-customtools" "google/gemini-3.1-pro-preview:batch" "google/gemini-3.5-flash" "google/gemini-3.5-flash-free" \
-		"google/gemini-3.5-flash-lite" "google/gemini-3.5-flash-lite:batch" "google/gemini-3.5-flash:batch" "google/gemini-3.6-flash" \
-		"google/gemini-3.6-flash:batch" "google/gemini-3.7-flash" "google/gemini-3.7-flash:batch" {
-		thinking-requires-effort #true
+	on "aimlapi" "cursor" "github-copilot" "google" "google-gemini-cli" "google-vertex" "kilo" \
+		"nanogpt" "ollama-cloud" "opencode-zen" "openrouter" "vercel-ai-gateway" "zenmux" {
+		revision ">=3 <3.8" {
+			thinking-requires-effort #true
+		}
 	}
-	models "gemini-3-1-pro-preview" "gemini-3-5-flash" "gemini-3-5-flash-lite" "gemini-3-6-flash" \
-		"google/gemini-flash-latest" "google/gemini-flash-lite-latest" "google/gemini-pro-latest" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	on "aimlapi" "github-copilot" "google" "google-antigravity" "google-gemini-cli" "google-vertex" \
+		"kilo" "nanogpt" "openrouter" "vercel-ai-gateway" "zenmux" {
+		family "pro" {
+			revision ">=2.5 <3" {
+				thinking-efforts "minimal" "low" "medium" "high"
+				thinking-requires-effort #true
+			}
+		}
 	}
-	models "gemini-3-pro" "gemini-3-pro-preview" "gemini-3.1-pro" "gemini-3.1-pro-preview" \
-		"gemini-3.1-pro-preview-customtools" "google/gemini-3-pro-image" "google/gemini-3-pro-image-preview" "google/gemini-3-pro-preview" \
-		"google/gemini-3.1-pro-preview" "google/gemini-3.1-pro-preview-customtools" "google/gemini-3.1-pro-preview:batch" {
-		thinking-efforts "low" "high"
+	on "aimlapi" "google" "google-antigravity" "google-gemini-cli" "google-vertex" "kilo" "nanogpt" \
+		"opencode-zen" "openrouter" "vercel-ai-gateway" "zenmux" {
+		family "lite" {
+			revision ">=2.5 <3.6" {
+				thinking-efforts "minimal" "low" "medium" "high"
+			}
+		}
 	}
-	models "gemini-3.1-flash-lite-image" "gemini-3.1-flash-live-preview" "gemini-3.1-pro-preview-customtools" "gemini-3.5-flash-lite" \
-		"gemini-3.7-flash" {
-		thinking-mode "google-level"
+	on "google" "google-antigravity" "google-gemini-cli" "google-vertex" "vercel-ai-gateway" {
+		revision ">=1.6 <3" {
+			thinking-mode "budget"
+		}
 	}
-	on "aimlapi" "cursor" "github-copilot" "kilo" "nanogpt" "ollama-cloud" "openrouter" "venice" "zenmux" {
-		thinking-mode "effort"
+	on "google" "google-gemini-cli" "google-vertex" "opencode-zen" {
+		revision ">=3 <3.8" {
+			thinking-mode "google-level"
+		}
+	}
+	on "nanogpt" "venice" {
+		family "pro" {
+			revision ">=3 <3.1" {
+				supports-usage-in-streaming #false
+			}
+		}
 	}
 }

@@ -1,0 +1,1077 @@
+//! Checked-in model identity taxonomy.
+
+use std::{collections::BTreeSet, sync::LazyLock};
+
+use kdl::{KdlDocument, KdlNode, KdlValue};
+use omp_core::{IntoStr, SemVer, Str};
+use thiserror::Error;
+
+use crate::{
+	cascade::{CascadeError, glob_match},
+	classify::EffortTier,
+	id::{ClassId, FamilyId},
+};
+
+macro_rules! sources {
+	($($name:literal),+ $(,)?) => {
+		&[$(($name, include_str!(concat!("../compat/taxonomy/", $name, ".kdl")))),+]
+	};
+}
+
+/// Checked-in collapse vocabulary and class taxonomy sources.
+pub const BUNDLED_TAXONOMY: &[(&str, &str)] = sources![
+	"_collapse",
+	"ai21",
+	"amazon",
+	"anthropic",
+	"baidu",
+	"bytedance",
+	"cohere",
+	"deepseek",
+	"gemini",
+	"gemma",
+	"glm",
+	"gpt-oss",
+	"kimi",
+	"meta",
+	"mimo",
+	"minimax",
+	"mistral",
+	"openai",
+	"qwen",
+	"stepfun",
+	"unknown",
+	"xai",
+];
+
+/// Kind and specificity rank of a class membership matcher.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatcherKind {
+	/// Whole lowercased bare identifier.
+	Exact,
+	/// Bare identifier token with a recognized boundary.
+	Bounded,
+	/// Exact slash-separated namespace segment.
+	Namespace,
+	/// Lowercased bare-identifier prefix.
+	Prefix,
+	/// Anchored wildcard over the lowercased bare identifier.
+	Glob,
+}
+
+impl MatcherKind {
+	const fn rank(self) -> u8 {
+		match self {
+			Self::Exact => 4,
+			Self::Bounded => 3,
+			Self::Namespace => 2,
+			Self::Prefix => 1,
+			Self::Glob => 0,
+		}
+	}
+}
+
+/// One class membership matcher.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Matcher {
+	/// Matching operation.
+	pub kind:    MatcherKind,
+	/// Lowercased matcher token.
+	pub token:   Str,
+	/// Whether a namespace token accepts legacy dot/colon segments and token
+	/// boundaries.
+	pub bounded: bool,
+}
+
+/// One product-family rule within a class.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FamilyDef {
+	/// Product family identifier.
+	pub id:       FamilyId,
+	/// Anchored wildcard matched against the lowercased bare name.
+	pub glob:     Str,
+	/// Explicit overlap priority.
+	pub priority: i64,
+}
+
+/// One revision-prefix rule.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RevisionPrefix {
+	/// Lowercased prefix spelling.
+	pub prefix:   Str,
+	/// Whether the prefix may occur after the start of the bare identifier.
+	pub anywhere: bool,
+}
+
+/// Revision extraction rules for a class.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RevisionDef {
+	/// Prefixes used before scanning for a numeric run.
+	pub prefixes:  Vec<RevisionPrefix>,
+	/// Bare product names which intentionally carry no revision.
+	pub skip_bare: Vec<Str>,
+}
+
+/// Reviewed exact identity correction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdentityOverride {
+	/// Stable review identifier.
+	pub id:               Str,
+	/// Optional exact provider source key.
+	pub provider:         Option<Str>,
+	/// Exact case-insensitive wire model identifier.
+	pub model:            Str,
+	/// Optional corrected logical model identifier.
+	pub logical:          Option<Str>,
+	/// Optional corrected class.
+	pub class:            Option<ClassId>,
+	/// Optional corrected product family.
+	pub family:           Option<FamilyId>,
+	/// Optional pinned revision.
+	pub revision:         Option<SemVer>,
+	/// Optional effort route.
+	pub effort:           Option<EffortTier>,
+	/// Optional thinking-sibling marker.
+	pub thinking_variant: Option<bool>,
+	/// Human-readable review rationale.
+	pub rationale:        Str,
+	/// Evidence provenance.
+	pub provenance:       Str,
+	/// Optional Unix-millisecond expiry.
+	pub expires_at_ms:    Option<u64>,
+}
+
+/// One parsed model class definition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClassDef {
+	/// Class identifier.
+	pub id:        ClassId,
+	/// Membership matchers.
+	pub matchers:  Vec<Matcher>,
+	/// Product-family rules.
+	pub families:  Vec<FamilyDef>,
+	/// Revision extraction rules.
+	pub revisions: RevisionDef,
+	/// Reviewed exact corrections stored with this class file.
+	pub overrides: Vec<IdentityOverride>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SuffixDef {
+	suffix:             Str,
+	effort:             Option<EffortTier>,
+	thinking:           bool,
+	except_bare_prefix: Option<Str>,
+}
+
+/// Parsed checked-in identity taxonomy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Taxonomy {
+	classes:  Vec<ClassDef>,
+	collapse: Vec<SuffixDef>,
+}
+
+/// Data-dependent taxonomy ambiguity.
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+pub enum TaxonomyError {
+	/// Two classes have equally specific winning matchers.
+	#[error("ambiguous class for `{model}`: `{first}` and `{second}` tie")]
+	AmbiguousClass {
+		/// Model being classified.
+		model:  Str,
+		/// First tied class.
+		first:  ClassId,
+		/// Second tied class.
+		second: ClassId,
+	},
+	/// Two product families have equally specific winning rules.
+	#[error("ambiguous family for `{model}` in class `{class}`: `{first}` and `{second}` tie")]
+	AmbiguousFamily {
+		/// Model being classified.
+		model:  Str,
+		/// Selected class.
+		class:  ClassId,
+		/// First tied family.
+		first:  FamilyId,
+		/// Second tied family.
+		second: FamilyId,
+	},
+}
+
+impl Taxonomy {
+	/// Parses taxonomy KDL sources.
+	///
+	/// # Errors
+	/// Returns [`CascadeError`] for invalid KDL, nodes, properties, or values.
+	pub fn parse(sources: &[(&str, &str)]) -> Result<Self, CascadeError> {
+		let mut classes = Vec::new();
+		let mut collapse = Vec::new();
+		let mut source_names = BTreeSet::new();
+		let mut class_names = BTreeSet::new();
+		let mut saw_collapse = false;
+		let mut override_ids = BTreeSet::new();
+		let mut override_keys = BTreeSet::new();
+
+		for &(file, text) in sources {
+			if !source_names.insert(file) {
+				return malformed(file, "source");
+			}
+			let document: KdlDocument =
+				text
+					.parse()
+					.map_err(|error: kdl::KdlError| CascadeError::Parse {
+						file:    file.to_str(),
+						message: error.to_string().to_str(),
+					})?;
+			for node in document.nodes() {
+				match node.name().value() {
+					"class" => {
+						let class = parse_class(file, node)?;
+						if !class_names.insert(class.id.as_str().to_owned()) {
+							return malformed(file, "class");
+						}
+						for identity in &class.overrides {
+							if !override_ids.insert(identity.id.as_str().to_owned()) {
+								return malformed(file, "override");
+							}
+							let key = (
+								identity
+									.provider
+									.as_ref()
+									.map(|value| value.to_ascii_lowercase()),
+								identity.model.to_ascii_lowercase(),
+							);
+							if !override_keys.insert(key) {
+								return malformed(file, "override");
+							}
+						}
+						classes.push(class);
+					},
+					"collapse" => {
+						if saw_collapse {
+							return malformed(file, "collapse");
+						}
+						saw_collapse = true;
+						collapse = parse_collapse(file, node)?;
+					},
+					other => return unexpected(file, other, "taxonomy"),
+				}
+			}
+		}
+		if !saw_collapse || collapse.is_empty() {
+			return malformed("taxonomy", "collapse");
+		}
+		Ok(Self { classes, collapse })
+	}
+
+	/// Parses the checked-in taxonomy inventory.
+	pub fn bundled() -> Result<Self, CascadeError> {
+		Self::parse(BUNDLED_TAXONOMY)
+	}
+
+	/// Finds the most specific active exact identity correction.
+	pub fn identity_override(
+		&self,
+		provider: &str,
+		bare_model: &str,
+		observed_at_ms: Option<u64>,
+	) -> Option<&IdentityOverride> {
+		let active = |identity: &&IdentityOverride| {
+			identity.model.eq_ignore_ascii_case(bare_model)
+				&& !matches!(
+					(identity.expires_at_ms, observed_at_ms),
+					(Some(expiry), Some(observed)) if observed >= expiry
+				)
+		};
+		self
+			.classes
+			.iter()
+			.flat_map(|class| &class.overrides)
+			.filter(active)
+			.find(|identity| {
+				identity
+					.provider
+					.as_ref()
+					.is_some_and(|expected| expected.eq_ignore_ascii_case(provider))
+			})
+			.or_else(|| {
+				self
+					.classes
+					.iter()
+					.flat_map(|class| &class.overrides)
+					.filter(active)
+					.find(|identity| identity.provider.is_none())
+			})
+	}
+
+	/// Collapses a declared thinking or effort suffix from a model identifier.
+	pub fn collapse<'a>(&self, model: &'a str) -> (&'a str, Option<EffortTier>, bool) {
+		let lower = model.to_ascii_lowercase();
+		let bare = lower.rsplit('/').next().unwrap_or(lower.as_str());
+		let winner = self
+			.collapse
+			.iter()
+			.filter(|rule| lower.ends_with(rule.suffix.as_str()))
+			.filter(|rule| {
+				!rule
+					.except_bare_prefix
+					.as_ref()
+					.is_some_and(|prefix| bare.starts_with(prefix.as_str()))
+			})
+			.max_by_key(|rule| rule.suffix.len());
+		match winner {
+			Some(rule) => (&model[..model.len() - rule.suffix.len()], rule.effort, rule.thinking),
+			None => (model, None, false),
+		}
+	}
+
+	/// Classifies a model into class, product family, and revision ranks.
+	///
+	/// # Errors
+	/// Returns [`TaxonomyError`] when equally ranked cross-class or cross-family
+	/// rules match.
+	pub fn classify_id(
+		&self,
+		model: &str,
+	) -> Result<(ClassId, Option<FamilyId>, Option<SemVer>), TaxonomyError> {
+		let lower = model.trim().to_ascii_lowercase();
+		let bare = lower.rsplit('/').next().unwrap_or(lower.as_str());
+		let mut winner: Option<((u8, usize), &ClassDef)> = None;
+		let mut tied_class = None;
+		for class in &self.classes {
+			for matcher in &class.matchers {
+				if !matcher_matches(matcher, &lower, bare) {
+					continue;
+				}
+				let rank = (matcher.kind.rank(), matcher.token.len());
+				match winner {
+					Some((held_rank, held)) if held_rank == rank && held.id != class.id => {
+						tied_class = Some((held, class));
+					},
+					Some((held_rank, _)) if held_rank >= rank => {},
+					_ => {
+						winner = Some((rank, class));
+						tied_class = None;
+					},
+				}
+			}
+		}
+		if let Some((first, second)) = tied_class {
+			return Err(TaxonomyError::AmbiguousClass {
+				model:  lower.to_str(),
+				first:  first.id.clone(),
+				second: second.id.clone(),
+			});
+		}
+		let Some((_, class)) = winner else {
+			return Ok((ClassId::new("unknown"), None, None));
+		};
+		let class = class.id.clone();
+		let (family, revision) = self.ranks_in_class(&class, model)?;
+		Ok((class, family, revision))
+	}
+
+	/// Resolves product-family and revision ranks within an already selected
+	/// class.
+	///
+	/// An undeclared class has no subordinate ranks.
+	///
+	/// # Errors
+	/// Returns [`TaxonomyError`] when equally ranked product-family rules match.
+	pub fn ranks_in_class(
+		&self,
+		class: &ClassId,
+		model: &str,
+	) -> Result<(Option<FamilyId>, Option<SemVer>), TaxonomyError> {
+		let Some(class) = self
+			.classes
+			.iter()
+			.find(|candidate| candidate.id.as_str() == class.as_str())
+		else {
+			return Ok((None, None));
+		};
+		let lower = model.trim().to_ascii_lowercase();
+		let bare = lower.rsplit('/').next().unwrap_or(lower.as_str());
+		let family = classify_family(class, bare, &lower)?;
+		let revision = extract_revision(&class.revisions, bare);
+		Ok((family, revision))
+	}
+}
+
+/// Returns the process-wide checked-in taxonomy.
+pub fn taxonomy() -> &'static Taxonomy {
+	static TAXONOMY: LazyLock<Taxonomy> = LazyLock::new(|| {
+		Taxonomy::bundled().unwrap_or_else(|error| panic!("bundled taxonomy is invalid: {error}"))
+	});
+	&TAXONOMY
+}
+
+fn parse_class(file: &str, node: &KdlNode) -> Result<ClassDef, CascadeError> {
+	validate_properties(file, node, "class", &[])?;
+	let arguments = positional_strings(node);
+	let [name] = arguments.as_slice() else {
+		return malformed(file, "class");
+	};
+	if name.is_empty() {
+		return malformed(file, "class");
+	}
+	let Some(children) = node.children() else {
+		return malformed(file, "class");
+	};
+	let mut class = ClassDef {
+		id:        ClassId::new(name.as_str()),
+		matchers:  Vec::new(),
+		families:  Vec::new(),
+		revisions: RevisionDef::default(),
+		overrides: Vec::new(),
+	};
+	for child in children.nodes() {
+		match child.name().value() {
+			"exact" | "bounded" | "namespace" | "prefix" | "glob" => {
+				class.matchers.push(parse_matcher(file, child)?);
+			},
+			"family" => class.families.push(parse_family(file, child)?),
+			"revision" => parse_revision_rule(file, child, &mut class.revisions)?,
+			"override" => class.overrides.push(parse_override(file, child)?),
+			other => return unexpected(file, other, "class"),
+		}
+	}
+	Ok(class)
+}
+
+fn parse_matcher(file: &str, node: &KdlNode) -> Result<Matcher, CascadeError> {
+	let directive = node.name().value();
+	let allowed = if directive == "namespace" {
+		&["bounded"][..]
+	} else {
+		&[][..]
+	};
+	validate_properties(file, node, directive, allowed)?;
+	let arguments = positional_strings(node);
+	let [token] = arguments.as_slice() else {
+		return malformed(file, directive);
+	};
+	if token.is_empty() || node.children().is_some() {
+		return malformed(file, directive);
+	}
+	let bounded = match node.get("bounded") {
+		Some(KdlValue::Bool(value)) => *value,
+		Some(_) => return malformed(file, directive),
+		None => false,
+	};
+	let kind = match directive {
+		"exact" => MatcherKind::Exact,
+		"bounded" => MatcherKind::Bounded,
+		"namespace" => MatcherKind::Namespace,
+		"prefix" => MatcherKind::Prefix,
+		"glob" => MatcherKind::Glob,
+		_ => unreachable!(),
+	};
+	Ok(Matcher { kind, token: token.to_ascii_lowercase().to_str(), bounded })
+}
+
+fn parse_family(file: &str, node: &KdlNode) -> Result<FamilyDef, CascadeError> {
+	validate_properties(file, node, "family", &["glob", "priority"])?;
+	let arguments = positional_strings(node);
+	let [name] = arguments.as_slice() else {
+		return malformed(file, "family");
+	};
+	let glob = property_string(node, "glob").ok_or_else(|| malformed_error(file, "family"))?;
+	let priority = match node.get("priority") {
+		Some(value) => value
+			.as_integer()
+			.and_then(|value| i64::try_from(value).ok())
+			.ok_or_else(|| malformed_error(file, "family"))?,
+		None => 0,
+	};
+	if name.is_empty() || glob.is_empty() || node.children().is_some() {
+		return malformed(file, "family");
+	}
+	Ok(FamilyDef {
+		id: FamilyId::new(name.as_str()),
+		glob: glob.to_ascii_lowercase().to_str(),
+		priority,
+	})
+}
+
+fn parse_revision_rule(
+	file: &str,
+	node: &KdlNode,
+	revisions: &mut RevisionDef,
+) -> Result<(), CascadeError> {
+	validate_properties(file, node, "revision", &["prefix", "anywhere"])?;
+	if node.children().is_some() {
+		return malformed(file, "revision");
+	}
+	match property_string(node, "prefix") {
+		Some(prefix) if positional_strings(node).is_empty() && !prefix.is_empty() => {
+			let anywhere = match node.get("anywhere") {
+				Some(KdlValue::Bool(value)) => *value,
+				Some(_) => return malformed(file, "revision"),
+				None => false,
+			};
+			revisions
+				.prefixes
+				.push(RevisionPrefix { prefix: prefix.to_ascii_lowercase().to_str(), anywhere });
+		},
+		None if node.get("anywhere").is_none() => {
+			let arguments = positional_strings(node);
+			if arguments.first().map(String::as_str) != Some("skip-bare") || arguments.len() < 2 {
+				return malformed(file, "revision");
+			}
+			revisions.skip_bare.extend(
+				arguments[1..]
+					.iter()
+					.map(|value| value.to_ascii_lowercase().to_str()),
+			);
+		},
+		_ => return malformed(file, "revision"),
+	}
+	Ok(())
+}
+
+fn parse_override(file: &str, node: &KdlNode) -> Result<IdentityOverride, CascadeError> {
+	const PROPERTIES: &[&str] = &[
+		"id",
+		"provider",
+		"model",
+		"logical",
+		"class",
+		"family",
+		"revision",
+		"effort",
+		"thinking-variant",
+		"rationale",
+		"provenance",
+		"expires-at-ms",
+	];
+	validate_properties(file, node, "override", PROPERTIES)?;
+	if !positional_strings(node).is_empty() || node.children().is_some() {
+		return malformed(file, "override");
+	}
+	for name in [
+		"id",
+		"provider",
+		"model",
+		"logical",
+		"class",
+		"family",
+		"revision",
+		"effort",
+		"rationale",
+		"provenance",
+	] {
+		if node.get(name).is_some() && property_string(node, name).is_none() {
+			return malformed(file, "override");
+		}
+	}
+	if ["class", "family"]
+		.into_iter()
+		.any(|name| property_string(node, name).is_some_and(str::is_empty))
+	{
+		return malformed(file, "override");
+	}
+	let required =
+		|name| property_string(node, name).ok_or_else(|| malformed_error(file, "override"));
+	let revision = property_string(node, "revision")
+		.map(parse_revision)
+		.transpose()
+		.map_err(|()| malformed_error(file, "override"))?;
+	let effort = property_string(node, "effort")
+		.map(parse_effort)
+		.transpose()
+		.map_err(|()| malformed_error(file, "override"))?;
+	let thinking_variant = match node.get("thinking-variant") {
+		Some(KdlValue::Bool(value)) => Some(*value),
+		Some(_) => return malformed(file, "override"),
+		None => None,
+	};
+	let expires_at_ms = match node.get("expires-at-ms") {
+		Some(value) => Some(
+			value
+				.as_integer()
+				.and_then(|value| u64::try_from(value).ok())
+				.ok_or_else(|| malformed_error(file, "override"))?,
+		),
+		None => None,
+	};
+	Ok(IdentityOverride {
+		id: required("id")?.to_str(),
+		provider: property_string(node, "provider").map(|value| value.to_str()),
+		model: required("model")?.to_str(),
+		logical: property_string(node, "logical").map(|value| value.to_str()),
+		class: property_string(node, "class").map(ClassId::new),
+		family: property_string(node, "family").map(FamilyId::new),
+		revision,
+		effort,
+		thinking_variant,
+		rationale: required("rationale")?.to_str(),
+		provenance: required("provenance")?.to_str(),
+		expires_at_ms,
+	})
+}
+
+fn parse_collapse(file: &str, node: &KdlNode) -> Result<Vec<SuffixDef>, CascadeError> {
+	validate_properties(file, node, "collapse", &[])?;
+	if !positional_strings(node).is_empty() {
+		return malformed(file, "collapse");
+	}
+	let Some(children) = node.children() else {
+		return malformed(file, "collapse");
+	};
+	let mut rules = Vec::new();
+	let mut suffixes = BTreeSet::new();
+	for child in children.nodes() {
+		let directive = child.name().value();
+		if !matches!(directive, "thinking-suffix" | "effort-suffix") {
+			return unexpected(file, directive, "collapse");
+		}
+		let allowed = if directive == "effort-suffix" {
+			&["tier", "except-bare-prefix"][..]
+		} else {
+			&[][..]
+		};
+		validate_properties(file, child, directive, allowed)?;
+		if child.get("except-bare-prefix").is_some()
+			&& property_string(child, "except-bare-prefix").is_none()
+		{
+			return malformed(file, directive);
+		}
+		let arguments = positional_strings(child);
+		let [suffix] = arguments.as_slice() else {
+			return malformed(file, directive);
+		};
+		if suffix.is_empty()
+			|| child.children().is_some()
+			|| !suffixes.insert(suffix.to_ascii_lowercase())
+		{
+			return malformed(file, directive);
+		}
+		let effort = if directive == "effort-suffix" {
+			Some(
+				parse_effort(
+					property_string(child, "tier").ok_or_else(|| malformed_error(file, directive))?,
+				)
+				.map_err(|()| malformed_error(file, directive))?,
+			)
+		} else {
+			None
+		};
+		rules.push(SuffixDef {
+			suffix: suffix.to_ascii_lowercase().to_str(),
+			effort,
+			thinking: directive == "thinking-suffix",
+			except_bare_prefix: property_string(child, "except-bare-prefix")
+				.map(|value| value.to_ascii_lowercase().to_str()),
+		});
+	}
+	Ok(rules)
+}
+
+fn matcher_matches(matcher: &Matcher, lower: &str, bare: &str) -> bool {
+	let token = matcher.token.as_str();
+	match matcher.kind {
+		MatcherKind::Exact => bare == token,
+		MatcherKind::Bounded => bounded(bare, token),
+		MatcherKind::Namespace if matcher.bounded => lower
+			.split(['/', '.', ':'])
+			.filter(|part| !part.is_empty())
+			.any(|part| bounded(part, token)),
+		MatcherKind::Namespace => lower
+			.split('/')
+			.filter(|part| !part.is_empty())
+			.any(|part| part == token),
+		MatcherKind::Prefix => bare.starts_with(token),
+		MatcherKind::Glob => glob_match(token, bare),
+	}
+}
+
+fn bounded(value: &str, token: &str) -> bool {
+	value == token
+		|| value.strip_prefix(token).is_some_and(|rest| {
+			rest
+				.as_bytes()
+				.first()
+				.is_some_and(|byte| matches!(byte, b'-' | b'_' | b'.' | b':' | b'0'..=b'9'))
+		})
+}
+
+fn classify_family(
+	class: &ClassDef,
+	bare: &str,
+	model: &str,
+) -> Result<Option<FamilyId>, TaxonomyError> {
+	let mut winner: Option<((i64, usize), &FamilyDef)> = None;
+	let mut tied_family = None;
+	for family in &class.families {
+		if !glob_match(family.glob.as_str(), bare) {
+			continue;
+		}
+		let rank = (family.priority, family.glob.bytes().filter(|byte| *byte != b'*').count());
+		match winner {
+			Some((held_rank, held)) if held_rank == rank && held.id != family.id => {
+				tied_family = Some((held, family));
+			},
+			Some((held_rank, _)) if held_rank >= rank => {},
+			_ => {
+				winner = Some((rank, family));
+				tied_family = None;
+			},
+		}
+	}
+	if let Some((first, second)) = tied_family {
+		return Err(TaxonomyError::AmbiguousFamily {
+			model:  model.to_str(),
+			class:  class.id.clone(),
+			first:  first.id.clone(),
+			second: second.id.clone(),
+		});
+	}
+	Ok(winner.map(|(_, family)| family.id.clone()))
+}
+
+fn extract_revision(rules: &RevisionDef, bare: &str) -> Option<SemVer> {
+	if rules.skip_bare.iter().any(|skip| skip.as_str() == bare) {
+		return None;
+	}
+	let tail = rules.prefixes.iter().find_map(|rule| {
+		if rule.anywhere {
+			let start = bare.find(rule.prefix.as_str())?;
+			Some(&bare[start + rule.prefix.len()..])
+		} else {
+			bare.strip_prefix(rule.prefix.as_str())
+		}
+	})?;
+	let start = tail.as_bytes().iter().position(u8::is_ascii_digit)?;
+	parse_revision_prefix(&tail[start..])
+}
+
+fn parse_revision_prefix(value: &str) -> Option<SemVer> {
+	let bytes = value.as_bytes();
+	let mut numbers = [0_u8; 3];
+	let mut count = 0;
+	let mut index = 0;
+	while count < numbers.len() {
+		let start = index;
+		while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+			index += 1;
+		}
+		let Ok(number) = parse_u8_component(&value[start..index]) else {
+			return (count > 0).then(|| SemVer::new(numbers[0], numbers[1], numbers[2]));
+		};
+		numbers[count] = number;
+		count += 1;
+		let Some(separator) = bytes.get(index) else {
+			break;
+		};
+		if !matches!(separator, b'.' | b'-') || !bytes.get(index + 1).is_some_and(u8::is_ascii_digit)
+		{
+			break;
+		}
+		index += 1;
+	}
+	Some(SemVer::new(numbers[0], numbers[1], numbers[2]))
+}
+
+fn parse_revision(value: &str) -> Result<SemVer, ()> {
+	let mut numbers = [0_u8; 3];
+	let mut count = 0;
+	for part in value.split(['.', '-']) {
+		if count == numbers.len() {
+			return Err(());
+		}
+		numbers[count] = parse_u8_component(part)?;
+		count += 1;
+	}
+	if count == 0 {
+		return Err(());
+	}
+	Ok(SemVer::new(numbers[0], numbers[1], numbers[2]))
+}
+
+fn parse_u8_component(value: &str) -> Result<u8, ()> {
+	if value.is_empty() {
+		return Err(());
+	}
+	value.as_bytes().iter().try_fold(0_u8, |number, byte| {
+		if !byte.is_ascii_digit() {
+			return Err(());
+		}
+		number
+			.checked_mul(10)
+			.and_then(|number| number.checked_add(*byte - b'0'))
+			.ok_or(())
+	})
+}
+
+fn parse_effort(value: &str) -> Result<EffortTier, ()> {
+	match value {
+		"off" => Ok(EffortTier::Off),
+		"minimal" => Ok(EffortTier::Minimal),
+		"low" => Ok(EffortTier::Low),
+		"medium" => Ok(EffortTier::Medium),
+		"high" => Ok(EffortTier::High),
+		"xhigh" => Ok(EffortTier::XHigh),
+		"max" => Ok(EffortTier::Max),
+		_ => Err(()),
+	}
+}
+
+fn positional_strings(node: &KdlNode) -> Vec<String> {
+	node
+		.entries()
+		.iter()
+		.filter(|entry| entry.name().is_none())
+		.filter_map(|entry| entry.value().as_string().map(str::to_owned))
+		.collect()
+}
+
+fn property_string<'a>(node: &'a KdlNode, name: &str) -> Option<&'a str> {
+	node.get(name).and_then(KdlValue::as_string)
+}
+
+fn validate_properties(
+	file: &str,
+	node: &KdlNode,
+	directive: &str,
+	allowed: &[&str],
+) -> Result<(), CascadeError> {
+	let mut seen = BTreeSet::new();
+	for entry in node.entries() {
+		if let Some(name) = entry.name() {
+			if !allowed.contains(&name.value()) {
+				return unexpected(file, name.value(), directive);
+			}
+			if !seen.insert(name.value()) {
+				return malformed(file, directive);
+			}
+		}
+	}
+	let positional_count = node
+		.entries()
+		.iter()
+		.filter(|entry| entry.name().is_none())
+		.count();
+	if positional_strings(node).len() != positional_count {
+		return malformed(file, directive);
+	}
+	Ok(())
+}
+
+fn malformed<T>(file: &str, directive: &str) -> Result<T, CascadeError> {
+	Err(malformed_error(file, directive))
+}
+
+fn malformed_error(file: &str, directive: &str) -> CascadeError {
+	CascadeError::MalformedDirective { file: file.to_str(), directive: directive.to_str() }
+}
+
+fn unexpected<T>(file: &str, node: &str, context: &str) -> Result<T, CascadeError> {
+	Err(CascadeError::UnexpectedNode {
+		file:    file.to_str(),
+		node:    node.to_str(),
+		context: context.to_str(),
+	})
+}
+
+#[cfg(test)]
+mod tests {
+	use omp_core::semver;
+
+	use super::*;
+
+	fn parse(sources: &[(&str, &str)]) -> Taxonomy {
+		Taxonomy::parse(sources).expect("valid taxonomy")
+	}
+
+	fn with_collapse(class: &str) -> Taxonomy {
+		parse(&[("collapse", include_str!("../compat/taxonomy/_collapse.kdl")), ("class", class)])
+	}
+
+	#[test]
+	fn bundled_inventory_parses_once() {
+		assert_eq!(BUNDLED_TAXONOMY.len(), 22);
+		Taxonomy::bundled().expect("bundled taxonomy parses");
+		let unique: BTreeSet<_> = BUNDLED_TAXONOMY.iter().map(|(name, _)| *name).collect();
+		assert_eq!(unique.len(), BUNDLED_TAXONOMY.len());
+	}
+
+	#[test]
+	fn bounded_matcher_outranks_prefix() {
+		let taxonomy = with_collapse(
+			r#"class "openai" { prefix "gpt-" }
+			class "gpt-oss" { bounded "gpt-oss" }"#,
+		);
+		assert_eq!(taxonomy.classify_id("gpt-oss-120b").unwrap().0, "gpt-oss");
+	}
+
+	#[test]
+	fn namespace_matches_exact_slash_segments_only() {
+		assert_eq!(taxonomy().classify_id("cohere/opaque").unwrap().0, "cohere");
+		assert_eq!(
+			taxonomy()
+				.classify_id("cohere.command-r-plus-v1:0")
+				.unwrap()
+				.0,
+			"unknown"
+		);
+	}
+
+	#[test]
+	fn bounded_namespaces_preserve_boundaries() {
+		assert_eq!(
+			taxonomy()
+				.classify_id("router/anthropic-v2/opaque")
+				.unwrap()
+				.0,
+			"anthropic"
+		);
+		for model in ["anthropicology", "deepseeker"] {
+			assert_eq!(taxonomy().classify_id(model).unwrap().0, "unknown", "{model}");
+		}
+	}
+
+	#[test]
+	fn family_priority_wins_overlap() {
+		let taxonomy = with_collapse(
+			r#"class "gemini" {
+				bounded "gemini"
+				family "flash" glob="*flash*"
+				family "lite" glob="*flash-lite*" priority=10
+			}"#,
+		);
+		assert_eq!(
+			taxonomy
+				.classify_id("gemini-2.5-flash-lite")
+				.unwrap()
+				.1
+				.unwrap(),
+			"lite"
+		);
+	}
+
+	#[test]
+	fn revisions_normalize_dashes_and_ignore_invalid_trailing_components() {
+		let cases = [
+			("amazon-bedrock/us.anthropic.claude-opus-4-6-v1", "anthropic", semver!(4.6)),
+			("claude-opus-4-1-20250805", "anthropic", semver!(4.1)),
+			("gemini-2.5-flash", "gemini", semver!(2.5)),
+			("qwen3.8-max", "qwen", semver!(3.8)),
+			("o3-mini", "openai", semver!(3.0)),
+		];
+		for (model, class, revision) in cases {
+			let classified = taxonomy().classify_id(model).unwrap();
+			assert_eq!(classified.0, class, "{model}");
+			assert_eq!(classified.2, Some(revision), "{model}");
+		}
+		let distill = taxonomy()
+			.classify_id("deepseek-r1-distill-qwen-32b")
+			.unwrap();
+		assert_eq!(distill.0, "qwen");
+		assert_eq!(distill.2, None);
+	}
+
+	#[test]
+	fn bundled_openai_o_series_membership_does_not_claim_later_numbers() {
+		let o3_mini = taxonomy()
+			.classify_id("o3-mini")
+			.expect("bundled taxonomy classifies o3-mini");
+		assert_eq!(o3_mini.0, "openai");
+		assert_eq!(o3_mini.2, Some(semver!(3.0)));
+
+		let o10 = taxonomy()
+			.classify_id("o10")
+			.expect("bundled taxonomy classifies o10");
+		assert_eq!(o10.0, "unknown");
+		assert_eq!(o10.2, None);
+	}
+
+	#[test]
+	fn revisions_reject_components_above_u8() {
+		assert_eq!(parse_revision("255.255.255"), Ok(semver!(255.255.255)));
+		assert_eq!(parse_revision("256.0.0"), Err(()));
+		assert_eq!(parse_revision("0.256.0"), Err(()));
+		assert_eq!(parse_revision("0.0.256"), Err(()));
+	}
+
+	#[test]
+	fn ranks_can_be_resolved_within_a_preselected_class() {
+		let ranks = taxonomy()
+			.ranks_in_class(&ClassId::new("anthropic"), "claude-opus-4-1-20250805")
+			.unwrap();
+		assert_eq!(ranks, (Some(FamilyId::new("opus")), Some(semver!(4.1))));
+	}
+
+	#[test]
+	fn qwen_max_is_product_but_xhigh_is_longest_suffix() {
+		assert_eq!(taxonomy().collapse("qwen3.8-max"), ("qwen3.8-max", None, false));
+		assert_eq!(taxonomy().collapse("gpt-5-xhigh"), ("gpt-5", Some(EffortTier::XHigh), false));
+	}
+
+	#[test]
+	fn equal_cross_class_and_family_ranks_are_ambiguous() {
+		let classes = with_collapse(
+			r#"class "one" { bounded "same" }
+			class "two" { bounded "same" }"#,
+		);
+		assert!(matches!(classes.classify_id("same-1"), Err(TaxonomyError::AmbiguousClass { .. })));
+
+		let families = with_collapse(
+			r#"class "one" {
+				bounded "same"
+				family "left" glob="*a*"
+				family "right" glob="*b*"
+			}"#,
+		);
+		assert!(matches!(
+			families.classify_id("same-ab"),
+			Err(TaxonomyError::AmbiguousFamily { .. })
+		));
+	}
+
+	#[test]
+	fn identity_overrides_honor_provider_scope_and_expiry() {
+		let taxonomy = with_collapse(
+			r#"class "one" {
+				exact "model"
+				override id="generic" model="model" logical="generic/model" class="one" rationale="test" provenance="test"
+				override id="scoped" provider="host" model="model" logical="host/model" class="one" expires-at-ms=10 rationale="test" provenance="test"
+			}"#,
+		);
+		assert_eq!(
+			taxonomy
+				.identity_override("host", "MODEL", Some(9))
+				.unwrap()
+				.id,
+			"scoped"
+		);
+		assert_eq!(
+			taxonomy
+				.identity_override("host", "model", Some(10))
+				.unwrap()
+				.id,
+			"generic"
+		);
+	}
+
+	#[test]
+	fn unknown_and_malformed_nodes_are_rejected() {
+		let collapse = ("collapse", include_str!("../compat/taxonomy/_collapse.kdl"));
+		assert!(matches!(
+			Taxonomy::parse(&[collapse, ("bad", "class \"x\" { mystery \"x\" }")]),
+			Err(CascadeError::UnexpectedNode { .. })
+		));
+		assert!(matches!(
+			Taxonomy::parse(&[collapse, ("bad", "class \"x\" { family \"x\" }")]),
+			Err(CascadeError::MalformedDirective { .. })
+		));
+		assert!(matches!(
+			Taxonomy::parse(&[collapse, ("bad", "class \"\" {}")]),
+			Err(CascadeError::MalformedDirective { .. })
+		));
+		assert!(matches!(
+			Taxonomy::parse(&[collapse, ("bad", "class \"x\" { family \"\" glob=\"*\" }")]),
+			Err(CascadeError::MalformedDirective { .. })
+		));
+	}
+}

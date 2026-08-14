@@ -1,53 +1,70 @@
-// Deployment compat for provider "github-copilot": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "github-copilot"; regenerated from the frozen census using deployment contract selectors.
 
 provider "github-copilot" {
+	class "anthropic" {
+		revision ">=4 <4.6" {
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		}
+	}
 	class "gemini" {
 		supports-reasoning-effort #false
 		supports-store #false
+		family "flash" {
+			supports-developer-role #false
+		}
+		revision ">=2.5 <3.7" {
+			thinking-mode "effort"
+		}
 	}
 	class "kimi" {
-		supports-developer-role #false
 		supports-reasoning-effort #false
 		supports-store #false
+		thinking-mode "effort"
+	}
+	class "openai" {
+		family "gpt" {
+			revision ">=4 <5" {
+				supports-reasoning-effort #false
+				supports-store #false
+			}
+		}
+		revision ">=5 <5.7" {
+			thinking-mode "effort"
+		}
 	}
 	class "unknown" {
 		thinking-mode "effort"
 	}
-	models "claude-fable-5" "claude-opus-5" "claude-sonnet-5" {
-		thinking-efforts "low" "medium" "high" "xhigh" "max"
-		thinking-mode "anthropic-adaptive"
-		thinking-supports-display #true
+	class "xai" {
+		family "grok" {
+			thinking-mode "effort"
+		}
 	}
-	models "claude-haiku-4.5" "claude-opus-4.5" "claude-sonnet-4" "claude-sonnet-4.5" \
-		"grok-4.5" "mai-code-1-flash-picker" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "gemini-2.5-pro" "gemini-3.1-pro-preview" "gpt-4.1" {
+		supports-developer-role #false
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "gpt-5.1-codex" "gpt-5.1-codex-max" {
+		thinking-efforts "minimal" "low" "medium" "high"
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "gpt-5.1-codex-mini" {
+		thinking-efforts "medium" "high"
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "grok-4.5" "mai-code-1-flash-picker" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}
-	models "gemini-2.5-pro" "gemini-3-flash-preview" "gemini-3.1-pro-preview" "gemini-3.6-flash" {
-		supports-developer-role #false
-	}
-	models "gemini-3.5-flash" {
-		thinking-requires-effort #true
-		supports-developer-role #false
-	}
-	models "gpt-4.1" {
-		supports-developer-role #false
-		supports-reasoning-effort #false
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "grok-code-fast-1" {
 		supports-store #false
-	}
-	models "gpt-4o" {
-		supports-reasoning-effort #false
-		supports-store #false
-	}
-	models "gpt-5.1" "kimi-k2.7-code" {
 		thinking-efforts "minimal" "low" "medium" "high"
 	}
-	models "gpt-5.2" "gpt-5.2-codex" "gpt-5.3-codex" {
-		thinking-efforts "low" "medium" "high" "xhigh"
-	}
-	models "grok-code-fast-1" "raptor-mini" {
-		thinking-efforts "minimal" "low" "medium" "high"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "raptor-mini" {
 		supports-reasoning-effort #false
 		supports-store #false
+		thinking-efforts "minimal" "low" "medium" "high"
 	}
 }

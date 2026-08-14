@@ -1,26 +1,35 @@
-// Deployment compat for provider "cursor": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "cursor"; regenerated from the frozen census using deployment contract selectors.
 
 provider "cursor" {
-	class "gemini" {
-		thinking-requires-effort #true
+	thinking-mode "effort"
+	class "openai" {
+		revision ">=5.2 <5.4" {
+			thinking-efforts "low" "high" "xhigh"
+		}
 	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "claude-4.6-opus" {
 		thinking-efforts "high" "max"
 	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "claude-fable-5" "claude-opus-4-7" "claude-opus-4-8" "claude-sonnet-5" {
 		thinking-efforts "low" "medium" "high" "xhigh" "max"
 	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "claude-opus-4*fast" "gpt-5.1-codex-max*" "claude-opus-5-high-fast" \
+		"claude-opus-5-low-fast" "claude-opus-5-medium-fast" "gpt-5-mini" {
+		thinking-efforts "minimal" "low" "medium" "high"
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "claude-opus-5" {
 		thinking-efforts "low" "medium" "high"
 	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "gpt-5.1" {
 		thinking-efforts "low" "high"
 	}
-	models "gpt-5.2" "gpt-5.2-codex" "gpt-5.3-codex" {
-		thinking-efforts "low" "high" "xhigh"
-	}
-	models "kimi-k2.5" "kimi-k2.7-code" {
-		thinking-efforts "minimal" "low" "medium" "high"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "gpt-5.1-codex-mini" {
+		thinking-efforts "medium" "high"
 	}
 }

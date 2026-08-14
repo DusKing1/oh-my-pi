@@ -13,9 +13,11 @@
 
 use std::{collections::BTreeMap, fs, path::Path};
 
+use omp_core::SemVer;
 use omp_llm_catalog::{
-	BUNDLED_COMPAT, CascadeError, ClassificationInput, ClassificationPhase, CompatCascade,
-	EffortTier, KNOWN_AXES, WirePolicy, classify,
+	BUNDLED_COMPAT, CascadeError, Catalog, ClassificationInput, ClassificationPhase, CompatCascade,
+	EffortTier, KNOWN_AXES, ModelKey, ResolveTarget, ThinkingEffort, ThinkingFormat, WirePolicy,
+	classify,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -27,6 +29,7 @@ const THINKING_PROFILES: &str =
 const NORMALIZED_MODELS: &str =
 	include_str!("../../../fixtures/llm-oracle/catalog/models.normalized.json");
 const CENSUS_CASES: &str = include_str!("../../../fixtures/llm-oracle/quirk-census/cases.jsonl");
+const CATALOG_POSTCARD: &[u8] = include_bytes!("../data/catalog.postcard");
 
 #[derive(Deserialize)]
 struct ProfileDocument {
@@ -46,13 +49,15 @@ struct NormalizedDocument {
 
 #[derive(Deserialize)]
 struct NormalizedModel {
-	id:       String,
-	provider: String,
-	model:    String,
-	#[serde(rename = "family")]
-	class:    String,
+	id:           String,
+	provider:     String,
+	model:        String,
 	#[serde(default)]
-	behavior: Option<Behavior>,
+	class:        Option<String>,
+	#[serde(default, rename = "family")]
+	legacy_class: Option<String>,
+	#[serde(default)]
+	behavior:     Option<Behavior>,
 }
 
 #[derive(Deserialize)]
@@ -115,12 +120,61 @@ fn census_thinking_format(provider: &str, class: &str) -> Option<&'static str> {
 	}
 }
 
-fn class_of(model: &NormalizedModel) -> &str {
-	if model.class.is_empty() {
-		"unknown"
-	} else {
-		model.class.as_str()
+fn frozen_class_of(model: &NormalizedModel) -> &str {
+	model
+		.class
+		.as_deref()
+		.or(model.legacy_class.as_deref())
+		.filter(|class| !class.is_empty())
+		.unwrap_or("unknown")
+}
+
+fn parse_revision(value: Option<&Value>) -> Option<SemVer> {
+	let value = value?;
+	if value.is_null() {
+		return None;
 	}
+	let components = match value {
+		Value::String(revision) => {
+			let mut components = [0_u8; 3];
+			let mut count = 0_usize;
+			for component in revision.split('.') {
+				assert!(
+					count < components.len()
+						&& !component.is_empty()
+						&& component.bytes().all(|byte| byte.is_ascii_digit()),
+					"revision must contain one to three numeric components"
+				);
+				components[count] = component
+					.parse()
+					.expect("revision components must fit in u8");
+				count += 1;
+			}
+			assert!(count > 0, "revision must contain at least one component");
+			components
+		},
+		Value::Object(revision) => {
+			assert_eq!(
+				revision.len(),
+				3,
+				"revision object must contain exactly major, minor, and patch"
+			);
+			let component = |name| {
+				let value = revision
+					.get(name)
+					.unwrap_or_else(|| panic!("revision object is missing {name}"));
+				u8::try_from(
+					value
+						.as_u64()
+						.unwrap_or_else(|| panic!("revision {name} must be an unsigned integer")),
+				)
+				.unwrap_or_else(|_| panic!("revision {name} must fit in u8"))
+			};
+			[component("major"), component("minor"), component("patch")]
+		},
+		_ => panic!("revision must be a string or an object"),
+	};
+	Some(SemVer::new(components[0], components[1], components[2]))
 }
 
 #[test]
@@ -194,13 +248,33 @@ fn cascade_resolves_every_catalog_model_to_oracle_plus_census_overlay() {
 	let mut thinking_profiled = 0_usize;
 	let mut overlay_applied = 0_usize;
 	for model in &normalized.models {
-		let class = class_of(model);
+		let frozen_class = frozen_class_of(model);
+		let classification = classify(ClassificationInput {
+			phase:          ClassificationPhase::CatalogCompiler,
+			provider:       &model.provider,
+			model:          &model.model,
+			observed_at_ms: None,
+		});
+		assert_eq!(
+			classification.class.as_str(),
+			frozen_class,
+			"frozen legacy class diverges for {}",
+			model.id
+		);
+		let class = classification.class.as_str();
 		let reasoning = model
 			.behavior
 			.as_ref()
 			.is_some_and(|b| b.thinking.is_some());
 		let resolved = cascade
-			.resolve(&model.provider, class, &model.model, reasoning)
+			.resolve(&ResolveTarget {
+				provider: &model.provider,
+				class,
+				family: classification.family.as_ref().map(|family| family.as_str()),
+				revision: classification.revision,
+				model: &model.model,
+				reasoning,
+			})
 			.unwrap_or_else(|error| panic!("{}: {error}", model.id));
 
 		// Wire: oracle-pinned axes exact; additions only from the census overlay.
@@ -248,6 +322,40 @@ fn cascade_resolves_every_catalog_model_to_oracle_plus_census_overlay() {
 	assert_eq!(wire_overridden, 312, "archived wire override census");
 	assert_eq!(thinking_profiled, 2_294, "thinking profile census");
 	assert!(overlay_applied > 500, "census overlay must reach real models: {overlay_applied}");
+}
+
+#[test]
+fn compiled_catalog_carries_cascade_overlay_policies() {
+	let catalog = Catalog::decode(CATALOG_POSTCARD).expect("compiled catalog snapshot decodes");
+
+	let nvidia_qwen = catalog
+		.model(&ModelKey::from("nvidia/qwen/qwen3-next-80b-a3b-thinking"))
+		.expect("frozen nvidia qwen model is compiled");
+	let wire_policy = catalog
+		.wire_policy(&nvidia_qwen.wire_policy)
+		.expect("nvidia qwen wire policy is interned");
+	assert_eq!(
+		wire_policy.reasoning.thinking_format,
+		Some(ThinkingFormat::QwenChatTemplate),
+		"compiled nvidia qwen policy must carry the cascade overlay"
+	);
+
+	let cursor_gpt = catalog
+		.model(&ModelKey::from("cursor/gpt-5.1"))
+		.expect("frozen cursor gpt-5.1 model is compiled");
+	let thinking_policy = catalog
+		.thinking_policy(
+			cursor_gpt
+				.thinking
+				.as_ref()
+				.expect("cursor gpt-5.1 references a thinking policy"),
+		)
+		.expect("cursor gpt-5.1 thinking policy is interned");
+	assert_eq!(
+		thinking_policy.efforts.as_slice(),
+		&[ThinkingEffort::Low, ThinkingEffort::High],
+		"compiled cursor gpt-5.1 policy must carry the cascade efforts"
+	);
 }
 
 #[test]
@@ -334,10 +442,21 @@ fn run_policy_case(cascade: &CompatCascade, case: &Case) {
 	let model = case.input["model_id"]
 		.as_str()
 		.expect("policy input model_id");
-	let class = case.input["family"].as_str().unwrap_or("unknown");
+	let explicit_class = case.input.get("class");
+	let class = explicit_class
+		.map(|class| class.as_str().expect("policy input class"))
+		.unwrap_or_else(|| case.input["family"].as_str().unwrap_or("unknown"));
+	let family = explicit_class.and_then(|_| {
+		case
+			.input
+			.get("family")
+			.filter(|family| !family.is_null())
+			.map(|family| family.as_str().expect("policy input product family"))
+	});
+	let revision = parse_revision(case.input.get("revision"));
 	let reasoning = case.input["reasoning"].as_bool().unwrap_or(false);
 	let resolved = cascade
-		.resolve(provider, class, model, reasoning)
+		.resolve(&ResolveTarget { provider, class, family, revision, model, reasoning })
 		.expect("policy resolves");
 	let overrides = case.expected["overrides"]
 		.as_object()
@@ -400,7 +519,14 @@ fn run_compile_error_case(case: &Case) {
 			)
 			.expect("rule set parses");
 			let error = cascade
-				.resolve("acme", "unknown", "foo-bar", false)
+				.resolve(&ResolveTarget {
+					provider:  "acme",
+					class:     "unknown",
+					family:    None,
+					revision:  None,
+					model:     "foo-bar",
+					reasoning: false,
+				})
 				.expect_err("must reject");
 			assert!(
 				matches!(&error, CascadeError::AmbiguousOverlap(details)
@@ -418,7 +544,14 @@ fn run_compile_error_case(case: &Case) {
 			)
 			.expect("rule set parses");
 			let resolved = cascade
-				.resolve("acme", "unknown", "foo-bar", false)
+				.resolve(&ResolveTarget {
+					provider:  "acme",
+					class:     "unknown",
+					family:    None,
+					revision:  None,
+					model:     "foo-bar",
+					reasoning: false,
+				})
 				.expect("disjoint is legal");
 			assert_eq!(resolved.wire["thinking_format"], Value::from("zai"), "{}", case.id);
 			assert_eq!(resolved.wire["supports_store"], Value::Bool(false), "{}", case.id);
@@ -432,7 +565,14 @@ fn run_compile_error_case(case: &Case) {
 			)
 			.expect("rule set parses");
 			let resolved = cascade
-				.resolve("acme", "unknown", "foo-bar", false)
+				.resolve(&ResolveTarget {
+					provider:  "acme",
+					class:     "unknown",
+					family:    None,
+					revision:  None,
+					model:     "foo-bar",
+					reasoning: false,
+				})
 				.expect("priority wins");
 			assert_eq!(resolved.wire["thinking_format"], Value::from("zai"), "{}", case.id);
 		},

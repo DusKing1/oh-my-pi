@@ -43,7 +43,9 @@
       "source": "archive/llm-legacy/llm-egress/src/retry.rs:RetryConfig/parse_retry_after/Retry::call/tests",
       "sha256": "b3bf5740d52ae951171d0856348de35569f6bc555ef3b64b7c23bf7df95f80c8",
       "secret_free": true,
-      "redactions": ["account identifier replaced with shape-preserving typed placeholder"]
+      "redactions": [
+        "account identifier replaced with shape-preserving typed placeholder"
+      ]
     },
     {
       "id": "transport.sse.cassettes.v1",
@@ -58,7 +60,11 @@
       "source": "archive/llm-legacy/llm-tower/tests/codex_websocket.rs:codex_websocket_executes_continues_cancels_and_falls_back_before_output",
       "sha256": "29b7ab6405136460ed9d5c0ba031c32e31aa45c2ace998ea2b649f41b3beca9e",
       "secret_free": true,
-      "redactions": ["bearer credential replaced with typed placeholder", "account identifier replaced with typed placeholder", "attestation value replaced with typed placeholder"]
+      "redactions": [
+        "bearer credential replaced with typed placeholder",
+        "account identifier replaced with typed placeholder",
+        "attestation value replaced with typed placeholder"
+      ]
     }
   ]
 }

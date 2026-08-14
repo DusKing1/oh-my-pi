@@ -1,5 +1,6 @@
 class "qwen" {
     bounded "qwen"
+    bounded "deepseek-r1-distill-qwen"
     glob "*distill-qwen*"
 
     family "qwq" glob="*qwq*"

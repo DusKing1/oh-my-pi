@@ -1,10 +1,22 @@
-// Deployment compat for provider "xiaomi": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "xiaomi"; regenerated from the frozen census using deployment contract selectors.
 
 provider "xiaomi" {
-	allows-synthetic-reasoning-content-for-tool-calls #false
-	reasoning-content-field "reasoning_content"
-	requires-reasoning-content-for-tool-calls #true
-	supports-store #false
-	thinking-format "zai"
+	class "mimo" {
+		family "v2" {
+			allows-synthetic-reasoning-content-for-tool-calls #false
+			reasoning-content-field "reasoning_content"
+			requires-reasoning-content-for-tool-calls #true
+			supports-store #false
+			thinking-format "zai"
+			thinking-mode "effort"
+		}
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "mimo-v2.5" {
+		allows-synthetic-reasoning-content-for-tool-calls #false
+		reasoning-content-field "reasoning_content"
+		requires-reasoning-content-for-tool-calls #true
+		supports-store #false
+		thinking-format "zai"
+	}
 }

@@ -1,8 +1,0 @@
-// Deployment compat for provider "minimax": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
-
-provider "minimax" {
-	models "MiniMax-M3" {
-		thinking-efforts "low" "medium" "high"
-	}
-}

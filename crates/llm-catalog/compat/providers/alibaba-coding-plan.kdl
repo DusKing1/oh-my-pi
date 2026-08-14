@@ -1,15 +1,16 @@
-// Deployment compat for provider "alibaba-coding-plan": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "alibaba-coding-plan"; regenerated from the frozen census using deployment contract selectors.
 
-provider "alibaba-coding-plan" priority=10 {
-	// pi-openai-chat:015 — `isAlibaba` (DashScope) => top-level enable_thinking
-	// for every model on this host; priority beats class defaults.
-	thinking-format "qwen"
-	supports-developer-role #false
+provider "alibaba-coding-plan" {
+	thinking-mode "effort"
 	class "glm" {
 		thinking-efforts "minimal" "low" "medium" "high"
 	}
-	class "kimi" {
-		thinking-efforts "minimal" "low" "medium" "high"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "*.5" {
+		thinking-format "qwen"
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "glm-5" {
+		thinking-format "qwen"
 	}
 }

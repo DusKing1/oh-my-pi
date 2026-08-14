@@ -1,49 +1,54 @@
-// Deployment compat for provider "opencode-go": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "opencode-go"; regenerated from the frozen census using deployment contract selectors.
 
 provider "opencode-go" {
-	class "mimo" {
-		supports-tool-choice #false
-	}
-	class "unknown" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	class "deepseek" {
 		thinking-mode "effort"
 	}
-	models "deepseek-v4-flash" "glm-5" "glm-5.1" "kimi-k2.5" \
-		"kimi-k2.6" {
+	class "glm" {
+		thinking-mode "effort"
+	}
+	class "kimi" {
+		thinking-mode "effort"
+	}
+	class "mimo" {
+		family "v2" {
+			supports-tool-choice #false
+			thinking-mode "effort"
+		}
+	}
+	class "qwen" {
+		revision ">=3.5 <3.7" {
+			thinking-efforts "minimal" "low" "medium" "high"
+			thinking-mode "effort"
+		}
+		revision ">=3.7 <3.9" {
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+			thinking-mode "budget"
+		}
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "deepseek-v4-flash" "glm-5" "glm-5.1" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}
-	models "deepseek-v4-pro" {
-		max-tokens-field "max_tokens"
-		reasoning-content-field "reasoning_content"
-		requires-reasoning-content-for-tool-calls #true
-		supports-tool-choice #false
-	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "glm-5.2" {
 		thinking-efforts "minimal" "low" "medium" "high" "max"
 	}
-	models "kimi-k2.7-code" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "gpt-5.6-luna" "grok-4.5" "minimax-m2.7" "minimax-m3" {
+		thinking-mode "effort"
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "hy3" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "effort"
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "kimi-k2.7-code" {
 		supports-forced-tool-choice #false
 	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "minimax-m2.5" {
-		thinking-efforts "low" "medium" "high"
 		thinking-mode "anthropic-adaptive"
-	}
-	models "minimax-m2.7" {
-		thinking-efforts "low" "medium" "high"
-		thinking-mode "effort"
-	}
-	models "minimax-m3" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-		thinking-mode "effort"
-	}
-	models "qwen3.5-plus" "qwen3.6-plus" {
-		thinking-efforts "minimal" "low" "medium" "high"
-		thinking-mode "effort"
-	}
-	models "qwen3.7-max" "qwen3.7-plus" "qwen3.8-max" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-		thinking-mode "budget"
 	}
 }

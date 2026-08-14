@@ -1,18 +1,24 @@
-// Deployment compat for provider "ollama-cloud": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "ollama-cloud"; regenerated from the frozen census using deployment contract selectors.
 
 provider "ollama-cloud" {
+	thinking-mode "effort"
 	class "unknown" {
 		thinking-efforts "minimal" "low" "medium" "high"
-		thinking-mode "effort"
 	}
-	models "deepseek-v4-flash" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "deepseek-v4-pro" {
+		requires-reasoning-content-for-all-assistant-turns #true
+		thinking-efforts "high" "max"
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "deepseek-v4-pro:preview" {
 		thinking-efforts "low" "high" "max"
 	}
-	models "glm-4.6" "glm-4.7" "glm-5" "glm-5.1" \
-		"kimi-k2-thinking" "kimi-k2.5" "kimi-k2.6" "kimi-k2.7-code" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "glm-4*" "glm-5" "glm-5.1" {
 		thinking-efforts "minimal" "low" "medium" "high"
 	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "glm-5.2" {
 		thinking-efforts "high" "max"
 	}

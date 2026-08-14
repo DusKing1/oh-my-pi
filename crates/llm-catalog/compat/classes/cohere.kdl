@@ -1,8 +1,6 @@
-// Model-lineage compat for the "cohere" class (census: model-class predicates in pi
-// dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
+// Model-lineage compat for "cohere"; regenerated from the frozen census using class taxonomy selectors.
 
 class "cohere" {
-	thinking-mode "effort"
 	on "cohere" "kilo" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}

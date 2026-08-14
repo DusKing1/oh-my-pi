@@ -2,12 +2,12 @@
   "schema_version": 1,
   "corpus": "llm-oracle",
   "hash_algorithm": "sha256",
-  "corpus_sha256": "6f4c0861760054fa01f4da6bbcd0bd8dbfac9bff9448c0cf5b3718ab2271a5ac",
+  "corpus_sha256": "d08fdbdfe41bb0199e0040d0c532164f1af6ef9224676c09491c06f1a6427348",
   "category_count": 14,
   "manifest_count": 14,
-  "artifact_count": 264,
-  "indexed_file_count": 278,
-  "secret_free_count": 278,
+  "artifact_count": 265,
+  "indexed_file_count": 279,
+  "secret_free_count": 279,
   "categories": [
     {
       "id": "agent-protocols",
@@ -36,8 +36,8 @@
     {
       "id": "catalog",
       "manifest_path": "catalog/manifest.json",
-      "artifact_count": 6,
-      "indexed_file_count": 7
+      "artifact_count": 7,
+      "indexed_file_count": 8
     },
     {
       "id": "catalog-policy",
@@ -1141,7 +1141,7 @@
       "path": "catalog/manifest.json",
       "provenance_category": "catalog",
       "secret_free": true,
-      "sha256": "f2ee805673517bdba7473a5611d5e10b38ebdedff4b2295bfbe15de90500f910"
+      "sha256": "fe73cd6b99e2435cf1860018b6e360f11d315403c49b4d58b90dbd17bbcc38e4"
     },
     {
       "id": "catalog.models.compressed.v1",
@@ -1174,6 +1174,14 @@
       "provenance_category": "catalog",
       "secret_free": true,
       "sha256": "775ea37ea3e97de177cdac3b6109fd62e08ae25131b486af89cd5b9291cde9b2"
+    },
+    {
+      "id": "catalog.models.normalized.projector.v1",
+      "kind": "artifact",
+      "path": "catalog/project_normalized.rs",
+      "provenance_category": "catalog",
+      "secret_free": true,
+      "sha256": "f150a5ed102ca4f647e8056a1f5c8b921fbbbf83aa7c99d4ad15176709724cf4"
     },
     {
       "id": "catalog.providers.source.v1",
@@ -1941,7 +1949,7 @@
       "path": "quirk-census/cases.jsonl",
       "provenance_category": "quirk-census",
       "secret_free": true,
-      "sha256": "93ef283d6619321537281dc60154a83954856fd194003474d3a72bbad62db9c0"
+      "sha256": "fd00977792ecf89a6f8f8331a45b5dc0d18d852aacfe96ad7a6d66a052cb2d5a"
     },
     {
       "id": "oracle.category.quirk-census.manifest.v1",
@@ -1949,7 +1957,7 @@
       "path": "quirk-census/manifest.json",
       "provenance_category": "quirk-census",
       "secret_free": true,
-      "sha256": "c581a0b34e8edf8defa717eb8b27d24cc9cf6bc1006148686bcf74bfe1bbac12"
+      "sha256": "6f900c199d8be808b128be3b578b9f6b23f2b814420827d90ea634045f4e7212"
     },
     {
       "id": "quirk.census.observations.v1",
@@ -2093,7 +2101,7 @@
       "path": "transport/manifest.json",
       "provenance_category": "transport",
       "secret_free": true,
-      "sha256": "3d463d39056587b6e6d7fc79fac56b09f04a26cfd6f835dd62d180e800ccbfdb"
+      "sha256": "f75c7313f14c2c0b8080b2482bba2e25961ac0b1abc22d30310eefb3d4e07333"
     },
     {
       "id": "transport.ndjson.cassettes.v1",

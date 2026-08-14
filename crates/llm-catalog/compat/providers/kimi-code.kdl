@@ -1,18 +1,18 @@
-// Deployment compat for provider "kimi-code": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "kimi-code"; regenerated from the frozen census using deployment contract selectors.
 
 provider "kimi-code" {
+	thinking-mode "effort"
 	class "unknown" {
-		thinking-efforts "minimal" "low" "medium" "high"
-		thinking-mode "effort"
 		reasoning-content-field "reasoning_content"
 		supports-developer-role #false
+		thinking-efforts "minimal" "low" "medium" "high"
 		thinking-format "kimi"
 	}
-	models "kimi-for-coding" "kimi-for-coding-highspeed" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "kimi-for*" {
+		reasoning-content-field "reasoning_content"
 		supports-developer-role #false
-	}
-	models "kimi-k2.5" {
 		thinking-efforts "minimal" "low" "medium" "high"
+		thinking-format "zai"
 	}
 }

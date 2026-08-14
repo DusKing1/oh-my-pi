@@ -1,12 +1,9 @@
-// Deployment compat for provider "friendli": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "friendli"; regenerated from the frozen census using deployment contract selectors.
 
 provider "friendli" {
-	class "unknown" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-		thinking-mode "effort"
-	}
-	models "zai-org/GLM-5.2" {
+	thinking-mode "effort"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "LGAI-EXAONE/K-EXAONE-236B-A23B" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}
 }

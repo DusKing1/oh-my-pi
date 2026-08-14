@@ -1,7 +1,9 @@
-// Deployment compat for provider "sarvam": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "sarvam"; regenerated from the frozen census using deployment contract selectors.
 
 provider "sarvam" {
-	thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-	thinking-mode "effort"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "sarvam-105b" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		thinking-mode "effort"
+	}
 }

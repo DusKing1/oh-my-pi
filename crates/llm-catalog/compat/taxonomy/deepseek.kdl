@@ -1,5 +1,5 @@
 class "deepseek" {
-    namespace "deepseek"
+    namespace "deepseek" bounded=#true
     bounded "deepseek"
 
     family "r1" glob="*deepseek-r1*"

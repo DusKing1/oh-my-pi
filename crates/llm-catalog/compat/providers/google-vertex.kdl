@@ -1,18 +1,18 @@
-// Deployment compat for provider "google-vertex": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "google-vertex"; regenerated from the frozen census using deployment contract selectors.
 
 provider "google-vertex" {
-	models "claude-haiku-4-5@20251001" "claude-opus-4-5@20251101" "claude-sonnet-4-5@20250929" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	class "anthropic" {
+		revision ">=4.5 <4.6" {
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		}
 	}
-	models "gemini-2.5-*" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "*latest" {
+		thinking-efforts "minimal" "low" "medium" "high"
 		thinking-mode "budget"
 	}
-	models "gemini-3-flash-preview" "gemini-3.1-flash-lite" "gemini-3.1-pro-preview" "gemini-3.6-flash" {
-		thinking-mode "google-level"
-	}
-	models "gemini-3.5-flash" {
-		thinking-mode "google-level"
-		thinking-requires-effort #true
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "openai/gpt-oss-120b-maas" {
+		thinking-mode "effort"
 	}
 }

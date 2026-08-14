@@ -5,10 +5,11 @@ use std::{
 	str::FromStr,
 };
 
+use omp_core::SemVer;
 use omp_llm_catalog::{
 	Availability, EmbeddingInputBits, EvidenceConfidence, ModalityBits, ModelAvailability,
 	OperationKind, ProvenanceKind,
-	classify::{ClassificationInput, ClassificationPhase, EffortTier, Revision, classify},
+	classify::{ClassificationInput, ClassificationPhase, EffortTier, classify},
 	compile::{CompiledCatalog, compile_oracle},
 	policy::{
 		ApplyPatchWireKind, ComputerUseConfigSupport, ComputerUseWireSupport, ExtendedContextMode,
@@ -243,18 +244,19 @@ struct ClassCase {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct VersionCases {
+struct RevisionCases {
 	schema_version:   u32,
 	alias_provenance: String,
-	cases:            Vec<VersionCase>,
+	cases:            Vec<RevisionCase>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct VersionCase {
-	case_kind:        String,
-	input:            String,
-	expected_version: Option<Revision>,
+struct RevisionCase {
+	case_kind:         String,
+	input:             String,
+	#[serde(rename = "expected_version")]
+	expected_revision: Option<SemVer>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -508,7 +510,8 @@ struct PriceModelCase {
 	model:             String,
 	context_window:    u64,
 	max_output_tokens: u64,
-	openai_version:    Revision,
+	#[serde(rename = "openai_version")]
+	openai_revision:   SemVer,
 	pricing:           Vec<FixturePrice>,
 	pricing_tiers:     Vec<FixtureTier>,
 }
@@ -707,9 +710,9 @@ fn class_classifier_matches_all_canonical_and_adversarial_cases() {
 }
 
 #[test]
-fn openai_versions_match_alias_canonical_and_adversarial_cases() {
-	let fixture: VersionCases =
-		serde_json::from_str(VERSION_CASES).expect("version fixture is valid");
+fn openai_revisions_match_alias_canonical_and_adversarial_cases() {
+	let fixture: RevisionCases =
+		serde_json::from_str(VERSION_CASES).expect("revision fixture is valid");
 	assert_eq!(fixture.schema_version, 1);
 	assert!(!fixture.alias_provenance.is_empty());
 	assert_eq!(fixture.cases.len(), 16);
@@ -717,7 +720,7 @@ fn openai_versions_match_alias_canonical_and_adversarial_cases() {
 	for case in fixture.cases {
 		let actual = compiler_classification(&case.input);
 		assert_eq!(
-			actual.revision, case.expected_version,
+			actual.revision, case.expected_revision,
 			"{} case {:?}",
 			case.case_kind, case.input
 		);
@@ -810,6 +813,24 @@ fn oracle_modalities(values: &[String]) -> ModalityBits {
 		}
 	}
 	modalities
+}
+
+fn census_thinking_format(provider: &str, class: &str) -> Option<ThinkingFormat> {
+	match provider {
+		"openrouter" => Some(ThinkingFormat::OpenRouter),
+		"alibaba-token-plan" | "alibaba-coding-plan" => Some(ThinkingFormat::Qwen),
+		"nvidia" if class == "qwen" => Some(ThinkingFormat::QwenChatTemplate),
+		"fireworks" if class == "qwen" => Some(ThinkingFormat::OpenAi),
+		_ if class == "qwen" => Some(ThinkingFormat::Qwen),
+		_ => None,
+	}
+}
+
+fn with_census_thinking_format(mut policy: WirePolicy, provider: &str, class: &str) -> WirePolicy {
+	if policy.reasoning.thinking_format.is_none() {
+		policy.reasoning.thinking_format = census_thinking_format(provider, class);
+	}
+	policy
 }
 
 fn with_model_behavior(
@@ -1611,8 +1632,8 @@ fn price_schedules_limits_and_long_context_tiers_match_exact_integer_oracle_valu
 		assert_eq!(model.limits.maximum_output_tokens, Some(case.max_output_tokens), "{key}");
 		assert_eq!(
 			compiler_classification(&case.model).revision,
-			Some(case.openai_version),
-			"{key} version"
+			Some(case.openai_revision),
+			"{key} revision"
 		);
 		assert_eq!(
 			model
@@ -2203,9 +2224,9 @@ fn every_sparse_wire_profile_has_a_stable_distinct_content_id() {
 		.map(|model| {
 			let behavior = serde_json::from_str(model.behavior.get())
 				.expect("typed behavior capability projection");
-			(model.id, behavior)
+			(model.id, (behavior, model.provider, model.class))
 		})
-		.collect::<BTreeMap<_, OracleBehaviorCapabilities>>();
+		.collect::<BTreeMap<_, _>>();
 	assert_eq!(fixture.schema_version, 1);
 	assert_eq!(fixture.profile_count, 35);
 	assert_eq!(fixture.profiles.len(), fixture.profile_count);
@@ -2228,19 +2249,12 @@ fn every_sparse_wire_profile_has_a_stable_distinct_content_id() {
 			"{} is not structurally distinct",
 			profile.profile_id
 		);
-		assert!(
-			compiled
-				.wire_policies
-				.iter()
-				.any(|candidate| candidate.content_id() == expected_id),
-			"{} wire policy is missing",
-			profile.profile_id
-		);
 		for key in profile.models {
-			let behavior = behavior_by_model
+			let (behavior, provider, class) = behavior_by_model
 				.get(&key)
 				.unwrap_or_else(|| panic!("{key} behavior fixture is missing"));
-			let expected_policy = with_model_behavior(policy.clone(), behavior);
+			let expected_policy = with_census_thinking_format(policy.clone(), provider, class);
+			let expected_policy = with_model_behavior(expected_policy, behavior);
 			let attached_id = expected_policy.content_id();
 			assert!(
 				expected_by_model
@@ -2269,10 +2283,16 @@ fn every_sparse_wire_profile_has_a_stable_distinct_content_id() {
 		let expected = if let Some(expected) = expected_by_model.get(model.key.as_str()) {
 			expected.clone()
 		} else {
-			let behavior = behavior_by_model
+			let (behavior, provider, class) = behavior_by_model
 				.get(model.key.as_str())
 				.unwrap_or_else(|| panic!("{} behavior fixture is missing", model.key));
-			let expected_policy = with_model_behavior(baseline.clone(), behavior);
+			let base = if census_thinking_format(provider, class).is_some() {
+				WirePolicy::overrides()
+			} else {
+				baseline.clone()
+			};
+			let expected_policy = with_census_thinking_format(base, provider, class);
+			let expected_policy = with_model_behavior(expected_policy, behavior);
 			let actual_policy = compiled
 				.wire_policies
 				.iter()

@@ -1,22 +1,17 @@
-// Deployment compat for provider "google": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "google"; regenerated from the frozen census using deployment contract selectors.
 
 provider "google" {
 	class "unknown" {
 		thinking-efforts "minimal" "low" "medium" "high"
 		thinking-mode "budget"
 	}
-	models "gemini-2.5-flash" "gemini-2.5-flash-lite" "gemini-2.5-flash-lite-preview-06-17" "gemini-2.5-flash-lite-preview-09-2025" \
-		"gemini-2.5-flash-preview-04-17" "gemini-2.5-flash-preview-05-20" "gemini-2.5-flash-preview-09-2025" "gemini-2.5-pro" \
-		"gemini-2.5-pro-preview-05-06" "gemini-2.5-pro-preview-06-05" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "*latest" {
+		thinking-efforts "minimal" "low" "medium" "high"
 		thinking-mode "budget"
 	}
-	models "gemini-3-flash-preview" "gemini-3-pro-preview" "gemini-3.1-flash-lite" "gemini-3.1-flash-lite-preview" \
-		"gemini-3.1-pro-preview" "gemini-3.6-flash" {
-		thinking-mode "google-level"
-	}
-	models "gemini-3.5-flash" {
-		thinking-mode "google-level"
-		thinking-requires-effort #true
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "gemini-2.5-computer-use-preview-10-2025" "gemini-robotics-er-1.6-preview" {
+		thinking-efforts "minimal" "low" "medium" "high"
 	}
 }

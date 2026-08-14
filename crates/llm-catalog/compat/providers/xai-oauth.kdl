@@ -1,19 +1,31 @@
-// Deployment compat for provider "xai-oauth": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "xai-oauth"; regenerated from the frozen census using deployment contract selectors.
 
 provider "xai-oauth" {
-	filter-reasoning-history #true
-	include-encrypted-reasoning #false
-	reasoning-effort-map {
-		minimal "low"
+	class "xai" {
+		family "grok" {
+			filter-reasoning-history #true
+			include-encrypted-reasoning #false
+			reasoning-effort-map {
+				minimal "low"
+			}
+			supports-image-detail-original #false
+			thinking-mode "effort"
+			revision ">=0.1 <4.3" {
+				omit-reasoning-effort #true
+			}
+			revision ">=4.3 <4.20" {
+				omit-reasoning-effort #false
+				supports-reasoning-effort #true
+			}
+		}
 	}
-	supports-image-detail-original #false
-	models "grok-4.20-0309-non-reasoning" "grok-4.20-0309-reasoning" "grok-build" "grok-build-0.1" \
-		"grok-composer-2.5-fast" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "*reasoning" "grok-build" {
 		omit-reasoning-effort #true
 		supports-reasoning-effort #false
 	}
-	models "grok-4.20-multi-agent-0309" "grok-4.3" "grok-4.5" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "grok-4.20-multi-agent-0309" {
 		omit-reasoning-effort #false
 		supports-reasoning-effort #true
 	}

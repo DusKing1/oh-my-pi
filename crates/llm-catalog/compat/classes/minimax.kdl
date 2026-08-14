@@ -1,41 +1,47 @@
-// Model-lineage compat for the "minimax" class (census: model-class predicates in pi
-// dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
+// Model-lineage compat for "minimax"; regenerated from the frozen census using class taxonomy selectors.
 
 class "minimax" {
-	models "MiniMax-M2" "MiniMax-M2.1" "MiniMax-M2.1-lightning" "MiniMax-M2.5" \
-		"MiniMax-M2.5-highspeed" "MiniMax-M2.5-lightning" "MiniMax-M2.7" "MiniMax-M2.7-highspeed" \
-		"MiniMaxAI/MiniMax-M2" "MiniMaxAI/MiniMax-M2.1" "MiniMaxAI/MiniMax-M2.5" "MiniMaxAI/MiniMax-M2.7" \
-		"TEE/minimax-m2.5" "minimax-m2" "minimax-m2.1" "minimax-m2.5" \
-		"minimax-m2.5-free" "minimax-m2.7" "minimax-m21" "minimax-m25" \
-		"minimax-m27" "minimax.minimax-m2" "minimax.minimax-m2.1" "minimax.minimax-m2.5" \
-		"minimax/minimax-m2" "minimax/minimax-m2.1" "minimax/minimax-m2.1-lightning" "minimax/minimax-m2.5" \
-		"minimax/minimax-m2.5-highspeed" "minimax/minimax-m2.5-lightning" "minimax/minimax-m2.5:free" "minimax/minimax-m2.7" \
-		"minimax/minimax-m2.7-highspeed" "minimax/minimax-m2.7-turbo" "minimaxai/minimax-m2" "minimaxai/minimax-m2.1" \
-		"minimaxai/minimax-m2.5" "minimaxai/minimax-m2.7" {
-		thinking-requires-effort #true
+	on "aimlapi" "coreweave" "fireworks" "huggingface" "kilo" "nanogpt" "novita" "nvidia" \
+		"opencode-go" "opencode-zen" "together" "venice" "wafer-serverless" "zenmux" {
+		family "m3" {
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		}
 	}
-	models "MiniMax-M2" "MiniMax-M2.1" "MiniMax-M2.1-lightning" "MiniMax-M2.5" \
-		"MiniMax-M2.5-highspeed" "MiniMax-M2.5-lightning" "MiniMax-M2.7" "MiniMax-M2.7-highspeed" \
-		"MiniMaxAI/MiniMax-M2" "MiniMaxAI/MiniMax-M2.1" "MiniMaxAI/MiniMax-M2.5" "MiniMaxAI/MiniMax-M2.7" \
-		"TEE/minimax-m2.5" "minimax-m2.5-free" "minimax-m21" "minimax-m25" \
-		"minimax-m27" "minimax/minimax-m2" "minimax/minimax-m2.1" "minimax/minimax-m2.1-lightning" \
-		"minimax/minimax-m2.5" "minimax/minimax-m2.5-highspeed" "minimax/minimax-m2.5-lightning" "minimax/minimax-m2.5:free" \
-		"minimax/minimax-m2.7" "minimax/minimax-m2.7-highspeed" "minimax/minimax-m2.7-turbo" "minimaxai/minimax-m2" \
-		"minimaxai/minimax-m2.1" "minimaxai/minimax-m2.5" "minimaxai/minimax-m2.7" {
-		thinking-efforts "low" "medium" "high"
+	on "alibaba-coding-plan" "amazon-bedrock" "coreweave" "fireworks" "friendli" "huggingface" "kilo" \
+		"minimax" "minimax-cn" "minimax-code" "minimax-code-cn" "nanogpt" "novita" "nvidia" \
+		"ollama-cloud" "opencode-go" "opencode-zen" "openrouter" "together" "venice" "vercel-ai-gateway" \
+		"zenmux" {
+		family "m2" {
+			thinking-requires-effort #true
+		}
 	}
-	models "MiniMaxAI/MiniMax-M3" "minimax-m3-free" "minimax-m3-preview" "minimax/minimax-latest" \
-		"minimax/minimax-m3:thinking" "minimaxai/minimax-m1-80k" "minimaxai/minimax-m3" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	on "alibaba-coding-plan" "coreweave" "fireworks" "friendli" "huggingface" "kilo" "minimax" \
+		"minimax-cn" "minimax-code" "minimax-code-cn" "nanogpt" "novita" "nvidia" "opencode-go" \
+		"opencode-zen" "openrouter" "together" "venice" "vercel-ai-gateway" "zenmux" {
+		family "m2" {
+			thinking-efforts "low" "medium" "high"
+		}
 	}
-	on "aimlapi" "alibaba-coding-plan" "coreweave" "fireworks" "friendli" "huggingface" "kilo" "minimax-code" "minimax-code-cn" "nanogpt" "novita" "nvidia" "ollama-cloud" "openrouter" "together" "venice" "wafer-serverless" "zenmux" {
-		thinking-mode "effort"
+	on "alibaba-coding-plan" "minimax-code" "minimax-code-cn" "wafer-serverless" {
+		supports-developer-role #false
 	}
 	on "amazon-bedrock" "ollama-cloud" {
 		thinking-efforts "minimal" "low" "medium" "high"
 	}
+	on "kilo" "novita" {
+		family "m1" {
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		}
+	}
 	on "minimax" "minimax-cn" "vercel-ai-gateway" {
 		thinking-mode "anthropic-adaptive"
+		family "m3" {
+			thinking-efforts "low" "medium" "high"
+		}
+	}
+	on "minimax-code" "minimax-code-cn" {
+		supports-reasoning-effort #false
+		supports-store #false
 	}
 	on "minimax-code" "minimax-code-cn" "wafer-serverless" {
 		reasoning-content-field "reasoning_content"

@@ -1,0 +1,9 @@
+// Provider-wire compat for "openai-codex"; regenerated from the frozen census using deployment contract selectors.
+
+provider "openai-codex" {
+	class "openai" {
+		revision ">=5.3 <5.7" {
+			thinking-mode "effort"
+		}
+	}
+}

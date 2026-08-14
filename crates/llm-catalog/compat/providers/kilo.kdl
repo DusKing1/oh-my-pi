@@ -1,37 +1,47 @@
-// Deployment compat for provider "kilo": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "kilo"; regenerated from the frozen census using deployment contract selectors.
 
 provider "kilo" {
+	thinking-mode "effort"
+	class "glm" {
+		family "turbo" {
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		}
+	}
 	class "unknown" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-		thinking-mode "effort"
 	}
-	models "arcee-ai/trinity-large-thinking" "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free" "qwen/qwen3-max" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "*thinking-2507" "arcee-ai/trinity-large-thinking" \
+		"nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free" {
 		thinking-requires-effort #true
 	}
-	models "deepseek/deepseek-chat-v3.1" "deepseek/deepseek-r1" "deepseek/deepseek-r1-0528" "deepseek/deepseek-v3.1-terminus" \
-		"deepseek/deepseek-v3.2" "deepseek/deepseek-v3.2-exp" "deepseek/deepseek-v4-pro" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "deepseek/deepseek-chat-v3.1" {
+		requires-reasoning-content-for-all-assistant-turns #true
 		thinking-efforts "high" "max"
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "deepseek/deepseek-r1" "deepseek/deepseek-r1-0528" "deepseek/deepseek-v3.1-terminus" \
+		"deepseek/deepseek-v3.2" "deepseek/deepseek-v3.2-exp" "deepseek/deepseek-v4-flash" \
+		"deepseek/deepseek-v4-flash-0731" "deepseek/deepseek-v4-flash:discounted" \
+		"~deepseek/deepseek-v4-flash-latest" {
 		requires-reasoning-content-for-all-assistant-turns #true
 	}
-	models "deepseek/deepseek-v4-flash" "deepseek/deepseek-v4-flash-0731" {
-		thinking-efforts "low" "high" "max"
-		requires-reasoning-content-for-all-assistant-turns #true
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "openai/gpt-5.1-codex" "openai/gpt-5.1-codex-max" {
+		thinking-efforts "minimal" "low" "medium" "high"
 	}
-	models "minimax/minimax-m1" "minimax/minimax-m3" "moonshotai/kimi-k2-thinking" "moonshotai/kimi-k2.5" \
-		"moonshotai/kimi-k2.6" "moonshotai/kimi-k2.7-code" "openai/o1" "openai/o3" \
-		"openai/o3-deep-research" "openai/o3-mini" "openai/o3-mini-high" "openai/o3-pro" \
-		"openai/o4-mini" "openai/o4-mini-deep-research" "openai/o4-mini-high" "z-ai/glm-4.5" \
-		"z-ai/glm-4.5-air" "z-ai/glm-4.5v" "z-ai/glm-4.6" "z-ai/glm-4.6v" \
-		"z-ai/glm-4.7" "z-ai/glm-4.7-flash" "z-ai/glm-5" "z-ai/glm-5.1" \
-		"~google/gemini-flash-latest" "~google/gemini-pro-latest" "~moonshotai/kimi-latest" "~openai/gpt-latest" \
-		"~openai/gpt-mini-latest" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "openai/gpt-5.1-codex-mini" {
+		thinking-efforts "medium" "high"
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "z-ai/glm-4.5*" "z-ai/glm-4.7*" "~google*" "~openai*" "z-ai/glm-4.6" "z-ai/glm-4.6v" \
+		"z-ai/glm-5" "z-ai/glm-5.1" "~moonshotai/kimi-latest" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "z-ai/glm-5.2" {
 		thinking-efforts "minimal" "low" "medium" "high" "max"
-	}
-	models "~deepseek/deepseek-v4-flash-latest" {
-		requires-reasoning-content-for-all-assistant-turns #true
 	}
 }

@@ -16,6 +16,7 @@ pub mod pricing;
 pub mod provider;
 pub mod resolve;
 pub mod snapshot;
+pub mod taxonomy;
 pub mod thinking;
 
 pub use capability::*;
@@ -30,6 +31,7 @@ pub use pricing::*;
 pub use provider::*;
 pub use resolve::*;
 pub use snapshot::*;
+pub use taxonomy::*;
 pub use thinking::*;
 
 #[cfg(test)]

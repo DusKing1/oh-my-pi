@@ -122,6 +122,8 @@ string_id!(/// Identifies one normalized selectable model deployment.
 	ModelKey);
 string_id!(/// Identifies a normalized model class (vendor lineage).
 	ClassId);
+string_id!(/// Identifies a product family within a class (for example flash, sonnet, or opus).
+	FamilyId);
 string_id!(/// Identifies an interned authentication specification.
 	AuthSpecId);
 string_id!(/// Identifies an interned public OAuth flow specification.

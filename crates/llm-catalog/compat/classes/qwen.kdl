@@ -1,17 +1,24 @@
-// Model-lineage compat for the "qwen" class (census: model-class predicates in pi
-// dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
+// Model-lineage compat for "qwen"; regenerated from the frozen census using class taxonomy selectors.
 
 class "qwen" {
-	models "Qwen/Qwen3-235B-A22B-Thinking-2507" "alibaba/qwen3-235b-a22b-thinking" "alibaba/qwen3-next-80b-a3b-thinking" "alibaba/qwen3-vl-thinking" \
-		"qwen/qwen3-235b-a22b-thinking-2507" "qwen/qwen3-30b-a3b-thinking-2507" "qwen/qwen3-next-80b-a3b-thinking" "qwen/qwen3-omni-30b-a3b-thinking" \
-		"qwen/qwen3-vl-235b-a22b-thinking" "qwen/qwen3-vl-30b-a3b-thinking" "qwen/qwen3-vl-8b-thinking" "qwen3-235b-a22b-thinking-2507" {
-		thinking-requires-effort #true
+	on "aiand" "aimlapi" "alibaba-coding-plan" "alibaba-token-plan" "amazon-bedrock" "cerebras" \
+		"coreweave" "crofai" "friendli" "groq" "huggingface" "kilo" "nanogpt" "novita" "ollama-cloud" \
+		"opencode-go" "opencode-zen" "ovhai" "scaleway" "synthetic" "together" "umans" "venice" \
+		"vercel-ai-gateway" "wafer-serverless" "zenmux" {
+		thinking-format "qwen"
 	}
-	on "aiand" "aimlapi" "alibaba-coding-plan" "alibaba-token-plan" "coreweave" "fireworks" "groq" "huggingface" "kilo" "nanogpt" "novita" "nvidia" "ollama-cloud" "openrouter" "ovhai" "scaleway" "synthetic" "together" "venice" "wafer-serverless" "zenmux" {
-		thinking-mode "effort"
-	}
-	on "aiand" "aimlapi" "alibaba-coding-plan" "amazon-bedrock" "coreweave" "groq" "huggingface" "kilo" "nanogpt" "novita" "nvidia" "ollama-cloud" "openrouter" "ovhai" "scaleway" "synthetic" "together" "venice" "wafer-serverless" "zenmux" {
+	on "aiand" "aimlapi" "alibaba-coding-plan" "amazon-bedrock" "coreweave" "groq" "huggingface" \
+		"kilo" "nanogpt" "novita" "nvidia" "ollama-cloud" "openrouter" "ovhai" "scaleway" "synthetic" \
+		"together" "venice" "wafer-serverless" "zenmux" {
 		thinking-efforts "minimal" "low" "medium" "high"
+	}
+	on "aimlapi" "coreweave" "venice" "zenmux" {
+		revision ">=3.32 <32.1" {
+			thinking-requires-effort #true
+		}
+	}
+	on "alibaba-coding-plan" "alibaba-token-plan" "wafer-serverless" {
+		supports-developer-role #false
 	}
 	on "amazon-bedrock" "umans" "vercel-ai-gateway" {
 		thinking-mode "budget"
@@ -19,16 +26,9 @@ class "qwen" {
 	on "fireworks" "umans" "vercel-ai-gateway" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}
-	// Census additions (not in the archived 312-model oracle slice):
-	// pi-openai-chat:015 — `isAlibaba || isQwen` => thinkingFormat "qwen"
-	// (top-level enable_thinking); host-specific overrides below.
-	thinking-format "qwen"
-	// pi-openai-chat:013 — `isQwen && isNvidiaNim` => chat_template_kwargs form.
-	on "nvidia" {
-		thinking-format "qwen-chat-template"
-	}
-	// pi-openai-chat:014 — `isQwen && isFireworks` => reasoning_effort form.
-	on "fireworks" {
-		thinking-format "openai"
+	on "kilo" "nanogpt" "novita" "nvidia" "openrouter" {
+		revision ">=3 <3.4" {
+			thinking-requires-effort #true
+		}
 	}
 }

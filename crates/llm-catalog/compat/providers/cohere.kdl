@@ -1,14 +1,15 @@
-// Deployment compat for provider "cohere": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "cohere"; regenerated from the frozen census using deployment contract selectors.
 
 provider "cohere" {
 	max-tokens-field "max_tokens"
 	supports-usage-in-streaming #true
-	class "unknown" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-		thinking-mode "effort"
-	}
+	thinking-mode "effort"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "command-a-reasoning-08-2025" {
 		thinking-requires-effort #true
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "north-mini-code-1-0" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}
 }

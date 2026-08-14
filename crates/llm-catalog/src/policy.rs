@@ -222,6 +222,12 @@ policy_enum!(/// Additional provider-specific thinking text representation.
 		#[serde(rename = "qwen-chat-template")]
 		#[strum(to_string = "qwen-chat-template", serialize = "qwen-chat-template")]
 		QwenChatTemplate,
+		/// Qwen's native reasoning text.
+		Qwen,
+		/// OpenRouter reasoning text.
+		#[serde(rename = "openrouter")]
+		#[strum(to_string = "openrouter", serialize = "openrouter")]
+		OpenRouter,
 	}
 );
 

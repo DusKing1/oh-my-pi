@@ -26,17 +26,30 @@
       "id": "catalog.models.normalized.v1",
       "path": "models.normalized.json",
       "provenance": {
-        "input": "archive/llm-legacy/llm-catalog/models.json.zst",
+        "baseline": "52b111a4abc8d76064abc4f58afda931edee9833:crates/llm-catalog/models.json.zst",
+        "input": "models.json.zst",
         "kind": "archived-loader-projection",
-        "loader": "archive/llm-legacy/llm-catalog/src/models.rs::load_catalog_zstd",
+        "loader": "52b111a4abc8d76064abc4f58afda931edee9833:crates/llm-catalog/src/models.rs::load_catalog_zstd",
         "ordering": [
           "provider",
           "model"
-        ]
+        ],
+        "projector": "project_normalized.rs"
       },
       "secret_free": true,
       "sha256": "d2d69608f4bb67df61bf38f98c92b9124686a5889339fc34c233612633d1fe08",
-      "source": "archive/llm-legacy/llm-catalog/src/models.rs::load_catalog_zstd"
+      "source": "52b111a4abc8d76064abc4f58afda931edee9833:crates/llm-catalog/src/models.rs"
+    },
+    {
+      "id": "catalog.models.normalized.projector.v1",
+      "path": "project_normalized.rs",
+      "provenance": {
+        "baseline_revision": "52b111a4abc8d76064abc4f58afda931edee9833",
+        "kind": "archived-loader-projector"
+      },
+      "secret_free": true,
+      "sha256": "f150a5ed102ca4f647e8056a1f5c8b921fbbbf83aa7c99d4ad15176709724cf4",
+      "source": "52b111a4abc8d76064abc4f58afda931edee9833:crates/llm-catalog/src/models.rs::load_catalog_zstd"
     },
     {
       "id": "catalog.providers.source.v1",

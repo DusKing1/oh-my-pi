@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use omp_core::{Str, hex};
 use serde::{Deserialize, Serialize};
-use serde_json::{Number, value::RawValue};
+use serde_json::{Map, Number, Value, value::RawValue};
 use sha2::{Digest, Sha256};
 use smallvec::SmallVec;
 
@@ -17,6 +17,7 @@ use crate::{
 		TokenizationCapabilities, TokenizationFeatureBits, ToolCapabilities, ToolFeatureBits,
 		TranscriptionCapabilities, TranscriptionFeatureBits, VideoCapabilities, VideoFeatureBits,
 	},
+	cascade::{AxisMap, CascadeError, CompatCascade, ResolveTarget},
 	classify::{ClassificationInput, ClassificationPhase, ModelClassification, classify},
 	discover::DiscoveryDefaults,
 	id::{
@@ -739,39 +740,6 @@ enum SourceOAuthKind {
 	CustomExchange,
 }
 
-#[derive(Debug, Deserialize)]
-struct ReviewedCompatDocument {
-	profiles: Vec<ReviewedCompatProfile>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ReviewedCompatProfile {
-	models: Vec<Str>,
-	shape:  ReviewedCompatShape,
-}
-
-#[derive(Debug, Deserialize)]
-struct ReviewedCompatShape {
-	#[serde(default, rename = "wire/requires_reasoning_content_for_all_assistant_turns")]
-	requires_reasoning_content_for_all_assistant_turns: bool,
-}
-
-fn reviewed_reasoning_content_models() -> Result<BTreeSet<Str>, CompileError> {
-	let document: ReviewedCompatDocument = serde_json::from_str(include_str!(
-		"../../../fixtures/llm-oracle/catalog-policy/compat-profiles.json"
-	))?;
-	Ok(document
-		.profiles
-		.into_iter()
-		.filter(|profile| {
-			profile
-				.shape
-				.requires_reasoning_content_for_all_assistant_turns
-		})
-		.flat_map(|profile| profile.models)
-		.collect())
-}
-
 /// Stable alias emitted by normalization.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CatalogAlias {
@@ -857,6 +825,9 @@ pub enum CompileError {
 	/// Compressed model source could not be decoded.
 	#[error("model oracle compression is invalid: {0}")]
 	Compression(#[from] std::io::Error),
+	/// Compatibility cascade parsing or resolution failed.
+	#[error("compatibility cascade is invalid: {0}")]
+	Cascade(#[from] CascadeError),
 	/// Source data violated a catalog invariant.
 	#[error("catalog invariant failed: {0}")]
 	Invariant(Str),
@@ -901,6 +872,7 @@ fn compile_with_oauth(
 	source: CatalogSource,
 	oauth_toml: &str,
 ) -> Result<CompiledCatalog, CompileError> {
+	let cascade = CompatCascade::bundled()?;
 	let CatalogSource { providers: provider_sources, models: mut model_sources } = source;
 	let provider_facets = provider_sources
 		.iter()
@@ -933,7 +905,6 @@ fn compile_with_oauth(
 		&mut header_profiles,
 		&provider_routes,
 	)?;
-	let reviewed_reasoning_content = reviewed_reasoning_content_models()?;
 	let mut thinking_policy_table = BTreeMap::new();
 	let (models, aliases) = compile_models(
 		model_sources,
@@ -942,7 +913,7 @@ fn compile_with_oauth(
 		&mut wire_policy_table,
 		&mut thinking_policy_table,
 		&provider_facets,
-		&reviewed_reasoning_content,
+		&cascade,
 	)?;
 	let census = CompilerCensus {
 		raw_models,
@@ -3123,7 +3094,7 @@ fn compile_models(
 	policies: &mut BTreeMap<WirePolicyId, WirePolicy>,
 	thinking_policies: &mut BTreeMap<crate::id::ThinkingPolicyId, ThinkingPolicy>,
 	provider_facets: &BTreeMap<Str, Vec<SourceFacet>>,
-	reviewed_reasoning_content: &BTreeSet<Str>,
+	cascade: &CompatCascade,
 ) -> Result<(Vec<ModelSpec>, Vec<CatalogAlias>), CompileError> {
 	let mut output = Vec::new();
 	let mut aliases = Vec::new();
@@ -3233,29 +3204,37 @@ fn compile_models(
 				facets,
 				capability_override.map(|override_| override_.correction),
 			);
-			let reviewed_model_key = Str::from(format!("{provider}/{logical_id}"));
-			let reasoning_content_overlay = reviewed_reasoning_content.contains(&reviewed_model_key);
-			let mut wire_policy = if let Some(overrides) = first.1.compat.as_ref() {
-				compile_wire_policy(WirePolicy::overrides(), overrides)?
-			} else if reasoning_content_overlay {
-				WirePolicy::overrides()
+			let resolved = cascade.resolve(&ResolveTarget {
+				provider:  provider.as_str(),
+				class:     class.as_str(),
+				family:    first.2.family.as_ref().map(|family| family.as_str()),
+				revision:  first.2.revision,
+				model:     logical_id.as_str(),
+				reasoning: members.iter().any(|(_, row, _)| row.thinking.is_some()),
+			})?;
+			let has_wire_overrides = !resolved.wire.is_empty();
+			let wire_overrides = axis_map_to_source_wire_policy(resolved.wire)?;
+			let thinking_profile = if resolved.thinking.is_empty() {
+				None
+			} else {
+				Some(axis_map_to_thinking_policy(resolved.thinking)?)
+			};
+			let mut wire_policy = if has_wire_overrides {
+				compile_wire_policy(WirePolicy::overrides(), &wire_overrides)?
 			} else {
 				WirePolicy::baseline()
 			};
-			if reasoning_content_overlay
-				&& wire_policy
-					.reasoning
-					.requires_content_for_all_assistant_turns
-					.is_none()
-			{
-				wire_policy
-					.reasoning
-					.requires_content_for_all_assistant_turns = Some(true);
-			}
-			if first.1.compat.is_some() {
-				policies
-					.entry(wire_policy.content_id())
-					.or_insert_with(|| wire_policy.clone());
+			// Source-model compat remains a migration invariant until the upstream
+			// oracle drops the field.
+			for (wire, row, _) in &members {
+				if let Some(legacy) = row.compat.as_ref() {
+					let with_legacy = compile_wire_policy(wire_policy.clone(), legacy)?;
+					if with_legacy != wire_policy {
+						return Err(CompileError::Invariant(Str::from(format!(
+							"legacy source compat disagrees with cascade for `{provider}/{wire}`"
+						))));
+					}
+				}
 			}
 			if let Some(enabled) = first.1.cursor_max_mode {
 				wire_policy.context.extended_mode = Some(ExtendedContextMode::from_enabled(enabled));
@@ -3293,7 +3272,7 @@ fn compile_models(
 			policies
 				.entry(wire_policy_id.clone())
 				.or_insert(wire_policy);
-			let (thinking, mut thinking_routing) = compile_thinking(&members)?;
+			let (thinking, mut thinking_routing) = compile_thinking(&members, thinking_profile)?;
 			if let Some(mode) = first.1.reasoning_mode.as_deref() {
 				thinking_routing.reasoning_mode =
 					Some(mode.parse::<ReasoningMode>().map_err(|_| {
@@ -3449,6 +3428,27 @@ fn collapsible_groups(classified: &BTreeMap<Str, ModelClassification>) -> BTreeS
 		}
 	}
 	result
+}
+
+fn axis_map_to_source_wire_policy(source: AxisMap) -> Result<SourceWirePolicy, CompileError> {
+	let mut object = Map::new();
+	for (key, value) in source {
+		let key = match key.as_str() {
+			"supports_usage_in_streaming" => "usage_in_streaming",
+			"supports_forced_tool_choice" => "forced_tool_choice",
+			key => key,
+		};
+		object.insert(key.to_owned(), value);
+	}
+	Ok(serde_json::from_value(Value::Object(object))?)
+}
+
+fn axis_map_to_thinking_policy(source: AxisMap) -> Result<ThinkingPolicy, CompileError> {
+	let mut object = Map::new();
+	for (key, value) in source {
+		object.insert(key.as_str().to_owned(), value);
+	}
+	Ok(serde_json::from_value(Value::Object(object))?)
 }
 
 fn compile_wire_policy(
@@ -3618,6 +3618,7 @@ where
 
 fn compile_thinking(
 	members: &[(Str, SourceModelRecord, ModelClassification)],
+	profile: Option<ThinkingPolicy>,
 ) -> Result<(Option<ThinkingPolicy>, ThinkingRouting), CompileError> {
 	let source = members.iter().find_map(|(_, row, _)| row.thinking.as_ref());
 	let mut classified_efforts: SmallVec<ThinkingEffort, 6> = members
@@ -3627,38 +3628,11 @@ fn compile_thinking(
 	classified_efforts.sort();
 	classified_efforts.dedup();
 	let tier_collapsed = classified_efforts.len() >= 2;
-	let profile = if let Some(source) = source {
-		let mut efforts: SmallVec<ThinkingEffort, 6> = if tier_collapsed {
-			classified_efforts.clone()
-		} else {
-			source
-				.efforts
-				.iter()
-				.copied()
-				.filter(|effort| *effort != ThinkingEffort::Off)
-				.collect()
-		};
-		efforts.sort();
-		efforts.dedup();
-		let mut profile = ThinkingPolicy {
-			mode: source.mode,
-			efforts,
-			default_level: source
-				.default_level
-				.filter(|effort| *effort != ThinkingEffort::Off),
-			effort_budgets: source.effort_budgets.clone(),
-			supports_display: source.supports_display,
-			suppress_when_off: source.suppress_when_off,
-			requires_effort: source.requires_effort,
-		};
-		profile.effort_budgets.remove(&ThinkingEffort::Off);
+	if let Some(profile) = &profile {
 		profile.validate().map_err(|error| {
 			CompileError::Invariant(Str::from(format!("invalid thinking profile: {error}")))
 		})?;
-		Some(profile)
-	} else {
-		None
-	};
+	}
 	let mut routing = ThinkingRouting::default();
 	if !tier_collapsed && let Some(thinking) = source {
 		routing.effort_map = thinking.effort_map.clone();

@@ -1,38 +1,83 @@
-// Model-lineage compat for the "kimi" class (census: model-class predicates in pi
-// dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
+// Model-lineage compat for "kimi"; regenerated from the frozen census using class taxonomy selectors.
 
 class "kimi" {
-	models "Kimi-K2.6" "Kimi-K2.7-Code" "Kimi-K3" "kimi-for-coding" \
-		"kimi-for-coding-highspeed" "kimi-k3-fast" {
-		reasoning-content-field "reasoning_content"
-		thinking-format "zai"
+	on "aiand" "baseten" "coreweave" "fireworks" "huggingface" "kilo" "nanogpt" "novita" \
+		"opencode-go" "opencode-zen" "together" "vercel-ai-gateway" "zenmux" {
+		family "k2.7-code" {
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		}
 	}
-	models "Kimi-K2.6" "Kimi-K2.7-Code" "kimi-for-coding" "kimi-for-coding-highspeed" \
-		"kimi-k2-thinking-turbo" "kimi-k2.7-code-highspeed" "moonshotai/kimi-k2.6:free" "moonshotai/kimi-k2.7-code:batch" {
-		thinking-efforts "minimal" "low" "medium" "high"
+	on "aiand" "cloudflare-ai-gateway" "coreweave" "cursor" "fireworks" "github-copilot" \
+		"huggingface" "kilo" "moonshot" "nanogpt" "novita" "ollama-cloud" "opencode-go" "opencode-zen" \
+		"openrouter" "synthetic" "together" "venice" "vercel-ai-gateway" "wafer-serverless" "zenmux" {
+		family "k3" {
+			thinking-default-level "max"
+			thinking-efforts "low" "high" "max"
+			thinking-requires-effort #true
+		}
 	}
-	models "Kimi-K3" "TEE/kimi-k3" "hf:moonshotai/Kimi-K3" "kimi-k2-thinking" \
-		"kimi-k2-thinking-turbo" "kimi-k3" "kimi-k3-fast" "kimi-k3-fast-api" \
-		"moonshotai/Kimi-K2-Thinking" "moonshotai/Kimi-K3" "moonshotai/kimi-k2-thinking" "moonshotai/kimi-k2-thinking-turbo" \
-		"moonshotai/kimi-k3" "moonshotai/kimi-k3-fast" "moonshotai/kimi-k3-free" {
-		thinking-requires-effort #true
+	on "alibaba-coding-plan" "cursor" "kimi-code" "moonshot" "ollama-cloud" "openrouter" {
+		family "k2.5" {
+			thinking-efforts "minimal" "low" "medium" "high"
+		}
 	}
-	models "*kimi-k3*" {
-		thinking-default-level "max"
-		thinking-efforts "low" "high" "max"
+	on "alibaba-coding-plan" "github-copilot" "wafer-serverless" {
+		supports-developer-role #false
 	}
-	models "TEE/kimi-k2.5" "kimi-k2" "kimi-k2-5" "kimi-k2-6" \
-		"kimi-k2-7-code" "kimi-k2.5-free" "kimi-k2.6-fast" "kimi-k2.7-code-fast" \
-		"moonshotai/Kimi-K2-Thinking" "moonshotai/Kimi-K2.5" "moonshotai/Kimi-K2.6" "moonshotai/Kimi-K2.7-Code" \
-		"moonshotai/kimi-k2-thinking-turbo" "moonshotai/kimi-k2-turbo" "moonshotai/kimi-k2.5:thinking" "moonshotai/kimi-k2.6:thinking" \
-		"moonshotai/kimi-k2.7-code-free" "moonshotai/kimi-k2.7-code-highspeed" "moonshotai/kimi-latest" "workers-ai/@cf/moonshotai/kimi-k2.5" \
-		"workers-ai/@cf/moonshotai/kimi-k2.6" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	on "baseten" "cloudflare-ai-gateway" "coreweave" "crofai" "fireworks" "huggingface" "kilo" \
+		"nanogpt" "novita" "nvidia" "opencode-go" "opencode-zen" "together" "vercel-ai-gateway" "zenmux" {
+		family "k2.6" {
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		}
 	}
-	on "aiand" "alibaba-coding-plan" "baseten" "coreweave" "crofai" "cursor" "firepass" "fireworks" "github-copilot" "huggingface" "kilo" "kimi-code" "moonshot" "nanogpt" "novita" "nvidia" "ollama-cloud" "opencode" "opencode-go" "opencode-zen" "openrouter" "synthetic" "together" "venice" "wafer-serverless" "zenmux" {
-		thinking-mode "effort"
+	on "cloudflare-ai-gateway" "coreweave" "crofai" "fireworks" "huggingface" "kilo" "nanogpt" \
+		"novita" "nvidia" "opencode" "opencode-go" "opencode-zen" "together" "vercel-ai-gateway" \
+		"zenmux" {
+		family "k2.5" {
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		}
 	}
 	on "cloudflare-ai-gateway" "vercel-ai-gateway" {
 		thinking-mode "budget"
+	}
+	on "cursor" "github-copilot" "moonshot" "ollama-cloud" "openrouter" "wafer-serverless" {
+		family "k2.7-code" {
+			thinking-efforts "minimal" "low" "medium" "high"
+		}
+	}
+	on "huggingface" "moonshot" "nanogpt" "novita" "nvidia" "ollama-cloud" "zenmux" {
+		family "k2" {
+			thinking-requires-effort #true
+		}
+	}
+	on "huggingface" "nanogpt" "novita" "nvidia" "opencode-zen" "venice" "vercel-ai-gateway" "zenmux" {
+		family "k2" {
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		}
+	}
+	on "kilo" "moonshot" "openrouter" "vercel-ai-gateway" "zenmux" {
+		family "k2-thinking" {
+			thinking-requires-effort #true
+		}
+	}
+	on "kilo" "vercel-ai-gateway" "zenmux" {
+		family "k2-thinking" {
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		}
+	}
+	on "moonshot" "ollama-cloud" {
+		family "k2" {
+			thinking-efforts "minimal" "low" "medium" "high"
+		}
+	}
+	on "moonshot" "ollama-cloud" "openrouter" "wafer-serverless" {
+		family "k2.6" {
+			thinking-efforts "minimal" "low" "medium" "high"
+		}
+	}
+	on "moonshot" "openrouter" {
+		family "k2-thinking" {
+			thinking-efforts "minimal" "low" "medium" "high"
+		}
 	}
 }

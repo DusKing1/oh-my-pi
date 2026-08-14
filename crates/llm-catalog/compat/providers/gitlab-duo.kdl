@@ -1,20 +1,19 @@
-// Deployment compat for provider "gitlab-duo": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "gitlab-duo"; regenerated from the frozen census using deployment contract selectors.
 
 provider "gitlab-duo" {
-	models "claude-haiku-4-5-20251001" "claude-sonnet-4-5-20250929" {
-		thinking-mode "budget"
+	class "openai" {
+		revision ">=5 <5.2" {
+			thinking-mode "effort"
+		}
 	}
-	models "claude-opus-4-5-20251101" {
-		thinking-mode "anthropic-budget-effort"
-	}
-	models "duo-chat-gpt-5-*" {
-		thinking-efforts "minimal" "low" "medium" "high"
-		thinking-mode "effort"
-	}
-	models "duo-chat-haiku-4-5" "duo-chat-opus-4-5" "duo-chat-opus-4-6" "duo-chat-sonnet-4-5" \
-		"duo-chat-sonnet-4-6" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "*5" "*6" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 		thinking-mode "budget"
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "duo-chat-gpt*" {
+		thinking-efforts "minimal" "low" "medium" "high"
+		thinking-mode "effort"
 	}
 }

@@ -1,10 +1,10 @@
-// Deployment compat for provider "agnes-plan": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "agnes-plan"; regenerated from the frozen census using deployment contract selectors.
 
 provider "agnes-plan" {
-	thinking-efforts "minimal" "low" "medium" "high"
-	thinking-mode "effort"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "agnes-2.0-flash" {
+		thinking-efforts "minimal" "low" "medium" "high"
 		thinking-format "qwen-chat-template"
+		thinking-mode "effort"
 	}
 }

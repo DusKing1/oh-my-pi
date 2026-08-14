@@ -1,18 +1,27 @@
-// Deployment compat for provider "openai": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "openai"; regenerated from the frozen census using deployment contract selectors.
 
 provider "openai" {
+	thinking-mode "effort"
 	class "unknown" {
-		thinking-efforts "low" "medium" "high" "xhigh" "max"
-		thinking-mode "effort"
+		revision ">=5.6 <5.7" {
+			reasoning-disable-mode "none-effort"
+			thinking-efforts "low" "medium" "high" "xhigh" "max"
+		}
 	}
-	models "daybreak-blue-latest" "daybreak-red-latest" "gpt-5.6-cyber" {
-		reasoning-disable-mode "none-effort"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "codex-mini-latest" "gpt-realtime-2.1" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}
-	models "gpt-5.1" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "gpt-5.1-codex" "gpt-5.1-codex-max" {
 		thinking-efforts "minimal" "low" "medium" "high"
 	}
-	models "gpt-5.2" "gpt-5.2-codex" "gpt-5.3-codex" {
-		thinking-efforts "low" "medium" "high" "xhigh"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "gpt-5.1-codex-mini" {
+		thinking-efforts "medium" "high"
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "gpt-5.6-cyber" {
+		reasoning-disable-mode "none-effort"
 	}
 }

@@ -1,14 +1,15 @@
-// Deployment compat for provider "coreweave": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "coreweave"; regenerated from the frozen census using deployment contract selectors.
 
 provider "coreweave" {
+	thinking-mode "effort"
 	class "unknown" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-		thinking-mode "effort"
 	}
-	models "deepseek-ai/DeepSeek-V4-Flash-0731" {
-		requires-reasoning-content-for-all-assistant-turns #true
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "zai-org/GLM-5.1" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "zai-org/GLM-5.2" {
 		thinking-efforts "minimal" "low" "medium" "high" "max"
 	}

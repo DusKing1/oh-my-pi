@@ -1,28 +1,34 @@
-// Deployment compat for provider "novita": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "novita"; regenerated from the frozen census using deployment contract selectors.
 
 provider "novita" {
+	thinking-mode "effort"
+	class "glm" {
+		family "turbo" {
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		}
+	}
 	class "unknown" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-		thinking-mode "effort"
 	}
-	models "deepseek/deepseek-r1" "deepseek/deepseek-r1-0528" "deepseek/deepseek-v3.1-terminus" "deepseek/deepseek-v3.2" \
-		"deepseek/deepseek-v3.2-exp" "deepseek/deepseek-v4-pro" {
-		thinking-efforts "high" "max"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "deepseek/deepseek-r1/community" {
 		requires-reasoning-content-for-all-assistant-turns #true
-	}
-	models "deepseek/deepseek-r1-distill-llama-70b" {
-		requires-reasoning-content-for-all-assistant-turns #true
-	}
-	models "deepseek/deepseek-v3.1" {
 		thinking-efforts "high" "max"
 	}
-	models "deepseek/deepseek-v4-flash" "deepseek/deepseek-v4-flash-0731" {
-		thinking-efforts "low" "high" "max"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "deepseek/deepseek-v3.*" {
 		requires-reasoning-content-for-all-assistant-turns #true
 	}
-	models "minimax/minimax-m3" "moonshotai/kimi-k2-thinking" "moonshotai/kimi-k2.5" "moonshotai/kimi-k2.6" \
-		"moonshotai/kimi-k2.7-code" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "qwen/qwen3-235b-a22b-thinking-2507" {
+		thinking-requires-effort #true
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "zai-org/glm-4*" "zai-org/glm-5" "zai-org/glm-5.1" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "zai-org/glm-5.2" {
+		thinking-efforts "minimal" "low" "medium" "high" "max"
 	}
 }

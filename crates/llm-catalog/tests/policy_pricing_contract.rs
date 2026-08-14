@@ -39,8 +39,7 @@ fn source_model() -> SourceModelRecord {
 			"applyPatchToolType":"freeform",
 			"supportsComputerUse":false,
 			"supportsComputerUseConfig":false,
-			"omitMaxOutputTokens":true,
-			"compat":{"supportsStore":true}
+			"omitMaxOutputTokens":true
 		}"#,
 	)
 	.expect("typed model source")
@@ -49,10 +48,10 @@ fn source_model() -> SourceModelRecord {
 #[test]
 fn compiler_preserves_policy_provenance_interning_extended_context_and_wire_routing() {
 	let compiled = compile(CatalogSource {
-		providers: BTreeMap::from([(Str::from("fixture-provider"), source_provider())]),
+		providers: BTreeMap::from([(Str::from("cursor"), source_provider())]),
 		models:    BTreeMap::from([(
-			Str::from("fixture-provider"),
-			BTreeMap::from([(Str::from("logical-model"), source_model())]),
+			Str::from("cursor"),
+			BTreeMap::from([(Str::from("gpt-5.1"), source_model())]),
 		)]),
 	})
 	.expect("fixture catalog compiles");
@@ -63,7 +62,7 @@ fn compiler_preserves_policy_provenance_interning_extended_context_and_wire_rout
 		.iter()
 		.find(|policy| policy.content_id() == model.wire_policy)
 		.expect("model wire policy is interned by its content id");
-	assert_eq!(policy.context.supports_store, Some(true));
+	assert_eq!(policy.context.supports_store, None);
 	assert_eq!(policy.context.extended_mode, Some(ExtendedContextMode::Extended));
 	assert_eq!(policy.context.max_output_tokens, Some(MaxOutputTokensEmission::Omit),);
 	assert_eq!(policy.tool.apply_patch, Some(ApplyPatchWireKind::Freeform));

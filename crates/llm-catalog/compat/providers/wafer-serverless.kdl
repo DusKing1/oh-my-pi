@@ -1,28 +1,31 @@
-// Deployment compat for provider "wafer-serverless": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "wafer-serverless"; regenerated from the frozen census using deployment contract selectors.
 
 provider "wafer-serverless" {
+	thinking-mode "effort"
 	class "glm" {
-		supports-developer-role #false
+		reasoning-content-field "reasoning_content"
 	}
 	class "kimi" {
-		supports-developer-role #false
-	}
-	class "minimax" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-		supports-developer-role #false
+		reasoning-content-field "reasoning_content"
+		thinking-format "zai"
 	}
 	class "qwen" {
-		supports-developer-role #false
+		revision ">=3.6.35 <3.8" {
+			reasoning-content-field "reasoning_content"
+		}
 	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "DeepSeek-V4-Flash-0731-Fast" "DeepSeek-V4-Pro" {
 		reasoning-content-field "reasoning_content"
 		supports-developer-role #false
 	}
-	models "Qwen3.6-35B-A3B" "qwen3.7-max" {
-		reasoning-content-field "reasoning_content"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "GLM-*" {
+		thinking-efforts "minimal" "low" "medium" "high"
+		thinking-format "zai"
 	}
-	models "deepseek-v4-flash" {
-		thinking-efforts "low" "high" "max"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "glm5*" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}
 }

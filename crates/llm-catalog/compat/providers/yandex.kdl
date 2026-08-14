@@ -1,13 +1,12 @@
-// Deployment compat for provider "yandex": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "yandex"; regenerated from the frozen census using deployment contract selectors.
 
 provider "yandex" {
-	class "unknown" {
-		thinking-mode "effort"
-	}
+	thinking-mode "effort"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "yandexgpt" "yandexgpt-lite" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "yandexgpt-5-pro" {
 		thinking-efforts "minimal" "low" "medium" "high"
 	}

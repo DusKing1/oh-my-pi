@@ -1,69 +1,73 @@
-// Deployment compat for provider "openrouter": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "openrouter"; regenerated from the frozen census using deployment contract selectors.
 
-provider "openrouter" priority=10 {
-	// pi-openai-chat:012 — `isOpenRouter` => nested reasoning object wire
-	// format for every model on this host; priority beats the qwen class
-	// default (pi checks the host before the class fallback).
+provider "openrouter" {
 	thinking-format "openrouter"
-	class "amazon" {
-		thinking-efforts "minimal" "low" "medium" "high"
+	thinking-mode "effort"
+	class "deepseek" {
+		family "r1" {
+			thinking-efforts "high"
+		}
+		family "v3" {
+			thinking-efforts "high"
+		}
 	}
-	class "baidu" {
-		thinking-efforts "minimal" "low" "medium" "high"
+	class "minimax" {
+		family "m3" {
+			thinking-efforts "minimal" "low" "medium" "high"
+		}
 	}
-	class "cohere" {
-		thinking-efforts "minimal" "low" "medium" "high"
-	}
-	class "meta" {
-		thinking-efforts "minimal" "low" "medium" "high"
+	class "openai" {
+		family "o-series" {
+			thinking-efforts "minimal" "low" "medium" "high"
+		}
 	}
 	class "stepfun" {
-		thinking-efforts "minimal" "low" "medium" "high"
-		supports-tool-choice #false
+		family "step" {
+			supports-tool-choice #false
+			thinking-efforts "minimal" "low" "medium" "high"
+		}
 	}
 	class "unknown" {
 		thinking-efforts "minimal" "low" "medium" "high"
-		thinking-mode "effort"
 	}
-	models "amazon/nova-lite-v1" "amazon/nova-micro-v1" "amazon/nova-premier-v1" "amazon/nova-pro-v1" \
-		"arcee-ai/trinity-large-preview" "arcee-ai/trinity-large-preview:free" "baidu/cobuddy:free" "minimax/minimax-m2.5:free" \
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "*thinking-2507" "*thinking:free" "arcee-ai/trinity-large-thinking" \
+		"nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free" {
+		thinking-requires-effort #true
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "arcee-ai/trinity-large-preview*" "amazon/nova-lite-v1" "amazon/nova-micro-v1" \
+		"amazon/nova-premier-v1" "amazon/nova-pro-v1" "baidu/cobuddy:free" "minimax/minimax-m2.5:free" \
 		"openrouter/owl-alpha" {
 		supports-tool-choice #false
 	}
-	models "anthropic/claude-3.7-sonnet" "anthropic/claude-haiku-4.5" "anthropic/claude-opus-4" "anthropic/claude-opus-4.1" \
-		"anthropic/claude-opus-4.5" "anthropic/claude-sonnet-4" "anthropic/claude-sonnet-4.5" "anthropic/claude-sonnet-4.6" \
-		"minimax/minimax-m1" "minimax/minimax-m3" "minimax/minimax-m3:batch" "moonshotai/kimi-k2-thinking" \
-		"moonshotai/kimi-k2.5" "moonshotai/kimi-k2.6" "moonshotai/kimi-k2.7-code" "openai/gpt-chat-latest" \
-		"openai/o1" "openai/o3" "openai/o3-deep-research" "openai/o3-mini" \
-		"openai/o3-mini-high" "openai/o3-pro" "openai/o4-mini" "openai/o4-mini-deep-research" \
-		"openai/o4-mini-high" "z-ai/glm-4.5" "z-ai/glm-4.5-air" "z-ai/glm-4.5v" \
-		"z-ai/glm-4.6" "z-ai/glm-4.6v" "z-ai/glm-4.7" "z-ai/glm-4.7-flash" \
-		"z-ai/glm-5" "z-ai/glm-5.1" "~anthropic/claude-fable-latest" "~anthropic/claude-haiku-latest" \
-		"~anthropic/claude-opus-latest" "~anthropic/claude-sonnet-latest" "~google/gemini-flash-latest" "~google/gemini-pro-latest" \
-		"~moonshotai/kimi-latest" "~openai/gpt-latest" "~openai/gpt-mini-latest" {
-		thinking-efforts "minimal" "low" "medium" "high"
-	}
-	models "anthropic/claude-fable-5" "anthropic/claude-opus-4.7" "anthropic/claude-opus-4.7-fast" "anthropic/claude-opus-4.8" \
-		"anthropic/claude-opus-4.8-fast" "anthropic/claude-opus-5" "anthropic/claude-opus-5-fast" "anthropic/claude-sonnet-5" {
-		thinking-efforts "low" "medium" "high" "xhigh" "max"
-	}
-	models "anthropic/claude-opus-4.6" "anthropic/claude-opus-4.6-fast" {
-		thinking-efforts "low" "medium" "high" "max"
-	}
-	models "arcee-ai/trinity-large-thinking" "arcee-ai/trinity-large-thinking:free" "liquid/lfm-2.5-1.2b-thinking:free" "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free" \
-		"qwen/qwen3-max" {
-		thinking-requires-effort #true
-	}
-	models "deepseek/deepseek-chat-v3.1" "deepseek/deepseek-r1" "deepseek/deepseek-r1-0528" "deepseek/deepseek-v3.1-terminus" \
-		"deepseek/deepseek-v3.1-terminus:exacto" "deepseek/deepseek-v3.2" "deepseek/deepseek-v3.2-exp" "deepseek/deepseek-v4-pro" \
-		"tngtech/deepseek-r1t2-chimera" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "deepseek/deepseek-chat-v3.1" "deepseek/deepseek-v4-pro" {
 		thinking-efforts "high"
 	}
-	models "deepseek/deepseek-v4-flash" "deepseek/deepseek-v4-flash-0731" {
-		thinking-efforts "low" "high" "max"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "openai/gpt-5.1-codex-mini" {
+		thinking-efforts "medium" "high"
 	}
-	models "z-ai/glm-5.2" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "openai/o1:batch" "openai/o3:batch" {
+		thinking-efforts "minimal" "low" "medium" "high"
+		thinking-requires-effort #true
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "qwen/qwen3-coder" {
+		thinking-format "openrouter"
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "z*5" "z-ai/glm-4.6*" "z-ai/glm-4.7*" "~anthropic*" "~google*" "~openai*" \
+		"amazon/nova-2-lite-v1" "baidu/ernie-4.5-vl-28b-a3b" "cohere/north-mini-code:free" \
+		"minimax/minimax-m1" "nvidia/llama-3.3-nemotron-super-49b-v1.5" "openai/gpt-5.1-codex" \
+		"openai/gpt-5.1-codex-max" "openai/gpt-chat-latest" "z-ai/glm-4.5v" "z-ai/glm-5.1" \
+		"~moonshotai/kimi-latest" {
+		thinking-efforts "minimal" "low" "medium" "high"
+	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "z-ai/glm-5.2*" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}
 }

@@ -1,75 +1,78 @@
-// Deployment compat for provider "opencode-zen": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "opencode-zen"; regenerated from the frozen census using deployment contract selectors.
 
 provider "opencode-zen" {
+	class "anthropic" {
+		revision ">=4 <4.6" {
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		}
+	}
+	class "deepseek" {
+		thinking-mode "effort"
+	}
+	class "glm" {
+		thinking-mode "effort"
+	}
+	class "kimi" {
+		thinking-mode "effort"
+	}
+	class "mimo" {
+		family "v2" {
+			thinking-mode "effort"
+		}
+	}
+	class "minimax" {
+		family "m3" {
+			thinking-mode "effort"
+		}
+	}
+	class "openai" {
+		revision ">=5 <5.7" {
+			thinking-mode "effort"
+		}
+	}
 	class "unknown" {
 		thinking-mode "effort"
 	}
-	models "big-pickle" {
-		thinking-efforts "high" "max"
+	class "xai" {
+		family "grok" {
+			thinking-mode "effort"
+		}
 	}
-	models "claude-fable-5" "claude-opus-4-7" "claude-opus-4-8" "claude-opus-5" \
-		"claude-sonnet-5" {
-		thinking-efforts "low" "medium" "high" "xhigh" "max"
-		thinking-mode "anthropic-adaptive"
-		thinking-supports-display #true
-	}
-	models "claude-haiku-4-5" "claude-opus-4-1" "claude-sonnet-4" "glm-4.6" \
-		"glm-4.7" "glm-5" "glm-5.1" "hy3-free" \
-		"hy3-preview-free" "kimi-k2.5" "kimi-k2.6" "kimi-k2.7-code" \
-		"laguna-s-2.1-free" "ling-3.0-flash-free" "ling-3.0-tiny-free" "longcat-2.0-free" \
-		"nemotron-3-super-free" "nemotron-3-ultra-free" "north-mini-code-free" "ring-2.6-1t-free" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-	}
-	models "claude-opus-4-5" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-		thinking-mode "anthropic-budget-effort"
-	}
-	models "claude-opus-4-6" {
-		thinking-efforts "low" "medium" "high" "max"
-		thinking-mode "anthropic-adaptive"
-	}
-	models "claude-sonnet-4-5" "qwen3.5-plus" "qwen3.6-plus" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "*plus" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 		thinking-mode "budget"
 	}
-	models "claude-sonnet-4-6" {
-		thinking-efforts "low" "medium" "high"
-		thinking-mode "anthropic-adaptive"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "big-pickle" {
+		thinking-efforts "high" "max"
 	}
-	models "deepseek-v4-flash" {
-		thinking-efforts "low" "high" "max"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "glm-4*" "hy*" "ling-3*" "nemotron*" "glm-5" "glm-5.1" "laguna-s-2.1-free" \
+		"longcat-2.0-free" "north-mini-code-free" "ring-2.6-1t-free" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}
-	models "gemini-3-flash" "gemini-3-pro" "gemini-3.1-pro" "gemini-3.5-flash" {
-		thinking-mode "google-level"
-		thinking-requires-effort #true
-	}
-	models "gemini-3.6-flash" {
-		thinking-mode "google-level"
-	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "glm-5.2" {
 		thinking-efforts "minimal" "low" "medium" "high" "max"
 	}
-	models "gpt-5.1" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "gpt-5.1-codex" "gpt-5.1-codex-max" {
 		thinking-efforts "minimal" "low" "medium" "high"
 	}
-	models "gpt-5.2" "gpt-5.2-codex" "gpt-5.3-codex" {
-		thinking-efforts "low" "medium" "high" "xhigh"
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "gpt-5.1-codex-mini" {
+		thinking-efforts "medium" "high"
 	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "minimax-m2.1" "minimax-m2.5" "minimax-m2.7" {
-		thinking-efforts "low" "medium" "high"
 		thinking-mode "effort"
 	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "minimax-m2.5-free" {
 		thinking-mode "anthropic-adaptive"
 	}
-	models "minimax-m3" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-		thinking-mode "effort"
-	}
-	models "minimax-m3-free" {
-		thinking-mode "effort"
-	}
+	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "qwen3.6-plus-free" {
 		thinking-efforts "minimal" "low" "medium" "high"
 		thinking-mode "effort"

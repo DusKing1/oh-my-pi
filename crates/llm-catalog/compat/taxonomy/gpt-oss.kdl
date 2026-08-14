@@ -1,5 +1,5 @@
 class "gpt-oss" {
-    namespace "gpt-oss"
+    namespace "gpt-oss" bounded=#true
     bounded "gpt-oss"
 
     family "120b" glob="*gpt-oss-120b*"

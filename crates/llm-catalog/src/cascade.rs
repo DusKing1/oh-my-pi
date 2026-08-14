@@ -3,11 +3,13 @@
 //! Authoring format for the sparse per-model compatibility data that today
 //! lives as flat enumerated profiles in
 //! `fixtures/llm-oracle/catalog-policy/{compat,thinking}-profiles.json`.
-//! Rules are conjunctions over three selector dimensions:
+//! Rules are conjunctions over five selector dimensions:
 //!
 //! - **class** — the centrally classified model class ([`crate::classify`]),
 //! - **providers** — deployment hosts (`on "a" "b"` inside a class block, or
 //!   the enclosing `provider` block),
+//! - **family** — the classified product family within a class,
+//! - **revision** — a conjunction of SemVer comparisons,
 //! - **models** — exact or `*`-glob, ASCII-case-insensitive, matched against
 //!   the provider-relative model identifier.
 //!
@@ -44,7 +46,7 @@
 use std::collections::BTreeMap;
 
 use kdl::{KdlDocument, KdlNode, KdlValue};
-use omp_core::{IntoStr, Str};
+use omp_core::{IntoStr, SemVer, Str};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
@@ -215,9 +217,9 @@ pub const BUNDLED_COMPAT: &[(&str, &str)] = sources![
 	"providers/friendli",
 	"providers/github-copilot",
 	"providers/gitlab-duo",
+	"providers/gmi-cloud",
 	"providers/google",
 	"providers/google-antigravity",
-	"providers/google-gemini-cli",
 	"providers/google-vertex",
 	"providers/groq",
 	"providers/huggingface",
@@ -225,8 +227,6 @@ pub const BUNDLED_COMPAT: &[(&str, &str)] = sources![
 	"providers/kilo",
 	"providers/kimi-code",
 	"providers/meta",
-	"providers/minimax",
-	"providers/minimax-cn",
 	"providers/minimax-code",
 	"providers/minimax-code-cn",
 	"providers/mistral",
@@ -236,10 +236,14 @@ pub const BUNDLED_COMPAT: &[(&str, &str)] = sources![
 	"providers/nvidia",
 	"providers/ollama-cloud",
 	"providers/openai",
+	"providers/openai-codex",
+	"providers/opencode",
 	"providers/opencode-go",
 	"providers/opencode-zen",
 	"providers/openrouter",
+	"providers/ovhai",
 	"providers/poolside",
+	"providers/qianfan",
 	"providers/sakana",
 	"providers/sarvam",
 	"providers/scaleway",
@@ -251,8 +255,12 @@ pub const BUNDLED_COMPAT: &[(&str, &str)] = sources![
 	"providers/venice",
 	"providers/vercel-ai-gateway",
 	"providers/wafer-serverless",
+	"providers/xai",
 	"providers/xai-oauth",
 	"providers/xiaomi",
+	"providers/xiaomi-token-plan-ams",
+	"providers/xiaomi-token-plan-cn",
+	"providers/xiaomi-token-plan-sgp",
 	"providers/yandex",
 	"providers/zai",
 	"providers/zenmux",
@@ -344,6 +352,47 @@ pub struct OverlapDetails {
 	pub second:   Str,
 }
 
+/// Structured identity and capability input to [`CompatCascade::resolve`].
+#[derive(Clone, Copy, Debug)]
+pub struct ResolveTarget<'a> {
+	/// Deployment provider hosting the model.
+	pub provider:  &'a str,
+	/// Centrally classified vendor lineage.
+	pub class:     &'a str,
+	/// Classified product family within the class, when known.
+	pub family:    Option<&'a str>,
+	/// Parsed model revision, when present in the identity.
+	pub revision:  Option<SemVer>,
+	/// Provider-relative model identifier.
+	pub model:     &'a str,
+	/// Whether the model exposes a reasoning control surface.
+	pub reasoning: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RevisionOp {
+	GreaterEqual,
+	Greater,
+	LessEqual,
+	Less,
+	Equal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RevisionConstraint(Vec<(RevisionOp, SemVer)>);
+
+impl RevisionConstraint {
+	fn matches(&self, revision: SemVer) -> bool {
+		self.0.iter().all(|&(op, expected)| match op {
+			RevisionOp::GreaterEqual => revision >= expected,
+			RevisionOp::Greater => revision > expected,
+			RevisionOp::LessEqual => revision <= expected,
+			RevisionOp::Less => revision < expected,
+			RevisionOp::Equal => revision == expected,
+		})
+	}
+}
+
 /// One exact or glob model selector.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Selector {
@@ -380,7 +429,7 @@ impl Selector {
 }
 
 /// Anchored `*`-wildcard match; both sides pre-lowercased.
-fn glob_match(pattern: &str, value: &str) -> bool {
+pub(crate) fn glob_match(pattern: &str, value: &str) -> bool {
 	let mut remainder = value;
 	let mut segments = pattern.split('*');
 	let Some(head) = segments.next() else {
@@ -413,6 +462,8 @@ fn glob_match(pattern: &str, value: &str) -> bool {
 struct Rule {
 	class:     Option<Str>,
 	providers: Option<Vec<Str>>,
+	family:    Option<Str>,
+	revision:  Option<RevisionConstraint>,
 	models:    Option<Vec<Selector>>,
 	priority:  i64,
 	wire:      AxisMap,
@@ -426,26 +477,34 @@ impl Rule {
 	fn dimensions(&self) -> u8 {
 		u8::from(self.class.is_some())
 			+ u8::from(self.providers.is_some())
+			+ u8::from(self.family.is_some())
+			+ u8::from(self.revision.is_some())
 			+ u8::from(self.models.is_some())
 	}
 
 	/// `(exactness, dimensions, priority)` rank when the rule matches.
-	fn rank(
-		&self,
-		provider: &str,
-		class: &str,
-		model: &str,
-		model_lower: &str,
-	) -> Option<(u8, u8, i64)> {
+	fn rank(&self, target: &ResolveTarget<'_>, model_lower: &str) -> Option<(u8, u8, i64)> {
 		if let Some(required) = &self.class
-			&& required.as_str() != class
+			&& required.as_str() != target.class
 		{
 			return None;
 		}
 		if let Some(providers) = &self.providers
 			&& !providers
 				.iter()
-				.any(|candidate| candidate.as_str() == provider)
+				.any(|candidate| candidate.as_str() == target.provider)
+		{
+			return None;
+		}
+		if let Some(required) = &self.family
+			&& target.family != Some(required.as_str())
+		{
+			return None;
+		}
+		if let Some(constraint) = &self.revision
+			&& !target
+				.revision
+				.is_some_and(|revision| constraint.matches(revision))
 		{
 			return None;
 		}
@@ -453,7 +512,7 @@ impl Rule {
 			None => 0,
 			Some(selectors) => selectors
 				.iter()
-				.filter(|s| s.matches(model, model_lower))
+				.filter(|selector| selector.matches(target.model, model_lower))
 				.map(Selector::exactness)
 				.max()?,
 		};
@@ -509,38 +568,30 @@ impl CompatCascade {
 		Self::parse(BUNDLED_COMPAT)
 	}
 
-	/// Resolves wire and thinking assignments for one model.
+	/// Resolves wire and thinking assignments for one structured model target.
 	///
-	/// `model` is the provider-relative identifier; `class` is the centrally
-	/// classified class (`unknown` when unclassified); `reasoning` is the
-	/// catalog's thinking capability for this model. When `false`, thinking
-	/// axes are never evaluated, so class and `on` thinking rules cannot
-	/// leak onto non-reasoning siblings. Unmatched models resolve to empty
-	/// maps.
+	/// When `target.reasoning` is false, thinking axes are never evaluated, so
+	/// selector rules cannot leak onto non-reasoning siblings. Family and
+	/// revision selectors never match a target lacking that identity rank.
+	/// Unmatched targets resolve to empty maps.
 	///
 	/// # Errors
 	/// [`CascadeError::AmbiguousOverlap`] when two rules tying on
 	/// `(exactness, dimensions, priority)` contest one axis.
-	pub fn resolve(
-		&self,
-		provider: &str,
-		class: &str,
-		model: &str,
-		reasoning: bool,
-	) -> Result<Resolved, CascadeError> {
-		let model_lower = model.to_ascii_lowercase();
+	pub fn resolve(&self, target: &ResolveTarget<'_>) -> Result<Resolved, CascadeError> {
+		let model_lower = target.model.to_ascii_lowercase();
 		let mut wire: BTreeMap<&Str, ((u8, u8, i64), &Rule)> = BTreeMap::new();
 		let mut thinking: BTreeMap<&Str, ((u8, u8, i64), &Rule)> = BTreeMap::new();
 		for rule in &self.rules {
-			if !reasoning && rule.wire.is_empty() {
+			if !target.reasoning && rule.wire.is_empty() {
 				continue;
 			}
-			let Some(rank) = rule.rank(provider, class, model, &model_lower) else {
+			let Some(rank) = rule.rank(target, &model_lower) else {
 				continue;
 			};
-			contest(&mut wire, &rule.wire, rank, rule, provider, model)?;
-			if reasoning {
-				contest(&mut thinking, &rule.thinking, rank, rule, provider, model)?;
+			contest(&mut wire, &rule.wire, rank, rule, target.provider, target.model)?;
+			if target.reasoning {
+				contest(&mut thinking, &rule.thinking, rank, rule, target.provider, target.model)?;
 			}
 		}
 		let collect = |winners: BTreeMap<&Str, ((u8, u8, i64), &Rule)>,
@@ -586,135 +637,106 @@ fn contest<'cascade>(
 	Ok(())
 }
 
+const CHILD_ON: u8 = 1 << 0;
+const CHILD_CLASS: u8 = 1 << 1;
+const CHILD_FAMILY: u8 = 1 << 2;
+const CHILD_REVISION: u8 = 1 << 3;
+const CHILD_MODELS: u8 = 1 << 4;
+const CLASS_CHILDREN: u8 = CHILD_ON | CHILD_FAMILY | CHILD_REVISION | CHILD_MODELS;
+const CLASS_ON_CHILDREN: u8 = CHILD_FAMILY | CHILD_REVISION | CHILD_MODELS;
+const PROVIDER_CHILDREN: u8 = CHILD_CLASS | CHILD_MODELS;
+const FAMILY_CHILDREN: u8 = CHILD_REVISION | CHILD_MODELS;
+const REVISION_CHILDREN: u8 = CHILD_MODELS;
+
+#[derive(Clone, Default)]
+struct RuleScope {
+	class:     Option<Str>,
+	providers: Option<Vec<Str>>,
+	family:    Option<Str>,
+	revision:  Option<RevisionConstraint>,
+	models:    Option<Vec<Selector>>,
+}
+
 fn parse_class(file: &str, node: &KdlNode, rules: &mut Vec<Rule>) -> Result<(), CascadeError> {
-	let name = single_string_argument(node).ok_or_else(|| CascadeError::MalformedDirective {
-		file:      file.to_str(),
-		directive: "class".to_str(),
-	})?;
-	let class = name.to_str();
-	let mut direct = RuleAxes::default();
-	if let Some(children) = node.children() {
-		for child in children.nodes() {
-			match child.name().value() {
-				"on" => {
-					let providers = string_arguments(child, file, "on")?;
-					let (axes, models) = parse_rule_body(file, child, true)?;
-					push_rule(rules, Some(class.clone()), Some(providers), models, child, axes, file);
-				},
-				"models" => {
-					let selectors = selector_arguments(child, file)?;
-					let (axes, nested) = parse_rule_body(file, child, false)?;
-					debug_assert!(nested.is_none());
-					push_rule(rules, Some(class.clone()), None, Some(selectors), child, axes, file);
-				},
-				_ => direct.collect(file, child)?,
-			}
-		}
-	}
-	if !direct.is_empty() {
-		rules.push(Rule {
-			class:     Some(class.clone()),
-			providers: None,
-			models:    None,
-			priority:  node_priority(node),
-			wire:      direct.wire,
-			thinking:  direct.thinking,
-			label:     fmt_label(file, &["class", class.as_str()]),
-		});
-	}
-	Ok(())
+	let class = required_name(file, node, "class")?.to_str();
+	parse_scope(
+		file,
+		node,
+		RuleScope { class: Some(class), ..RuleScope::default() },
+		CLASS_CHILDREN,
+		rules,
+	)
 }
 
 fn parse_provider(file: &str, node: &KdlNode, rules: &mut Vec<Rule>) -> Result<(), CascadeError> {
-	let name = single_string_argument(node).ok_or_else(|| CascadeError::MalformedDirective {
-		file:      file.to_str(),
-		directive: "provider".to_str(),
-	})?;
-	let provider = name.to_str();
-	let mut direct = RuleAxes::default();
-	if let Some(children) = node.children() {
-		for child in children.nodes() {
-			match child.name().value() {
-				"class" => {
-					let class = single_string_argument(child).ok_or_else(|| {
-						CascadeError::MalformedDirective {
-							file:      file.to_str(),
-							directive: "class".to_str(),
-						}
-					})?;
-					let (axes, nested) = parse_rule_body(file, child, false)?;
-					debug_assert!(nested.is_none());
-					push_rule(
-						rules,
-						Some(class.to_str()),
-						Some(vec![provider.clone()]),
-						None,
-						child,
-						axes,
-						file,
-					);
-				},
-				"models" => {
-					let selectors = selector_arguments(child, file)?;
-					let (axes, nested) = parse_rule_body(file, child, false)?;
-					debug_assert!(nested.is_none());
-					push_rule(
-						rules,
-						None,
-						Some(vec![provider.clone()]),
-						Some(selectors),
-						child,
-						axes,
-						file,
-					);
-				},
-				_ => direct.collect(file, child)?,
-			}
-		}
-	}
-	if !direct.is_empty() {
-		rules.push(Rule {
-			class:     None,
-			providers: Some(vec![provider.clone()]),
-			models:    None,
-			priority:  node_priority(node),
-			wire:      direct.wire,
-			thinking:  direct.thinking,
-			label:     fmt_label(file, &["provider", provider.as_str()]),
-		});
-	}
-	Ok(())
+	let provider = required_name(file, node, "provider")?.to_str();
+	parse_scope(
+		file,
+		node,
+		RuleScope { providers: Some(vec![provider]), ..RuleScope::default() },
+		PROVIDER_CHILDREN,
+		rules,
+	)
 }
 
-/// Directives (and, for `on` blocks, one optional nested `models` rule body).
-fn parse_rule_body(
+fn parse_scope(
 	file: &str,
 	node: &KdlNode,
-	allow_models: bool,
-) -> Result<(RuleAxes, Option<Vec<Selector>>), CascadeError> {
+	scope: RuleScope,
+	allowed: u8,
+	rules: &mut Vec<Rule>,
+) -> Result<(), CascadeError> {
+	let priority = node_priority(file, node)?;
 	let mut axes = RuleAxes::default();
-	let mut models = None;
 	if let Some(children) = node.children() {
 		for child in children.nodes() {
-			if allow_models && child.name().value() == "models" && models.is_none() {
-				let selectors = selector_arguments(child, file)?;
-				let (nested, _) = parse_rule_body(file, child, false)?;
-				// Nested `models` inside `on` narrows the same rule; merge.
-				axes.merge(file, nested)?;
-				models = Some(selectors);
-				continue;
+			let (kind, next_allowed) = match child.name().value() {
+				"on" => (CHILD_ON, CLASS_ON_CHILDREN),
+				"class" => (CHILD_CLASS, CLASS_ON_CHILDREN),
+				"family" => (CHILD_FAMILY, FAMILY_CHILDREN),
+				"revision" => (CHILD_REVISION, REVISION_CHILDREN),
+				"models" => (CHILD_MODELS, 0),
+				_ => {
+					axes.collect(file, child)?;
+					continue;
+				},
+			};
+			if allowed & kind == 0 {
+				return Err(CascadeError::UnexpectedNode {
+					file:    file.to_str(),
+					node:    child.name().value().to_str(),
+					context: node.name().value().to_str(),
+				});
 			}
-			axes.collect(file, child)?;
+
+			let mut nested = scope.clone();
+			match kind {
+				CHILD_ON => nested.providers = Some(string_arguments(child, file, "on")?),
+				CHILD_CLASS => nested.class = Some(required_name(file, child, "class")?.to_str()),
+				CHILD_FAMILY => nested.family = Some(required_name(file, child, "family")?.to_str()),
+				CHILD_REVISION => {
+					let expression = required_name(file, child, "revision")?;
+					nested.revision = Some(parse_revision_constraint(expression).ok_or_else(|| {
+						CascadeError::MalformedDirective {
+							file:      file.to_str(),
+							directive: "revision".to_str(),
+						}
+					})?);
+				},
+				CHILD_MODELS => nested.models = Some(selector_arguments(child, file)?),
+				_ => unreachable!("known selector bit"),
+			}
+			parse_scope(file, child, nested, next_allowed, rules)?;
 		}
 	}
-	Ok((axes, models))
+	push_rule(rules, scope, priority, node, axes, file);
+	Ok(())
 }
 
 fn push_rule(
 	rules: &mut Vec<Rule>,
-	class: Option<Str>,
-	providers: Option<Vec<Str>>,
-	models: Option<Vec<Selector>>,
+	scope: RuleScope,
+	priority: i64,
 	node: &KdlNode,
 	axes: RuleAxes,
 	file: &str,
@@ -722,16 +744,65 @@ fn push_rule(
 	if axes.is_empty() {
 		return;
 	}
-	let label = fmt_label(file, &[node.name().value()]);
 	rules.push(Rule {
-		class,
-		providers,
-		models,
-		priority: node_priority(node),
+		class: scope.class,
+		providers: scope.providers,
+		family: scope.family,
+		revision: scope.revision,
+		models: scope.models,
+		priority,
 		wire: axes.wire,
 		thinking: axes.thinking,
-		label,
+		label: fmt_label(file, &[node.name().value()]),
 	});
+}
+
+fn required_name<'a>(
+	file: &str,
+	node: &'a KdlNode,
+	directive: &str,
+) -> Result<&'a str, CascadeError> {
+	single_string_argument(node).ok_or_else(|| CascadeError::MalformedDirective {
+		file:      file.to_str(),
+		directive: directive.to_str(),
+	})
+}
+
+fn parse_revision_constraint(expression: &str) -> Option<RevisionConstraint> {
+	let mut terms = Vec::new();
+	for term in expression.split_ascii_whitespace() {
+		let (op, version) = if let Some(version) = term.strip_prefix(">=") {
+			(RevisionOp::GreaterEqual, version)
+		} else if let Some(version) = term.strip_prefix("<=") {
+			(RevisionOp::LessEqual, version)
+		} else if let Some(version) = term.strip_prefix('>') {
+			(RevisionOp::Greater, version)
+		} else if let Some(version) = term.strip_prefix('<') {
+			(RevisionOp::Less, version)
+		} else if let Some(version) = term.strip_prefix('=') {
+			(RevisionOp::Equal, version)
+		} else {
+			return None;
+		};
+		terms.push((op, parse_semver(version)?));
+	}
+	(!terms.is_empty()).then_some(RevisionConstraint(terms))
+}
+
+fn parse_semver(text: &str) -> Option<SemVer> {
+	let mut components = [0_u8; 3];
+	let mut count = 0;
+	for component in text.split('.') {
+		if count == components.len()
+			|| component.is_empty()
+			|| !component.bytes().all(|byte| byte.is_ascii_digit())
+		{
+			return None;
+		}
+		components[count] = component.parse().ok()?;
+		count += 1;
+	}
+	(count > 0).then(|| SemVer::new(components[0], components[1], components[2]))
 }
 
 /// Wire and thinking assignments collected from one rule block.
@@ -747,6 +818,12 @@ impl RuleAxes {
 	}
 
 	fn collect(&mut self, file: &str, node: &KdlNode) -> Result<(), CascadeError> {
+		if node.entries().iter().any(|entry| entry.name().is_some()) {
+			return Err(CascadeError::MalformedDirective {
+				file:      file.to_str(),
+				directive: node.name().value().to_str(),
+			});
+		}
 		let written = node.name().value();
 		let Some(&(_, set, key, kind)) = KNOWN_AXES
 			.iter()
@@ -770,25 +847,29 @@ impl RuleAxes {
 		}
 		Ok(())
 	}
-
-	fn merge(&mut self, file: &str, other: Self) -> Result<(), CascadeError> {
-		for (map, incoming) in [(&mut self.wire, other.wire), (&mut self.thinking, other.thinking)] {
-			for (axis, value) in incoming {
-				if map.insert(axis.clone(), value).is_some() {
-					return Err(CascadeError::DuplicateAxis { file: file.to_str(), axis });
-				}
-			}
-		}
-		Ok(())
-	}
 }
 
-fn node_priority(node: &KdlNode) -> i64 {
-	node
-		.get("priority")
-		.and_then(KdlValue::as_integer)
-		.and_then(|value| i64::try_from(value).ok())
-		.unwrap_or(0)
+fn node_priority(file: &str, node: &KdlNode) -> Result<i64, CascadeError> {
+	let mut priority = None;
+	for entry in node.entries().iter().filter(|entry| entry.name().is_some()) {
+		if entry.name().is_none_or(|name| name.value() != "priority") || priority.is_some() {
+			return Err(CascadeError::MalformedDirective {
+				file:      file.to_str(),
+				directive: node.name().value().to_str(),
+			});
+		}
+		priority = entry
+			.value()
+			.as_integer()
+			.and_then(|value| i64::try_from(value).ok());
+		if priority.is_none() {
+			return Err(CascadeError::MalformedDirective {
+				file:      file.to_str(),
+				directive: node.name().value().to_str(),
+			});
+		}
+	}
+	Ok(priority.unwrap_or(0))
 }
 
 fn fmt_label(file: &str, parts: &[&str]) -> Str {
@@ -902,6 +983,15 @@ mod tests {
 		CompatCascade::parse(&[("test.kdl", text)])
 	}
 
+	fn target<'a>(
+		provider: &'a str,
+		class: &'a str,
+		model: &'a str,
+		reasoning: bool,
+	) -> ResolveTarget<'a> {
+		ResolveTarget { provider, class, family: None, revision: None, model, reasoning }
+	}
+
 	#[test]
 	fn class_provider_and_model_rules_rank_by_specificity() {
 		let cascade = parse_one(
@@ -918,7 +1008,7 @@ mod tests {
 		)
 		.expect("valid cascade");
 		let base = cascade
-			.resolve("vendor", "deepseek", "r1-mini", true)
+			.resolve(&target("vendor", "deepseek", "r1-mini", true))
 			.expect("resolves");
 		assert_eq!(base.wire["supports_store"], Value::Bool(false));
 		assert_eq!(
@@ -927,11 +1017,11 @@ mod tests {
 		);
 		assert_eq!(base.thinking["mode"], Value::from("effort"));
 		let pro = cascade
-			.resolve("vendor", "deepseek", "r1-pro", true)
+			.resolve(&target("vendor", "deepseek", "r1-pro", true))
 			.expect("resolves");
 		assert_eq!(pro.wire["supports_store"], Value::Bool(true), "model rule beats provider");
 		let foreign = cascade
-			.resolve("vendor", "qwen", "r1-mini", true)
+			.resolve(&target("vendor", "qwen", "r1-mini", true))
 			.expect("resolves");
 		assert!(
 			!foreign
@@ -940,7 +1030,7 @@ mod tests {
 		);
 		assert!(foreign.thinking.is_empty());
 		let elsewhere = cascade
-			.resolve("other", "deepseek", "r1-mini", true)
+			.resolve(&target("other", "deepseek", "r1-mini", true))
 			.expect("resolves");
 		assert!(elsewhere.thinking.is_empty(), "`on` scopes the composition");
 		assert_eq!(
@@ -949,7 +1039,7 @@ mod tests {
 			"selector-free dimensions do not scope"
 		);
 		let gated = cascade
-			.resolve("vendor", "deepseek", "r1-mini", false)
+			.resolve(&target("vendor", "deepseek", "r1-mini", false))
 			.expect("resolves");
 		assert!(gated.thinking.is_empty(), "reasoning=false suppresses thinking axes");
 		assert_eq!(gated.wire, base.wire, "wire axes are unaffected by the gate");
@@ -965,13 +1055,17 @@ mod tests {
 		)
 		.expect("valid cascade");
 		let error = cascade
-			.resolve("acme", "unknown", "foo-bar", true)
+			.resolve(&target("acme", "unknown", "foo-bar", true))
 			.expect_err("ambiguous");
 		assert!(matches!(
 			&error,
 			CascadeError::AmbiguousOverlap(details) if details.axis.as_str() == "thinking_format"
 		));
-		assert!(cascade.resolve("acme", "unknown", "foo-only", true).is_ok());
+		assert!(
+			cascade
+				.resolve(&target("acme", "unknown", "foo-only", true))
+				.is_ok()
+		);
 	}
 
 	#[test]
@@ -984,7 +1078,7 @@ mod tests {
 		)
 		.expect("valid cascade");
 		let resolved = cascade
-			.resolve("acme", "unknown", "foo-bar", true)
+			.resolve(&target("acme", "unknown", "foo-bar", true))
 			.expect("resolves");
 		assert_eq!(resolved.wire["thinking_format"], Value::from("zai"));
 		assert_eq!(resolved.wire["supports_store"], Value::Bool(false));
@@ -1001,11 +1095,11 @@ mod tests {
 		)
 		.expect("valid cascade");
 		let tied = cascade
-			.resolve("acme", "unknown", "foo-bar", true)
+			.resolve(&target("acme", "unknown", "foo-bar", true))
 			.expect("priority wins");
 		assert_eq!(tied.wire["thinking_format"], Value::from("zai"));
 		let exact = cascade
-			.resolve("acme", "unknown", "foo-exact", true)
+			.resolve(&target("acme", "unknown", "foo-exact", true))
 			.expect("resolves");
 		assert_eq!(exact.wire["thinking_format"], Value::from("kimi"), "exact beats glob");
 	}
@@ -1026,6 +1120,26 @@ mod tests {
 				thinking-format "b" }"#),
 			Err(CascadeError::DuplicateAxis { axis, .. }) if axis.as_str() == "thinking_format"
 		));
+		assert!(matches!(
+			parse_one(r#"provider "acme" { models "*" priority="10" { thinking-format "zai" } }"#),
+			Err(CascadeError::MalformedDirective { .. })
+		));
+		assert!(matches!(
+			parse_one(
+				r#"provider "acme" {
+					models "*" priority=9223372036854775808 { thinking-format "zai" }
+				}"#
+			),
+			Err(CascadeError::MalformedDirective { .. })
+		));
+		assert!(matches!(
+			parse_one(r#"provider "acme" bogus=#true { thinking-format "zai" }"#),
+			Err(CascadeError::MalformedDirective { .. })
+		));
+		assert!(matches!(
+			parse_one(r#"provider "acme" { thinking-format "zai" bogus=#true }"#),
+			Err(CascadeError::MalformedDirective { .. })
+		));
 	}
 
 	#[test]
@@ -1040,7 +1154,7 @@ mod tests {
 		)
 		.expect("valid cascade");
 		let resolved = cascade
-			.resolve("acme", "unknown", "any", true)
+			.resolve(&target("acme", "unknown", "any", true))
 			.expect("resolves");
 		assert_eq!(
 			resolved.wire["extra_body"],
@@ -1061,17 +1175,130 @@ mod tests {
 		.expect("valid cascade");
 		for id in ["zai-org/GLM-4.7", "GLM-5.2", "glm-5.2-fast"] {
 			let resolved = cascade
-				.resolve("anyhost", "glm", id, true)
+				.resolve(&target("anyhost", "glm", id, true))
 				.expect("resolves");
 			assert_eq!(resolved.wire["thinking_format"], Value::from("zai"), "{id}");
 		}
 		let miss = cascade
-			.resolve("anyhost", "glm", "zai-org/glm-4.7", true)
+			.resolve(&target("anyhost", "glm", "zai-org/glm-4.7", true))
 			.expect("resolves");
 		assert!(
 			!miss.wire.contains_key("thinking_format"),
 			"exact ids are distinct identifiers across case"
 		);
+	}
+
+	#[test]
+	fn revision_boundaries_and_missing_family_are_strict() {
+		let cascade = parse_one(
+			r#"class "gemini" {
+				revision ">=2.5" { supports-store #true }
+				family "flash" { thinking-format "gemini" }
+			}"#,
+		)
+		.expect("valid cascade");
+		let mut candidate = target("acme", "gemini", "gemini-2.5-flash", true);
+		candidate.revision = Some(SemVer::new(2, 5, 0));
+		assert_eq!(
+			cascade.resolve(&candidate).expect("boundary matches").wire["supports_store"],
+			Value::Bool(true)
+		);
+		candidate.revision = Some(SemVer::new(2, 4, 9));
+		assert!(
+			!cascade
+				.resolve(&candidate)
+				.expect("below boundary resolves")
+				.wire
+				.contains_key("supports_store")
+		);
+		assert!(
+			!cascade
+				.resolve(&candidate)
+				.expect("family-less target resolves")
+				.wire
+				.contains_key("thinking_format"),
+			"family selectors never match family=None"
+		);
+	}
+
+	#[test]
+	fn family_and_revision_conjunction_outranks_family_only() {
+		let cascade = parse_one(
+			r#"class "gemini" {
+				family "flash" {
+					thinking-format "family"
+					revision ">=2.5" { thinking-format "family-revision" }
+				}
+			}"#,
+		)
+		.expect("valid cascade");
+		let candidate = ResolveTarget {
+			provider:  "acme",
+			class:     "gemini",
+			family:    Some("flash"),
+			revision:  Some(SemVer::new(2, 5, 0)),
+			model:     "gemini-2.5-flash",
+			reasoning: true,
+		};
+		assert_eq!(
+			cascade.resolve(&candidate).expect("resolves").wire["thinking_format"],
+			Value::from("family-revision")
+		);
+	}
+
+	#[test]
+	fn overlapping_revision_ranges_need_priority() {
+		let ambiguous = parse_one(
+			r#"class "gemini" {
+				revision ">=2" { thinking-format "lower" }
+				revision "<3" { thinking-format "upper" }
+			}"#,
+		)
+		.expect("valid cascade");
+		let candidate = ResolveTarget {
+			provider:  "acme",
+			class:     "gemini",
+			family:    None,
+			revision:  Some(SemVer::new(2, 5, 0)),
+			model:     "gemini-2.5",
+			reasoning: true,
+		};
+		assert!(matches!(ambiguous.resolve(&candidate), Err(CascadeError::AmbiguousOverlap(_))));
+
+		let prioritized = parse_one(
+			r#"class "gemini" {
+				revision ">=2" priority=1 { thinking-format "lower" }
+				revision "<3" { thinking-format "upper" }
+			}"#,
+		)
+		.expect("valid cascade");
+		assert_eq!(
+			prioritized
+				.resolve(&candidate)
+				.expect("priority resolves")
+				.wire["thinking_format"],
+			Value::from("lower")
+		);
+	}
+
+	#[test]
+	fn malformed_revisions_and_illegal_nesting_are_rejected() {
+		for expression in [">=2.5.0.1", "2.5", ">=256", ">=2..5", ">= 2.5", ""] {
+			let source =
+				format!("class \"gemini\" {{ revision \"{expression}\" {{ supports-store #true }} }}");
+			assert!(
+				matches!(parse_one(&source), Err(CascadeError::MalformedDirective { .. })),
+				"{expression:?}"
+			);
+		}
+		for source in [
+			r#"provider "acme" { family "flash" { supports-store #true } }"#,
+			r#"class "gemini" { models "*" { revision ">=2" { supports-store #true } } }"#,
+			r#"class "gemini" { family "flash" { family "lite" { supports-store #true } } }"#,
+			r#"provider "acme" { class "gemini" { on "other" { supports-store #true } } }"#,
+		] {
+			assert!(matches!(parse_one(source), Err(CascadeError::UnexpectedNode { .. })));
+		}
 	}
 
 	#[test]

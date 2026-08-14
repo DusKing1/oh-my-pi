@@ -1,9 +1,8 @@
-// Deployment compat for provider "mistral": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "mistral"; regenerated from the frozen census using deployment contract selectors.
 
 provider "mistral" {
+	thinking-mode "effort"
 	class "unknown" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-		thinking-mode "effort"
 	}
 }

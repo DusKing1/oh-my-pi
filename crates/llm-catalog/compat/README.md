@@ -1,0 +1,408 @@
+# Compatibility taxonomy and cascade
+
+This tree is the checked-in source of model identity and compatibility policy. A **class** is a vendor lineage such as `gemini` or `anthropic`; a **family** is a product line within one class, such as `flash`, `pro`, `sonnet`, or `opus`; and a **revision** is an `omp_core::SemVer` value (`major.minor.patch`) extracted from a model name. Missing minor and patch components compare as zero.
+
+There are three ownership strata:
+
+- `taxonomy/*.kdl` defines identity: class membership, product families, revision extraction, reviewed exact corrections, and suffix collapse.
+- `classes/*.kdl` defines model-lineage truths: behavior inherent to a model line, optionally scoped to the providers where the census established it.
+- `providers/*.kdl` defines deployment contracts: behavior imposed by a host, plus documented per-model residue that taxonomy cannot express exactly.
+
+Do not move a statistically common provider behavior into a class file, or a lineage truth into a provider file. Absence is not evidence that a capability is stripped. Preserve comments that record census provenance, reviewed exceptions, and why a `models` residue remains. Source-lock entries use the provenance text `census 2026-08: .omp/local/quirks + frozen oracle`.
+
+Both grammars are KDL v2. Unknown nodes/directives and malformed value shapes are errors. Declaration and file order do not break cascade ties.
+
+## Taxonomy grammar
+
+At a taxonomy document root, the only permitted nodes are `class` and `collapse`; a source may contain multiple class nodes. Class names and override IDs must be unique across all bundled sources. Exactly one non-empty `collapse` definition is required across the inventory.
+
+```kdl
+class "anthropic" {
+    namespace "anthropic" bounded=#true
+    bounded "claude"
+
+    family "sonnet" glob="*sonnet*"
+    family "opus" glob="*opus*"
+
+    revision prefix="claude-" anywhere=#true
+
+    override id="reviewed-distill" provider="example-host" model="opaque-model" \
+        logical="author/opaque-model" class="anthropic" family="opus" revision="4.6" \
+        effort="high" thinking-variant=#true expires-at-ms=1799712000000 \
+        rationale="Reviewed teacher lineage" provenance="frozen census case identity-01"
+}
+```
+
+### Class membership matchers
+
+Classification trims and lowercases the full model identifier. The **bare name** is the segment after its final `/`. Matcher tokens are also lowercased while parsing.
+
+| Node | Rank | Match |
+| --- | ---: | --- |
+| `exact "token"` | 4 | The whole bare name equals `token`. |
+| `bounded "token"` | 3 | The bare name equals `token`, or starts with it followed by `-`, `_`, `.`, `:`, or an ASCII digit. |
+| `namespace "token"` | 2 | A non-empty `/`-separated segment of the full identifier equals `token`. |
+| `namespace "token" bounded=#true` | 2 | Split the full identifier on `/`, `.`, and `:`; a segment must satisfy the bounded rule above. This is the only matcher property. |
+| `prefix "token"` | 1 | The bare name starts with `token`. |
+| `glob "pattern"` | 0 | An anchored `*` wildcard match over the bare name. `*` spans any substring; all non-wildcard text remains anchored in order. |
+
+A class match is ranked by `(matcher-kind rank, token byte length)`. The greatest tuple wins. Equal tuples from different classes are an `AmbiguousClass` error; source order is not a tiebreak. If nothing matches, classification returns class `unknown` with no family or revision.
+
+### Product families
+
+A family rule has one name, a required `glob` property, and an optional signed integer `priority` (default `0`):
+
+```kdl
+family "flash" glob="*flash*"
+family "lite" glob="*flash-lite*" priority=10
+```
+
+The glob is anchored, ASCII-case-insensitive, and matched against the lowercased bare name. Matching families rank by `(priority, non-wildcard byte count in the glob)`. Equal ranks belonging to different family IDs are an `AmbiguousFamily` error. No match produces no family. Repeating rules for the same family ID is allowed, as in the checked-in `o-series` taxonomy.
+
+### Revision extraction
+
+A class may contain both forms:
+
+```kdl
+revision prefix="gemini-"
+revision prefix="claude-" anywhere=#true
+revision skip-bare "o1" "o3" "o4"
+```
+
+- `prefix=` adds a lowercased extraction prefix. Without `anywhere=#true`, it must begin the bare name. With it, the first occurrence may appear anywhere in the bare name.
+- Prefixes are tried in declaration order; the first matching prefix is used.
+- `skip-bare` takes one or more bare names that intentionally carry no revision and overrides extraction.
+- After removing or locating the prefix, extraction starts at the first ASCII digit. It reads at most three unsigned 8-bit numeric components separated by `.` or by `-` followed by a digit. Missing components become zero. Thus `claude-opus-4-6` can produce `4.6.0`.
+
+### Reviewed identity overrides
+
+`override` has properties only and no child block. Required string properties are:
+
+- `id`: stable, globally unique review ID;
+- `model`: exact bare model identifier, compared case-insensitively;
+- `rationale`: human-readable reason for the correction;
+- `provenance`: evidence location.
+
+Optional properties are:
+
+| Property | Shape and meaning |
+| --- | --- |
+| `provider` | Exact provider key, compared case-insensitively. A matching provider-specific override wins over a provider-agnostic one. |
+| `logical` | Corrected logical model identifier. |
+| `class` | Corrected class ID; a non-empty string. |
+| `family` | Corrected product-family ID; a non-empty string. |
+| `revision` | One to three unsigned 8-bit components separated by `.` or `-`. |
+| `effort` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
+| `thinking-variant` | Boolean marker for a separately exposed thinking sibling. |
+| `expires-at-ms` | Non-negative Unix time in milliseconds. The override is inactive when the observation time is at or after this value. |
+
+The pair `(provider, model)` must also be unique, including provider-agnostic pairs. When no observation time is supplied, an expiring override remains active.
+
+### Suffix collapse
+
+The single collapse vocabulary has this grammar:
+
+```kdl
+collapse {
+    thinking-suffix "-thinking"
+    effort-suffix "-minimal" tier="minimal"
+    effort-suffix "-xhigh" tier="xhigh"
+    effort-suffix "-max" tier="max" except-bare-prefix="qwen"
+}
+```
+
+`thinking-suffix` accepts one non-empty suffix and no properties. `effort-suffix` additionally requires `tier` with one of the effort values above, and may have `except-bare-prefix`. Suffixes are unique case-insensitively. Matching is case-insensitive against the end of the full model identifier; the longest matching suffix wins. The exception tests the lowercased bare name prefix.
+
+## Cascade grammar
+
+A cascade document starts with `class` or `provider`. Every selector adds a conjunct to the current rule. Axis directives may appear directly in any permitted scope, and nested selector blocks may appear alongside them.
+
+```kdl
+class "gemini" {
+    on "google" "google-vertex" "openrouter" {
+        family "flash" {
+            revision ">=2.5 <3.8" {
+                thinking-efforts "minimal" "low" "medium" "high"
+            }
+        }
+    }
+}
+
+provider "openrouter" {
+    thinking-format "openrouter"
+    class "openai" {
+        family "o-series" {
+            thinking-efforts "minimal" "low" "medium" "high"
+        }
+    }
+    models "openai/o1:batch" "vendor/*-reasoning" priority=10 {
+        thinking-requires-effort #true
+    }
+}
+```
+
+### Selectors and nesting
+
+| Selector | Form | Matching semantics |
+| --- | --- | --- |
+| `class` | `class "id" { ... }` | Exact class ID. At document root it may contain `on`, `family`, `revision`, and `models`. Under `provider` it may contain `family`, `revision`, and `models`. |
+| `provider` | `provider "id" { ... }` | Exact provider ID. It is root-only and may contain `class` and `models`. |
+| `on` | `on "provider-a" "provider-b" { ... }` | One or more provider IDs, combined as OR. It is allowed only under a root `class`, and may contain `family`, `revision`, and `models`. |
+| `family` | `family "id" { ... }` | Exact classified family ID. It may contain `revision` and `models`. A target with no family does not match. |
+| `revision` | `revision ">=2.5 <4" { ... }` | A non-empty, whitespace-separated conjunction of comparisons. It may contain `models`. A target with no revision does not match. |
+| `models` | `models "id" "vendor/*" { ... }` | One or more alternatives, combined as OR. It cannot contain another selector. |
+
+Class, provider/`on`, and family selector values are compared exactly and case-sensitively to the structured resolve target.
+
+Revision operators are `>=`, `>`, `<=`, `<`, and `=`. Each operand has one to three dot-separated unsigned 8-bit components; omitted components are zero. All terms must hold.
+
+A `models` string without `*` is an exact, case-sensitive match against the provider-relative model identifier. A string containing `*` is an anchored, ASCII-case-insensitive wildcard match. Prefer taxonomy ranks; retain exact/glob lists only when they isolate the census member set exactly, and keep a `// residue:` comment explaining why ranks do not.
+
+`priority=N` is an optional signed integer property on the block that owns axis assignments. Its default is zero. Use it only to resolve an intentional equal-specificity overlap; do not use it to encode declaration order.
+
+### Axis value shapes
+
+The directive vocabulary is closed. Its three shapes are:
+
+- **Scalar**: exactly one KDL boolean, integer, float, or string argument and no children. `#null` is rejected.
+- **Array**: one or more scalar arguments and no children; it resolves to a JSON array.
+- **Object**: no arguments and a child block, including an empty block. Child names are emitted verbatim as JSON keys. Each child is either one scalar or another object; arrays are not representable inside an object payload.
+
+#### Wire axes
+
+| KDL directive | Resolved key | Shape |
+| --- | --- | --- |
+| `allows-synthetic-reasoning-content-for-tool-calls` | `allows_synthetic_reasoning_content_for_tool_calls` | Scalar |
+| `disable-adaptive-thinking` | `disable_adaptive_thinking` | Scalar |
+| `disable-reasoning-on-tool-choice` | `disable_reasoning_on_tool_choice` | Scalar |
+| `escape-builtin-tool-names` | `escape_builtin_tool_names` | Scalar |
+| `extra-body` | `extra_body` | Object |
+| `filter-reasoning-history` | `filter_reasoning_history` | Scalar |
+| `include-encrypted-reasoning` | `include_encrypted_reasoning` | Scalar |
+| `max-tokens-field` | `max_tokens_field` | Scalar |
+| `official-endpoint` | `official_endpoint` | Scalar |
+| `omit-reasoning-effort` | `omit_reasoning_effort` | Scalar |
+| `reasoning-content-field` | `reasoning_content_field` | Scalar |
+| `reasoning-disable-mode` | `reasoning_disable_mode` | Scalar |
+| `reasoning-effort-map` | `reasoning_effort_map` | Object |
+| `replay-unsigned-thinking` | `replay_unsigned_thinking` | Scalar |
+| `requires-assistant-content-for-tool-calls` | `requires_assistant_content_for_tool_calls` | Scalar |
+| `requires-reasoning-content-for-all-assistant-turns` | `requires_reasoning_content_for_all_assistant_turns` | Scalar |
+| `requires-reasoning-content-for-tool-calls` | `requires_reasoning_content_for_tool_calls` | Scalar |
+| `requires-thinking-enabled` | `requires_thinking_enabled` | Scalar |
+| `requires-tool-result-id` | `requires_tool_result_id` | Scalar |
+| `signing-endpoint` | `signing_endpoint` | Scalar |
+| `stream-idle-timeout-ms` | `stream_idle_timeout_ms` | Scalar |
+| `supports-developer-role` | `supports_developer_role` | Scalar |
+| `supports-eager-tool-input-streaming` | `supports_eager_tool_input_streaming` | Scalar |
+| `supports-forced-tool-choice` | `supports_forced_tool_choice` | Scalar |
+| `supports-image-detail-original` | `supports_image_detail_original` | Scalar |
+| `supports-long-cache-retention` | `supports_long_cache_retention` | Scalar |
+| `supports-mid-conversation-system` | `supports_mid_conversation_system` | Scalar |
+| `supports-reasoning-effort` | `supports_reasoning_effort` | Scalar |
+| `supports-sampling-params` | `supports_sampling_params` | Scalar |
+| `supports-store` | `supports_store` | Scalar |
+| `supports-tool-choice` | `supports_tool_choice` | Scalar |
+| `supports-usage-in-streaming` | `supports_usage_in_streaming` | Scalar |
+| `thinking-format` | `thinking_format` | Scalar |
+| `when-thinking` | `when_thinking` | Object |
+
+Object example:
+
+```kdl
+reasoning-effort-map {
+    minimal "low"
+    xhigh "high"
+}
+extra-body {
+    reasoning {
+        enabled #true
+    }
+}
+```
+
+#### Thinking axes
+
+| KDL directive | Resolved key | Shape |
+| --- | --- | --- |
+| `thinking-default-level` | `defaultLevel` | Scalar |
+| `thinking-effort-budgets` | `effortBudgets` | Object |
+| `thinking-efforts` | `efforts` | Array |
+| `thinking-mode` | `mode` | Scalar |
+| `thinking-requires-effort` | `requiresEffort` | Scalar |
+| `thinking-suppress-when-off` | `suppressWhenOff` | Scalar |
+| `thinking-supports-display` | `supportsDisplay` | Scalar |
+
+A rule cannot assign the same resolved axis twice in one block.
+
+### Precedence and ambiguity
+
+Rules resolve independently per axis. A matching rule is ranked by:
+
+```text
+(model-selector exactness, constrained-dimension count, priority)
+```
+
+The tuple is compared lexicographically, greatest first:
+
+- model exactness is `2` when any matching `models` selector is exact, `1` when the best matching selector is a glob, and `0` when the rule has no `models` selector;
+- dimension count is the number of present dimensions among class, provider/`on`, family, revision, and models;
+- priority is the local block's `priority`, defaulting to `0`.
+
+The highest-ranked matching assignment wins for that axis. Two distinct rules that tie on all three components and assign the same axis are an `AmbiguousOverlap` error even if their values are equal. File and declaration order never resolve the tie; add an explicit priority only after confirming the overlap is intentional.
+
+### Capability gating
+
+Wire axes are considered for every matching target. Thinking axes are considered only when the structured resolve target sets `reasoning`; catalog compilation sets it only for a logical model whose source members carry a structural thinking profile. A target without that flag cannot inherit a thinking profile from a matching class, provider, family, revision, or model rule. Family and revision selectors likewise never match targets missing that rank. An unmatched target resolves to empty maps; the cascade does not infer negative capabilities from absence.
+
+## Deterministic regeneration
+
+Run all commands from the workspace root. Keep inputs and generated output in stable sorted order; never accept a selector because it happens to cover only a sampled provider.
+
+### 1. Dump the full classified roster
+
+```sh
+cargo run -p omp-llm-catalog --example dump_identity > /tmp/compat-identity.tsv
+```
+
+The TSV columns are `id`, `provider`, `class`, `family`, `revision`, and `reasoning`, in frozen normalized-catalog order. Join it with `fixtures/llm-oracle/catalog-policy/compat-profiles.json` and `thinking-profiles.json`. For each desired member set, test candidates against the entire roster and accept one only when it selects exactly that set within its class and any `on` provider scope. Use this deterministic candidate order:
+
+1. family;
+2. family plus a closed-open revision range (`>=a <b`);
+3. revision range;
+4. anchored `*` glob synthesis;
+5. exact model IDs as documented residue.
+
+Emit class files before provider residues, sort provider/model alternatives deterministically, preserve census comments, and ensure every on-disk file is listed by `BUNDLED_TAXONOMY` or `BUNDLED_COMPAT`.
+
+### 2. Refresh `data/sources.lock.json`
+
+The ID scheme is `compat.cascade.<group>.<stem>.v1`, where group is `taxonomy`, `classes`, or `providers`; paths are workspace-relative. Build the generator while the current lock and snapshots still agree, then refresh the lock. This avoids the intentional build-time check rejecting an old snapshot after its source digest changes.
+
+The following runnable update preserves non-compat IDs and provenance, replaces every compat KDL entry, refreshes every locked hash, sorts by ID, and recomputes `source_digest` as `sha256(concat(id + NUL + path + NUL + sha256 + NUL))`:
+
+```sh
+cargo build -p omp-llm-catalog --example generate_snapshot
+python3 - <<'PY'
+from pathlib import Path
+import hashlib, json
+
+root = Path.cwd()
+lock_path = root / "crates/llm-catalog/data/sources.lock.json"
+lock = json.loads(lock_path.read_text())
+inputs = {
+    item["id"]: item
+    for item in lock["inputs"]
+    if not item["id"].startswith("compat.cascade.")
+}
+for path in sorted((root / "crates/llm-catalog/compat").glob("*/*.kdl")):
+    relative = path.relative_to(root).as_posix()
+    group, stem = path.parent.name, path.stem
+    item_id = f"compat.cascade.{group}.{stem}.v1"
+    inputs[item_id] = {
+        "id": item_id,
+        "path": relative,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "source": "census 2026-08: .omp/local/quirks + frozen oracle",
+    }
+for item in inputs.values():
+    item["sha256"] = hashlib.sha256((root / item["path"]).read_bytes()).hexdigest()
+lock["inputs"] = sorted(inputs.values(), key=lambda item: item["id"])
+h = hashlib.sha256()
+for item in lock["inputs"]:
+    for field in ("id", "path", "sha256"):
+        h.update(item[field].encode())
+        h.update(b"\0")
+lock["source_digest"] = h.hexdigest()
+lock_path.write_text(json.dumps(lock, indent=2) + "\n")
+PY
+```
+
+### 3. Generate the compiled snapshot
+
+Run the generator binary built before the source-lock update:
+
+```sh
+./target/debug/examples/generate_snapshot
+```
+
+This verifies the source lock and rewrites:
+
+- `crates/llm-catalog/data/catalog.normalized.json`
+- `crates/llm-catalog/data/catalog.postcard`
+
+`crates/llm-catalog/data/catalog.normalized.json` is the full compiled catalog: providers, routes, models, wire policies, thinking policies, and revision. `fixtures/llm-oracle/catalog/models.normalized.json` is a different, reduced 4,227-model archival schema. Never copy or compare the full compiled artifact over the reduced fixture.
+
+The reduced fixture changes only when `models.json.zst` changes. Its loader is pinned to
+`52b111a4abc8d76064abc4f58afda931edee9833`; the checked-in projector preserves the
+historical baseline-plus-overlay encoding and sorts models by `(provider, model)`.
+
+```sh
+root=$PWD
+revision=52b111a4abc8d76064abc4f58afda931edee9833
+tree=/work/.tree/omp-catalog-oracle
+git worktree add --detach "$tree" "$revision"
+mkdir -p "$tree/crates/llm-catalog/examples"
+cp "$root/fixtures/llm-oracle/catalog/project_normalized.rs" \
+  "$tree/crates/llm-catalog/examples/project_normalized.rs"
+cargo run --locked --manifest-path "$tree/Cargo.toml" \
+  -p omp-llm-catalog --example project_normalized -- \
+  "$tree/crates/llm-catalog/models.json.zst" \
+  "$root/fixtures/llm-oracle/catalog/models.json.zst" \
+  "$root/fixtures/llm-oracle/catalog/models.normalized.json"
+git worktree remove "$tree"
+```
+
+If this rewrites the reduced fixture, repeat step 2, rebuild the generator against the
+new lock, then repeat step 3 before refreezing the oracle corpus. If the compressed
+source is unchanged, leave the reduced fixture unchanged.
+
+### 4. Refreeze the oracle corpus
+
+This command refreshes fixture hashes in every category manifest, then root-lock hashes, counts, and the aggregate digest. It updates existing indexed files; add any genuinely new fixture to its category manifest and root entries before running it.
+
+```sh
+python3 - <<'PY'
+from pathlib import Path
+import hashlib, json
+
+root = Path("fixtures/llm-oracle")
+lock_path = root / "manifest.lock.json"
+lock = json.loads(lock_path.read_text())
+sha = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+
+for category in lock["categories"]:
+    manifest_path = root / category["manifest_path"]
+    manifest = json.loads(manifest_path.read_text())
+    for fixture in manifest["fixtures"]:
+        fixture["sha256"] = sha(manifest_path.parent / fixture["path"])
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+
+for entry in lock["entries"]:
+    entry["sha256"] = sha(root / entry["path"])
+for category in lock["categories"]:
+    members = [e for e in lock["entries"] if e["provenance_category"] == category["id"]]
+    category["artifact_count"] = sum(e["kind"] == "artifact" for e in members)
+    category["indexed_file_count"] = len(members)
+lock["category_count"] = len(lock["categories"])
+lock["manifest_count"] = sum(e["kind"] == "category-manifest" for e in lock["entries"])
+lock["artifact_count"] = sum(e["kind"] == "artifact" for e in lock["entries"])
+lock["indexed_file_count"] = len(lock["entries"])
+lock["secret_free_count"] = sum(e["secret_free"] is True for e in lock["entries"])
+rows = ["\0".join((e["id"], e["path"], e["sha256"], e["provenance_category"],
+                   "true" if e["secret_free"] is True else "false"))
+        for e in lock["entries"]]
+lock["corpus_sha256"] = hashlib.sha256(("\n".join(rows) + "\n").encode()).hexdigest()
+lock_path.write_text(json.dumps(lock, indent=2) + "\n")
+PY
+python3 fixtures/llm-oracle/validate.py --self-test
+```
+
+If a refrozen corpus file is also a source-lock input, rebuild the generator while the current lock and snapshot still agree, repeat the source-lock update from step 2, and run the prebuilt generator directly. Then verify both the corpus and compiled catalog:
+
+```sh
+./target/debug/examples/generate_snapshot
+python3 fixtures/llm-oracle/validate.py --self-test
+cargo test -p omp-llm-catalog --lib taxonomy
+cargo test -p omp-llm-catalog --test compat_cascade
+```

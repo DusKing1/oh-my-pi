@@ -1,53 +1,24 @@
-// Model-lineage compat for the "glm" class (census: model-class predicates in pi
-// dialect selection / transform-messages; oracle-verified by tests/compat_cascade.rs).
+// Model-lineage compat for "glm"; regenerated from the frozen census using class taxonomy selectors.
 
 class "glm" {
-	models "GLM-5.1" "GLM-5.2" "GLM5.2-Turbo" "glm-5.2-highspeed" \
-		"glm-5.2-highspeed[1m]" "glm5.2-fast" {
-		reasoning-content-field "reasoning_content"
-	}
-	models "GLM-5.1" "GLM-5.2" "glm-5.2-highspeed" "glm-5.2-highspeed[1m]" {
-		thinking-format "zai"
-	}
-	models "GLM-5.1" "GLM-5.2" "z-ai/glm-4.5-air:free" "z-ai/glm-4.6:exacto" {
-		thinking-efforts "minimal" "low" "medium" "high"
-	}
-	models "GLM5.2-Turbo" "TEE/glm-5-1" "TEE/glm-5.1" "glm-4.5-flash" \
-		"glm-4.5v" "glm-4.7-flash" "glm-4.7-flashx" "glm-5-free" \
-		"glm-5.1-fast" "glm5.2-fast" "hf:zai-org/GLM-4.7-Flash" "workers-ai/@cf/zai-org/glm-4.7-flash" \
-		"workers-ai/@cf/zai-org/glm-5.2" "z-ai/glm-4.6:thinking" "z-ai/glm-4.6v-flash" "z-ai/glm-4.6v-flash-free" \
-		"z-ai/glm-4.7-flash-free" "z-ai/glm-4.7-flashx" "z-ai/glm-5-turbo" "z-ai/glm-5.2:batch" \
-		"z-ai/glm-5v-turbo" "z-ai/glm-5v-turbo:thinking" "z-ai/glm4.7" "z-ai/glm5" \
-		"zai-org/GLM-4.5" "zai-org/GLM-4.5-Air" "zai-org/GLM-4.5-Air:thinking" "zai-org/GLM-4.5V" \
-		"zai-org/GLM-4.6" "zai-org/GLM-4.6-turbo" "zai-org/GLM-4.7" "zai-org/GLM-4.7-Flash" \
-		"zai-org/GLM-5" "zai-org/GLM-5.1" "zai-org/glm-4.5-air" "zai-org/glm-4.5v" \
-		"zai-org/glm-4.6" "zai-org/glm-4.6v" "zai-org/glm-4.7" "zai-org/glm-4.7-flash" \
-		"zai-org/glm-4.7-flash-original" "zai-org/glm-4.7-h" "zai-org/glm-4.7-original" "zai-org/glm-4.7-original:thinking" \
-		"zai-org/glm-4.7:thinking" "zai-org/glm-5" "zai-org/glm-5-original" "zai-org/glm-5-original:thinking" \
-		"zai-org/glm-5-turbo" "zai-org/glm-5.1" "zai-org/glm-5.1:thinking" "zai-org/glm-5:thinking" \
-		"zai-org/glm-5v-turbo" "zai-org/glm-latest" "zai/glm-4.5" "zai/glm-4.5-air" \
-		"zai/glm-4.5v" "zai/glm-4.6" "zai/glm-4.6v" "zai/glm-4.6v-flash" \
-		"zai/glm-4.7" "zai/glm-4.7-flash" "zai/glm-4.7-flashx" "zai/glm-5" \
-		"zai/glm-5-turbo" "zai/glm-5.1" "zai/glm-5.2" "zai/glm-5.2-fast" \
-		"zai/glm-5v-turbo" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-	}
-	models "TEE/glm-5.2" "TEE/glm-5.2:thinking" "glm-5.2-fast" "hf:zai-org/GLM-5.2" \
-		"z-ai/glm-5.2-free" "zai-org/glm-5.2" "zai-org/glm-5.2:thinking" {
+	on "aiand" "alibaba-token-plan" "scaleway" {
 		thinking-efforts "minimal" "low" "medium" "high" "max"
 	}
-	models "glm-4.5-flash" "glm-4.5v" "glm-4.7-flash" "glm-4.7-flashx" \
-		"workers-ai/@cf/zai-org/glm-4.7-flash" "workers-ai/@cf/zai-org/glm-5.2" "zai/glm-4.5" "zai/glm-4.5-air" \
-		"zai/glm-4.5v" "zai/glm-4.6" "zai/glm-4.6v" "zai/glm-4.6v-flash" \
-		"zai/glm-4.7" "zai/glm-4.7-flash" "zai/glm-4.7-flashx" "zai/glm-5" \
-		"zai/glm-5-turbo" "zai/glm-5.1" "zai/glm-5.2" "zai/glm-5.2-fast" \
-		"zai/glm-5v-turbo" {
+	on "aimlapi" "cloudflare-ai-gateway" "friendli" "opencode" "vercel-ai-gateway" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	}
+	on "alibaba-coding-plan" "alibaba-token-plan" {
+		thinking-format "qwen"
+	}
+	on "alibaba-coding-plan" "alibaba-token-plan" "wafer-serverless" {
+		supports-developer-role #false
+	}
+	on "cloudflare-ai-gateway" "vercel-ai-gateway" {
 		thinking-mode "budget"
 	}
-	models "glm-5.2-highspeed" "glm-5.2-highspeed[1m]" "zai-org/GLM-5.2-Fast" {
-		thinking-efforts "high" "max"
-	}
-	on "aiand" "aimlapi" "alibaba-coding-plan" "alibaba-token-plan" "baseten" "coreweave" "fireworks" "friendli" "huggingface" "kilo" "nanogpt" "novita" "nvidia" "ollama-cloud" "opencode" "opencode-go" "opencode-zen" "openrouter" "scaleway" "synthetic" "together" "wafer-serverless" "zenmux" "zhipu-coding-plan" {
-		thinking-mode "effort"
+	on "openrouter" "zhipu-coding-plan" {
+		family "air" {
+			thinking-efforts "minimal" "low" "medium" "high"
+		}
 	}
 }

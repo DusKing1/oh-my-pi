@@ -1,22 +1,17 @@
-// Deployment compat for provider "cloudflare-ai-gateway": transport/wire contract of this deployment,
-// plus per-model residues the class stratum does not explain.
+// Provider-wire compat for "cloudflare-ai-gateway"; regenerated from the frozen census using deployment contract selectors.
 
 provider "cloudflare-ai-gateway" {
-	class "unknown" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-		thinking-mode "budget"
+	class "anthropic" {
+		revision ">=4 <4.6" {
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+		}
 	}
-	models "anthropic/claude-fable-5" "anthropic/claude-opus-5" "anthropic/claude-sonnet-5" {
-		thinking-efforts "low" "medium" "high" "xhigh" "max"
-		thinking-mode "anthropic-adaptive"
-		thinking-supports-display #true
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "openai/gpt-5.1-codex" {
+		thinking-efforts "minimal" "low" "medium" "high"
 	}
-	models "anthropic/claude-haiku-4-5" "anthropic/claude-opus-4-1" "anthropic/claude-opus-4-5" "anthropic/claude-sonnet-4-5" \
-		"openai/o1" "openai/o3" "openai/o3-mini" "openai/o3-pro" \
-		"openai/o4-mini" {
-		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
-	}
-	models "anthropic/claude-opus-4" "anthropic/claude-sonnet-4" "claude-sonnet-4-5" {
+	// residue: taxonomy ranks and exact globs do not isolate these models.
+	models "workers-ai/@cf/nvidia/nemotron-3-120b-a12b" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 		thinking-mode "budget"
 	}
