@@ -1,3 +1,5 @@
+//! Transport seam contracts for in-process and RPC agent turns.
+
 use std::{
 	collections::VecDeque,
 	pin::Pin,

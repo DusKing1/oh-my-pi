@@ -18,7 +18,6 @@ mod mailbox;
 mod project;
 mod prompt;
 mod state;
-mod supervise;
 mod turn;
 
 pub use batch::{BatchError, BatchResult, CommittedCall, SpeculativeCall, ToolBatch};

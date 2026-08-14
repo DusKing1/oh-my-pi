@@ -5,9 +5,9 @@ use std::{fmt, sync::Arc, time::Duration};
 use bytes::Bytes;
 use futures::{StreamExt, stream::FuturesUnordered};
 use omp_core::{IntoStr, Str, StrMut};
-use omp_env::{ClientError, EnvClient, Invocation};
+use omp_env::{ClientError, EnvClient, Invocation, InvocationEvent};
 use omp_proto::{
-	env::v1::InvokeTool,
+	env::v1::{EventStreamError, InvokeTool, Verdict as EnvVerdict},
 	thread::v1::{Item, Part as CanonicalPart},
 };
 use omp_tool::{
@@ -19,7 +19,6 @@ use tokio::sync::watch;
 use crate::{
 	events::{AgentEvent, EventBus},
 	project::{tool_result_item, tool_result_item_canonical_parts},
-	supervise::{InvocationTerminal, drain_terminal, interrupt_with_grace},
 };
 
 /// Failure to open, relay, decode, project, or lower a tool invocation.
@@ -59,17 +58,221 @@ impl From<ClientError> for BatchError {
 	}
 }
 
+enum PumpCommand {
+	ArgText { fragment: Str, ack: flume::Sender<Result<(), ClientError>> },
+	Commit { raw: Bytes, ack: flume::Sender<Result<(), ClientError>> },
+	Interrupt { reason: Str, ack: flume::Sender<Result<(), ClientError>> },
+	Cancel { ack: flume::Sender<()> },
+}
+
+enum PumpTerminal {
+	Verdict(EnvVerdict),
+	StreamError(EventStreamError),
+	ClientError(ClientError),
+	Closed,
+	CancelUnobserved,
+}
+
+enum PumpOutput {
+	Update(Bytes),
+	Terminal(PumpTerminal),
+}
+
+struct InvocationPump {
+	commands: flume::Sender<PumpCommand>,
+	outputs:  flume::Receiver<PumpOutput>,
+}
+
+impl InvocationPump {
+	async fn arg_text(&self, fragment: Str) -> Result<(), BatchError> {
+		let (ack, reply) = flume::bounded(1);
+		self.send(PumpCommand::ArgText { fragment, ack })?;
+		reply.recv_async().await.map_err(|_| Self::closed())??;
+		Ok(())
+	}
+
+	async fn commit(&self, raw: Bytes) -> Result<(), BatchError> {
+		let (ack, reply) = flume::bounded(1);
+		self.send(PumpCommand::Commit { raw, ack })?;
+		reply.recv_async().await.map_err(|_| Self::closed())??;
+		Ok(())
+	}
+
+	async fn interrupt(&self, reason: Str) -> Result<(), BatchError> {
+		let (ack, reply) = flume::bounded(1);
+		self.send(PumpCommand::Interrupt { reason, ack })?;
+		reply.recv_async().await.map_err(|_| Self::closed())??;
+		Ok(())
+	}
+
+	async fn cancel(&self) -> Result<(), BatchError> {
+		let (ack, reply) = flume::bounded(1);
+		self.send(PumpCommand::Cancel { ack })?;
+		reply.recv_async().await.map_err(|_| Self::closed())
+	}
+
+	fn send(&self, command: PumpCommand) -> Result<(), BatchError> {
+		self.commands.send(command).map_err(|_| Self::closed())
+	}
+
+	fn closed() -> BatchError {
+		BatchError::Projection(Str::new_static("environment invocation pump closed"))
+	}
+
+	async fn output(&self) -> PumpOutput {
+		self
+			.outputs
+			.recv_async()
+			.await
+			.unwrap_or(PumpOutput::Terminal(PumpTerminal::Closed))
+	}
+}
+
+enum CommitAction {
+	Sent(Result<(), ClientError>),
+	Control(PumpCommand),
+	Closed,
+}
+
+fn spawn_invocation_pump(
+	mut invocation: Invocation,
+	call_id: Str,
+	events: EventBus,
+) -> InvocationPump {
+	let (commands, command_rx) = flume::unbounded();
+	let (output_tx, outputs) = flume::unbounded();
+	tokio::spawn(async move {
+		let mut args_text = StrMut::default();
+		loop {
+			tokio::select! {
+				command = command_rx.recv_async() => {
+					let Ok(command) = command else { break };
+					match command {
+						PumpCommand::ArgText { fragment, ack } => {
+							let result = invocation.arg_text(fragment.clone()).await;
+							if result.is_ok() {
+								args_text.push_str(&fragment);
+								let view = omp_slopjson::parse_streaming(args_text.as_str());
+								events.publish(AgentEvent::ToolArgs {
+									call_id: call_id.clone(),
+									fragment: Bytes::copy_from_slice(fragment.as_bytes()),
+									view,
+								});
+							}
+							let failed = result.is_err();
+							let _ = ack.send(result);
+							if failed {
+								break;
+							}
+						},
+						PumpCommand::Commit { raw, ack } => {
+							let action = {
+								let sent = invocation.commit_args(raw);
+								tokio::pin!(sent);
+								tokio::select! {
+									result = &mut sent => CommitAction::Sent(result),
+									control = command_rx.recv_async() => match control {
+										Ok(control) => CommitAction::Control(control),
+										Err(_) => CommitAction::Closed,
+									},
+								}
+							};
+							match action {
+								CommitAction::Sent(result) => {
+									let failed = result.is_err();
+									let _ = ack.send(result);
+									if failed {
+										break;
+									}
+								},
+								CommitAction::Control(PumpCommand::Interrupt {
+									reason,
+									ack: interrupt_ack,
+								}) => {
+									let result = invocation.interrupt(reason).await;
+									let failed = result.is_err();
+									let _ = interrupt_ack.send(result);
+									drop(ack);
+									if failed {
+										break;
+									}
+								},
+								CommitAction::Control(PumpCommand::Cancel { ack: cancel_ack }) => {
+									invocation.guard().cancel();
+									let _ = cancel_ack.send(());
+									drop(ack);
+								},
+								CommitAction::Control(command) => {
+									drop(command);
+									drop(ack);
+									break;
+								},
+								CommitAction::Closed => break,
+							}
+						},
+						PumpCommand::Interrupt { reason, ack } => {
+							let result = invocation.interrupt(reason).await;
+							let failed = result.is_err();
+							let _ = ack.send(result);
+							if failed {
+								break;
+							}
+						},
+						PumpCommand::Cancel { ack } => {
+							invocation.guard().cancel();
+							let _ = ack.send(());
+						},
+					}
+				},
+				event = invocation.next_event() => match event {
+					Ok(Some(InvocationEvent::Accepted(_))) => {},
+					Ok(Some(InvocationEvent::Update(update))) => {
+						let json = update.json;
+						events.publish(AgentEvent::ToolUpdate {
+							call_id: call_id.clone(),
+							json: json.clone(),
+						});
+						let _ = output_tx.send(PumpOutput::Update(json));
+					},
+					Ok(Some(InvocationEvent::Verdict(verdict))) => {
+						let _ = output_tx.send(PumpOutput::Terminal(
+							PumpTerminal::Verdict(verdict),
+						));
+						break;
+					},
+					Ok(Some(InvocationEvent::StreamError(error))) => {
+						let _ = output_tx.send(PumpOutput::Terminal(
+							PumpTerminal::StreamError(error),
+						));
+						break;
+					},
+					Ok(None) => {
+						let _ = output_tx.send(PumpOutput::Terminal(PumpTerminal::Closed));
+						break;
+					},
+					Err(error) => {
+						let _ = output_tx.send(PumpOutput::Terminal(
+							PumpTerminal::ClientError(error),
+						));
+						break;
+					},
+				},
+			}
+		}
+	});
+	InvocationPump { commands, outputs }
+}
+
 /// An environment invocation opened before its model arguments are committed.
 ///
 /// Relaying fragments may prepare environment-owned resources, but only
 /// [`commit`](Self::commit) creates a call eligible to send `ArgsCommitted`.
 /// Dropping this handle structurally cancels the uncommitted invocation.
 pub struct SpeculativeCall {
-	call_id:    Str,
-	identity:   ToolIdentity,
-	invocation: Invocation,
-	events:     EventBus,
-	args_text:  StrMut,
+	call_id:  Str,
+	identity: ToolIdentity,
+	pump:     InvocationPump,
+	events:   EventBus,
 }
 
 impl SpeculativeCall {
@@ -95,13 +298,8 @@ impl SpeculativeCall {
 			name:    identity.name.clone(),
 			rev:     identity.rev.clone(),
 		});
-		Ok(Self {
-			call_id,
-			identity,
-			invocation,
-			events: events.clone(),
-			args_text: StrMut::default(),
-		})
+		let pump = spawn_invocation_pump(invocation, call_id.clone(), events.clone());
+		Ok(Self { call_id, identity, pump, events: events.clone() })
 	}
 
 	/// Returns the stable model-authored call identifier.
@@ -114,18 +312,12 @@ impl SpeculativeCall {
 		&self.identity
 	}
 
-	/// Relays one provider argument fragment verbatim and publishes the retained
-	/// best-effort view of every fragment received so far.
+	/// Queues one provider argument fragment verbatim for the invocation owner.
+	///
+	/// The owner publishes the cumulative parsed view only after env/v1 accepts
+	/// the fragment, before it can observe and publish the resulting update.
 	pub async fn relay_fragment(&mut self, fragment: Str) -> Result<(), BatchError> {
-		self.invocation.arg_text(fragment.clone()).await?;
-		self.args_text.push_str(&fragment);
-		let view = omp_slopjson::parse_streaming(self.args_text.as_str());
-		self.events.publish(AgentEvent::ToolArgs {
-			call_id: self.call_id.clone(),
-			fragment: Bytes::copy_from_slice(fragment.as_bytes()),
-			view,
-		});
-		Ok(())
+		self.pump.arg_text(fragment).await
 	}
 
 	/// Binds authoritative committed argument bytes to this invocation.
@@ -138,7 +330,7 @@ impl SpeculativeCall {
 			call_id: self.call_id,
 			identity: self.identity,
 			raw_args,
-			invocation: self.invocation,
+			pump: self.pump,
 			events: self.events,
 		}
 	}
@@ -146,11 +338,11 @@ impl SpeculativeCall {
 
 /// An authoritative call waiting for the concurrent `ArgsCommitted` gate.
 pub struct CommittedCall {
-	call_id:    Str,
-	identity:   ToolIdentity,
-	raw_args:   Bytes,
-	invocation: Invocation,
-	events:     EventBus,
+	call_id:  Str,
+	identity: ToolIdentity,
+	raw_args: Bytes,
+	pump:     InvocationPump,
+	events:   EventBus,
 }
 
 impl CommittedCall {
@@ -248,10 +440,6 @@ impl ToolBatch {
 	}
 
 	/// Drives the batch with one watch-broadcast cooperative interrupt source.
-	///
-	/// The first nonempty reason interrupts every still-running call. Each call
-	/// gets `grace` to report a cooperative verdict before its `RunGuard` queues
-	/// structural cancellation; peers remain independent throughout.
 	pub async fn drive_interruptible(
 		self,
 		registry: &Registry,
@@ -264,7 +452,7 @@ impl ToolBatch {
 			.await
 	}
 
-	/// Drives an interruptible batch while copying exact updates to `updates`.
+	/// Drives an interruptible batch while forwarding each queued update once.
 	pub(crate) async fn drive_streaming(
 		self,
 		registry: &Registry,
@@ -314,7 +502,7 @@ impl ToolBatch {
 
 async fn run_call(
 	index: usize,
-	mut call: CommittedCall,
+	call: CommittedCall,
 	registry: &Registry,
 	caps: &PromptCaps,
 	mut interrupt: Option<watch::Receiver<Option<Str>>>,
@@ -335,68 +523,96 @@ async fn run_call(
 				let reason = format!("interrupted before execution: {reason}").to_str();
 				return (index, lower_abort_total(&call, Abort::Skipped { reason }));
 			},
-			result = call.invocation.commit_args(call.raw_args.clone()) => result,
+			result = call.pump.commit(call.raw_args.clone()) => result,
 		}
 	} else {
-		call.invocation.commit_args(call.raw_args.clone()).await
+		call.pump.commit(call.raw_args.clone()).await
 	};
 	if let Err(error) = commit {
 		let reason = format!("ArgsCommitted delivery failed: {error}").to_str();
 		return (index, lower_abort_total(&call, Abort::EffectsUnknown { reason }));
 	}
 
-	let mut publish_update = |update: omp_proto::env::v1::Update| {
-		let json = update.json;
-		call
-			.events
-			.publish(AgentEvent::ToolUpdate { call_id: call.call_id.clone(), json: json.clone() });
-		if let Some(updates) = updates.as_ref() {
-			let _ = updates.send(BatchUpdate {
-				call_id: call.call_id.clone(),
-				identity: call.identity.clone(),
-				json,
-			});
-		}
-	};
 	let terminal = if let Some(receiver) = interrupt.as_mut() {
 		tokio::select! {
-			terminal = drain_terminal(&mut call.invocation, &mut publish_update) => terminal,
+			terminal = drain_pump(&call, updates.as_ref()) => terminal,
 			reason = wait_for_interrupt(receiver) => {
-				interrupt_with_grace(
-					&mut call.invocation,
-					reason,
-					grace,
-					&mut publish_update,
-				).await
+				interrupt_pump_with_grace(&call, updates.as_ref(), reason, grace).await
 			},
 		}
 	} else {
-		drain_terminal(&mut call.invocation, &mut publish_update).await
+		drain_pump(&call, updates.as_ref()).await
 	};
-
 	let result = match terminal {
-		Ok(InvocationTerminal::Verdict(verdict)) => lower_verdict(&call, registry, caps, verdict)
+		PumpTerminal::Verdict(verdict) => lower_verdict(&call, registry, caps, verdict)
 			.unwrap_or_else(|error| {
 				lower_abort_total(&call, Abort::EffectsUnknown {
 					reason: format!("failed to lower environment verdict: {error}").to_str(),
 				})
 			}),
-		Ok(InvocationTerminal::StreamError(error)) => {
-			lower_abort_total(&call, Abort::EffectsUnknown {
-				reason: format!("environment invocation stream lost: {}", error.message).to_str(),
-			})
-		},
-		Ok(InvocationTerminal::Closed) => lower_abort_total(&call, Abort::MissingOutcome),
-		Ok(InvocationTerminal::CancelUnobserved) => lower_abort_total(&call, Abort::EffectsUnknown {
+		PumpTerminal::StreamError(error) => lower_abort_total(&call, Abort::EffectsUnknown {
+			reason: format!("environment invocation stream lost: {}", error.message).to_str(),
+		}),
+		PumpTerminal::Closed => lower_abort_total(&call, Abort::MissingOutcome),
+		PumpTerminal::CancelUnobserved => lower_abort_total(&call, Abort::EffectsUnknown {
 			reason: Str::new_static(
 				"environment owner did not report terminal truth after cancellation",
 			),
 		}),
-		Err(error) => lower_abort_total(&call, Abort::EffectsUnknown {
+		PumpTerminal::ClientError(error) => lower_abort_total(&call, Abort::EffectsUnknown {
 			reason: format!("environment invocation failed: {error}").to_str(),
 		}),
 	};
 	(index, result)
+}
+
+async fn drain_pump(
+	call: &CommittedCall,
+	updates: Option<&flume::Sender<BatchUpdate>>,
+) -> PumpTerminal {
+	loop {
+		match call.pump.output().await {
+			PumpOutput::Update(json) => {
+				if let Some(updates) = updates {
+					let _ = updates.send(BatchUpdate {
+						call_id: call.call_id.clone(),
+						identity: call.identity.clone(),
+						json,
+					});
+				}
+			},
+			PumpOutput::Terminal(terminal) => return terminal,
+		}
+	}
+}
+
+async fn interrupt_pump_with_grace(
+	call: &CommittedCall,
+	updates: Option<&flume::Sender<BatchUpdate>>,
+	reason: Str,
+	grace: Duration,
+) -> PumpTerminal {
+	let cooperative = async {
+		call.pump.interrupt(reason).await?;
+		Ok::<_, BatchError>(drain_pump(call, updates).await)
+	};
+	match tokio::time::timeout(grace, cooperative).await {
+		Ok(Ok(terminal)) => terminal,
+		Ok(Err(_)) | Err(_) => {
+			let forced = async {
+				let _ = call.pump.cancel().await;
+				drain_pump(call, updates).await
+			};
+			match tokio::time::timeout(grace, forced).await {
+				Ok(PumpTerminal::Verdict(verdict)) => PumpTerminal::Verdict(verdict),
+				Ok(PumpTerminal::StreamError(error)) => PumpTerminal::StreamError(error),
+				Ok(PumpTerminal::ClientError(error)) => PumpTerminal::ClientError(error),
+				Ok(PumpTerminal::Closed | PumpTerminal::CancelUnobserved) | Err(_) => {
+					PumpTerminal::CancelUnobserved
+				},
+			}
+		},
+	}
 }
 
 async fn wait_for_interrupt(receiver: &mut watch::Receiver<Option<Str>>) -> Str {
@@ -754,5 +970,103 @@ mod tests {
 		assert_eq!(args_events[1].0, Bytes::from_static(br#""command":"cargo ch"#));
 		assert_eq!(args_events[1].1["path"].as_str(), Some("src/main.rs"));
 		assert_eq!(args_events[1].1["command"].as_str(), Some("cargo ch"));
+	}
+
+	#[tokio::test]
+	async fn speculative_update_publishes_before_commit_then_completes_once() {
+		let (client, transport) = EnvClient::in_process(0);
+		let (requests, responses) = transport.into_parts();
+		let events = EventBus::new();
+		let observed = events.subscribe_lossless();
+		let mut call = SpeculativeCall::open(
+			&client,
+			&events,
+			Str::new_static("preview"),
+			identity("preview_tool"),
+			Duration::from_secs(1),
+		)
+		.await
+		.expect("open speculative call");
+		let opened = requests.recv_async().await.expect("InvokeTool frame");
+		let request_id = opened.request_id;
+		assert!(matches!(opened.body, Some(client_frame::Body::InvokeTool(_))));
+
+		call
+			.relay_fragment(Str::new_static(r#"{"path":"src/lib.rs"}"#))
+			.await
+			.expect("relay speculative arguments");
+		let fragment = requests.recv_async().await.expect("ArgText frame");
+		assert!(matches!(fragment.body, Some(client_frame::Body::ArgText(_))));
+		responses
+			.send_async(frame::ServerFrame {
+				request_id,
+				body: Some(server_frame::Body::Update(frame::Update {
+					invocation_id: "preview".into(),
+					json: Bytes::from_static(br#"{"diff":"+preview"}"#),
+					..Default::default()
+				})),
+				..Default::default()
+			})
+			.await
+			.expect("speculative update");
+
+		let mut saw_args = false;
+		let mut update_count = 0;
+		let mut saw_update = false;
+		while !saw_update {
+			let event = tokio::time::timeout(Duration::from_secs(1), observed.recv())
+				.await
+				.expect("speculative event timeout")
+				.expect("event subscriber");
+			match event.as_ref() {
+				AgentEvent::ToolArgs { .. } => saw_args = true,
+				AgentEvent::ToolUpdate { json, .. } => {
+					assert!(saw_args, "ToolArgs must precede its speculative ToolUpdate");
+					assert_eq!(json, &Bytes::from_static(br#"{"diff":"+preview"}"#));
+					update_count += 1;
+					saw_update = true;
+				},
+				_ => {},
+			}
+		}
+		assert!(requests.try_recv().is_err(), "speculative update authorized effects before commit");
+
+		let drive = tokio::spawn(async move {
+			ToolBatch::new(vec![call.commit(Bytes::from_static(br#"{"path":"src/lib.rs"}"#))])
+				.drive(&Registry::new(), &caps())
+				.await
+		});
+		let commit = requests.recv_async().await.expect("ArgsCommitted frame");
+		assert!(matches!(
+			&commit.body,
+			Some(client_frame::Body::ArgsCommitted(committed))
+				if committed.raw == Bytes::from_static(br#"{"path":"src/lib.rs"}"#)
+		));
+		responses
+			.send_async(frame::ServerFrame {
+				request_id,
+				body: Some(server_frame::Body::Verdict(frame::Verdict {
+					invocation_id: "preview".into(),
+					json: Bytes::from_static(br#"{"kind":"ok","value":{"applied":true}}"#),
+					parts: vec![ThreadPart { kind: Some(part::Kind::Text("applied".into())) }],
+					..Default::default()
+				})),
+				..Default::default()
+			})
+			.await
+			.expect("terminal verdict");
+		let results = drive.await.expect("batch task");
+		assert_eq!(results.len(), 1);
+		assert_eq!(terminal_text(&results[0]), "applied");
+		let mut finished = 0;
+		while let Ok(event) = observed.try_recv() {
+			match event.as_ref() {
+				AgentEvent::ToolFinished { .. } => finished += 1,
+				AgentEvent::ToolUpdate { .. } => update_count += 1,
+				_ => {},
+			}
+		}
+		assert_eq!(finished, 1, "committed call must complete exactly once");
+		assert_eq!(update_count, 1, "speculative update must publish exactly once");
 	}
 }

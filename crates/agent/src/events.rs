@@ -2,7 +2,7 @@
 
 use std::sync::{
 	Arc,
-	atomic::{AtomicU64, Ordering},
+	atomic::{AtomicU8, AtomicU64, Ordering},
 };
 
 use bytes::Bytes;
@@ -26,6 +26,26 @@ pub enum AgentPhase {
 	Turning,
 	/// Executing a committed batch of tool calls.
 	ToolBatch,
+}
+
+impl AgentPhase {
+	const fn encode(self) -> u8 {
+		match self {
+			Self::Idle => 0,
+			Self::Projecting => 1,
+			Self::Turning => 2,
+			Self::ToolBatch => 3,
+		}
+	}
+
+	const fn decode(encoded: u8) -> Self {
+		match encoded {
+			1 => Self::Projecting,
+			2 => Self::Turning,
+			3 => Self::ToolBatch,
+			_ => Self::Idle,
+		}
+	}
 }
 
 /// One immutable observation emitted by the agent loop.
@@ -114,6 +134,7 @@ struct Subscribers {
 struct EventBusInner {
 	subscribers:   Mutex<Subscribers>,
 	dropped_lossy: AtomicU64,
+	phase:         AtomicU8,
 }
 
 /// Cloneable ordered fan-out for immutable shared agent events.
@@ -180,9 +201,16 @@ impl EventBus {
 		event
 	}
 
-	/// Publishes a phase transition.
+	/// Publishes a phase transition after updating the allocation-free phase
+	/// snapshot.
 	pub fn transition(&self, from: AgentPhase, to: AgentPhase) -> Arc<AgentEvent> {
+		self.inner.phase.store(to.encode(), Ordering::Release);
 		self.publish(AgentEvent::PhaseChanged { from, to })
+	}
+
+	/// Returns the latest phase without subscribing or allocating.
+	pub fn phase(&self) -> AgentPhase {
+		AgentPhase::decode(self.inner.phase.load(Ordering::Acquire))
 	}
 
 	/// Returns the cumulative number of events dropped by all lossy subscribers.
@@ -248,5 +276,33 @@ impl LossyEventSubscription {
 	/// Returns whether this subscriber currently has no buffered events.
 	pub fn is_empty(&self) -> bool {
 		self.rx.is_empty()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{AgentEvent, AgentPhase, EventBus};
+
+	#[test]
+	fn phase_snapshot_tracks_transitions_across_clones() {
+		let bus = EventBus::new();
+		let clone = bus.clone();
+		let events = bus.subscribe_lossless();
+
+		assert_eq!(bus.phase(), AgentPhase::Idle);
+		clone.transition(AgentPhase::Idle, AgentPhase::Projecting);
+		assert_eq!(bus.phase(), AgentPhase::Projecting);
+
+		let event = events
+			.try_recv()
+			.expect("transition must remain observable");
+		assert!(matches!(event.as_ref(), AgentEvent::PhaseChanged {
+			from: AgentPhase::Idle,
+			to:   AgentPhase::Projecting,
+		}));
+		assert_eq!(clone.phase(), AgentPhase::Projecting);
+
+		bus.transition(AgentPhase::Projecting, AgentPhase::Turning);
+		assert_eq!(clone.phase(), AgentPhase::Turning);
 	}
 }
