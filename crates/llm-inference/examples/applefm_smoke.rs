@@ -12,8 +12,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		return Ok(());
 	}
 	let model = AppleFm::load().await?;
-	let mut stream =
-		model.stream(AppleFmOptions::new("Reply with exactly: available").max_tokens(8))?;
+	let mut stream = model.stream(
+		AppleFmOptions::new("Reply with exactly: available")
+			.system_prompt("Follow the user's response-format instruction exactly.")
+			.max_tokens(8),
+	)?;
 	let mut finished = false;
 	while let Some(event) = stream.next().await {
 		match event? {

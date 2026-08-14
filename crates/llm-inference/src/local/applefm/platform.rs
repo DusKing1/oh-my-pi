@@ -283,6 +283,36 @@ struct SwiftString {
 	object: usize,
 }
 
+struct OwnedSwiftString {
+	raw:     SwiftString,
+	release: SwiftBridgeRelease,
+}
+
+impl OwnedSwiftString {
+	const fn new(raw: SwiftString, release: SwiftBridgeRelease) -> Self {
+		Self { raw, release }
+	}
+
+	const fn raw(&self) -> SwiftString {
+		self.raw
+	}
+
+	fn into_raw(self) -> SwiftString {
+		let raw = self.raw;
+		mem::forget(self);
+		raw
+	}
+}
+
+impl Drop for OwnedSwiftString {
+	fn drop(&mut self) {
+		if self.raw.object != 0 {
+			// SAFETY: raw contains a caller-owned Swift String bridge object.
+			unsafe { (self.release)(ptr::with_exposed_provenance_mut(self.raw.object)) };
+		}
+	}
+}
+
 #[repr(C)]
 struct ErrorMetadataName {
 	bytes:    [u8; 8],
@@ -491,23 +521,17 @@ impl SnapshotStringBridge {
 	}
 
 	fn to_rust(self, value: SwiftString) -> std::result::Result<String, BridgeFailure> {
+		let value = OwnedSwiftString::new(value, self.bridge_release);
 		// SAFETY: value is an initialized Swift String returned by the snapshot getter.
-		let ns_string = unsafe { (self.to_ns_string)(value) };
-		let result = if ns_string.is_null() {
+		let ns_string = unsafe { (self.to_ns_string)(value.raw()) };
+		if ns_string.is_null() {
 			Err(BridgeFailure::runtime("Could not bridge generated text to NSString"))
 		} else {
 			let result = ns_string_to_rust_with(ns_string, self.length, self.maximum, self.copy);
 			// SAFETY: The bridge returns a +1 NSString consumed after conversion.
 			unsafe { (self.release)(ns_string) };
 			result
-		};
-		// SAFETY: The caller-owned Swift String must be released after bridging.
-		unsafe {
-			if value.object != 0 {
-				(self.bridge_release)(ptr::with_exposed_provenance_mut(value.object));
-			}
 		}
-		result
 	}
 }
 
@@ -1021,25 +1045,25 @@ fn create_session(
 	let initialize = unsafe { runtime.symbol::<*const c_void>(SESSION_INIT)? };
 	// SAFETY: swift_release has the declared Swift reference-counting ABI.
 	let release: SwiftRelease = unsafe { runtime.symbol(c"swift_release")? };
-	// SAFETY: swift_bridgeObjectRelease has the declared Swift ABI.
-	let bridge_release: SwiftBridgeRelease =
-		unsafe { runtime.symbol(c"swift_bridgeObjectRelease")? };
 	let instructions = system_prompt
 		.map(|value| to_swift_string(runtime, value))
 		.transpose()?;
-	let (first, object) = instructions.map_or((0, 0), |value| (value.first, value.object));
-	// SAFETY: The model carries a +1 ownership consumed by the initializer. The
-	// optional instructions remain live for the synchronous call, and metadata is
-	// complete.
+	let (first, object) = instructions.map_or((0, 0), |value| {
+		let value = value.into_raw();
+		(value.first, value.object)
+	});
+	// SAFETY: `swiftc -emit-sil` lowers this exact initializer as
+	// `@convention(method) (@owned SystemLanguageModel, @owned Array<any Tool>,
+	// @owned Optional<String>, @thick LanguageModelSession.Type)`: the call
+	// consumes the model, the tools array, and the instructions string at +1,
+	// so no release follows (unlike the borrowing `streamResponse` method in
+	// `create_stream`, whose SIL takes its arguments `@guaranteed`). The -O
+	// assembly of the same call confirms caller-side retains before the call
+	// and no releases after. Metadata is complete.
 	let session = unsafe {
 		apple_fm_session_init(model.pointer, first, object, metadata, empty_tools, initialize)
 	};
 	model.pointer = null_mut();
-	if object != 0 {
-		// SAFETY: `to_swift_string` returned a caller-owned bridge object and the
-		// synchronous initializer has finished borrowing it.
-		unsafe { bridge_release(ptr::with_exposed_provenance_mut(object)) };
-	}
 	SwiftObject::new(session, release, "language model session")
 }
 
@@ -1059,8 +1083,8 @@ fn create_options(
 	let maximum = isize::try_from(max_tokens.unwrap_or_default())
 		.map_err(|error| BridgeFailure::runtime(format!("Invalid maximum token count: {error}")))?;
 	let maximum_tag = usize::from(max_tokens.is_none());
-	// SAFETY: options is uninitialized output storage and sampling is an
-	// initialized Optional.none.
+	// SAFETY: options is uninitialized output storage. The initializer consumes
+	// the initialized Optional.none in sampling.
 	unsafe {
 		apple_fm_options_init(
 			options.pointer,
@@ -1072,6 +1096,7 @@ fn create_options(
 			runtime.symbol::<*const c_void>(OPTIONS_INIT)?,
 		);
 	};
+	sampling.initialized = false;
 	options.initialized = true;
 	Ok(options)
 }
@@ -1084,12 +1109,10 @@ fn create_stream(
 ) -> std::result::Result<SwiftValue, BridgeFailure> {
 	let stream_metadata = runtime.metadata(STREAM_METADATA_NAME)?;
 	let mut stream = SwiftValue::new(stream_metadata)?;
-	// SAFETY: swift_bridgeObjectRelease has the declared Swift ABI.
-	let bridge_release: SwiftBridgeRelease =
-		unsafe { runtime.symbol(c"swift_bridgeObjectRelease")? };
 	// SAFETY: STREAM_RESPONSE resolves to the compiled synchronous method.
 	let stream_response = unsafe { runtime.symbol::<*const c_void>(STREAM_RESPONSE)? };
 	let prompt = to_swift_string(runtime, prompt)?;
+	let prompt_value = prompt.raw();
 	// SAFETY: The local bridge adapts streamResponse's x8/x20 convention.
 	// SAFETY: session/options/prompt are initialized and stream is matching
 	// uninitialized output storage. The prompt is guaranteed for this call.
@@ -1097,17 +1120,12 @@ fn create_stream(
 		apple_fm_stream_response(
 			stream.pointer,
 			session,
-			prompt.first,
-			prompt.object,
+			prompt_value.first,
+			prompt_value.object,
 			options,
 			stream_response,
 		);
 	};
-	if prompt.object != 0 {
-		// SAFETY: `to_swift_string` returned a caller-owned bridge object and the
-		// synchronous method has finished borrowing it.
-		unsafe { bridge_release(ptr::with_exposed_provenance_mut(prompt.object)) };
-	}
 	stream.initialized = true;
 	Ok(stream)
 }
@@ -1115,9 +1133,7 @@ fn create_stream(
 fn to_swift_string(
 	runtime: &Runtime,
 	value: &str,
-) -> std::result::Result<SwiftString, BridgeFailure> {
-	// SAFETY: These symbol types match their CoreFoundation and Swift Foundation
-	// ABIs.
+) -> std::result::Result<OwnedSwiftString, BridgeFailure> {
 	// SAFETY: These symbols match their CoreFoundation and Swift Foundation ABIs.
 	let create: CFStringCreateWithBytes = unsafe { runtime.symbol(c"CFStringCreateWithBytes")? };
 	// SAFETY: The Swift bridge symbol has the declared Foundation ABI.
@@ -1125,6 +1141,9 @@ fn to_swift_string(
 		runtime
 			.symbol(c"$sSS10FoundationE36_unconditionallyBridgeFromObjectiveCySSSo8NSStringCSgFZ")?
 	};
+	// SAFETY: swift_bridgeObjectRelease has the declared Swift ABI.
+	let bridge_release: SwiftBridgeRelease =
+		unsafe { runtime.symbol(c"swift_bridgeObjectRelease")? };
 	// SAFETY: CFRelease has the declared CoreFoundation ABI.
 	let release: CFRelease = unsafe { runtime.symbol(c"CFRelease")? };
 	let length = isize::try_from(value.len())
@@ -1140,7 +1159,7 @@ fn to_swift_string(
 	// SAFETY: CFStringCreateWithBytes returned a +1 object which the Swift bridge
 	// has finished reading.
 	unsafe { release(ns_string) };
-	Ok(result)
+	Ok(OwnedSwiftString::new(result, bridge_release))
 }
 
 fn ns_string_to_rust(
