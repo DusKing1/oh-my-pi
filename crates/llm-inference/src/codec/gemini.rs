@@ -321,12 +321,26 @@ pub struct GoogleToolConfig {
 	pub function_calling_config: GoogleFunctionCallingConfig,
 }
 
+/// Google function calling mode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum GoogleFunctionCallingMode {
+	/// Model decides whether to call functions.
+	Auto,
+	/// Model must not call functions.
+	None,
+	/// Model must call a function.
+	Any,
+	/// Antigravity validated function calling mode.
+	Validated,
+}
+
 /// Function calling mode and optional named allowlist.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GoogleFunctionCallingConfig {
-	/// `AUTO`, `NONE`, or `ANY`.
-	pub mode:                   Str,
+	/// Function calling mode (`AUTO`, `NONE`, `ANY`, or `VALIDATED`).
+	pub mode:                   GoogleFunctionCallingMode,
 	/// Allowed function names for named forcing.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub allowed_function_names: Vec<Str>,
@@ -1398,23 +1412,20 @@ fn project_tool_choice(
 		};
 	}
 	let (mode, allowed_function_names) = match choice {
-		ToolChoice::Disabled => ("NONE", Vec::new()),
-		ToolChoice::Auto => ("AUTO", Vec::new()),
-		ToolChoice::Required => ("ANY", Vec::new()),
+		ToolChoice::Disabled => (GoogleFunctionCallingMode::None, Vec::new()),
+		ToolChoice::Auto => (GoogleFunctionCallingMode::Auto, Vec::new()),
+		ToolChoice::Required => (GoogleFunctionCallingMode::Any, Vec::new()),
 		ToolChoice::Named(name) => {
 			if !tools.iter().any(|tool| tool.name == *name) {
 				return Err(GoogleCodecError::encoding(format!(
 					"named Google tool choice `{name}` is not declared"
 				)));
 			}
-			("ANY", vec![name.clone()])
+			(GoogleFunctionCallingMode::Any, vec![name.clone()])
 		},
 	};
 	Ok(Some(GoogleToolConfig {
-		function_calling_config: GoogleFunctionCallingConfig {
-			mode: mode.into(),
-			allowed_function_names,
-		},
+		function_calling_config: GoogleFunctionCallingConfig { mode, allowed_function_names },
 	}))
 }
 

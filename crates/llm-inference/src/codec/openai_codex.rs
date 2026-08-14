@@ -12,7 +12,7 @@ use super::openai_responses::{
 	ResponsesInputItem, ResponsesInputItemKind, ResponsesMetadata, ResponsesMetadataValue,
 	ResponsesNamedToolKind, ResponsesOutputItem, ResponsesReasoning, ResponsesRequest,
 	ResponsesRole, ResponsesStreamEvent, ResponsesStreamEventKind, ResponsesStreamOptions,
-	ResponsesTool, ResponsesToolChoice, ResponsesToolKind,
+	ResponsesTool, ResponsesToolChoice, ResponsesToolChoiceMode, ResponsesToolKind,
 };
 
 const CODEX_CLIENT_VERSION: &str = "0.144.1";
@@ -261,10 +261,9 @@ pub fn transform_codex_request(
 		request.input.insert(position, message);
 	}
 	request.tool_choice = Some(match request.tool_choice.take() {
-		Some(ResponsesToolChoice::Mode(mode)) if mode == "none" => ResponsesToolChoice::Mode(mode),
-		Some(ResponsesToolChoice::Mode(mode)) if mode == "required" => {
-			ResponsesToolChoice::Mode(mode)
-		},
+		Some(ResponsesToolChoice::Mode(
+			mode @ (ResponsesToolChoiceMode::None | ResponsesToolChoiceMode::Required),
+		)) => ResponsesToolChoice::Mode(mode),
 		Some(ResponsesToolChoice::Named(choice))
 			if matches!(
 				choice.kind,
@@ -273,9 +272,9 @@ pub fn transform_codex_request(
 					| ResponsesNamedToolKind::Computer
 			) =>
 		{
-			ResponsesToolChoice::Mode(Str::from("required"))
+			ResponsesToolChoice::Mode(ResponsesToolChoiceMode::Required)
 		},
-		_ => ResponsesToolChoice::Mode(Str::from("auto")),
+		_ => ResponsesToolChoice::Mode(ResponsesToolChoiceMode::Auto),
 	});
 	Ok(())
 }

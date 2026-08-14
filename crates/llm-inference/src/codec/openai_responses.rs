@@ -484,12 +484,24 @@ pub struct ResponsesNamedToolChoice {
 	pub name: Option<Str>,
 }
 
+/// Responses tool-choice mode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponsesToolChoiceMode {
+	/// Model decides whether to call tools.
+	Auto,
+	/// Model must not call tools.
+	None,
+	/// Model must call at least one tool.
+	Required,
+}
+
 /// Responses tool-choice value.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ResponsesToolChoice {
 	/// `none`, `auto`, or `required`.
-	Mode(Str),
+	Mode(ResponsesToolChoiceMode),
 	/// Named or hosted tool selection.
 	Named(ResponsesNamedToolChoice),
 }
@@ -2423,9 +2435,9 @@ impl OpenAiResponsesCodec {
 		let tool_choice = match &request.tool_choice {
 			Setting::Unset => None,
 			Setting::Require(value) | Setting::Prefer(value) => Some(match value {
-				ToolChoice::Disabled => ResponsesToolChoice::Mode(Str::from("none")),
-				ToolChoice::Auto => ResponsesToolChoice::Mode(Str::from("auto")),
-				ToolChoice::Required => ResponsesToolChoice::Mode(Str::from("required")),
+				ToolChoice::Disabled => ResponsesToolChoice::Mode(ResponsesToolChoiceMode::None),
+				ToolChoice::Auto => ResponsesToolChoice::Mode(ResponsesToolChoiceMode::Auto),
+				ToolChoice::Required => ResponsesToolChoice::Mode(ResponsesToolChoiceMode::Required),
 				ToolChoice::Named(name) => {
 					let kind = tools
 						.iter()

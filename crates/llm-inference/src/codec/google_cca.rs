@@ -198,7 +198,7 @@ pub fn wrap_antigravity_request(
 	if metadata.validated_tool_config {
 		request.tool_config = Some(super::gemini::GoogleToolConfig {
 			function_calling_config: super::gemini::GoogleFunctionCallingConfig {
-				mode:                   "VALIDATED".into(),
+				mode:                   super::gemini::GoogleFunctionCallingMode::Validated,
 				allowed_function_names: Vec::new(),
 			},
 		});

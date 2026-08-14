@@ -372,17 +372,27 @@ pub struct OutputConfig {
 }
 
 /// Anthropic tool-choice control.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct WireToolChoice {
-	/// `auto`, `any`, `tool`, or `none`.
-	#[serde(rename = "type")]
-	pub kind: Str,
-	/// Required tool name for `tool`.
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub name: Option<Str>,
-	/// Disable parallel caller-tool calls.
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub disable_parallel_tool_use: Option<bool>,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WireToolChoice {
+	/// Model decides automatically.
+	Auto {
+		#[serde(skip_serializing_if = "Option::is_none")]
+		disable_parallel_tool_use: Option<bool>,
+	},
+	/// Model must call any available tool.
+	Any {
+		#[serde(skip_serializing_if = "Option::is_none")]
+		disable_parallel_tool_use: Option<bool>,
+	},
+	/// Model must call the specified tool.
+	Tool {
+		name: Str,
+		#[serde(skip_serializing_if = "Option::is_none")]
+		disable_parallel_tool_use: Option<bool>,
+	},
+	/// Model must not call any tool.
+	None,
 }
 
 /// Typed Anthropic container selector.
@@ -870,25 +880,11 @@ fn cache_control(setting: &Setting<CacheRetention>) -> Option<CacheControl> {
 
 fn lower_tool_choice(setting: &Setting<ToolChoice>) -> Option<WireToolChoice> {
 	setting_value(setting).map(|choice| match choice {
-		ToolChoice::Disabled => WireToolChoice {
-			kind: Str::new_static("none"),
-			name: None,
-			disable_parallel_tool_use: None,
-		},
-		ToolChoice::Auto => WireToolChoice {
-			kind: Str::new_static("auto"),
-			name: None,
-			disable_parallel_tool_use: None,
-		},
-		ToolChoice::Required => WireToolChoice {
-			kind: Str::new_static("any"),
-			name: None,
-			disable_parallel_tool_use: None,
-		},
-		ToolChoice::Named(name) => WireToolChoice {
-			kind: Str::new_static("tool"),
-			name: Some(name.clone()),
-			disable_parallel_tool_use: None,
+		ToolChoice::Disabled => WireToolChoice::None,
+		ToolChoice::Auto => WireToolChoice::Auto { disable_parallel_tool_use: None },
+		ToolChoice::Required => WireToolChoice::Any { disable_parallel_tool_use: None },
+		ToolChoice::Named(name) => {
+			WireToolChoice::Tool { name: name.clone(), disable_parallel_tool_use: None }
 		},
 	})
 }
@@ -2529,5 +2525,39 @@ mod tests {
 		let mut truncated =
 			CountTokensDecoder { done: false, wire_model: Str::new_static("claude-sonnet-4-6") };
 		assert_eq!(truncated.finish(&mut |_| {}).unwrap_err().kind, ErrorKind::StreamCorruption);
+	}
+
+	#[test]
+	fn wire_tool_choice_serialization_round_trips() {
+		assert_eq!(serde_json::to_string(&WireToolChoice::None).unwrap(), r#"{"type":"none"}"#);
+		assert_eq!(
+			serde_json::to_string(&WireToolChoice::Auto { disable_parallel_tool_use: None }).unwrap(),
+			r#"{"type":"auto"}"#
+		);
+		assert_eq!(
+			serde_json::to_string(&WireToolChoice::Auto { disable_parallel_tool_use: Some(true) })
+				.unwrap(),
+			r#"{"type":"auto","disable_parallel_tool_use":true}"#
+		);
+		assert_eq!(
+			serde_json::to_string(&WireToolChoice::Any { disable_parallel_tool_use: None }).unwrap(),
+			r#"{"type":"any"}"#
+		);
+		assert_eq!(
+			serde_json::to_string(&WireToolChoice::Tool {
+				name: Str::new_static("bash"),
+				disable_parallel_tool_use: None,
+			})
+			.unwrap(),
+			r#"{"type":"tool","name":"bash"}"#
+		);
+
+		let decoded: WireToolChoice =
+			serde_json::from_str(r#"{"type":"tool","name":"eval","disable_parallel_tool_use":true}"#)
+				.unwrap();
+		assert_eq!(decoded, WireToolChoice::Tool {
+			name: Str::new_static("eval"),
+			disable_parallel_tool_use: Some(true),
+		});
 	}
 }
