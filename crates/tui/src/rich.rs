@@ -628,8 +628,34 @@ pub trait Pipeline: RichSink + Sized {
 	/// Flows output grapheme-exact to `width` like a bare terminal: every
 	/// width break is a byte-preserving [`RichSink::soft_wrap`], so joined
 	/// rows reproduce the source exactly in native copy.
-	fn wrap_chars(self, width: u16) -> CharWrap<Self> {
-		CharWrap { inner: self, width: width.max(1), used: 0 }
+	fn wrap_chars(self, width: u16) -> CharWrap<'static, Self> {
+		CharWrap {
+			inner:        self,
+			width:        width.max(1),
+			first:        Prefix::empty_ref(),
+			cont:         Prefix::empty_ref(),
+			line_width:   0,
+			emitted:      false,
+			continuation: false,
+		}
+	}
+
+	/// Character-wraps output using first-row and continuation prefixes.
+	fn wrap_chars_prefixed<'p>(
+		self,
+		width: u16,
+		first: &'p Prefix,
+		cont: &'p Prefix,
+	) -> CharWrap<'p, Self> {
+		CharWrap {
+			inner: self,
+			width: width.max(1),
+			first,
+			cont,
+			line_width: 0,
+			emitted: false,
+			continuation: false,
+		}
 	}
 
 	/// Word-wraps output using first-row and continuation prefixes.
@@ -654,41 +680,82 @@ pub trait Pipeline: RichSink + Sized {
 }
 
 impl<S: RichSink> Pipeline for S {}
+
 /// A terminal-exact wrapping sink adapter.
 ///
-/// Graphemes flow to the exact width with all whitespace preserved and
-/// every width break emitted as a soft wrap — the wrapping a bare terminal
-/// performs, so the renderer can re-join rows byte-for-byte.
-pub struct CharWrap<S: RichSink> {
-	inner: S,
-	width: u16,
-	used:  u16,
+/// Graphemes flow to the exact width with all whitespace preserved.
+/// Bare overflows soft-wrap, while non-empty continuations hard-break.
+pub struct CharWrap<'p, S: RichSink> {
+	inner:        S,
+	width:        u16,
+	first:        &'p Prefix,
+	cont:         &'p Prefix,
+	line_width:   u16,
+	emitted:      bool,
+	continuation: bool,
 }
 
-impl<S: RichSink> RichSink for CharWrap<S> {
+impl<S: RichSink> CharWrap<'_, S> {
+	fn start_row(&mut self) {
+		if self.emitted {
+			return;
+		}
+		let prefix = if self.continuation {
+			self.cont
+		} else {
+			self.first
+		};
+		prefix.emit_clipped(self.width, &mut self.inner);
+		self.line_width = prefix.width().min(self.width);
+		self.emitted = true;
+	}
+}
+
+impl<S: RichSink> RichSink for CharWrap<'_, S> {
 	fn run(&mut self, style: Style, text: &str) {
 		for grapheme in text.graphemes() {
-			let grapheme_width = cell_width(grapheme);
-			if grapheme_width > self.width {
+			let w = cell_width(grapheme);
+			if w > self.width {
 				continue;
 			}
-			if grapheme_width > 0 && self.used.saturating_add(grapheme_width) > self.width {
-				self.inner.soft_wrap();
-				self.used = 0;
+
+			self.start_row();
+
+			if w > 0 && self.line_width.saturating_add(w) > self.width {
+				if self.cont.width().min(self.width).saturating_add(w) > self.width {
+					continue;
+				}
+				if self.cont.is_empty() {
+					self.inner.soft_wrap();
+				} else {
+					self.inner.newline();
+				}
+				self.emitted = false;
+				self.continuation = true;
+				self.start_row();
 			}
+
 			self.inner.run(style, grapheme);
-			self.used = self.used.saturating_add(grapheme_width);
+			self.line_width = self.line_width.saturating_add(w);
 		}
 	}
 
 	fn newline(&mut self) {
+		self.start_row();
 		self.inner.newline();
-		self.used = 0;
+		self.emitted = false;
+		self.continuation = false;
 	}
 
 	fn soft_wrap(&mut self) {
-		self.inner.soft_wrap();
-		self.used = 0;
+		self.start_row();
+		if self.cont.is_empty() {
+			self.inner.soft_wrap();
+		} else {
+			self.inner.newline();
+		}
+		self.emitted = false;
+		self.continuation = true;
 	}
 }
 
@@ -1223,7 +1290,7 @@ mod tests {
 		let mut output = RichText::default();
 		let mut wrap = (&mut output).wrap(3);
 		wrap.run(Style::new(), "abcdef gh");
-		wrap.finish();
+		wrap.newline();
 		assert_eq!(texts(&output), ["abc", "def", "gh"]);
 		assert!(output.row_soft_wrap(0), "a width break inside a word is soft");
 		assert!(!output.row_soft_wrap(1), "a word-boundary break collapsed whitespace");
@@ -1237,7 +1304,7 @@ mod tests {
 		let mut output = RichText::default();
 		let mut wrap = (&mut output).wrap_prefixed(4, Prefix::empty_ref(), &cont);
 		wrap.run(Style::new(), "abcdefgh");
-		wrap.finish();
+		wrap.newline();
 		assert!(RichText::rows(&output) > 1);
 		assert!((0..RichText::rows(&output)).all(|row| !output.row_soft_wrap(row)));
 	}
@@ -1266,12 +1333,45 @@ mod tests {
 		assert!(copy.row_soft_wrap(0));
 	}
 	#[test]
+	fn char_wrap_prefixed_preserves_leading_whitespace_and_hard_wraps() {
+		let mut output = RichText::default();
+		let mut first = Prefix::default();
+		first.push(Style::new(), "> ");
+		let mut cont = Prefix::default();
+		cont.push(Style::new(), ". ");
+
+		let mut wrap = (&mut output).wrap_chars_prefixed(5, &first, &cont);
+		wrap.run(Style::new(), "   a");
+		wrap.newline();
+
+		assert_eq!(output.row_text(0), ">    ");
+		assert_eq!(output.row_text(1), ". a");
+
+		assert!(!output.row_soft_wrap(0));
+	}
+
+	#[test]
+	fn char_wrap_prefixed_never_exceeds_requested_width() {
+		let mut output = RichText::default();
+		let mut first = Prefix::default();
+		first.push(Style::new(), ">>>");
+		let mut cont = Prefix::default();
+		cont.push(Style::new(), "...");
+
+		let mut wrap = (&mut output).wrap_chars_prefixed(2, &first, &cont);
+		wrap.run(Style::new(), "abc");
+		wrap.newline();
+
+		assert_eq!(texts(&output), [">>"]);
+	}
+
+	#[test]
 	fn restyle_composes_with_wrap() {
 		let changed = Style::new().fg(Color::Indexed(4));
 		let mut output = RichText::default();
 		let mut wrap = (&mut output).restyle(|_| changed).wrap(3);
 		wrap.run(Style::new(), "ab cd");
-		wrap.finish();
+		wrap.newline();
 		assert_eq!(texts(&output), ["ab", "cd"]);
 		assert!(output.row_runs(0).all(|(style, _)| style == changed));
 	}

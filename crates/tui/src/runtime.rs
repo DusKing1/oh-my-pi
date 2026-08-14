@@ -555,6 +555,21 @@ impl App {
 		self.stable_rows = rows;
 	}
 
+	/// Rebuilds terminal history after the retained document is replaced
+	/// wholesale.
+	///
+	/// Direct terminals clear and reconstruct native history on the next
+	/// [`App::next`] call. A visible alternate-screen layer defers that rebuild
+	/// until release so the replacement appears atomically.
+	pub fn rebuild_history(&mut self) {
+		if self.alt_hold {
+			self.main_stale = true;
+			self.needs_rebuild = false;
+		} else {
+			self.needs_rebuild = true;
+		}
+	}
+
 	/// Requests or releases a persistent alternate-screen hold.
 	///
 	/// Fullscreen scenes — a welcome screen, a pager — hold the alternate

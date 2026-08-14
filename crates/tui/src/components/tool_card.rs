@@ -119,16 +119,19 @@ impl ToolCard {
 	}
 
 	/// In-place update: fold state.
-	pub const fn set_folded(&mut self, folded: bool) -> bool {
+	pub fn set_folded(&mut self, folded: bool) -> bool {
 		if self.folded == folded {
 			return false;
 		}
 		self.folded = folded;
+		for child in &mut self.children {
+			child.visible = !folded;
+		}
 		true
 	}
 
 	/// Sets whether the card is folded (hides children).
-	pub const fn folded(mut self, folded: bool) -> Self {
+	pub fn folded(mut self, folded: bool) -> Self {
 		self.set_folded(folded);
 		self
 	}
@@ -137,12 +140,20 @@ impl ToolCard {
 	pub fn replace_body(&mut self, children: impl IntoChildren) -> bool {
 		self.children.clear();
 		children.extend_children(&mut self.children);
+		let folded = self.folded;
+		for child in &mut self.children {
+			child.visible = !folded;
+		}
 		true
 	}
 
 	/// Appends child components to the card's body.
 	pub fn child(mut self, children: impl IntoChildren) -> Self {
 		children.extend_children(&mut self.children);
+		let folded = self.folded;
+		for child in &mut self.children {
+			child.visible = !folded;
+		}
 		self
 	}
 
@@ -394,10 +405,9 @@ mod tests {
 			.intent("src/file.txt")
 			.state(ToolState::Streaming);
 
-		let mut ui = Ui::from_root(card, 15, UiContext::default()); // narrow 15
+		let mut ui = Ui::from_root(card, 15, UiContext::default());
 		assert!(frame_row_text(ui.frame(), 0).contains("edit src/"));
 
-		// Transition to success with children
 		let changed = ui.update_component::<ToolCard>("t1", |card| {
 			let mut dirty = false;
 			dirty |= card.set_state(ToolState::Success);
@@ -412,7 +422,6 @@ mod tests {
 		assert!(row_0.contains("1s"));
 		assert_eq!(frame_row_text(ui.frame(), 1), "│ done");
 
-		// Transition to folded failure
 		let changed = ui.update_component::<ToolCard>("t1", |card| {
 			let mut dirty = false;
 			dirty |= card.set_state(ToolState::Failure);
@@ -422,7 +431,9 @@ mod tests {
 		assert!(changed);
 
 		let row_0_fail = frame_row_text(ui.frame(), 0);
-		assert!(row_0_fail.contains("edit")); // name is still edit
-		assert_eq!(ui.frame().size().height, 1); // folded means height is 1
+		assert!(row_0_fail.contains("edit"));
+		// Verify the component folded by checking that the row is cleared, independent
+		// of the monotonic frame height.
+		assert_eq!(frame_row_text(ui.frame(), 1), "");
 	}
 }

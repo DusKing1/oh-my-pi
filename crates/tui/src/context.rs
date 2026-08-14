@@ -65,23 +65,30 @@ pub struct Grid {
 
 /// Semantic prefixes for diff lines.
 #[derive(Clone, Copy, Debug)]
-pub struct DiffPrefixes {
+pub(crate) struct DiffPrefixes {
 	/// Header or file metadata prefix.
-	pub header:  &'static str,
+	pub header:       &'static str,
 	/// Unchanged context line prefix.
-	pub context: &'static str,
+	pub context:      &'static str,
 	/// Added line prefix.
-	pub add:     &'static str,
+	pub add:          &'static str,
 	/// Removed line prefix.
-	pub remove:  &'static str,
+	pub remove:       &'static str,
+	/// Continuation line prefix for wrapped text.
+	pub continuation: &'static str,
 }
 
 impl Charset {
 	/// Prefixes diff lines for this terminal's capability tier.
-	pub const fn diff_prefixes(self) -> DiffPrefixes {
+	pub(crate) const fn diff_prefixes(self) -> DiffPrefixes {
 		match self {
-			Self::Ascii => DiffPrefixes { header: "  ", context: "  ", add: "+ ", remove: "- " },
-			_ => DiffPrefixes { header: "  ", context: "  ", add: "+ ", remove: "- " },
+			Self::Unicode | Self::NerdFont | Self::Ascii => DiffPrefixes {
+				header:       "  ",
+				context:      "  ",
+				add:          "+ ",
+				remove:       "- ",
+				continuation: "  ",
+			},
 		}
 	}
 

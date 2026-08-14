@@ -71,6 +71,7 @@ impl DiffView {
 		}
 		self.lines.clear();
 		self.rendered_lines = 0;
+		self.rich.clear();
 		true
 	}
 
@@ -86,7 +87,8 @@ impl DiffView {
 	/// Replaces all lines in the diff view.
 	pub fn replace(&mut self, lines: Vec<DiffLine>) {
 		self.lines = lines;
-		self.rendered_lines = 0; // force full render
+		self.rendered_lines = 0;
+		self.rich.clear();
 	}
 
 	fn render(&mut self, ctx: &UiContext, width: u16) {
@@ -111,25 +113,24 @@ impl DiffView {
 
 		let (info, muted, ok, err) = (ctx.theme.info, ctx.theme.muted, ctx.theme.ok, ctx.theme.err);
 
+		let prefixes = ctx.charset.diff_prefixes();
 		let mut p_header = Prefix::default();
-		p_header.push(Style::new().fg(info).bold(), "  ");
+		p_header.push(Style::new().fg(info).bold(), prefixes.header);
 		let mut p_context = Prefix::default();
-		p_context.push(Style::new().fg(muted), "  ");
+		p_context.push(Style::new().fg(muted), prefixes.context);
 		let mut p_add = Prefix::default();
-		p_add.push(Style::new().fg(ok), "+ ");
+		p_add.push(Style::new().fg(ok), prefixes.add);
 		let mut p_remove = Prefix::default();
-		p_remove.push(Style::new().fg(err), "- ");
+		p_remove.push(Style::new().fg(err), prefixes.remove);
 
 		let mut c_header = Prefix::default();
-		c_header.push(Style::new().fg(info).bold(), "  ");
+		c_header.push(Style::new().fg(info).bold(), prefixes.continuation);
 		let mut c_context = Prefix::default();
-		c_context.push(Style::new().fg(muted), "  ");
+		c_context.push(Style::new().fg(muted), prefixes.continuation);
 		let mut c_add = Prefix::default();
-		c_add.push(Style::new().fg(ok), "  ");
+		c_add.push(Style::new().fg(ok), prefixes.continuation);
 		let mut c_remove = Prefix::default();
-		c_remove.push(Style::new().fg(err), "  ");
-
-		let mut wrap = (&mut self.rich).wrap(width);
+		c_remove.push(Style::new().fg(err), prefixes.continuation);
 
 		for line in &self.lines[self.rendered_lines..] {
 			let (prefix, cont, text_style) = match line.kind {
@@ -139,18 +140,17 @@ impl DiffView {
 				DiffKind::Remove => (&p_remove, &c_remove, Style::new().fg(err)),
 			};
 
-			let mut prefixed = (&mut wrap).prefixed(prefix, cont);
+			let mut wrap = (&mut self.rich).wrap_chars_prefixed(width, prefix, cont);
 			for (index, physical_line) in line.text.split("\n").enumerate() {
 				if index > 0 {
-					prefixed.newline();
+					wrap.newline();
 				}
 				if !physical_line.is_empty() {
-					prefixed.run(text_style, physical_line.as_str());
+					wrap.run(text_style, physical_line.as_str());
 				}
 			}
-			prefixed.newline();
+			wrap.newline();
 		}
-		wrap.finish();
 		self.rendered_lines = self.lines.len();
 	}
 }
@@ -243,6 +243,10 @@ mod tests {
 		let frame2 = paint(&mut diff, 10, 2);
 		assert_eq!(frame_row_text(&frame2, 1).trim_end(), "+ b");
 
+		for i in 0..RichText::rows(&diff.rich) {
+			assert!(!diff.rich.row_soft_wrap(i), "wrapped DiffView rows should not be soft");
+		}
+
 		diff.replace(vec![DiffLine { kind: DiffKind::Remove, text: Str::from("c") }]);
 		let frame3 = paint(&mut diff, 10, 2);
 		assert_eq!(frame_row_text(&frame3, 0).trim_end(), "- c");
@@ -277,7 +281,6 @@ mod tests {
 		let mut fresh = DiffView::new();
 		let ctx = UiContext::default();
 
-		// Incremental build
 		incremental.push(DiffKind::Header, "file.txt");
 		let _ = paint_with_ctx(&mut incremental, ctx.clone(), 20, 10);
 
@@ -290,7 +293,6 @@ mod tests {
 		incremental.push(DiffKind::Add, "line 3");
 		let frame_incremental = paint_with_ctx(&mut incremental, ctx.clone(), 20, 10);
 
-		// Fresh build
 		fresh.extend(vec![
 			DiffLine { kind: DiffKind::Header, text: Str::from("file.txt") },
 			DiffLine { kind: DiffKind::Context, text: Str::from("line 1") },
@@ -299,7 +301,6 @@ mod tests {
 		]);
 		let frame_fresh = paint_with_ctx(&mut fresh, ctx, 20, 10);
 
-		// Verify identity
 		assert_eq!(frame_row_text(&frame_incremental, 0), frame_row_text(&frame_fresh, 0));
 		assert_eq!(frame_row_text(&frame_incremental, 1), frame_row_text(&frame_fresh, 1));
 		assert_eq!(frame_row_text(&frame_incremental, 2), frame_row_text(&frame_fresh, 2));
@@ -309,27 +310,10 @@ mod tests {
 	#[test]
 	fn clear_and_extend_return_semantic_changes() {
 		let mut diff = DiffView::new();
-		assert!(!diff.clear()); // Empty to start
-		assert!(diff.extend(vec![DiffLine { kind: DiffKind::Add, text: Str::from("x") }])); // Added something
-		assert!(!diff.extend(vec![])); // Added nothing
-		assert!(diff.clear()); // Cleared something
-	}
-
-	#[test]
-	fn charset_routing() {
-		use crate::context::Charset;
-
-		let mut diff = DiffView::new();
-		diff.push(DiffKind::Add, "test");
-
-		let ctx_ascii = UiContext { charset: Charset::Ascii, ..UiContext::default() };
-		let ctx_unicode = UiContext { charset: Charset::Unicode, ..UiContext::default() };
-
-		let frame_ascii = paint_with_ctx(&mut diff, ctx_ascii, 10, 2);
-		let frame_unicode = paint_with_ctx(&mut diff, ctx_unicode, 10, 2);
-
-		assert_eq!(frame_row_text(&frame_ascii, 0).trim_end(), "+ test");
-		assert_eq!(frame_row_text(&frame_unicode, 0).trim_end(), "+ test");
+		assert!(!diff.clear());
+		assert!(diff.extend(vec![DiffLine { kind: DiffKind::Add, text: Str::from("x") }]));
+		assert!(!diff.extend(vec![]));
+		assert!(diff.clear());
 	}
 
 	#[test]

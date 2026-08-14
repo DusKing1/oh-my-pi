@@ -4859,7 +4859,6 @@ cd</pre>"##,
 		ui.present(&mut renderer, 10, 0).unwrap();
 		assert!(ui.frame.size().height > initial_height);
 
-		// Add a second item so we can replace it and preserve the first
 		ui.update_component::<TranscriptView>("transcript", |view| {
 			let child = Col::new();
 			view.push(crate::component::Cached::new(Box::new(child)));
@@ -4867,7 +4866,6 @@ cd</pre>"##,
 		});
 		ui.present(&mut renderer, 10, 0).unwrap();
 
-		// Replacing tail preserves earlier slot
 		let mut tail_child_slot = 0;
 		let changed = ui.update_component::<TranscriptView>("transcript", |view| {
 			let child = Col::new();
@@ -4878,7 +4876,8 @@ cd</pre>"##,
 		assert!(changed);
 		ui.present(&mut renderer, 10, 0).unwrap();
 
-		let final_slots: Vec<_> = ui.root.comp().children()[0]
+		let final_slots: Vec<_> = ui
+			.root
 			.comp()
 			.children()
 			.iter()
@@ -4888,7 +4887,6 @@ cd</pre>"##,
 		assert_eq!(final_slots[0], first_child_slot, "Earlier slot preserved");
 		assert_eq!(final_slots[1], tail_child_slot, "Tail slot replaced");
 
-		// Wrong type causes no damage
 		let mut wrong_type_called = false;
 		let changed = ui.update_component::<Col>("transcript", |_| {
 			wrong_type_called = true;
