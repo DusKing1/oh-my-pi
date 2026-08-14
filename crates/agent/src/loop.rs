@@ -22,7 +22,7 @@ use crate::{
 	Mailbox, MailboxSender, ProjectionError, PromptError, TurnClient, TurnInput, TurnSession,
 	batch::{SpeculativeCall, ToolBatch},
 	duplex::{DuplexError, DuplexManager},
-	journal::{TurnInputRecord, TurnOptionsRecord, TurnStart},
+	journal::{AbortDisposition, TurnInputRecord, TurnOptionsRecord, TurnStart},
 	mailbox::DrainPoint,
 	project::project_journal,
 	turn::Error as TurnError,
@@ -294,12 +294,16 @@ impl<C: TurnClient> Agent<C> {
 					if pb::turn_error::Kind::try_from(error.kind)
 						== Ok(pb::turn_error::Kind::EmptyOutput) =>
 				{
-					let recoverable = empty_output_retries < EMPTY_OUTPUT_RETRY_CAP;
+					let disposition = if empty_output_retries < EMPTY_OUTPUT_RETRY_CAP {
+						AbortDisposition::Continue
+					} else {
+						AbortDisposition::Exhausted
+					};
 					self
 						.journal
-						.abort_turn(now_ms(), turn_id.as_str(), recoverable)?;
+						.abort_turn(now_ms(), turn_id.as_str(), disposition)?;
 					self.context = None;
-					if !recoverable {
+					if disposition == AbortDisposition::Exhausted {
 						error.detail = EMPTY_OUTPUT_RETRY_DETAIL.into();
 						return Err(AgentError::Turn(TurnError::Terminal(error)));
 					}

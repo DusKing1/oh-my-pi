@@ -20,6 +20,20 @@ use crate::prompt::PromptHash;
 type ActivePrompt = ([u8; 32], Vec<u64>);
 type PendingItem = (u64, Item, Option<[u8; 32]>);
 type PendingItems = Vec<PendingItem>;
+/// Durable disposition of a started turn that failed without an outcome.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AbortDisposition {
+	/// Continue the submission through bounded crash-recoverable retry.
+	Continue,
+	/// Fence the exhausted retry epoch; later caller input starts a new epoch.
+	Exhausted,
+}
+
+impl AbortDisposition {
+	const fn recoverable(self) -> bool {
+		matches!(self, Self::Continue)
+	}
+}
 
 /// Journal append or validation failure.
 #[derive(Debug, Error)]
@@ -103,7 +117,7 @@ pub struct Journal {
 	writer:                  Writer,
 	receipts:                BTreeMap<Str, TurnReceipt>,
 	starts:                  BTreeMap<Str, (u64, TurnStart)>,
-	aborted:                 BTreeMap<Str, (u64, bool)>,
+	aborted:                 BTreeMap<Str, (u64, AbortDisposition)>,
 	claims:                  BTreeMap<u64, Str>,
 	last_start:              Option<TurnStart>,
 	last_receipt:            Option<TurnReceipt>,
@@ -163,7 +177,6 @@ impl Journal {
 		let mut authorized_batches = BTreeMap::new();
 		let mut turn_inputs = BTreeMap::<Str, Vec<u64>>::new();
 		let mut turn_input_order = Vec::new();
-		let mut started_turns = BTreeSet::new();
 		let mut claimed_ever = BTreeSet::new();
 		let mut settled_input_events = Vec::new();
 		for index in 0..u64::try_from(log.len()).expect("transcript length fits in u64") {
@@ -197,11 +210,15 @@ impl Journal {
 				Kind::TurnStart(start) => {
 					starts.insert(start.turn_id.clone(), (index, start.clone()));
 					last_start = Some(start.clone());
-					started_turns.insert(start.turn_id.clone());
 					claimed_ever.extend(start.item_events.iter().copied());
 				},
 				Kind::TurnAbort(abort) => {
-					aborted.insert(abort.turn_id.clone(), (index, abort.recoverable));
+					let disposition = if abort.recoverable {
+						AbortDisposition::Continue
+					} else {
+						AbortDisposition::Exhausted
+					};
+					aborted.insert(abort.turn_id.clone(), (index, disposition));
 				},
 				Kind::TurnReceipt(receipt) => {
 					receipts.insert(receipt.turn_id.clone(), receipt.clone());
@@ -257,15 +274,18 @@ impl Journal {
 			.retain(|turn_id, _| !receipts.contains_key(turn_id) && !aborted.contains_key(turn_id));
 		let recovery_epoch = aborted
 			.values()
-			.filter_map(|(index, recoverable)| (!recoverable).then_some(*index))
+			.filter_map(|(index, disposition)| {
+				(*disposition == AbortDisposition::Exhausted).then_some(*index)
+			})
 			.chain(last_receipt_event)
 			.max();
 		let mut released_inputs = Vec::new();
 		for turn_id in &turn_input_order {
 			if aborted
 				.get(turn_id.as_str())
-				.is_some_and(|(abort, recoverable)| {
-					*recoverable && recovery_epoch.is_none_or(|boundary| *abort > boundary)
+				.is_some_and(|(abort, disposition)| {
+					*disposition == AbortDisposition::Continue
+						&& recovery_epoch.is_none_or(|boundary| *abort > boundary)
 				}) && let Some(events) = turn_inputs.get(turn_id.as_str())
 			{
 				released_inputs.extend_from_slice(events);
@@ -521,10 +541,10 @@ impl Journal {
 		&mut self,
 		ts: u64,
 		turn_id: &str,
-		recoverable: bool,
+		disposition: AbortDisposition,
 	) -> Result<u64, JournalError> {
 		if let Some((index, durable)) = self.aborted.get(turn_id) {
-			if *durable != recoverable {
+			if *durable != disposition {
 				return Err(JournalError::TurnAbortMismatch(Str::from(turn_id)));
 			}
 			return Ok(*index);
@@ -535,12 +555,15 @@ impl Journal {
 		}
 		let index = self.writer.append(&Event {
 			ts,
-			kind: Kind::TurnAbort(TurnAbort { turn_id: turn_id.clone(), recoverable }),
+			kind: Kind::TurnAbort(TurnAbort {
+				turn_id:     turn_id.clone(),
+				recoverable: disposition.recoverable(),
+			}),
 		})?;
 		self.starts.remove(turn_id.as_str());
 		self.pending.remove(turn_id.as_str());
 		self.claims.retain(|_, claimed| claimed != &turn_id);
-		self.aborted.insert(turn_id, (index, recoverable));
+		self.aborted.insert(turn_id, (index, disposition));
 		Ok(index)
 	}
 
@@ -882,15 +905,18 @@ impl Journal {
 		let boundary = self
 			.aborted
 			.values()
-			.filter_map(|(index, recoverable)| (!recoverable).then_some(*index))
+			.filter_map(|(index, disposition)| {
+				(*disposition == AbortDisposition::Exhausted).then_some(*index)
+			})
 			.chain(self.last_receipt_event)
 			.max();
 		u32::try_from(
 			self
 				.aborted
 				.values()
-				.filter(|(index, recoverable)| {
-					*recoverable && boundary.is_none_or(|fence| *index > fence)
+				.filter(|(index, disposition)| {
+					*disposition == AbortDisposition::Continue
+						&& boundary.is_none_or(|fence| *index > fence)
 				})
 				.count(),
 		)
@@ -1445,6 +1471,7 @@ mod tests {
 
 	#[test]
 	fn ordered_staged_turn_groups_and_settlement_survive_sequential_reopens() {
+		let no_events: &[u64] = &[];
 		let path = path("staged-queue");
 		let first_turn = ulid::Ulid::generate().to_string();
 		let second_turn = ulid::Ulid::generate().to_string();
@@ -1495,7 +1522,7 @@ mod tests {
 		let (turn_id, indexes) = journal.pending_input_submission().expect("second group");
 		assert_eq!(turn_id.as_str(), second_turn);
 		assert_eq!(indexes, &[second]);
-		assert!(journal.recoverable_settlement_events().is_empty());
+		assert_eq!(journal.recoverable_settlement_events(), no_events);
 		journal
 			.start_turn(7, TurnStart {
 				turn_id:            Str::from(second_turn.as_str()),
@@ -1523,7 +1550,7 @@ mod tests {
 
 		let journal = Journal::open(&path).expect("final reopen");
 		assert!(journal.pending_input_submission().is_none());
-		assert!(journal.recoverable_settlement_events().is_empty());
+		assert_eq!(journal.recoverable_settlement_events(), no_events);
 		std::fs::remove_file(path).expect("remove journal");
 	}
 	#[test]
@@ -1686,17 +1713,17 @@ mod tests {
 			.start_turn(2, start.clone())
 			.expect("start first turn");
 		journal
-			.abort_turn(3, "failed-turn-1", true)
+			.abort_turn(3, "failed-turn-1", AbortDisposition::Continue)
 			.expect("abort first turn");
 		let mut second = start.clone();
 		second.turn_id = Str::from("failed-turn-2");
 		journal.start_turn(4, second).expect("start second turn");
 		let abort = journal
-			.abort_turn(5, "failed-turn-2", true)
+			.abort_turn(5, "failed-turn-2", AbortDisposition::Continue)
 			.expect("abort second turn");
 		assert_eq!(
 			journal
-				.abort_turn(6, "failed-turn-2", true)
+				.abort_turn(6, "failed-turn-2", AbortDisposition::Continue)
 				.expect("repeat abort"),
 			abort,
 			"abort settlement must be idempotent"

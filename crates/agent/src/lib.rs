@@ -25,7 +25,8 @@ pub use events::{AgentEvent, AgentPhase, EventBus, EventSubscription, LossyEvent
 pub use inproc::{InProcTurnClient, RpcTurnClient, RpcTurnSession};
 pub use jobs::{JobBoard, PendingJobs};
 pub use journal::{
-	Journal, JournalError, TurnInputRecord, TurnOptionsRecord, TurnReceipt, TurnStart,
+	AbortDisposition, Journal, JournalError, TurnInputRecord, TurnOptionsRecord, TurnReceipt,
+	TurnStart,
 };
 pub use r#loop::{Agent, AgentError, AgentRunSummary};
 pub use mailbox::{DrainPoint, Interrupt, InterruptClass, InterruptSource, Mailbox, MailboxSender};

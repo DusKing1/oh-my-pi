@@ -354,7 +354,7 @@ async fn invalid_control_invocation_fails_once_without_environment_dispatch() {
 	let complete = expect_complete(complete, "invalid invocation is represented, not raised");
 	let status = complete.status.expect("failed status");
 	assert_eq!(status.outcome, exec_status::Outcome::Failed as i32);
-	assert!(!status.reason.is_empty());
+	assert_ne!(status.reason, "");
 	assert!(complete.tool_result.is_none());
 	assert!(manager.next().await.is_none(), "one invocation yields at most one completion");
 	assert!(matches!(

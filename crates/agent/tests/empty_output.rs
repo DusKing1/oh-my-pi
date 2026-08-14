@@ -2,7 +2,7 @@
 
 use std::{
 	collections::VecDeque,
-	future::{Future, Ready, pending, ready},
+	future::{Future, pending, ready},
 	sync::{
 		Arc,
 		atomic::{AtomicUsize, Ordering},
@@ -11,9 +11,9 @@ use std::{
 
 use futures::stream;
 use omp_agent::{
-	Agent, AgentError, AgentPhase, AgentSnapshot, AgentState, Error, InvokeFrame, Journal,
-	TurnClient, TurnId, TurnInput, TurnInputRecord, TurnOptions, TurnOptionsRecord, TurnSession,
-	TurnStart,
+	AbortDisposition, Agent, AgentError, AgentPhase, AgentSnapshot, AgentState, Error, InvokeFrame,
+	Journal, TurnClient, TurnId, TurnInput, TurnInputRecord, TurnOptions, TurnOptionsRecord,
+	TurnSession, TurnStart,
 };
 use omp_core::Str;
 use omp_env::EnvClient;
@@ -30,9 +30,12 @@ const RETRY_TEXT: &str = "<system-injection>\nStopped without actionable output;
                           call.\nAttempt #1/3\n</system-injection>";
 const CAP_DETAIL: &str = "Assistant returned no final output after retry cap; try switching models";
 
+type ScriptOutcome = Result<pb::Outcome, Box<pb::TurnError>>;
+type ScriptQueue = Arc<Mutex<VecDeque<ScriptOutcome>>>;
+
 #[derive(Clone)]
 struct ScriptedClient {
-	script: Arc<Mutex<VecDeque<Result<pb::Outcome, Box<pb::TurnError>>>>>,
+	script: ScriptQueue,
 	opened: Arc<Mutex<Vec<TurnInput>>>,
 }
 
@@ -122,7 +125,7 @@ fn user_text(text: &str) -> Item {
 	}
 }
 
-fn terminal(kind: pb::turn_error::Kind) -> Result<pb::Outcome, Box<pb::TurnError>> {
+fn terminal(kind: pb::turn_error::Kind) -> ScriptOutcome {
 	Err(Box::new(pb::TurnError {
 		kind: kind as i32,
 		detail: "provider detail".to_owned(),
@@ -157,7 +160,7 @@ fn input_texts(input: &TurnInput) -> Vec<&str> {
 }
 fn build_agent(
 	journal: Journal,
-	script: Vec<Result<pb::Outcome, Box<pb::TurnError>>>,
+	script: Vec<ScriptOutcome>,
 ) -> (Agent<ScriptedClient>, Arc<Mutex<Vec<TurnInput>>>) {
 	let opened = Arc::new(Mutex::new(Vec::new()));
 	let client =
@@ -222,15 +225,20 @@ fn exhausted_journal(path: &std::path::Path) -> Journal {
 		journal
 			.start_turn(5 + attempt as u64 * 2, start)
 			.expect("start capped-chain turn");
+		let disposition = if attempt < 3 {
+			AbortDisposition::Continue
+		} else {
+			AbortDisposition::Exhausted
+		};
 		journal
-			.abort_turn(6 + attempt as u64 * 2, &id, attempt < 3)
+			.abort_turn(6 + attempt as u64 * 2, &id, disposition)
 			.expect("abort capped-chain turn");
 	}
 	journal
 }
 
 fn agent(
-	script: Vec<Result<pb::Outcome, Box<pb::TurnError>>>,
+	script: Vec<ScriptOutcome>,
 ) -> (Agent<ScriptedClient>, Arc<Mutex<Vec<TurnInput>>>, std::path::PathBuf) {
 	let path = std::env::temp_dir().join(format!(
 		"omp-agent-empty-output-{}-{}.jsonl",
@@ -284,23 +292,26 @@ async fn fourth_empty_output_hits_cap_after_exactly_three_reminders() {
 		panic!("expected terminal turn error")
 	};
 	assert_eq!(error.detail, CAP_DETAIL);
-	let inputs = opened.lock();
-	assert_eq!(inputs.len(), 4);
-	let reminders: Vec<_> = inputs
-		.iter()
-		.skip(1)
-		.map(|input| {
-			input_texts(input)
-				.into_iter()
-				.rfind(|text| text.starts_with("<system-injection>\nStopped without actionable output"))
-				.expect("follow-up turn contains its reminder")
-		})
-		.collect();
-	assert_eq!(reminders.len(), 3);
-	assert!(reminders[0].contains("Attempt #1/3"));
-	assert!(reminders[1].contains("Attempt #2/3"));
-	assert!(reminders[2].contains("Attempt #3/3"));
-	drop(inputs);
+	{
+		let inputs = opened.lock();
+		assert_eq!(inputs.len(), 4);
+		let reminders: Vec<_> = inputs
+			.iter()
+			.skip(1)
+			.map(|input| {
+				input_texts(input)
+					.into_iter()
+					.rfind(|text| {
+						text.starts_with("<system-injection>\nStopped without actionable output")
+					})
+					.expect("follow-up turn contains its reminder")
+			})
+			.collect();
+		assert_eq!(reminders.len(), 3);
+		assert!(reminders[0].contains("Attempt #1/3"));
+		assert!(reminders[1].contains("Attempt #2/3"));
+		assert!(reminders[2].contains("Attempt #3/3"));
+	}
 	assert_eq!(agent.events().phase(), AgentPhase::Idle);
 	agent
 		.submit([user_text("fresh after cap")], TurnId::new("fresh"))
@@ -337,7 +348,7 @@ async fn retry_count_survives_journal_reopen() {
 		.start_turn(3, first)
 		.expect("start first failed turn");
 	journal
-		.abort_turn(4, "failed-1", true)
+		.abort_turn(4, "failed-1", AbortDisposition::Continue)
 		.expect("abort first failed turn");
 	let first_reminder = user_text(RETRY_TEXT);
 	let second_event = journal
@@ -351,7 +362,7 @@ async fn retry_count_survives_journal_reopen() {
 		.start_turn(6, second)
 		.expect("start second failed turn");
 	journal
-		.abort_turn(7, "failed-2", true)
+		.abort_turn(7, "failed-2", AbortDisposition::Continue)
 		.expect("abort second failed turn");
 	drop(journal);
 
@@ -433,7 +444,7 @@ async fn crash_after_abort_reclaims_input_under_fresh_full_reseed() {
 	failed.options.context_id = Some(Str::from("context"));
 	journal.start_turn(5, failed).expect("start failed turn");
 	journal
-		.abort_turn(6, "failed", true)
+		.abort_turn(6, "failed", AbortDisposition::Continue)
 		.expect("abort failed turn");
 	drop(journal);
 
@@ -529,7 +540,7 @@ async fn fresh_epoch_abort_releases_only_fresh_inputs_after_reopen() {
 		.start_turn(21, start)
 		.expect("start fresh epoch turn");
 	journal
-		.abort_turn(22, "fresh-failed", true)
+		.abort_turn(22, "fresh-failed", AbortDisposition::Continue)
 		.expect("abort fresh epoch turn");
 	drop(journal);
 
