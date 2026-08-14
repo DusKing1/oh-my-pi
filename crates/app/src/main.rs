@@ -22,8 +22,7 @@ async fn main() -> ExitCode {
 	match result {
 		Ok(()) => ExitCode::SUCCESS,
 		Err(error) => {
-			// Do not print inner details: lower transport layers may
-			// carry untrusted provider diagnostics. Public top-level errors are
+			// Errors that reach this point are top-level execution failures;
 			// deliberately classified and redacted at their subsystem boundary.
 			eprintln!("omp: {error}");
 			ExitCode::FAILURE

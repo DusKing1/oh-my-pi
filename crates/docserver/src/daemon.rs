@@ -142,15 +142,6 @@ pub enum Error {
 		path: PathBuf,
 	},
 
-	/// The directory containing the socket has invalid ownership or permissions.
-	#[error("socket directory {directory:?} must be an owner-only directory owned by uid {user_id}")]
-	InvalidSocketDirectoryPermissions {
-		/// Path to the socket directory.
-		directory: PathBuf,
-		/// Effective user ID.
-		user_id:   u32,
-	},
-
 	/// Refusing to replace an existing non-socket file at the socket path.
 	#[error("refusing to replace non-socket path {path:?}")]
 	ReplaceNonSocketPath {
@@ -330,17 +321,6 @@ async fn bind_socket(path: PathBuf) -> Result<(UnixListener, SocketCleanup)> {
 		.filter(|parent| !parent.as_os_str().is_empty())
 		.unwrap_or_else(|| Path::new("."));
 	let canonical_parent = std::fs::canonicalize(parent)?;
-	let parent_metadata = std::fs::symlink_metadata(&canonical_parent)?;
-	let user_id = rustix::process::geteuid().as_raw();
-	if !parent_metadata.is_dir()
-		|| parent_metadata.uid() != user_id
-		|| parent_metadata.mode() & 0o077 != 0
-	{
-		return Err(Error::InvalidSocketDirectoryPermissions {
-			directory: canonical_parent,
-			user_id,
-		});
-	}
 	let path = canonical_parent.join(name);
 	let identity = path.clone();
 	let lock = InstanceLock::acquire("socket", &identity)?;
@@ -375,19 +355,26 @@ async fn bind_socket(path: PathBuf) -> Result<(UnixListener, SocketCleanup)> {
 }
 
 #[cfg(unix)]
-async fn serve_socket(environment: Environment, path: PathBuf) -> Result {
-	let root = environment
-		.root_uri()
-		.to_file_path()
-		.map_err(|()| Error::NonFileUriRoot)?;
+fn validate_socket_location(path: &Path, root: &Path) -> Result {
 	let parent = path
 		.parent()
 		.filter(|parent| !parent.as_os_str().is_empty())
 		.unwrap_or_else(|| Path::new("."));
 	let canonical_parent = std::fs::canonicalize(parent)?;
-	if canonical_parent.starts_with(&root) {
-		return Err(Error::SocketInsideEnvironmentRoot { path, root });
+	if canonical_parent.starts_with(root) {
+		Err(Error::SocketInsideEnvironmentRoot { path: path.to_owned(), root: root.to_owned() })
+	} else {
+		Ok(())
 	}
+}
+
+#[cfg(unix)]
+async fn serve_socket(environment: Environment, path: PathBuf) -> Result {
+	let root = environment
+		.root_uri()
+		.to_file_path()
+		.map_err(|()| Error::NonFileUriRoot)?;
+	validate_socket_location(&path, &root)?;
 	let (listener, socket) = bind_socket(path).await?;
 	let shutdown = CancellationToken::new();
 	let signal = shutdown_signal();
@@ -602,15 +589,41 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn socket_binding_rejects_a_shared_parent_directory() {
+	async fn socket_binding_accepts_standard_parent_permissions() {
 		let root = TempDir::new().expect("temporary directory");
 		let shared = root.path().join("shared");
 		std::fs::create_dir(&shared).expect("create shared directory");
 		std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755))
-			.expect("make parent shared");
+			.expect("set standard parent permissions");
 		let path = shared.join("document.sock");
 
-		assert!(bind_socket(path.clone()).await.is_err());
+		let (listener, cleanup) = bind_socket(path.clone()).await.expect("bind socket");
+		assert_eq!(
+			std::fs::metadata(&path)
+				.expect("socket metadata")
+				.permissions()
+				.mode() & 0o777,
+			0o600
+		);
+		drop(listener);
+		drop(cleanup);
 		assert!(!path.exists());
+	}
+
+	#[test]
+	fn socket_location_rejects_workspace_paths() {
+		let scratch = TempDir::new().expect("temporary directory");
+		let project = scratch.path().join("project");
+		let metadata = project.join(".omp");
+		let runtime = scratch.path().join("runtime");
+		std::fs::create_dir_all(&metadata).expect("project metadata directory");
+		std::fs::create_dir(&runtime).expect("runtime directory");
+		let project = std::fs::canonicalize(project).expect("canonical project");
+
+		let error = validate_socket_location(&metadata.join("document.sock"), &project)
+			.expect_err("workspace socket must be rejected");
+		assert!(matches!(error, Error::SocketInsideEnvironmentRoot { .. }));
+		validate_socket_location(&runtime.join("document.sock"), &project)
+			.expect("external runtime socket");
 	}
 }

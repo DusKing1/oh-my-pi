@@ -2169,7 +2169,7 @@ fn write_sqlite_row(
 	content: &str,
 ) -> Result<Option<omp_tools::write::backends::ResultPayload>, omp_tools::write::backends::Fault> {
 	use omp_tools::{
-		read::sqlite::looks_like_sqlite,
+		read::looks_like_sqlite,
 		write::backends::{ResultPayload, mutate_sqlite_row, sqlite_targets},
 	};
 	use rusqlite::OpenFlags;

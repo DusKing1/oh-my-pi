@@ -51,12 +51,12 @@ pub enum ChatError {
 	/// The canonical project path is not a directory.
 	#[error("project root is not a directory: {0}")]
 	ProjectNotDirectory(PathBuf),
-	/// Project-local state failed its owner-only invariant.
-	#[error("project state is not owner-only: {path}")]
-	InsecureState {
-		/// State path that failed validation.
+	/// Project-local state could not be accessed.
+	#[error("could not access project state {path}")]
+	ProjectState {
+		/// State path that failed.
 		path:   PathBuf,
-		/// Filesystem or ownership failure.
+		/// Filesystem failure.
 		#[source]
 		source: std::io::Error,
 	},
@@ -351,10 +351,11 @@ impl<C: TurnClient + Clone + 'static> crate::envd::eval::ParentSessionHost for C
 #[cfg(unix)]
 pub async fn run(args: ChatArgs) -> crate::Result<()> {
 	let root = canonical_project(&args.project)?;
-	let state_dir = root.join(".omp");
+	let data_dir = crate::cli::data_dir(None)?;
+	let state_dir = crate::project_state::directory(&data_dir, &root)?;
 	let sessions_dir = state_dir.join("sessions");
-	secure_owner_directory(&state_dir)?;
-	secure_owner_directory(&sessions_dir)?;
+	ensure_state_directory(&state_dir)?;
+	ensure_state_directory(&sessions_dir)?;
 
 	let environment = crate::envd::ProjectEnvironment::connect_or_start(
 		&root,
@@ -392,7 +393,6 @@ pub async fn run(args: ChatArgs) -> crate::Result<()> {
 		)
 		.await?;
 	} else {
-		let data_dir = crate::cli::data_dir(None)?;
 		let (_, inference) =
 			crate::daemon::production_inference(&data_dir, Arc::clone(&registry)).await?;
 		let client = InProcTurnClient::new(inference)
@@ -444,8 +444,8 @@ async fn run_ui<C: TurnClient + Clone + 'static>(
 	loop {
 		parent.update(state.clone(), session.id.clone());
 		let session_root = scope.sessions_dir.join(session.id.as_str());
-		secure_owner_directory(&session_root)?;
-		secure_owner_directory(&session_root.join("local"))?;
+		ensure_state_directory(&session_root)?;
+		ensure_state_directory(&session_root.join("local"))?;
 		eval_bridge.set_session_config(crate::envd::eval::EvalSessionConfig {
 			local_roots_json: Str::from(
 				json!({ "local": session_root.join("local").to_string_lossy() }).to_string(),
@@ -523,11 +523,11 @@ fn open_session(
 	};
 	let path = sessions_dir.join(format!("{}.jsonl", id.as_str()));
 	let journal = if resume.is_some() {
-		secure_session_file(&path).map_err(|source| {
+		validate_session_file(&path).map_err(|source| {
 			if source.kind() == std::io::ErrorKind::NotFound {
 				ChatError::MissingResume(id.clone())
 			} else {
-				ChatError::InsecureState { path: path.clone(), source }
+				ChatError::ProjectState { path: path.clone(), source }
 			}
 		})?;
 		let journal = Journal::open(&path)?;
@@ -540,18 +540,12 @@ fn open_session(
 		}
 		journal
 	} else {
-		let journal = Journal::create(&path, &Header {
+		Journal::create(&path, &Header {
 			v:       4,
 			id:      SessionId(id.clone()),
 			created: now_ms(),
 			cwd:     root.to_owned(),
-		})?;
-		if let Err(source) = set_owner_file_permissions(&path) {
-			drop(journal);
-			let _ = std::fs::remove_file(&path);
-			return Err(ChatError::InsecureState { path, source });
-		}
-		journal
+		})?
 	};
 	let initial_items = project_journal(&journal.load()?, registry, &PROMPT_CAPS)?.items;
 	Ok(Session { id, journal, initial_items })
@@ -563,7 +557,7 @@ fn resume_choices(
 	current_id: &Str,
 ) -> Result<Vec<ResumeChoice>, ChatError> {
 	let entries = std::fs::read_dir(sessions_dir)
-		.map_err(|source| ChatError::InsecureState { path: sessions_dir.to_owned(), source })?;
+		.map_err(|source| ChatError::ProjectState { path: sessions_dir.to_owned(), source })?;
 	let mut choices = Vec::new();
 	for entry in entries {
 		let Ok(entry) = entry else {
@@ -571,7 +565,7 @@ fn resume_choices(
 		};
 		let path = entry.path();
 		if path.extension().and_then(std::ffi::OsStr::to_str) != Some("jsonl")
-			|| secure_session_file(&path).is_err()
+			|| validate_session_file(&path).is_err()
 		{
 			continue;
 		}
@@ -744,85 +738,20 @@ fn now_ms() -> u64 {
 		.unwrap_or(u64::MAX)
 }
 
-#[cfg(unix)]
-fn secure_owner_directory(path: &Path) -> Result<(), ChatError> {
-	use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+fn ensure_state_directory(path: &Path) -> Result<(), ChatError> {
+	std::fs::create_dir_all(path)
+		.map_err(|source| ChatError::ProjectState { path: path.to_owned(), source })
+}
 
-	match std::fs::create_dir(path) {
-		Ok(()) => std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-			.map_err(|source| ChatError::InsecureState { path: path.to_owned(), source })?,
-		Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
-		Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-			let parent = path.parent().ok_or_else(|| ChatError::InsecureState {
-				path:   path.to_owned(),
-				source: std::io::Error::new(
-					std::io::ErrorKind::InvalidInput,
-					"state path has no parent",
-				),
-			})?;
-			secure_owner_directory(parent)?;
-			std::fs::create_dir(path)
-				.map_err(|source| ChatError::InsecureState { path: path.to_owned(), source })?;
-			std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-				.map_err(|source| ChatError::InsecureState { path: path.to_owned(), source })?;
-		},
-		Err(source) => return Err(ChatError::InsecureState { path: path.to_owned(), source }),
+fn validate_session_file(path: &Path) -> std::io::Result<()> {
+	if std::fs::metadata(path)?.is_file() {
+		Ok(())
+	} else {
+		Err(std::io::Error::new(
+			std::io::ErrorKind::InvalidData,
+			"session journal is not a regular file",
+		))
 	}
-	let metadata = std::fs::symlink_metadata(path)
-		.map_err(|source| ChatError::InsecureState { path: path.to_owned(), source })?;
-	if !metadata.is_dir()
-		|| metadata.uid() != nix::unistd::geteuid().as_raw()
-		|| metadata.mode() & 0o077 != 0
-	{
-		return Err(ChatError::InsecureState {
-			path:   path.to_owned(),
-			source: std::io::Error::new(
-				std::io::ErrorKind::PermissionDenied,
-				"state directory must be owner-only and owned by the current user",
-			),
-		});
-	}
-	Ok(())
-}
-
-#[cfg(unix)]
-fn set_owner_file_permissions(path: &Path) -> std::io::Result<()> {
-	use std::os::unix::fs::PermissionsExt as _;
-
-	std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(unix)]
-fn secure_session_file(path: &Path) -> std::io::Result<()> {
-	use std::os::unix::fs::MetadataExt as _;
-
-	let metadata = std::fs::symlink_metadata(path)?;
-	if !metadata.is_file()
-		|| metadata.uid() != nix::unistd::geteuid().as_raw()
-		|| metadata.mode() & 0o077 != 0
-	{
-		return Err(std::io::Error::new(
-			std::io::ErrorKind::PermissionDenied,
-			"session journal must be an owner-only regular file",
-		));
-	}
-	Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_owner_file_permissions(_path: &Path) -> std::io::Result<()> {
-	Err(std::io::Error::new(
-		std::io::ErrorKind::Unsupported,
-		"owner-only session permissions require Unix",
-	))
-}
-
-#[cfg(not(unix))]
-fn secure_session_file(_path: &Path) -> std::io::Result<()> {
-	Err(std::io::Error::new(
-		std::io::ErrorKind::Unsupported,
-		"owner-only session verification requires Unix",
-	))
 }
 
 #[cfg(all(test, unix))]
@@ -932,15 +861,68 @@ mod tests {
 				.expect("append title");
 		}
 		drop(writer);
-		set_owner_file_permissions(&path).expect("secure transcript");
 		id
+	}
+
+	#[test]
+	fn project_state_is_external_and_accepts_standard_permissions() {
+		use std::os::unix::fs::PermissionsExt as _;
+
+		let scratch = tempfile::tempdir().expect("scratch directory");
+		let root = scratch.path().join("project");
+		let metadata_dir = root.join(".omp");
+		std::fs::create_dir_all(&metadata_dir).expect("project metadata");
+		std::fs::set_permissions(&metadata_dir, std::fs::Permissions::from_mode(0o755))
+			.expect("standard project metadata permissions");
+
+		let state_dir = crate::project_state::directory(&scratch.path().join("data"), &root)
+			.expect("project state path");
+		let sessions_dir = state_dir.join("sessions");
+		ensure_state_directory(&sessions_dir).expect("project state");
+		std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o755))
+			.expect("standard project state permissions");
+		std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o755))
+			.expect("standard session directory permissions");
+		ensure_state_directory(&state_dir).expect("existing project state directory");
+		ensure_state_directory(&sessions_dir).expect("existing session directory");
+
+		assert!(!state_dir.starts_with(&root));
+		assert_eq!(
+			std::fs::metadata(&metadata_dir)
+				.expect("project metadata")
+				.permissions()
+				.mode() & 0o777,
+			0o755
+		);
+		assert_eq!(
+			std::fs::metadata(&state_dir)
+				.expect("project state")
+				.permissions()
+				.mode() & 0o777,
+			0o755
+		);
+
+		let id = write_session(&sessions_dir, &root, "resume me", None);
+		let path = sessions_dir.join(format!("{id}.jsonl"));
+		std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+			.expect("standard journal permissions");
+		let session =
+			open_session(&root, &sessions_dir, Some(&id), &Registry::new()).expect("resume session");
+		assert_eq!(session.id, id);
+		assert_eq!(
+			std::fs::metadata(path)
+				.expect("session journal")
+				.permissions()
+				.mode() & 0o777,
+			0o644
+		);
 	}
 
 	#[test]
 	fn resume_choices_use_titles_then_prompts_and_strip_terminal_controls() {
 		let scratch = tempfile::tempdir().expect("scratch directory");
 		let root = scratch.path().join("project");
-		let sessions_dir = root.join(".omp/sessions");
+		let sessions_dir = root.join("sessions");
 		std::fs::create_dir_all(&sessions_dir).expect("session directory");
 		let prompt_id = write_session(&sessions_dir, &root, "  first prompt\nignored", None);
 		let titled_id = write_session(
@@ -969,7 +951,7 @@ mod tests {
 	async fn session_bound_parent_runs_live_completion_and_agent_turns() {
 		let scratch = tempfile::tempdir().expect("chat parent scratch");
 		let root = scratch.path().join("project");
-		let sessions_dir = root.join(".omp/sessions");
+		let sessions_dir = root.join("sessions");
 		std::fs::create_dir_all(&sessions_dir).expect("session directory");
 		let inputs = Arc::new(Mutex::new(Vec::new()));
 		let options = Arc::new(Mutex::new(Vec::new()));
@@ -1046,10 +1028,15 @@ mod tests {
 			}) == "complete this"
 		));
 		assert!(matches!(&inputs[1], TurnInput::Full(thread)
-			if bridge_outcome_text(&inference_pb::Outcome {
-				output: thread.items.clone(),
-				..inference_pb::Outcome::default()
-			}) == "delegate this"
+			if thread.items.iter().any(|item| matches!(
+				&item.kind,
+				Some(item::Kind::Message(message))
+					if message.role == i32::from(Role::User)
+						&& message.parts.iter().any(|part| matches!(
+							&part.kind,
+							Some(part::Kind::Text(text)) if text == "delegate this"
+						))
+			))
 		));
 	}
 }

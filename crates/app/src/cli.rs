@@ -74,13 +74,14 @@ pub struct EnvdArgs {
 	/// Workspace root exposed by the environment.
 	#[arg(long, value_name = "PATH", default_value = ".")]
 	pub root:             PathBuf,
-	/// Owner-only environment socket. Defaults to `<root>/.omp/env.sock`.
+	/// Owner-only environment socket. Defaults to `<state-dir>/env.sock`.
 	#[arg(long, value_name = "PATH")]
 	pub socket:           Option<PathBuf>,
-	/// Document-server socket. Defaults to `<root>/.omp/docserver.sock`.
+	/// Document-server socket. Defaults to `<state-dir>/docserver.sock`.
 	#[arg(long, value_name = "PATH")]
 	pub docserver_socket: Option<PathBuf>,
-	/// Environment state directory. Defaults to `<root>/.omp`.
+	/// Environment state directory. Defaults to a project-keyed directory under
+	/// `OMP_DATA_DIR`.
 	#[arg(long, value_name = "PATH")]
 	pub state_dir:        Option<PathBuf>,
 	/// Enable the built-in Python expression-evaluation tool.

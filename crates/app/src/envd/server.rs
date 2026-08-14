@@ -406,7 +406,7 @@ impl EnvServer {
 		let parent = path.parent().ok_or_else(|| {
 			io::Error::new(io::ErrorKind::InvalidInput, "environment socket has no parent")
 		})?;
-		secure_owner_directory(parent)?;
+		ensure_directory(parent)?;
 		match tokio::fs::symlink_metadata(path).await {
 			Ok(metadata) if metadata.file_type().is_socket() => {
 				if tokio::net::UnixStream::connect(path).await.is_ok() {
@@ -2628,8 +2628,15 @@ pub async fn run(args: EnvdArgs) -> Result<(), EnvdError> {
 pub async fn run_with_registry(args: EnvdArgs, registry: Registry) -> Result<(), EnvdError> {
 	let workspace = WorkspaceHost::open(&args.root)?;
 	let root = workspace.root().to_path_buf();
-	let state_dir = args.state_dir.unwrap_or_else(|| root.join(".omp"));
-	secure_owner_directory(&state_dir)?;
+	let state_dir = match args.state_dir {
+		Some(path) => path,
+		None => {
+			let data_dir = crate::cli::data_dir(None)
+				.map_err(|error| io::Error::new(io::ErrorKind::NotFound, error.to_string()))?;
+			crate::project_state::directory(&data_dir, &root)?
+		},
+	};
+	ensure_directory(&state_dir)?;
 	let socket = args.socket.unwrap_or_else(|| state_dir.join("env.sock"));
 	let docserver_socket = args
 		.docserver_socket
@@ -2686,7 +2693,7 @@ async fn connect_or_start_docserver(
 		return Ok((DocumentHost::connect(stream).await?, None));
 	}
 	if let Some(parent) = socket.parent() {
-		secure_owner_directory(parent)?;
+		ensure_directory(parent)?;
 	}
 	let executable = docserver_executable()?;
 	let mut child = tokio::process::Command::new(executable)
@@ -2718,27 +2725,8 @@ async fn connect_or_start_docserver(
 }
 
 #[cfg(unix)]
-fn secure_owner_directory(path: &Path) -> io::Result<()> {
-	use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-
-	match std::fs::create_dir(path) {
-		Ok(()) => std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?,
-		Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {},
-		Err(error) if error.kind() == io::ErrorKind::NotFound => {
-			std::fs::create_dir_all(path)?;
-			std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
-		},
-		Err(error) => return Err(error),
-	}
-	let metadata = std::fs::symlink_metadata(path)?;
-	let owner = nix::unistd::geteuid().as_raw();
-	if !metadata.is_dir() || metadata.uid() != owner || metadata.mode() & 0o077 != 0 {
-		return Err(io::Error::new(
-			io::ErrorKind::PermissionDenied,
-			"environment socket directory must be owner-only and owned by the current user",
-		));
-	}
-	Ok(())
+fn ensure_directory(path: &Path) -> io::Result<()> {
+	std::fs::create_dir_all(path)
 }
 
 #[cfg(unix)]
