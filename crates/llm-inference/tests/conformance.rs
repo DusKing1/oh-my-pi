@@ -553,7 +553,7 @@ async fn staging_cancellation_is_terminal_and_receipted_without_a_fake_success()
 	let source = BodySource::bytes(Bytes::from_static(b"never staged"));
 	let policy = StagingPolicy::memory_only(1024, 1024);
 	let cancellation = StagingCancellation::new();
-	let mut budget = ExecutionBudget { max_staging_bytes: 1024, ..ExecutionBudget::default() };
+	let budget = ExecutionBudget { max_staging_bytes: 1024, ..ExecutionBudget::default() };
 	let mut receipt = ExecutionReceipt::default();
 	let error = stage_body(&source, &policy, &budget, &cancellation, &mut receipt)
 		.await

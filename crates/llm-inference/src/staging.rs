@@ -1040,7 +1040,10 @@ fn tamper_error() -> Error {
 
 #[cfg(test)]
 mod tests {
-	use std::sync::atomic::{AtomicUsize, Ordering};
+	use std::{
+		io::{self, Read, Seek, Write},
+		sync::atomic::{AtomicUsize, Ordering},
+	};
 
 	use futures::stream;
 

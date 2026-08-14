@@ -809,7 +809,7 @@ mod tests {
 		wrong.route = RouteId::from("other-route");
 		assert!(matches!(
 			cursor.project(&[wrong], None),
-			Err(DiscoveryError::RowScopeMismatch { actual_route, .. }) if actual_route == "other-route"
+			Err(DiscoveryError::RowScopeMismatch { actual_route, .. }) if actual_route.as_str() == "other-route"
 		));
 
 		let mut first = row("first");
@@ -818,7 +818,7 @@ mod tests {
 		second.aliases = Box::new([WireModelId::from("shared")]);
 		assert!(matches!(
 			cursor.project(&[first, second], None),
-			Err(DiscoveryError::AliasConflict { alias, .. }) if alias == "shared"
+			Err(DiscoveryError::AliasConflict { alias, .. }) if alias.as_str() == "shared"
 		));
 
 		let single = projector(DiscoveryPagination::SinglePage);
@@ -833,7 +833,7 @@ mod tests {
 		});
 		assert!(matches!(
 			numbered.project(&[], Some("01".into())),
-			Err(DiscoveryError::InvalidPageNumber { value, .. }) if value == "01"
+			Err(DiscoveryError::InvalidPageNumber { value, .. }) if value.as_str() == "01"
 		));
 		assert_eq!(
 			numbered

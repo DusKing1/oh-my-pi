@@ -61,6 +61,7 @@ impl fmt::Display for NanoUsd {
 	Deserialize,
 )]
 #[strum(serialize_all = "snake_case", ascii_case_insensitive)]
+#[serde(rename_all = "snake_case")]
 pub enum PriceUnit {
 	/// One million uncached input tokens.
 	MtokInput,

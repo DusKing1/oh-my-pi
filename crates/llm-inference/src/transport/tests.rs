@@ -151,13 +151,15 @@ struct FailDecoder;
 
 impl Decoder for FailDecoder {
 	fn push(&mut self, _frame: Frame, _emit: &mut dyn FnMut(RawEvent)) -> Result<(), Error> {
-		Err(Error::new(
-			ErrorKind::Protocol,
-			ErrorPhase::Handshake,
-			RetryAction::Never,
-			ExecutionReceipt::default(),
+		Err(
+			Error::new(
+				ErrorKind::Protocol,
+				ErrorPhase::Handshake,
+				RetryAction::Never,
+				ExecutionReceipt::default(),
+			)
+			.detail(ErrorDetail::protocol(ReasonId(Str::from("fixture-first-frame")))),
 		)
-		.detail(ErrorDetail::protocol(ReasonId(Str::from("fixture-first-frame")))))
 	}
 
 	fn finish(&mut self, _emit: &mut dyn FnMut(RawEvent)) -> Result<(), Error> {
@@ -740,7 +742,12 @@ async fn consumed_one_shot_preamble_failure_suppresses_retry_evidence() {
 		.await
 		.err()
 		.expect("metadata then disconnect");
-	let body = error.receipt().attempts.last().expect("attempt receipt").body;
+	let body = error
+		.receipt()
+		.attempts
+		.last()
+		.expect("attempt receipt")
+		.body;
 	assert_eq!(body.retry_decision, RetryDecision::Suppress);
 	assert_eq!(body.reason, RetryDecisionReason::ConsumedOneShot);
 }
@@ -822,7 +829,12 @@ async fn stalled_body_preserves_factory_replay_and_suppresses_consumed_one_shot(
 	let mut call = request(BodySource::Factory(factory), EmitDecoder, Cancellation::default());
 	call.attempt.timeout = std::time::Duration::from_millis(5);
 	let error = replayable.call(call).await.err().expect("body timeout");
-	let body = error.receipt().attempts.last().expect("attempt receipt").body;
+	let body = error
+		.receipt()
+		.attempts
+		.last()
+		.expect("attempt receipt")
+		.body;
 	assert_eq!(body.retry_decision, RetryDecision::Allow);
 
 	let one_shot = Arc::new(OneShotBody::new(Box::pin(stream::pending())));
@@ -836,7 +848,12 @@ async fn stalled_body_preserves_factory_replay_and_suppresses_consumed_one_shot(
 	let mut call = request(BodySource::OneShot(one_shot), EmitDecoder, Cancellation::default());
 	call.attempt.timeout = std::time::Duration::from_millis(5);
 	let error = consumed.call(call).await.err().expect("body timeout");
-	let body = error.receipt().attempts.last().expect("attempt receipt").body;
+	let body = error
+		.receipt()
+		.attempts
+		.last()
+		.expect("attempt receipt")
+		.body;
 	assert_eq!(body.retry_decision, RetryDecision::Suppress);
 	assert_eq!(body.reason, RetryDecisionReason::ConsumedOneShot);
 	assert_eq!(

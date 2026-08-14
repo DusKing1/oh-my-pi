@@ -115,7 +115,7 @@ pub(super) async fn render<C: HttpClient + Sync>(
 		.as_deref()
 		.filter(|value| !value.is_empty())
 	{
-		write!(markdown, "**Repository:** {repository}\n").expect("writing markdown to a string");
+		writeln!(markdown, "**Repository:** {repository}").expect("writing markdown to a string");
 	}
 	if let Some(homepage) = metadata
 		.homepage
@@ -123,21 +123,21 @@ pub(super) async fn render<C: HttpClient + Sync>(
 		.filter(|value| !value.is_empty())
 		.filter(|homepage| Some(*homepage) != metadata.repository.as_deref())
 	{
-		write!(markdown, "**Homepage:** {homepage}\n").expect("writing markdown to a string");
+		writeln!(markdown, "**Homepage:** {homepage}").expect("writing markdown to a string");
 	}
 	if let Some(documentation) = metadata
 		.documentation
 		.as_deref()
 		.filter(|value| !value.is_empty())
 	{
-		write!(markdown, "**Docs:** {documentation}\n").expect("writing markdown to a string");
+		writeln!(markdown, "**Docs:** {documentation}").expect("writing markdown to a string");
 	}
 	if let Some(keywords) = metadata
 		.keywords
 		.as_ref()
 		.filter(|values| !values.is_empty())
 	{
-		write!(markdown, "**Keywords:** {}\n", keywords.join(", "))
+		writeln!(markdown, "**Keywords:** {}", keywords.join(", "))
 			.expect("writing markdown to a string");
 	}
 	if let Some(categories) = metadata
@@ -145,7 +145,7 @@ pub(super) async fn render<C: HttpClient + Sync>(
 		.as_ref()
 		.filter(|values| !values.is_empty())
 	{
-		write!(markdown, "**Categories:** {}\n", categories.join(", "))
+		writeln!(markdown, "**Categories:** {}", categories.join(", "))
 			.expect("writing markdown to a string");
 	}
 
@@ -156,9 +156,9 @@ pub(super) async fn render<C: HttpClient + Sync>(
 	{
 		markdown.push_str("\n## Recent Versions\n\n");
 		for version in versions.iter().take(5) {
-			write!(
+			writeln!(
 				markdown,
-				"- **{}** ({}) - {} downloads\n",
+				"- **{}** ({}) - {} downloads",
 				version.num,
 				iso_date(&version.created_at),
 				format_compact_number(version.downloads)

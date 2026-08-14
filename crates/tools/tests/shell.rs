@@ -137,7 +137,7 @@ impl ShellExec for FakeExec {
 		let owner_name = request.name.clone();
 		self.state.lock().detaches.push(request);
 		if pending {
-			futures::future::pending().await;
+			futures::future::pending::<()>().await;
 		}
 		Ok(DetachedJob { id, owner: JobOwner::NamedProcess { name: owner_name, generation: 1 } })
 	}

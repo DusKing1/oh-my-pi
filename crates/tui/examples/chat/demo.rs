@@ -931,9 +931,15 @@ impl Demo {
 		self.editor.borrow_mut().take_copied()
 	}
 
+	/// Height in rows of the composer block at the document tail; the GUI
+	/// host routes plain pointer gestures there to the scene.
+	pub const fn composer_rows(&self) -> u16 {
+		self.editor_ui.height()
+	}
+
 	/// Routes a document-space mouse report into the editor UI.
 	pub fn handle_mouse(&mut self, report: &MouseReport) {
-		let editor_height = self.editor_ui.height();
+		let editor_height = self.composer_rows();
 		let editor_y = self.frame.size().height.saturating_sub(editor_height);
 		let editor_bottom = editor_y.saturating_add(editor_height);
 		if report.row < editor_y || report.row >= editor_bottom {
@@ -1124,7 +1130,7 @@ impl Demo {
 			new_rows = new_rows.saturating_add(Self::entry_height(entry, viewport.width, &self.ctx));
 		}
 		let transcript_rows = self.transcript_rows.saturating_add(new_rows);
-		let editor_height = self.editor_ui.height();
+		let editor_height = self.composer_rows();
 		// Native scrollback is append-only, so the logical document may
 		// never shrink while the seam is live: band rows that close again
 		// (extra input lines) become blank padding that heals as the
@@ -1335,7 +1341,7 @@ impl Demo {
 		// The live band, laid out exactly like the retained document's.
 		let margin = u16::from(viewport.width >= 50);
 		let content_width = viewport.width.saturating_sub(margin * 2);
-		let editor_height = self.editor_ui.height();
+		let editor_height = self.composer_rows();
 		let editor_y = viewport.height.saturating_sub(editor_height);
 		let title_y = editor_y.saturating_sub(1);
 		let working_y = title_y.saturating_sub(1);

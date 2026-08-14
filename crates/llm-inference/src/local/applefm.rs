@@ -1371,7 +1371,7 @@ mod tests {
 	use super::{
 		AppleFm, AppleFmAvailabilityEvidence, AppleFmError, AppleFmErrorCode, AppleFmEvent,
 		AppleFmFeatureEvidence, AppleFmGeneration, AppleFmOptions, AppleFmSupportState,
-		append_native_attempt, apple_discovered_model, validate_options,
+		append_native_attempt, apple_discovered_model, native_attempt_error, validate_options,
 	};
 	use crate::{
 		codec::{RawEvent, TransportAttempt},
@@ -1529,5 +1529,13 @@ mod tests {
 			.await
 			.unwrap_err();
 		assert_eq!(error.code(), AppleFmErrorCode::Cancelled);
+	}
+
+	#[test]
+	fn native_attempt_error_attaches_static_error_code() {
+		let error = AppleFmError::new(AppleFmErrorCode::ContextOverflow, "context overflowed");
+		let attempt_err = native_attempt_error(&attempt(), &error, false);
+		assert_eq!(attempt_err.code.as_deref(), Some("context_overflow"));
+		assert_eq!(AppleFmErrorCode::Runtime.as_str(), "runtime_error");
 	}
 }

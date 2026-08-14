@@ -1125,7 +1125,7 @@ fn bedrock_discovery_uri(context: &EncodeContext<'_>) -> Result<Str, Error> {
 		.account
 		.and_then(|account| account.region.as_ref())
 		.map(|region| region.as_str())
-		.or_else(|| context.route.endpoint.region.as_deref())
+		.or(context.route.endpoint.region.as_deref())
 		.or_else(|| bedrock_endpoint_region(base))
 		.unwrap_or("us-east-1");
 	bedrock_discovery_endpoint(base, region)

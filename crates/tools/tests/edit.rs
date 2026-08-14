@@ -1,6 +1,6 @@
 //! Exact pi-facing contracts for hashline edit execution and projection.
 
-use std::{collections::HashMap, future::Future, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use bytes::Bytes;
 use futures::StreamExt;
@@ -362,7 +362,7 @@ async fn malformed_and_headerless_input_never_commit_and_preserve_parser_diagnos
 				Ev::Args(issue) => issue.found.as_deref().map(str::to_owned),
 				_ => None,
 			})
-			.expect("diagnostic event");
+			.unwrap_or_else(|| panic!("diagnostic event for {input:?}: {events:?}"));
 		assert_eq!(rendered, expected);
 	}
 	assert_eq!(fake.state.lock().commits, [] as [omp_tools::edit::EditProposal; 0]);

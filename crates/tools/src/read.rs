@@ -1218,6 +1218,7 @@ fn seen_ranges(lines: &[usize]) -> Vec<SeenRange> {
 		}
 		end = line;
 	}
+	ranges.push(SeenRange { start_line: start as u64, end_line: end as u64 });
 	ranges
 }
 

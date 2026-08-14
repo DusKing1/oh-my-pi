@@ -202,7 +202,7 @@ async fn render_tree<C: HttpClient + Sync>(
 			} else {
 				String::new()
 			};
-			write!(markdown, "{prefix}{}{size}\n", item.name)
+			writeln!(markdown, "{prefix}{}{size}", item.name)
 				.expect("writing to a String cannot fail");
 		}
 		markdown.push_str("```\n\n");
@@ -246,17 +246,17 @@ async fn render_repo<C: HttpClient + Sync>(
 		markdown.push_str(description);
 		markdown.push_str("\n\n");
 	}
-	write!(
+	writeln!(
 		markdown,
-		"Stars: {} · Forks: {} · Issues: {}\n",
+		"Stars: {} · Forks: {} · Issues: {}",
 		repo.stargazers_count, repo.forks_count, repo.open_issues_count
 	)
 	.expect("writing to a String cannot fail");
 	if let Some(language) = repo.language.as_deref().filter(|value| !value.is_empty()) {
-		write!(markdown, "Language: {language}\n").expect("writing to a String cannot fail");
+		writeln!(markdown, "Language: {language}").expect("writing to a String cannot fail");
 	}
 	if let Some(license) = repo.license.as_ref() {
-		write!(markdown, "License: {}\n", license.name).expect("writing to a String cannot fail");
+		writeln!(markdown, "License: {}", license.name).expect("writing to a String cannot fail");
 	}
 	markdown.push_str("\n---\n\n");
 
@@ -270,10 +270,10 @@ async fn render_repo<C: HttpClient + Sync>(
 			} else {
 				"      "
 			};
-			write!(markdown, "{prefix}{}\n", item.path).expect("writing to a String cannot fail");
+			writeln!(markdown, "{prefix}{}", item.path).expect("writing to a String cannot fail");
 		}
 		if tree.tree.len() > 100 {
-			write!(markdown, "[…{} files elided…]\n", tree.tree.len() - 100)
+			writeln!(markdown, "[…{} files elided…]", tree.tree.len() - 100)
 				.expect("writing to a String cannot fail");
 		}
 		markdown.push_str("```\n\n");
@@ -308,9 +308,9 @@ async fn render_issue<C: HttpClient + Sync>(
 		issue.title, issue.number, issue.state, issue.user.login, issue.created_at, issue.updated_at
 	);
 	if !issue.labels.is_empty() {
-		write!(
+		writeln!(
 			markdown,
-			"Labels: {}\n",
+			"Labels: {}",
 			issue
 				.labels
 				.iter()
@@ -459,9 +459,9 @@ async fn render_commit<C: HttpClient + Sync>(
 	markdown.push('\n');
 	if let Some(stats) = commit.stats.as_ref() {
 		let files = commit.files.len();
-		write!(
+		writeln!(
 			markdown,
-			"{files} file{} changed · +{} −{}\n",
+			"{files} file{} changed · +{} −{}",
 			if files == 1 { "" } else { "s" },
 			stats.additions.unwrap_or(0),
 			stats.deletions.unwrap_or(0)

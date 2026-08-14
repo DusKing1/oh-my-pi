@@ -492,7 +492,7 @@ async fn structural_summary_has_a_concrete_recovery_footer() {
 	let sources = Sources::default();
 	let mut body = String::from("pub fn giant() {\n");
 	for line in 0..120 {
-		writeln!(body, "    let value_{line} = {line}").expect("writing to string");
+		writeln!(body, "    let value_{line} = {line};").expect("writing to string");
 	}
 	body.push_str("}\n");
 	sources.file("big.rs", body);
@@ -926,7 +926,7 @@ async fn macos_sample_profile_uses_the_checked_in_call_tree_fixture() {
 		output.starts_with("1:macOS sample profile: fixture (pid 123), sampled every 1 ms\n"),
 		"{output}"
 	);
-	assert!(output.contains("work (fixture)") || output.contains("work  (in fixture)"), "{output}");
+	assert!(output.contains("800  80.0%    work"), "{output}");
 	assert!(
 		output.ends_with(
 			"[Summarized view of a macOS `sample` call-tree report. Use ':raw' to read the original \
