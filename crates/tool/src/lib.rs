@@ -7,11 +7,7 @@
 mod incoming;
 mod registry;
 
-use std::{
-	collections::{BTreeMap, HashMap},
-	fmt,
-	future::Future,
-};
+use std::{fmt, future::Future};
 
 use bytes::Bytes;
 use futures::Stream;
@@ -20,146 +16,31 @@ pub use incoming::{
 	InvocationEvent, InvocationFeed, InvocationSendError, ParamError,
 };
 use omp_core::Str;
-pub use omp_macros::ToolParam;
 pub use registry::{
 	ConstraintDisposition, ErasedEv, ErasedOutcome, ErasedStream, LoweredTool, LoweringCaps,
 	ProjectedCall, ProjectedVerdict, Registry, RegistryError, ToolRoute,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Value, json};
-
-/// Model-facing JSON Schema for one tool-parameter type.
-///
-/// This is the workspace's schemars replacement for the tool-argument
-/// boundary. Schemas describe deserialization, matching how tool parameters
-/// are consumed: doc comments become property descriptions, `Option` fields
-/// follow JSON Schema's absent-property convention (no `null`), and numbers
-/// carry no `format` annotations. Derive it with
-/// [`ToolParam`](macro@ToolParam).
-pub trait ToolParam {
-	/// True when a field of this type may be omitted from the arguments
-	/// object entirely, keeping it out of `required`.
-	const OPTIONAL: bool = false;
-
-	/// Returns this type's inline JSON Schema in value position, where
-	/// `Option` means a nullable value.
-	fn schema() -> Value;
-
-	/// Returns this type's schema when it sits directly in an object property
-	/// whose absence is representable: `Option` contributes its inner schema
-	/// plus omission instead of `null`.
-	fn property_schema() -> Value {
-		Self::schema()
-	}
-}
-
-macro_rules! leaf {
-	($schema:tt for $($ty:ty),+) => {
-		$(impl ToolParam for $ty {
-			fn schema() -> Value {
-				json!($schema)
-			}
-		})+
-	};
-}
-
-leaf!({ "type": "string" } for Str, String);
-leaf!({ "type": "boolean" } for bool);
-leaf!({ "type": "number" } for f32, f64);
-leaf!({ "type": "integer" } for i8, i16, i32, i64, i128, isize);
-leaf!({ "type": "integer", "minimum": 0 } for u8, u16, u32, u64, u128, usize);
-
-impl<T: ToolParam> ToolParam for Option<T> {
-	const OPTIONAL: bool = true;
-
-	fn schema() -> Value {
-		json!({ "anyOf": [T::schema(), { "type": "null" }] })
-	}
-
-	fn property_schema() -> Value {
-		T::schema()
-	}
-}
-
-impl<T: ToolParam> ToolParam for Vec<T> {
-	fn schema() -> Value {
-		json!({ "type": "array", "items": T::schema() })
-	}
-}
-
-impl<V: ToolParam> ToolParam for BTreeMap<Str, V> {
-	fn schema() -> Value {
-		json!({ "type": "object", "additionalProperties": V::schema() })
-	}
-}
-
-impl<V: ToolParam> ToolParam for BTreeMap<String, V> {
-	fn schema() -> Value {
-		json!({ "type": "object", "additionalProperties": V::schema() })
-	}
-}
-
-impl<V: ToolParam, S> ToolParam for HashMap<String, V, S> {
-	fn schema() -> Value {
-		json!({ "type": "object", "additionalProperties": V::schema() })
-	}
-}
-
-/// Any JSON value; schemas to the permissive `true`.
-impl ToolParam for Value {
-	fn schema() -> Value {
-		Self::Bool(true)
-	}
-}
 
 /// Generates the compact, deterministic JSON Schema exposed to models for `T`.
 ///
-/// The root `description` is stripped: the tool's prose description travels
-/// separately on [`ToolSpec`].
-pub fn schema<T: ToolParam>() -> Bytes {
-	let mut root = T::schema();
-	if let Some(object) = root.as_object_mut() {
-		object.shift_remove("description");
-	}
+/// Subschemas are inlined and generator metadata is omitted. Schemas describe
+/// deserialization, matching how tool parameters are consumed.
+pub fn schema<T: schemars::JsonSchema>() -> Bytes {
+	let generator = schemars::generate::SchemaSettings::draft2020_12()
+		.with(|settings| {
+			settings.inline_subschemas = true;
+			settings.meta_schema = None;
+		})
+		.for_deserialize()
+		.into_generator();
+	let mut root = generator.into_root_schema_for::<T>();
+	root.remove("$schema");
+	root.remove("title");
 	Bytes::from(
-		serde_json::to_vec(&root).expect("model-facing JSON Schema serializes to compact JSON"),
+		serde_json::to_vec(root.as_value())
+			.expect("schemars-generated JSON Schema must serialize to compact JSON"),
 	)
-}
-
-/// Runtime support for the [`ToolParam`](macro@ToolParam) derive. Not public
-/// API.
-#[doc(hidden)]
-pub mod __private {
-	pub use serde_json;
-	use serde_json::{Map, Value};
-
-	/// Fills leaf-schema entries into `target` without overriding entries the
-	/// derive already placed (notably `description`).
-	pub fn merge_defaults(target: &mut Map<String, Value>, leaf: Value) {
-		if let Value::Object(leaf) = leaf {
-			for (key, value) in leaf {
-				target.entry(key).or_insert(value);
-			}
-		}
-	}
-
-	/// Merges an `extend({ ... })` JSON object over `target`, overriding on
-	/// collision.
-	pub fn merge_override(target: &mut Map<String, Value>, extension: Value) {
-		if let Value::Object(extension) = extension {
-			for (key, value) in extension {
-				target.insert(key, value);
-			}
-		}
-	}
-
-	/// Widens a scalar `type` to `[type, "null"]` for nullable properties.
-	pub fn nullable(target: &mut Map<String, Value>) {
-		if let Some(kind) = target.get_mut("type") {
-			let scalar = kind.take();
-			*kind = Value::Array(vec![scalar, Value::String("null".into())]);
-		}
-	}
 }
 /// Namespaced thread-item property carrying a committed tool revision.
 pub const TOOL_REV_PROP: &str = "omp/tool-rev";

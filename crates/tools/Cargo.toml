@@ -13,10 +13,12 @@ readme = "README.md"
 workspace = true
 
 [dependencies]
+anydoc = { workspace = true }
 async-stream = { workspace = true }
 bytecount = { workspace = true }
 bytes = { workspace = true }
 encoding_rs = { workspace = true }
+cfb = { workspace = true }
 flate2 = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
@@ -38,8 +40,10 @@ pyo3 = { workspace = true }
 quick-xml = { workspace = true }
 rusqlite = { workspace = true, features = ["hooks", "serialize"] }
 serde = { workspace = true }
+schemars = { workspace = true }
 serde_json = { workspace = true }
 smallvec = { workspace = true }
+strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

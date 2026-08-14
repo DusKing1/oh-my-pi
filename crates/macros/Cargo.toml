@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Workspace proc macros: the dom! markup macro and the ToolParam schema derive"
+description = "Workspace proc macros for declarative TUI markup"
 
 [lib]
 proc-macro = true

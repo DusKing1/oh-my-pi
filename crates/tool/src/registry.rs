@@ -240,8 +240,8 @@ impl<T: Tool> ErasedTool for Registered<T> {
 	}
 
 	fn call<'a>(&'a self, params: IncomingParams<'a>) -> ErasedStream<'a> {
+		let events = self.tool.call(params);
 		Box::pin(stream! {
-			let events = self.tool.call(params);
 			pin_mut!(events);
 			let mut terminal = false;
 			while let Some(event) = events.next().await {
