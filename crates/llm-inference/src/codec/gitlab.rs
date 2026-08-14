@@ -256,9 +256,9 @@ pub enum GitLabDelegatingCodec {
 	/// Delegate request/stream behavior to the shared `OpenAI` Chat codec.
 	OpenAiChat(OpenAiChatCodec),
 	/// Delegate request/stream behavior to the shared `OpenAI` Responses codec.
-	OpenAiResponses(OpenAiResponsesCodec),
+	OpenAiResponses(Box<OpenAiResponsesCodec>),
 	/// Delegate request/stream behavior to the shared Anthropic codec.
-	AnthropicMessages(Box<AnthropicCodec>),
+	AnthropicMessages(AnthropicCodec),
 }
 
 impl GitLabDelegatingCodec {
@@ -268,11 +268,9 @@ impl GitLabDelegatingCodec {
 	pub fn from_route(route: &GitLabDirectRoute) -> Self {
 		match route.delegation {
 			GitLabDelegationTarget::OpenAiChat => Self::OpenAiChat(OpenAiChatCodec::default()),
-			GitLabDelegationTarget::OpenAiResponses => {
-				Self::OpenAiResponses(OpenAiResponsesCodec::default())
-			},
+			GitLabDelegationTarget::OpenAiResponses => Self::OpenAiResponses(Box::default()),
 			GitLabDelegationTarget::AnthropicMessages => {
-				Self::AnthropicMessages(Box::new(AnthropicCodec::direct()))
+				Self::AnthropicMessages(AnthropicCodec::direct())
 			},
 		}
 	}

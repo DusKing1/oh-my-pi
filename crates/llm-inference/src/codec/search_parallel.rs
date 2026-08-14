@@ -466,7 +466,7 @@ mod tests {
 			(1, Some("first\n\nsecond"))
 		);
 		assert_eq!(answer.results[0].score, Some(0.875));
-		assert_eq!(answer.results[0].published_at, Some(UNIX_EPOCH + Duration::from_hours(474768)));
+		assert_eq!(answer.results[0].published_at, Some(UNIX_EPOCH + Duration::from_weeks(2826)));
 		assert_eq!(answer.usage.search_calls, 1);
 		assert_eq!(answer.usage.source, UsageSource::Provider);
 	}

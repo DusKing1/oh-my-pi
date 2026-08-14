@@ -811,7 +811,7 @@ mod tests {
 	}
 	#[test]
 	fn gemini_and_gemma_candidates_are_split_invariant() {
-		for (dialect, input) in [(Dialect::Gemini, b"```tool_code\nprint(default_api.run(ok=True, missing=None, n=-2.5, xs=[1, 'two'], cfg={'x': 3}))\n```".as_slice()), (Dialect::Gemma, b"<|tool_call>call:run{x:1, ok:true, missing:null, nested:{items:[1,2]}}<tool_call|>".as_slice())] { let expected = calls(dialect, input, input.len()); assert!(!expected.is_empty()); for split in 0..=input.len() { assert_eq!(calls(dialect, input, split), expected, "split {split}"); } }
+		for (dialect, input) in [(Dialect::Gemini, b"```tool_code\nprint(default_api.run(ok=True, missing=None, n=-2.5, xs=[1, 'two'], cfg={'x': 3}))\n```".as_slice()), (Dialect::Gemma, b"<|tool_call>call:run{x:1, ok:true, missing:null, nested:{items:[1,2]}}<tool_call|>".as_slice())] { let expected = calls(dialect, input, input.len()); assert_ne!(expected, [] as [(omp_core::Str, serde_json::Value); 0]); for split in 0..=input.len() { assert_eq!(calls(dialect, input, split), expected, "split {split}"); } }
 	}
 	#[test]
 	fn every_dialect_candidate_is_split_invariant() {
@@ -838,7 +838,13 @@ mod tests {
 	}
 	#[test]
 	fn prose_outside_owned_blocks_never_fabricates_calls() {
-		assert!(calls(Dialect::Gemini, b"default_api.search(query='outside')", 1).is_empty());
-		assert!(calls(Dialect::Gemma, b"call:search{query:'outside'}", 1).is_empty());
+		assert_eq!(calls(Dialect::Gemini, b"default_api.search(query='outside')", 1), [] as [(
+			omp_core::Str,
+			serde_json::Value
+		); 0]);
+		assert_eq!(calls(Dialect::Gemma, b"call:search{query:'outside'}", 1), [] as [(
+			omp_core::Str,
+			serde_json::Value
+		); 0]);
 	}
 }

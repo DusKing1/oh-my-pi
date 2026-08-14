@@ -1390,7 +1390,7 @@ impl Decoder for OpenAiChatDecoder {
 		}
 		let final_usage = chunk.choices.is_empty();
 		for choice in chunk.choices {
-			self.decode_choice(choice, emit)?;
+			self.decode_choice(choice, emit);
 		}
 		if let Some(usage) = chunk.usage {
 			merge_usage(&mut self.usage, usage.canonical());
@@ -1411,11 +1411,7 @@ impl Decoder for OpenAiChatDecoder {
 }
 
 impl OpenAiChatDecoder {
-	fn decode_choice(
-		&mut self,
-		choice: WireChoice,
-		emit: &mut dyn FnMut(RawEvent),
-	) -> Result<(), Error> {
+	fn decode_choice(&mut self, choice: WireChoice, emit: &mut dyn FnMut(RawEvent)) {
 		let index = choice.index;
 		let mut state = self.choices.remove(&index).unwrap_or_default();
 		if let Some(reason) = choice.finish_reason {
@@ -1425,7 +1421,7 @@ impl OpenAiChatDecoder {
 		if let Some(error) = payload.error {
 			self.done = true;
 			emit(RawEvent::Failure(classify_error(error, self.committed)));
-			return Ok(());
+			return;
 		}
 		let reasoning = payload
 			.reasoning_content
@@ -1525,7 +1521,6 @@ impl OpenAiChatDecoder {
 			}
 		}
 		self.choices.insert(index, state);
-		Ok(())
 	}
 
 	fn start_block(&mut self, kind: BlockKind, emit: &mut dyn FnMut(RawEvent)) -> u32 {

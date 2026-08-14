@@ -293,11 +293,11 @@ mod tests {
 	struct WholeAttemptPolicy;
 
 	impl SemanticPolicy<()> for WholeAttemptPolicy {
-		fn condition(&self, _: &()) -> Option<GateCondition> {
+		fn condition(&self, (): &()) -> Option<GateCondition> {
 			Some(GateCondition::WholeAttempt)
 		}
 
-		fn max_retries(&self, _: &()) -> u32 {
+		fn max_retries(&self, (): &()) -> u32 {
 			1
 		}
 	}

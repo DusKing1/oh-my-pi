@@ -1559,9 +1559,16 @@ struct GateSpoolState {
 }
 
 struct GateSpoolStorage {
-	file:  StdFile,
-	_path: TempPath,
-	key:   StagingKey,
+	file: StdFile,
+	#[cfg_attr(
+		not(test),
+		expect(
+			dead_code,
+			reason = "owning the TempPath keeps the encrypted spool alive until its file is dropped"
+		)
+	)]
+	path: TempPath,
+	key:  StagingKey,
 }
 
 impl fmt::Debug for GateSpoolStorage {
@@ -1612,7 +1619,7 @@ impl SecureTemporaryGateSpool {
 			.map_err(|_| gate_unavailable("secure_gate_spool_open_failed"))?;
 		let key = derive_ephemeral_key(key)?;
 		let state = Arc::new(GateSpoolState {
-			storage:   Mutex::new(Some(GateSpoolStorage { file, _path: path, key })),
+			storage:   Mutex::new(Some(GateSpoolStorage { file, path, key })),
 			cancelled: AtomicBool::new(false),
 		});
 		cancellation.register_gate_spool(&state);
@@ -1641,7 +1648,7 @@ impl SecureTemporaryGateSpool {
 			.storage
 			.lock()
 			.as_ref()
-			.map(|storage| storage._path.to_path_buf())
+			.map(|storage| storage.path.to_path_buf())
 	}
 }
 

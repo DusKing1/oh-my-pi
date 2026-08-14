@@ -116,6 +116,11 @@ mod wire {
 		reason = "prost maps protobuf oneofs directly to enums; boxing would change the generated \
 		          Rust API"
 	)]
+	#![allow(
+		clippy::enum_variant_names,
+		reason = "prost maps protobuf enum variant names directly without stripping shared prefixes \
+		          or suffixes"
+	)]
 	pub mod exa {
 		pub mod analytics_pb {
 			include!(concat!(env!("OUT_DIR"), "/exa.analytics_pb.rs"));
@@ -1274,7 +1279,7 @@ mod tests {
 		let request = GetCliModelConfigsRequest::decode(bound).expect("protobuf");
 		let metadata = request.metadata.expect("metadata");
 		assert_eq!(metadata.api_key, "devin-session-token$jwt-value");
-		assert!(metadata.user_jwt.is_empty());
+		assert_eq!(metadata.user_jwt, "");
 	}
 
 	#[test]

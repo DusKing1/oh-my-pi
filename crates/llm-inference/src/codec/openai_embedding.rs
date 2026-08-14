@@ -821,9 +821,8 @@ mod tests {
 			(br#"{"data":[{"index":0,"embedding":[1.0]},{"index":2,"embedding":[2.0]}],"usage":{"prompt_tokens":1,"total_tokens":1}}"#.as_slice(), "openai_embedding_missing_index"),
 			(br#"{"data":[{"index":0,"embedding":[1.0,2.0]},{"index":1,"embedding":[3.0]}],"usage":{"prompt_tokens":1,"total_tokens":1}}"#.as_slice(), "openai_embedding_dimension_mismatch"),
 		] {
-			let error = match decode(fixture, 2, None) {
-				Ok(_) => panic!("invalid response accepted"),
-				Err(error) => error,
+			let Err(error) = decode(fixture, 2, None) else {
+				panic!("invalid response accepted");
 			};
 			assert!(matches!(error.detail_ref(), Some(ErrorDetail::Protocol { reason: actual }) if actual.0 == reason));
 		}
@@ -831,19 +830,17 @@ mod tests {
 			br#"{"data":[{"index":0,"embedding":[1e400]}],"usage":{"prompt_tokens":1,"total_tokens":1}}"#.as_slice(),
 			br#"{"data":not-json}"#.as_slice(),
 		] {
-			let error = match decode(fixture, 1, None) {
-				Ok(_) => panic!("invalid response accepted"),
-				Err(error) => error,
+			let Err(error) = decode(fixture, 1, None) else {
+				panic!("invalid response accepted");
 			};
 			assert_eq!(error.kind, ErrorKind::Protocol);
 		}
-		let error = match decode(
+		let Err(error) = decode(
 			br#"{"data":[{"index":0,"embedding":[1.0,2.0]}],"usage":{"prompt_tokens":1,"total_tokens":1}}"#,
 			1,
 			Some(3),
-		) {
-			Ok(_) => panic!("wrong requested dimensions accepted"),
-			Err(error) => error,
+		) else {
+			panic!("wrong requested dimensions accepted");
 		};
 		assert!(matches!(
 			error.detail_ref(),
@@ -858,9 +855,8 @@ mod tests {
 			1,
 			None,
 		).expect("typed error");
-		let error = match events.into_iter().next().expect("failure event") {
-			RawEvent::Failure(error) => error,
-			_ => panic!("failure expected"),
+		let RawEvent::Failure(error) = events.into_iter().next().expect("failure event") else {
+			panic!("failure expected");
 		};
 		assert_eq!(error.kind, ErrorKind::RateLimited);
 		assert_eq!(error.status, Some(429));

@@ -170,7 +170,7 @@ where
 					("client_secret", client_secret.as_str()),
 					("refresh_token", refresh_token.as_str()),
 				];
-				let request = self.form_request(token_uri, &fields)?;
+				let request = Self::form_request(token_uri, &fields)?;
 				let response = self.execute(request).await?;
 				let token = parse_token_response(response)?;
 				Ok(AdcResolution {
@@ -193,7 +193,7 @@ where
 					issued_at,
 				)?;
 				let fields = [("grant_type", JWT_GRANT), ("assertion", assertion.expose_secret())];
-				let request = self.form_request(token_uri, &fields)?;
+				let request = Self::form_request(token_uri, &fields)?;
 				let response = self.execute(request).await?;
 				let token = parse_token_response(response)?;
 				Ok(AdcResolution {
@@ -222,7 +222,7 @@ where
 					("subject_token_type", subject_token_type.as_str()),
 					("subject_token", subject.expose_secret().trim()),
 				];
-				let request = self.form_request(token_url, &fields)?;
+				let request = Self::form_request(token_url, &fields)?;
 				let response = self.execute(request).await?;
 				let token = parse_token_response(response)?;
 				Ok(AdcResolution {
@@ -261,11 +261,7 @@ where
 		}))
 	}
 
-	fn form_request(
-		&self,
-		url: &str,
-		fields: &[(&str, &str)],
-	) -> Result<OAuthHttpRequest, AdcError> {
+	fn form_request(url: &str, fields: &[(&str, &str)]) -> Result<OAuthHttpRequest, AdcError> {
 		let mut serializer = url::form_urlencoded::Serializer::new(String::new());
 		for (name, value) in fields {
 			serializer.append_pair(name, value);

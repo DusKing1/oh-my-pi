@@ -1614,7 +1614,8 @@ mod tests {
 				put(&store, &account, value.as_bytes(), 10 + worker as u64);
 				let observed = store.get(&account).expect("concurrent read");
 				assert!(observed.metadata.generation >= 2);
-				assert!(!observed.secret.expose_secret().is_empty());
+				let empty: &[u8] = &[];
+				assert_ne!(observed.secret.expose_secret().as_slice(), empty);
 			}));
 		}
 		for worker in threads {

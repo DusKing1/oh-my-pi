@@ -256,7 +256,7 @@ async fn render_model_or_user<C: HttpClient + Sync>(
 	};
 
 	let display_user = user
-		.user
+		.username
 		.as_deref()
 		.filter(|value| !value.is_empty())
 		.unwrap_or(id);
@@ -264,13 +264,13 @@ async fn render_model_or_user<C: HttpClient + Sync>(
 	if let Some(name) = user.name.filter(|value| !value.is_empty()) {
 		push_field(&mut markdown, "Name", &name);
 	}
-	if let Some(models) = user.num_models {
+	if let Some(models) = user.models {
 		push_field(&mut markdown, "Models", &format_number(models));
 	}
-	if let Some(datasets) = user.num_datasets {
+	if let Some(datasets) = user.datasets {
 		push_field(&mut markdown, "Datasets", &format_number(datasets));
 	}
-	if let Some(spaces) = user.num_spaces {
+	if let Some(spaces) = user.spaces {
 		push_field(&mut markdown, "Spaces", &format_number(spaces));
 	}
 	if !user.orgs.is_empty() {
@@ -461,16 +461,17 @@ struct SpaceCard {
 #[derive(Deserialize)]
 struct User {
 	#[serde(rename = "fullname")]
-	name:         Option<String>,
-	user:         Option<String>,
+	name:     Option<String>,
+	#[serde(rename = "user")]
+	username: Option<String>,
 	#[serde(default)]
-	orgs:         Vec<Organization>,
+	orgs:     Vec<Organization>,
 	#[serde(rename = "numModels")]
-	num_models:   Option<u64>,
+	models:   Option<u64>,
 	#[serde(rename = "numDatasets")]
-	num_datasets: Option<u64>,
+	datasets: Option<u64>,
 	#[serde(rename = "numSpaces")]
-	num_spaces:   Option<u64>,
+	spaces:   Option<u64>,
 }
 
 #[derive(Deserialize)]
