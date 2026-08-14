@@ -137,7 +137,7 @@ impl OperationBits {
 	}
 
 	/// Adds `kind` to this set.
-	pub fn insert_kind(&mut self, kind: OperationKind) {
+	pub const fn insert_kind(&mut self, kind: OperationKind) {
 		self.insert(Self::for_kind(kind));
 	}
 }

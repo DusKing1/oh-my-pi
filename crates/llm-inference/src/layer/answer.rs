@@ -249,17 +249,18 @@ fn chat_stream(
 					break;
 				},
 				Some(Ok(RawEvent::Chat(ChatEvent::Started(_)))) => {},
-				Some(Ok(RawEvent::Chat(event))) => {
+				Some(Ok(RawEvent::Chat(mut event))) => {
 					let terminal = matches!(event, ChatEvent::Completed(_));
 					if let Err(mut error) = context.record_session_event(&event) {
 						context.finalize_error(&mut error); error.committed = context.is_committed(); context.abort_session(); abort.disarm(); yield Err(error); break;
 					}
 					if event.commits_output() { context.commit(); }
-					if let ChatEvent::Completed(completion) = &event {
+					if let ChatEvent::Completed(completion) = &mut event {
 						context.merge_receipt(&completion.receipt);
 						if let Err(mut error) = context.commit_session() {
 							context.finalize_error(&mut error); error.committed = context.is_committed(); abort.disarm(); yield Err(error); break;
 						}
+						completion.receipt = context.receipt();
 					}
 					yield Ok(event);
 					if terminal { abort.disarm(); break; }
