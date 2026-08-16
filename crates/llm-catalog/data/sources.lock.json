@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source_digest": "eec0b418506754ff1507d2304acb49afee22a6a5cba3f0ec6e9c03a7258886eb",
+  "source_digest": "51ae0af15d3c0347b660389a9a22de00cae8d259463e8533331db98d86ec597c",
   "inputs": [
     {
       "id": "catalog-policy.manifest.v1",
@@ -95,7 +95,7 @@
     {
       "id": "catalog.policy.exact-model-overrides.v1",
       "path": "fixtures/llm-oracle/catalog-policy/exact-model-overrides.json",
-      "sha256": "dbf9a237a9f7d7a633fc2833f050c4ec1c4dd59191de833568c70e31afae3694",
+      "sha256": "ecb4f0dad1dac49883d3322b5e00205955ddae7c76473e0e97f7213c662205d6",
       "source": "oracle:catalog.policy.exact-model-overrides.v1"
     },
     {
@@ -629,7 +629,7 @@
     {
       "id": "compat.cascade.providers.xai-oauth.v1",
       "path": "crates/llm-catalog/compat/providers/xai-oauth.kdl",
-      "sha256": "539bd92b965a354c4ea18a1a1ecbb70db8afc6c153bc5e0fef754e39a5d32c06",
+      "sha256": "6bfef98e5f3090af8d6c1724bbda5f6a90e21116c1da6f97216bb5840a5b4a3a",
       "source": "census 2026-08: .omp/local/quirks + frozen oracle"
     },
     {

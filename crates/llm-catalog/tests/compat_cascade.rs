@@ -285,6 +285,13 @@ fn cascade_resolves_every_catalog_model_to_oracle_plus_census_overlay() {
 			expected.insert("thinking_format".into(), Value::from(format));
 			overlay_applied += 1;
 		}
+		if model.provider == "opencode-go"
+			&& (model.model == "deepseek-v4-flash" || model.model == "deepseek-v4-pro")
+		{
+			// #8244: the Responses route rejects forced tool choice for DeepSeek
+			// V4; the frozen wire oracle predates the override.
+			expected.insert("supports_tool_choice".into(), Value::from(false));
+		}
 		let resolved_wire: BTreeMap<String, Value> = resolved
 			.wire
 			.iter()
@@ -296,7 +303,44 @@ fn cascade_resolves_every_catalog_model_to_oracle_plus_census_overlay() {
 		}
 
 		// Thinking: exact against the profile oracle; empty when not profiled.
-		let expected_thinking = thinking_oracle.get(&model.id).cloned().unwrap_or_default();
+		let mut expected_thinking = thinking_oracle.get(&model.id).cloned().unwrap_or_default();
+		if model.id == "baseten/moonshotai/Kimi-K3" {
+			expected_thinking.extend([
+				("defaultLevel".into(), Value::from("max")),
+				(
+					"efforts".into(),
+					Value::from(vec![Value::from("low"), Value::from("high"), Value::from("max")]),
+				),
+				("mode".into(), Value::from("effort")),
+			]);
+		}
+		if model.id == "xai-oauth/grok-4.5" {
+			// #8369 (scoped): mandatory high default; the frozen row's legacy
+			// compat pins the ladder itself until the next snapshot import.
+			expected_thinking.extend([
+				("defaultLevel".into(), Value::from("high")),
+				("requiresEffort".into(), Value::from(true)),
+			]);
+		}
+		if model.id == "nanogpt/linkup-research" {
+			// #8364's exact-rule reasoning promotion woke nanogpt.kdl's intentional
+			// tiered ladder for this logical alias; the frozen profile oracle
+			// predates the promotion.
+			expected_thinking.extend([
+				("defaultLevel".into(), Value::from("high")),
+				(
+					"efforts".into(),
+					Value::from(vec![
+						Value::from("low"),
+						Value::from("medium"),
+						Value::from("high"),
+						Value::from("xhigh"),
+					]),
+				),
+				("mode".into(), Value::from("effort")),
+				("requiresEffort".into(), Value::from(true)),
+			]);
+		}
 		let resolved_thinking: BTreeMap<String, Value> = resolved
 			.thinking
 			.iter()

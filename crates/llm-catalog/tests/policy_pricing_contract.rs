@@ -176,6 +176,89 @@ fn opencode_go_deepseek_v4_omits_tool_choice_without_hiding_tools() {
 }
 
 #[test]
+fn xai_oauth_grok_45_and_46_default_to_mandatory_high_effort() {
+	let source = |name: &str| {
+		serde_json::from_value::<SourceModelRecord>(serde_json::json!({
+			"name": name,
+			"reasoning": true,
+			"input": ["text", "image"],
+			"output": ["text"],
+			"thinking": {
+				"mode": "effort",
+				"efforts": ["minimal", "low", "medium", "high", "xhigh"]
+			}
+		}))
+		.expect("typed xAI OAuth model source")
+	};
+	let compiled = compile(CatalogSource {
+		providers: BTreeMap::from([(Str::from("xai-oauth"), source_provider())]),
+		models:    BTreeMap::from([(
+			Str::from("xai-oauth"),
+			BTreeMap::from([
+				(Str::from("grok-4.5"), source("Grok 4.5")),
+				(Str::from("grok-4.6"), source("Grok 4.6")),
+			]),
+		)]),
+	})
+	.expect("xAI OAuth catalog compiles");
+
+	// Grok 4.5's ladder is pinned by the frozen source row's legacy compat, so
+	// only the mandatory-high default applies to it today; Grok 4.6 carries the
+	// full corrected ladder for the next snapshot import.
+	for (key, expected) in [
+		(
+			"xai-oauth/grok-4.5",
+			&[
+				ThinkingEffort::Minimal,
+				ThinkingEffort::Low,
+				ThinkingEffort::Medium,
+				ThinkingEffort::High,
+				ThinkingEffort::XHigh,
+			][..],
+		),
+		(
+			"xai-oauth/grok-4.6",
+			&[
+				ThinkingEffort::Low,
+				ThinkingEffort::Medium,
+				ThinkingEffort::High,
+				ThinkingEffort::XHigh,
+			][..],
+		),
+	] {
+		let model = compiled
+			.models
+			.iter()
+			.find(|model| model.key.as_str() == key)
+			.unwrap_or_else(|| panic!("compiled {key}"));
+		let thinking_id = model.thinking.as_ref().unwrap_or_else(|| panic!("{key} thinking policy"));
+		let thinking = compiled
+			.thinking_policies
+			.iter()
+			.find(|policy| policy.content_id() == *thinking_id)
+			.unwrap_or_else(|| panic!("{key} interned thinking policy"));
+		assert_eq!(thinking.efforts.as_slice(), expected, "{key} efforts");
+		assert_eq!(thinking.default_level, Some(ThinkingEffort::High), "{key} default");
+		assert_eq!(thinking.requires_effort, Some(true), "{key} mandatory effort");
+		assert!(!thinking.supports(ThinkingEffort::Off), "{key} has no off switch");
+	}
+	let grok_46 = compiled
+		.models
+		.iter()
+		.find(|model| model.key.as_str() == "xai-oauth/grok-4.6")
+		.expect("compiled grok-4.6");
+	let grok_46_thinking = compiled
+		.thinking_policies
+		.iter()
+		.find(|policy| policy.content_id() == *grok_46.thinking.as_ref().expect("grok-4.6 thinking"))
+		.expect("grok-4.6 interned thinking policy");
+	assert!(
+		!grok_46_thinking.supports(ThinkingEffort::Minimal),
+		"grok-4.6 rejects the false minimal tier"
+	);
+}
+
+#[test]
 fn integer_nano_usd_cost_is_exact_at_micro_usd_and_tier_boundaries() {
 	let pricing =
 		Pricing::new(vec![Price { unit: PriceUnit::MtokInput, nanos_usd: 1_000 }], vec![PriceTier {

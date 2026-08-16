@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "catalog-8bad5463c77e42308dfc7027322bb994a9426e31a20c9c95abbe7bd60db67a1c",
+  "revision": "catalog-70d5baa8aa08eb2cd2ec080c5475ddfd3dbe358d1d756835b9fd634196e9a801",
   "census": {
     "raw_models": 4302,
     "logical_models": 4227,
@@ -417418,7 +417418,7 @@
         "maximum_output_tokens": 500000,
         "maximum_batch": null
       },
-      "thinking": "thinking-sha256-8f962913526d0f5c7a7af9ff7d328c3c43cc0394c567c92a9621ea4df4240a47",
+      "thinking": "thinking-sha256-075ba2f88691e8aeb8a06091a229eea377f0e0e87ca9d56f825fa81c73fc4d2b",
       "thinking_routing": {
         "effortMap": {
           "minimal": "low"
@@ -452017,6 +452017,21 @@
     }
   ],
   "thinking_policies": [
+    {
+      "mode": "effort",
+      "efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "defaultLevel": "high",
+      "effortBudgets": {},
+      "supportsDisplay": null,
+      "suppressWhenOff": null,
+      "requiresEffort": true
+    },
     {
       "mode": "effort",
       "efforts": [

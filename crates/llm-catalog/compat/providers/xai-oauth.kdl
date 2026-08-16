@@ -19,6 +19,21 @@ provider "xai-oauth" {
 			}
 		}
 	}
+	// SuperGrok requires an explicit native effort and defaults to high. The
+	// frozen source row's legacy compat pins the effort ladder (including the
+	// dead `minimal` alias), so the ladder cleanup rides the next snapshot
+	// import; only the default and the mandatory-effort contract apply now.
+	models "grok-4.5" {
+		thinking-default-level "high"
+		thinking-requires-effort #true
+	}
+	// Dormant until a catalog snapshot ships grok-4.6; xhigh is native there.
+	models "grok-4.6" {
+		reasoning-effort-map {}
+		thinking-efforts "low" "medium" "high" "xhigh"
+		thinking-default-level "high"
+		thinking-requires-effort #true
+	}
 	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "*reasoning" "grok-build" {
 		omit-reasoning-effort #true
