@@ -169,6 +169,15 @@ impl Mailbox {
 		}
 	}
 
+	/// Discards queued producer steering while preserving detached-job
+	/// settlements, whose durable facts remain valid across a history rewind.
+	pub(crate) fn discard_producer_interrupts(&mut self) {
+		self.pump(false);
+		self
+			.backlog
+			.retain(|interrupt| matches!(interrupt.source, InterruptSource::Job { .. }));
+	}
+
 	/// Returns the number of interrupts retained locally and in the channel.
 	pub fn len(&self) -> usize {
 		self.backlog.len() + self.rx.len()

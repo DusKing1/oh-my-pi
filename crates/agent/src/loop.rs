@@ -234,6 +234,7 @@ impl<C: TurnClient> Agent<C> {
 	/// projection.
 	pub fn rewind(&mut self, to: Option<u64>) -> Result<Vec<Item>, AgentError> {
 		self.journal.rewind(now_ms(), to)?;
+		self.mailbox.discard_producer_interrupts();
 		self.context = None;
 		self.prompt_hash = None;
 		self.prompt_head_events.clear();
@@ -1799,6 +1800,48 @@ mod tests {
 
 		let cleared = agent.rewind(None).expect("rewind to root");
 		assert!(cleared.is_empty());
+		drop(agent);
+		std::fs::remove_file(path).expect("remove journal");
+	}
+
+	#[tokio::test]
+	async fn rewind_discards_queued_user_steering_before_next_submission() {
+		let (journal, path) = test_journal("rewind-steering");
+		let opened = Arc::new(Mutex::new(Vec::new()));
+		let client = ScriptedClient {
+			scripts: Arc::new(Mutex::new(VecDeque::from([outcome_script(end_outcome(
+				"replacement answer",
+			))]))),
+			opened:  Arc::clone(&opened),
+		};
+		let (env, _transport) = EnvClient::in_process(1);
+		let mut agent = Agent::new(
+			client,
+			env,
+			AgentState::new(crate::AgentSnapshot::default()),
+			journal,
+			test_caps(),
+		);
+		agent
+			.mailbox()
+			.try_enqueue(crate::Interrupt {
+				class:  crate::InterruptClass::Immediate,
+				item:   message(thread::Role::User, "stale steering"),
+				source: crate::InterruptSource::Producer(Str::from("user")),
+			})
+			.expect("enqueue stale steering");
+
+		agent.rewind(None).expect("rewind to root");
+		agent
+			.submit([message(thread::Role::User, "replacement")], TurnId::new("replacement"))
+			.await
+			.expect("replacement turn");
+
+		let opened = opened.lock();
+		assert_eq!(opened.len(), 1);
+		assert!(input_contains_text(&opened[0].1, "replacement"));
+		assert!(!input_contains_text(&opened[0].1, "stale steering"));
+		drop(opened);
 		drop(agent);
 		std::fs::remove_file(path).expect("remove journal");
 	}
