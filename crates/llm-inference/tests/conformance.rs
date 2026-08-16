@@ -233,7 +233,7 @@ fn every_operation_has_a_typed_extraction_bound_to_the_operations_manifest() {
 		.is_ok()
 	);
 	assert!(
-		UsageRequest::extract(answer(AnswerBody::Usage(UsageReport {
+		UsageRequest::extract(answer(AnswerBody::Usage(Box::new(UsageReport {
 			provider:      ProviderId::from("offline-provider"),
 			account:       AccountId::from("fixture-account-alpha"),
 			principal:     None,
@@ -243,7 +243,7 @@ fn every_operation_has_a_typed_extraction_bound_to_the_operations_manifest() {
 			notes:         Box::default(),
 			reset_credits: None,
 			windows:       Vec::new(),
-		})))
+		}))))
 		.is_ok()
 	);
 	assert!(
