@@ -104,7 +104,7 @@ client_id = "17e5f671-d194-4dfb-9706-5516cb48c098"
 authorize_url = "https://auth.kimi.com/api/oauth/device_authorization"
 token_url = "https://auth.kimi.com/api/oauth/token"
 scopes = []
-principal_resolution = { kind = "static-label", label = "kimi-code" }
+principal_resolution = { kind = "access-token-claims", claims = ["user_id", "sub"] }
 
 [[provider]]
 provider = "gitlab-duo"

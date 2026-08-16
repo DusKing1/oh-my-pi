@@ -158,25 +158,45 @@ fn parse_response(body: &str, now: SystemTime) -> Result<ParsedResponse, UsageFe
 	} else {
 		Box::default()
 	};
-	let mut windows = Vec::with_capacity(2);
-	if let (Some(used), Some(limit)) = (
-		number(payload.pointer("/usage/requests_in_window")),
-		number(payload.pointer("/limits/requests/limit")),
-	) {
-		let remaining = number(payload.pointer("/usage/remaining_requests"));
+	let mut windows = Vec::with_capacity(3);
+	let request_limit = number(payload.pointer("/limits/requests/limit"));
+	let hard_cap = number(payload.pointer("/limits/requests/hard_cap"));
+	let raw_used = number(payload.pointer("/usage/requests_in_window"));
+	let raw_remaining = number(payload.pointer("/usage/remaining_requests"));
+	let weighted_used = number(payload.pointer("/usage/weighted_in_window"));
+	let weighted_remaining = number(payload.pointer("/usage/weighted_remaining_requests"));
+	if let (Some(used), Some(limit)) = (weighted_used.or(raw_used), request_limit) {
 		let duration =
 			number(payload.pointer("/limits/requests/window_seconds")).unwrap_or(5 * 60 * 60);
+		let split = weighted_used.is_some() && hard_cap.is_some();
 		windows.push(window(
-			"umans:requests",
+			if split { "umans:requests:soft" } else { "umans:requests" },
 			"requests",
-			"Requests (rolling 5h)",
+			if split { "Requests (soft cap)" } else { "Requests (rolling 5h)" },
 			Some("shared"),
 			used,
-			remaining,
+			if weighted_used.is_some() { weighted_remaining } else { raw_remaining },
 			limit,
 			Some(Duration::from_secs(duration)),
 			now,
+			!split,
 		));
+		if let (Some(raw_used), Some(hard_cap)) = (raw_used, hard_cap)
+			&& weighted_used.is_some()
+		{
+			windows.push(window(
+				"umans:requests:hard",
+				"requests",
+				"Requests (burst ceiling)",
+				Some("shared"),
+				raw_used,
+				None,
+				hard_cap,
+				Some(Duration::from_secs(duration)),
+				now,
+				true,
+			));
+		}
 	}
 	if let (Some(used), Some(limit)) = (
 		number(payload.pointer("/usage/concurrent_sessions")),
@@ -192,6 +212,7 @@ fn parse_response(body: &str, now: SystemTime) -> Result<ParsedResponse, UsageFe
 			limit,
 			None,
 			now,
+			true,
 		));
 	}
 	if windows.is_empty() {
@@ -213,10 +234,11 @@ fn window(
 	limit: u64,
 	duration: Option<Duration>,
 	now: SystemTime,
+	allow_exhausted: bool,
 ) -> UsageWindow {
 	let status = if limit == 0 {
 		UsageStatus::Unknown
-	} else if used >= limit {
+	} else if allow_exhausted && used >= limit {
 		UsageStatus::Exhausted
 	} else if used.saturating_mul(10) >= limit.saturating_mul(9) {
 		UsageStatus::Warning
@@ -318,6 +340,58 @@ mod tests {
 		assert_eq!(requests[0].0, "https://api.code.umans.ai/v1/usage");
 		assert_eq!(requests[0].1["authorization"].to_str().unwrap(), "Bearer sk-test");
 		assert!(requests[0].1["authorization"].is_sensitive());
+	}
+	#[tokio::test]
+	async fn weighted_requests_drive_soft_cap_and_raw_requests_drive_burst_ceiling() {
+		let http = Arc::new(Http::new([
+			(
+				200,
+				r#"{"limits":{"requests":{"limit":500,"hard_cap":1000,"window_seconds":18000}},"usage":{"requests_in_window":838,"remaining_requests":0,"weighted_in_window":207,"weighted_remaining_requests":293}}"#,
+			),
+			(
+				200,
+				r#"{"limits":{"requests":{"limit":500,"hard_cap":1000,"window_seconds":18000}},"usage":{"requests_in_window":500,"remaining_requests":0,"weighted_in_window":500,"weighted_remaining_requests":0}}"#,
+			),
+		]));
+		let fetcher = UmansUsageFetcher::new(http);
+		let key = SecretString::from("k".to_owned());
+
+		let headroom = fetcher
+			.fetch(Some(&key), SystemTime::now(), None)
+			.await
+			.unwrap();
+		let soft = headroom
+			.windows
+			.iter()
+			.find(|window| window.id == "umans:requests:soft")
+			.expect("weighted soft-cap window");
+		assert_eq!(soft.amount.consumed.unwrap().units, 207);
+		assert_eq!(soft.amount.remaining.unwrap().units, 293);
+		assert_eq!(soft.status, Some(UsageStatus::Ok));
+		let hard = headroom
+			.windows
+			.iter()
+			.find(|window| window.id == "umans:requests:hard")
+			.expect("raw burst-ceiling window");
+		assert_eq!(hard.amount.consumed.unwrap().units, 838);
+		assert_eq!(hard.amount.limit.unwrap().units, 1_000);
+		assert_eq!(hard.status, Some(UsageStatus::Ok));
+		assert!(headroom.windows.iter().all(|window| window.status != Some(UsageStatus::Exhausted)));
+
+		let soft_cap = fetcher
+			.fetch(Some(&key), SystemTime::now(), None)
+			.await
+			.unwrap();
+		assert_eq!(
+			soft_cap
+				.windows
+				.iter()
+				.find(|window| window.id == "umans:requests:soft")
+				.expect("weighted soft-cap window")
+				.status,
+			Some(UsageStatus::Warning)
+		);
+		assert!(soft_cap.windows.iter().all(|window| window.status != Some(UsageStatus::Exhausted)));
 	}
 	#[tokio::test]
 	async fn normalizes_all_custom_base_url_forms() {

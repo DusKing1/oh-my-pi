@@ -852,7 +852,8 @@ fn interactive_oauth_contracts_preserve_provider_parameters_and_identity() {
 	assert_eq!(kimi.client_id, "17e5f671-d194-4dfb-9706-5516cb48c098");
 	assert!(matches!(
 		&kimi.principal_resolution,
-		Some(PrincipalResolution::StaticLabel { label }) if label == "kimi-code"
+		Some(PrincipalResolution::AccessTokenClaims { claims })
+			if claims.iter().map(|claim| claim.as_str()).eq(["user_id", "sub"])
 	));
 
 	let google = provider_oauth(&compiled, "google-gemini-cli");

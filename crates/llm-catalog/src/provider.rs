@@ -401,6 +401,11 @@ pub enum PrincipalResolution {
 		/// Top-level claim name or RFC 6901 JSON Pointer.
 		claim: Str,
 	},
+	/// Reads the first present stable principal claim from the access-token JWT.
+	AccessTokenClaims {
+		/// Ordered top-level claim names or RFC 6901 JSON Pointers.
+		claims: Box<[Str]>,
+	},
 	/// Reads the principal from a typed token-response field.
 	TokenResponseField {
 		/// JSON Pointer into the known token response schema.

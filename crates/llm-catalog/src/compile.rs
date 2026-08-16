@@ -755,6 +755,7 @@ enum SourceOAuthKind {
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 enum SourcePrincipalResolution {
 	IdTokenClaim { claim: Str },
+	AccessTokenClaims { claims: Box<[Str]> },
 	TokenResponseField { pointer: Str },
 	UserinfoEndpoint { url: Str, field: Str },
 	StaticLabel { label: Str },
@@ -764,6 +765,9 @@ impl From<SourcePrincipalResolution> for PrincipalResolution {
 	fn from(source: SourcePrincipalResolution) -> Self {
 		match source {
 			SourcePrincipalResolution::IdTokenClaim { claim } => Self::IdTokenClaim { claim },
+			SourcePrincipalResolution::AccessTokenClaims { claims } => {
+				Self::AccessTokenClaims { claims }
+			},
 			SourcePrincipalResolution::TokenResponseField { pointer } => {
 				Self::TokenResponseField { pointer }
 			},
