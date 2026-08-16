@@ -811,6 +811,15 @@ impl SessionCompletion for DurableCompletion {
 						};
 						blocks.insert(*index, block);
 					}
+					else {
+						blocks.insert(
+							*index,
+							AssistantBlock::Tool(StoredContent::Text {
+								text:  Str::default(),
+								proof: Some(proof(data.clone())),
+							}),
+						);
+					}
 				},
 				ProviderStateEvent::ToolCallProof { index, value } => {
 					if let Some(AssistantBlock::Tool(StoredContent::ToolCall { proof: slot, .. })) =
