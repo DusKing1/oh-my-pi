@@ -1,6 +1,6 @@
 //! Typed `OpenAI` Chat Completions request and incremental response codec.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
 use bytes::{Bytes, BytesMut};
 use omp_core::{IntoStr, Str, encoding::base64};
@@ -1415,6 +1415,11 @@ impl OpenAiChatDecoder {
 		let index = choice.index;
 		let mut state = self.choices.remove(&index).unwrap_or_default();
 		if let Some(reason) = choice.finish_reason {
+			if matches!(reason, WireFinishReason::InsufficientSystemResource) {
+				self.done = true;
+				emit(RawEvent::Failure(resource_finish_error(self.committed)));
+				return;
+			}
 			state.finish = Some(reason.normalize());
 		}
 		let payload = choice.delta.or(choice.message).unwrap_or_default();
@@ -1533,6 +1538,10 @@ impl OpenAiChatDecoder {
 	fn complete(&mut self, emit: &mut dyn FnMut(RawEvent)) -> Result<(), Error> {
 		if self.done {
 			return Ok(());
+		}
+		if self.committed && !self.choices.values().any(|state| state.finish.is_some()) {
+			self.done = true;
+			return Err(incomplete_stream_error());
 		}
 		let mut finish = FinishReason::Stop;
 		let committed = self.committed;
@@ -1767,15 +1776,17 @@ enum WireFinishReason {
 	MaxOutputTokens,
 	ContentFilter,
 	Safety,
+	InsufficientSystemResource,
 }
 
 impl WireFinishReason {
-	const fn normalize(self) -> FinishReason {
+	fn normalize(self) -> FinishReason {
 		match self {
 			Self::Stop | Self::End | Self::EndTurn => FinishReason::Stop,
 			Self::ToolCalls | Self::FunctionCall | Self::ToolUse => FinishReason::ToolCalls,
 			Self::Length | Self::MaxTokens | Self::MaxOutputTokens => FinishReason::Length,
 			Self::ContentFilter | Self::Safety => FinishReason::ContentFilter,
+			Self::InsufficientSystemResource => unreachable!("resource finish is handled before normalization"),
 		}
 	}
 }
@@ -1822,11 +1833,16 @@ fn classify_error(error: WireError, committed: bool) -> Error {
 	let code = error.code.as_ref().map(ErrorCode::text);
 	let code_text = code.as_ref().map(Str::as_str).unwrap_or_default();
 	let message = error.message.as_ref().map(Str::as_str).unwrap_or_default();
+	let dashscope_token_limit = code_text == "insufficient_quota"
+		&& contains_ascii_case_insensitive(message.as_bytes(), b"error-code")
+		&& contains_ascii_case_insensitive(message.as_bytes(), b"#token-limit");
 	let kind = if matches!(code_text, "invalid_api_key" | "authentication_error" | "401") {
 		ErrorKind::Authentication
 	} else if matches!(code_text, "permission_denied" | "403") {
 		ErrorKind::Authorization
 	} else if matches!(code_text, "rate_limit_exceeded" | "429") {
+		ErrorKind::RateLimited
+	} else if code_text == "insufficient_quota" && dashscope_token_limit {
 		ErrorKind::RateLimited
 	} else if code_text == "insufficient_quota" {
 		ErrorKind::QuotaExhausted
@@ -1848,13 +1864,49 @@ fn classify_error(error: WireError, committed: bool) -> Error {
 		} else {
 			ErrorPhase::Handshake
 		},
-		RetryAction::Never,
+		if dashscope_token_limit {
+			RetryAction::SameRoute { after: Duration::from_secs(30) }
+		} else {
+			RetryAction::Never
+		},
 		ExecutionReceipt::default(),
 	)
 	.status(status)
 	.optional_code(error.metadata.and_then(|metadata| metadata.raw).or(code))
 	.committed(committed)
 }
+fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
+	haystack
+		.windows(needle.len())
+		.any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+fn incomplete_stream_error() -> Error {
+	Error::new(
+		ErrorKind::StreamCorruption,
+		ErrorPhase::Streaming,
+		RetryAction::SemanticRetry,
+		ExecutionReceipt::default(),
+	)
+	.code(Str::new_static("openai_chat.incomplete_stream"))
+	.committed(true)
+}
+
+fn resource_finish_error(committed: bool) -> Error {
+	Error::new(
+		ErrorKind::ResourceExhausted,
+		if committed {
+			ErrorPhase::Streaming
+		} else {
+			ErrorPhase::Handshake
+		},
+		RetryAction::SemanticRetry,
+		ExecutionReceipt::default(),
+	)
+	.code(Str::new_static("insufficient_system_resource"))
+	.committed(committed)
+}
+
 fn protocol_error(committed: bool, code: Option<Str>) -> Error {
 	Error::new(
 		ErrorKind::Protocol,
@@ -1937,7 +1989,7 @@ mod tests {
 			ToolDefinition, ToolInputConstraint,
 		},
 		codec::{Decoder, RawEvent},
-		error::ErrorKind,
+		error::{ErrorKind, RetryAction},
 		event::{ChatEvent, FinishReason},
 		transport::{Frame, SseDecoder},
 	};
@@ -2148,6 +2200,66 @@ mod tests {
 			assert_eq!(error.code.as_ref().map(|value| value.as_str()), Some(code));
 			assert!(!error.committed);
 		}
+	}
+
+	#[test]
+	fn dashscope_token_limit_anchor_stays_transient_but_free_quota_is_permanent() {
+		let classify = |message: &str| {
+			super::classify_error(
+				super::WireError {
+					code:     Some(super::ErrorCode::Text("insufficient_quota".into())),
+					message:  Some(message.into()),
+					_param:   None,
+					metadata: None,
+				},
+				false,
+			)
+		};
+		let throttle = classify(
+			"You exceeded your current quota. See \
+			 https://help.aliyun.com/zh/model-studio/error-code#token-limit",
+		);
+		assert_eq!(throttle.kind, ErrorKind::RateLimited);
+		assert!(matches!(throttle.action, RetryAction::SameRoute { .. }));
+
+		let permanent = classify(
+			"Free allocated quota exceeded. See https://platform.openai.com/account/usage",
+		);
+		assert_eq!(permanent.kind, ErrorKind::QuotaExhausted);
+		assert!(!matches!(permanent.action, RetryAction::SameRoute { .. }));
+	}
+
+	#[test]
+	fn truncated_content_stream_and_resource_finish_are_retryable_failures() {
+		let truncated = match decode_fixture(
+			"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n",
+		) {
+			Ok(_) => panic!("content without a finish reason must be truncated"),
+			Err(error) => error,
+		};
+		assert_eq!(truncated.kind, ErrorKind::StreamCorruption);
+		assert_eq!(truncated.action, RetryAction::SemanticRetry);
+		let empty = decode_fixture("").expect("empty close remains an empty completion");
+		assert!(empty.iter().any(|event| {
+			matches!(event, RawEvent::Completion(completion) if completion.reason == FinishReason::Stop)
+		}));
+
+
+		let events = decode_fixture(
+			"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n\
+			 data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"insufficient_system_resource\"}]}\n\n\
+			 data: [DONE]\n\n",
+		)
+		.expect("resource finish decodes to a typed failure");
+		let failure = events
+			.into_iter()
+			.find_map(|event| match event {
+				RawEvent::Failure(error) => Some(error),
+				_ => None,
+			})
+			.expect("resource finish emits a failure");
+		assert_eq!(failure.kind, ErrorKind::ResourceExhausted);
+		assert_eq!(failure.action, RetryAction::SemanticRetry);
 	}
 
 	#[test]

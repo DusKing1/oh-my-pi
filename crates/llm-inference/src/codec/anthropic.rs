@@ -269,6 +269,13 @@ pub enum ContentBlock {
 		/// Result content.
 		content:     Value,
 	},
+	/// Hosted tool-search result retained in replay history.
+	ToolSearchToolResult {
+		/// Tool use identifier.
+		tool_use_id: Str,
+		/// Result content.
+		content:     Value,
+	},
 	/// Hosted web-fetch result retained in replay history.
 	WebFetchToolResult {
 		/// Tool use identifier.
@@ -811,9 +818,14 @@ fn lower_parts(
 			CanonicalPart::Text { text, proof } => {
 				if let Some(proof) = proof {
 					validate_proof(proof, provider, codec)?;
-					return Err(capability_error("anthropic.text.proof_unrepresentable"));
+					if text.is_empty() {
+						replay_history_block(proof)?
+					} else {
+						return Err(capability_error("anthropic.text.proof_unrepresentable"));
+					}
+				} else {
+					ContentBlock::Text { text: text.clone(), cache_control: cache.clone() }
 				}
-				ContentBlock::Text { text: text.clone(), cache_control: cache.clone() }
 			},
 			CanonicalPart::Reasoning { text, proof } => ContentBlock::Thinking {
 				thinking:  text.clone(),
@@ -868,6 +880,26 @@ fn lower_parts(
 		blocks.push(block);
 	}
 	Ok(blocks)
+}
+
+fn replay_history_block(proof: &ProviderProof) -> Result<ContentBlock, Error> {
+	let block: ContentBlock = serde_json::from_slice(&proof.value)
+		.map_err(|_| encoding_error("anthropic.history.proof_invalid"))?;
+	if matches!(
+		&block,
+		ContentBlock::ServerToolUse { .. }
+			| ContentBlock::WebSearchToolResult { .. }
+			| ContentBlock::ToolSearchToolResult { .. }
+			| ContentBlock::WebFetchToolResult { .. }
+			| ContentBlock::CodeExecutionToolResult { .. }
+			| ContentBlock::BashCodeExecutionToolResult { .. }
+			| ContentBlock::TextEditorCodeExecutionToolResult { .. }
+			| ContentBlock::Fallback { .. }
+	) {
+		Ok(block)
+	} else {
+		Err(encoding_error("anthropic.history.proof_kind"))
+	}
 }
 
 fn lower_tool_result(content: &[ToolResultContent]) -> Result<Vec<ContentBlock>, Error> {
@@ -1593,6 +1625,7 @@ enum BlockState {
 	Text,
 	Thinking { signature: String },
 	Tool { id: Str, name: Str, arguments: BytesMut },
+	ServerTool { history: usize, arguments: BytesMut },
 	Server,
 }
 
@@ -1723,17 +1756,33 @@ impl AnthropicDecoder {
 						events.push(ChatEvent::ToolCallStarted { index, id: ToolCallId::new(id), name });
 					},
 					IncomingBlock::ServerToolUse { id, name, input } => {
+						let arguments = input
+							.as_ref()
+							.filter(|value| !matches!(value, Value::Object(object) if object.is_empty()))
+							.map(serde_json::to_vec)
+							.transpose()
+							.map_err(|_| protocol_error("anthropic.server_tool.arguments", true))?
+							.map_or_else(BytesMut::new, |bytes| BytesMut::from(bytes.as_slice()));
+						let history = self.outcome.server_blocks.len();
 						self
 							.outcome
 							.server_blocks
 							.push((index, ContentBlock::ServerToolUse { id, name, input }));
-						self.blocks[index as usize] = Some(BlockState::Server);
+						self.blocks[index as usize] =
+							Some(BlockState::ServerTool { history, arguments });
 					},
 					IncomingBlock::WebSearchToolResult { tool_use_id, content } => {
 						self
 							.outcome
 							.server_blocks
 							.push((index, ContentBlock::WebSearchToolResult { tool_use_id, content }));
+						self.blocks[index as usize] = Some(BlockState::Server);
+					},
+					IncomingBlock::ToolSearchToolResult { tool_use_id, content } => {
+						self.outcome.server_blocks.push((
+							index,
+							ContentBlock::ToolSearchToolResult { tool_use_id, content },
+						));
 						self.blocks[index as usize] = Some(BlockState::Server);
 					},
 					IncomingBlock::WebFetchToolResult { tool_use_id, content } => {
@@ -1789,14 +1838,16 @@ impl AnthropicDecoder {
 				},
 				IncomingDelta::InputJson { partial_json } => {
 					let bytes = Bytes::copy_from_slice(partial_json.as_bytes());
-					if let Some(Some(BlockState::Tool { arguments, .. })) =
-						self.blocks.get_mut(index as usize)
-					{
-						arguments.extend_from_slice(&bytes);
-					} else {
-						return Err(protocol_error("anthropic.tool_delta.block", true));
+					match self.blocks.get_mut(index as usize) {
+						Some(Some(BlockState::Tool { arguments, .. })) => {
+							arguments.extend_from_slice(&bytes);
+							events.push(ChatEvent::ToolArgumentsDelta { index, bytes });
+						},
+						Some(Some(BlockState::ServerTool { arguments, .. })) => {
+							arguments.extend_from_slice(&bytes);
+						},
+						_ => return Err(protocol_error("anthropic.tool_delta.block", true)),
 					}
-					events.push(ChatEvent::ToolArgumentsDelta { index, bytes });
 				},
 				IncomingDelta::Citation { citation } => self.outcome.citations.push(citation),
 			},
@@ -1823,10 +1874,23 @@ impl AnthropicDecoder {
 							},
 						});
 					},
+					BlockState::ServerTool { history, arguments } if !arguments.is_empty() => {
+						let input = serde_json::from_slice(&arguments)
+							.map_err(|_| protocol_error("anthropic.server_tool.arguments", true))?;
+						let Some((_, ContentBlock::ServerToolUse { input: target, .. })) =
+							self.outcome.server_blocks.get_mut(history)
+						else {
+							return Err(protocol_error("anthropic.server_tool.history", true));
+						};
+						*target = Some(input);
+					},
 					BlockState::Thinking { signature } if !signature.is_empty() => {
 						self.outcome.signatures.push((index, Str::new(signature)));
 					},
-					BlockState::Text | BlockState::Thinking { .. } | BlockState::Server => {},
+					BlockState::Text
+					| BlockState::Thinking { .. }
+					| BlockState::ServerTool { .. }
+					| BlockState::Server => {},
 				}
 			},
 			Incoming::MessageDelta { delta, usage } => {
@@ -1953,6 +2017,10 @@ enum IncomingBlock {
 		input: Option<Value>,
 	},
 	WebSearchToolResult {
+		tool_use_id: Str,
+		content:     Value,
+	},
+	ToolSearchToolResult {
 		tool_use_id: Str,
 		content:     Value,
 	},
@@ -2553,6 +2621,32 @@ mod tests {
 			ErrorKind::StreamCorruption
 		);
 
+		let mut tool_search = AnthropicDecoder::new();
+		for data in [
+			br#"{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_search","name":"tool_search_tool_regex"}}"#.as_slice(),
+			br#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"pattern\":\"read\"}"}}"#.as_slice(),
+			br#"{"type":"content_block_stop","index":0}"#.as_slice(),
+			br#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_search","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"_read"}]}}}"#.as_slice(),
+			br#"{"type":"content_block_stop","index":1}"#.as_slice(),
+		] {
+			tool_search
+				.push_data(data)
+				.expect("tool-search server history decodes");
+		}
+		assert!(matches!(
+			&tool_search.outcome().server_blocks[0].1,
+			ContentBlock::ServerToolUse {
+				name,
+				input: Some(input),
+				..
+			} if name.as_str() == "tool_search_tool_regex" && input == &serde_json::json!({"pattern":"read"})
+		));
+		assert!(matches!(
+			&tool_search.outcome().server_blocks[1].1,
+			ContentBlock::ToolSearchToolResult { tool_use_id, .. }
+				if tool_use_id.as_str() == "srvtoolu_search"
+		));
+
 		let mut truncated = AnthropicDecoder::new();
 		replay_sse(
 			include_bytes!(
@@ -2563,6 +2657,36 @@ mod tests {
 			},
 		);
 		assert_eq!(truncated.finish().unwrap_err().kind, ErrorKind::StreamCorruption);
+	}
+
+	#[test]
+	fn opaque_tool_search_history_proof_replays_as_an_assistant_block() {
+		let provider = ProviderId::new("anthropic");
+		let codec = CodecId::new("anthropic-messages");
+		let history = ContentBlock::ToolSearchToolResult {
+			tool_use_id: "srvtoolu_search".into(),
+			content:     serde_json::json!({
+				"type": "tool_search_tool_search_result",
+				"tool_references": [{"type": "tool_reference", "tool_name": "_read"}],
+			}),
+		};
+		let proof = ProviderProof {
+			provider: provider.clone(),
+			codec: codec.clone(),
+			value: Bytes::from(serde_json::to_vec(&history).expect("history serializes")),
+		};
+		let blocks = lower_parts(
+			&[CanonicalPart::Text { text: Str::default(), proof: Some(proof) }],
+			None,
+			&provider,
+			&codec,
+		)
+		.expect("same-provider opaque history replays");
+		assert!(matches!(
+			&blocks[0],
+			ContentBlock::ToolSearchToolResult { tool_use_id, .. }
+				if tool_use_id.as_str() == "srvtoolu_search"
+		));
 	}
 
 	#[test]

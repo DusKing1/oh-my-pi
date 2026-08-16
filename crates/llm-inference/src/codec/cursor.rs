@@ -6,7 +6,12 @@
 //! stream even though the pinned descriptor declares the method unary;
 //! descriptor tests make that observed drift explicit.
 
-use std::{collections::BTreeMap, fmt};
+use std::{
+	collections::BTreeMap,
+	fmt,
+	sync::Arc,
+	time::Duration,
+};
 
 use bytes::{BufMut as _, Bytes, BytesMut};
 use omp_core::Str;
@@ -15,6 +20,7 @@ use omp_llm_catalog::{
 	OperationBits, OperationKind, ReasoningCapabilities, ReasoningFeatureBits, WireModelId,
 };
 use prost::Message;
+use parking_lot::Mutex;
 use prost_types::FileDescriptorSet;
 
 use super::{
@@ -27,7 +33,7 @@ use crate::{
 	call::{ChatRequest, ContentPart, OperationCall, Role, Setting},
 	error::{Error, ErrorDetail, ErrorKind, ErrorPhase, RetryAction},
 	event::{BlockKind, ChatEvent, FinishReason, UsageUpdate},
-	id::ToolCallId,
+	id::{RequestId, ToolCallId},
 	receipt::{ExecutionReceipt, ReasonId, Usage, UsageSource},
 	transport::{ConnectEnvelopeKind, Frame, FramingProtocol},
 };
@@ -95,6 +101,8 @@ pub enum CursorErrorKind {
 	Authentication,
 	/// Cursor returned a non-success status.
 	Upstream,
+	/// Cursor rejected a poisoned conversation before producing tokens.
+	ResourceExhausted,
 	/// Cursor reported a context-window overflow.
 	ContextOverflow,
 	/// A requested canonical shape has no lossless Cursor projection.
@@ -903,6 +911,13 @@ impl CursorDecoder {
 				Some("context_length_exceeded" | "context_overflow") => {
 					CursorErrorKind::ContextOverflow
 				},
+				Some(code)
+					if code.eq_ignore_ascii_case("resource_exhausted")
+						|| code.eq_ignore_ascii_case("resource-exhausted")
+						|| code.eq_ignore_ascii_case("resource exhausted") =>
+				{
+					CursorErrorKind::ResourceExhausted
+				},
 				_ => CursorErrorKind::Upstream,
 			};
 			return Err(CursorProtocolError::new(
@@ -932,6 +947,9 @@ impl CursorDecoder {
 			"Cursor stream ended before terminal completion",
 			self.committed,
 		))
+	}
+	fn saw_token_delta(&self) -> bool {
+		self.saw_usage
 	}
 
 	fn project(
@@ -1207,14 +1225,56 @@ fn tool_name(tool: Option<&wire::ToolCall>) -> Str {
 	Str::new_static(name)
 }
 
-/// Sans-I/O Cursor Agent codec registered under the catalog codec id `cursor`.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct CursorCodec;
+#[derive(Clone, Debug, Default)]
+pub struct CursorCodec {
+	conversations: Arc<Mutex<CursorConversationRotations>>,
+}
+
+#[derive(Clone, Debug)]
+struct CursorConversationAttempt {
+	base: Str,
+	seed: Str,
+}
+
+#[derive(Debug, Default)]
+struct CursorConversationRotations {
+	rotated: BTreeMap<Str, Str>,
+	pending: BTreeMap<RequestId, CursorConversationAttempt>,
+}
+
+impl CursorConversationRotations {
+	fn resolve(&self, base: &Str) -> Str {
+		self.rotated.get(base).cloned().unwrap_or_else(|| base.clone())
+	}
+
+	fn begin(&mut self, request: &RequestId, base: &Str) -> Str {
+		let wire = self.resolve(base);
+		self.pending.insert(request.clone(), CursorConversationAttempt {
+			base: base.clone(),
+			seed: Str::from(request.as_str()),
+		});
+		wire
+	}
+
+	fn take(&mut self, request: &RequestId) -> Option<CursorConversationAttempt> {
+		self.pending.remove(request)
+	}
+
+	fn rotate_once(&mut self, base: &Str, seed: &str) -> bool {
+		if self.rotated.contains_key(base) {
+			return false;
+		}
+		self
+			.rotated
+			.insert(base.clone(), Str::from(format!("cursor-rotated-{seed}")));
+		true
+	}
+}
 
 impl CursorCodec {
-	/// Constructs the stateless Cursor codec.
-	pub const fn new() -> Self {
-		Self
+	/// Constructs a Cursor codec with isolated conversation recovery state.
+	pub fn new() -> Self {
+		Self::default()
 	}
 }
 
@@ -1225,7 +1285,9 @@ impl Codec for CursorCodec {
 		operation: &OperationCall,
 	) -> Result<EncodedRequest, Error> {
 		match operation {
-			OperationCall::Chat(request) => encode_chat_call(context, request),
+			OperationCall::Chat(request) => {
+				encode_chat_call(context, request, &self.conversations)
+			},
 			OperationCall::DiscoverModels(request) => {
 				if request.cursor.is_some() {
 					return Err(encoding_error("cursor_discovery_has_no_pagination"));
@@ -1255,12 +1317,17 @@ impl Codec for CursorCodec {
 		if !matches!(context.operation, OperationKind::Chat | OperationKind::DiscoverModels) {
 			return Err(encoding_error("cursor_operation_not_supported"));
 		}
+		let conversation = (context.operation == OperationKind::Chat)
+			.then(|| self.conversations.lock().take(context.request_id))
+			.flatten();
 		Ok(Box::new(CursorWireDecoder {
 			operation:      context.operation,
 			provider:       context.provider.clone(),
 			route:          context.route.clone(),
 			agent:          CursorDecoder::default(),
 			discovery_done: false,
+			conversations:  Arc::clone(&self.conversations),
+			conversation,
 		}))
 	}
 }
@@ -1268,6 +1335,7 @@ impl Codec for CursorCodec {
 fn encode_chat_call(
 	context: &EncodeContext<'_>,
 	request: &ChatRequest,
+	conversations: &Arc<Mutex<CursorConversationRotations>>,
 ) -> Result<EncodedRequest, Error> {
 	reject_unprojected_chat_options(request, context.thinking_selection.is_some())?;
 	let mut roots = Vec::new();
@@ -1317,9 +1385,11 @@ fn encode_chat_call(
 	let run = CursorRunRequest {
 		model_id: Str::from(target.wire_model.as_str()),
 		max_mode,
-		conversation_id: context
-			.session
-			.map(|session| Str::from(session.conversation.as_str())),
+		conversation_id: context.session.map(|session| {
+			conversations
+				.lock()
+				.begin(context.request_id, &Str::from(session.conversation.as_str()))
+		}),
 		checkpoint: None,
 		root_prompts: roots.into_boxed_slice(),
 		tools: tools.into_boxed_slice(),
@@ -1421,6 +1491,8 @@ struct CursorWireDecoder {
 	route:          omp_llm_catalog::RouteId,
 	agent:          CursorDecoder,
 	discovery_done: bool,
+	conversations:  Arc<Mutex<CursorConversationRotations>>,
+	conversation:   Option<CursorConversationAttempt>,
 }
 
 impl Decoder for CursorWireDecoder {
@@ -1433,11 +1505,17 @@ impl Decoder for CursorWireDecoder {
 				if envelope.is_compressed() {
 					return Err(self.attach(encoding_error("cursor_compressed_connect_not_supported")));
 				}
-				let events = match envelope.kind {
+				let result = match envelope.kind {
 					ConnectEnvelopeKind::Message => self.agent.push_payload(envelope.payload),
 					ConnectEnvelopeKind::EndStream => self.agent.push_end_stream(&envelope.payload),
-				}
-				.map_err(|error| self.attach(inference_error(error)))?;
+				};
+				let events = match result {
+					Ok(events) => events,
+					Err(error) => {
+						self.rotate_poisoned_conversation(&error);
+						return Err(self.attach(inference_error(error)));
+					},
+				};
 				for event in events {
 					emit(cursor_raw_event(event));
 				}
@@ -1556,6 +1634,19 @@ impl CursorWireDecoder {
 			.provider(self.provider.clone())
 			.route(self.route.clone())
 	}
+
+	fn rotate_poisoned_conversation(&mut self, error: &CursorProtocolError) {
+		if error.kind != CursorErrorKind::ResourceExhausted || self.agent.saw_token_delta() {
+			return;
+		}
+		let Some(attempt) = self.conversation.take() else {
+			return;
+		};
+		self
+			.conversations
+			.lock()
+			.rotate_once(&attempt.base, attempt.seed.as_str());
+	}
 }
 
 fn cursor_raw_event(event: CursorEvent) -> RawEvent {
@@ -1609,17 +1700,21 @@ const fn interaction_query_kind(query: &wire::interaction_query::Query) -> Str {
 }
 
 fn inference_error(error: CursorProtocolError) -> Error {
-	let kind = match error.kind {
+	let (kind, action) = match error.kind {
 		CursorErrorKind::Malformed | CursorErrorKind::Truncated | CursorErrorKind::AfterTerminal => {
-			ErrorKind::StreamCorruption
+			(ErrorKind::StreamCorruption, RetryAction::Never)
 		},
-		CursorErrorKind::Cancelled => ErrorKind::Cancelled,
-		CursorErrorKind::Authentication => ErrorKind::Authentication,
-		CursorErrorKind::Upstream => ErrorKind::Protocol,
-		CursorErrorKind::ContextOverflow => ErrorKind::ContextOverflow,
-		CursorErrorKind::Unsupported => ErrorKind::CapabilityMismatch,
+		CursorErrorKind::Cancelled => (ErrorKind::Cancelled, RetryAction::Never),
+		CursorErrorKind::Authentication => (ErrorKind::Authentication, RetryAction::Never),
+		CursorErrorKind::Upstream => (ErrorKind::Protocol, RetryAction::Never),
+		CursorErrorKind::ResourceExhausted => (
+			ErrorKind::ResourceExhausted,
+			RetryAction::SameRoute { after: Duration::from_secs(1) },
+		),
+		CursorErrorKind::ContextOverflow => (ErrorKind::ContextOverflow, RetryAction::Never),
+		CursorErrorKind::Unsupported => (ErrorKind::CapabilityMismatch, RetryAction::Never),
 	};
-	Error::new(kind, ErrorPhase::Streaming, RetryAction::Never, ExecutionReceipt::default())
+	Error::new(kind, ErrorPhase::Streaming, action, ExecutionReceipt::default())
 		.status(error.status)
 		.code(error.reason.clone())
 		.committed(error.committed)
@@ -2030,6 +2125,20 @@ mod tests {
 				.kind,
 			CursorErrorKind::ContextOverflow
 		);
+		let resource = CursorDecoder::default()
+			.push_end_stream(br#"{"error":{"code":"resource_exhausted"}}"#)
+			.expect_err("resource exhaustion");
+		assert_eq!(resource.kind, CursorErrorKind::ResourceExhausted);
+
+		let mut rotations = CursorConversationRotations::default();
+		let base = Str::from("session-poisoned");
+		assert_eq!(rotations.resolve(&base), base);
+		assert!(rotations.rotate_once(&base, "request-one"));
+		let rotated = rotations.resolve(&base);
+		assert_ne!(rotated, base);
+		assert!(!rotations.rotate_once(&base, "request-two"));
+		assert_eq!(rotations.resolve(&base), rotated);
+
 
 		let mut terminal = CursorDecoder::default();
 		terminal
