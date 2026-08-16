@@ -1209,7 +1209,7 @@ fn render_paragraph(
 ) {
 	let start = *index;
 	while *index < lines.len() && !lines[*index].trim().is_empty() {
-		if *index > start && starts_block(lines, *index) {
+		if *index > start && !is_indented_code(lines[*index]) && starts_block(lines, *index) {
 			break;
 		}
 		if *index == start && *index + 1 < lines.len() && setext_depth(lines[*index + 1]).is_some() {
@@ -1865,6 +1865,21 @@ mod tests {
 	fn fenced_and_indented_code_show_fences() {
 		assert_eq!(plain("```rust\n  a  b\n```", 20), ["```rust", "    a  b", "```"]);
 		assert_eq!(plain("    x", 20), ["```", "  x", "```"]);
+	}
+
+	#[test]
+	fn attached_indented_lines_are_lazy_paragraph_continuations() {
+		let attached =
+			plain("tree root\n└── last branch\n    └── child with **bold** text", 80);
+		assert!(
+			attached.iter().all(|row| !row.contains("```")),
+			"attached indentation opened a code block: {attached:?}",
+		);
+		assert!(attached.iter().any(|row| row.contains("child with bold text")));
+		assert!(attached.iter().all(|row| !row.contains("**")));
+
+		let detached = plain("tree root\n\n    real indented code", 80);
+		assert_eq!(detached, ["tree root", "", "```", "  real indented code", "```"]);
 	}
 
 	#[test]
