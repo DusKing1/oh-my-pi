@@ -24,7 +24,9 @@ use crate::{
 		empty::{EmptyCompletionKind, EmptyCompletionStage, EmptyEvent, EmptyInput},
 		json::{JsonEnforcement, JsonRepairLimits, JsonRepairStage},
 		reasoning::{ReasoningLimits, ReasoningObservation, ReasoningStallGuard},
-		repetition::{OutputVisibility, recovery_record},
+		repetition::{
+			AttemptRepetitionGuard, OutputVisibility, RepetitionLimits, recovery_record,
+		},
 		tools::{
 			ToolAssembler, ToolAssemblyEvent, ToolAssemblyLimits, ToolFragment, validate_schema,
 		},
@@ -158,6 +160,8 @@ where
 				let mut completion: Option<RawCompletion> = None;
 				let mut empty = empty_policy.map(|policy| EmptyCompletionStage::new(policy, output_context.attempts().saturating_sub(1)));
 				let mut reasoning_guard = guard_reasoning.then(|| ReasoningStallGuard::new(ReasoningLimits::default()));
+				let mut thinking_repetition = AttemptRepetitionGuard::new(RepetitionLimits::default());
+				let mut text_repetition = AttemptRepetitionGuard::new(RepetitionLimits::default());
 				while let Some(item) = input.next().await {
 					if let Err(error) = output_context.checkpoint(ErrorPhase::Recovery) {
 						output_context.cancel();
@@ -172,6 +176,13 @@ where
 							return;
 						}
 						Ok(RawEvent::Completion(terminal)) => {
+							if let Some(signal) = thinking_repetition
+								.finish_exact_cycle(OutputVisibility::Gated)
+								.or_else(|| text_repetition.finish_exact_cycle(OutputVisibility::Gated))
+							{
+								yield Err(repetition_error(&signal, &output_context));
+								return;
+							}
 							if completion.replace(terminal).is_some() {
 								yield Err(recovery_error("response.duplicate-completion", &output_context));
 								return;
@@ -182,7 +193,13 @@ where
 								Ok(event) => event,
 								Err(error) => { yield Err(error); return; },
 							};
-							if let Err(error) = observe_reasoning(&mut reasoning_guard, &event, &output_context) {
+							if let Err(error) = observe_reasoning(
+								&mut reasoning_guard,
+								&mut thinking_repetition,
+								&mut text_repetition,
+								&event,
+								&output_context,
+							) {
 								yield Err(error);
 								return;
 							}
@@ -206,7 +223,13 @@ where
 						}
 						Ok(RawEvent::Chat(ChatEvent::TextDelta { index, text })) => {
 							let event = ChatEvent::TextDelta { index, text: text.clone() };
-							if let Err(error) = observe_reasoning(&mut reasoning_guard, &event, &output_context) {
+							if let Err(error) = observe_reasoning(
+								&mut reasoning_guard,
+								&mut thinking_repetition,
+								&mut text_repetition,
+								&event,
+								&output_context,
+							) {
 								yield Err(error);
 								return;
 							}
@@ -225,7 +248,13 @@ where
 							}
 						}
 						Ok(RawEvent::Chat(event)) => {
-							if let Err(error) = observe_reasoning(&mut reasoning_guard, &event, &output_context) {
+							if let Err(error) = observe_reasoning(
+								&mut reasoning_guard,
+								&mut thinking_repetition,
+								&mut text_repetition,
+								&event,
+								&output_context,
+							) {
 								yield Err(error);
 								return;
 							}
@@ -308,9 +337,23 @@ fn project_discovery(
 }
 fn observe_reasoning(
 	guard: &mut Option<ReasoningStallGuard>,
+	thinking_repetition: &mut AttemptRepetitionGuard,
+	text_repetition: &mut AttemptRepetitionGuard,
 	event: &ChatEvent,
 	context: &crate::layer::ExecutionContext,
 ) -> Result<(), Error> {
+	let exact = match event {
+		ChatEvent::ThinkingDelta { text, .. } => {
+			thinking_repetition.observe_exact_cycle(text, OutputVisibility::Gated)
+		},
+		ChatEvent::TextDelta { text, .. } => {
+			text_repetition.observe_exact_cycle(text, OutputVisibility::Gated)
+		},
+		_ => None,
+	};
+	if let Some(signal) = exact {
+		return Err(repetition_error(&signal, context));
+	}
 	let Some(guard) = guard.as_mut() else {
 		return Ok(());
 	};
@@ -332,21 +375,26 @@ fn observe_reasoning(
 	let Some(signal) = guard.observe(observation) else {
 		return Ok(());
 	};
+	Err(repetition_error(&signal, context))
+}
+
+fn repetition_error(
+	signal: &crate::recovery::repetition::LoopSignal,
+	context: &crate::layer::ExecutionContext,
+) -> Error {
 	context.with_receipt(|receipt| {
 		receipt
 			.recoveries
-			.push(recovery_record(context.attempts().saturating_sub(1), &signal));
+			.push(recovery_record(context.attempts().saturating_sub(1), signal));
 	});
-	Err(
-		Error::new(
-			ErrorKind::RepeatedReasoning,
-			ErrorPhase::Recovery,
-			RetryAction::SemanticRetry,
-			context.receipt(),
-		)
-		.committed(context.is_committed())
-		.detail(ErrorDetail::protocol(ReasonId("reasoning.loop-detected".into()))),
+	Error::new(
+		ErrorKind::RepeatedReasoning,
+		ErrorPhase::Recovery,
+		RetryAction::SemanticRetry,
+		context.receipt(),
 	)
+	.committed(context.is_committed())
+	.detail(ErrorDetail::protocol(ReasonId("reasoning.loop-detected".into())))
 }
 
 fn observe_empty(
@@ -692,6 +740,42 @@ mod tests {
 			Some(ErrorDetail::Protocol { reason })
 				if reason.0.as_str() == "empty-completion.classified"
 		));
+	}
+
+	#[test]
+	fn exact_text_cycles_are_guarded_without_provider_opt_in() {
+		let cycle = "shipped delivered verified validated approved accepted merged deployed live \
+			operational successful excellent perfect final absolute total whole full entire complete \
+			done finished";
+		let runaway = cycle.repeat(8);
+		let context = ExecutionContext::new(ExecutionBudget {
+			max_attempts: 3,
+			..ExecutionBudget::default()
+		});
+		let mut reasoning = None;
+		let mut thinking_repetition =
+			AttemptRepetitionGuard::new(RepetitionLimits::default());
+		let mut text_repetition = AttemptRepetitionGuard::new(RepetitionLimits::default());
+		let mut failure = None;
+		for chunk in runaway.as_bytes().chunks(23) {
+			let event = ChatEvent::TextDelta {
+				index: 0,
+				text:  std::str::from_utf8(chunk).expect("ASCII fixture").into(),
+			};
+			if let Err(error) = observe_reasoning(
+				&mut reasoning,
+				&mut thinking_repetition,
+				&mut text_repetition,
+				&event,
+				&context,
+			) {
+				failure = Some(error);
+				break;
+			}
+		}
+		let error = failure.expect("provider-independent exact cycle guard");
+		assert_eq!(error.kind, ErrorKind::RepeatedReasoning);
+		assert_eq!(error.action, RetryAction::SemanticRetry);
 	}
 
 	#[test]

@@ -11,6 +11,13 @@ use crate::{
 	id::ToolCallId,
 	receipt::{ReasonId, RecoveryKind, RecoveryRecord},
 };
+const EXACT_TAIL_BYTES: usize = 4 * 1024;
+const EXACT_MAX_PERIOD_BYTES: usize = 1024;
+const EXACT_SCAN_STRIDE_BYTES: usize = 128;
+const EXACT_SHORT_MAX_PERIOD_BYTES: usize = 60;
+const EXACT_SHORT_MIN_REPEATED_BYTES: usize = 180;
+const EXACT_LONG_MIN_REPEATED_BYTES: usize = 1024;
+
 
 /// Whether provisional output is still hidden from the consumer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -98,21 +105,33 @@ struct Unit {
 /// Detects repeated text, reasoning, or tool signatures during one attempt.
 #[derive(Debug)]
 pub struct AttemptRepetitionGuard {
-	limits:      RepetitionLimits,
-	history:     VecDeque<Unit>,
-	consecutive: u32,
-	input_bytes: u64,
+	limits:           RepetitionLimits,
+	history:          VecDeque<Unit>,
+	consecutive:      u32,
+	input_bytes:      u64,
+	exact_tail:       Vec<u8>,
+	exact_since_scan: usize,
 }
 
 impl AttemptRepetitionGuard {
 	/// Creates a bounded guard.
 	pub const fn new(limits: RepetitionLimits) -> Self {
-		Self { limits, history: VecDeque::new(), consecutive: 0, input_bytes: 0 }
+		Self {
+			limits,
+			history: VecDeque::new(),
+			consecutive: 0,
+			input_bytes: 0,
+			exact_tail: Vec::new(),
+			exact_since_scan: 0,
+		}
 	}
 
 	/// Observes one semantic output unit.
 	pub fn observe(&mut self, unit: &str, visibility: OutputVisibility) -> Option<LoopSignal> {
 		self.input_bytes = self.input_bytes.saturating_add(unit.len() as u64);
+		if let Some(signal) = self.observe_exact(unit, visibility, false) {
+			return Some(signal);
+		}
 		let normalized = normalize_unit(unit, self.limits.max_unit_bytes)?;
 		let fingerprint = stable_hash(normalized.as_bytes());
 		let repeated = self.history.back().is_some_and(|previous| {
@@ -141,12 +160,63 @@ impl AttemptRepetitionGuard {
 			disposition: visibility.into(),
 		})
 	}
+	/// Observes only byte-exact suffix cycles, independent of provider family or
+	/// chunk boundaries.
+	pub fn observe_exact_cycle(
+		&mut self,
+		unit: &str,
+		visibility: OutputVisibility,
+	) -> Option<LoopSignal> {
+		self.input_bytes = self.input_bytes.saturating_add(unit.len() as u64);
+		self.observe_exact(unit, visibility, false)
+	}
+
+	/// Forces the final exact-cycle scan when a stream ends before the cadence
+	/// threshold.
+	pub fn finish_exact_cycle(&self, visibility: OutputVisibility) -> Option<LoopSignal> {
+		self.exact_signal(visibility)
+	}
+
+	fn observe_exact(
+		&mut self,
+		unit: &str,
+		visibility: OutputVisibility,
+		force: bool,
+	) -> Option<LoopSignal> {
+		push_exact_tail(&mut self.exact_tail, unit.as_bytes());
+		self.exact_since_scan = self.exact_since_scan.saturating_add(unit.len());
+		if !force
+			&& self.exact_since_scan < EXACT_SCAN_STRIDE_BYTES
+			&& unit.len() < EXACT_SCAN_STRIDE_BYTES
+		{
+			return None;
+		}
+		self.exact_since_scan = 0;
+		self.exact_signal(visibility)
+	}
+
+	fn exact_signal(&self, visibility: OutputVisibility) -> Option<LoopSignal> {
+		let (period, repetitions) = exact_suffix_cycle(&self.exact_tail)?;
+		let unit = &self.exact_tail[self.exact_tail.len() - period..];
+		Some(LoopSignal {
+			evidence:    LoopEvidence {
+				kind: LoopKind::WithinAttempt,
+				fingerprint: stable_hash(unit),
+				repetitions,
+				input_bytes: self.input_bytes,
+			},
+			disposition: visibility.into(),
+		})
+	}
+
 
 	/// Clears state before a new provider attempt.
 	pub fn reset(&mut self) {
 		self.history.clear();
 		self.consecutive = 0;
 		self.input_bytes = 0;
+		self.exact_tail.clear();
+		self.exact_since_scan = 0;
 	}
 }
 
@@ -386,6 +456,54 @@ fn repeated_cycle(history: &VecDeque<Unit>, threshold: u32) -> Option<(u32, u64)
 	None
 }
 
+fn push_exact_tail(tail: &mut Vec<u8>, delta: &[u8]) {
+	if delta.len() >= EXACT_TAIL_BYTES {
+		tail.clear();
+		tail.extend_from_slice(&delta[delta.len() - EXACT_TAIL_BYTES..]);
+		return;
+	}
+	let overflow = tail
+		.len()
+		.saturating_add(delta.len())
+		.saturating_sub(EXACT_TAIL_BYTES);
+	if overflow != 0 {
+		tail.copy_within(overflow.., 0);
+		tail.truncate(tail.len() - overflow);
+	}
+	tail.extend_from_slice(delta);
+}
+
+fn exact_suffix_cycle(tail: &[u8]) -> Option<(usize, u32)> {
+	let max_period = EXACT_MAX_PERIOD_BYTES.min(tail.len() / 3);
+	for period in 2..=max_period {
+		let unit = &tail[tail.len() - period..];
+		if !unit
+			.iter()
+			.any(|byte| byte.is_ascii_alphabetic() || !byte.is_ascii())
+		{
+			continue;
+		}
+		let mut repetitions = 1_usize;
+		let mut end = tail.len() - period;
+		while end >= period && &tail[end - period..end] == unit {
+			repetitions += 1;
+			end -= period;
+		}
+		let (minimum_repetitions, minimum_bytes) =
+			if period <= EXACT_SHORT_MAX_PERIOD_BYTES {
+				(4, EXACT_SHORT_MIN_REPEATED_BYTES)
+			} else {
+				(3, EXACT_LONG_MIN_REPEATED_BYTES)
+			};
+		if repetitions >= minimum_repetitions
+			&& period.saturating_mul(repetitions) >= minimum_bytes
+		{
+			return Some((period, repetitions as u32));
+		}
+	}
+	None
+}
+
 fn normalize_unit(unit: &str, limit: usize) -> Option<String> {
 	let mut normalized = String::with_capacity(unit.len().min(limit));
 	for word in unit.split_ascii_whitespace() {
@@ -446,6 +564,27 @@ mod tests {
 			assert!(guard.observe(unit, OutputVisibility::Gated).is_none());
 		}
 		assert!(guard.observe("beta", OutputVisibility::Gated).is_some());
+	}
+
+	#[test]
+	fn long_exact_cycle_is_detected_across_token_sized_deltas() {
+		const CYCLE: &str = "% shipped. 100% delivered. 100% verified. 100% validated. 100% \
+			approved. 100% accepted. 100% merged. 100% deployed. 100% live. 100% operational. \
+			100% successful. 100% excellent. 100% perfect. 100% final. 100% absolute. 100% total. \
+			100% whole. 100% full. 100% entire. 100% complete. 100% done. 100% finished. 100";
+		let runaway = format!("Healthy lead sentence. {}", CYCLE.repeat(6));
+		let mut guard = AttemptRepetitionGuard::new(RepetitionLimits::default());
+		let mut detected = None;
+		for chunk in runaway.as_bytes().chunks(23) {
+			let chunk = std::str::from_utf8(chunk).expect("ASCII fixture");
+			if let Some(signal) = guard.observe(chunk, OutputVisibility::Gated) {
+				detected = Some(signal);
+				break;
+			}
+		}
+		let signal = detected.expect("long exact response cycle must terminate");
+		assert_eq!(signal.evidence.kind, LoopKind::WithinAttempt);
+		assert_eq!(signal.disposition, LoopDisposition::RetryEligible);
 	}
 
 	#[test]
