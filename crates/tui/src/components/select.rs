@@ -546,6 +546,10 @@ impl Select {
 					Flow::Consumed
 				}
 			},
+			// Space owns multi-select toggling. Enter confirms the current
+			// aggregate (including an empty one), so a dialog host can submit
+			// one question or advance to the next without mutating it.
+			Key::Enter if self.state.multi => Flow::Event(UiEvent::Submit),
 			Key::Enter if !visible.is_empty() => {
 				let position = usize::from(self.state.cursor.min(visible.len() as u16 - 1));
 				self.commit(visible[position])
@@ -1342,5 +1346,38 @@ mod tests {
 			indent,
 			"continuations align under the label"
 		);
+	}
+
+	#[test]
+	fn multi_select_space_toggles_and_enter_submits_current_selection() {
+		let mut select = Select::new()
+			.with(Prop::Id, "checks")
+			.with(Prop::Multi, true)
+			.option(SelectOption::new().label("lint"))
+			.option(SelectOption::new().label("unit"));
+		let ctx = UiContext::default();
+		let mut values = serde_json::Map::new();
+
+		assert_eq!(
+			select.key(&mut event_ctx(&ctx), Key::Enter),
+			Flow::Event(UiEvent::Submit),
+			"an empty multi-select is a valid submission"
+		);
+		select.value(&mut values);
+		assert_eq!(values["checks"], serde_json::json!([]));
+
+		assert_eq!(
+			select.key(&mut event_ctx(&ctx), Key::Space),
+			Flow::Event(UiEvent::Changed { id: "checks".into(), value: "lint".into() }),
+			"Space alone toggles the focused option"
+		);
+		assert_eq!(
+			select.key(&mut event_ctx(&ctx), Key::Enter),
+			Flow::Event(UiEvent::Submit),
+			"Enter submits without toggling the focused option"
+		);
+		values.clear();
+		select.value(&mut values);
+		assert_eq!(values["checks"], serde_json::json!(["lint"]));
 	}
 }
