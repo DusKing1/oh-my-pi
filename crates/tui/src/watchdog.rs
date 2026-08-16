@@ -11,6 +11,60 @@ use parking_lot::{Condvar, Mutex};
 
 const STALL_THRESHOLD: Duration = Duration::from_millis(250);
 const SYSTEM_SLEEP_THRESHOLD: Duration = Duration::from_secs(60);
+const CPU_BUSY_RATIO: f64 = 0.5;
+
+#[cfg(unix)]
+fn process_cpu_time() -> Option<Duration> {
+	use nix::sys::{
+		resource::{UsageWho, getrusage},
+		time::TimeValLike,
+	};
+
+	let usage = getrusage(UsageWho::RUSAGE_SELF).ok()?;
+	let micros = usage
+		.user_time()
+		.num_microseconds()
+		.checked_add(usage.system_time().num_microseconds())?;
+	u64::try_from(micros).ok().map(Duration::from_micros)
+}
+
+#[cfg(windows)]
+fn process_cpu_time() -> Option<Duration> {
+	use windows_sys::Win32::{
+		Foundation::FILETIME,
+		System::Threading::{GetCurrentProcess, GetProcessTimes},
+	};
+
+	let mut created = FILETIME::default();
+	let mut exited = FILETIME::default();
+	let mut kernel = FILETIME::default();
+	let mut user = FILETIME::default();
+	// SAFETY: GetCurrentProcess returns a valid pseudo-handle, and every output
+	// pointer refers to a live FILETIME for the duration of the call.
+	let success = unsafe {
+		GetProcessTimes(
+			GetCurrentProcess(),
+			&raw mut created,
+			&raw mut exited,
+			&raw mut kernel,
+			&raw mut user,
+		)
+	};
+	if success == 0 {
+		return None;
+	}
+	let ticks = |time: FILETIME| {
+		(u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
+	};
+	Some(Duration::from_nanos(
+		ticks(kernel).saturating_add(ticks(user)).saturating_mul(100),
+	))
+}
+
+#[cfg(not(any(unix, windows)))]
+const fn process_cpu_time() -> Option<Duration> {
+	None
+}
 
 /// A render-loop stall returned by [`LoopWatchdogCore::check`].
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,26 +77,34 @@ pub struct StallReport {
 
 /// Deterministic state machine underlying [`LoopWatchdog`].
 ///
-/// Times are monotonic durations from any caller-chosen epoch. A continuous
-/// stall is reported once, and gaps over 60 seconds are treated as system
-/// sleep.
+/// Wall and CPU times are monotonic durations from caller-chosen epochs. A
+/// continuous stall is reported once. Gaps over 60 seconds are treated as
+/// system sleep only when the process burned less than half of the wall gap on
+/// CPU.
 #[derive(Debug)]
 pub struct LoopWatchdogCore {
-	last_tick: Duration,
-	phase:     Str,
-	reported:  bool,
+	last_tick:     Duration,
+	last_cpu_time: Duration,
+	phase:         Str,
+	reported:      bool,
 }
 
 impl LoopWatchdogCore {
-	/// Create a watchdog core whose last successful render-loop tick was `now`.
+	/// Create a watchdog core with the latest wall and process CPU times.
 	#[must_use]
-	pub fn new(now: Duration) -> Self {
-		Self { last_tick: now, phase: "unknown".into(), reported: false }
+	pub fn new(now: Duration, cpu_time: Duration) -> Self {
+		Self {
+			last_tick: now,
+			last_cpu_time: cpu_time,
+			phase: "unknown".into(),
+			reported: false,
+		}
 	}
 
-	/// Record progress by the render loop at monotonic time `now`.
-	pub const fn tick(&mut self, now: Duration) {
+	/// Record render-loop progress with the current wall and process CPU times.
+	pub const fn tick(&mut self, now: Duration, cpu_time: Duration) {
 		self.last_tick = now;
+		self.last_cpu_time = cpu_time;
 		self.reported = false;
 	}
 
@@ -51,15 +113,16 @@ impl LoopWatchdogCore {
 		self.phase = phase.into();
 	}
 
-	/// Check for a newly detected stall at monotonic time `now`.
+	/// Check for a newly detected stall at the current wall and process CPU times.
 	///
 	/// Returns one report after 250 ms without a tick. Further checks stay
-	/// silent until [`Self::tick`] records progress. Gaps over 60 seconds are
-	/// suppressed.
+	/// silent until [`Self::tick`] records progress. A gap over 60 seconds is
+	/// suppressed only when the process consumed little CPU during it.
 	#[must_use]
-	pub fn check(&mut self, now: Duration) -> Option<StallReport> {
+	pub fn check(&mut self, now: Duration, cpu_time: Duration) -> Option<StallReport> {
 		let elapsed = now.saturating_sub(self.last_tick);
-		if elapsed > SYSTEM_SLEEP_THRESHOLD {
+		let cpu_elapsed = cpu_time.saturating_sub(self.last_cpu_time);
+		if elapsed > SYSTEM_SLEEP_THRESHOLD && cpu_elapsed < elapsed.mul_f64(CPU_BUSY_RATIO) {
 			self.reported = false;
 			return None;
 		}
@@ -85,7 +148,7 @@ struct Shared {
 /// Call [`Self::tick`] after each successful render-loop iteration and update
 /// [`Self::set_phase`] when entering a diagnostic phase. A background probe
 /// invokes the supplied callback once per continuous stall longer than 250 ms.
-/// Gaps longer than 60 seconds are ignored as probable system sleep.
+/// Long gaps are ignored as system sleep only when process CPU time stayed low.
 pub struct LoopWatchdog {
 	origin: Instant,
 	shared: Arc<(Mutex<Shared>, Condvar)>,
@@ -97,8 +160,12 @@ impl LoopWatchdog {
 	#[must_use]
 	pub fn new(report: impl Fn(Duration, &str) + Send + 'static) -> Self {
 		let origin = Instant::now();
+		let initial_cpu = process_cpu_time().unwrap_or(Duration::ZERO);
 		let shared = Arc::new((
-			Mutex::new(Shared { core: LoopWatchdogCore::new(Duration::ZERO), stopping: false }),
+			Mutex::new(Shared {
+				core: LoopWatchdogCore::new(Duration::ZERO, initial_cpu),
+				stopping: false,
+			}),
 			Condvar::new(),
 		));
 		let worker_shared = Arc::clone(&shared);
@@ -110,7 +177,10 @@ impl LoopWatchdog {
 				if guard.stopping {
 					break;
 				}
-				let stall = guard.core.check(origin.elapsed());
+				let now = origin.elapsed();
+				let cpu_time =
+					process_cpu_time().unwrap_or_else(|| initial_cpu.saturating_add(now));
+				let stall = guard.core.check(now, cpu_time);
 				drop(guard);
 				if let Some(stall) = stall {
 					report(stall.elapsed, &stall.phase);
@@ -125,7 +195,10 @@ impl LoopWatchdog {
 	pub fn tick(&self) {
 		let (lock, wake) = &*self.shared;
 		let mut shared = lock.lock();
-		shared.core.tick(self.origin.elapsed());
+		let now = self.origin.elapsed();
+		let cpu_time =
+			process_cpu_time().unwrap_or_else(|| shared.core.last_cpu_time.saturating_add(now));
+		shared.core.tick(now, cpu_time);
 		drop(shared);
 		wake.notify_one();
 	}
@@ -165,30 +238,52 @@ mod tests {
 
 	#[test]
 	fn reports_a_300ms_stall_with_phase() {
-		let mut watchdog = LoopWatchdogCore::new(Duration::ZERO);
+		let mut watchdog = LoopWatchdogCore::new(Duration::ZERO, Duration::ZERO);
 		watchdog.set_phase("render");
 		let report = watchdog
-			.check(Duration::from_millis(300))
+			.check(Duration::from_millis(300), Duration::from_millis(300))
 			.expect("300 ms should exceed the stall threshold");
 		assert_eq!(report.elapsed, Duration::from_millis(300));
 		assert_eq!(report.phase, "render");
-		assert_eq!(watchdog.check(Duration::from_millis(400)), None);
+		assert_eq!(
+			watchdog.check(Duration::from_millis(400), Duration::from_millis(400)),
+			None,
+		);
 	}
 
 	#[test]
 	fn ignores_a_90s_system_sleep_gap() {
-		let mut watchdog = LoopWatchdogCore::new(Duration::ZERO);
+		let mut watchdog = LoopWatchdogCore::new(Duration::ZERO, Duration::ZERO);
 		watchdog.set_phase("render");
-		assert_eq!(watchdog.check(Duration::from_secs(90)), None);
+		assert_eq!(
+			watchdog.check(Duration::from_secs(90), Duration::from_millis(3)),
+			None,
+		);
+	}
+
+	#[test]
+	fn classifies_long_gap_by_process_cpu_time() {
+		let mut busy = LoopWatchdogCore::new(Duration::ZERO, Duration::ZERO);
+		let report = busy
+			.check(Duration::from_secs(90), Duration::from_secs(80))
+			.expect("a long gap spent running on CPU is a stall");
+		assert_eq!(report.elapsed, Duration::from_secs(90));
+
+		let mut suspended = LoopWatchdogCore::new(Duration::ZERO, Duration::ZERO);
+		assert_eq!(
+			suspended.check(Duration::from_secs(90), Duration::from_millis(3)),
+			None,
+			"a suspend/resume gap burns no process CPU",
+		);
 	}
 
 	#[test]
 	fn stays_silent_under_normal_ticks() {
-		let mut watchdog = LoopWatchdogCore::new(Duration::ZERO);
+		let mut watchdog = LoopWatchdogCore::new(Duration::ZERO, Duration::ZERO);
 		for millis in [200, 400, 600, 800] {
 			let now = Duration::from_millis(millis);
-			assert_eq!(watchdog.check(now), None);
-			watchdog.tick(now);
+			assert_eq!(watchdog.check(now, now), None);
+			watchdog.tick(now, now);
 		}
 	}
 }
