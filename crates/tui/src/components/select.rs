@@ -2,6 +2,7 @@ use std::ops::Range;
 
 use omp_core::Str;
 use smallvec::SmallVec;
+use xutf::Text;
 
 use super::{
 	layout::{grid_measure, place_grid_row, solve_columns},
@@ -356,7 +357,11 @@ impl Select {
 			.map_or(0, |desc| desc_lines(desc, width.saturating_sub(6)).len() as u16);
 		let cells = self.state.options[index].cells.clone();
 		let row = if cells.is_empty() {
-			1
+			label_lines(
+				&self.state.options[index].label,
+				option_label_width(ctx, self.state.multi, width),
+			)
+			.len() as u16
 		} else {
 			cells
 				.enumerate()
@@ -758,7 +763,11 @@ impl Component for Select {
 				.map_or(0, |desc| desc_lines(desc, content.width.saturating_sub(6)).len() as u16);
 			let cells = self.state.options[index].cells.clone();
 			let row = if cells.is_empty() {
-				1
+				label_lines(
+					&self.state.options[index].label,
+					option_label_width(ctx, self.state.multi, content.width),
+				)
+				.len() as u16
 			} else {
 				place_grid_row(
 					ctx,
@@ -906,10 +915,15 @@ impl Component for Select {
 				self.paint_option_tail(pc, rect, index, layout);
 				continue;
 			}
+			let label_width = option_label_width(pc.ctx, self.state.multi, rect.width);
+			let label_lines = label_lines(&option.label, label_width);
+			let label_rows = label_lines.len() as u16;
 			let row_bg = hovered.then_some(pc.ctx.theme.hover);
 			if let Some(background) = row_bg {
-				pc.frame
-					.fill(Rect::new(rect.x, layout.top, rect.width, 1), Style::new().bg(background));
+				pc.frame.fill(
+					Rect::new(rect.x, layout.top, rect.width, label_rows),
+					Style::new().bg(background),
+				);
 			}
 			let tint = |style: Style| row_bg.map_or(style, |background| style.bg(background));
 			let mut x = pc.frame.put(
@@ -944,7 +958,19 @@ impl Component for Select {
 			} else {
 				tint(base(&pc.ctx.theme))
 			};
-			x = pc.frame.put(x, layout.top, &option.label, label_style);
+			let indent = option_label_indent(pc.ctx, self.state.multi);
+			for (line_index, line) in label_lines.iter().enumerate() {
+				let y = layout.top.saturating_add(line_index as u16);
+				let line_x = if line_index == 0 {
+					x
+				} else {
+					rect.x.saturating_add(indent)
+				};
+				let end = pc.frame.put(line_x, y, line, label_style);
+				if line_index == 0 {
+					x = end;
+				}
+			}
 			if option.recommended {
 				x = pc
 					.frame
@@ -1113,6 +1139,79 @@ fn fuzzy_score(hay: &str, needle: &str) -> Option<i32> {
 	Some(score - i32::try_from(hay.len().min(64)).expect("bounded length"))
 }
 
+fn option_label_indent(ctx: &UiContext, multi: bool) -> u16 {
+	let mark = if multi {
+		ctx.charset.checkbox(false)
+	} else {
+		ctx.charset.radio(false)
+	};
+	cell_width(ctx.charset.cursor())
+		.saturating_add(cell_width(mark))
+		.saturating_add(1)
+}
+
+fn option_label_width(ctx: &UiContext, multi: bool, width: u16) -> u16 {
+	width.saturating_sub(option_label_indent(ctx, multi)).max(1)
+}
+
+fn label_lines(label: &Str, width: u16) -> SmallVec<Str, 16> {
+	let width = width.max(1);
+	let text = label.as_str();
+	let mut lines = SmallVec::new();
+	let mut current: Option<(usize, usize, u16)> = None;
+	for (offset, word) in text
+		.split_whitespace()
+		.map(|word| (word.as_ptr() as usize - text.as_ptr() as usize, word))
+	{
+		let end = offset + word.len();
+		if let Some((start, previous_end, line_width)) = current {
+			let gap = &text[previous_end..offset];
+			let gap_width = cell_width(gap);
+			if !gap.contains('\n')
+				&& line_width
+					.saturating_add(gap_width)
+					.saturating_add(cell_width(word))
+					<= width
+			{
+				current = Some((
+					start,
+					end,
+					line_width.saturating_add(gap_width).saturating_add(cell_width(word)),
+				));
+				continue;
+			}
+			lines.push(label.slice(start..previous_end));
+		}
+
+		let word_width = cell_width(word);
+		if word_width <= width {
+			current = Some((offset, end, word_width));
+			continue;
+		}
+
+		let mut chunk_start = offset;
+		let mut chunk_width = 0u16;
+		for (relative, grapheme) in word.grapheme_indices() {
+			let grapheme_width = cell_width(grapheme);
+			if chunk_width > 0 && chunk_width.saturating_add(grapheme_width) > width {
+				let chunk_end = offset + relative;
+				lines.push(label.slice(chunk_start..chunk_end));
+				chunk_start = chunk_end;
+				chunk_width = 0;
+			}
+			chunk_width = chunk_width.saturating_add(grapheme_width);
+		}
+		current = Some((chunk_start, end, chunk_width));
+	}
+	if let Some((start, end, _)) = current {
+		lines.push(label.slice(start..end));
+	}
+	if lines.is_empty() {
+		lines.push(Str::default());
+	}
+	lines
+}
+
 fn desc_lines(desc: &Str, width: u16) -> SmallVec<Str, 2> {
 	let width = width.max(8);
 	let mut lines = SmallVec::new();
@@ -1207,5 +1306,41 @@ mod tests {
 		select.paint(&mut pc, rect);
 		assert!(frame_row_text(&frame, 0).contains("Alpha"));
 		assert_eq!(hits.len(), 1);
+	}
+
+	#[test]
+	fn long_labels_wrap_onto_indented_continuation_rows() {
+		let label = "This is a deliberately long option label with distinguishing tail";
+		let mut select = Select::new().option(SelectOption::new().label(label));
+		let ctx = UiContext::default();
+		let width = 24;
+		let height = select.height(&ctx, width);
+		assert!(height > 1, "the complete label must occupy multiple visual rows");
+		let rect = Rect::new(0, 0, width, height);
+		select.place(&ctx, rect);
+		let mut frame = Frame::new(Size::new(width, height));
+		let mut hits = Vec::new();
+		let mut wakes = Vec::new();
+		let mut pc = PaintCtx::new(&mut frame, &ctx, &mut hits, &mut wakes);
+		pc.focus = Some(select.slot());
+		select.paint(&mut pc, rect);
+
+		let rows: Vec<String> = (0..height).map(|row| frame_row_text(&frame, row)).collect();
+		assert!(rows.iter().all(|row| !row.contains('…')), "labels must not be truncated");
+		assert!(
+			rows.iter().any(|row| row.contains("distinguishing tail")),
+			"the disambiguating tail remains visible: {rows:?}"
+		);
+		let indent =
+			cell_width(ctx.charset.cursor()) + cell_width(ctx.charset.radio(false)) + 1;
+		let continuation = rows
+			.iter()
+			.find(|row| row.contains("distinguishing tail"))
+			.expect("tail continuation row");
+		assert_eq!(
+			cell_width(&continuation[..continuation.len() - continuation.trim_start().len()]),
+			indent,
+			"continuations align under the label"
+		);
 	}
 }
