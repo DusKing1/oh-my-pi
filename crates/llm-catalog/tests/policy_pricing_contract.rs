@@ -131,6 +131,51 @@ fn baseten_kimi_k3_exposes_reasoning_with_max_as_the_default_effort() {
 }
 
 #[test]
+fn opencode_go_deepseek_v4_omits_tool_choice_without_hiding_tools() {
+	let source = |name: &str| {
+		serde_json::from_value::<SourceModelRecord>(serde_json::json!({
+			"name": name,
+			"reasoning": true,
+			"supportsTools": true,
+			"input": ["text"],
+			"output": ["text"],
+			"thinking": {
+				"mode": "effort",
+				"efforts": ["high"]
+			}
+		}))
+		.expect("typed OpenCode model source")
+	};
+	let compiled = compile(CatalogSource {
+		providers: BTreeMap::from([(Str::from("opencode-go"), source_provider())]),
+		models:    BTreeMap::from([(
+			Str::from("opencode-go"),
+			BTreeMap::from([
+				(Str::from("deepseek-v4-flash"), source("DeepSeek V4 Flash")),
+				(Str::from("deepseek-v4-pro"), source("DeepSeek V4 Pro")),
+			]),
+		)]),
+	})
+	.expect("OpenCode Go catalog compiles");
+
+	for key in ["opencode-go/deepseek-v4-flash", "opencode-go/deepseek-v4-pro"] {
+		let model = compiled
+			.models
+			.iter()
+			.find(|model| model.key.as_str() == key)
+			.unwrap_or_else(|| panic!("compiled {key}"));
+		let policy = compiled
+			.wire_policies
+			.iter()
+			.find(|policy| policy.content_id() == model.wire_policy)
+			.unwrap_or_else(|| panic!("{key} wire policy"));
+		assert_eq!(policy.tool.supports_tool_choice, Some(false), "{key} tool_choice");
+		let chat = model.capabilities.chat.as_ref().expect("chat capability");
+		assert!(chat.tools.constraints().is_some(), "{key} still advertises tools");
+	}
+}
+
+#[test]
 fn integer_nano_usd_cost_is_exact_at_micro_usd_and_tier_boundaries() {
 	let pricing =
 		Pricing::new(vec![Price { unit: PriceUnit::MtokInput, nanos_usd: 1_000 }], vec![PriceTier {

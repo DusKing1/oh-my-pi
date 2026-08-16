@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source_digest": "27410fdf45594d1f9cf4e2d3707c10af32dcff8a17915397d5ed8b38eb98b802",
+  "source_digest": "eec0b418506754ff1507d2304acb49afee22a6a5cba3f0ec6e9c03a7258886eb",
   "inputs": [
     {
       "id": "catalog-policy.manifest.v1",
@@ -521,7 +521,7 @@
     {
       "id": "compat.cascade.providers.opencode-go.v1",
       "path": "crates/llm-catalog/compat/providers/opencode-go.kdl",
-      "sha256": "4d4989129ce939d2dca7294097fc90d47aaf60da04779adc2eadcbb0f4c3097e",
+      "sha256": "9526a06d0c93b9d70e61addd93923eb6f110f768f91556043e1335358290afed",
       "source": "census 2026-08: .omp/local/quirks + frozen oracle"
     },
     {

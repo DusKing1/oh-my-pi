@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "catalog-ff8bd72413a11a0241dbb7f4875daede4a56504b8ca100e840d91bf23e0473d6",
+  "revision": "catalog-8bad5463c77e42308dfc7027322bb994a9426e31a20c9c95abbe7bd60db67a1c",
   "census": {
     "raw_models": 4302,
     "logical_models": 4227,
@@ -307082,7 +307082,7 @@
         "effortRouting": {},
         "reasoningMode": null
       },
-      "wire_policy": "wire-sha256-6f53ac5c52833401d2060ee2b69b7d570ed34d29d7b756b8b20f52a35e578459",
+      "wire_policy": "wire-sha256-e661a4752ac03727fce88fb5a2f9839d309ce15fb05261d8af9ad44859dadffb",
       "context": "replay",
       "pricing": {
         "components": [
@@ -451072,6 +451072,84 @@
       },
       "audio": {
         "api_version": "none"
+      }
+    },
+    {
+      "role": {
+        "supports_developer_role": null,
+        "multiple_system_messages": null,
+        "supports_mid_conversation_system": null
+      },
+      "tool": {
+        "supports_tool_choice": false,
+        "named_choice": null,
+        "forced_choice": null,
+        "strict_mode": null,
+        "schema_flavor": null,
+        "id_profile": null,
+        "escape_builtin_names": null,
+        "requires_result_id": null,
+        "eager_input_streaming": null,
+        "requires_assistant_content": null,
+        "thinking_conflict": null,
+        "apply_patch": null,
+        "computer_use": null,
+        "computer_use_config": null,
+        "disable_reasoning_on_choice": null
+      },
+      "structured": {
+        "penalties": null,
+        "sampling_params": null,
+        "stop_sequences": null
+      },
+      "reasoning": {
+        "wire_format": null,
+        "thinking_format": null,
+        "supports_effort": null,
+        "omit_effort": null,
+        "effort_map": {},
+        "disable_mode": null,
+        "content_field": null,
+        "requires_content_for_tool_calls": null,
+        "requires_content_for_all_assistant_turns": true,
+        "allows_synthetic_content_for_tool_calls": null,
+        "filter_history": null,
+        "include_encrypted": null,
+        "replay_unsigned": null,
+        "requires_enabled": null,
+        "disable_adaptive": null,
+        "interleaved_thinking": null,
+        "official_endpoint": null,
+        "signing_endpoint": null,
+        "extra_body": null,
+        "when_thinking": null,
+        "leaked_healer": null,
+        "loop_guard": null
+      },
+      "cache": {
+        "control_format": null,
+        "supports_long_retention": null
+      },
+      "context": {
+        "max_tokens_field": null,
+        "max_output_tokens": null,
+        "supports_store": null,
+        "stateful_response_chaining": null,
+        "extended_mode": null
+      },
+      "streaming": {
+        "protocol": null,
+        "watchdog": null
+      },
+      "usage": {
+        "in_streaming": null
+      },
+      "image": {
+        "encoding": null,
+        "supports_detail_original": null
+      },
+      "audio": {
+        "api_version": null
       }
     },
     {

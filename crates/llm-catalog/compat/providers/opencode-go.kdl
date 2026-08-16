@@ -3,6 +3,9 @@
 provider "opencode-go" {
 	class "deepseek" {
 		thinking-mode "effort"
+		family "flash" {
+			supports-tool-choice #false
+		}
 	}
 	class "glm" {
 		thinking-mode "effort"
