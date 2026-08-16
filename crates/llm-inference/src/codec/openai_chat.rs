@@ -1,6 +1,6 @@
 //! Typed `OpenAI` Chat Completions request and incremental response codec.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
 use bytes::{Bytes, BytesMut};
 use omp_core::{IntoStr, Str, encoding::base64};
@@ -1833,11 +1833,16 @@ fn classify_error(error: WireError, committed: bool) -> Error {
 	let code = error.code.as_ref().map(ErrorCode::text);
 	let code_text = code.as_ref().map(Str::as_str).unwrap_or_default();
 	let message = error.message.as_ref().map(Str::as_str).unwrap_or_default();
+	let dashscope_token_limit = code_text == "insufficient_quota"
+		&& contains_ascii_case_insensitive(message.as_bytes(), b"error-code")
+		&& contains_ascii_case_insensitive(message.as_bytes(), b"#token-limit");
 	let kind = if matches!(code_text, "invalid_api_key" | "authentication_error" | "401") {
 		ErrorKind::Authentication
 	} else if matches!(code_text, "permission_denied" | "403") {
 		ErrorKind::Authorization
 	} else if matches!(code_text, "rate_limit_exceeded" | "429") {
+		ErrorKind::RateLimited
+	} else if code_text == "insufficient_quota" && dashscope_token_limit {
 		ErrorKind::RateLimited
 	} else if code_text == "insufficient_quota" {
 		ErrorKind::QuotaExhausted
@@ -1859,13 +1864,23 @@ fn classify_error(error: WireError, committed: bool) -> Error {
 		} else {
 			ErrorPhase::Handshake
 		},
-		RetryAction::Never,
+		if dashscope_token_limit {
+			RetryAction::SameRoute { after: Duration::from_secs(30) }
+		} else {
+			RetryAction::Never
+		},
 		ExecutionReceipt::default(),
 	)
 	.status(status)
 	.optional_code(error.metadata.and_then(|metadata| metadata.raw).or(code))
 	.committed(committed)
 }
+fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
+	haystack
+		.windows(needle.len())
+		.any(|window| window.eq_ignore_ascii_case(needle))
+}
+
 fn incomplete_stream_error() -> Error {
 	Error::new(
 		ErrorKind::StreamCorruption,
@@ -2185,6 +2200,33 @@ mod tests {
 			assert_eq!(error.code.as_ref().map(|value| value.as_str()), Some(code));
 			assert!(!error.committed);
 		}
+	}
+
+	#[test]
+	fn dashscope_token_limit_anchor_stays_transient_but_free_quota_is_permanent() {
+		let classify = |message: &str| {
+			super::classify_error(
+				super::WireError {
+					code:     Some(super::ErrorCode::Text("insufficient_quota".into())),
+					message:  Some(message.into()),
+					_param:   None,
+					metadata: None,
+				},
+				false,
+			)
+		};
+		let throttle = classify(
+			"You exceeded your current quota. See \
+			 https://help.aliyun.com/zh/model-studio/error-code#token-limit",
+		);
+		assert_eq!(throttle.kind, ErrorKind::RateLimited);
+		assert!(matches!(throttle.action, RetryAction::SameRoute { .. }));
+
+		let permanent = classify(
+			"Free allocated quota exceeded. See https://platform.openai.com/account/usage",
+		);
+		assert_eq!(permanent.kind, ErrorKind::QuotaExhausted);
+		assert!(!matches!(permanent.action, RetryAction::SameRoute { .. }));
 	}
 
 	#[test]
