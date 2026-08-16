@@ -1415,6 +1415,11 @@ impl OpenAiChatDecoder {
 		let index = choice.index;
 		let mut state = self.choices.remove(&index).unwrap_or_default();
 		if let Some(reason) = choice.finish_reason {
+			if matches!(reason, WireFinishReason::InsufficientSystemResource) {
+				self.done = true;
+				emit(RawEvent::Failure(resource_finish_error(self.committed)));
+				return;
+			}
 			state.finish = Some(reason.normalize());
 		}
 		let payload = choice.delta.or(choice.message).unwrap_or_default();
@@ -1533,6 +1538,10 @@ impl OpenAiChatDecoder {
 	fn complete(&mut self, emit: &mut dyn FnMut(RawEvent)) -> Result<(), Error> {
 		if self.done {
 			return Ok(());
+		}
+		if self.committed && !self.choices.values().any(|state| state.finish.is_some()) {
+			self.done = true;
+			return Err(incomplete_stream_error());
 		}
 		let mut finish = FinishReason::Stop;
 		let committed = self.committed;
@@ -1767,15 +1776,17 @@ enum WireFinishReason {
 	MaxOutputTokens,
 	ContentFilter,
 	Safety,
+	InsufficientSystemResource,
 }
 
 impl WireFinishReason {
-	const fn normalize(self) -> FinishReason {
+	fn normalize(self) -> FinishReason {
 		match self {
 			Self::Stop | Self::End | Self::EndTurn => FinishReason::Stop,
 			Self::ToolCalls | Self::FunctionCall | Self::ToolUse => FinishReason::ToolCalls,
 			Self::Length | Self::MaxTokens | Self::MaxOutputTokens => FinishReason::Length,
 			Self::ContentFilter | Self::Safety => FinishReason::ContentFilter,
+			Self::InsufficientSystemResource => unreachable!("resource finish is handled before normalization"),
 		}
 	}
 }
@@ -1855,6 +1866,32 @@ fn classify_error(error: WireError, committed: bool) -> Error {
 	.optional_code(error.metadata.and_then(|metadata| metadata.raw).or(code))
 	.committed(committed)
 }
+fn incomplete_stream_error() -> Error {
+	Error::new(
+		ErrorKind::StreamCorruption,
+		ErrorPhase::Streaming,
+		RetryAction::SemanticRetry,
+		ExecutionReceipt::default(),
+	)
+	.code(Str::new_static("openai_chat.incomplete_stream"))
+	.committed(true)
+}
+
+fn resource_finish_error(committed: bool) -> Error {
+	Error::new(
+		ErrorKind::ResourceExhausted,
+		if committed {
+			ErrorPhase::Streaming
+		} else {
+			ErrorPhase::Handshake
+		},
+		RetryAction::SemanticRetry,
+		ExecutionReceipt::default(),
+	)
+	.code(Str::new_static("insufficient_system_resource"))
+	.committed(committed)
+}
+
 fn protocol_error(committed: bool, code: Option<Str>) -> Error {
 	Error::new(
 		ErrorKind::Protocol,
@@ -1937,7 +1974,7 @@ mod tests {
 			ToolDefinition, ToolInputConstraint,
 		},
 		codec::{Decoder, RawEvent},
-		error::ErrorKind,
+		error::{ErrorKind, RetryAction},
 		event::{ChatEvent, FinishReason},
 		transport::{Frame, SseDecoder},
 	};
@@ -2148,6 +2185,39 @@ mod tests {
 			assert_eq!(error.code.as_ref().map(|value| value.as_str()), Some(code));
 			assert!(!error.committed);
 		}
+	}
+
+	#[test]
+	fn truncated_content_stream_and_resource_finish_are_retryable_failures() {
+		let truncated = match decode_fixture(
+			"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n",
+		) {
+			Ok(_) => panic!("content without a finish reason must be truncated"),
+			Err(error) => error,
+		};
+		assert_eq!(truncated.kind, ErrorKind::StreamCorruption);
+		assert_eq!(truncated.action, RetryAction::SemanticRetry);
+		let empty = decode_fixture("").expect("empty close remains an empty completion");
+		assert!(empty.iter().any(|event| {
+			matches!(event, RawEvent::Completion(completion) if completion.reason == FinishReason::Stop)
+		}));
+
+
+		let events = decode_fixture(
+			"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n\
+			 data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"insufficient_system_resource\"}]}\n\n\
+			 data: [DONE]\n\n",
+		)
+		.expect("resource finish decodes to a typed failure");
+		let failure = events
+			.into_iter()
+			.find_map(|event| match event {
+				RawEvent::Failure(error) => Some(error),
+				_ => None,
+			})
+			.expect("resource finish emits a failure");
+		assert_eq!(failure.kind, ErrorKind::ResourceExhausted);
+		assert_eq!(failure.action, RetryAction::SemanticRetry);
 	}
 
 	#[test]
