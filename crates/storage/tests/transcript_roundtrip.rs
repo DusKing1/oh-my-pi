@@ -353,6 +353,33 @@ fn header_is_single_and_torn_tail_is_truncated() {
 }
 
 #[test]
+fn malformed_trailing_record_is_repaired_before_append() {
+	let directory = tempdir().expect("temporary directory");
+	let path = directory.path().join("session.jsonl");
+	let mut writer = Writer::create(&path, &header()).expect("new transcript");
+	assert_eq!(writer.append(&title(1, "first")).expect("first event"), 0);
+	drop(writer);
+
+	let mut file = OpenOptions::new()
+		.append(true)
+		.open(&path)
+		.expect("append malformed record");
+	file.write_all(b"{not json}\n").expect("write malformed record");
+	drop(file);
+
+	let mut writer = Writer::open_append(&path).expect("repair malformed tail");
+	assert_eq!(writer.append(&title(2, "second")).expect("second event"), 1);
+	drop(writer);
+
+	let log = load(&path).expect("repaired transcript loads");
+	assert_eq!(log.len(), 2);
+	assert!(matches!(
+		log.get(1),
+		Some(Entry::Ok(event)) if matches!(&event.kind, Kind::Title { title, .. } if title.as_str() == "second")
+	));
+}
+
+#[test]
 fn malformed_middle_line_is_a_tombstone() {
 	let directory = tempdir().expect("temporary directory");
 	let path = directory.path().join("session.jsonl");
