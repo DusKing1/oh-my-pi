@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "catalog-7b2d7bf18c01a90345af7f463e323a93ad45268079fb290b32ec11a08f10f583",
+  "revision": "catalog-ff8bd72413a11a0241dbb7f4875daede4a56504b8ca100e840d91bf23e0473d6",
   "census": {
     "raw_models": 4302,
     "logical_models": 4227,
@@ -71555,7 +71555,7 @@
           "structured_output": "unknown",
           "grammar": "unknown",
           "text_verbosity": "unknown",
-          "reasoning": "unsupported",
+          "reasoning": "unknown",
           "input_modalities": {
             "native": 3
           },
@@ -71583,7 +71583,7 @@
         "maximum_output_tokens": 262144,
         "maximum_batch": null
       },
-      "thinking": null,
+      "thinking": "thinking-sha256-5a08f16fa4877a9bb8a2f57756739fd4f4fe47674202dbd3dc354225f2467199",
       "thinking_routing": {
         "effortMap": {},
         "effortRouting": {},
@@ -452120,6 +452120,19 @@
         "max"
       ],
       "defaultLevel": null,
+      "effortBudgets": {},
+      "supportsDisplay": null,
+      "suppressWhenOff": null,
+      "requiresEffort": null
+    },
+    {
+      "mode": "effort",
+      "efforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "defaultLevel": "max",
       "effortBudgets": {},
       "supportsDisplay": null,
       "suppressWhenOff": null,

@@ -101,6 +101,10 @@ const INFERRED_CURSOR_THINKING: &[(&str, &[ThinkingEffort])] = &[
 		ThinkingEffort::Max,
 	]),
 ];
+const REVIEWED_THINKING_CORRECTIONS: &[(&str, &[ThinkingEffort])] = &[(
+	"baseten/moonshotai/Kimi-K3",
+	&[ThinkingEffort::Low, ThinkingEffort::High, ThinkingEffort::Max],
+)];
 const CURATED_THINKING_OVERRIDES: &[&str] = &["nanogpt/linkup-research"];
 
 fn inferred_cursor_efforts(model: &str) -> Option<&'static [ThinkingEffort]> {
@@ -652,6 +656,8 @@ struct ExactExpected {
 struct ExactThinking {
 	mode:              String,
 	efforts:           Vec<FixtureEffort>,
+	#[serde(default)]
+	default_level:     Option<FixtureEffort>,
 	#[serde(default)]
 	effort_budgets:    BTreeMap<FixtureEffort, u64>,
 	#[serde(default)]
@@ -1250,6 +1256,7 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 	let oracle: NormalizedOracle =
 		serde_json::from_str(NORMALIZED_MODELS).expect("normalized model fixture is valid");
 	let compiled = compile_frozen_oracle();
+	let reviewed_thinking = REVIEWED_THINKING_CORRECTIONS.iter().copied().collect::<BTreeMap<_, _>>();
 	assert_eq!(oracle.schema_version, 1);
 	let raw_bytes = zstd::stream::decode_all(MODELS_ZSTD).expect("raw model oracle decompresses");
 	let mut inherited_price_components = BTreeMap::<PriceUnit, usize>::new();
@@ -1377,6 +1384,13 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 		);
 		assert!(!actual.provenance.sources.is_empty(), "{} provenance", expected.id);
 
+		let actual_thinking = actual.thinking.as_ref().map(|id| {
+			compiled
+				.thinking_policies
+				.iter()
+				.find(|policy| policy.content_id() == id.clone())
+				.expect("model thinking policy is interned")
+		});
 		let expected_chat = expected.facets.iter().any(|facet| facet == "chat");
 		let expected_embed = expected.facets.iter().any(|facet| facet == "embeddings");
 		for operation in all_operations() {
@@ -1421,20 +1435,14 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 				"{} input modalities",
 				expected.id
 			);
+			let reviewed_reasoning = reviewed_thinking.contains_key(expected.id.as_str());
 			assert_eq!(
 				chat.reasoning.is_unsupported(),
-				!expected.reasoning,
+				!expected.reasoning && !reviewed_reasoning,
 				"{} reasoning",
 				expected.id
 			);
 		}
-		let actual_thinking = actual.thinking.as_ref().map(|id| {
-			compiled
-				.thinking_policies
-				.iter()
-				.find(|policy| policy.content_id() == id.clone())
-				.expect("model thinking policy is interned")
-		});
 		if let Some(efforts) = inferred_cursor_efforts(&expected.id) {
 			assert_eq!(
 				actual_thinking.map_or(&[][..], |policy| policy.efforts.as_slice()),
@@ -1462,17 +1470,23 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 				);
 			}
 		} else {
-			assert_eq!(
-				actual_thinking.map_or(&[][..], |policy| policy.efforts.as_slice()),
-				expected
-					.efforts
-					.iter()
-					.copied()
-					.map(Into::into)
-					.collect::<Vec<_>>(),
-				"{} thinking efforts",
-				expected.id
-			);
+			let actual_efforts =
+				actual_thinking.map_or(&[][..], |policy| policy.efforts.as_slice());
+			if let Some(expected_efforts) = reviewed_thinking.get(expected.id.as_str()) {
+				assert_eq!(actual_efforts, *expected_efforts, "{} reviewed thinking efforts", expected.id);
+			} else {
+				assert_eq!(
+					actual_efforts,
+					expected
+						.efforts
+						.iter()
+						.copied()
+						.map(Into::into)
+						.collect::<Vec<_>>(),
+					"{} thinking efforts",
+					expected.id
+				);
+			}
 			assert_eq!(
 				actual
 					.thinking_routing
@@ -1922,7 +1936,7 @@ fn exact_override_rows_and_qwen_collapses_remain_present_and_auditable() {
 		serde_json::from_str(QWEN_COLLAPSE).expect("Qwen collapse fixture is valid");
 	let compiled = compile_frozen_oracle();
 	assert_eq!(exact.schema_version, 1);
-	assert_eq!(exact.cases.len(), 9);
+	assert_eq!(exact.cases.len(), 10);
 	assert_ne!(exact.source_assertions, "");
 	for case in exact.cases {
 		let model = compiled
@@ -1962,6 +1976,12 @@ fn exact_override_rows_and_qwen_collapses_remain_present_and_auditable() {
 				.map(Into::into)
 				.collect::<Vec<_>>(),
 			"{} thinking efforts",
+			case.model
+		);
+		assert_eq!(
+			actual_thinking.default_level,
+			expected_thinking.default_level.map(Into::into),
+			"{} default thinking effort",
 			case.model
 		);
 		assert_eq!(

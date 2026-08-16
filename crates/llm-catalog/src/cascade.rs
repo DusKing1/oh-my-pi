@@ -570,10 +570,11 @@ impl CompatCascade {
 
 	/// Resolves wire and thinking assignments for one structured model target.
 	///
-	/// When `target.reasoning` is false, thinking axes are never evaluated, so
-	/// selector rules cannot leak onto non-reasoning siblings. Family and
-	/// revision selectors never match a target lacking that identity rank.
-	/// Unmatched targets resolve to empty maps.
+	/// When `target.reasoning` is false, broad thinking rules are not evaluated, so
+	/// family and revision policy cannot leak onto non-reasoning siblings. An exact
+	/// model selector may still declare thinking axes as a reviewed correction to
+	/// stale source capability metadata. Family and revision selectors never match
+	/// a target lacking that identity rank. Unmatched targets resolve to empty maps.
 	///
 	/// # Errors
 	/// [`CascadeError::AmbiguousOverlap`] when two rules tying on
@@ -582,15 +583,22 @@ impl CompatCascade {
 		let model_lower = target.model.to_ascii_lowercase();
 		let mut wire: BTreeMap<&Str, ((u8, u8, i64), &Rule)> = BTreeMap::new();
 		let mut thinking: BTreeMap<&Str, ((u8, u8, i64), &Rule)> = BTreeMap::new();
+		let reasoning = target.reasoning
+			|| self.rules.iter().any(|rule| {
+				rule.thinking.contains_key("efforts")
+					&& rule
+						.rank(target, &model_lower)
+						.is_some_and(|(exactness, _, _)| exactness == 2)
+			});
 		for rule in &self.rules {
-			if !target.reasoning && rule.wire.is_empty() {
-				continue;
-			}
 			let Some(rank) = rule.rank(target, &model_lower) else {
 				continue;
 			};
+			if !reasoning && rule.wire.is_empty() {
+				continue;
+			}
 			contest(&mut wire, &rule.wire, rank, rule, target.provider, target.model)?;
-			if target.reasoning {
+			if reasoning {
 				contest(&mut thinking, &rule.thinking, rank, rule, target.provider, target.model)?;
 			}
 		}

@@ -7,7 +7,7 @@ use omp_llm_catalog::{
 	ApplyPatchWireKind, CatalogSource, ComputerUseConfigSupport, ComputerUseWireSupport,
 	ExtendedContextMode, MaxOutputTokensEmission, NanoUsd, PremiumMultiplier, Price, PriceTier,
 	PriceUnit, Pricing, ProvenanceKind, SourceModelRecord, SourceProviderRecord, ThinkingEffort,
-	UsageDimensions, WirePolicy, compile,
+	ThinkingMode, UsageDimensions, WirePolicy, compile,
 };
 
 fn source_provider() -> SourceProviderRecord {
@@ -90,6 +90,44 @@ fn compiler_preserves_policy_provenance_interning_extended_context_and_wire_rout
 	let encoded = policy.canonical_bytes();
 	let decoded: WirePolicy = serde_json::from_slice(&encoded).expect("canonical policy round-trip");
 	assert_eq!(decoded.content_id(), policy.content_id());
+}
+
+#[test]
+fn baseten_kimi_k3_exposes_reasoning_with_max_as_the_default_effort() {
+	let model: SourceModelRecord = serde_json::from_str(
+		r#"{
+			"name":"Kimi K3",
+			"reasoning":false,
+			"input":["text","image"],
+			"output":["text"],
+			"contextWindow":1048576,
+			"maxTokens":262144
+		}"#,
+	)
+	.expect("typed Baseten model source");
+	let compiled = compile(CatalogSource {
+		providers: BTreeMap::from([(Str::from("baseten"), source_provider())]),
+		models:    BTreeMap::from([(
+			Str::from("baseten"),
+			BTreeMap::from([(Str::from("moonshotai/Kimi-K3"), model)]),
+		)]),
+	})
+	.expect("Baseten catalog compiles");
+	let model = compiled.models.first().expect("compiled Kimi K3");
+	let chat = model.capabilities.chat.as_ref().expect("Kimi K3 chat capability");
+	assert!(!chat.reasoning.is_unsupported(), "Kimi K3 advertises reasoning");
+	let thinking_id = model.thinking.as_ref().expect("Kimi K3 thinking policy");
+	let thinking = compiled
+		.thinking_policies
+		.iter()
+		.find(|policy| policy.content_id() == *thinking_id)
+		.expect("Kimi K3 thinking policy is interned");
+	assert_eq!(thinking.mode, ThinkingMode::Effort);
+	assert_eq!(
+		thinking.efforts.as_slice(),
+		[ThinkingEffort::Low, ThinkingEffort::High, ThinkingEffort::Max],
+	);
+	assert_eq!(thinking.default_level, Some(ThinkingEffort::Max));
 }
 
 #[test]

@@ -189,6 +189,22 @@
       "model": "opencode-go/deepseek-v4-flash",
       "provenance": "archive/llm-legacy/llm-catalog/tests/generated_models.rs::checked_in_snapshot_retains_representative_server_behavior",
       "rationale": "The Responses route requires reasoning content replay on every assistant turn."
+    },
+    {
+      "expected": {
+        "thinking": {
+          "defaultLevel": "max",
+          "efforts": [
+            "low",
+            "high",
+            "max"
+          ],
+          "mode": "effort"
+        }
+      },
+      "model": "baseten/moonshotai/Kimi-K3",
+      "provenance": "packages/catalog/test/baseten-provider.test.ts#Baseten-Kimi-K3-reasoning",
+      "rationale": "Baseten advertises Kimi K3 reasoning effort despite the frozen source row carrying stale reasoning=false metadata."
     }
   ],
   "schema_version": 1,
