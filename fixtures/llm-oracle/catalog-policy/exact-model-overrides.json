@@ -189,6 +189,40 @@
       "model": "opencode-go/deepseek-v4-flash",
       "provenance": "archive/llm-legacy/llm-catalog/tests/generated_models.rs::checked_in_snapshot_retains_representative_server_behavior",
       "rationale": "The Responses route requires reasoning content replay on every assistant turn."
+    },
+    {
+      "expected": {
+        "thinking": {
+          "defaultLevel": "max",
+          "efforts": [
+            "low",
+            "high",
+            "max"
+          ],
+          "mode": "effort"
+        }
+      },
+      "model": "baseten/moonshotai/Kimi-K3",
+      "provenance": "packages/catalog/test/baseten-provider.test.ts#Baseten-Kimi-K3-reasoning",
+      "rationale": "Baseten advertises Kimi K3 reasoning effort despite the frozen source row carrying stale reasoning=false metadata."
+    },
+    {
+      "expected": {
+        "thinking": {
+          "defaultLevel": "high",
+          "efforts": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "mode": "effort"
+        }
+      },
+      "model": "xai-oauth/grok-4.5",
+      "provenance": "oh-my-pi#8369 xAI OAuth effort verification",
+      "rationale": "SuperGrok requires an explicit effort and defaults to high; the frozen source row's legacy compat pins the ladder until the next snapshot import."
     }
   ],
   "schema_version": 1,

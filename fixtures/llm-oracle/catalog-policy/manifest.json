@@ -68,7 +68,7 @@
       "id": "catalog.policy.exact-model-overrides.v1",
       "path": "exact-model-overrides.json",
       "secret_free": true,
-      "sha256": "62f350671b08a4d2d1579e3b073e02a89d071ab28d45a6ac003cf854407104d1",
+      "sha256": "dbf9a237a9f7d7a633fc2833f050c4ec1c4dd59191de833568c70e31afae3694",
       "source": "archive/llm-legacy/llm-catalog/tests/generated_models.rs::checked_in_snapshot_retains_representative_server_behavior"
     },
     {

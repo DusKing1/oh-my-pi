@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "catalog-7b2d7bf18c01a90345af7f463e323a93ad45268079fb290b32ec11a08f10f583",
+  "revision": "catalog-70d5baa8aa08eb2cd2ec080c5475ddfd3dbe358d1d756835b9fd634196e9a801",
   "census": {
     "raw_models": 4302,
     "logical_models": 4227,
@@ -71558,7 +71558,7 @@
           "structured_output": "unknown",
           "grammar": "unknown",
           "text_verbosity": "unknown",
-          "reasoning": "unsupported",
+          "reasoning": "unknown",
           "input_modalities": {
             "native": 3
           },
@@ -71586,7 +71586,7 @@
         "maximum_output_tokens": 262144,
         "maximum_batch": null
       },
-      "thinking": null,
+      "thinking": "thinking-sha256-5a08f16fa4877a9bb8a2f57756739fd4f4fe47674202dbd3dc354225f2467199",
       "thinking_routing": {
         "effortMap": {},
         "effortRouting": {},
@@ -307085,7 +307085,7 @@
         "effortRouting": {},
         "reasoningMode": null
       },
-      "wire_policy": "wire-sha256-6f53ac5c52833401d2060ee2b69b7d570ed34d29d7b756b8b20f52a35e578459",
+      "wire_policy": "wire-sha256-e661a4752ac03727fce88fb5a2f9839d309ce15fb05261d8af9ad44859dadffb",
       "context": "replay",
       "pricing": {
         "components": [
@@ -417421,7 +417421,7 @@
         "maximum_output_tokens": 500000,
         "maximum_batch": null
       },
-      "thinking": "thinking-sha256-8f962913526d0f5c7a7af9ff7d328c3c43cc0394c567c92a9621ea4df4240a47",
+      "thinking": "thinking-sha256-075ba2f88691e8aeb8a06091a229eea377f0e0e87ca9d56f825fa81c73fc4d2b",
       "thinking_routing": {
         "effortMap": {
           "minimal": "low"
@@ -451084,6 +451084,84 @@
         "supports_mid_conversation_system": null
       },
       "tool": {
+        "supports_tool_choice": false,
+        "named_choice": null,
+        "forced_choice": null,
+        "strict_mode": null,
+        "schema_flavor": null,
+        "id_profile": null,
+        "escape_builtin_names": null,
+        "requires_result_id": null,
+        "eager_input_streaming": null,
+        "requires_assistant_content": null,
+        "thinking_conflict": null,
+        "apply_patch": null,
+        "computer_use": null,
+        "computer_use_config": null,
+        "disable_reasoning_on_choice": null
+      },
+      "structured": {
+        "penalties": null,
+        "sampling_params": null,
+        "stop_sequences": null
+      },
+      "reasoning": {
+        "wire_format": null,
+        "thinking_format": null,
+        "supports_effort": null,
+        "omit_effort": null,
+        "effort_map": {},
+        "disable_mode": null,
+        "content_field": null,
+        "requires_content_for_tool_calls": null,
+        "requires_content_for_all_assistant_turns": true,
+        "allows_synthetic_content_for_tool_calls": null,
+        "filter_history": null,
+        "include_encrypted": null,
+        "replay_unsigned": null,
+        "requires_enabled": null,
+        "disable_adaptive": null,
+        "interleaved_thinking": null,
+        "official_endpoint": null,
+        "signing_endpoint": null,
+        "extra_body": null,
+        "when_thinking": null,
+        "leaked_healer": null,
+        "loop_guard": null
+      },
+      "cache": {
+        "control_format": null,
+        "supports_long_retention": null
+      },
+      "context": {
+        "max_tokens_field": null,
+        "max_output_tokens": null,
+        "supports_store": null,
+        "stateful_response_chaining": null,
+        "extended_mode": null
+      },
+      "streaming": {
+        "protocol": null,
+        "watchdog": null
+      },
+      "usage": {
+        "in_streaming": null
+      },
+      "image": {
+        "encoding": null,
+        "supports_detail_original": null
+      },
+      "audio": {
+        "api_version": null
+      }
+    },
+    {
+      "role": {
+        "supports_developer_role": null,
+        "multiple_system_messages": null,
+        "supports_mid_conversation_system": null
+      },
+      "tool": {
         "supports_tool_choice": null,
         "named_choice": null,
         "forced_choice": null,
@@ -451945,6 +452023,21 @@
     {
       "mode": "effort",
       "efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "defaultLevel": "high",
+      "effortBudgets": {},
+      "supportsDisplay": null,
+      "suppressWhenOff": null,
+      "requiresEffort": true
+    },
+    {
+      "mode": "effort",
+      "efforts": [
         "high",
         "max"
       ],
@@ -452123,6 +452216,19 @@
         "max"
       ],
       "defaultLevel": null,
+      "effortBudgets": {},
+      "supportsDisplay": null,
+      "suppressWhenOff": null,
+      "requiresEffort": null
+    },
+    {
+      "mode": "effort",
+      "efforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "defaultLevel": "max",
       "effortBudgets": {},
       "supportsDisplay": null,
       "suppressWhenOff": null,

@@ -3285,11 +3285,6 @@ fn compile_models(
 			}
 			let pricing = compile_pricing(provider.as_str(), logical_id.as_str(), &first.1.cost)?;
 			let capability_override = exact_capability_override(&provider, &logical_id);
-			let capabilities = conservative_capabilities(
-				&merged_row,
-				facets,
-				capability_override.map(|override_| override_.correction),
-			);
 			let resolved = cascade.resolve(&ResolveTarget {
 				provider:  provider.as_str(),
 				class:     class.as_str(),
@@ -3298,6 +3293,14 @@ fn compile_models(
 				model:     logical_id.as_str(),
 				reasoning: tier_reasoning || members.iter().any(|(_, row, _)| row.thinking.is_some()),
 			})?;
+			if resolved.thinking.contains_key("efforts") {
+				merged_row.reasoning = true;
+			}
+			let capabilities = conservative_capabilities(
+				&merged_row,
+				facets,
+				capability_override.map(|override_| override_.correction),
+			);
 			let has_wire_overrides = !resolved.wire.is_empty();
 			let wire_overrides = axis_map_to_source_wire_policy(resolved.wire)?;
 			let thinking_profile = if capabilities.chat.is_none()

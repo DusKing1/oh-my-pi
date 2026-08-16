@@ -101,7 +101,18 @@ const INFERRED_CURSOR_THINKING: &[(&str, &[ThinkingEffort])] = &[
 		ThinkingEffort::Max,
 	]),
 ];
-const CURATED_THINKING_OVERRIDES: &[&str] = &["nanogpt/linkup-research"];
+const REVIEWED_THINKING_CORRECTIONS: &[(&str, &[ThinkingEffort])] = &[(
+	"baseten/moonshotai/Kimi-K3",
+	&[ThinkingEffort::Low, ThinkingEffort::High, ThinkingEffort::Max],
+)];
+const CURATED_THINKING_OVERRIDES: &[&str] = &["baseten/moonshotai/Kimi-K3", "nanogpt/linkup-research"];
+/// Frozen-profile members whose compiled thinking intentionally gained a
+/// mandatory default (#8369); the profile fixture predates the override.
+const REVIEWED_THINKING_DEFAULTS: &[&str] = &["xai-oauth/grok-4.5"];
+/// Frozen wire-profile members whose compiled policy intentionally disables
+/// tool choice (#8244); the profile fixture predates the override.
+const REVIEWED_WIRE_TOOL_CHOICE_DISABLED: &[&str] =
+	&["opencode-go/deepseek-v4-flash", "opencode-go/deepseek-v4-pro"];
 
 fn inferred_cursor_efforts(model: &str) -> Option<&'static [ThinkingEffort]> {
 	INFERRED_CURSOR_THINKING
@@ -652,6 +663,8 @@ struct ExactExpected {
 struct ExactThinking {
 	mode:              String,
 	efforts:           Vec<FixtureEffort>,
+	#[serde(default)]
+	default_level:     Option<FixtureEffort>,
 	#[serde(default)]
 	effort_budgets:    BTreeMap<FixtureEffort, u64>,
 	#[serde(default)]
@@ -1251,6 +1264,7 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 	let oracle: NormalizedOracle =
 		serde_json::from_str(NORMALIZED_MODELS).expect("normalized model fixture is valid");
 	let compiled = compile_frozen_oracle();
+	let reviewed_thinking = REVIEWED_THINKING_CORRECTIONS.iter().copied().collect::<BTreeMap<_, _>>();
 	assert_eq!(oracle.schema_version, 1);
 	let raw_bytes = zstd::stream::decode_all(MODELS_ZSTD).expect("raw model oracle decompresses");
 	let mut inherited_price_components = BTreeMap::<PriceUnit, usize>::new();
@@ -1378,6 +1392,13 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 		);
 		assert!(!actual.provenance.sources.is_empty(), "{} provenance", expected.id);
 
+		let actual_thinking = actual.thinking.as_ref().map(|id| {
+			compiled
+				.thinking_policies
+				.iter()
+				.find(|policy| policy.content_id() == id.clone())
+				.expect("model thinking policy is interned")
+		});
 		let expected_chat = expected.facets.iter().any(|facet| facet == "chat");
 		let expected_embed = expected.facets.iter().any(|facet| facet == "embeddings");
 		for operation in all_operations() {
@@ -1422,20 +1443,14 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 				"{} input modalities",
 				expected.id
 			);
+			let reviewed_reasoning = reviewed_thinking.contains_key(expected.id.as_str());
 			assert_eq!(
 				chat.reasoning.is_unsupported(),
-				!expected.reasoning,
+				!expected.reasoning && !reviewed_reasoning,
 				"{} reasoning",
 				expected.id
 			);
 		}
-		let actual_thinking = actual.thinking.as_ref().map(|id| {
-			compiled
-				.thinking_policies
-				.iter()
-				.find(|policy| policy.content_id() == id.clone())
-				.expect("model thinking policy is interned")
-		});
 		if let Some(efforts) = inferred_cursor_efforts(&expected.id) {
 			assert_eq!(
 				actual_thinking.map_or(&[][..], |policy| policy.efforts.as_slice()),
@@ -1463,17 +1478,23 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 				);
 			}
 		} else {
-			assert_eq!(
-				actual_thinking.map_or(&[][..], |policy| policy.efforts.as_slice()),
-				expected
-					.efforts
-					.iter()
-					.copied()
-					.map(Into::into)
-					.collect::<Vec<_>>(),
-				"{} thinking efforts",
-				expected.id
-			);
+			let actual_efforts =
+				actual_thinking.map_or(&[][..], |policy| policy.efforts.as_slice());
+			if let Some(expected_efforts) = reviewed_thinking.get(expected.id.as_str()) {
+				assert_eq!(actual_efforts, *expected_efforts, "{} reviewed thinking efforts", expected.id);
+			} else {
+				assert_eq!(
+					actual_efforts,
+					expected
+						.efforts
+						.iter()
+						.copied()
+						.map(Into::into)
+						.collect::<Vec<_>>(),
+					"{} thinking efforts",
+					expected.id
+				);
+			}
 			assert_eq!(
 				actual
 					.thinking_routing
@@ -1923,7 +1944,7 @@ fn exact_override_rows_and_qwen_collapses_remain_present_and_auditable() {
 		serde_json::from_str(QWEN_COLLAPSE).expect("Qwen collapse fixture is valid");
 	let compiled = compile_frozen_oracle();
 	assert_eq!(exact.schema_version, 1);
-	assert_eq!(exact.cases.len(), 9);
+	assert_eq!(exact.cases.len(), 11);
 	assert_ne!(exact.source_assertions, "");
 	for case in exact.cases {
 		let model = compiled
@@ -1963,6 +1984,12 @@ fn exact_override_rows_and_qwen_collapses_remain_present_and_auditable() {
 				.map(Into::into)
 				.collect::<Vec<_>>(),
 			"{} thinking efforts",
+			case.model
+		);
+		assert_eq!(
+			actual_thinking.default_level,
+			expected_thinking.default_level.map(Into::into),
+			"{} default thinking effort",
 			case.model
 		);
 		assert_eq!(
@@ -2390,9 +2417,17 @@ fn every_thinking_profile_is_interned_and_attached_to_its_exact_model_set() {
 			profile.profile_id
 		);
 		for key in profile.models {
+			// #8369: reviewed defaults split these members off the frozen shape.
+			let mut expected_shape = profile.shape.clone();
+			if REVIEWED_THINKING_DEFAULTS.contains(&key.as_str()) {
+				expected_shape.default_level = Some(ThinkingEffort::High);
+				expected_shape.requires_effort = Some(true);
+			}
+			let expected_model_id = expected_shape.content_id();
+			expected_ids.insert(expected_model_id.clone());
 			assert!(
 				expected_by_model
-					.insert(key.clone(), expected_id.clone())
+					.insert(key.clone(), expected_model_id.clone())
 					.is_none(),
 				"{key} appears in more than one thinking profile"
 			);
@@ -2411,8 +2446,8 @@ fn every_thinking_profile_is_interned_and_attached_to_its_exact_model_set() {
 						.find(|policy| policy.content_id() == *id)
 				})
 				.unwrap_or_else(|| panic!("{key} thinking policy is not interned"));
-			assert_eq!(actual_policy, &profile.shape, "{key} thinking policy shape");
-			assert_eq!(model.thinking.as_ref(), Some(&expected_id), "{key} thinking policy");
+			assert_eq!(actual_policy, &expected_shape, "{key} thinking policy shape");
+			assert_eq!(model.thinking.as_ref(), Some(&expected_model_id), "{key} thinking policy");
 		}
 	}
 	for key in INFERRED_CURSOR_THINKING
@@ -2437,7 +2472,7 @@ fn every_thinking_profile_is_interned_and_attached_to_its_exact_model_set() {
 			"{key} unexpectedly has a fixture thinking profile"
 		);
 	}
-	assert_eq!(expected_ids.len(), 49);
+	assert_eq!(expected_ids.len(), 51);
 	let actual_ids = compiled
 		.thinking_policies
 		.iter()
@@ -2506,7 +2541,12 @@ fn every_sparse_wire_profile_has_a_stable_distinct_content_id() {
 				.get(&key)
 				.unwrap_or_else(|| panic!("{key} behavior fixture is missing"));
 			let expected_policy = with_census_thinking_format(policy.clone(), provider, class);
-			let expected_policy = with_model_behavior(expected_policy, behavior);
+			let mut expected_policy = with_model_behavior(expected_policy, behavior);
+			if REVIEWED_WIRE_TOOL_CHOICE_DISABLED.contains(&key.as_str()) {
+				// #8244: the Responses route rejects forced tool choice for
+				// DeepSeek V4; the frozen wire profile predates the override.
+				expected_policy.tool.supports_tool_choice = Some(false);
+			}
 			let attached_id = expected_policy.content_id();
 			assert!(
 				expected_by_model

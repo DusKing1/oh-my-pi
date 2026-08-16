@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "source_digest": "4dbb5972589b001d6bef0f73c7d042752a3680ad005f1958926cb614aa35b7b3",
+  "source_digest": "464d1c2acaccd424fb92b5dff18e590d41bdd82c4bcb8c93184b5587f02a44d5",
   "inputs": [
     {
       "id": "catalog-policy.manifest.v1",
       "path": "fixtures/llm-oracle/catalog-policy/manifest.json",
-      "sha256": "088895be933831cfe8a433d4d4d0bc3a2f456b7f75bd8d1ff75eeb1d9eae4bf8",
+      "sha256": "663dae7ade36164b5ff4c02888c59080ddb2b76a735db97b84443b8151490262",
       "source": "oracle:catalog-policy.manifest.v1"
     },
     {
@@ -95,7 +95,7 @@
     {
       "id": "catalog.policy.exact-model-overrides.v1",
       "path": "fixtures/llm-oracle/catalog-policy/exact-model-overrides.json",
-      "sha256": "62f350671b08a4d2d1579e3b073e02a89d071ab28d45a6ac003cf854407104d1",
+      "sha256": "ecb4f0dad1dac49883d3322b5e00205955ddae7c76473e0e97f7213c662205d6",
       "source": "oracle:catalog.policy.exact-model-overrides.v1"
     },
     {
@@ -317,7 +317,7 @@
     {
       "id": "compat.cascade.providers.baseten.v1",
       "path": "crates/llm-catalog/compat/providers/baseten.kdl",
-      "sha256": "ed4018725d424cf030ab41dd0bacfca27e5bb4042b43a162f1331fe1beab3e60",
+      "sha256": "516c77406163c4d96a267d58c3ac85ee334420c79c63aec998e17afd6c7d8052",
       "source": "census 2026-08: .omp/local/quirks + frozen oracle"
     },
     {
@@ -521,7 +521,7 @@
     {
       "id": "compat.cascade.providers.opencode-go.v1",
       "path": "crates/llm-catalog/compat/providers/opencode-go.kdl",
-      "sha256": "4d4989129ce939d2dca7294097fc90d47aaf60da04779adc2eadcbb0f4c3097e",
+      "sha256": "9526a06d0c93b9d70e61addd93923eb6f110f768f91556043e1335358290afed",
       "source": "census 2026-08: .omp/local/quirks + frozen oracle"
     },
     {
@@ -629,7 +629,7 @@
     {
       "id": "compat.cascade.providers.xai-oauth.v1",
       "path": "crates/llm-catalog/compat/providers/xai-oauth.kdl",
-      "sha256": "539bd92b965a354c4ea18a1a1ecbb70db8afc6c153bc5e0fef754e39a5d32c06",
+      "sha256": "6bfef98e5f3090af8d6c1724bbda5f6a90e21116c1da6f97216bb5840a5b4a3a",
       "source": "census 2026-08: .omp/local/quirks + frozen oracle"
     },
     {
