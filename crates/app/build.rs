@@ -4,9 +4,9 @@
 //! When linking against a vendored `CPython` archive containing LLVM LTO
 //! bitcode (marked with `needs-lld`, e.g. production release trees), the final
 //! link must use `omp-py`'s ld64-to-lld shim. Dev builds link against
-//! machine-code archives (freethreaded+debug) and skip the shim. Every target
-//! retains and exports `CPython`'s global C API so native wheels can resolve
-//! code and data symbols when they are loaded.
+//! machine-code archives (freethreaded+debug) and skip the shim. Supported
+//! native targets retain and export `CPython`'s global C API so native wheels
+//! can resolve code and data symbols when they are loaded.
 
 use std::path::{Path, PathBuf};
 
@@ -39,5 +39,21 @@ fn main() {
 		}
 	}
 
-	println!("cargo::rustc-link-arg=-Wl,-export_dynamic");
+	// ld64 and ELF linkers spell this flag differently. In particular, passing
+	// ld64's spelling to an ELF linker is parsed as `-e xport_dynamic`, which
+	// produces a binary with no valid entry point. Other object formats have no
+	// compatible flag.
+	let target_vendor = std::env::var("CARGO_CFG_TARGET_VENDOR").unwrap_or_default();
+	let target_family = std::env::var("CARGO_CFG_TARGET_FAMILY").unwrap_or_default();
+	let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+	let link_arg = if target_vendor == "apple" {
+		Some("-Wl,-export_dynamic")
+	} else if target_os != "aix" && target_family.split(',').any(|family| family == "unix") {
+		Some("-Wl,--export-dynamic")
+	} else {
+		None
+	};
+	if let Some(link_arg) = link_arg {
+		println!("cargo::rustc-link-arg={link_arg}");
+	}
 }
