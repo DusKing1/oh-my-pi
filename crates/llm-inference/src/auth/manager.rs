@@ -1086,11 +1086,11 @@ mod tests {
 	use secrecy::{ExposeSecret as _, SecretString};
 
 	use super::{
-		AuthLoginEngine, OAuthLoginEngine, auth_method, auth_store_error, select_auth_spec,
-		select_login_engine,
+		AuthLoginEngine, AuthRefreshEngine, OAuthLoginEngine, StoredOAuthRefreshEngine, auth_method,
+		auth_store_error, select_auth_spec, select_login_engine,
 	};
 	use crate::{
-		account::AccountPool,
+		account::{AccountPool, RefreshCoordinator, RefreshPolicy},
 		answer::AuthEvent,
 		auth::{
 			AlibabaTokenPlanLoginEngine, CredentialStore, HeadlessKeySource, KeyError, KeyId,
@@ -1266,21 +1266,32 @@ mod tests {
 					status:  200,
 					headers: HeaderMap::new(),
 					body:    SecretString::from(
-						r#"{"access_token":"access","refresh_token":"refresh","token_type":"Bearer","expires_in":3600}"#
+						r#"{"access_token":"header.eyJ1c2VyX2lkIjoia2ltaS11c2VyLTQyIiwic3ViIjoiZmFsbGJhY2sifQ.signature","refresh_token":"refresh","token_type":"Bearer","expires_in":3600}"#
+							.to_owned(),
+					),
+				},
+				OAuthHttpResponse {
+					status:  200,
+					headers: HeaderMap::new(),
+					body:    SecretString::from(
+						r#"{"access_token":"header.eyJ1c2VyX2lkIjoia2ltaS11c2VyLTQyIiwic3ViIjoiZmFsbGJhY2sifQ.signature","refresh_token":"refresh-2","token_type":"Bearer","expires_in":3600}"#
 							.to_owned(),
 					),
 				},
 			])),
 			requests:  Mutex::new(Vec::new()),
 		});
+		let accounts = AccountPool::new();
+		let custom = Arc::new(OAuthCustomDispatcher::new());
+		let clock = Arc::new(ImmediateClock(SystemTime::UNIX_EPOCH));
 		let engine = OAuthLoginEngine::new(
 			AuthMethod::OAuthDevice,
-			catalog,
-			store,
-			AccountPool::new(),
+			Arc::clone(&catalog),
+			Arc::clone(&store),
+			accounts.clone(),
 			Arc::clone(&http),
-			Arc::new(ImmediateClock(SystemTime::UNIX_EPOCH)),
-			Arc::new(OAuthCustomDispatcher::new()),
+			Arc::clone(&clock),
+			Arc::clone(&custom),
 		)
 		.unwrap();
 		let session = engine
@@ -1288,7 +1299,7 @@ mod tests {
 			.await
 			.unwrap();
 		let mut saw_code = false;
-		loop {
+		let completed = loop {
 			let event = tokio::time::timeout(Duration::from_secs(1), session.events.recv_async())
 				.await
 				.expect("Kimi login event")
@@ -1301,23 +1312,40 @@ mod tests {
 					saw_code = true;
 				},
 				AuthEvent::Complete(account) => {
-					assert_eq!(account.account.as_str(), "kimi-code:kimi-code");
+					assert_eq!(account.account.as_str(), "kimi-code:kimi-user-42");
 					assert_eq!(
 						account
 							.principal
 							.as_ref()
 							.map(|principal| principal.as_str()),
-						Some("kimi-code")
+						Some("kimi-user-42")
 					);
-					break;
+					break account;
 				},
 				AuthEvent::OpenUrl(_) | AuthEvent::Waiting => {},
 				AuthEvent::Prompt(_) => panic!("Kimi device flow must not request private input"),
 			}
-		}
+		};
+		let refreshed = StoredOAuthRefreshEngine::new(
+			catalog,
+			store,
+			accounts,
+			http.clone(),
+			clock,
+			custom,
+			Arc::new(
+				RefreshCoordinator::new("kimi-refresh-test", RefreshPolicy::default())
+					.expect("refresh coordinator"),
+			),
+		)
+		.refresh(completed.account.clone())
+		.await
+		.expect("Kimi refresh");
+		assert_eq!(refreshed.account, completed.account);
+		assert_eq!(refreshed.principal, completed.principal);
 		assert!(saw_code);
 		let requests = http.requests.lock();
-		assert_eq!(requests.len(), 2);
+		assert_eq!(requests.len(), 3);
 		assert_eq!(requests[0].0, "https://auth.kimi.com/api/oauth/device_authorization");
 		assert!(
 			requests[0]
@@ -1331,6 +1359,8 @@ mod tests {
 				.contains("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code")
 		);
 		assert!(requests[1].1.contains("device_code=device"));
+		assert!(requests[2].1.contains("grant_type=refresh_token"));
+		assert!(requests[2].1.contains("refresh_token=refresh"));
 		drop(requests);
 		drop(session);
 		drop(engine);

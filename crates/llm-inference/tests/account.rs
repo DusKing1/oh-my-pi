@@ -146,6 +146,72 @@ fn quota_and_rate_429_timelines_never_poison_each_other() {
 }
 
 #[test]
+fn quota_headroom_ranks_accounts_and_exhaustion_expires_at_provider_reset() {
+	let pool = AccountPool::new();
+	let route = RouteId::from("route");
+	let loaded = AccountId::new("loaded");
+	let sibling = AccountId::new("sibling");
+	pool.upsert(record("loaded", "loaded-principal", &route)).unwrap();
+	pool
+		.upsert(record("sibling", "sibling-principal", &route))
+		.unwrap();
+	for (account, five_hour, weekly) in [
+		(loaded.clone(), 90, 80),
+		(sibling.clone(), 50, 50),
+	] {
+		for (window, remaining, reset_at) in [
+			("5h", five_hour, at(18_100)),
+			("7d", weekly, at(604_900)),
+		] {
+			pool
+				.observe_quota(account.clone(), QuotaObservation {
+					window: QuotaWindowId::new(window),
+					consumed: Some(100 - remaining),
+					remaining: Some(remaining),
+					limit: Some(100),
+					reset_at: Some(reset_at),
+					exhausted: Some(false),
+					provenance: QuotaProvenance::Provider,
+					observed_at: at(100),
+				})
+				.unwrap();
+		}
+	}
+	assert_eq!(
+		pool
+			.select(&selection_request(&route, at(100)))
+			.unwrap()
+			.record
+			.account,
+		loaded
+	);
+	pool
+		.record_quota_429(
+			loaded.clone(),
+			QuotaWindowId::new("5h"),
+			Some(at(18_100)),
+			at(101),
+		)
+		.unwrap();
+	assert_eq!(
+		pool
+			.select(&selection_request(&route, at(102)))
+			.unwrap()
+			.record
+			.account,
+		sibling
+	);
+	assert_eq!(
+		pool
+			.select(&selection_request(&route, at(18_100)))
+			.unwrap()
+			.record
+			.account,
+		loaded
+	);
+}
+
+#[test]
 fn partial_window_receipts_merge_fieldwise_and_reset_deterministically() {
 	let pool = AccountPool::new();
 	let route = RouteId::from("route");

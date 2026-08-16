@@ -4660,12 +4660,12 @@
       "credential_sources": [
         {
           "oauth": {
-            "flow": "oauth-c6d6693eb3cdeb36a1f69d6cf8bf4826265c8173564e1e4d2dbd1a55615ba2c5"
+            "flow": "oauth-3b444d63cbee66ed6ac2157ad354525755afb3759ba101372df3aed4fe4d257f"
           }
         },
         "stored"
       ],
-      "oauth": "oauth-c6d6693eb3cdeb36a1f69d6cf8bf4826265c8173564e1e4d2dbd1a55615ba2c5",
+      "oauth": "oauth-3b444d63cbee66ed6ac2157ad354525755afb3759ba101372df3aed4fe4d257f",
       "signing": null
     },
     {
@@ -5214,6 +5214,39 @@
       }
     },
     {
+      "id": "oauth-3b444d63cbee66ed6ac2157ad354525755afb3759ba101372df3aed4fe4d257f",
+      "client_id": "17e5f671-d194-4dfb-9706-5516cb48c098",
+      "token_url": "https://auth.kimi.com/api/oauth/token",
+      "scopes": [],
+      "audience": null,
+      "placement": {
+        "header": {
+          "name": "authorization",
+          "prefix": "Bearer "
+        }
+      },
+      "token_parameters": [],
+      "flow": {
+        "device_code": {
+          "device_authorization_url": "https://auth.kimi.com/api/oauth/device_authorization",
+          "polling": {
+            "maximum_polls": 120,
+            "default_interval_ms": 5000,
+            "maximum_interval_ms": 30000
+          }
+        }
+      },
+      "refresh": "token_endpoint",
+      "principal_resolution": {
+        "access_token_claims": {
+          "claims": [
+            "user_id",
+            "sub"
+          ]
+        }
+      }
+    },
+    {
       "id": "oauth-3fb2a5f42a1c38af0b44def4af2b65b926adea395313ed8994cb7b464c63d78b",
       "client_id": "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
       "token_url": "https://oauth2.googleapis.com/token",
@@ -5587,36 +5620,6 @@
         "userinfo_endpoint": {
           "url": "https://gitlab.com/api/v4/user",
           "field": "username"
-        }
-      }
-    },
-    {
-      "id": "oauth-c6d6693eb3cdeb36a1f69d6cf8bf4826265c8173564e1e4d2dbd1a55615ba2c5",
-      "client_id": "17e5f671-d194-4dfb-9706-5516cb48c098",
-      "token_url": "https://auth.kimi.com/api/oauth/token",
-      "scopes": [],
-      "audience": null,
-      "placement": {
-        "header": {
-          "name": "authorization",
-          "prefix": "Bearer "
-        }
-      },
-      "token_parameters": [],
-      "flow": {
-        "device_code": {
-          "device_authorization_url": "https://auth.kimi.com/api/oauth/device_authorization",
-          "polling": {
-            "maximum_polls": 120,
-            "default_interval_ms": 5000,
-            "maximum_interval_ms": 30000
-          }
-        }
-      },
-      "refresh": "token_endpoint",
-      "principal_resolution": {
-        "static_label": {
-          "label": "kimi-code"
         }
       }
     },

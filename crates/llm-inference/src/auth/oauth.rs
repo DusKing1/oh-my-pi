@@ -941,22 +941,10 @@ impl OAuthTokenSet {
 			},
 			PrincipalResolution::IdTokenClaim { claim } => {
 				let id_token = json_string_at(self.identity_response.expose_secret(), "/id_token")?;
-				let payload = id_token
-					.split(".")
-					.nth(1)
-					.ok_or(OAuthError::PrincipalUnresolved)?;
-				let decoded = Zeroizing::new(
-					base64_url::decode_raw(payload.as_bytes())
-						.into_vec()
-						.map_err(|_| OAuthError::PrincipalUnresolved)?,
-				);
-				let claims =
-					std::str::from_utf8(&decoded).map_err(|_| OAuthError::PrincipalUnresolved)?;
-				if claim.starts_with('/') {
-					json_string_at(claims, claim)?
-				} else {
-					json_object_string(claims, claim)?
-				}
+				jwt_claim(&id_token, std::slice::from_ref(claim))?
+			},
+			PrincipalResolution::AccessTokenClaims { claims } => {
+				jwt_claim(self.access_token.expose_secret(), claims)?
 			},
 			PrincipalResolution::UserinfoEndpoint { url, field } => {
 				let mut headers = HeaderMap::new();
@@ -1419,6 +1407,30 @@ fn json_object_string(document: &str, field: &str) -> Result<Str, OAuthError> {
 		.filter(|value| !value.is_empty())
 		.map(Str::from)
 		.ok_or(OAuthError::PrincipalUnresolved)
+}
+
+fn jwt_claim(token: &str, claims: &[Str]) -> Result<Str, OAuthError> {
+	let payload = token
+		.split('.')
+		.nth(1)
+		.ok_or(OAuthError::PrincipalUnresolved)?;
+	let decoded = Zeroizing::new(
+		base64_url::decode_raw(payload.as_bytes())
+			.into_vec()
+			.map_err(|_| OAuthError::PrincipalUnresolved)?,
+	);
+	let document = std::str::from_utf8(&decoded).map_err(|_| OAuthError::PrincipalUnresolved)?;
+	for claim in claims {
+		let value = if claim.starts_with('/') {
+			json_string_at(document, claim)
+		} else {
+			json_object_string(document, claim)
+		};
+		if let Ok(value) = value {
+			return Ok(value);
+		}
+	}
+	Err(OAuthError::PrincipalUnresolved)
 }
 
 fn provider_error(status: u16, body: &SecretString, refresh: bool) -> OAuthError {
@@ -1959,8 +1971,10 @@ mod tests {
 		let identity = format!(
 			r#"{{"profile":{{"id":"response-principal"}},"id_token":"e30.{payload}.signature"}}"#,
 		);
+		let access_payload =
+			base64_url::encode_raw(br#"{"sub":"access-principal"}"#).into_string();
 		let tokens = OAuthTokenSet {
-			access_token:      SecretString::from("access-secret".to_owned()),
+			access_token:      SecretString::from(format!("e30.{access_payload}.signature")),
 			refresh_token:     Some(SecretString::from("refresh-secret".to_owned())),
 			token_type:        "Bearer".into(),
 			expires_in:        Some(Duration::from_secs(3600)),
@@ -2002,6 +2016,19 @@ mod tests {
 				.expect("nested ID token principal")
 				.as_str(),
 			"nested-principal",
+		);
+		assert_eq!(
+			tokens
+				.resolve_principal(
+					&PrincipalResolution::AccessTokenClaims {
+						claims: Box::new(["user_id".into(), "sub".into()]),
+					},
+					&http,
+				)
+				.await
+				.expect("access token principal")
+				.as_str(),
+			"access-principal",
 		);
 		assert_eq!(
 			tokens
