@@ -4101,6 +4101,70 @@ mod tests {
 	}
 
 	#[test]
+	fn live_panel_below_streaming_seam_stays_out_of_native_history() {
+		// Port of pi 7cff20cfd0 (#8793): while the transcript still streams,
+		// an anchored live panel below the streaming seam must never commit
+		// its scrolled-off rows into native scrollback, even as it outgrows
+		// the viewport on every growth frame. omp's commit ceiling is the
+		// caller-declared stable seam (`layout::stable_limit`,
+		// `scroll_append_to`), independent of which live region sits topmost:
+		// live rows below it — streaming tail and panel alike — are clipped,
+		// never frozen into history.
+		let mut renderer = Renderer::new(Vec::new());
+		let mut terminal = TerminalModel::new(12, 8);
+		let transcript: Vec<String> = (0..5).map(|row| format!("HIST-{row}")).collect();
+
+		let mut lines: Vec<String> = transcript.clone();
+		lines.extend(["streaming".to_owned(), "BTW-0-0".to_owned(), "editor".to_owned()]);
+		let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+		renderer
+			.present(document_at_width(12, &refs), 8, 5)
+			.expect("initial paint succeeds");
+		apply_paint(&mut renderer, &mut terminal);
+
+		for tick in 1..=12u16 {
+			let mut lines: Vec<String> = transcript.clone();
+			lines.push(format!("tail-{tick}"));
+			lines.extend((0..=tick).map(|row| format!("BTW-{tick}-{row}")));
+			lines.push("editor".to_owned());
+			let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+			let stats = renderer
+				.present(document_at_width(12, &refs), 8, 5)
+				.expect("panel growth frame paints");
+			apply_paint(&mut renderer, &mut terminal);
+			if tick > 5 {
+				assert_eq!(
+					stats.committed_rows, 0,
+					"growth past the stable seam commits nothing (tick {tick})"
+				);
+			}
+		}
+
+		// Mid-stream native history holds exactly one copy of the finalized
+		// transcript prefix — zero rows of the growing panel or the mutable
+		// streaming tail.
+		assert_eq!(terminal.history, ["HIST-0", "HIST-1", "HIST-2", "HIST-3", "HIST-4"]);
+		assert!(
+			terminal
+				.history
+				.iter()
+				.all(|row| !row.starts_with("BTW-") && !row.starts_with("tail-")),
+			"no panel or streaming-tail row may reach native scrollback"
+		);
+		assert_eq!(renderer.committed_rows(), 5);
+		assert_eq!(terminal.visible_rows(), [
+			"BTW-12-6",
+			"BTW-12-7",
+			"BTW-12-8",
+			"BTW-12-9",
+			"BTW-12-10",
+			"BTW-12-11",
+			"BTW-12-12",
+			"editor"
+		]);
+	}
+
+	#[test]
 	fn initial_paint_commits_only_stable_overflow() {
 		let mut renderer = Renderer::new(Vec::new());
 

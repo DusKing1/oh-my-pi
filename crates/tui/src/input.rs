@@ -1956,6 +1956,37 @@ mod tests {
 	}
 
 	#[test]
+	fn submit_remap_on_ctrl_enter_wins_over_newline_default() {
+		// pi #8906: a chord the user explicitly binds to submit must win over
+		// the hardcoded Ctrl+Enter -> newline default. omp's newline spellings
+		// are table-owned rows, so rebinding the exact chord replaces the
+		// default `(Enter, ctrl) -> ShiftEnter` row — including under kitty
+		// caps/num lock bits, which the decoder drops before lookup. Bare LF
+		// (the iTerm2 Shift+Enter mapping) stays exempt: it decodes as the
+		// Shift+Enter chord, so a Ctrl+Enter remap never captures it.
+		let start = Instant::now();
+		let mut decoder = InputDecoder::new();
+		decoder
+			.keymap_mut()
+			.bind(Chord::new(Key::Enter, mods_from_bits(4)), Key::Enter);
+		let mut events = Vec::new();
+		// Ctrl+Enter as kitty CSI-u: plain, +caps lock (64), +num lock (128),
+		// then a bare LF.
+		decoder.feed(b"\x1b[13;5u\x1b[13;69u\x1b[13;133u\n", start, &mut events);
+		assert_eq!(events, [
+			InputEvent::Key(Key::Enter),
+			InputEvent::Key(Key::Enter),
+			InputEvent::Key(Key::Enter),
+			InputEvent::Key(Key::ShiftEnter),
+		]);
+
+		// Under the default table the same spelling still inserts a newline.
+		let mut keys = Vec::new();
+		decode_keys(b"\x1b[13;5u", &mut keys);
+		assert_eq!(keys, [Key::ShiftEnter]);
+	}
+
+	#[test]
 	fn split_private_csi_report_reassembles_after_partial_expiry() {
 		// pi #8542: a Device-Attributes reply split by a slow SSH/PTY link.
 		// The prefix outlives the partial hold, the tail arrives as ordinary
