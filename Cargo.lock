@@ -5089,6 +5089,7 @@ dependencies = [
  "globset",
  "ignore",
  "omp-core",
+ "parking_lot",
  "serde",
  "smallvec 2.0.0-alpha.12",
  "strum",
@@ -5150,6 +5151,7 @@ dependencies = [
  "tree-sitter-xml",
  "tree-sitter-yaml",
  "tree-sitter-zig",
+ "xxhash-rust",
 ]
 
 [[package]]

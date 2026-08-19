@@ -7,7 +7,7 @@ use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
 const CURSOR_SCHEMA_SHA256: &str =
-	"aa6d1715e8ba8309c9049d3d1d9acbea75454f852a82ff22292843c1010ae527";
+	"fc1ac3ed472676e6d863fe2238ab1529247b68d3ea21f33b3fae1abae481892c";
 
 fn main() {
 	let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
