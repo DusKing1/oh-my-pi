@@ -133,6 +133,22 @@ fn terminal(kind: pb::turn_error::Kind) -> ScriptOutcome {
 	}))
 }
 
+fn empty_stop_terminal(code: &str, detail: &str) -> ScriptOutcome {
+	Err(Box::new(pb::TurnError {
+		kind: pb::turn_error::Kind::EmptyOutput as i32,
+		detail: "provider detail".to_owned(),
+		diagnostics: vec![pb::Diagnostic {
+			provider:     "provider-a".to_owned(),
+			model:        "model-a".to_owned(),
+			attempt:      1,
+			code:         code.to_owned(),
+			detail:       detail.to_owned(),
+			retryability: pb::Retryability::Never as i32,
+		}],
+		..pb::TurnError::default()
+	}))
+}
+
 fn success() -> pb::Outcome {
 	pb::Outcome { stop: pb::StopReason::StopEndTurn as i32, ..pb::Outcome::default() }
 }
@@ -682,6 +698,75 @@ async fn other_terminal_error_fails_without_reminder() {
 	);
 	assert!(input_texts(&opened[1]).contains(&"fresh"));
 	drop(opened);
+	drop(agent);
+	std::fs::remove_file(path).expect("remove journal");
+}
+
+#[tokio::test]
+async fn capped_billed_zero_block_stop_names_the_dropped_output_tokens() {
+	let (mut agent, _opened, path) = agent(vec![
+		terminal(pb::turn_error::Kind::EmptyOutput),
+		terminal(pb::turn_error::Kind::EmptyOutput),
+		terminal(pb::turn_error::Kind::EmptyOutput),
+		empty_stop_terminal(omp_agent::empty_stop::BILLED_OUTPUT, "42"),
+	]);
+	let error = agent
+		.submit([user_text("original")], TurnId::new("root"))
+		.await
+		.expect_err("retry cap must fail");
+	let AgentError::Turn(Error::Terminal(error)) = error else {
+		panic!("expected terminal turn error")
+	};
+	assert_eq!(
+		error.detail,
+		"Assistant returned an empty stop after retry cap, but the provider billed 42 output tokens \
+		 for it; content was generated and then dropped before delivery, which usually points to a \
+		 provider-side content filter or a lossy API translation rather than a context problem"
+	);
+	drop(agent);
+	std::fs::remove_file(path).expect("remove journal");
+}
+
+#[tokio::test]
+async fn capped_empty_stop_without_billed_output_keeps_the_context_hint() {
+	let (mut agent, _opened, path) = agent(vec![
+		terminal(pb::turn_error::Kind::EmptyOutput),
+		terminal(pb::turn_error::Kind::EmptyOutput),
+		terminal(pb::turn_error::Kind::EmptyOutput),
+		empty_stop_terminal(omp_agent::empty_stop::EMPTY, ""),
+	]);
+	let error = agent
+		.submit([user_text("original")], TurnId::new("root"))
+		.await
+		.expect_err("retry cap must fail");
+	let AgentError::Turn(Error::Terminal(error)) = error else {
+		panic!("expected terminal turn error")
+	};
+	assert_eq!(
+		error.detail,
+		"Assistant returned an empty stop after retry cap; try switching models or removing large \
+		 attachments from recent context"
+	);
+	drop(agent);
+	std::fs::remove_file(path).expect("remove journal");
+}
+
+#[tokio::test]
+async fn capped_thought_only_stop_reports_no_final_output() {
+	let (mut agent, _opened, path) = agent(vec![
+		terminal(pb::turn_error::Kind::EmptyOutput),
+		terminal(pb::turn_error::Kind::EmptyOutput),
+		terminal(pb::turn_error::Kind::EmptyOutput),
+		empty_stop_terminal(omp_agent::empty_stop::NO_FINAL_OUTPUT, ""),
+	]);
+	let error = agent
+		.submit([user_text("original")], TurnId::new("root"))
+		.await
+		.expect_err("retry cap must fail");
+	let AgentError::Turn(Error::Terminal(error)) = error else {
+		panic!("expected terminal turn error")
+	};
+	assert_eq!(error.detail, CAP_DETAIL);
 	drop(agent);
 	std::fs::remove_file(path).expect("remove journal");
 }

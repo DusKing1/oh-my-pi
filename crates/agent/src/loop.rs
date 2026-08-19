@@ -25,7 +25,7 @@ use crate::{
 	journal::{AbortDisposition, TurnInputRecord, TurnOptionsRecord, TurnStart},
 	mailbox::DrainPoint,
 	project::project_journal,
-	turn::Error as TurnError,
+	turn::{Error as TurnError, empty_stop},
 };
 
 const INTERRUPT_GRACE: Duration = Duration::from_millis(500);
@@ -423,7 +423,7 @@ impl<C: TurnClient> Agent<C> {
 						.abort_turn(now_ms(), turn_id.as_str(), disposition)?;
 					self.context = None;
 					if disposition == AbortDisposition::Exhausted {
-						error.detail = EMPTY_OUTPUT_RETRY_DETAIL.into();
+						error.detail = empty_output_cap_detail(&error);
 						return Err(AgentError::Turn(TurnError::Terminal(error)));
 					}
 					empty_output_retries = empty_output_retries.saturating_add(1);
@@ -1221,6 +1221,40 @@ fn empty_output_retry_item(attempt: u8) -> Item {
 			parts: vec![thread::Part { kind: Some(thread::part::Kind::Text(text)) }],
 		})),
 		props:         None,
+	}
+}
+
+/// Selects the terminal message for a capped empty-output chain from the
+/// gateway's empty-stop diagnostics on the final failed turn.
+///
+/// Billed non-reasoning output on a zero-block stop means content was
+/// generated and then dropped downstream — a filter or refusal flattened to a
+/// clean stop by a proxy, or a lossy API translation — so the generic
+/// switch-models hint would misdiagnose a provider-side delivery problem.
+/// Known reasoning-only usage is not evidence that deliverable content was
+/// dropped and keeps the context hint.
+fn empty_output_cap_detail(error: &pb::TurnError) -> String {
+	let diagnostic = error
+		.diagnostics
+		.iter()
+		.rev()
+		.find(|diagnostic| diagnostic.code.starts_with("empty_stop."));
+	match diagnostic.map(|diagnostic| (diagnostic.code.as_str(), diagnostic.detail.as_str())) {
+		Some((empty_stop::BILLED_OUTPUT, billed)) => {
+			let tokens: u64 = billed.parse().unwrap_or(0);
+			let plural = if tokens == 1 { "" } else { "s" };
+			format!(
+				"Assistant returned an empty stop after retry cap, but the provider billed {tokens} \
+				 output token{plural} for it; content was generated and then dropped before delivery, \
+				 which usually points to a provider-side content filter or a lossy API translation \
+				 rather than a context problem"
+			)
+		},
+		Some((empty_stop::EMPTY, _)) => "Assistant returned an empty stop after retry cap; try \
+		                                 switching models or removing large attachments from recent \
+		                                 context"
+			.to_owned(),
+		_ => EMPTY_OUTPUT_RETRY_DETAIL.to_owned(),
 	}
 }
 

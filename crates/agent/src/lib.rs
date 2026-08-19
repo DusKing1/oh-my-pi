@@ -47,4 +47,4 @@ pub use prompt::{
 	WorkspacePromptSource, render_prompt,
 };
 pub use state::{AgentSnapshot, AgentState, RetryPolicy, RetryPolicyError};
-pub use turn::{Error, InvokeFrame, TurnClient, TurnInput, TurnOptions, TurnSession};
+pub use turn::{Error, InvokeFrame, TurnClient, TurnInput, TurnOptions, TurnSession, empty_stop};

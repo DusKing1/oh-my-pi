@@ -77,6 +77,23 @@ impl From<InvokeFrame> for TurnFrame {
 	}
 }
 
+/// Stable diagnostic codes attached to [`pb::turn_error::Kind::EmptyOutput`]
+/// terminal errors.
+///
+/// The gateway classifies why a completed provider turn carried no actionable
+/// output and stamps one [`pb::Diagnostic`] with these codes. The agent loop
+/// selects its terminal retry-cap message from the code so a provider-side
+/// content filter is never misreported as a model or context problem.
+pub mod empty_stop {
+	/// The provider itself signaled no final output (thought-only completion).
+	pub const NO_FINAL_OUTPUT: &str = "empty_stop.no_final_output";
+	/// The stop carried zero content blocks while billing non-reasoning output
+	/// tokens; the diagnostic `detail` holds the billed count in decimal.
+	pub const BILLED_OUTPUT: &str = "empty_stop.billed_output";
+	/// An empty stop without billed non-reasoning output evidence.
+	pub const EMPTY: &str = "empty_stop.empty";
+}
+
 /// A turn-layer failure.
 ///
 /// Protocol terminal errors retain their generated [`TurnError`] verbatim so
