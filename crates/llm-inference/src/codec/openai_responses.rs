@@ -2069,6 +2069,109 @@ pub fn decode_provider_proof(bytes: &[u8]) -> Result<ResponsesProviderProof, ser
 	serde_json::from_slice(bytes)
 }
 
+/// Position of a Responses input item within a tool-call/output batch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ToolBatchItemKind {
+	/// Tool invocation (`function_call`, `custom_tool_call`, `computer_call`).
+	Call,
+	/// Tool result (`function_call_output` and siblings).
+	Output,
+	/// Assistant `message` item.
+	AssistantMessage,
+	/// Anything else; terminates a batch walk.
+	Other,
+}
+
+/// Classifies a Responses input item for tool-call/output batch
+/// normalization.
+fn tool_batch_item_kind(item: &ResponsesInputItem) -> ToolBatchItemKind {
+	match item.kind {
+		Some(
+			ResponsesInputItemKind::FunctionCall
+			| ResponsesInputItemKind::CustomToolCall
+			| ResponsesInputItemKind::ComputerCall,
+		) => ToolBatchItemKind::Call,
+		Some(
+			ResponsesInputItemKind::FunctionCallOutput
+			| ResponsesInputItemKind::CustomToolCallOutput
+			| ResponsesInputItemKind::ComputerCallOutput,
+		) => ToolBatchItemKind::Output,
+		None | Some(ResponsesInputItemKind::Message)
+			if item.role == Some(ResponsesRole::Assistant) =>
+		{
+			ToolBatchItemKind::AssistantMessage
+		},
+		_ => ToolBatchItemKind::Other,
+	}
+}
+
+/// Relocates assistant `message` items wedged inside a tool-call →
+/// tool-output batch to before the batch, yielding canonical
+/// `message(s) → calls → outputs` order. Idempotent; content is unchanged.
+///
+/// `OpenAI`'s Responses API pairs tool outputs by `call_id` and tolerates any
+/// item order, but stricter gateways (notably opencode-go's "Console Go")
+/// reject a shape where an assistant message interrupts a `function_call` →
+/// `function_call_output` run, 400ing with `No tool output found for tool
+/// call …` (naming a random call of the batch on each retry). This arises
+/// whenever a model streams a trailing text / demoted-thinking block *after*
+/// its tool calls: block encoding preserves stream order, emitting the
+/// message between the calls and the outputs appended afterward. Moving the
+/// already-model-owned message ahead of its call batch keeps content
+/// identical while satisfying the strict validator.
+fn hoist_interleaved_tool_batch_messages(input: &mut Vec<ResponsesInputItem>) {
+	let mut moved = BTreeSet::new();
+	let mut insert_before: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+	for index in 0..input.len() {
+		if tool_batch_item_kind(&input[index]) != ToolBatchItemKind::Output {
+			continue;
+		}
+		// Only anchor on the first output of a run.
+		if index > 0 && tool_batch_item_kind(&input[index - 1]) == ToolBatchItemKind::Output {
+			continue;
+		}
+		// Walk back over the batch body (calls interleaved with assistant
+		// messages).
+		let mut start = index;
+		let mut saw_call = false;
+		let mut message_indexes = Vec::new();
+		while start > 0 {
+			match tool_batch_item_kind(&input[start - 1]) {
+				ToolBatchItemKind::Call => saw_call = true,
+				ToolBatchItemKind::AssistantMessage => message_indexes.push(start - 1),
+				ToolBatchItemKind::Output | ToolBatchItemKind::Other => break,
+			}
+			start -= 1;
+		}
+		// Nothing to hoist unless a message actually sits among the calls.
+		if !saw_call || message_indexes.is_empty() {
+			continue;
+		}
+		message_indexes.reverse();
+		let target = insert_before.entry(start).or_default();
+		for message_index in message_indexes {
+			moved.insert(message_index);
+			target.push(message_index);
+		}
+	}
+	if moved.is_empty() {
+		return;
+	}
+	let mut slots: Vec<Option<ResponsesInputItem>> =
+		std::mem::take(input).into_iter().map(Some).collect();
+	for index in 0..slots.len() {
+		if let Some(pending) = insert_before.get(&index) {
+			for &message_index in pending {
+				input.extend(slots[message_index].take());
+			}
+		}
+		if moved.contains(&index) {
+			continue;
+		}
+		input.extend(slots[index].take());
+	}
+}
+
 /// Pure `OpenAI` Responses codec.
 #[derive(Clone, Debug, Default)]
 pub struct OpenAiResponsesCodec {
@@ -2406,6 +2509,7 @@ impl OpenAiResponsesCodec {
 			}
 		}
 		input.extend(self.options.native_input.iter().cloned());
+		hoist_interleaved_tool_batch_messages(&mut input);
 		let instructions = if instructions.is_empty() {
 			None
 		} else {
@@ -3244,18 +3348,19 @@ mod tests {
 
 	use super::{
 		OpenAiResponsesCodec, OpenAiResponsesDecoder, ResponsesContinuationFailure,
-		ResponsesInputItemKind, ResponsesProjection, ResponsesProviderProof,
-		classify_continuation_error, encode_provider_proof,
+		ResponsesInputItem, ResponsesInputItemKind, ResponsesProjection, ResponsesProviderProof,
+		ResponsesRole, classify_continuation_error, encode_provider_proof,
+		hoist_interleaved_tool_batch_messages,
 	};
 	use crate::{
 		call::{
 			ChatRequest, ContentPart, Message, NegotiationPolicy, OpaqueJson, ProviderProof,
 			ReasoningRequest, ReasoningVisibility, Role, Sampling, Setting, ToolDefinition,
-			ToolGrammar, ToolGrammarSyntax, ToolInputConstraint,
+			ToolGrammar, ToolGrammarSyntax, ToolInputConstraint, ToolResultContent,
 		},
 		codec::{EncodeAttempt, EncodeContext},
 		event::{ChatEvent, FinishReason},
-		id::RequestId,
+		id::{RequestId, ToolCallId},
 	};
 
 	fn replay_sse(fixture: &str) -> Vec<ResponsesProjection> {
@@ -3892,5 +3997,160 @@ mod tests {
 			},
 			other => panic!("expected error evidence, got {other:?}"),
 		}
+	}
+
+	fn history_request(messages: Vec<Message>) -> ChatRequest {
+		ChatRequest {
+			messages:          Arc::from(messages),
+			tools:             Arc::from([]),
+			hosted_tools:      Arc::from([]),
+			tool_choice:       Setting::Unset,
+			output:            Setting::Unset,
+			reasoning:         Setting::Unset,
+			verbosity:         Setting::Unset,
+			cache_retention:   Setting::Unset,
+			service_tier:      Setting::Unset,
+			sampling:          Sampling::default(),
+			max_output_tokens: None,
+			top_logprobs:      None,
+			safety:            Arc::from([]),
+			negotiation:       NegotiationPolicy::default(),
+		}
+	}
+
+	fn read_call(id: &str, path: &str) -> ContentPart {
+		ContentPart::ToolCall {
+			call:      ToolCallId::new(id),
+			name:      Str::from("read"),
+			arguments: OpaqueJson::new(serde_json::json!({ "path": path })),
+			proof:     None,
+		}
+	}
+
+	fn read_results(pairs: &[(&str, &str)]) -> Message {
+		Message {
+			role:    Role::Tool,
+			content: pairs
+				.iter()
+				.map(|(id, output)| ContentPart::ToolResult {
+					call:     ToolCallId::new(*id),
+					name:     Some(Str::from("read")),
+					content:  Arc::from([ToolResultContent::Text(Str::from(*output))]),
+					is_error: false,
+				})
+				.collect(),
+			name:    None,
+		}
+	}
+
+	fn input_item_kinds(input: &[ResponsesInputItem]) -> Vec<&'static str> {
+		input
+			.iter()
+			.map(|item| match item.kind {
+				Some(ResponsesInputItemKind::FunctionCall) => "function_call",
+				Some(ResponsesInputItemKind::FunctionCallOutput) => "function_call_output",
+				Some(_) => "other",
+				None => match item.role {
+					Some(ResponsesRole::Assistant) => "message:assistant",
+					Some(ResponsesRole::User) => "message:user",
+					_ => "message",
+				},
+			})
+			.collect()
+	}
+
+	#[test]
+	fn hoists_trailing_assistant_text_before_its_tool_call_batch() {
+		// Console Go (opencode-go) 400s with "No tool output found for tool
+		// call …" when an assistant message sits between a function_call
+		// batch and its function_call_output items; the model streamed
+		// [3 tool calls, trailing demoted-thinking text] and the block-encode
+		// path preserves stream order. See #8789.
+		let trailing = "<think>\n</thinking\n</think>";
+		let request = history_request(vec![
+			Message {
+				role:    Role::Assistant,
+				content: Arc::from([
+					read_call("call_a", "a"),
+					read_call("call_b", "b"),
+					read_call("call_c", "c"),
+					ContentPart::Text { text: Str::from(trailing), proof: None },
+				]),
+				name:    None,
+			},
+			read_results(&[("call_a", "out a"), ("call_b", "out b"), ("call_c", "out c")]),
+			Message {
+				role:    Role::User,
+				content: Arc::from([ContentPart::Text { text: Str::from("continue"), proof: None }]),
+				name:    None,
+			},
+		]);
+		let policy = omp_llm_catalog::policy::WirePolicy::baseline();
+		let encoded = encode_with_policy(&policy, |_, _| request);
+		// Canonical message(s) → calls → outputs, byte-exact on the wire.
+		assert_eq!(
+			serde_json::to_string(&encoded.request.input).expect("input serializes"),
+			r#"[{"role":"assistant","content":[{"type":"input_text","text":"<think>\n</thinking\n</think>"}]},{"type":"function_call","name":"read","call_id":"call_a","arguments":"{\"path\":\"a\"}"},{"type":"function_call","name":"read","call_id":"call_b","arguments":"{\"path\":\"b\"}"},{"type":"function_call","name":"read","call_id":"call_c","arguments":"{\"path\":\"c\"}"},{"type":"function_call_output","call_id":"call_a","output":"out a"},{"type":"function_call_output","call_id":"call_b","output":"out b"},{"type":"function_call_output","call_id":"call_c","output":"out c"},{"role":"user","content":[{"type":"input_text","text":"continue"}]}]"#,
+		);
+		// Hoisting is idempotent: a second pass changes nothing.
+		let mut again = encoded.request.input.clone();
+		hoist_interleaved_tool_batch_messages(&mut again);
+		assert_eq!(again, encoded.request.input);
+	}
+
+	#[test]
+	fn already_canonical_message_calls_outputs_turn_is_unchanged() {
+		let request = history_request(vec![
+			Message {
+				role:    Role::Assistant,
+				content: Arc::from([
+					ContentPart::Text { text: Str::from("calling read on two files"), proof: None },
+					read_call("call_a", "a"),
+					read_call("call_b", "b"),
+				]),
+				name:    None,
+			},
+			read_results(&[("call_a", "out a"), ("call_b", "out b")]),
+		]);
+		let policy = omp_llm_catalog::policy::WirePolicy::baseline();
+		let encoded = encode_with_policy(&policy, |_, _| request);
+		assert_eq!(
+			serde_json::to_string(&encoded.request.input).expect("input serializes"),
+			r#"[{"role":"assistant","content":[{"type":"input_text","text":"calling read on two files"}]},{"type":"function_call","name":"read","call_id":"call_a","arguments":"{\"path\":\"a\"}"},{"type":"function_call","name":"read","call_id":"call_b","arguments":"{\"path\":\"b\"}"},{"type":"function_call_output","call_id":"call_a","output":"out a"},{"type":"function_call_output","call_id":"call_b","output":"out b"}]"#,
+		);
+	}
+
+	#[test]
+	fn hoists_demoted_thinking_turn_text_ahead_of_calls() {
+		// deepseek-v4-flash on opencode-go streamed [thinking, 2 tool calls,
+		// trailing "</thinking" text]; the proofless reasoning drops out of
+		// the replay and the demoted text must not wedge between the calls
+		// and their outputs.
+		let request = history_request(vec![
+			Message {
+				role:    Role::Assistant,
+				content: Arc::from([
+					ContentPart::Reasoning { text: Str::from("planning"), proof: None },
+					read_call("call_a", "a"),
+					read_call("call_b", "b"),
+					ContentPart::Text { text: Str::from("<think>\n</thinking\n</think>"), proof: None },
+				]),
+				name:    None,
+			},
+			read_results(&[("call_a", "out a"), ("call_b", "out b")]),
+		]);
+		let policy = omp_llm_catalog::policy::WirePolicy::baseline();
+		let encoded = encode_with_policy(&policy, |_, _| request);
+		assert_eq!(input_item_kinds(&encoded.request.input), vec![
+			"message:assistant",
+			"function_call",
+			"function_call",
+			"function_call_output",
+			"function_call_output",
+		]);
+		// The demoted-thinking text is preserved verbatim as the hoisted
+		// message.
+		let hoisted = serde_json::to_string(&encoded.request.input[0]).expect("message serializes");
+		assert!(hoisted.contains("</thinking"), "hoisted message keeps text: {hoisted}");
 	}
 }
