@@ -1191,7 +1191,6 @@ fn starts_block(lines: &[&str], index: usize) -> bool {
 	atx_heading(lines[index]).is_some()
 		|| horizontal_rule(lines[index]).is_some()
 		|| fence_start(lines[index]).is_some()
-		|| is_indented_code(lines[index])
 		|| quote_line(lines[index]).is_some()
 		|| list_marker(lines[index]).is_some()
 		|| display_math(lines, index).is_some()
@@ -1209,7 +1208,7 @@ fn render_paragraph(
 ) {
 	let start = *index;
 	while *index < lines.len() && !lines[*index].trim().is_empty() {
-		if *index > start && !is_indented_code(lines[*index]) && starts_block(lines, *index) {
+		if *index > start && starts_block(lines, *index) {
 			break;
 		}
 		if *index == start && *index + 1 < lines.len() && setext_depth(lines[*index + 1]).is_some() {
@@ -1869,17 +1868,44 @@ mod tests {
 
 	#[test]
 	fn attached_indented_lines_are_lazy_paragraph_continuations() {
-		let attached =
-			plain("tree root\n└── last branch\n    └── child with **bold** text", 80);
+		let attached = plain("tree root\n└── last branch\n    └── child with **bold** text", 80);
 		assert!(
 			attached.iter().all(|row| !row.contains("```")),
 			"attached indentation opened a code block: {attached:?}",
 		);
-		assert!(attached.iter().any(|row| row.contains("child with bold text")));
+		assert!(
+			attached
+				.iter()
+				.any(|row| row.contains("child with bold text"))
+		);
 		assert!(attached.iter().all(|row| !row.contains("**")));
 
 		let detached = plain("tree root\n\n    real indented code", 80);
 		assert_eq!(detached, ["tree root", "", "```", "  real indented code", "```"]);
+	}
+
+	#[test]
+	fn lazy_continuation_boundaries_match_marked() {
+		// pi utils-marked-lazy-indent boundary shapes (cross-checked against
+		// marked v18): a line indented by at least four spaces directly
+		// attached to paragraph text stays a lazy continuation even when a
+		// block probe matches downstream, while a whitespace-padded blank
+		// line detaches it so the next indented run still opens indented
+		// code.
+		let attached = plain("lead\n     deeper attached\n---", 80);
+		assert!(
+			attached.iter().all(|row| !row.contains("```")),
+			"deeper attached indentation opened a code block: {attached:?}",
+		);
+		assert!(attached.iter().any(|row| row.contains("deeper attached")));
+
+		for source in ["lead\n   \n    code", "lead\n   \n     deeper code"] {
+			let detached = plain(source, 80);
+			assert!(
+				detached.iter().any(|row| row.contains("```")),
+				"padded blank failed to detach indented code: {detached:?}",
+			);
+		}
 	}
 
 	#[test]

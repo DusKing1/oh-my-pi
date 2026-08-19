@@ -37,6 +37,22 @@ pub fn frame_cell_style(frame: &Frame, x: u16, y: u16) -> Style {
 	frame.cell(x, y).style
 }
 
+/// Writes a `width`x`height` opaque single-color PNG, for tests that
+/// exercise image-path decoding across crates.
+pub fn write_test_png(path: &std::path::Path, width: u32, height: u32, rgb: [u8; 3]) {
+	let file = std::fs::File::create(path).expect("create test PNG");
+	let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+	encoder.set_color(png::ColorType::Rgba);
+	encoder.set_depth(png::BitDepth::Eight);
+	let mut writer = encoder.write_header().expect("PNG header");
+	let mut data = vec![0_u8; (width * height * 4) as usize];
+	for pixel in data.chunks_exact_mut(4) {
+		pixel[..3].copy_from_slice(&rgb);
+		pixel[3] = 255;
+	}
+	writer.write_image_data(&data).expect("PNG data");
+}
+
 /// Minimal VT model with wide-glyph cell semantics.
 ///
 /// Printable output is segmented into grapheme clusters and measured with the

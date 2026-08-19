@@ -310,33 +310,116 @@ impl Component for Img {
 				break;
 			}
 			let mut x = rect.x;
-			for (upper, lower) in self.state.row(row_index) {
-				// Transparent halves stay unpainted so the terminal or
-				// container background shows through.
-				let cell = match (upper, lower) {
-					(Some(upper), Some(lower)) => Some((
-						crate::Icon::UpperHalf,
-						Style::new()
-							.fg(Color::Rgb(upper[0], upper[1], upper[2]))
-							.bg(Color::Rgb(lower[0], lower[1], lower[2])),
-					)),
-					(Some(upper), None) => Some((
-						crate::Icon::UpperHalf,
-						Style::new().fg(Color::Rgb(upper[0], upper[1], upper[2])),
-					)),
-					(None, Some(lower)) => Some((
-						crate::Icon::LowerHalf,
-						Style::new().fg(Color::Rgb(lower[0], lower[1], lower[2])),
-					)),
-					(None, None) => None,
-				};
-				x = match cell {
+			for &(upper, lower) in self.state.row(row_index) {
+				x = match half_block_cell(upper, lower) {
 					Some((icon, style)) => pc.frame.put(x, y, pc.ctx.charset.icon(icon), style),
 					None => x.saturating_add(1),
 				};
 			}
 		}
 	}
+}
+
+/// Half-block glyph and colors for one sampled cell. Transparent halves
+/// stay unpainted so the terminal or container background shows through.
+fn half_block_cell(upper: Option<Rgb>, lower: Option<Rgb>) -> Option<(crate::Icon, Style)> {
+	match (upper, lower) {
+		(Some(upper), Some(lower)) => Some((
+			crate::Icon::UpperHalf,
+			Style::new()
+				.fg(Color::Rgb(upper[0], upper[1], upper[2]))
+				.bg(Color::Rgb(lower[0], lower[1], lower[2])),
+		)),
+		(Some(upper), None) => {
+			Some((crate::Icon::UpperHalf, Style::new().fg(Color::Rgb(upper[0], upper[1], upper[2]))))
+		},
+		(None, Some(lower)) => {
+			Some((crate::Icon::LowerHalf, Style::new().fg(Color::Rgb(lower[0], lower[1], lower[2]))))
+		},
+		(None, None) => None,
+	}
+}
+
+/// Aspect-preserving cell box for an image of `px` pixel dimensions within
+/// column and row caps. Half-block cells and Kitty placements both cover
+/// two pixel rows per terminal row.
+pub fn image_cell_box(px: ImageDimensions, max_width: u16, max_rows: u16) -> (u16, u16) {
+	let width = u64::from(px.width.max(1));
+	let height = u64::from(px.height.max(1));
+	let max_cols = u64::from(max_width.max(1));
+	let max_rows = u64::from(max_rows.max(1));
+	let rows = ((max_cols * height + width) / (width * 2)).max(1);
+	if rows <= max_rows {
+		return (max_cols as u16, rows as u16);
+	}
+	let cols = ((max_rows * 2 * width + height / 2) / height).clamp(1, max_cols);
+	(cols as u16, max_rows as u16)
+}
+
+/// Draws an image source inline at `(x, y)`, bounded by `max_width` columns
+/// and `max_rows` rows while preserving aspect ratio.
+///
+/// Applies the same tier selection as [`Img`]: typed Kitty placeholder
+/// cells when the terminal trusts Unicode placeholders (real pixels that
+/// survive native scrollback), colored half-block cells everywhere else.
+/// Returns the number of rows drawn; `0` when the source cannot be decoded,
+/// so callers keep their text fallback. Cells beyond the frame clip safely.
+pub fn draw_image_inline(
+	frame: &mut crate::Frame,
+	ctx: &UiContext,
+	x: u16,
+	y: u16,
+	source: &str,
+	max_width: u16,
+	max_rows: u16,
+) -> u16 {
+	if max_width == 0 || max_rows == 0 {
+		return 0;
+	}
+	if ctx.graphics == Graphics::KittyPlaceholders {
+		let Some(interned) = crate::imagereg::intern(source) else {
+			return 0;
+		};
+		let (cols, rows) = image_cell_box(
+			interned.dimensions,
+			max_width.min(PLACEHOLDER_LIMIT),
+			max_rows.min(PLACEHOLDER_LIMIT),
+		);
+		for row in 0..rows {
+			for col in 0..cols {
+				frame.put_image_cell(
+					x.saturating_add(col),
+					y.saturating_add(row),
+					interned.id,
+					row,
+					col,
+					rows,
+					cols,
+				);
+			}
+		}
+		return rows;
+	}
+	let Some(DecodedImage::Pixels(pixels)) = decode_image(source) else {
+		return 0;
+	};
+	if pixels.is_empty() || pixels.first().is_none_or(|row| row.is_empty()) {
+		return 0;
+	}
+	let px = ImageDimensions { width: pixels[0].len() as u32, height: pixels.len() as u32 };
+	let (cols, rows) = image_cell_box(px, max_width, max_rows);
+	let state = sample_cells(&pixels, cols, Some(rows), PAINT_GATE);
+	for row_index in 0..state.rows {
+		let row_y = y.saturating_add(row_index);
+		let mut cell_x = x;
+		for &(upper, lower) in state.row(row_index) {
+			cell_x = match half_block_cell(upper, lower) {
+				Some((icon, style)) => frame.put(cell_x, row_y, ctx.charset.icon(icon), style),
+				None => cell_x.saturating_add(1),
+			};
+		}
+	}
+	state.rows
 }
 
 enum DecodedImage {
@@ -783,5 +866,64 @@ mod tests {
 			Rect::new(0, 0, 2, 1),
 		);
 		assert_ne!(frame_row_text(&cells, 0), "", "embedded logo paints half-block cells");
+	}
+
+	#[test]
+	fn image_cell_box_preserves_aspect_within_caps() {
+		let px = |width, height| ImageDimensions { width, height };
+		// Wide caps: full width, aspect-derived rows.
+		assert_eq!(image_cell_box(px(100, 50), 40, 20), (40, 10));
+		// Row cap binds: columns shrink to preserve aspect.
+		assert_eq!(image_cell_box(px(100, 400), 40, 10), (5, 10));
+		// Degenerate caps and dimensions never return zero.
+		assert_eq!(image_cell_box(px(1, 1), 0, 0), (1, 1));
+	}
+
+	#[test]
+	fn draw_image_inline_paints_half_blocks_and_typed_cells() {
+		// A 4x4 opaque red PNG on disk, as a persisted tool result image.
+		let mut bytes = Vec::new();
+		{
+			let mut encoder = png::Encoder::new(&mut bytes, 4, 4);
+			encoder.set_color(png::ColorType::Rgba);
+			encoder.set_depth(png::BitDepth::Eight);
+			let mut writer = encoder.write_header().unwrap();
+			let mut data = vec![0_u8; 4 * 4 * 4];
+			for pixel in data.chunks_exact_mut(4) {
+				pixel[0] = 255;
+				pixel[3] = 255;
+			}
+			writer.write_image_data(&data).unwrap();
+		}
+		let path =
+			std::env::temp_dir().join(format!("omp-tui-img-inline-{}.png", std::process::id()));
+		std::fs::write(&path, bytes).unwrap();
+		let source = path.to_string_lossy().into_owned();
+
+		// Every non-placeholder tier samples to colored half blocks.
+		let ctx = UiContext::default();
+		let mut frame = Frame::new(Size::new(8, 4));
+		let rows = draw_image_inline(&mut frame, &ctx, 1, 0, &source, 4, 8);
+		assert_eq!(rows, 2, "4x4 pixels at 4 columns cover two half-block rows");
+		assert_eq!(frame_row_text(&frame, 0).trim(), "▀▀▀▀");
+		assert_eq!(frame.cell(1, 0).style.foreground_color(), Color::Rgb(255, 0, 0));
+
+		// The Kitty placeholder tier places typed image cells instead.
+		let kitty_ctx = UiContext { graphics: Graphics::KittyPlaceholders, ..UiContext::default() };
+		let mut typed = Frame::new(Size::new(8, 4));
+		let rows = draw_image_inline(&mut typed, &kitty_ctx, 0, 0, &source, 4, 8);
+		assert_eq!(rows, 2);
+		assert!(matches!(typed.cell(3, 1).content, CellContent::Image {
+			row: 1,
+			col: 3,
+			rows: 2,
+			cols: 4,
+			..
+		}));
+		std::fs::remove_file(path).unwrap();
+
+		// Undecodable sources report zero rows so callers keep their text
+		// fallback.
+		assert_eq!(draw_image_inline(&mut frame, &ctx, 0, 0, "/nonexistent.png", 4, 8), 0);
 	}
 }

@@ -53,11 +53,12 @@ fn process_cpu_time() -> Option<Duration> {
 	if success == 0 {
 		return None;
 	}
-	let ticks = |time: FILETIME| {
-		(u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
-	};
+	let ticks =
+		|time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
 	Some(Duration::from_nanos(
-		ticks(kernel).saturating_add(ticks(user)).saturating_mul(100),
+		ticks(kernel)
+			.saturating_add(ticks(user))
+			.saturating_mul(100),
 	))
 }
 
@@ -94,10 +95,10 @@ impl LoopWatchdogCore {
 	#[must_use]
 	pub fn new(now: Duration, cpu_time: Duration) -> Self {
 		Self {
-			last_tick: now,
+			last_tick:     now,
 			last_cpu_time: cpu_time,
-			phase: "unknown".into(),
-			reported: false,
+			phase:         "unknown".into(),
+			reported:      false,
 		}
 	}
 
@@ -113,7 +114,8 @@ impl LoopWatchdogCore {
 		self.phase = phase.into();
 	}
 
-	/// Check for a newly detected stall at the current wall and process CPU times.
+	/// Check for a newly detected stall at the current wall and process CPU
+	/// times.
 	///
 	/// Returns one report after 250 ms without a tick. Further checks stay
 	/// silent until [`Self::tick`] records progress. A gap over 60 seconds is
@@ -163,7 +165,7 @@ impl LoopWatchdog {
 		let initial_cpu = process_cpu_time().unwrap_or(Duration::ZERO);
 		let shared = Arc::new((
 			Mutex::new(Shared {
-				core: LoopWatchdogCore::new(Duration::ZERO, initial_cpu),
+				core:     LoopWatchdogCore::new(Duration::ZERO, initial_cpu),
 				stopping: false,
 			}),
 			Condvar::new(),
@@ -178,8 +180,7 @@ impl LoopWatchdog {
 					break;
 				}
 				let now = origin.elapsed();
-				let cpu_time =
-					process_cpu_time().unwrap_or_else(|| initial_cpu.saturating_add(now));
+				let cpu_time = process_cpu_time().unwrap_or_else(|| initial_cpu.saturating_add(now));
 				let stall = guard.core.check(now, cpu_time);
 				drop(guard);
 				if let Some(stall) = stall {
@@ -245,20 +246,14 @@ mod tests {
 			.expect("300 ms should exceed the stall threshold");
 		assert_eq!(report.elapsed, Duration::from_millis(300));
 		assert_eq!(report.phase, "render");
-		assert_eq!(
-			watchdog.check(Duration::from_millis(400), Duration::from_millis(400)),
-			None,
-		);
+		assert_eq!(watchdog.check(Duration::from_millis(400), Duration::from_millis(400)), None,);
 	}
 
 	#[test]
 	fn ignores_a_90s_system_sleep_gap() {
 		let mut watchdog = LoopWatchdogCore::new(Duration::ZERO, Duration::ZERO);
 		watchdog.set_phase("render");
-		assert_eq!(
-			watchdog.check(Duration::from_secs(90), Duration::from_millis(3)),
-			None,
-		);
+		assert_eq!(watchdog.check(Duration::from_secs(90), Duration::from_millis(3)), None,);
 	}
 
 	#[test]

@@ -47,7 +47,7 @@ pub use editor::{
 pub use form::{Field, Form};
 pub use hr::{Hr, Spacer};
 pub use icon::Icon;
-pub use img::Img;
+pub use img::{Img, draw_image_inline, image_cell_box};
 pub(crate) use img::{ImgState, decode_source};
 pub use input::Input;
 pub use latex::Latex;

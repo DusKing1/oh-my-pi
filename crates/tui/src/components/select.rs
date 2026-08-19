@@ -1180,7 +1180,9 @@ fn label_lines(label: &Str, width: u16) -> SmallVec<Str, 16> {
 				current = Some((
 					start,
 					end,
-					line_width.saturating_add(gap_width).saturating_add(cell_width(word)),
+					line_width
+						.saturating_add(gap_width)
+						.saturating_add(cell_width(word)),
 				));
 				continue;
 			}
@@ -1335,8 +1337,7 @@ mod tests {
 			rows.iter().any(|row| row.contains("distinguishing tail")),
 			"the disambiguating tail remains visible: {rows:?}"
 		);
-		let indent =
-			cell_width(ctx.charset.cursor()) + cell_width(ctx.charset.radio(false)) + 1;
+		let indent = cell_width(ctx.charset.cursor()) + cell_width(ctx.charset.radio(false)) + 1;
 		let continuation = rows
 			.iter()
 			.find(|row| row.contains("distinguishing tail"))

@@ -454,11 +454,24 @@ impl ProbeParser {
 				let Some(status) = fields.next().and_then(parse_u16) else {
 					return false;
 				};
-				let Some(registers) = fields.next().and_then(parse_u16) else {
+				// Reply shape `CSI ? 2 ; Ps ; Pv S`: per xterm ctlseqs Ps is
+				// the status (0 = success) and Pv the maximum SIXEL geometry,
+				// which foot 1.27 reports as two parts (`…;0;1692;432S`) and a
+				// terminal without SIXEL reports as zero. Any positive part
+				// proves a usable geometry; oversized parts saturate instead
+				// of rejecting the reply.
+				let mut geometry = None;
+				for field in fields {
+					let Some(value) = parse_u16_saturating(field) else {
+						return false;
+					};
+					geometry = Some(geometry.unwrap_or(0).max(value));
+				}
+				let Some(geometry) = geometry else {
 					return false;
 				};
 				self.results.sixel_status = Some(status);
-				self.results.sixel_color_registers = Some(registers);
+				self.results.sixel_color_registers = Some(geometry);
 				true
 			},
 			b't' => {
@@ -561,6 +574,20 @@ fn parse_u16(bytes: &[u8]) -> Option<u16> {
 	(!bytes.is_empty() && bytes.iter().all(u8::is_ascii_digit))
 		.then(|| std::str::from_utf8(bytes).ok()?.parse().ok())
 		.flatten()
+}
+
+/// Parses an all-digit field, saturating values beyond `u16::MAX`.
+fn parse_u16_saturating(bytes: &[u8]) -> Option<u16> {
+	if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
+		return None;
+	}
+	let mut value = 0_u32;
+	for byte in bytes {
+		value = value
+			.saturating_mul(10)
+			.saturating_add(u32::from(byte - b'0'));
+	}
+	Some(u16::try_from(value).unwrap_or(u16::MAX))
 }
 
 const OSC99_PROBE_ID: &[u8] = b"omp-tui";
@@ -1370,6 +1397,49 @@ mod tests {
 	fn da1_attribute_four_enables_sixel() {
 		let (results, _) = parse([b"\x1b[?62;4;22c".to_vec()]);
 		assert!(results.supports_sixel());
+	}
+
+	#[test]
+	fn xtsmgraphics_geometry_reply_gates_sixel_on_status_and_geometry() {
+		// XTSMGRAPHICS item 2 reply captured from foot 1.27: status 0
+		// (success) plus the terminal's maximum SIXEL geometry in pixels.
+		let (results, preserved) = parse([b"\x1b[?2;0;1692;432S".to_vec()]);
+		assert_eq!(results.sixel_status, Some(0));
+		assert_eq!(results.sixel_color_registers, Some(1692));
+		assert!(results.supports_sixel());
+		assert_eq!(preserved, [] as [u8; 0]);
+
+		// Status 0 with a zero maximum geometry means no SIXEL support.
+		let (results, _) = parse([b"\x1b[?2;0;0;0S".to_vec()]);
+		assert!(!results.supports_sixel());
+
+		// A non-zero status is an error reply even with a plausible geometry.
+		let (results, _) = parse([b"\x1b[?2;3;1000;1000S".to_vec()]);
+		assert!(!results.supports_sixel());
+
+		// Oversized geometry parts saturate instead of rejecting the reply.
+		let (results, preserved) = parse([b"\x1b[?2;0;100000S".to_vec()]);
+		assert_eq!(results.sixel_color_registers, Some(u16::MAX));
+		assert!(results.supports_sixel());
+		assert_eq!(preserved, [] as [u8; 0]);
+	}
+
+	#[test]
+	fn probe_detects_sixel_on_terminals_without_identifying_environment() {
+		// pi #8724 regression: a SIXEL-capable terminal that exports no
+		// identifying variable (foot sets TERM=foot and COLORTERM=truecolor
+		// only) resolved the trueColor row and rendered every image as the
+		// `[Image: …]` text card. The runtime probe must upgrade it.
+		let foot = detect(&[("TERM", "foot"), ("COLORTERM", "truecolor")], TerminalPlatform::Linux);
+		assert_eq!(foot.graphics, Graphics::Cells);
+		let (probe, _) = parse([b"\x1b[?2;0;1692;432S\x1b[?62;4c".to_vec()]);
+		assert_eq!(TerminalCaps::resolve(foot, Some(&probe), None).graphics, Graphics::Sixel);
+		// An explicit force — including the `off` kill switch resolved to
+		// [`Graphics::Cells`] — wins over the probe.
+		assert_eq!(
+			TerminalCaps::resolve(foot, Some(&probe), Some(Graphics::Cells)).graphics,
+			Graphics::Cells
+		);
 	}
 
 	#[test]

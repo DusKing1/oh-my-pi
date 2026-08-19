@@ -244,6 +244,10 @@ pub struct InputDecoder {
 	paste_active:          bool,
 	paste_last_input:      Option<Instant>,
 	paste_scan_from:       usize,
+	/// Reassembly buffer for a private-CSI report whose prefix outlived the
+	/// partial hold; empty when disarmed. See
+	/// [`InputDecoder::reassemble_private_csi`].
+	private_csi_partial:   Vec<u8>,
 }
 
 impl InputDecoder {
@@ -259,6 +263,7 @@ impl InputDecoder {
 			paste_active:          false,
 			paste_last_input:      None,
 			paste_scan_from:       0,
+			private_csi_partial:   Vec::new(),
 		}
 	}
 
@@ -287,6 +292,7 @@ impl InputDecoder {
 	pub fn feed(&mut self, bytes: &[u8], now: Instant, out: &mut Vec<InputEvent>) {
 		self.expire_paste(now, out);
 		self.expire_partial(now, out);
+		let bytes = self.reassemble_private_csi(bytes, out);
 		if self.paste_active {
 			self.paste.extend_from_slice(bytes);
 			self.paste_last_input = Some(now);
@@ -295,6 +301,55 @@ impl InputDecoder {
 		}
 		self.buffer.extend_from_slice(bytes);
 		self.process_buffer(now, out);
+	}
+
+	/// Continues a private-CSI report whose prefix outlived the partial
+	/// hold, returning the suffix of `bytes` that remains ordinary input.
+	///
+	/// A private CSI (`ESC [ ?` / `ESC [ >`) is a terminal->host report,
+	/// never a keystroke, so reassembly stays armed for the whole session:
+	/// a Device-Attributes reply split by a slow SSH/PTY link must not leak
+	/// its tail into the composer as literal text (pi #8542).
+	fn reassemble_private_csi<'a>(
+		&mut self,
+		bytes: &'a [u8],
+		out: &mut Vec<InputEvent>,
+	) -> &'a [u8] {
+		if self.private_csi_partial.is_empty() {
+			return bytes;
+		}
+		for (index, &byte) in bytes.iter().enumerate() {
+			match byte {
+				// Parameter and intermediate bytes extend the report; a
+				// runaway sequence resets instead of growing without bound.
+				0x20..=0x3f => {
+					self.private_csi_partial.push(byte);
+					if self.private_csi_partial.len() > MAX_CSI_BYTES {
+						self.private_csi_partial.clear();
+						return &bytes[index + 1..];
+					}
+				},
+				// Final byte: the report is complete. Recognized replies
+				// surface as structured responses; anything else is dropped
+				// — a late or unowned report is never typed input.
+				0x40..=0x7e => {
+					self.private_csi_partial.push(byte);
+					let sequence = std::mem::take(&mut self.private_csi_partial);
+					if let Decoded::Event(event) = decode_frame(&sequence) {
+						out.push(event);
+					}
+					return &bytes[index + 1..];
+				},
+				// An escape or control byte can never continue a report:
+				// abandon the stale partial (terminal noise, not keystrokes)
+				// and process the new bytes normally.
+				_ => {
+					self.private_csi_partial.clear();
+					return &bytes[index..];
+				},
+			}
+		}
+		&[]
 	}
 
 	/// Advances timeout-driven recovery without reading input.
@@ -424,6 +479,14 @@ impl InputDecoder {
 		let buffered = std::mem::take(&mut self.buffer);
 		self.incomplete_since = None;
 		self.pending_kitty_print = None;
+		if is_private_csi_report_partial(&buffered) {
+			// A `CSI ?…` / `CSI >…` prefix flushed mid-sequence is the start
+			// of a terminal report split by a slow link. Swallowing it here
+			// and reassembling with later bytes keeps the reply out of the
+			// composer for the whole session (pi #8542).
+			self.private_csi_partial = buffered;
+			return;
+		}
 		if !emit_unterminated_response(&buffered, out) {
 			if buffered == b"\x1b\x1b" {
 				emit_chord(&self.keymap, Chord::plain(Key::Esc), out);
@@ -886,7 +949,13 @@ fn decode_plain(bytes: &[u8], alt: bool) -> Option<Chord> {
 fn decode_control(byte: u8) -> Option<Chord> {
 	let chord = match byte {
 		b'\t' => Chord::plain(Key::Tab),
-		b'\r' | b'\n' => Chord::plain(Key::Enter),
+		b'\r' => Chord::plain(Key::Enter),
+		// A bare LF is the iTerm2-style Shift+Enter mapping (Claude Code's
+		// /terminal-setup and similar bindings); raw-mode Enter always
+		// arrives as CR, so LF decodes as the Shift+Enter chord and the
+		// keymap's `(Enter, shift)` row owns the newline semantics, matching
+		// pi's composer and /tree selector (#8821).
+		b'\n' => Chord::new(Key::Enter, Mods { shift: true, ..Mods::default() }),
 		0x7f | 0x08 => Chord::plain(Key::Backspace),
 		0x01..=0x1a => {
 			Chord::new(Key::Char(char::from(b'a' + byte - 1)), Mods { ctrl: true, ..Mods::default() })
@@ -930,6 +999,21 @@ fn valid_sgr_body(body: &[u8]) -> bool {
 fn is_sgr_mouse_partial(bytes: &[u8]) -> bool {
 	bytes.starts_with(b"\x1b[<")
 		&& bytes[3..]
+			.iter()
+			.all(|byte| byte.is_ascii_digit() || *byte == b';')
+}
+
+/// Whether an expired partial is unambiguously the prefix of a private-CSI
+/// terminal report: `ESC [ ?` or `ESC [ >` followed only by parameter bytes.
+fn is_private_csi_report_partial(bytes: &[u8]) -> bool {
+	let Some(body) = bytes.strip_prefix(b"\x1b[") else {
+		return false;
+	};
+	let Some((&marker, parameters)) = body.split_first() else {
+		return false;
+	};
+	matches!(marker, b'?' | b'>')
+		&& parameters
 			.iter()
 			.all(|byte| byte.is_ascii_digit() || *byte == b';')
 }
@@ -1852,6 +1936,54 @@ mod tests {
 			InputEvent::Focus(true),
 			InputEvent::Focus(false),
 		]);
+	}
+
+	#[test]
+	fn bare_lf_decodes_as_shift_enter_while_cr_stays_enter() {
+		// pi #8821: the composer and /tree selector accept three Shift+Enter
+		// encodings — kitty CSI-u (covered by the keymap rows), the legacy
+		// `CSI 13;2~` form, and a bare LF from the iTerm2 mapping. Raw-mode
+		// Enter always arrives as CR.
+		let start = Instant::now();
+		let mut decoder = InputDecoder::new();
+		let mut events = Vec::new();
+		decoder.feed(b"\r\n\x1b[13;2~", start, &mut events);
+		assert_eq!(events, [
+			InputEvent::Key(Key::Enter),
+			InputEvent::Key(Key::ShiftEnter),
+			InputEvent::Key(Key::ShiftEnter),
+		]);
+	}
+
+	#[test]
+	fn split_private_csi_report_reassembles_after_partial_expiry() {
+		// pi #8542: a Device-Attributes reply split by a slow SSH/PTY link.
+		// The prefix outlives the partial hold, the tail arrives as ordinary
+		// bytes; neither half may leak into the composer as literal text.
+		let start = Instant::now();
+		let mut decoder = InputDecoder::new();
+		let mut events = Vec::new();
+		decoder.feed(b"\x1b[?1;22;23", start, &mut events);
+		decoder.tick(start + Duration::from_millis(200), &mut events);
+		assert_eq!(events, [] as [InputEvent; 0]);
+		decoder.feed(b";24;28;32;42;52c", start + Duration::from_millis(300), &mut events);
+		assert_eq!(events, [InputEvent::Response(TerminalResponse::DeviceAttributes(
+			"?1;22;23;24;28;32;42;52".into(),
+		))]);
+	}
+
+	#[test]
+	fn abandoned_private_csi_partial_yields_to_new_escape_input() {
+		let start = Instant::now();
+		let mut decoder = InputDecoder::new();
+		let mut events = Vec::new();
+		decoder.feed(b"\x1b[?1;2", start, &mut events);
+		decoder.tick(start + Duration::from_millis(200), &mut events);
+		assert_eq!(events, [] as [InputEvent; 0]);
+		// A new escape can never continue a report: the stale partial is
+		// dropped as terminal noise and the arrow decodes normally.
+		decoder.feed(b"\x1b[A", start + Duration::from_millis(300), &mut events);
+		assert_eq!(events, [InputEvent::Key(Key::Up)]);
 	}
 
 	#[test]

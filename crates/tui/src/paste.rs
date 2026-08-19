@@ -593,21 +593,46 @@ pub enum Clipboard {
 
 /// Reads smart clipboard content, preferring image data, then file paths, then
 /// text.
+///
+/// One exception, ported from pi (#8769): macOS Finder `Cmd+C` on an image
+/// file advertises BOTH a `public.file-url` representation and a generated
+/// 1024x1024 file-icon bitmap, and `arboard::get_image()` succeeds with the
+/// icon — so a file URL resolving to a supported image file wins over the
+/// co-advertised bitmap. Pure bitmap pasteboards (screenshots, browser
+/// copies) and non-image file URLs still fall through to the image path.
+/// [`read_file_urls`] is a no-op off Darwin.
 pub fn read_clipboard() -> Option<Clipboard> {
-	if let Some(image) = read_clipboard_image() {
+	smart_clipboard(read_file_urls(), read_clipboard_image, read_clipboard_text)
+}
+
+/// Pure ordering core of [`read_clipboard`], separated for tests.
+fn smart_clipboard(
+	file_urls: Option<Vec<Str>>,
+	read_image: impl FnOnce() -> Option<PastedImage>,
+	read_text: impl FnOnce() -> Option<String>,
+) -> Option<Clipboard> {
+	let file_urls = match file_urls {
+		// The authoritative file bytes are what the user copied: an image
+		// file URL beats the co-advertised Finder icon bitmap.
+		Some(paths) if paths.iter().any(|path| is_image_path(path)) => {
+			return Some(Clipboard::Paths(paths));
+		},
+		other => other,
+	};
+	if let Some(image) = read_image() {
 		return Some(Clipboard::Image(image));
 	}
-	if let Some(paths) = read_file_urls() {
+	if let Some(paths) = file_urls {
 		return Some(Clipboard::Paths(paths));
 	}
-	let text = read_clipboard_text()?;
+	let text = read_text()?;
 	(!text.is_empty()).then_some(Clipboard::Text(text))
 }
 
 /// Scope of one background clipboard read.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClipboardRead {
-	/// Smart content: image, then copied file paths, then text
+	/// Smart content: copied file paths, then image, then text
 	/// ([`read_clipboard`]).
 	Smart,
 	/// Plain text only ([`read_clipboard_text`]) — the Ctrl+Shift+V
@@ -1255,5 +1280,61 @@ mod tests {
 			assert_eq!(PastedImage::from_bytes(bytes.to_vec()).unwrap().format, *format);
 		}
 		assert_eq!(PastedImage::from_bytes(b"garbage".to_vec()), None);
+	}
+
+	fn icon_bitmap() -> PastedImage {
+		// Stands in for Finder's generated file-icon bitmap that
+		// `arboard::get_image()` returns alongside a `public.file-url`.
+		PastedImage::from_bytes(b"\x89PNG\r\n\x1a\nicon".to_vec()).unwrap()
+	}
+
+	#[test]
+	fn image_file_url_wins_over_co_advertised_icon_bitmap() {
+		// pi #8769: Finder `Cmd+C` on an image file advertises both the file
+		// URL and a generated icon bitmap; the file path must win so vision
+		// models receive the copied image, not a generic document icon.
+		let clipboard = smart_clipboard(
+			Some(vec![Str::from("/Users/me/Desktop/screenshot.png")]),
+			|| Some(icon_bitmap()),
+			|| unreachable!("text is never consulted when an image path resolves"),
+		);
+		assert_eq!(
+			clipboard,
+			Some(Clipboard::Paths(vec![Str::from("/Users/me/Desktop/screenshot.png")]))
+		);
+	}
+
+	#[test]
+	fn pure_bitmap_pasteboard_still_attaches_the_image() {
+		let clipboard = smart_clipboard(None, || Some(icon_bitmap()), || None);
+		assert_eq!(clipboard, Some(Clipboard::Image(icon_bitmap())));
+	}
+
+	#[test]
+	fn non_image_file_url_falls_to_the_bitmap_then_to_paths() {
+		// A non-image Finder selection: the bitmap representation wins …
+		let clipboard = smart_clipboard(
+			Some(vec![Str::from("/Users/me/Documents/report.pdf")]),
+			|| Some(icon_bitmap()),
+			|| None,
+		);
+		assert_eq!(clipboard, Some(Clipboard::Image(icon_bitmap())));
+		// … and without a bitmap the copied paths still paste.
+		let clipboard =
+			smart_clipboard(Some(vec![Str::from("/Users/me/Documents/report.pdf")]), || None, || None);
+		assert_eq!(
+			clipboard,
+			Some(Clipboard::Paths(vec![Str::from("/Users/me/Documents/report.pdf")]))
+		);
+	}
+
+	#[test]
+	fn empty_clipboard_falls_to_text_and_rejects_empty_text() {
+		assert_eq!(
+			smart_clipboard(None, || None, || Some("hello".to_owned())),
+			Some(Clipboard::Text("hello".to_owned()))
+		);
+		assert_eq!(smart_clipboard(None, || None, || Some(String::new())), None);
+		assert_eq!(smart_clipboard(None, || None, || None), None);
 	}
 }
