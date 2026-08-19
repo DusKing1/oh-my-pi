@@ -3,8 +3,38 @@
 provider "xai" {
 	class "xai" {
 		family "grok" {
+			// pi PR #7454 cluster: paid xAI routes through /v1/responses like
+			// SuperGrok. Encrypted reasoning is requested and replayed across
+			// turns, api.x.ai rejects `reasoning.summary`, `minimal` clamps to
+			// `low`, and root-union tool schemas are flattened for the xAI
+			// function-calling validator.
+			filter-reasoning-history #false
+			flatten-root-unions #true
+			include-encrypted-reasoning #true
+			reasoning-effort-map {
+				minimal "low"
+			}
+			supports-reasoning-summary #false
 			thinking-mode "effort"
 		}
+	}
+	// Dormant until a catalog snapshot ships grok-4.6; xhigh is native there.
+	models "grok-4.6" {
+		reasoning-effort-map {}
+		thinking-default-level "high"
+		thinking-efforts "low" "medium" "high" "xhigh"
+		thinking-requires-effort #true
+	}
+	// residue: no-dial Responses rows (reasoning-suffixed SKUs, grok-build,
+	// grok-code-fast, composer) 400 when `reasoning.effort` is present.
+	models "*reasoning" "grok-build*" "grok-code-fast*" "*composer*" {
+		omit-reasoning-effort #true
+		supports-reasoning-effort #false
+	}
+	// residue: multi-agent Responses SKUs keep the native effort dial.
+	models "grok-4.20-multi-agent*" {
+		omit-reasoning-effort #false
+		supports-reasoning-effort #true
 	}
 	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "grok-4.20-0309-reasoning" "grok-4.20-beta-latest-reasoning" {

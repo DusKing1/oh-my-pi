@@ -178,6 +178,7 @@ The directive vocabulary is closed. Its three shapes are:
 | `escape-builtin-tool-names` | `escape_builtin_tool_names` | Scalar |
 | `extra-body` | `extra_body` | Object |
 | `filter-reasoning-history` | `filter_reasoning_history` | Scalar |
+| `flatten-root-unions` | `flatten_root_unions` | Scalar |
 | `include-encrypted-reasoning` | `include_encrypted_reasoning` | Scalar |
 | `max-tokens-field` | `max_tokens_field` | Scalar |
 | `official-endpoint` | `official_endpoint` | Scalar |
@@ -200,6 +201,7 @@ The directive vocabulary is closed. Its three shapes are:
 | `supports-long-cache-retention` | `supports_long_cache_retention` | Scalar |
 | `supports-mid-conversation-system` | `supports_mid_conversation_system` | Scalar |
 | `supports-reasoning-effort` | `supports_reasoning_effort` | Scalar |
+| `supports-reasoning-summary` | `supports_reasoning_summary` | Scalar |
 | `supports-sampling-params` | `supports_sampling_params` | Scalar |
 | `supports-store` | `supports_store` | Scalar |
 | `supports-tool-choice` | `supports_tool_choice` | Scalar |

@@ -290,6 +290,19 @@ impl ThinkingRouting {
 			return Err(ThinkingSelectionError::UnsupportedEffort(effort));
 		}
 		let native_effort = self.effort_map.get(&effort).cloned();
+		// A collapsed family may alias `minimal` onto the sibling `low` wire
+		// identity (Cloud Code Assist Gemini 3.6/3.7 Flash route both onto the
+		// `-low` SKU, which rejects wire `MINIMAL`; pi f7df5d4970). The wire
+		// effort names the canonical effort that owns the routed identity so
+		// codecs spell the level that SKU actually accepts.
+		let wire_effort = if effort == ThinkingEffort::Minimal
+			&& let Some(routed) = self.effort_routing.get(&ThinkingEffort::Minimal)
+			&& self.effort_routing.get(&ThinkingEffort::Low) == Some(routed)
+		{
+			ThinkingEffort::Low
+		} else {
+			effort
+		};
 		let wire_model = self
 			.effort_routing
 			.get(&effort)
@@ -297,6 +310,7 @@ impl ThinkingRouting {
 			.clone();
 		Ok(ThinkingSelection {
 			effort,
+			wire_effort,
 			native_effort,
 			budget: policy.budget(effort),
 			wire_model,
@@ -311,6 +325,12 @@ impl ThinkingRouting {
 pub struct ThinkingSelection {
 	/// Selected canonical effort.
 	pub effort:            ThinkingEffort,
+	/// Canonical effort that owns the routed wire identity.
+	///
+	/// Differs from [`Self::effort`] only when a collapsed family aliases the
+	/// requested effort onto a sibling's wire model (Cloud Code Assist rejects
+	/// wire `MINIMAL` on `-low` SKUs).
+	pub wire_effort:       ThinkingEffort,
 	/// Provider-native spelling override, when one exists.
 	pub native_effort:     Option<Str>,
 	/// Provider-native token budget, when one exists.
@@ -504,5 +524,47 @@ mod tests {
 			.expect("off resolves when effort is optional");
 		assert!(off.suppress_when_off);
 		assert_eq!(off.wire_model, "model-default");
+	}
+
+	#[test]
+	fn minimal_aliased_onto_the_low_wire_model_spells_low() {
+		// Cloud Code Assist Gemini 3.6/3.7 Flash route both minimal and low
+		// onto the `-low` SKU, which rejects wire `MINIMAL` (pi f7df5d4970).
+		let policy = ThinkingPolicy::new(ThinkingMode::GoogleLevel, [
+			ThinkingEffort::Minimal,
+			ThinkingEffort::Low,
+			ThinkingEffort::Medium,
+			ThinkingEffort::High,
+		])
+		.expect("ordered efforts");
+		let mut routing = ThinkingRouting::default();
+		routing
+			.effort_routing
+			.insert(ThinkingEffort::Minimal, "gemini-3.7-flash-low".into());
+		routing
+			.effort_routing
+			.insert(ThinkingEffort::Low, "gemini-3.7-flash-low".into());
+		routing
+			.effort_routing
+			.insert(ThinkingEffort::Medium, "gemini-3.7-flash-medium".into());
+		let aliased = routing
+			.resolve(&policy, Some(ThinkingEffort::Minimal), &WireModelId::from("gemini-3.7-flash"))
+			.expect("minimal resolves");
+		assert_eq!(aliased.effort, ThinkingEffort::Minimal);
+		assert_eq!(aliased.wire_effort, ThinkingEffort::Low);
+		assert_eq!(aliased.wire_model, "gemini-3.7-flash-low");
+
+		// Unaliased minimal keeps its own wire identity and spelling.
+		let mut unaliased = ThinkingRouting::default();
+		unaliased
+			.effort_routing
+			.insert(ThinkingEffort::Minimal, "gemini-3.7-flash-minimal".into());
+		unaliased
+			.effort_routing
+			.insert(ThinkingEffort::Low, "gemini-3.7-flash-low".into());
+		let selection = unaliased
+			.resolve(&policy, Some(ThinkingEffort::Minimal), &WireModelId::from("gemini-3.7-flash"))
+			.expect("minimal resolves");
+		assert_eq!(selection.wire_effort, ThinkingEffort::Minimal);
 	}
 }

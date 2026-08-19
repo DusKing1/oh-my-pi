@@ -292,6 +292,33 @@ fn cascade_resolves_every_catalog_model_to_oracle_plus_census_overlay() {
 			// V4; the frozen wire oracle predates the override.
 			expected.insert("supports_tool_choice".into(), Value::from(false));
 		}
+		if model.provider == "xai"
+			&& classification
+				.family
+				.as_ref()
+				.is_some_and(|family| family.as_str() == "grok")
+		{
+			// pi PR #7454 cluster: paid xAI routes through /v1/responses like
+			// SuperGrok; the frozen wire oracle predates the migration.
+			expected.insert("filter_reasoning_history".into(), Value::from(false));
+			expected.insert("flatten_root_unions".into(), Value::from(true));
+			expected.insert("include_encrypted_reasoning".into(), Value::from(true));
+			expected.insert("reasoning_effort_map".into(), serde_json::json!({ "minimal": "low" }));
+			expected.insert("supports_reasoning_summary".into(), Value::from(false));
+			let bare = model.model.to_ascii_lowercase();
+			if bare.ends_with("reasoning")
+				|| bare.starts_with("grok-build")
+				|| bare.starts_with("grok-code-fast")
+				|| bare.contains("composer")
+			{
+				// No-dial Responses rows 400 when reasoning.effort is present.
+				expected.insert("omit_reasoning_effort".into(), Value::from(true));
+				expected.insert("supports_reasoning_effort".into(), Value::from(false));
+			} else if bare.contains("grok-4.20-multi-agent") {
+				expected.insert("omit_reasoning_effort".into(), Value::from(false));
+				expected.insert("supports_reasoning_effort".into(), Value::from(true));
+			}
+		}
 		let resolved_wire: BTreeMap<String, Value> = resolved
 			.wire
 			.iter()
@@ -442,6 +469,141 @@ fn every_ready_census_case_executes_against_real_machinery() {
 		executed.push(case.id);
 	}
 	assert_eq!(executed.len(), 23, "ready census cases all executed: {executed:?}");
+}
+
+#[test]
+fn glm_53_uniform_ladder_resolves_on_every_host() {
+	// pi e49ee4b4e2: GLM-5.3 replaces GLM-5.2's host-specific dialects with a
+	// uniform wire-exact low/high/max ladder, mandatory thinking, and a max
+	// default effort. The rule must beat census host-dialect residues such as
+	// baseten's `zai-org/GLM-5*` glob.
+	let cascade = CompatCascade::bundled().expect("bundled cascade parses");
+	for (provider, model) in [
+		("zai", "glm-5.3"),
+		("zhipu-coding-plan", "glm-5.3"),
+		("opencode-go", "glm-5.3"),
+		("baseten", "zai-org/GLM-5.3"),
+		("openrouter", "z-ai/glm-5.3-air"),
+		("aiand", "glm-5.3-turbo"),
+	] {
+		let classification = classify(ClassificationInput {
+			phase: ClassificationPhase::CatalogCompiler,
+			provider,
+			model,
+			observed_at_ms: None,
+		});
+		assert_eq!(classification.class.as_str(), "glm", "{provider}/{model}: class");
+		let resolved = cascade
+			.resolve(&ResolveTarget {
+				provider,
+				class: classification.class.as_str(),
+				family: classification.family.as_ref().map(|family| family.as_str()),
+				revision: classification.revision,
+				model,
+				reasoning: true,
+			})
+			.unwrap_or_else(|error| panic!("{provider}/{model}: {error}"));
+		assert_eq!(
+			resolved.thinking.get("efforts"),
+			Some(&Value::from(vec!["low", "high", "max"])),
+			"{provider}/{model}: uniform ladder"
+		);
+		assert_eq!(
+			resolved.thinking.get("defaultLevel"),
+			Some(&Value::from("max")),
+			"{provider}/{model}: max default"
+		);
+		assert_eq!(
+			resolved.thinking.get("requiresEffort"),
+			Some(&Value::Bool(true)),
+			"{provider}/{model}: thinking cannot be disabled"
+		);
+	}
+	// The vision shape keeps its host dialect; the 5.3 rule must not match.
+	let vision = cascade
+		.resolve(&ResolveTarget {
+			provider:  "zai",
+			class:     "glm",
+			family:    None,
+			revision:  None,
+			model:     "glm-5.3v",
+			reasoning: true,
+		})
+		.expect("vision target resolves");
+	assert_ne!(
+		vision.thinking.get("efforts"),
+		Some(&Value::from(vec!["low", "high", "max"])),
+		"glm-5.3v must not inherit the coding-SKU ladder"
+	);
+}
+
+#[test]
+fn qwen_38_local_hosts_route_effort_onto_the_chat_template() {
+	// pi bf490ae024: Qwen 3.8+ chat templates steer thinking depth via the
+	// `reasoning_effort` kwarg (low/medium/xhigh) and cannot disable thinking;
+	// vLLM rides the chat-template-kwargs dialect because it ignores top-level
+	// `enable_thinking`.
+	let cascade = CompatCascade::bundled().expect("bundled cascade parses");
+	for (provider, format) in
+		[("llama.cpp", "qwen"), ("lm-studio", "qwen"), ("vllm", "qwen-chat-template")]
+	{
+		let classification = classify(ClassificationInput {
+			phase: ClassificationPhase::CatalogCompiler,
+			provider,
+			model: "qwen3.8-27b",
+			observed_at_ms: None,
+		});
+		assert_eq!(classification.class.as_str(), "qwen", "{provider}: class");
+		let resolved = cascade
+			.resolve(&ResolveTarget {
+				provider,
+				class: classification.class.as_str(),
+				family: classification.family.as_ref().map(|family| family.as_str()),
+				revision: classification.revision,
+				model: "qwen3.8-27b",
+				reasoning: true,
+			})
+			.unwrap_or_else(|error| panic!("{provider}: {error}"));
+		assert_eq!(
+			resolved.wire.get("supports_reasoning_effort"),
+			Some(&Value::Bool(true)),
+			"{provider}: template effort dial"
+		);
+		assert_eq!(
+			resolved.wire.get("thinking_format"),
+			Some(&Value::from(format)),
+			"{provider}: dialect"
+		);
+		assert_eq!(
+			resolved.thinking.get("efforts"),
+			Some(&Value::from(vec!["low", "medium", "xhigh"])),
+			"{provider}: template ladder"
+		);
+		assert_eq!(
+			resolved.thinking.get("requiresEffort"),
+			Some(&Value::Bool(true)),
+			"{provider}: thinking cannot be disabled"
+		);
+	}
+	// Pre-3.8 templates have no reasoning_effort kwarg; nothing may leak.
+	let classification = classify(ClassificationInput {
+		phase:          ClassificationPhase::CatalogCompiler,
+		provider:       "llama.cpp",
+		model:          "qwen3.6-27b",
+		observed_at_ms: None,
+	});
+	let resolved = cascade
+		.resolve(&ResolveTarget {
+			provider:  "llama.cpp",
+			class:     classification.class.as_str(),
+			family:    classification.family.as_ref().map(|family| family.as_str()),
+			revision:  classification.revision,
+			model:     "qwen3.6-27b",
+			reasoning: true,
+		})
+		.expect("pre-3.8 target resolves");
+	assert_eq!(resolved.wire.get("supports_reasoning_effort"), None, "no dial before 3.8");
+	assert_eq!(resolved.thinking.get("efforts"), None, "no template ladder before 3.8");
 }
 
 fn run_identity_case(case: &Case) {

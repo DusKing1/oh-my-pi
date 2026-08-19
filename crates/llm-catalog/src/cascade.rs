@@ -92,6 +92,7 @@ pub const KNOWN_AXES: &[(&str, AxisSet, &str, AxisKind)] = &[
 	("escape-builtin-tool-names", AxisSet::Wire, "escape_builtin_tool_names", AxisKind::Scalar),
 	("extra-body", AxisSet::Wire, "extra_body", AxisKind::Object),
 	("filter-reasoning-history", AxisSet::Wire, "filter_reasoning_history", AxisKind::Scalar),
+	("flatten-root-unions", AxisSet::Wire, "flatten_root_unions", AxisKind::Scalar),
 	("include-encrypted-reasoning", AxisSet::Wire, "include_encrypted_reasoning", AxisKind::Scalar),
 	("max-tokens-field", AxisSet::Wire, "max_tokens_field", AxisKind::Scalar),
 	("official-endpoint", AxisSet::Wire, "official_endpoint", AxisKind::Scalar),
@@ -149,6 +150,7 @@ pub const KNOWN_AXES: &[(&str, AxisSet, &str, AxisKind)] = &[
 		AxisKind::Scalar,
 	),
 	("supports-reasoning-effort", AxisSet::Wire, "supports_reasoning_effort", AxisKind::Scalar),
+	("supports-reasoning-summary", AxisSet::Wire, "supports_reasoning_summary", AxisKind::Scalar),
 	("supports-sampling-params", AxisSet::Wire, "supports_sampling_params", AxisKind::Scalar),
 	("supports-store", AxisSet::Wire, "supports_store", AxisKind::Scalar),
 	("supports-tool-choice", AxisSet::Wire, "supports_tool_choice", AxisKind::Scalar),
@@ -570,11 +572,12 @@ impl CompatCascade {
 
 	/// Resolves wire and thinking assignments for one structured model target.
 	///
-	/// When `target.reasoning` is false, broad thinking rules are not evaluated, so
-	/// family and revision policy cannot leak onto non-reasoning siblings. An exact
-	/// model selector may still declare thinking axes as a reviewed correction to
-	/// stale source capability metadata. Family and revision selectors never match
-	/// a target lacking that identity rank. Unmatched targets resolve to empty maps.
+	/// When `target.reasoning` is false, broad thinking rules are not evaluated,
+	/// so family and revision policy cannot leak onto non-reasoning siblings.
+	/// An exact model selector may still declare thinking axes as a reviewed
+	/// correction to stale source capability metadata. Family and revision
+	/// selectors never match a target lacking that identity rank. Unmatched
+	/// targets resolve to empty maps.
 	///
 	/// # Errors
 	/// [`CascadeError::AmbiguousOverlap`] when two rules tying on
@@ -588,7 +591,7 @@ impl CompatCascade {
 				rule.thinking.contains_key("efforts")
 					&& rule
 						.rank(target, &model_lower)
-						.is_some_and(|(exactness, _, _)| exactness == 2)
+						.is_some_and(|(exactness, ..)| exactness == 2)
 			});
 		for rule in &self.rules {
 			let Some(rank) = rule.rank(target, &model_lower) else {

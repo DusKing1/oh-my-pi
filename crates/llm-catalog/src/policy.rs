@@ -355,6 +355,10 @@ pub struct ToolPolicy {
 	pub computer_use_config:         Option<ComputerUseConfigSupport>,
 	/// Whether choosing a tool disables reasoning.
 	pub disable_reasoning_on_choice: Option<bool>,
+	/// Whether object-root `anyOf`/`oneOf` tool-parameter unions must be
+	/// flattened when exclusive-required and withheld otherwise (xAI rejects
+	/// them).
+	pub flatten_root_unions:         Option<bool>,
 }
 
 /// Structured-output lowering policy.
@@ -408,6 +412,8 @@ pub struct ReasoningPolicy {
 	pub thinking_format: Option<ThinkingFormat>,
 	/// Whether native effort controls are accepted.
 	pub supports_effort: Option<bool>,
+	/// Whether `reasoning.summary` is accepted by the endpoint.
+	pub supports_summary: Option<bool>,
 	/// Whether the effort field must be omitted.
 	pub omit_effort: Option<bool>,
 	/// Canonical-to-native effort spelling overrides.
@@ -827,6 +833,8 @@ mod tests {
 		extra_body: Option<ReasoningBodyOverride>,
 		#[serde(rename = "wire/filter_reasoning_history")]
 		filter_reasoning_history: Option<bool>,
+		#[serde(rename = "wire/flatten_root_unions")]
+		flatten_root_unions: Option<bool>,
 		#[serde(rename = "wire/include_encrypted_reasoning")]
 		include_encrypted_reasoning: Option<bool>,
 		#[serde(rename = "wire/max_tokens_field")]
@@ -871,6 +879,8 @@ mod tests {
 		supports_mid_conversation_system: Option<bool>,
 		#[serde(rename = "wire/supports_reasoning_effort")]
 		supports_reasoning_effort: Option<bool>,
+		#[serde(rename = "wire/supports_reasoning_summary")]
+		supports_reasoning_summary: Option<bool>,
 		#[serde(rename = "wire/supports_sampling_params")]
 		supports_sampling_params: Option<bool>,
 		#[serde(rename = "wire/supports_store")]
@@ -904,6 +914,7 @@ mod tests {
 			policy.role.supports_mid_conversation_system = shape.supports_mid_conversation_system;
 			policy.tool.supports_tool_choice = shape.supports_tool_choice;
 			policy.tool.forced_choice = shape.supports_forced_tool_choice;
+			policy.tool.flatten_root_unions = shape.flatten_root_unions;
 			policy.tool.escape_builtin_names = shape.escape_builtin_tool_names;
 			policy.tool.requires_result_id = shape.requires_tool_result_id;
 			policy.tool.eager_input_streaming = shape.supports_eager_tool_input_streaming;
@@ -912,6 +923,7 @@ mod tests {
 			policy.structured.sampling_params = shape.supports_sampling_params;
 			policy.reasoning.thinking_format = shape.thinking_format;
 			policy.reasoning.supports_effort = shape.supports_reasoning_effort;
+			policy.reasoning.supports_summary = shape.supports_reasoning_summary;
 			policy.reasoning.omit_effort = shape.omit_reasoning_effort;
 			policy.reasoning.effort_map = shape.reasoning_effort_map;
 			policy.reasoning.disable_mode = shape.reasoning_disable_mode;

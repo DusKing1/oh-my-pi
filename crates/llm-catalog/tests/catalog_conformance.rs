@@ -101,11 +101,14 @@ const INFERRED_CURSOR_THINKING: &[(&str, &[ThinkingEffort])] = &[
 		ThinkingEffort::Max,
 	]),
 ];
-const REVIEWED_THINKING_CORRECTIONS: &[(&str, &[ThinkingEffort])] = &[(
-	"baseten/moonshotai/Kimi-K3",
-	&[ThinkingEffort::Low, ThinkingEffort::High, ThinkingEffort::Max],
-)];
-const CURATED_THINKING_OVERRIDES: &[&str] = &["baseten/moonshotai/Kimi-K3", "nanogpt/linkup-research"];
+const REVIEWED_THINKING_CORRECTIONS: &[(&str, &[ThinkingEffort])] =
+	&[("baseten/moonshotai/Kimi-K3", &[
+		ThinkingEffort::Low,
+		ThinkingEffort::High,
+		ThinkingEffort::Max,
+	])];
+const CURATED_THINKING_OVERRIDES: &[&str] =
+	&["baseten/moonshotai/Kimi-K3", "nanogpt/linkup-research"];
 /// Frozen-profile members whose compiled thinking intentionally gained a
 /// mandatory default (#8369); the profile fixture predates the override.
 const REVIEWED_THINKING_DEFAULTS: &[&str] = &["xai-oauth/grok-4.5"];
@@ -433,6 +436,8 @@ struct CompatShape {
 	escape_builtin_tool_names: Option<bool>,
 	#[serde(rename = "wire/filter_reasoning_history")]
 	filter_reasoning_history: Option<bool>,
+	#[serde(rename = "wire/flatten_root_unions")]
+	flatten_root_unions: Option<bool>,
 	#[serde(rename = "wire/include_encrypted_reasoning")]
 	include_encrypted_reasoning: Option<bool>,
 	#[serde(rename = "wire/max_tokens_field")]
@@ -477,6 +482,8 @@ struct CompatShape {
 	supports_mid_conversation_system: Option<bool>,
 	#[serde(rename = "wire/supports_reasoning_effort")]
 	supports_reasoning_effort: Option<bool>,
+	#[serde(rename = "wire/supports_reasoning_summary")]
+	supports_reasoning_summary: Option<bool>,
 	#[serde(rename = "wire/supports_sampling_params")]
 	supports_sampling_params: Option<bool>,
 	#[serde(rename = "wire/supports_store")]
@@ -509,6 +516,7 @@ impl CompatShape {
 		policy.tool.disable_reasoning_on_choice = self.disable_reasoning_on_tool_choice;
 		policy.tool.escape_builtin_names = self.escape_builtin_tool_names;
 		policy.reasoning.filter_history = self.filter_reasoning_history;
+		policy.tool.flatten_root_unions = self.flatten_root_unions;
 		policy.reasoning.include_encrypted = self.include_encrypted_reasoning;
 		policy.context.max_tokens_field = self
 			.max_tokens_field
@@ -549,6 +557,7 @@ impl CompatShape {
 		policy.cache.supports_long_retention = self.supports_long_cache_retention;
 		policy.role.supports_mid_conversation_system = self.supports_mid_conversation_system;
 		policy.reasoning.supports_effort = self.supports_reasoning_effort;
+		policy.reasoning.supports_summary = self.supports_reasoning_summary;
 		policy.structured.sampling_params = self.supports_sampling_params;
 		policy.context.supports_store = self.supports_store;
 		policy.tool.supports_tool_choice = self.supports_tool_choice;
@@ -1264,7 +1273,10 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 	let oracle: NormalizedOracle =
 		serde_json::from_str(NORMALIZED_MODELS).expect("normalized model fixture is valid");
 	let compiled = compile_frozen_oracle();
-	let reviewed_thinking = REVIEWED_THINKING_CORRECTIONS.iter().copied().collect::<BTreeMap<_, _>>();
+	let reviewed_thinking = REVIEWED_THINKING_CORRECTIONS
+		.iter()
+		.copied()
+		.collect::<BTreeMap<_, _>>();
 	assert_eq!(oracle.schema_version, 1);
 	let raw_bytes = zstd::stream::decode_all(MODELS_ZSTD).expect("raw model oracle decompresses");
 	let mut inherited_price_components = BTreeMap::<PriceUnit, usize>::new();
@@ -1478,10 +1490,13 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 				);
 			}
 		} else {
-			let actual_efforts =
-				actual_thinking.map_or(&[][..], |policy| policy.efforts.as_slice());
+			let actual_efforts = actual_thinking.map_or(&[][..], |policy| policy.efforts.as_slice());
 			if let Some(expected_efforts) = reviewed_thinking.get(expected.id.as_str()) {
-				assert_eq!(actual_efforts, *expected_efforts, "{} reviewed thinking efforts", expected.id);
+				assert_eq!(
+					actual_efforts, *expected_efforts,
+					"{} reviewed thinking efforts",
+					expected.id
+				);
 			} else {
 				assert_eq!(
 					actual_efforts,
@@ -2578,7 +2593,12 @@ fn every_sparse_wire_profile_has_a_stable_distinct_content_id() {
 			let (behavior, provider, class) = behavior_by_model
 				.get(model.key.as_str())
 				.unwrap_or_else(|| panic!("{} behavior fixture is missing", model.key));
-			let base = if census_thinking_format(provider, class).is_some() {
+			let base = if model.key.as_str().starts_with("xai/") {
+				// pi PR #7454 cluster: every paid xAI row (grok-2 era included)
+				// routes through /v1/responses; the chat-era baseline
+				// expectation predates the migration.
+				paid_xai_responses_policy(model.key.as_str())
+			} else if census_thinking_format(provider, class).is_some() {
 				WirePolicy::overrides()
 			} else {
 				baseline.clone()
@@ -2599,6 +2619,35 @@ fn every_sparse_wire_profile_has_a_stable_distinct_content_id() {
 		};
 		assert_eq!(model.wire_policy, expected, "{} exact wire compatibility policy", model.key);
 	}
+}
+
+/// Post-freeze wire expectation for paid xAI rows on `/v1/responses`.
+///
+/// Mirrors `compat/providers/xai.kdl`: encrypted reasoning is replayed,
+/// `reasoning.summary` is rejected, `minimal` clamps to `low`, root-union
+/// tool schemas are flattened, no-dial rows omit the effort field, and
+/// multi-agent SKUs keep the native dial (pi PR #7454 cluster).
+fn paid_xai_responses_policy(key: &str) -> WirePolicy {
+	let mut policy = WirePolicy::overrides();
+	policy.reasoning.filter_history = Some(false);
+	policy.tool.flatten_root_unions = Some(true);
+	policy.reasoning.include_encrypted = Some(true);
+	policy.reasoning.effort_map =
+		BTreeMap::from([(ThinkingEffort::Minimal, omp_core::Str::from("low"))]);
+	policy.reasoning.supports_summary = Some(false);
+	let bare = key.trim_start_matches("xai/").to_ascii_lowercase();
+	if bare.ends_with("reasoning")
+		|| bare.starts_with("grok-build")
+		|| bare.starts_with("grok-code-fast")
+		|| bare.contains("composer")
+	{
+		policy.reasoning.omit_effort = Some(true);
+		policy.reasoning.supports_effort = Some(false);
+	} else if bare.contains("grok-4.20-multi-agent") {
+		policy.reasoning.omit_effort = Some(false);
+		policy.reasoning.supports_effort = Some(true);
+	}
+	policy
 }
 
 #[test]

@@ -534,6 +534,9 @@ pub struct SourceWirePolicy {
 	/// Reasoning effort support.
 	#[serde(alias = "supportsReasoningEffort")]
 	pub supports_reasoning_effort: Option<bool>,
+	/// Reasoning summary support.
+	#[serde(alias = "supportsReasoningSummary")]
+	pub supports_reasoning_summary: Option<bool>,
 	/// Omit native reasoning effort.
 	#[serde(alias = "omitReasoningEffort")]
 	pub omit_reasoning_effort: Option<bool>,
@@ -558,6 +561,9 @@ pub struct SourceWirePolicy {
 	/// Reasoning history filtering.
 	#[serde(alias = "filterReasoningHistory")]
 	pub filter_reasoning_history: Option<bool>,
+	/// Root-union tool schema flattening.
+	#[serde(alias = "flattenRootUnions")]
+	pub flatten_root_unions: Option<bool>,
 	/// Encrypted reasoning inclusion.
 	#[serde(alias = "includeEncryptedReasoning")]
 	pub include_encrypted_reasoning: Option<bool>,
@@ -3565,6 +3571,9 @@ fn compile_wire_policy(
 		parse_policy(source.tool_strict_mode.as_deref(), policy.tool.strict_mode)?;
 	policy.tool.named_choice = source.named_tool_choice.or(policy.tool.named_choice);
 	policy.tool.forced_choice = source.forced_tool_choice.or(policy.tool.forced_choice);
+	policy.tool.flatten_root_unions = source
+		.flatten_root_unions
+		.or(policy.tool.flatten_root_unions);
 	policy.tool.id_profile = match source.tool_call_id_profile.as_deref() {
 		Some("mistral9_alnum") => Some(ToolCallIdProfile::Mistral9Alnum),
 		Some("open_ai40") => Some(ToolCallIdProfile::OpenAi40),
@@ -3630,6 +3639,9 @@ fn compile_wire_policy(
 	policy.reasoning.supports_effort = source
 		.supports_reasoning_effort
 		.or(policy.reasoning.supports_effort);
+	policy.reasoning.supports_summary = source
+		.supports_reasoning_summary
+		.or(policy.reasoning.supports_summary);
 	policy.reasoning.omit_effort = source
 		.omit_reasoning_effort
 		.or(policy.reasoning.omit_effort);
@@ -4733,6 +4745,25 @@ mod tests {
 			),
 		]);
 		assert!(collapsible_groups(&siblings).contains("model"));
+	}
+
+	#[test]
+	fn coreweave_discovery_is_authoritative() {
+		// CoreWeave Serverless Inference (W&B Inference) is a reseller with a
+		// rotating model menu: runtime /v1/models discovery must replace stale
+		// bundled rows instead of merging over them (pi 309d5712af, PR #8923).
+		let providers = include_str!("../../../fixtures/llm-oracle/catalog/providers.toml");
+		let models = zstd::stream::encode_all(&br#"{}"#[..], 1).expect("fixture compression");
+		let source = parse_oracle(providers, &models).expect("fixture providers parse");
+		let coreweave = source
+			.providers
+			.get("coreweave")
+			.expect("coreweave provider record");
+		let discovery = coreweave
+			.discovery
+			.as_ref()
+			.expect("coreweave discovery source");
+		assert!(discovery.authoritative, "coreweave dynamic discovery must be authoritative");
 	}
 
 	#[test]

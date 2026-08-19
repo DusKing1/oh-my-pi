@@ -114,7 +114,11 @@ fn baseten_kimi_k3_exposes_reasoning_with_max_as_the_default_effort() {
 	})
 	.expect("Baseten catalog compiles");
 	let model = compiled.models.first().expect("compiled Kimi K3");
-	let chat = model.capabilities.chat.as_ref().expect("Kimi K3 chat capability");
+	let chat = model
+		.capabilities
+		.chat
+		.as_ref()
+		.expect("Kimi K3 chat capability");
 	assert!(!chat.reasoning.is_unsupported(), "Kimi K3 advertises reasoning");
 	let thinking_id = model.thinking.as_ref().expect("Kimi K3 thinking policy");
 	let thinking = compiled
@@ -123,10 +127,11 @@ fn baseten_kimi_k3_exposes_reasoning_with_max_as_the_default_effort() {
 		.find(|policy| policy.content_id() == *thinking_id)
 		.expect("Kimi K3 thinking policy is interned");
 	assert_eq!(thinking.mode, ThinkingMode::Effort);
-	assert_eq!(
-		thinking.efforts.as_slice(),
-		[ThinkingEffort::Low, ThinkingEffort::High, ThinkingEffort::Max],
-	);
+	assert_eq!(thinking.efforts.as_slice(), [
+		ThinkingEffort::Low,
+		ThinkingEffort::High,
+		ThinkingEffort::Max
+	],);
 	assert_eq!(thinking.default_level, Some(ThinkingEffort::Max));
 }
 
@@ -231,7 +236,10 @@ fn xai_oauth_grok_45_and_46_default_to_mandatory_high_effort() {
 			.iter()
 			.find(|model| model.key.as_str() == key)
 			.unwrap_or_else(|| panic!("compiled {key}"));
-		let thinking_id = model.thinking.as_ref().unwrap_or_else(|| panic!("{key} thinking policy"));
+		let thinking_id = model
+			.thinking
+			.as_ref()
+			.unwrap_or_else(|| panic!("{key} thinking policy"));
 		let thinking = compiled
 			.thinking_policies
 			.iter()
