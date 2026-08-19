@@ -21,6 +21,10 @@ use smallvec::SmallVec;
 use crate::{BackendEvent, StatusFacts, SubmitMode};
 
 const LIVE_PANEL_ROWS: u16 = 12;
+/// Column cap for inline tool-result images inside committed cards.
+const TOOL_IMAGE_MAX_COLS: u16 = 64;
+/// Row cap for inline tool-result images inside committed cards.
+const TOOL_IMAGE_MAX_ROWS: u16 = 12;
 const SHIMMER_PERIOD: Duration = Duration::from_millis(1900);
 const BRAND_FADE: Duration = Duration::from_millis(450);
 const FADE_FRAME: Duration = Duration::from_millis(40);
@@ -108,12 +112,19 @@ struct UserEntry {
 	chips: Vec<Str>,
 }
 
+/// One persisted tool-result image with its probed pixel dimensions.
+struct ToolImageEntry {
+	source: Str,
+	px:     omp_tui::imagefmt::ImageDimensions,
+}
+
 struct ToolEntry {
 	title:   Str,
 	kind:    ToolKind,
 	ok:      bool,
 	output:  Str,
 	summary: Vec<Str>,
+	images:  Vec<ToolImageEntry>,
 }
 
 struct LiveAssistant {
@@ -126,6 +137,7 @@ struct LiveTool {
 	name:   Str,
 	title:  Str,
 	output: StrMut,
+	images: Vec<ToolImageEntry>,
 }
 
 enum Entry {
@@ -600,6 +612,7 @@ impl Chat {
 			name:   name.into(),
 			title:  title.into(),
 			output: StrMut::new(""),
+			images: Vec::new(),
 		});
 		self.bump_live();
 	}
@@ -612,6 +625,27 @@ impl Chat {
 			.find(|tool| tool.id.as_str() == id)
 		{
 			tool.output.push_str(chunk);
+			self.bump_live();
+		}
+	}
+
+	/// Attaches a persisted PNG to a matching live tool card; the committed
+	/// card renders it inline. Sources whose headers fail to probe are
+	/// ignored, keeping the text fallback.
+	pub fn tool_image(&mut self, id: &str, source: impl Into<Str>) {
+		let source = source.into();
+		let Some(px) = std::fs::read(source.as_str())
+			.ok()
+			.and_then(|bytes| omp_tui::imagefmt::dimensions(&bytes))
+		else {
+			return;
+		};
+		if let Some(tool) = self
+			.live_tools
+			.iter_mut()
+			.find(|tool| tool.id.as_str() == id)
+		{
+			tool.images.push(ToolImageEntry { source, px });
 			self.bump_live();
 		}
 	}
@@ -630,6 +664,7 @@ impl Chat {
 				ok,
 				output: tool.output.freeze(),
 				summary,
+				images: tool.images,
 			}));
 			self.bump_live();
 		}
@@ -702,6 +737,7 @@ impl Chat {
 			BackendEvent::AssistantEnd { id } => self.end_assistant(id.as_str()),
 			BackendEvent::ToolStarted { id, name, title } => self.tool_started(id, name, title),
 			BackendEvent::ToolOutput { id, chunk } => self.tool_output(id.as_str(), chunk.as_str()),
+			BackendEvent::ToolImage { id, source } => self.tool_image(id.as_str(), source),
 			BackendEvent::ToolFinished { id, ok, summary } => {
 				self.tool_finished(id.as_str(), ok, summary)
 			},
@@ -751,7 +787,11 @@ impl Chat {
 		let panel_y = working_y
 			.saturating_sub(1)
 			.saturating_sub(LIVE_PANEL_ROWS + 2);
-		self.draw_live_panel(&mut frame, Rect::new(0, panel_y, viewport.width, LIVE_PANEL_ROWS + 2));
+		self.draw_live_panel(
+			&mut frame,
+			Rect::new(0, panel_y, viewport.width, LIVE_PANEL_ROWS + 2),
+			elapsed,
+		);
 		if self.is_working() {
 			self.draw_working(&mut frame, working_y, elapsed);
 		}
@@ -876,9 +916,10 @@ impl Chat {
 		}
 		self.drawn_entries = self.transcript.len();
 		self.transcript_rows = y;
-		let live_changed = repaint_suffix || self.drawn_live != self.live_revision;
+		let spinner_active = !self.live_tools.is_empty();
+		let live_changed = repaint_suffix || self.drawn_live != self.live_revision || spinner_active;
 		if live_changed {
-			self.draw_live_panel_owned(panel);
+			self.draw_live_panel_owned(panel, elapsed);
 		}
 		let working = self.is_working();
 		let working_changed = working != self.last_working;
@@ -973,13 +1014,20 @@ impl Chat {
 		}
 	}
 
-	fn draw_live_panel_owned(&mut self, rect: Rect) {
+	fn draw_live_panel_owned(&mut self, rect: Rect, elapsed: Duration) {
 		let ctx = self.ctx.clone();
-		draw_live_panel_impl(&mut self.frame, rect, &self.live_assistant, &self.live_tools, &ctx);
+		draw_live_panel_impl(
+			&mut self.frame,
+			rect,
+			&self.live_assistant,
+			&self.live_tools,
+			&ctx,
+			elapsed,
+		);
 	}
 
-	fn draw_live_panel(&self, frame: &mut Frame, rect: Rect) {
-		draw_live_panel_impl(frame, rect, &self.live_assistant, &self.live_tools, &self.ctx);
+	fn draw_live_panel(&self, frame: &mut Frame, rect: Rect, elapsed: Duration) {
+		draw_live_panel_impl(frame, rect, &self.live_assistant, &self.live_tools, &self.ctx, elapsed);
 	}
 
 	fn draw_working_owned(&mut self, y: u16, elapsed: Duration) {
@@ -1025,6 +1073,7 @@ fn draw_live_panel_impl(
 	assistant: &Option<LiveAssistant>,
 	tools: &[LiveTool],
 	ctx: &UiContext,
+	elapsed: Duration,
 ) {
 	frame.fill(rect, base_style(ctx.theme));
 	if assistant.is_none() && tools.is_empty() {
@@ -1057,7 +1106,7 @@ fn draw_live_panel_impl(
 		if y >= bottom {
 			break;
 		}
-		let prefix = fmts!("{} {}", ctx.charset.spinner().at(Duration::ZERO), tool.title);
+		let prefix = fmts!("{} {}", ctx.charset.spinner().at(elapsed), tool.title);
 		draw_line(frame, rect.x.saturating_add(1), y, rect.width.saturating_sub(2), &[Span::new(
 			&prefix,
 			ink(ctx.theme.info),
@@ -1217,17 +1266,51 @@ fn draw_tool(frame: &mut Frame, y: u16, width: u16, tool: &ToolEntry, ctx: &UiCo
 		)]);
 		row = row.saturating_add(1);
 	}
+	for image in &tool.images {
+		let (cols, rows) = tool_image_box(image, width);
+		if rows == 0 || row.saturating_add(rows) > bottom {
+			break;
+		}
+		omp_tui::components::draw_image_inline(
+			frame,
+			ctx,
+			rect.x.saturating_add(2),
+			row,
+			image.source.as_str(),
+			cols,
+			rows,
+		);
+		row = row.saturating_add(rows);
+	}
 	height
 }
 
-fn tool_height(tool: &ToolEntry, _width: u16) -> u16 {
+/// Aspect-fit cell box for one tool image inside a card of `width` columns.
+fn tool_image_box(image: &ToolImageEntry, width: u16) -> (u16, u16) {
+	let margin = u16::from(width >= 50);
+	let interior = width
+		.saturating_sub(margin * 2)
+		.saturating_sub(4)
+		.min(TOOL_IMAGE_MAX_COLS);
+	if interior == 0 {
+		return (0, 0);
+	}
+	omp_tui::components::image_cell_box(image.px, interior, TOOL_IMAGE_MAX_ROWS)
+}
+
+fn tool_height(tool: &ToolEntry, width: u16) -> u16 {
 	let lines = if tool.summary.is_empty() {
 		tool.output.lines().count()
 	} else {
 		tool.summary.len()
 	};
+	let image_rows = tool
+		.images
+		.iter()
+		.fold(0_u16, |rows, image| rows.saturating_add(tool_image_box(image, width).1));
 	u16::try_from(lines.min(3))
 		.unwrap_or(3)
+		.saturating_add(image_rows)
 		.saturating_add(2)
 		.max(3)
 }
@@ -1563,8 +1646,14 @@ mod tests {
 		context.theme = Theme::for_appearance(omp_tui::Appearance::Light);
 		let mut frame = Frame::new(Size::new(20, 5));
 		let assistant = Some(LiveAssistant { id: Str::from("a"), text: StrMut::new("stream") });
-
-		draw_live_panel_impl(&mut frame, Rect::new(0, 0, 20, 5), &assistant, &[], &context);
+		draw_live_panel_impl(
+			&mut frame,
+			Rect::new(0, 0, 20, 5),
+			&assistant,
+			&[],
+			&context,
+			Duration::ZERO,
+		);
 
 		let border = frame.cell(0, 0).style();
 		assert_eq!(border.foreground_color(), context.theme.border);
@@ -1579,5 +1668,42 @@ mod tests {
 		assert!(chat.render(Size::new(60, 20)).stable_rows > 0);
 		chat.clear_history();
 		assert_eq!(chat.render(Size::new(60, 20)).stable_rows, 0);
+	}
+
+	#[test]
+	fn tool_result_images_render_inline_in_committed_cards() {
+		// pi UI-06/UI-20: image payloads returned by tools (including PDF
+		// page screenshots) render inline in the committed card instead of
+		// only appearing as a text label.
+		let path =
+			std::env::temp_dir().join(format!("omp-chat-tool-image-{}.png", std::process::id()));
+		omp_tui::test_support::write_test_png(&path, 8, 8, [255, 0, 0]);
+		let source = Str::from(path.to_string_lossy().as_ref());
+
+		let mut chat = Chat::new(&ctx());
+		chat.tool_started("t1", "read", "read page.pdf:p1.png");
+		chat.tool_image("t1", source);
+		chat.tool_finished("t1", true, vec![Str::from("rendered page 1")]);
+		let frame = chat.render(Size::new(80, 40)).frame;
+		std::fs::remove_file(&path).ok();
+		assert!(
+			(0..frame.size().height).any(|row| row_text(frame, row).contains('▀')),
+			"committed tool card renders half-block image rows"
+		);
+		assert!(
+			(0..frame.size().height).any(|row| row_text(frame, row).contains("rendered page 1")),
+			"summary text stays alongside the inline image"
+		);
+	}
+
+	#[test]
+	fn undecodable_tool_image_keeps_the_text_card() {
+		let mut chat = Chat::new(&ctx());
+		chat.tool_started("t1", "shell", "shell ls");
+		chat.tool_image("t1", "/nonexistent/omp-tool-image.png");
+		chat.tool_finished("t1", true, vec![Str::from("done")]);
+		let frame = chat.render(Size::new(80, 24)).frame;
+		assert!((0..frame.size().height).any(|row| row_text(frame, row).contains("done")));
+		assert!((0..frame.size().height).all(|row| !row_text(frame, row).contains('▀')));
 	}
 }

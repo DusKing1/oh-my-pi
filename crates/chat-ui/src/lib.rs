@@ -218,6 +218,17 @@ pub enum BackendEvent {
 		/// Output chunk.
 		chunk: Str,
 	},
+	/// Attach an inline image to a live tool invocation.
+	///
+	/// `source` is a filesystem path to persisted PNG bytes; the scene
+	/// renders it inline in the committed card on graphics-capable
+	/// terminals and ignores undecodable sources.
+	ToolImage {
+		/// Stable tool-call identifier.
+		id:     Str,
+		/// Path to the persisted PNG payload.
+		source: Str,
+	},
 	/// Finish a tool invocation.
 	ToolFinished {
 		/// Stable tool-call identifier.

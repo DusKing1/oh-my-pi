@@ -13,12 +13,20 @@ use std::collections::BTreeMap;
 /// `TEMP`/`TMP` to `TMPDIR` (preserving originals for native Windows apps),
 /// and synthesizes `HOME` if it is not natively defined.
 ///
+/// Entries whose key or value is not valid Unicode are skipped: a corrupt
+/// entry carries no usable meaning, and a naive [`std::env::vars()`] call
+/// panics on the first one before any command can run.
+///
 /// A [`BTreeMap`] is used (rather than `HashMap`) so iteration order is
 /// deterministic across runs. If two source variables collide under the same
 /// canonical name (e.g. both `Path` and `PATH` are set to different values),
 /// the conflict is logged and the last-seen value wins.
 pub(crate) fn get_host_env_vars() -> impl Iterator<Item = (String, String)> {
-	collect_host_env_vars(std::env::vars())
+	collect_host_env_vars(std::env::vars_os().filter_map(|(key, value)| {
+		let key = key.into_string().ok()?;
+		let value = value.into_string().ok()?;
+		Some((key, value))
+	}))
 }
 
 /// Collects and normalizes a set of environment variables. Exposed as a
