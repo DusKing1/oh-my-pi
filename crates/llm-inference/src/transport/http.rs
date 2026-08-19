@@ -1123,4 +1123,28 @@ mod tests {
 		assert_eq!(mapped.detail_ref(), inner.detail_ref());
 		assert_eq!(mapped.receipt(), inner.receipt());
 	}
+
+	/// Mid-stream transport interruptions (HTTP/2 RST_STREAM, connection
+	/// resets) are classified as transient connectivity: uncommitted attempts
+	/// retry the same route immediately, while committed attempts keep the
+	/// stable `Connectivity`/`Streaming`/`committed` signature session-level
+	/// turn recovery keys on instead of being misfiled as corruption.
+	#[test]
+	fn stream_interruptions_classify_as_transient_connectivity() {
+		let uncommitted = connectivity(ErrorPhase::Handshake, false, "http-response-body");
+		assert_eq!(uncommitted.kind, ErrorKind::Connectivity);
+		assert!(!uncommitted.committed);
+		assert_eq!(uncommitted.action, RetryAction::SameRoute { after: std::time::Duration::ZERO });
+
+		let committed = connectivity(ErrorPhase::Streaming, true, "http-response-body");
+		assert_eq!(committed.kind, ErrorKind::Connectivity);
+		assert_eq!(committed.phase, ErrorPhase::Streaming);
+		assert!(committed.committed);
+		assert_eq!(committed.action, RetryAction::Never, "committed output is never blind-retried");
+		assert_eq!(
+			committed.detail_ref(),
+			Some(&ErrorDetail::protocol(ReasonId(Str::new_static("http-response-body")))),
+			"the stable reason survives for resume classification"
+		);
+	}
 }

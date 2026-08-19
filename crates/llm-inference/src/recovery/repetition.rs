@@ -18,7 +18,6 @@ const EXACT_SHORT_MAX_PERIOD_BYTES: usize = 60;
 const EXACT_SHORT_MIN_REPEATED_BYTES: usize = 180;
 const EXACT_LONG_MIN_REPEATED_BYTES: usize = 1024;
 
-
 /// Whether provisional output is still hidden from the consumer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutputVisibility {
@@ -160,6 +159,7 @@ impl AttemptRepetitionGuard {
 			disposition: visibility.into(),
 		})
 	}
+
 	/// Observes only byte-exact suffix cycles, independent of provider family or
 	/// chunk boundaries.
 	pub fn observe_exact_cycle(
@@ -208,7 +208,6 @@ impl AttemptRepetitionGuard {
 			disposition: visibility.into(),
 		})
 	}
-
 
 	/// Clears state before a new provider attempt.
 	pub fn reset(&mut self) {
@@ -489,15 +488,12 @@ fn exact_suffix_cycle(tail: &[u8]) -> Option<(usize, u32)> {
 			repetitions += 1;
 			end -= period;
 		}
-		let (minimum_repetitions, minimum_bytes) =
-			if period <= EXACT_SHORT_MAX_PERIOD_BYTES {
-				(4, EXACT_SHORT_MIN_REPEATED_BYTES)
-			} else {
-				(3, EXACT_LONG_MIN_REPEATED_BYTES)
-			};
-		if repetitions >= minimum_repetitions
-			&& period.saturating_mul(repetitions) >= minimum_bytes
-		{
+		let (minimum_repetitions, minimum_bytes) = if period <= EXACT_SHORT_MAX_PERIOD_BYTES {
+			(4, EXACT_SHORT_MIN_REPEATED_BYTES)
+		} else {
+			(3, EXACT_LONG_MIN_REPEATED_BYTES)
+		};
+		if repetitions >= minimum_repetitions && period.saturating_mul(repetitions) >= minimum_bytes {
 			return Some((period, repetitions as u32));
 		}
 	}
@@ -569,9 +565,10 @@ mod tests {
 	#[test]
 	fn long_exact_cycle_is_detected_across_token_sized_deltas() {
 		const CYCLE: &str = "% shipped. 100% delivered. 100% verified. 100% validated. 100% \
-			approved. 100% accepted. 100% merged. 100% deployed. 100% live. 100% operational. \
-			100% successful. 100% excellent. 100% perfect. 100% final. 100% absolute. 100% total. \
-			100% whole. 100% full. 100% entire. 100% complete. 100% done. 100% finished. 100";
+		                     approved. 100% accepted. 100% merged. 100% deployed. 100% live. 100% \
+		                     operational. 100% successful. 100% excellent. 100% perfect. 100% \
+		                     final. 100% absolute. 100% total. 100% whole. 100% full. 100% entire. \
+		                     100% complete. 100% done. 100% finished. 100";
 		let runaway = format!("Healthy lead sentence. {}", CYCLE.repeat(6));
 		let mut guard = AttemptRepetitionGuard::new(RepetitionLimits::default());
 		let mut detected = None;
@@ -608,6 +605,59 @@ mod tests {
 				.unwrap()
 				.disposition,
 			LoopDisposition::SurfaceCommitted
+		);
+	}
+
+	#[test]
+	fn exact_cycle_completed_after_the_last_cadence_scan_is_caught_at_stream_end() {
+		// The bounded scan cadence (every EXACT_SCAN_STRIDE_BYTES) can leave the
+		// final repetitions unscanned when the stream ends; the forced final
+		// check must still terminate the runaway.
+		let unit: String = ('a'..='z').chain('A'..='S').collect();
+		assert_eq!(unit.len(), 45);
+		let prelude = "prelude prose, not looped: ";
+		assert_eq!(prelude.len(), 27);
+		let runaway = format!("{prelude}{}", unit.repeat(4));
+		assert_eq!(runaway.len(), 207);
+		let mut guard = AttemptRepetitionGuard::new(RepetitionLimits::default());
+		for chunk in runaway.as_bytes().chunks(9) {
+			let chunk = std::str::from_utf8(chunk).expect("ASCII fixture");
+			assert!(
+				guard
+					.observe_exact_cycle(chunk, OutputVisibility::Gated)
+					.is_none(),
+				"cycle must not be detectable before it completes"
+			);
+		}
+		let signal = guard
+			.finish_exact_cycle(OutputVisibility::Gated)
+			.expect("stream end must force one final exact scan");
+		assert_eq!(signal.evidence.kind, LoopKind::WithinAttempt);
+		assert_eq!(signal.evidence.repetitions, 4);
+		assert_eq!(signal.disposition, LoopDisposition::RetryEligible);
+	}
+
+	#[test]
+	fn digit_and_punctuation_cycles_are_legitimate_output() {
+		// Runs of digits, whitespace, or punctuation are common in tabular, hex,
+		// and numeric output; only units carrying a letter (or non-ASCII, e.g.
+		// emoji) count as runaway cycles.
+		let numeric = "0123456789".repeat(30);
+		let mut guard = AttemptRepetitionGuard::new(RepetitionLimits::default());
+		assert!(
+			guard
+				.observe_exact_cycle(&numeric, OutputVisibility::Gated)
+				.is_none()
+		);
+		assert!(guard.finish_exact_cycle(OutputVisibility::Gated).is_none());
+
+		let emoji = "\u{1F30A} ".repeat(120);
+		let mut guard = AttemptRepetitionGuard::new(RepetitionLimits::default());
+		assert!(
+			guard
+				.observe_exact_cycle(&emoji, OutputVisibility::Gated)
+				.is_some(),
+			"pictographic runaway must still be caught"
 		);
 	}
 }

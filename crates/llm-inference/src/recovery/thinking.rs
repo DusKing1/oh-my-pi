@@ -505,6 +505,122 @@ fn fence_close_end(buffer: &[u8], ticks: usize, final_chunk: bool) -> Option<usi
 	None
 }
 
+/// Strips standalone leaked reasoning-fence opener lines from structured
+/// thinking deltas.
+///
+/// The visible-channel healers above split leaked ```` ```thinking ````
+/// fences out of the *text* stream; they never run over parts a provider
+/// already flags as thinking. Gemini thought summaries occasionally emit a
+/// bare ```` ```thinking ```` / ```` ``````thinking ```` opener line as a
+/// between-summary delimiter (pi #8719), which otherwise reaches display and
+/// persisted transcripts verbatim as fence spam.
+///
+/// Only a *standalone* opener line — nothing but ≤3 lead spaces, a run of ≥3
+/// backticks, and the info string `thinking` or `reasoning` — is dropped.
+/// Language-tagged code fences, bare closers, and inline mentions pass
+/// through so legitimate fenced code inside the reasoning survives.
+///
+/// Streaming-safe: deltas may split a line anywhere. A trailing partial line
+/// is held only while it remains a viable opener prefix; every held line is
+/// classified strictly on its newline or on [`ThinkingFenceStripper::flush`]
+/// before it is dropped.
+#[derive(Debug, Default)]
+pub struct ThinkingFenceStripper {
+	/// Buffered content of the current line still being classified.
+	carry:       String,
+	/// The current line is known not to be an opener; bytes pass through
+	/// until its newline.
+	passthrough: bool,
+}
+
+impl ThinkingFenceStripper {
+	/// Consumes one thinking delta and returns the sanitized text to emit.
+	pub fn push(&mut self, chunk: &str) -> String {
+		let mut output = String::with_capacity(chunk.len());
+		for character in chunk.chars() {
+			if self.passthrough {
+				output.push(character);
+				if character == '\n' {
+					self.passthrough = false;
+				}
+				continue;
+			}
+			if character == '\n' {
+				if !is_fence_opener_line(&self.carry) {
+					output.push_str(&self.carry);
+					output.push('\n');
+				}
+				self.carry.clear();
+				continue;
+			}
+			self.carry.push(character);
+			if !could_be_fence_opener_prefix(&self.carry) {
+				output.push_str(&self.carry);
+				self.carry.clear();
+				self.passthrough = true;
+			}
+		}
+		output
+	}
+
+	/// Drains any held partial line at block end.
+	pub fn flush(&mut self) -> String {
+		self.passthrough = false;
+		let carry = std::mem::take(&mut self.carry);
+		if is_fence_opener_line(&carry) {
+			String::new()
+		} else {
+			carry
+		}
+	}
+}
+
+/// Splits a candidate line into its backtick run and info-string remainder.
+///
+/// Returns `None` when more than three lead spaces or interior structure rule
+/// the line out as a fence opener. Tolerates a trailing CR from a split CRLF.
+fn fence_opener_parts(line: &str) -> Option<(usize, &str)> {
+	let line = line.strip_suffix('\r').unwrap_or(line);
+	let trimmed = line.trim_start_matches(' ');
+	if line.len() - trimmed.len() > 3 {
+		return None;
+	}
+	let rest = trimmed.trim_start_matches('`');
+	Some((trimmed.len() - rest.len(), rest))
+}
+
+/// A complete standalone reasoning-fence opener line.
+fn is_fence_opener_line(line: &str) -> bool {
+	let Some((ticks, rest)) = fence_opener_parts(line) else {
+		return false;
+	};
+	if ticks < 3 {
+		return false;
+	}
+	let word = rest.trim_end_matches([' ', '\t']);
+	word.eq_ignore_ascii_case("thinking") || word.eq_ignore_ascii_case("reasoning")
+}
+
+/// Whether a partial line could still grow into a standalone opener.
+fn could_be_fence_opener_prefix(line: &str) -> bool {
+	let Some((ticks, rest)) = fence_opener_parts(line) else {
+		return false;
+	};
+	if rest.is_empty() {
+		// Still consuming lead spaces or the backtick run.
+		return true;
+	}
+	if ticks < 3 {
+		return false;
+	}
+	let word = rest.trim_end_matches([' ', '\t']);
+	if word.len() > "reasoning".len() {
+		return false;
+	}
+	let lowered = word.to_ascii_lowercase();
+	"thinking".starts_with(&lowered) || "reasoning".starts_with(&lowered)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -568,5 +684,47 @@ mod tests {
 		assert_eq!(visible, input);
 		assert_eq!(thinking, [] as [u8; 0]);
 		assert_eq!((starts, ends, recoveries), (0, 0, 0));
+	}
+
+	fn strip_whole(input: &str) -> String {
+		let mut stripper = ThinkingFenceStripper::default();
+		let mut output = stripper.push(input);
+		output.push_str(&stripper.flush());
+		output
+	}
+
+	#[test]
+	fn standalone_thinking_fence_openers_are_dropped() {
+		assert_eq!(strip_whole("```thinking\nplan first\n"), "plan first\n");
+		assert_eq!(strip_whole("``````thinking\nplan\n"), "plan\n");
+		assert_eq!(strip_whole("   ```REASONING \t\nplan\n"), "plan\n");
+		assert_eq!(strip_whole("a\n```thinking\r\nb"), "a\nb");
+		// An unterminated opener held at block end is dropped by flush.
+		assert_eq!(strip_whole("plan\n```thinking"), "plan\n");
+	}
+
+	#[test]
+	fn legitimate_fences_and_inline_mentions_survive() {
+		assert_eq!(strip_whole("```rs\nfn main() {}\n```\n"), "```rs\nfn main() {}\n```\n");
+		assert_eq!(strip_whole("```\nplain fence\n"), "```\nplain fence\n");
+		assert_eq!(strip_whole("use ```thinking fences\n"), "use ```thinking fences\n");
+		assert_eq!(strip_whole("```thinking more prose\n"), "```thinking more prose\n");
+		assert_eq!(strip_whole("    ```thinking\n"), "    ```thinking\n");
+	}
+
+	#[test]
+	fn fence_stripping_is_split_invariant() {
+		let input = "intro\n```thinking\nplan\n```rs\ncode\n```\ntail";
+		let expected = strip_whole(input);
+		for split in 0..=input.len() {
+			if !input.is_char_boundary(split) {
+				continue;
+			}
+			let mut stripper = ThinkingFenceStripper::default();
+			let mut output = stripper.push(&input[..split]);
+			output.push_str(&stripper.push(&input[split..]));
+			output.push_str(&stripper.flush());
+			assert_eq!(output, expected, "split {split}");
+		}
 	}
 }

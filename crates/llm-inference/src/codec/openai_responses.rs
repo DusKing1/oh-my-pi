@@ -1218,6 +1218,23 @@ impl OpenAiResponsesDecoder {
 		}
 		let Ok(event) = serde_json::from_slice::<ResponsesStreamEvent>(payload) else {
 			self.terminal = true;
+			// Non-2xx bodies arrive as a bare `{"error":{…}}` envelope without a
+			// stream event discriminator; preserve their code and message so
+			// policy-bearing denials stay classifiable.
+			#[derive(Deserialize)]
+			struct ErrorEnvelope {
+				error: ResponsesErrorObject,
+			}
+			if let Ok(envelope) = serde_json::from_slice::<ErrorEnvelope>(payload) {
+				return vec![ResponsesProjection::Error(ResponsesErrorEvidence {
+					code:         envelope.error.code.or(envelope.error.kind),
+					message:      envelope
+						.error
+						.message
+						.unwrap_or_else(|| Str::from("Responses request failed")),
+					continuation: ResponsesContinuationFailure::NotStale,
+				})];
+			}
 			return vec![ResponsesProjection::Error(ResponsesErrorEvidence {
 				code:         Some(Str::from("invalid_responses_event")),
 				message:      Str::from("invalid Responses event"),
@@ -1898,6 +1915,104 @@ pub fn classify_continuation_error(status: u16, body: &[u8]) -> ResponsesErrorEv
 	ResponsesErrorEvidence { code, message, continuation: kind }
 }
 
+/// Provider whose ChatGPT-account model-entitlement denials trigger account
+/// rotation.
+const CODEX_PROVIDER: &str = "openai-codex";
+/// Exact denial sentence following the quoted model id.
+const CODEX_CHATGPT_MODEL_DENIAL_SUFFIX: &[u8] =
+	b" model is not supported when using Codex with a ChatGPT account.";
+/// Upper bound on a matchable model identity.
+const CODEX_CHATGPT_MODEL_MAX_LENGTH: usize = 256;
+
+/// Model id quoted in Codex's exact ChatGPT-account entitlement denial.
+///
+/// The match is deliberately narrow: the full sentence, quoting, and terminal
+/// period must be present, and the quoted identity must be bounded and
+/// single-line, so a generic unsupported-model rejection or an unrelated
+/// mention cannot trigger credential rotation.
+pub fn codex_chatgpt_account_policy_model(message: &str) -> Option<&str> {
+	let bytes = message.as_bytes();
+	let mut cursor = 0;
+	while let Some(position) =
+		find_ascii_case_insensitive(&bytes[cursor..], CODEX_CHATGPT_MODEL_DENIAL_SUFFIX)
+	{
+		let close = cursor + position;
+		cursor = close + 1;
+		if close == 0 {
+			continue;
+		}
+		let quote = bytes[close - 1];
+		if !matches!(quote, b'\'' | b'"') {
+			continue;
+		}
+		// Scan back to the matching opening quote; the quoted identity must not
+		// span lines.
+		let mut open = None;
+		let mut index = close - 1;
+		while index > 0 {
+			index -= 1;
+			let byte = bytes[index];
+			if byte == quote {
+				open = Some(index);
+				break;
+			}
+			if matches!(byte, b'\r' | b'\n') {
+				break;
+			}
+		}
+		let Some(open) = open else { continue };
+		// The sentence must start with a word-bounded "The " before the quote.
+		if open < 4 || !bytes[open - 4..open].eq_ignore_ascii_case(b"The ") {
+			continue;
+		}
+		if open >= 5 && (bytes[open - 5].is_ascii_alphanumeric() || bytes[open - 5] == b'_') {
+			continue;
+		}
+		let model = &message[open + 1..close - 1];
+		if codex_model_identity(model).is_some() {
+			return Some(model);
+		}
+	}
+	None
+}
+
+/// Whether the exact Codex ChatGPT-account entitlement denial names the
+/// requested model on the Codex provider.
+///
+/// The denial sentence is provider-controlled input; a non-Codex provider or a
+/// denial naming some other model must not burn sibling credentials.
+pub fn is_codex_chatgpt_account_policy_denial(
+	provider: &str,
+	requested_model: Option<&str>,
+	message: &str,
+) -> bool {
+	if provider != CODEX_PROVIDER {
+		return false;
+	}
+	let Some(requested) = requested_model.and_then(codex_model_identity) else {
+		return false;
+	};
+	codex_chatgpt_account_policy_model(message)
+		.and_then(codex_model_identity)
+		.is_some_and(|denied| denied.eq_ignore_ascii_case(requested))
+}
+
+/// Bare, bounded model identity used for entitlement-denial comparison.
+fn codex_model_identity(model: &str) -> Option<&str> {
+	let bare = model.rsplit('/').next().unwrap_or(model).trim();
+	(!bare.is_empty() && bare.len() <= CODEX_CHATGPT_MODEL_MAX_LENGTH && !bare.contains('\0'))
+		.then_some(bare)
+}
+
+fn find_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+	if needle.is_empty() || haystack.len() < needle.len() {
+		return None;
+	}
+	haystack
+		.windows(needle.len())
+		.position(|window| window.eq_ignore_ascii_case(needle))
+}
+
 /// Validates a completed function call syntactically without authorizing
 /// execution.
 pub fn syntactically_valid_function_call(arguments: &[u8]) -> Option<OpaqueJson> {
@@ -2108,6 +2223,16 @@ impl OpenAiResponsesCodec {
 						if !content.is_empty() {
 							input.push(ResponsesInputItem::message(role, std::mem::take(&mut content)));
 						}
+						// Policy-filtered reasoning history: some routes reject
+						// replayed `type: "reasoning"` wrappers outright
+						// (OpenRouter Anthropic). Routes that replay encrypted
+						// reasoning (first-party xAI `/v1/responses`) leave this
+						// unset so `reasoning.encrypted_content` from `include`
+						// returns on later turns; the filter and include axes
+						// are independent and must not be collapsed.
+						if context.policy.reasoning.filter_history == Some(true) {
+							continue;
+						}
 						let Some(proof) = proof else {
 							if !text.is_empty() {
 								adjustments.push(ResponsesAdjustment::Dropped {
@@ -2296,10 +2421,16 @@ impl OpenAiResponsesCodec {
 		};
 
 		let apply_patch = context.policy.tool.apply_patch;
+		let flatten_root_unions = context.policy.tool.flatten_root_unions == Some(true);
+		// Tools whose schemas still carry a root union the route rejects
+		// (xAI exclusive-required `anyOf`) are quarantined: the request
+		// proceeds without them, and a forced choice naming one is cleared
+		// after tool-choice lowering.
+		let mut quarantined_tools = Vec::new();
 		let mut tools = request
 			.tools
 			.iter()
-			.map(|tool| {
+			.filter_map(|tool| {
 				let freeform_patch =
 					matches!(&tool.input, crate::call::ToolInputConstraint::JsonSchema { .. })
 						&& tool.name == "apply_patch"
@@ -2308,12 +2439,19 @@ impl OpenAiResponsesCodec {
 					crate::call::ToolInputConstraint::JsonSchema { parameters, strict }
 						if !freeform_patch =>
 					{
-						(
-							ResponsesToolKind::Function,
-							Some(parameters.as_value().clone()),
-							Some(*strict),
-							None,
-						)
+						let mut schema = parameters.as_value().clone();
+						if flatten_root_unions {
+							if let Some(flattened) =
+								super::openai_chat::flatten_exclusive_required_root_union(&schema)
+							{
+								schema = flattened;
+							}
+							if super::openai_chat::leftover_root_object_union(&schema) {
+								quarantined_tools.push(tool.name.clone());
+								return None;
+							}
+						}
+						(ResponsesToolKind::Function, Some(schema), Some(*strict), None)
 					},
 					crate::call::ToolInputConstraint::JsonSchema { .. } => {
 						(ResponsesToolKind::Custom, None, None, None)
@@ -2333,7 +2471,7 @@ impl OpenAiResponsesCodec {
 						}),
 					),
 				};
-				ResponsesTool {
+				Some(ResponsesTool {
 					kind,
 					name: Some(tool.name.clone()),
 					description: tool.description.clone(),
@@ -2348,7 +2486,7 @@ impl OpenAiResponsesCodec {
 					blocked_domains: Vec::new(),
 					vector_store_ids: Vec::new(),
 					container: None,
-				}
+				})
 			})
 			.collect::<Vec<_>>();
 		for custom in &self.options.custom_tools {
@@ -2461,6 +2599,50 @@ impl OpenAiResponsesCodec {
 				},
 			}),
 		};
+		// A forced selection of a quarantined tool cannot be honored; the
+		// request proceeds unforced rather than naming an undeclared tool.
+		let tool_choice = match tool_choice {
+			Some(ResponsesToolChoice::Named(named))
+				if named
+					.name
+					.as_ref()
+					.is_some_and(|name| quarantined_tools.iter().any(|tool| tool == name)) =>
+			{
+				None
+			},
+			other => other,
+		};
+		// Console Go's Responses route rejects tool-choice selectors for
+		// DeepSeek V4 while thinking mode is active (#8244): policy-declared
+		// hosts drop the selector — or just its forced/named form — while the
+		// tool definitions themselves stay on the wire.
+		let tool_choice = match tool_choice {
+			Some(_) if context.policy.tool.supports_tool_choice == Some(false) => {
+				adjustments.push(ResponsesAdjustment::Dropped {
+					field:  Str::from("tool_choice"),
+					reason: Str::from("route policy rejects tool-choice selectors"),
+				});
+				None
+			},
+			Some(
+				ResponsesToolChoice::Mode(ResponsesToolChoiceMode::Required)
+				| ResponsesToolChoice::Named(_),
+			) if context.policy.tool.forced_choice == Some(false) => {
+				adjustments.push(ResponsesAdjustment::Dropped {
+					field:  Str::from("tool_choice"),
+					reason: Str::from("route policy rejects forced tool choice"),
+				});
+				None
+			},
+			Some(ResponsesToolChoice::Named(_)) if context.policy.tool.named_choice == Some(false) => {
+				adjustments.push(ResponsesAdjustment::Dropped {
+					field:  Str::from("tool_choice"),
+					reason: Str::from("route policy rejects named tool choice"),
+				});
+				None
+			},
+			other => other,
+		};
 		let reasoning =
 			match &request.reasoning {
 				Setting::Unset => None,
@@ -2471,29 +2653,39 @@ impl OpenAiResponsesCodec {
 							reason: Str::from("Responses accepts qualitative effort only"),
 						});
 					}
-					let effort = value.effort.map(|effort| match effort {
-						crate::catalog::ReasoningEffort::Off => ResponsesReasoningEffort::None,
-						crate::catalog::ReasoningEffort::Minimal => ResponsesReasoningEffort::Minimal,
-						crate::catalog::ReasoningEffort::Low => ResponsesReasoningEffort::Low,
-						crate::catalog::ReasoningEffort::Medium => ResponsesReasoningEffort::Medium,
-						crate::catalog::ReasoningEffort::High => ResponsesReasoningEffort::High,
-						crate::catalog::ReasoningEffort::Xhigh | crate::catalog::ReasoningEffort::Max => {
-							ResponsesReasoningEffort::Xhigh
-						},
-					});
-					Some(ResponsesReasoning {
-						effort,
-						summary: self.options.reasoning_summary.clone().or_else(|| {
-							match value.visibility {
+					// Routes without an effort dial (grok-build,
+					// grok-code-fast, …) 400 when `reasoning.effort` is
+					// present; policy omits the field while keeping the
+					// reasoning object itself.
+					let effort = if context.policy.reasoning.omit_effort == Some(true) {
+						None
+					} else {
+						value
+							.effort
+							.map(|effort| wire_reasoning_effort(context, effort))
+					};
+					// api.x.ai rejects `reasoning.summary` for SuperGrok and
+					// the paid key alike; the wire omits the field instead of
+					// filling `auto`.
+					let summary = if context.policy.reasoning.supports_summary == Some(false) {
+						None
+					} else {
+						self
+							.options
+							.reasoning_summary
+							.clone()
+							.or_else(|| match value.visibility {
 								ReasoningVisibility::Hidden => Some(None),
 								ReasoningVisibility::Summary | ReasoningVisibility::Visible => {
 									Some(Some(Str::from("auto")))
 								},
-							}
-						}),
-						mode: self.options.reasoning_mode.clone(),
-						context: None,
-					})
+							})
+					};
+					// An all-omitted reasoning object carries no wire
+					// information; no-dial routes send no `reasoning` at all.
+					let mode = self.options.reasoning_mode.clone();
+					(effort.is_some() || summary.is_some() || mode.is_some())
+						.then(|| ResponsesReasoning { effort, summary, mode, context: None })
 				},
 			};
 		let text = {
@@ -2574,9 +2766,20 @@ impl OpenAiResponsesCodec {
 				reason: Str::from("Responses has no per-request safety thresholds"),
 			});
 		}
+		// xAI `/v1/responses` rejects presence/frequency penalties for every
+		// Grok model; policy-conformant lowering omits them so configured
+		// penalties do not fail the route.
+		let penalties_supported = context.policy.structured.penalties != Some(false);
 		let include = {
 			let mut values = self.options.include.clone();
-			if matches!(&request.reasoning, Setting::Require(value) | Setting::Prefer(value) if value.preserve_signatures)
+			// Encrypted reasoning is requested when the request preserves
+			// signatures or the route policy replays encrypted reasoning on
+			// later turns (first-party OpenAI and xAI `/v1/responses`).
+			let request_include = matches!(
+				&request.reasoning,
+				Setting::Require(value) | Setting::Prefer(value) if value.preserve_signatures
+			);
+			if (request_include || context.policy.reasoning.include_encrypted == Some(true))
 				&& !values
 					.iter()
 					.any(|value| value == "reasoning.encrypted_content")
@@ -2615,8 +2818,12 @@ impl OpenAiResponsesCodec {
 				text,
 				temperature: request.sampling.temperature,
 				top_p: request.sampling.top_p,
-				presence_penalty: request.sampling.presence_penalty,
-				frequency_penalty: request.sampling.frequency_penalty,
+				presence_penalty: penalties_supported
+					.then_some(request.sampling.presence_penalty)
+					.flatten(),
+				frequency_penalty: penalties_supported
+					.then_some(request.sampling.frequency_penalty)
+					.flatten(),
 				max_output_tokens: request.max_output_tokens,
 				service_tier,
 				metadata: self.options.metadata.clone(),
@@ -2625,6 +2832,62 @@ impl OpenAiResponsesCodec {
 			},
 			adjustments,
 		})
+	}
+}
+
+/// Maps a canonical effort through the route's native spelling override.
+///
+/// The planner's `ThinkingSelection` wins; the wire policy's `effort_map`
+/// (xAI clamps `minimal` to `low`) applies otherwise. Unknown spellings fall
+/// back to the canonical projection.
+fn wire_reasoning_effort(
+	context: &super::EncodeContext<'_>,
+	effort: crate::catalog::ReasoningEffort,
+) -> ResponsesReasoningEffort {
+	let canonical = match effort {
+		crate::catalog::ReasoningEffort::Off => ResponsesReasoningEffort::None,
+		crate::catalog::ReasoningEffort::Minimal => ResponsesReasoningEffort::Minimal,
+		crate::catalog::ReasoningEffort::Low => ResponsesReasoningEffort::Low,
+		crate::catalog::ReasoningEffort::Medium => ResponsesReasoningEffort::Medium,
+		crate::catalog::ReasoningEffort::High => ResponsesReasoningEffort::High,
+		crate::catalog::ReasoningEffort::Xhigh | crate::catalog::ReasoningEffort::Max => {
+			ResponsesReasoningEffort::Xhigh
+		},
+	};
+	if let Some(native) = context
+		.thinking_selection
+		.and_then(|selection| selection.native_effort.as_deref())
+	{
+		return parse_reasoning_effort(native).unwrap_or(canonical);
+	}
+	let thinking = match effort {
+		crate::catalog::ReasoningEffort::Off => crate::catalog::ThinkingEffort::Off,
+		crate::catalog::ReasoningEffort::Minimal => crate::catalog::ThinkingEffort::Minimal,
+		crate::catalog::ReasoningEffort::Low => crate::catalog::ThinkingEffort::Low,
+		crate::catalog::ReasoningEffort::Medium => crate::catalog::ThinkingEffort::Medium,
+		crate::catalog::ReasoningEffort::High => crate::catalog::ThinkingEffort::High,
+		crate::catalog::ReasoningEffort::Xhigh => crate::catalog::ThinkingEffort::XHigh,
+		crate::catalog::ReasoningEffort::Max => crate::catalog::ThinkingEffort::Max,
+	};
+	context
+		.policy
+		.reasoning
+		.effort_map
+		.get(&thinking)
+		.and_then(|value| parse_reasoning_effort(value))
+		.unwrap_or(canonical)
+}
+
+/// Parses a native effort spelling into the Responses wire vocabulary.
+fn parse_reasoning_effort(value: &str) -> Option<ResponsesReasoningEffort> {
+	match value {
+		"none" => Some(ResponsesReasoningEffort::None),
+		"minimal" => Some(ResponsesReasoningEffort::Minimal),
+		"low" => Some(ResponsesReasoningEffort::Low),
+		"medium" => Some(ResponsesReasoningEffort::Medium),
+		"high" => Some(ResponsesReasoningEffort::High),
+		"xhigh" => Some(ResponsesReasoningEffort::Xhigh),
+		_ => None,
 	}
 }
 
@@ -2769,21 +3032,39 @@ impl ResponsesDecoderAdapter {
 			error::{Error, ErrorKind, ErrorPhase, RetryAction},
 			receipt::ExecutionReceipt,
 		};
-		let (kind, action) = match evidence.continuation {
-			ResponsesContinuationFailure::StalePreviousResponse
-			| ResponsesContinuationFailure::StaleServerItem => {
-				(ErrorKind::SessionExpired, RetryAction::ReseedSession)
-			},
-			ResponsesContinuationFailure::Malformed => {
-				(ErrorKind::StreamCorruption, RetryAction::Never)
-			},
-			ResponsesContinuationFailure::NotStale => (ErrorKind::Protocol, RetryAction::Never),
+		// A ChatGPT account not entitled to the requested Codex model is an
+		// account-scoped policy denial, not a plain provider error: rotate so an
+		// entitled sibling account can serve the request (pi PR #8756).
+		let model_policy_denial = evidence.continuation == ResponsesContinuationFailure::NotStale
+			&& is_codex_chatgpt_account_policy_denial(
+				self.provider.as_str(),
+				self.wire_model.as_deref(),
+				evidence.message.as_str(),
+			);
+		let (kind, action) = if model_policy_denial {
+			(ErrorKind::Authorization, RetryAction::RotateAccount)
+		} else {
+			match evidence.continuation {
+				ResponsesContinuationFailure::StalePreviousResponse
+				| ResponsesContinuationFailure::StaleServerItem => {
+					(ErrorKind::SessionExpired, RetryAction::ReseedSession)
+				},
+				ResponsesContinuationFailure::Malformed => {
+					(ErrorKind::StreamCorruption, RetryAction::Never)
+				},
+				ResponsesContinuationFailure::NotStale => (ErrorKind::Protocol, RetryAction::Never),
+			}
+		};
+		let code = if model_policy_denial {
+			Some(Str::new_static("codex_chatgpt_account_model_policy"))
+		} else {
+			evidence.code
 		};
 		Error::new(kind, ErrorPhase::Streaming, action, ExecutionReceipt::default())
 			.provider(self.provider.clone())
 			.route(self.route.clone())
 			.request_id(self.request_id.clone())
-			.optional_code(evidence.code)
+			.optional_code(code)
 			.committed(self.inner.committed_output())
 	}
 }
@@ -2959,15 +3240,17 @@ mod tests {
 	use std::sync::Arc;
 
 	use omp_core::Str;
-	use omp_llm_catalog::{Catalog, WireTarget};
+	use omp_llm_catalog::{Catalog, ReasoningEffort, RouteDef, ThinkingEffort, WireTarget};
 
 	use super::{
 		OpenAiResponsesCodec, OpenAiResponsesDecoder, ResponsesContinuationFailure,
-		ResponsesProjection, classify_continuation_error,
+		ResponsesInputItemKind, ResponsesProjection, ResponsesProviderProof,
+		classify_continuation_error, encode_provider_proof,
 	};
 	use crate::{
 		call::{
-			ChatRequest, NegotiationPolicy, OpaqueJson, Sampling, Setting, ToolDefinition,
+			ChatRequest, ContentPart, Message, NegotiationPolicy, OpaqueJson, ProviderProof,
+			ReasoningRequest, ReasoningVisibility, Role, Sampling, Setting, ToolDefinition,
 			ToolGrammar, ToolGrammarSyntax, ToolInputConstraint,
 		},
 		codec::{EncodeAttempt, EncodeContext},
@@ -3065,6 +3348,252 @@ mod tests {
 			.encode_chat(&context, &request_with_tool(input))
 			.expect("tool request encodes");
 		serde_json::to_vec(&encoded.request.tools).expect("tools serialize")
+	}
+
+	fn encode_with_policy(
+		policy: &omp_llm_catalog::policy::WirePolicy,
+		build: impl FnOnce(&RouteDef, &WireTarget) -> ChatRequest,
+	) -> super::EncodedResponses {
+		let catalog = Catalog::embedded();
+		let model = catalog
+			.models()
+			.iter()
+			.find(|model| {
+				model.routes.iter().any(|route| {
+					catalog
+						.route(route)
+						.is_some_and(|route| route.codec.as_str() == "openai-responses")
+				})
+			})
+			.expect("embedded Responses model");
+		let route = model
+			.routes
+			.iter()
+			.filter_map(|route| catalog.route(route))
+			.find(|route| route.codec.as_str() == "openai-responses")
+			.expect("embedded Responses route");
+		let wire_model = model
+			.wire_ids
+			.iter()
+			.find(|(candidate, _)| candidate == &route.id)
+			.expect("embedded Responses wire model")
+			.1
+			.clone();
+		let target = WireTarget {
+			route: route.id.clone(),
+			codec: route.codec.clone(),
+			endpoint: route.endpoint.clone(),
+			wire_model,
+		};
+		let request = build(route, &target);
+		let request_id = RequestId::new("responses-policy-encoding");
+		let context = EncodeContext {
+			request_id: &request_id,
+			route,
+			target: Some(&target),
+			policy_model: None,
+			policy,
+			thinking_policy: None,
+			thinking_selection: None,
+			session: None,
+			server_state: None,
+			account: None,
+			attempt: EncodeAttempt { index: 0, provisional: false },
+		};
+		OpenAiResponsesCodec::default()
+			.encode_chat(&context, &request)
+			.expect("policy request encodes")
+	}
+
+	/// First-party xAI `/v1/responses` wire policy: no summary, no penalties,
+	/// encrypted reasoning requested and replayed, `minimal` clamped to `low`.
+	fn xai_like_policy() -> omp_llm_catalog::policy::WirePolicy {
+		let mut policy = omp_llm_catalog::policy::WirePolicy::baseline();
+		policy.structured.penalties = Some(false);
+		policy.reasoning.supports_summary = Some(false);
+		policy.reasoning.include_encrypted = Some(true);
+		policy.reasoning.filter_history = Some(false);
+		policy
+			.reasoning
+			.effort_map
+			.insert(ThinkingEffort::Minimal, Str::new_static("low"));
+		policy
+	}
+
+	fn xai_replay_request(route: &RouteDef, target: &WireTarget) -> ChatRequest {
+		let proof = encode_provider_proof(&ResponsesProviderProof {
+			item_id: Some(Str::new_static("rs_1")),
+			encrypted_reasoning: Some(Str::new_static("enc_BLOB")),
+			..ResponsesProviderProof::default()
+		})
+		.expect("proof encodes");
+		ChatRequest {
+			messages:          Arc::from([
+				Message {
+					role:    Role::User,
+					content: Arc::from([ContentPart::Text { text: "hi".into(), proof: None }]),
+					name:    None,
+				},
+				Message {
+					role:    Role::Assistant,
+					content: Arc::from([ContentPart::Reasoning {
+						text:  Str::new_static("Inspect first."),
+						proof: Some(ProviderProof {
+							provider: route.provider.clone(),
+							codec:    target.codec.clone(),
+							value:    proof,
+						}),
+					}]),
+					name:    None,
+				},
+			]),
+			tools:             Arc::from([]),
+			hosted_tools:      Arc::from([]),
+			tool_choice:       Setting::Unset,
+			output:            Setting::Unset,
+			reasoning:         Setting::Require(ReasoningRequest {
+				visibility:          ReasoningVisibility::Summary,
+				effort:              Some(ReasoningEffort::Minimal),
+				max_tokens:          None,
+				preserve_signatures: false,
+			}),
+			verbosity:         Setting::Unset,
+			cache_retention:   Setting::Unset,
+			service_tier:      Setting::Unset,
+			sampling:          Sampling {
+				presence_penalty: Some(0.5),
+				frequency_penalty: Some(0.25),
+				..Sampling::default()
+			},
+			max_output_tokens: None,
+			top_logprobs:      None,
+			safety:            Arc::from([]),
+			negotiation:       NegotiationPolicy::default(),
+		}
+	}
+
+	#[test]
+	fn xai_policy_omits_summary_and_penalties_and_replays_encrypted_reasoning() {
+		let policy = xai_like_policy();
+		let encoded = encode_with_policy(&policy, xai_replay_request);
+		assert!(encoded.adjustments.is_empty(), "policy lowering is not an adjustment");
+		let request = &encoded.request;
+		// `minimal` clamps to `low` through the route effort map; the summary
+		// field is omitted entirely, not sent as null or filled with `auto`.
+		let reasoning = serde_json::to_value(request.reasoning.as_ref().expect("reasoning object"))
+			.expect("reasoning serializes");
+		assert_eq!(reasoning.get("effort"), Some(&serde_json::json!("low")));
+		assert!(reasoning.get("summary").is_none());
+		// api.x.ai rejects presence/frequency penalties for every Grok model.
+		assert_eq!(request.presence_penalty, None);
+		assert_eq!(request.frequency_penalty, None);
+		// Encrypted reasoning is requested via `include` and replayed from
+		// history proofs so later turns keep the encrypted chain.
+		assert!(
+			request
+				.include
+				.iter()
+				.any(|value| value == "reasoning.encrypted_content")
+		);
+		let replayed = request
+			.input
+			.iter()
+			.find(|item| item.kind == Some(ResponsesInputItemKind::Reasoning))
+			.expect("replayed reasoning item");
+		assert_eq!(replayed.encrypted_content.as_deref(), Some("enc_BLOB"));
+		assert_eq!(replayed.id.as_deref(), Some("rs_1"));
+	}
+
+	#[test]
+	fn filtered_reasoning_history_drops_replay_wrappers_without_adjustments() {
+		let mut policy = xai_like_policy();
+		policy.reasoning.filter_history = Some(true);
+		policy.reasoning.include_encrypted = Some(false);
+		let encoded = encode_with_policy(&policy, xai_replay_request);
+		assert!(encoded.adjustments.is_empty());
+		assert!(
+			!encoded
+				.request
+				.input
+				.iter()
+				.any(|item| item.kind == Some(ResponsesInputItemKind::Reasoning))
+		);
+		assert!(
+			!encoded
+				.request
+				.include
+				.iter()
+				.any(|value| value == "reasoning.encrypted_content")
+		);
+	}
+
+	#[test]
+	fn omitted_effort_with_no_summary_sends_no_reasoning_object_at_all() {
+		// No-dial Grok rows 400 on `reasoning.effort`, and api.x.ai rejects
+		// `reasoning.summary`; with both omitted the object carries nothing,
+		// so the wire drops `reasoning` entirely rather than sending `{}`.
+		let mut policy = xai_like_policy();
+		policy.reasoning.omit_effort = Some(true);
+		let encoded = encode_with_policy(&policy, xai_replay_request);
+		assert!(encoded.request.reasoning.is_none());
+	}
+
+	#[test]
+	fn tool_choice_policy_omits_forced_selectors_while_preserving_tools() {
+		// Console Go's Responses route rejects forced named selectors for
+		// DeepSeek V4 while thinking mode is active (#8244); the selector is
+		// dropped but the tool definitions stay on the wire.
+		let mut policy = omp_llm_catalog::policy::WirePolicy::baseline();
+		policy.tool.supports_tool_choice = Some(false);
+		let encoded = encode_with_policy(&policy, |_, _| {
+			let mut request = request_with_tool(ToolInputConstraint::JsonSchema {
+				parameters: OpaqueJson::new(serde_json::json!({"type": "object"})),
+				strict:     false,
+			});
+			request.tool_choice =
+				Setting::Require(crate::call::ToolChoice::Named(Str::new_static("match_input")));
+			request
+		});
+		assert_eq!(encoded.request.tool_choice, None, "rejected selector is omitted");
+		assert_eq!(encoded.request.tools.len(), 1, "tool definitions are preserved");
+		assert_eq!(encoded.request.tools[0].name.as_deref(), Some("match_input"));
+		assert!(
+			matches!(
+				&encoded.adjustments[..],
+				[super::ResponsesAdjustment::Dropped { field, .. }] if field == "tool_choice"
+			),
+			"the drop is recorded as an adjustment"
+		);
+	}
+
+	#[test]
+	fn forced_choice_policy_keeps_auto_but_drops_required_selectors() {
+		let mut policy = omp_llm_catalog::policy::WirePolicy::baseline();
+		policy.tool.forced_choice = Some(false);
+		let encoded = encode_with_policy(&policy, |_, _| {
+			let mut request = request_with_tool(ToolInputConstraint::JsonSchema {
+				parameters: OpaqueJson::new(serde_json::json!({"type": "object"})),
+				strict:     false,
+			});
+			request.tool_choice = Setting::Require(crate::call::ToolChoice::Required);
+			request
+		});
+		assert_eq!(encoded.request.tool_choice, None);
+		let encoded = encode_with_policy(&policy, |_, _| {
+			let mut request = request_with_tool(ToolInputConstraint::JsonSchema {
+				parameters: OpaqueJson::new(serde_json::json!({"type": "object"})),
+				strict:     false,
+			});
+			request.tool_choice = Setting::Require(crate::call::ToolChoice::Auto);
+			request
+		});
+		assert!(
+			matches!(
+				encoded.request.tool_choice,
+				Some(super::ResponsesToolChoice::Mode(super::ResponsesToolChoiceMode::Auto))
+			),
+			"auto is not a forced selector and stays on the wire"
+		);
 	}
 
 	#[test]
@@ -3244,5 +3773,124 @@ mod tests {
 				.is_empty()
 		);
 		assert!(decoder.finish().is_empty());
+	}
+
+	const CODEX_DENIAL: &str = "The 'gpt-daybreak-blue-latest' model is not supported when using \
+	                            Codex with a ChatGPT account. (code=invalid_request_error)";
+
+	#[test]
+	fn codex_chatgpt_model_denial_matches_only_the_exact_sentence() {
+		use super::codex_chatgpt_account_policy_model as model_of;
+		assert_eq!(model_of(CODEX_DENIAL), Some("gpt-daybreak-blue-latest"));
+		// Double quotes and case-insensitive sentence also match.
+		assert_eq!(
+			model_of(
+				"the \"GPT-Daybreak-Blue-Latest\" MODEL IS NOT SUPPORTED WHEN USING CODEX WITH A \
+				 CHATGPT ACCOUNT."
+			),
+			Some("GPT-Daybreak-Blue-Latest")
+		);
+		// Near misses never match: missing period, different sentence, unquoted
+		// model, model spanning lines, or an embedded word boundary violation.
+		assert_eq!(
+			model_of(
+				"The 'gpt-daybreak-blue-latest' model is not supported when using Codex with a \
+				 ChatGPT account"
+			),
+			None
+		);
+		assert_eq!(
+			model_of(
+				"The gpt-daybreak model is not supported when using Codex with a ChatGPT account."
+			),
+			None
+		);
+		assert_eq!(
+			model_of("The '' model is not supported when using Codex with a ChatGPT account."),
+			None
+		);
+		assert_eq!(
+			model_of("The 'a\nb' model is not supported when using Codex with a ChatGPT account."),
+			None
+		);
+		assert_eq!(
+			model_of("Breathe 'x' model is not supported when using Codex with a ChatGPT account."),
+			None
+		);
+	}
+
+	#[test]
+	fn codex_model_denial_rotates_only_for_the_requested_model_on_codex() {
+		use super::is_codex_chatgpt_account_policy_denial as denial;
+		// Exact provider and model identity: rotation fires.
+		assert!(denial("openai-codex", Some("gpt-daybreak-blue-latest"), CODEX_DENIAL));
+		// Provider-prefixed and case-shifted requested ids normalize to the same
+		// bare identity.
+		assert!(denial("openai-codex", Some("openai-codex/GPT-Daybreak-Blue-Latest"), CODEX_DENIAL));
+		// A denial naming some other model must not burn sibling credentials.
+		assert!(!denial("openai-codex", Some("gpt-5.3-codex"), CODEX_DENIAL));
+		// Non-Codex providers never rotate on this provider-controlled sentence.
+		assert!(!denial("openai", Some("gpt-daybreak-blue-latest"), CODEX_DENIAL));
+		// Absent or unbounded requested identity never matches.
+		assert!(!denial("openai-codex", None, CODEX_DENIAL));
+		let oversized = "m".repeat(300);
+		assert!(!denial("openai-codex", Some(oversized.as_str()), CODEX_DENIAL));
+	}
+
+	#[test]
+	fn codex_model_denial_classifies_as_account_rotation() {
+		use crate::error::{ErrorKind, RetryAction};
+		let adapter = super::ResponsesDecoderAdapter {
+			inner:      OpenAiResponsesDecoder::default(),
+			request_id: RequestId::new("request"),
+			provider:   crate::catalog::ProviderId::from("openai-codex"),
+			route:      crate::catalog::RouteId::from("openai-codex/primary"),
+			wire_model: Some(Str::from("gpt-daybreak-blue-latest")),
+		};
+		let denial = adapter.error_from_evidence(super::ResponsesErrorEvidence {
+			code:         None,
+			message:      Str::from(CODEX_DENIAL),
+			continuation: ResponsesContinuationFailure::NotStale,
+		});
+		assert_eq!(denial.kind, ErrorKind::Authorization);
+		assert_eq!(denial.action, RetryAction::RotateAccount);
+		assert_eq!(denial.code.as_deref(), Some("codex_chatgpt_account_model_policy"));
+		assert!(!denial.committed);
+
+		// The identical sentence naming another model stays a plain provider
+		// error with no rotation.
+		let unrelated = adapter.error_from_evidence(super::ResponsesErrorEvidence {
+			code:         None,
+			message:      Str::from(
+				"The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.",
+			),
+			continuation: ResponsesContinuationFailure::NotStale,
+		});
+		assert_eq!(unrelated.kind, ErrorKind::Protocol);
+		assert_eq!(unrelated.action, RetryAction::Never);
+	}
+
+	#[test]
+	fn bare_error_envelope_preserves_code_and_message_for_classification() {
+		// Non-2xx bodies arrive as `{"error":{…}}` without a stream event type;
+		// the denial message must survive into the error evidence.
+		let mut decoder = OpenAiResponsesDecoder::default();
+		let events = decoder.push_json(
+			format!(r#"{{"error":{{"type":"invalid_request_error","message":"{CODEX_DENIAL}"}}}}"#)
+				.replace("(code=invalid_request_error)", "")
+				.as_bytes(),
+		);
+		match events.as_slice() {
+			[ResponsesProjection::Error(evidence)] => {
+				assert_eq!(evidence.continuation, ResponsesContinuationFailure::NotStale);
+				assert_eq!(evidence.code.as_deref(), Some("invalid_request_error"));
+				assert!(
+					evidence
+						.message
+						.contains("model is not supported when using Codex")
+				);
+			},
+			other => panic!("expected error evidence, got {other:?}"),
+		}
 	}
 }

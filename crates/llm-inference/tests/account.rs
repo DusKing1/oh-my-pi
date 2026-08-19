@@ -151,27 +151,25 @@ fn quota_headroom_ranks_accounts_and_exhaustion_expires_at_provider_reset() {
 	let route = RouteId::from("route");
 	let loaded = AccountId::new("loaded");
 	let sibling = AccountId::new("sibling");
-	pool.upsert(record("loaded", "loaded-principal", &route)).unwrap();
+	pool
+		.upsert(record("loaded", "loaded-principal", &route))
+		.unwrap();
 	pool
 		.upsert(record("sibling", "sibling-principal", &route))
 		.unwrap();
-	for (account, five_hour, weekly) in [
-		(loaded.clone(), 90, 80),
-		(sibling.clone(), 50, 50),
-	] {
-		for (window, remaining, reset_at) in [
-			("5h", five_hour, at(18_100)),
-			("7d", weekly, at(604_900)),
-		] {
+	for (account, five_hour, weekly) in [(loaded.clone(), 90, 80), (sibling.clone(), 50, 50)] {
+		for (window, remaining, reset_at) in
+			[("5h", five_hour, at(18_100)), ("7d", weekly, at(604_900))]
+		{
 			pool
 				.observe_quota(account.clone(), QuotaObservation {
-					window: QuotaWindowId::new(window),
-					consumed: Some(100 - remaining),
-					remaining: Some(remaining),
-					limit: Some(100),
-					reset_at: Some(reset_at),
-					exhausted: Some(false),
-					provenance: QuotaProvenance::Provider,
+					window:      QuotaWindowId::new(window),
+					consumed:    Some(100 - remaining),
+					remaining:   Some(remaining),
+					limit:       Some(100),
+					reset_at:    Some(reset_at),
+					exhausted:   Some(false),
+					provenance:  QuotaProvenance::Provider,
 					observed_at: at(100),
 				})
 				.unwrap();
@@ -186,12 +184,7 @@ fn quota_headroom_ranks_accounts_and_exhaustion_expires_at_provider_reset() {
 		loaded
 	);
 	pool
-		.record_quota_429(
-			loaded.clone(),
-			QuotaWindowId::new("5h"),
-			Some(at(18_100)),
-			at(101),
-		)
+		.record_quota_429(loaded.clone(), QuotaWindowId::new("5h"), Some(at(18_100)), at(101))
 		.unwrap();
 	assert_eq!(
 		pool
@@ -208,6 +201,71 @@ fn quota_headroom_ranks_accounts_and_exhaustion_expires_at_provider_reset() {
 			.record
 			.account,
 		loaded
+	);
+}
+
+#[test]
+fn model_policy_cooldown_blocks_one_route_and_rotates_to_an_entitled_sibling() {
+	// A ChatGPT account denied one Codex model (pi #8756) must stop competing
+	// for that model while its other entitlements — and its siblings — keep
+	// working; the block expires on its own.
+	let pool = AccountPool::new();
+	let denied_route = RouteId::from("codex/gpt-daybreak");
+	let other_route = RouteId::from("codex/gpt-codex");
+	let mut denied = record("denied", "denied-principal", &denied_route);
+	denied.routes.insert(other_route.clone());
+	let mut sibling = record("sibling", "sibling-principal", &denied_route);
+	sibling.routes.insert(other_route.clone());
+	pool.upsert(denied).unwrap();
+	pool.upsert(sibling).unwrap();
+
+	pool.cooldown_route(
+		AccountId::new("denied"),
+		denied_route.clone(),
+		at(500),
+		CooldownReason::ModelPolicy,
+	);
+
+	// The denied model rotates to the sibling, with typed cooldown evidence.
+	let selection = pool
+		.select(&selection_request(&denied_route, at(100)))
+		.unwrap();
+	assert_eq!(selection.record.account, AccountId::new("sibling"));
+	let denied_evidence = selection
+		.receipt
+		.candidates
+		.iter()
+		.find(|candidate| candidate.account == AccountId::new("denied"))
+		.unwrap();
+	assert_eq!(denied_evidence.eligibility, Eligibility::Cooldown {
+		until:  at(500),
+		reason: CooldownReason::ModelPolicy,
+	});
+	assert_eq!(denied_evidence.eligible_at, Some(at(500)));
+
+	// Every other model on the denied account stays eligible.
+	assert_eq!(
+		pool
+			.select(&selection_request(&other_route, at(100)))
+			.unwrap()
+			.record
+			.account,
+		AccountId::new("denied")
+	);
+
+	// The block expires: the denied account competes for the model again.
+	let recovered = pool
+		.select(&selection_request(&denied_route, at(500)))
+		.unwrap();
+	assert_eq!(
+		recovered
+			.receipt
+			.candidates
+			.iter()
+			.find(|candidate| candidate.account == AccountId::new("denied"))
+			.unwrap()
+			.eligibility,
+		Eligibility::Eligible
 	);
 }
 

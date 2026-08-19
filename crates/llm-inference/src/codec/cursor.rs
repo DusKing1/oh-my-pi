@@ -6,12 +6,7 @@
 //! stream even though the pinned descriptor declares the method unary;
 //! descriptor tests make that observed drift explicit.
 
-use std::{
-	collections::BTreeMap,
-	fmt,
-	sync::Arc,
-	time::Duration,
-};
+use std::{collections::BTreeMap, fmt, sync::Arc, time::Duration};
 
 use bytes::{BufMut as _, Bytes, BytesMut};
 use omp_core::Str;
@@ -19,8 +14,8 @@ use omp_llm_catalog::{
 	Availability, ChatCapabilities, DiscoveredModel, ExtendedContextMode, ModelCapabilities,
 	OperationBits, OperationKind, ReasoningCapabilities, ReasoningFeatureBits, WireModelId,
 };
-use prost::Message;
 use parking_lot::Mutex;
+use prost::Message;
 use prost_types::FileDescriptorSet;
 
 use super::{
@@ -60,8 +55,13 @@ pub mod wire {
 }
 
 /// SHA-256 of the checked-in source compiled by this crate.
-pub const SCHEMA_SHA256: &str = "aa6d1715e8ba8309c9049d3d1d9acbea75454f852a82ff22292843c1010ae527";
+pub const SCHEMA_SHA256: &str = "fc1ac3ed472676e6d863fe2238ab1529247b68d3ea21f33b3fae1abae481892c";
 /// Repository commit from which the checked-in schema was recovered.
+///
+/// The checked-in copy additionally models the hosted `WebFetch` interaction
+/// gate (`ToolCall.web_fetch_tool_call = 37`,
+/// `InteractionQuery`/`InteractionResponse` field 9) observed on later Cursor
+/// builds.
 pub const SCHEMA_SOURCE_COMMIT: &str = "b6e01c8a3c836032823e13a404ceca2e968b6411";
 /// Cursor's bidirectional Agent Connect method.
 pub const RUN_PATH: &str = "/agent.v1.AgentService/Run";
@@ -795,12 +795,16 @@ pub enum CursorEvent {
 		/// Encoded `ConversationStateStructure`.
 		data: Bytes,
 	},
-	/// Correlated Cursor interaction query requiring a typed response.
+	/// Correlated Cursor interaction query answered by the codec.
 	InteractionQuery {
 		/// Query correlation identifier.
 		id:    u32,
-		/// Generated typed query payload.
-		query: wire::interaction_query::Query,
+		/// Generated typed query payload; `None` for an unnamed variant that
+		/// was approved on its raw wire field.
+		query: Option<wire::interaction_query::Query>,
+		/// Prepared Connect-framed `AgentClientMessage` answer for the client
+		/// stream; `None` when silence is the only honest reply (VM setup).
+		reply: Option<Bytes>,
 	},
 	/// Terminal chat facts awaiting final receipt accounting.
 	Completion {
@@ -867,14 +871,14 @@ impl CursorDecoder {
 				self.committed,
 			));
 		}
-		let message = wire::AgentServerMessage::decode(payload).map_err(|_| {
+		let message = wire::AgentServerMessage::decode(payload.clone()).map_err(|_| {
 			CursorProtocolError::new(
 				CursorErrorKind::Malformed,
 				"malformed Cursor AgentServerMessage",
 				self.committed,
 			)
 		})?;
-		self.project(message)
+		self.project(message, &payload)
 	}
 
 	/// Applies a Connect end-stream payload without exposing it as protobuf.
@@ -948,13 +952,15 @@ impl CursorDecoder {
 			self.committed,
 		))
 	}
-	fn saw_token_delta(&self) -> bool {
+
+	const fn saw_token_delta(&self) -> bool {
 		self.saw_usage
 	}
 
 	fn project(
 		&mut self,
 		message: wire::AgentServerMessage,
+		payload: &[u8],
 	) -> Result<Vec<CursorEvent>, CursorProtocolError> {
 		match message.message {
 			Some(wire::agent_server_message::Message::InteractionUpdate(update)) => {
@@ -974,10 +980,7 @@ impl CursorDecoder {
 				Ok(vec![CursorEvent::Checkpoint { data: Bytes::from(checkpoint.encode_to_vec()) }])
 			},
 			Some(wire::agent_server_message::Message::InteractionQuery(query)) => {
-				let Some(payload) = query.query else {
-					return Ok(Vec::new());
-				};
-				Ok(vec![CursorEvent::InteractionQuery { id: query.id, query: payload }])
+				Ok(project_interaction_query(query, payload))
 			},
 			Some(wire::agent_server_message::Message::KvServerMessage(_)) | None => Ok(Vec::new()),
 		}
@@ -1204,7 +1207,7 @@ fn tool_name(tool: Option<&wire::ToolCall>) -> Str {
 		Tool::ReadMcpResourceToolCall(_) => "read_mcp_resource",
 		Tool::ApplyAgentDiffToolCall(_) => "apply_agent_diff",
 		Tool::AskQuestionToolCall(_) => "ask_question",
-		Tool::FetchToolCall(_) => "fetch",
+		Tool::FetchToolCall(_) | Tool::WebFetchToolCall(_) => "fetch",
 		Tool::SwitchModeToolCall(_) => "switch_mode",
 		Tool::ExaSearchToolCall(_) => "exa_search",
 		Tool::ExaFetchToolCall(_) => "exa_fetch",
@@ -1225,6 +1228,184 @@ fn tool_name(tool: Option<&wire::ToolCall>) -> Str {
 	Str::new_static(name)
 }
 
+/// Rejection-reason suffix answered for interactive queries this client does
+/// not implement.
+pub const NOT_IMPLEMENTED_SUFFIX: &str = "not implemented by this client";
+
+/// Field number of `AgentServerMessage.interaction_query`.
+const INTERACTION_QUERY_FIELD: u32 = 7;
+/// Field number of `AgentClientMessage.interaction_response`.
+const INTERACTION_RESPONSE_FIELD: u32 = 6;
+
+/// Projects one decoded `InteractionQuery` into its answered codec event.
+///
+/// `payload` is the raw `AgentServerMessage` protobuf: when the query variant
+/// is not named by the schema, prost drops it into the void, so the raw bytes
+/// are rescanned for the unnamed permission gate that must still be approved.
+/// A query with no variant at all is dropped rather than answered blindly.
+fn project_interaction_query(query: wire::InteractionQuery, payload: &[u8]) -> Vec<CursorEvent> {
+	let id = query.id;
+	if let Some(named) = query.query {
+		let reply = interaction_query_response(id, &named).map(|response| {
+			connect_message(&wire::AgentClientMessage {
+				message: Some(wire::agent_client_message::Message::InteractionResponse(response)),
+			})
+		});
+		vec![CursorEvent::InteractionQuery { id, query: Some(named), reply }]
+	} else {
+		let Some(field) =
+			raw_len_field(payload, INTERACTION_QUERY_FIELD).and_then(first_unknown_query_field)
+		else {
+			return Vec::new();
+		};
+		vec![CursorEvent::InteractionQuery {
+			id,
+			query: None,
+			reply: Some(connect_raw_message(&unknown_interaction_query_response(id, field))),
+		}]
+	}
+}
+
+/// Builds the typed client answer for one named Cursor interaction query.
+///
+/// Network permission gates (hosted web search, Exa search/fetch, hosted
+/// `WebFetch`) are approved so the Run stream is not stranded on heartbeats
+/// until the idle watchdog aborts. Interactive queries (ask-question, mode
+/// switch, plan creation) are rejected so the server can route around the
+/// capability. VM setup returns `None`: its result oneof is success-only and
+/// a fake `SetupVmEnvironmentSuccess` is worse than silence.
+pub fn interaction_query_response(
+	id: u32,
+	query: &wire::interaction_query::Query,
+) -> Option<wire::InteractionResponse> {
+	use wire::{interaction_query::Query, interaction_response::Result as Reply};
+	let result = match query {
+		Query::WebSearchRequestQuery(_) => {
+			Reply::WebSearchRequestResponse(wire::WebSearchRequestResponse {
+				result: Some(wire::web_search_request_response::Result::Approved(
+					wire::WebSearchRequestResponseApproved {},
+				)),
+			})
+		},
+		Query::ExaSearchRequestQuery(_) => {
+			Reply::ExaSearchRequestResponse(wire::ExaSearchRequestResponse {
+				result: Some(wire::exa_search_request_response::Result::Approved(
+					wire::ExaSearchRequestResponseApproved {},
+				)),
+			})
+		},
+		Query::ExaFetchRequestQuery(_) => {
+			Reply::ExaFetchRequestResponse(wire::ExaFetchRequestResponse {
+				result: Some(wire::exa_fetch_request_response::Result::Approved(
+					wire::ExaFetchRequestResponseApproved {},
+				)),
+			})
+		},
+		Query::WebFetchRequestQuery(_) => {
+			Reply::WebFetchRequestResponse(wire::WebFetchRequestResponse {
+				result: Some(wire::web_fetch_request_response::Result::Approved(
+					wire::WebFetchRequestResponseApproved {},
+				)),
+			})
+		},
+		Query::AskQuestionInteractionQuery(_) => {
+			Reply::AskQuestionInteractionResponse(wire::AskQuestionInteractionResponse {
+				result: Some(wire::AskQuestionResult {
+					result: Some(wire::ask_question_result::Result::Rejected(
+						wire::AskQuestionRejected {
+							reason: format!("Interactive questions are {NOT_IMPLEMENTED_SUFFIX}"),
+						},
+					)),
+				}),
+			})
+		},
+		Query::SwitchModeRequestQuery(_) => {
+			Reply::SwitchModeRequestResponse(wire::SwitchModeRequestResponse {
+				result: Some(wire::switch_mode_request_response::Result::Rejected(
+					wire::SwitchModeRequestResponseRejected {
+						reason: format!("Mode switches are {NOT_IMPLEMENTED_SUFFIX}"),
+					},
+				)),
+			})
+		},
+		Query::CreatePlanRequestQuery(_) => {
+			Reply::CreatePlanRequestResponse(wire::CreatePlanRequestResponse {
+				result: Some(wire::CreatePlanResult {
+					plan_uri: String::new(),
+					result:   Some(wire::create_plan_result::Result::Error(wire::CreatePlanError {
+						error: format!("Plan files are {NOT_IMPLEMENTED_SUFFIX}"),
+					})),
+				}),
+			})
+		},
+		// The result oneof is success-only; do not invent a VM.
+		Query::SetupVmEnvironmentArgs(_) => return None,
+	};
+	Some(wire::InteractionResponse { id, result: Some(result) })
+}
+
+/// Encodes the raw `approved {}` answer for an unnamed interaction-query
+/// variant as one complete `AgentClientMessage`.
+///
+/// The reply mirrors the query's own field number inside the response oneof.
+/// The embedded variant message (`approved` on field 1, empty payload) MUST
+/// be length-prefixed: writing bare `0a 00` after the tag produces a frame
+/// the server cannot decode, because the `0a` is read as the length.
+pub fn unknown_interaction_query_response(id: u32, field: u32) -> Vec<u8> {
+	use prost::encoding::{WireType, encode_key, encode_varint};
+	let mut response = BytesMut::with_capacity(16);
+	encode_key(1, WireType::Varint, &mut response);
+	encode_varint(u64::from(id), &mut response);
+	encode_key(field, WireType::LengthDelimited, &mut response);
+	// `approved {}`: length 2, then field 1 with an empty LEN payload.
+	response.put_slice(&[0x02, 0x0a, 0x00]);
+	let mut client = BytesMut::with_capacity(response.len() + 4);
+	encode_key(INTERACTION_RESPONSE_FIELD, WireType::LengthDelimited, &mut client);
+	encode_varint(response.len() as u64, &mut client);
+	client.put_slice(&response);
+	client.to_vec()
+}
+
+/// Adds a Connect data envelope around already-encoded protobuf bytes.
+fn connect_raw_message(payload: &[u8]) -> Bytes {
+	let mut bytes = BytesMut::with_capacity(payload.len() + 5);
+	bytes.put_u8(0);
+	bytes
+		.put_u32(u32::try_from(payload.len()).expect("Cursor protobuf message exceeds u32 framing"));
+	bytes.put_slice(payload);
+	bytes.freeze()
+}
+
+/// Returns the raw bytes of the first length-delimited `want` field in `buf`.
+fn raw_len_field(mut buf: &[u8], want: u32) -> Option<&[u8]> {
+	use prost::encoding::{DecodeContext, WireType, decode_key, decode_varint, skip_field};
+	while !buf.is_empty() {
+		let (field, wire_type) = decode_key(&mut buf).ok()?;
+		if wire_type == WireType::LengthDelimited && field == want {
+			let length = usize::try_from(decode_varint(&mut buf).ok()?).ok()?;
+			return buf.get(..length);
+		}
+		skip_field(wire_type, field, &mut buf, DecodeContext::default()).ok()?;
+	}
+	None
+}
+
+/// Finds the unnamed permission-gate variant inside raw `InteractionQuery`
+/// bytes: the first length-delimited field past the `id` scalar.
+fn first_unknown_query_field(mut buf: &[u8]) -> Option<u32> {
+	use prost::encoding::{DecodeContext, WireType, decode_key, skip_field};
+	while !buf.is_empty() {
+		let (field, wire_type) = decode_key(&mut buf).ok()?;
+		if wire_type == WireType::LengthDelimited && field >= 2 {
+			return Some(field);
+		}
+		skip_field(wire_type, field, &mut buf, DecodeContext::default()).ok()?;
+	}
+	None
+}
+
+/// Sans-I/O Cursor Agent codec registered under the catalog codec id `cursor`,
+/// carrying shared poisoned-conversation rotation state across attempts.
 #[derive(Clone, Debug, Default)]
 pub struct CursorCodec {
 	conversations: Arc<Mutex<CursorConversationRotations>>,
@@ -1244,15 +1425,21 @@ struct CursorConversationRotations {
 
 impl CursorConversationRotations {
 	fn resolve(&self, base: &Str) -> Str {
-		self.rotated.get(base).cloned().unwrap_or_else(|| base.clone())
+		self
+			.rotated
+			.get(base)
+			.cloned()
+			.unwrap_or_else(|| base.clone())
 	}
 
 	fn begin(&mut self, request: &RequestId, base: &Str) -> Str {
 		let wire = self.resolve(base);
-		self.pending.insert(request.clone(), CursorConversationAttempt {
-			base: base.clone(),
-			seed: Str::from(request.as_str()),
-		});
+		self
+			.pending
+			.insert(request.clone(), CursorConversationAttempt {
+				base: base.clone(),
+				seed: Str::from(request.as_str()),
+			});
 		wire
 	}
 
@@ -1285,9 +1472,7 @@ impl Codec for CursorCodec {
 		operation: &OperationCall,
 	) -> Result<EncodedRequest, Error> {
 		match operation {
-			OperationCall::Chat(request) => {
-				encode_chat_call(context, request, &self.conversations)
-			},
+			OperationCall::Chat(request) => encode_chat_call(context, request, &self.conversations),
 			OperationCall::DiscoverModels(request) => {
 				if request.cursor.is_some() {
 					return Err(encoding_error("cursor_discovery_has_no_pagination"));
@@ -1321,12 +1506,12 @@ impl Codec for CursorCodec {
 			.then(|| self.conversations.lock().take(context.request_id))
 			.flatten();
 		Ok(Box::new(CursorWireDecoder {
-			operation:      context.operation,
-			provider:       context.provider.clone(),
-			route:          context.route.clone(),
-			agent:          CursorDecoder::default(),
+			operation: context.operation,
+			provider: context.provider.clone(),
+			route: context.route.clone(),
+			agent: CursorDecoder::default(),
 			discovery_done: false,
-			conversations:  Arc::clone(&self.conversations),
+			conversations: Arc::clone(&self.conversations),
 			conversation,
 		}))
 	}
@@ -1674,11 +1859,12 @@ fn cursor_raw_event(event: CursorEvent) -> RawEvent {
 		CursorEvent::Checkpoint { data } => {
 			RawEvent::ProviderState(ProviderStateEvent::Checkpoint { id: None, data })
 		},
-		CursorEvent::InteractionQuery { id, query } => {
-			let kind = interaction_query_kind(&query);
-			let payload =
-				Bytes::from(wire::InteractionQuery { id, query: Some(query) }.encode_to_vec());
-			RawEvent::Control(ProviderControlEvent::InteractionQuery { id, kind, payload })
+		CursorEvent::InteractionQuery { id, query, reply } => {
+			let kind = query
+				.as_ref()
+				.map_or(Str::new_static("unknown"), interaction_query_kind);
+			let payload = Bytes::from(wire::InteractionQuery { id, query }.encode_to_vec());
+			RawEvent::Control(ProviderControlEvent::InteractionQuery { id, kind, payload, reply })
 		},
 		CursorEvent::Completion { reason, blocks, usage } => {
 			RawEvent::Completion(RawCompletion { reason, blocks, usage })
@@ -1690,6 +1876,7 @@ const fn interaction_query_kind(query: &wire::interaction_query::Query) -> Str {
 	use wire::interaction_query::Query;
 	Str::new_static(match query {
 		Query::WebSearchRequestQuery(_) => "web_search",
+		Query::WebFetchRequestQuery(_) => "web_fetch",
 		Query::AskQuestionInteractionQuery(_) => "ask_question",
 		Query::SwitchModeRequestQuery(_) => "switch_mode",
 		Query::ExaSearchRequestQuery(_) => "exa_search",
@@ -1707,10 +1894,9 @@ fn inference_error(error: CursorProtocolError) -> Error {
 		CursorErrorKind::Cancelled => (ErrorKind::Cancelled, RetryAction::Never),
 		CursorErrorKind::Authentication => (ErrorKind::Authentication, RetryAction::Never),
 		CursorErrorKind::Upstream => (ErrorKind::Protocol, RetryAction::Never),
-		CursorErrorKind::ResourceExhausted => (
-			ErrorKind::ResourceExhausted,
-			RetryAction::SameRoute { after: Duration::from_secs(1) },
-		),
+		CursorErrorKind::ResourceExhausted => {
+			(ErrorKind::ResourceExhausted, RetryAction::SameRoute { after: Duration::from_secs(1) })
+		},
 		CursorErrorKind::ContextOverflow => (ErrorKind::ContextOverflow, RetryAction::Never),
 		CursorErrorKind::Unsupported => (ErrorKind::CapabilityMismatch, RetryAction::Never),
 	};
@@ -1831,6 +2017,317 @@ mod tests {
 		assert_eq!(field("token_delta"), Some(8));
 		assert_eq!(field("turn_ended"), Some(14));
 		assert_eq!(field("tool_call_delta"), Some(15));
+
+		let message_field = |message_name: &str, field_name: &str| {
+			file
+				.message_type
+				.iter()
+				.find(|message| message.name.as_deref() == Some(message_name))
+				.expect("pinned message descriptor")
+				.field
+				.iter()
+				.find(|field| field.name.as_deref() == Some(field_name))
+				.and_then(|field| field.number)
+		};
+		assert_eq!(message_field("InteractionQuery", "web_fetch_request_query"), Some(9));
+		assert_eq!(message_field("InteractionResponse", "web_fetch_request_response"), Some(9));
+		assert_eq!(message_field("ToolCall", "web_fetch_tool_call"), Some(37));
+		assert_eq!(message_field("AgentClientMessage", "interaction_response"), Some(6));
+		assert_eq!(message_field("AgentServerMessage", "interaction_query"), Some(7));
+	}
+
+	#[test]
+	fn interaction_queries_are_answered_with_length_prefixed_replies() {
+		use wire::{interaction_query::Query, interaction_response::Result as Reply};
+
+		#[derive(serde::Deserialize)]
+		struct Fixture {
+			cases: Vec<Case>,
+		}
+		#[derive(serde::Deserialize)]
+		struct Case {
+			query:           String,
+			id:              u32,
+			#[serde(default)]
+			kind:            Option<String>,
+			disposition:     String,
+			#[serde(default)]
+			reason:          Option<String>,
+			#[serde(default)]
+			query_frame_hex: Option<String>,
+			#[serde(default)]
+			reply_frame_hex: Option<String>,
+		}
+
+		fn server_query(id: u32, query: Option<Query>) -> Bytes {
+			Bytes::from(
+				wire::AgentServerMessage {
+					message: Some(wire::agent_server_message::Message::InteractionQuery(
+						wire::InteractionQuery { id, query },
+					)),
+				}
+				.encode_to_vec(),
+			)
+		}
+
+		fn named_query(name: &str) -> Query {
+			match name {
+				"web_search_request_query" => {
+					Query::WebSearchRequestQuery(wire::WebSearchRequestQuery::default())
+				},
+				"ask_question_interaction_query" => {
+					Query::AskQuestionInteractionQuery(wire::AskQuestionInteractionQuery::default())
+				},
+				"switch_mode_request_query" => {
+					Query::SwitchModeRequestQuery(wire::SwitchModeRequestQuery::default())
+				},
+				"exa_search_request_query" => {
+					Query::ExaSearchRequestQuery(wire::ExaSearchRequestQuery::default())
+				},
+				"exa_fetch_request_query" => {
+					Query::ExaFetchRequestQuery(wire::ExaFetchRequestQuery::default())
+				},
+				"create_plan_request_query" => {
+					Query::CreatePlanRequestQuery(wire::CreatePlanRequestQuery::default())
+				},
+				"setup_vm_environment_args" => {
+					Query::SetupVmEnvironmentArgs(wire::SetupVmEnvironmentArgs::default())
+				},
+				"web_fetch_request_query" => {
+					Query::WebFetchRequestQuery(wire::WebFetchRequestQuery::default())
+				},
+				other => panic!("unpinned query case {other}"),
+			}
+		}
+
+		fn decode_reply(reply: &Bytes) -> wire::AgentClientMessage {
+			assert_eq!(reply[0], 0, "reply is an uncompressed Connect data envelope");
+			let length = u32::from_be_bytes(reply[1..5].try_into().expect("length prefix")) as usize;
+			assert_eq!(length + 5, reply.len(), "envelope length covers the full payload");
+			wire::AgentClientMessage::decode(&reply[5..]).expect("reply frame decodes")
+		}
+
+		fn reply_response(reply: &Bytes) -> wire::InteractionResponse {
+			let Some(wire::agent_client_message::Message::InteractionResponse(response)) =
+				decode_reply(reply).message
+			else {
+				panic!("reply is an interaction_response client message")
+			};
+			response
+		}
+
+		let fixture: Fixture = serde_json::from_slice(&fixture("interaction.queries.json"))
+			.expect("typed interaction fixture");
+		for case in fixture.cases {
+			let events = match case.query.as_str() {
+				"unknown" => {
+					let payload =
+						Bytes::from(decode_hex(case.query_frame_hex.as_deref().expect("raw query")));
+					CursorDecoder::default()
+						.push_payload(payload)
+						.expect("unknown variant query")
+				},
+				"none" => {
+					let events = CursorDecoder::default()
+						.push_payload(server_query(case.id, None))
+						.expect("bare query");
+					assert!(events.is_empty(), "a variant-free query is dropped, not answered");
+					continue;
+				},
+				name => CursorDecoder::default()
+					.push_payload(server_query(case.id, Some(named_query(name))))
+					.expect("named query"),
+			};
+			let [CursorEvent::InteractionQuery { id, query, reply }] = events.as_slice() else {
+				panic!("exactly one interaction event for {}", case.query)
+			};
+			assert_eq!(*id, case.id);
+			let kind = query
+				.as_ref()
+				.map_or(Str::new_static("unknown"), interaction_query_kind);
+			assert_eq!(Some(kind.as_str()), case.kind.as_deref());
+
+			match case.disposition.as_str() {
+				"approved" => {
+					let response = reply_response(reply.as_ref().expect("approval reply"));
+					assert_eq!(response.id, case.id);
+					match response.result.expect("approval result") {
+						Reply::WebSearchRequestResponse(wire::WebSearchRequestResponse {
+							result: Some(wire::web_search_request_response::Result::Approved(_)),
+						})
+						| Reply::ExaSearchRequestResponse(wire::ExaSearchRequestResponse {
+							result: Some(wire::exa_search_request_response::Result::Approved(_)),
+						})
+						| Reply::ExaFetchRequestResponse(wire::ExaFetchRequestResponse {
+							result: Some(wire::exa_fetch_request_response::Result::Approved(_)),
+						})
+						| Reply::WebFetchRequestResponse(wire::WebFetchRequestResponse {
+							result: Some(wire::web_fetch_request_response::Result::Approved(_)),
+						}) => {},
+						other => panic!("{} must be approved, got {other:?}", case.query),
+					}
+				},
+				"rejected" => {
+					let response = reply_response(reply.as_ref().expect("rejection reply"));
+					let reason = match response.result.expect("rejection result") {
+						Reply::AskQuestionInteractionResponse(response) => {
+							let Some(wire::ask_question_result::Result::Rejected(rejected)) =
+								response.result.and_then(|result| result.result)
+							else {
+								panic!("ask-question reply must be rejected")
+							};
+							rejected.reason
+						},
+						Reply::SwitchModeRequestResponse(response) => {
+							let Some(wire::switch_mode_request_response::Result::Rejected(rejected)) =
+								response.result
+							else {
+								panic!("switch-mode reply must be rejected")
+							};
+							rejected.reason
+						},
+						other => panic!("{} must be rejected, got {other:?}", case.query),
+					};
+					assert_eq!(Some(reason.as_str()), case.reason.as_deref());
+				},
+				"error" => {
+					let response = reply_response(reply.as_ref().expect("error reply"));
+					let Some(Reply::CreatePlanRequestResponse(wire::CreatePlanRequestResponse {
+						result: Some(result),
+					})) = response.result
+					else {
+						panic!("create-plan reply carries a result")
+					};
+					let Some(wire::create_plan_result::Result::Error(error)) = result.result else {
+						panic!("create-plan reply must be an error")
+					};
+					assert_eq!(Some(error.error.as_str()), case.reason.as_deref());
+				},
+				"unanswered" => {
+					assert!(reply.is_none(), "no fake SetupVmEnvironmentSuccess is invented");
+				},
+				"approved_raw" => {
+					let reply = reply.as_ref().expect("raw approval reply");
+					let expected = decode_hex(case.reply_frame_hex.as_deref().expect("pinned bytes"));
+					assert_eq!(
+						reply.as_ref(),
+						expected.as_slice(),
+						"unknown-variant approval pins its LEN-prefixed wire shape"
+					);
+					// The frame stays decodable even though the mirrored field is
+					// unknown to this schema.
+					assert_eq!(reply_response(reply).id, case.id);
+				},
+				other => panic!("unpinned disposition {other}"),
+			}
+		}
+
+		// The raw same-field fallback and the named field-9 decode agree: an
+		// `approved {}` mirrored on field 9 decodes as the named WebFetch
+		// approval under the regenerated schema, which also pins the LEN
+		// prefix inside the raw payload.
+		let raw = unknown_interaction_query_response(18, 9);
+		let response = wire::InteractionResponse::decode(raw.as_slice().get(2..).expect("body"))
+			.expect("raw reply decodes");
+		assert_eq!(response.id, 18);
+		assert!(
+			matches!(
+				response.result,
+				Some(Reply::WebFetchRequestResponse(wire::WebFetchRequestResponse {
+					result: Some(wire::web_fetch_request_response::Result::Approved(_)),
+				}))
+			),
+			"field-9 raw approval decodes as the named WebFetch approval"
+		);
+	}
+
+	#[test]
+	fn poisoned_conversation_rotates_the_wire_id_once_and_never_after_tokens() {
+		fn wire_decoder(
+			conversations: &Arc<Mutex<CursorConversationRotations>>,
+			request: &str,
+			base: &Str,
+		) -> (CursorWireDecoder, Str) {
+			let request = RequestId::from(request);
+			let wire_id = conversations.lock().begin(&request, base);
+			let conversation = conversations.lock().take(&request);
+			(
+				CursorWireDecoder {
+					operation: OperationKind::Chat,
+					provider: omp_llm_catalog::ProviderId::from("cursor"),
+					route: omp_llm_catalog::RouteId::from("cursor/primary"),
+					agent: CursorDecoder::default(),
+					discovery_done: false,
+					conversations: Arc::clone(conversations),
+					conversation,
+				},
+				wire_id,
+			)
+		}
+
+		fn end_stream(payload: &[u8]) -> Frame {
+			Frame::Connect(crate::transport::ConnectEnvelope {
+				flags:   CONNECT_END_STREAM,
+				kind:    ConnectEnvelopeKind::EndStream,
+				payload: Bytes::copy_from_slice(payload),
+			})
+		}
+
+		fn message(payload: Bytes) -> Frame {
+			Frame::Connect(crate::transport::ConnectEnvelope {
+				flags: 0,
+				kind: ConnectEnvelopeKind::Message,
+				payload,
+			})
+		}
+
+		const POISONED: &[u8] = br#"{"error":{"code":"resource_exhausted"}}"#;
+		let conversations = Arc::new(Mutex::new(CursorConversationRotations::default()));
+		let mut sink = |_event: RawEvent| {};
+
+		// A bare resource_exhausted end-stream with zero generated tokens is a
+		// poisoned conversation: the wire id rotates so the caller's retry
+		// starts a fresh conversation, exactly like /fork.
+		let base = Str::from("conversation-poisoned");
+		let (mut decoder, wire_id) = wire_decoder(&conversations, "request-1", &base);
+		assert_eq!(wire_id, base, "first attempt sends the caller's conversation id");
+		let error = decoder
+			.push(end_stream(POISONED), &mut sink)
+			.expect_err("poisoned conversation fails the attempt");
+		assert_eq!(error.kind, ErrorKind::ResourceExhausted);
+		let rotated = conversations.lock().resolve(&base);
+		assert_ne!(rotated, base, "retry must not reuse the poisoned wire id");
+
+		// The retry encodes the rotated id, and a repeated failure keeps it:
+		// rotation happens exactly once so genuine account-level exhaustion is
+		// not hidden behind an endless stream of fresh conversations.
+		let (mut decoder, wire_id) = wire_decoder(&conversations, "request-2", &base);
+		assert_eq!(wire_id, rotated);
+		decoder
+			.push(end_stream(POISONED), &mut sink)
+			.expect_err("repeated exhaustion still fails");
+		assert_eq!(conversations.lock().resolve(&base), rotated, "rotation happens exactly once");
+
+		// A conversation that already produced tokens is exhausted, not
+		// poisoned: its id is preserved.
+		let billed = Str::from("conversation-billed");
+		let (mut decoder, _) = wire_decoder(&conversations, "request-3", &billed);
+		decoder
+			.push(
+				message(update(wire::interaction_update::Message::TokenDelta(
+					wire::TokenDeltaUpdate { tokens: 3 },
+				))),
+				&mut sink,
+			)
+			.expect("token delta projects");
+		decoder
+			.push(end_stream(POISONED), &mut sink)
+			.expect_err("exhaustion after tokens still fails");
+		assert_eq!(
+			conversations.lock().resolve(&billed),
+			billed,
+			"a billed conversation is never rotated"
+		);
 	}
 
 	#[test]
@@ -2138,7 +2635,6 @@ mod tests {
 		assert_ne!(rotated, base);
 		assert!(!rotations.rotate_once(&base, "request-two"));
 		assert_eq!(rotations.resolve(&base), rotated);
-
 
 		let mut terminal = CursorDecoder::default();
 		terminal

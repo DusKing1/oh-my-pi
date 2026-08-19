@@ -399,14 +399,35 @@ impl<'a> ToolAssembler<'a> {
 						};
 					},
 				};
-				if let Err(reason) =
-					validate_schema(parameters.as_value(), &arguments, *strict, self.limits)
-				{
-					return ToolAssemblyEvent::Rejected {
-						source_index,
-						reason: ToolRejection::SchemaViolation(reason),
+				let arguments =
+					match validate_schema(parameters.as_value(), &arguments, *strict, self.limits) {
+						Ok(()) => arguments,
+						Err(reason) => {
+							// Some providers (notably Gemini) serialize array arguments
+							// as flattened property paths (`questions[0].id`) instead of
+							// nested arrays. Rebuild the nested structure and re-validate
+							// before surfacing the original violation.
+							match normalize_flattened_arguments(&arguments).filter(|rebuilt| {
+								validate_schema(parameters.as_value(), rebuilt, *strict, self.limits)
+									.is_ok()
+							}) {
+								Some(rebuilt) => {
+									self.record(
+										"tool.flattened-array-arguments",
+										call.arguments.len() as u64,
+										1,
+									);
+									rebuilt
+								},
+								None => {
+									return ToolAssemblyEvent::Rejected {
+										source_index,
+										reason: ToolRejection::SchemaViolation(reason),
+									};
+								},
+							}
+						},
 					};
-				}
 				self.record("tool.complete-schema-valid", call.arguments.len() as u64, 1);
 				arguments
 			},
@@ -761,6 +782,251 @@ fn child_path(parent: &str, child: &str) -> String {
 }
 fn violation<T>(path: &str, rule: &'static str) -> Result<T, SchemaViolation> {
 	Err(SchemaViolation { path: Str::from(if path.is_empty() { "/" } else { path }), rule })
+}
+
+// ============================================================================
+// Flattened array-argument normalization (LLM quirk).
+//
+// Some providers (notably Gemini) serialize array tool arguments using
+// flattened property paths — `questions[0].id`, `questions[0].options[0].label`
+// — instead of a nested `questions` array of objects. The schema sees only
+// unrecognized extra keys and rejects the call, so `end` rebuilds the nested
+// structure and re-validates before rejecting.
+//
+// Conservative by design:
+//   - runs only after plain validation has already failed;
+//   - fires only when at least one key is a well-formed array-index path
+//     (`name[i]`, `name[i].prop`, `name[i][j]`); plain keys and non-array
+//     dotted keys (`a.b`) never match;
+//   - aborts wholesale (`None`) on any shape conflict so genuine schema
+//     mistakes still surface as validation errors;
+//   - array indices and path depth are capped so a hostile payload cannot
+//     allocate oversized arrays or overflow the rebuild recursion.
+// ============================================================================
+
+/// Cap on array indices accepted by the flattened-path parser.
+const MAX_FLATTENED_INDEX: u64 = 100_000;
+/// Cap on build steps per key, aligned with the default schema-depth bound.
+const MAX_FLATTENED_STEPS: usize = 64;
+
+/// One parsed step of a flattened argument key such as `questions[0].id`.
+#[derive(Clone, Copy)]
+enum FlattenedStep<'a> {
+	/// Descend into an object property.
+	Prop(&'a str),
+	/// Descend into an array element.
+	Index(usize),
+}
+
+/// Partially rebuilt argument tree. `Hole` marks an array slot created by a
+/// larger sibling index and never written: descending into one vivifies a
+/// fresh container, while descending into an explicit JSON `null` aborts.
+enum FlattenedNode {
+	/// Unwritten array slot; serializes to `null`.
+	Hole,
+	/// A JSON value adopted verbatim from a leaf write or a plain sibling key.
+	Value(Value),
+	/// An object under reconstruction, in first-seen key order.
+	Object(Vec<(String, Self)>),
+	/// An array under reconstruction.
+	Array(Vec<Self>),
+}
+
+impl FlattenedNode {
+	fn into_value(self) -> Value {
+		match self {
+			Self::Hole => Value::Null,
+			Self::Value(value) => value,
+			Self::Object(entries) => Value::Object(
+				entries
+					.into_iter()
+					.map(|(key, node)| (key, node.into_value()))
+					.collect(),
+			),
+			Self::Array(items) => Value::Array(items.into_iter().map(Self::into_value).collect()),
+		}
+	}
+}
+
+const fn is_flattened_ident_start(byte: u8) -> bool {
+	byte == b'_' || byte == b'$' || byte.is_ascii_alphabetic()
+}
+const fn is_flattened_ident_continue(byte: u8) -> bool {
+	is_flattened_ident_start(byte) || byte.is_ascii_digit()
+}
+
+/// Parses one flattened array-path key into build steps. Returns `None` for
+/// keys that are not flattened array paths: no `[<digits>]` index anywhere
+/// (`questions`, `a.b`), a malformed or non-numeric index (`foo[bar]`), an
+/// index-first path (`[0].x`), or an index outside the safety cap.
+fn parse_flattened_path(key: &str) -> Option<Vec<FlattenedStep<'_>>> {
+	let bytes = key.as_bytes();
+	// The path must start with a property name so `[0].x` / `[0]` are left
+	// alone.
+	if bytes.is_empty() || !is_flattened_ident_start(bytes[0]) {
+		return None;
+	}
+	let mut end = 1;
+	while end < bytes.len() && is_flattened_ident_continue(bytes[end]) {
+		end += 1;
+	}
+	let mut steps = vec![FlattenedStep::Prop(&key[..end])];
+	let mut pos = end;
+	let mut saw_index = false;
+	while pos < bytes.len() {
+		if steps.len() >= MAX_FLATTENED_STEPS {
+			return None;
+		}
+		match bytes[pos] {
+			b'.' => {
+				pos += 1;
+				if pos >= bytes.len() || !is_flattened_ident_start(bytes[pos]) {
+					return None;
+				}
+				let start = pos;
+				pos += 1;
+				while pos < bytes.len() && is_flattened_ident_continue(bytes[pos]) {
+					pos += 1;
+				}
+				steps.push(FlattenedStep::Prop(&key[start..pos]));
+			},
+			b'[' => {
+				pos += 1;
+				let start = pos;
+				while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+					pos += 1;
+				}
+				if pos == start || pos >= bytes.len() || bytes[pos] != b']' {
+					return None;
+				}
+				let index: u64 = key[start..pos].parse().ok()?;
+				if index > MAX_FLATTENED_INDEX {
+					return None;
+				}
+				steps.push(FlattenedStep::Index(index as usize));
+				saw_index = true;
+				pos += 1;
+			},
+			// Any other character (lone `[foo]`, whitespace, invalid ident
+			// bytes) is not a flattened array path.
+			_ => return None,
+		}
+	}
+	saw_index.then_some(steps)
+}
+
+/// Writes `value` into the container `node` along `steps`. Returns `false`
+/// when an existing node contradicts the path; the caller then abandons the
+/// whole rebuild so the ambiguity surfaces as a validation error.
+fn build_flattened_path(
+	node: &mut FlattenedNode,
+	steps: &[FlattenedStep<'_>],
+	value: Value,
+) -> bool {
+	let Some((step, rest)) = steps.split_first() else {
+		return false;
+	};
+	match *step {
+		FlattenedStep::Prop(name) => {
+			// Adopt an object copied from a plain sibling key.
+			if matches!(node, FlattenedNode::Value(Value::Object(_))) {
+				let FlattenedNode::Value(Value::Object(map)) =
+					std::mem::replace(node, FlattenedNode::Hole)
+				else {
+					unreachable!("matched object value");
+				};
+				*node = FlattenedNode::Object(
+					map.into_iter()
+						.map(|(key, entry)| (key, FlattenedNode::Value(entry)))
+						.collect(),
+				);
+			}
+			let FlattenedNode::Object(entries) = node else {
+				return false;
+			};
+			let slot = if let Some(position) = entries.iter().position(|(key, _)| key == name) {
+				&mut entries[position].1
+			} else {
+				entries.push((name.to_owned(), FlattenedNode::Hole));
+				&mut entries.last_mut().expect("entry just pushed").1
+			};
+			write_flattened_slot(slot, rest, value)
+		},
+		FlattenedStep::Index(index) => {
+			// Adopt an array copied from a plain sibling key.
+			if matches!(node, FlattenedNode::Value(Value::Array(_))) {
+				let FlattenedNode::Value(Value::Array(items)) =
+					std::mem::replace(node, FlattenedNode::Hole)
+				else {
+					unreachable!("matched array value");
+				};
+				*node = FlattenedNode::Array(items.into_iter().map(FlattenedNode::Value).collect());
+			}
+			let FlattenedNode::Array(items) = node else {
+				return false;
+			};
+			if items.len() <= index {
+				items.resize_with(index + 1, || FlattenedNode::Hole);
+			}
+			write_flattened_slot(&mut items[index], rest, value)
+		},
+	}
+}
+
+/// Fills one selected slot: a leaf write overwrites unconditionally, while a
+/// deeper path requires the slot to hold (or vivify into) a container whose
+/// kind matches the next step.
+fn write_flattened_slot(
+	slot: &mut FlattenedNode,
+	rest: &[FlattenedStep<'_>],
+	value: Value,
+) -> bool {
+	let Some(next) = rest.first() else {
+		*slot = FlattenedNode::Value(value);
+		return true;
+	};
+	let next_is_array = matches!(next, FlattenedStep::Index(_));
+	match slot {
+		FlattenedNode::Hole => {
+			*slot = if next_is_array {
+				FlattenedNode::Array(Vec::new())
+			} else {
+				FlattenedNode::Object(Vec::new())
+			};
+		},
+		FlattenedNode::Object(_) | FlattenedNode::Value(Value::Object(_)) if !next_is_array => {},
+		FlattenedNode::Array(_) | FlattenedNode::Value(Value::Array(_)) if next_is_array => {},
+		_ => return false,
+	}
+	build_flattened_path(slot, rest, value)
+}
+
+/// Rebuilds nested arrays/objects from provider-flattened property paths.
+/// Returns `None` when no key is a flattened array path or when any shape
+/// conflict makes the rebuild ambiguous.
+fn normalize_flattened_arguments(arguments: &Value) -> Option<Value> {
+	let source = arguments.as_object()?;
+	let mut root = FlattenedNode::Object(Vec::with_capacity(source.len()));
+	let mut changed = false;
+	for (key, entry) in source {
+		let Some(steps) = parse_flattened_path(key) else {
+			let FlattenedNode::Object(entries) = &mut root else {
+				unreachable!("root stays an object");
+			};
+			// A plain key colliding with an already-built path is ambiguous —
+			// bail to the failure path so genuine schema mistakes surface.
+			if entries.iter().any(|(name, _)| name == key) {
+				return None;
+			}
+			entries.push((key.clone(), FlattenedNode::Value(entry.clone())));
+			continue;
+		};
+		if !build_flattened_path(&mut root, &steps, entry.clone()) {
+			return None;
+		}
+		changed = true;
+	}
+	changed.then(|| root.into_value())
 }
 
 /// Origin of a purported tool result.
@@ -1155,5 +1421,240 @@ mod tests {
 		));
 		assert_eq!(pairer.register_ready(&first), ToolRegistration::Duplicate);
 		assert_eq!(pairer.register_ready(&second), ToolRegistration::LimitExceeded);
+	}
+
+	/// Mirrors the shape of the `ask` tool that motivated pi issue #8886.
+	fn ask_definition() -> ToolDefinition {
+		ToolDefinition {
+			name:        Str::from("ask"),
+			description: None,
+			input:       ToolInputConstraint::JsonSchema {
+				parameters: OpaqueJson::new(json!({
+					"type": "object",
+					"properties": {
+						"questions": {
+							"type": "array",
+							"minItems": 1,
+							"items": {
+								"type": "object",
+								"properties": {
+									"id": {"type": "string"},
+									"question": {"type": "string"},
+									"options": {
+										"type": "array",
+										"items": {
+											"type": "object",
+											"properties": {"label": {"type": "string"}},
+											"required": ["label"],
+											"additionalProperties": false
+										}
+									},
+									"recommended": {"type": "number"}
+								},
+								"required": ["id", "question", "options"],
+								"additionalProperties": false
+							}
+						}
+					},
+					"required": ["questions"]
+				})),
+				strict:     true,
+			},
+		}
+	}
+
+	fn call_with(
+		definition: ToolDefinition,
+		arguments: &Value,
+	) -> (Vec<ToolAssemblyEvent>, Vec<Str>) {
+		let definitions = [definition];
+		let mut assembler = ToolAssembler::new(&definitions, ToolAssemblyLimits::default(), 1);
+		assembler.push(ToolFragment::Start {
+			source_index: 0,
+			id:           None,
+			name:         Bytes::copy_from_slice(definitions[0].name.as_bytes()),
+		});
+		assembler.push(ToolFragment::ArgumentsDelta {
+			source_index: 0,
+			bytes:        Bytes::from(serde_json::to_vec(arguments).expect("arguments serialize")),
+		});
+		let events = assembler.push(ToolFragment::End { source_index: 0 });
+		let rules = assembler
+			.take_evidence()
+			.into_iter()
+			.map(|record| record.rule.0)
+			.collect();
+		(events, rules)
+	}
+
+	fn ready_arguments(events: &[ToolAssemblyEvent]) -> Option<Value> {
+		events.iter().find_map(|event| match event {
+			ToolAssemblyEvent::Ready { call, .. } => Some(call.arguments.as_value().clone()),
+			_ => None,
+		})
+	}
+
+	#[test]
+	fn flattened_array_paths_rebuild_nested_arguments() {
+		let (events, rules) = call_with(
+			ask_definition(),
+			&json!({
+				"questions[0].id": "doc_structure",
+				"questions[0].question": "Which format should we adopt?",
+				"questions[0].options[0].label": "Structured Markdown",
+				"questions[0].options[1].label": "Plain text",
+				"questions[0].recommended": 0
+			}),
+		);
+		assert_eq!(
+			ready_arguments(&events).expect("call authorizes"),
+			json!({
+				"questions": [{
+					"id": "doc_structure",
+					"question": "Which format should we adopt?",
+					"options": [{"label": "Structured Markdown"}, {"label": "Plain text"}],
+					"recommended": 0
+				}]
+			})
+		);
+		assert!(
+			rules
+				.iter()
+				.any(|rule| rule.as_str() == "tool.flattened-array-arguments")
+		);
+	}
+
+	#[test]
+	fn flattened_paths_span_multiple_array_elements() {
+		let (events, _) = call_with(
+			ask_definition(),
+			&json!({
+				"questions[0].id": "q1",
+				"questions[0].question": "First",
+				"questions[0].options[0].label": "A",
+				"questions[1].id": "q2",
+				"questions[1].question": "Second",
+				"questions[1].options[0].label": "B"
+			}),
+		);
+		assert_eq!(
+			ready_arguments(&events).expect("call authorizes"),
+			json!({
+				"questions": [
+					{"id": "q1", "question": "First", "options": [{"label": "A"}]},
+					{"id": "q2", "question": "Second", "options": [{"label": "B"}]}
+				]
+			})
+		);
+	}
+
+	#[test]
+	fn flattened_bare_leaf_array_elements_rebuild() {
+		let tags = ToolDefinition {
+			name:        Str::from("tag"),
+			description: None,
+			input:       ToolInputConstraint::JsonSchema {
+				parameters: OpaqueJson::new(json!({
+					"type": "object",
+					"properties": {"tags": {"type": "array", "minItems": 2, "items": {"type": "string"}}},
+					"required": ["tags"]
+				})),
+				strict:     true,
+			},
+		};
+		let (events, _) = call_with(tags, &json!({"tags[0]": "alpha", "tags[1]": "beta"}));
+		assert_eq!(
+			ready_arguments(&events).expect("call authorizes"),
+			json!({"tags": ["alpha", "beta"]})
+		);
+	}
+
+	#[test]
+	fn flattened_rebuild_preserves_plain_sibling_keys() {
+		let mut definition = ask_definition();
+		let ToolInputConstraint::JsonSchema { parameters, .. } = &mut definition.input else {
+			unreachable!("ask definition declares a JSON schema");
+		};
+		let mut schema = parameters.as_value().clone();
+		schema["properties"]["title"] = json!({"type": "string"});
+		*parameters = OpaqueJson::new(schema);
+		let (events, _) = call_with(
+			definition,
+			&json!({
+				"title": "Session",
+				"questions[0].id": "q",
+				"questions[0].question": "Go?",
+				"questions[0].options[0].label": "Yes"
+			}),
+		);
+		assert_eq!(
+			ready_arguments(&events).expect("call authorizes"),
+			json!({
+				"title": "Session",
+				"questions": [{"id": "q", "question": "Go?", "options": [{"label": "Yes"}]}]
+			})
+		);
+	}
+
+	#[test]
+	fn plain_nested_arguments_are_untouched() {
+		let arguments =
+			json!({"questions": [{"id": "q", "question": "Go?", "options": [{"label": "Yes"}]}]});
+		let (events, rules) = call_with(ask_definition(), &arguments);
+		assert_eq!(ready_arguments(&events).expect("call authorizes"), arguments);
+		assert!(
+			!rules
+				.iter()
+				.any(|rule| rule.as_str() == "tool.flattened-array-arguments")
+		);
+	}
+
+	#[test]
+	fn non_array_dotted_keys_are_untouched() {
+		let dotted = ToolDefinition {
+			name:        Str::from("dot"),
+			description: None,
+			input:       ToolInputConstraint::JsonSchema {
+				parameters: OpaqueJson::new(json!({
+					"type": "object",
+					"properties": {"a.b": {"type": "number"}, "c": {"type": "number"}},
+					"required": ["a.b", "c"]
+				})),
+				strict:     true,
+			},
+		};
+		let arguments = json!({"a.b": 1, "c": 2});
+		let (events, _) = call_with(dotted, &arguments);
+		assert_eq!(ready_arguments(&events).expect("call authorizes"), arguments);
+	}
+
+	#[test]
+	fn malformed_indexed_keys_surface_the_validation_error() {
+		let (events, _) = call_with(ask_definition(), &json!({"questions[foo]": "nope"}));
+		assert!(matches!(
+			events.first(),
+			Some(ToolAssemblyEvent::Rejected { reason: ToolRejection::SchemaViolation(_), .. })
+		));
+	}
+
+	#[test]
+	fn schema_mismatch_without_flattened_keys_still_rejects() {
+		let (events, _) = call_with(ask_definition(), &json!({"label": "300"}));
+		assert!(matches!(
+			events.first(),
+			Some(ToolAssemblyEvent::Rejected { reason: ToolRejection::SchemaViolation(_), .. })
+		));
+	}
+
+	#[test]
+	fn flattened_path_colliding_with_plain_key_bails_to_validation_error() {
+		// Ambiguous input must not lose the plain key — fall through to a
+		// genuine validation error instead of a partial rebuild.
+		let (events, _) =
+			call_with(ask_definition(), &json!({"questions": [5], "questions[0].id": "x"}));
+		assert!(matches!(
+			events.first(),
+			Some(ToolAssemblyEvent::Rejected { reason: ToolRejection::SchemaViolation(_), .. })
+		));
 	}
 }

@@ -499,7 +499,9 @@ pub enum ProviderControlEvent {
 		/// Whether incremental execution updates are expected.
 		streaming:  bool,
 	},
-	/// Provider requests a correlated interactive answer.
+	/// Provider requests a correlated interactive answer. The codec resolves
+	/// permission gates itself; `reply` carries the prepared same-stream
+	/// client answer for a duplex-capable transport to write.
 	InteractionQuery {
 		/// Provider interaction identity.
 		id:      u32,
@@ -507,6 +509,9 @@ pub enum ProviderControlEvent {
 		kind:    Str,
 		/// Opaque interaction payload.
 		payload: Bytes,
+		/// Prepared client answer frame; `None` when the codec deliberately
+		/// leaves the query unanswered.
+		reply:   Option<Bytes>,
 	},
 	/// Provider cancels an outstanding tool or control call.
 	Cancel {

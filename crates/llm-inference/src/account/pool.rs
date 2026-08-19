@@ -70,6 +70,9 @@ mod cooldown_reason {
 		AccountDisabled,
 		/// A caller explicitly imposed a temporary health cooldown.
 		Health,
+		/// Provider denied the account exactly one requested model
+		/// entitlement.
+		ModelPolicy,
 	}
 }
 
@@ -289,12 +292,16 @@ struct Rejection {
 
 #[derive(Default)]
 struct PoolState {
-	accounts:   BTreeMap<AccountId, AccountRecord>,
-	cooldowns:  BTreeMap<AccountId, Cooldown>,
-	rejections: BTreeMap<AccountId, Rejection>,
-	rate:       BTreeMap<AccountId, RateState>,
-	quota:      BTreeMap<AccountId, QuotaState>,
-	affinities: BTreeMap<AffinityScope, AccountAffinity>,
+	accounts:        BTreeMap<AccountId, AccountRecord>,
+	cooldowns:       BTreeMap<AccountId, Cooldown>,
+	/// Route-scoped cooldowns; process-local because model-entitlement denials
+	/// are re-observed cheaply and must not outlive the credential set that
+	/// produced them.
+	route_cooldowns: BTreeMap<AccountId, BTreeMap<RouteId, Cooldown>>,
+	rejections:      BTreeMap<AccountId, Rejection>,
+	rate:            BTreeMap<AccountId, RateState>,
+	quota:           BTreeMap<AccountId, QuotaState>,
+	affinities:      BTreeMap<AffinityScope, AccountAffinity>,
 }
 
 /// Concurrent, durable-aware account metadata and eligibility state.
@@ -444,6 +451,29 @@ impl AccountPool {
 		}
 		self.state.write().cooldowns.remove(account);
 		Ok(())
+	}
+
+	/// Blocks one account on exactly one route, leaving every other route
+	/// eligible.
+	///
+	/// Used for provider model-entitlement denials (for example a ChatGPT
+	/// account that lacks one requested Codex model): rotation must reach an
+	/// entitled sibling while the denied account keeps serving the models it is
+	/// entitled to. Process-local by design; the denial is re-observed cheaply.
+	pub fn cooldown_route(
+		&self,
+		account: AccountId,
+		route: RouteId,
+		until: SystemTime,
+		reason: CooldownReason,
+	) {
+		self
+			.state
+			.write()
+			.route_cooldowns
+			.entry(account)
+			.or_default()
+			.insert(route, Cooldown { until, reason });
 	}
 
 	/// Rejects exactly the observed credential generation without changing the
@@ -801,6 +831,11 @@ fn eligibility(
 	{
 		return Eligibility::Cooldown { until: cooldown.until, reason: cooldown.reason };
 	}
+	if let Some(cooldown) = route_cooldown(state, record, request)
+		&& cooldown.until > request.now
+	{
+		return Eligibility::Cooldown { until: cooldown.until, reason: cooldown.reason };
+	}
 	match state
 		.quota
 		.get(&record.account)
@@ -850,6 +885,11 @@ fn candidate_eligible_at(
 	{
 		ready_at = cooldown.until;
 	}
+	if let Some(cooldown) = route_cooldown(state, record, request)
+		&& cooldown.until > ready_at
+	{
+		ready_at = cooldown.until;
+	}
 	match rate {
 		RateAvailability::Available => {},
 		RateAvailability::Delayed { until } => ready_at = ready_at.max(until),
@@ -861,4 +901,15 @@ fn candidate_eligible_at(
 		QuotaAvailability::ExhaustedUnknownReset => return None,
 	}
 	Some(ready_at)
+}
+
+fn route_cooldown<'a>(
+	state: &'a PoolState,
+	record: &AccountRecord,
+	request: &AccountSelectionRequest,
+) -> Option<&'a Cooldown> {
+	state
+		.route_cooldowns
+		.get(&record.account)?
+		.get(&request.route)
 }

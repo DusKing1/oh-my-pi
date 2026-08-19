@@ -110,73 +110,80 @@ pub enum HostedToolWireFormat {
 #[derive(Clone, Debug)]
 pub struct OpenAiChatProfile {
 	/// Relative request path.
-	pub path:                     Str,
+	pub path: Str,
 	/// Role used for canonical system instructions.
-	pub system_role:              WireRole,
+	pub system_role: WireRole,
 	/// Whether multiple system/developer messages are accepted.
 	pub multiple_system_messages: bool,
 	/// Whether sampling controls are accepted.
-	pub sampling:                 bool,
+	pub sampling: bool,
 	/// Whether presence and frequency penalties are accepted.
-	pub penalties:                bool,
+	pub penalties: bool,
 	/// Whether stop sequences are accepted.
-	pub stop_sequences:           bool,
+	pub stop_sequences: bool,
 	/// Output-token field selection.
-	pub max_tokens_field:         MaxTokensField,
+	pub max_tokens_field: MaxTokensField,
 	/// Whether streaming usage is requested.
-	pub streaming_usage:          bool,
+	pub streaming_usage: bool,
 	/// Whether `store:false` is required.
-	pub disable_store:            bool,
+	pub disable_store: bool,
 	/// Whether tool choice is accepted.
-	pub tool_choice:              bool,
+	pub tool_choice: bool,
 	/// Whether named tool choice is accepted.
-	pub named_tool_choice:        bool,
+	pub named_tool_choice: bool,
 	/// Whether required/named forcing is accepted.
-	pub forced_tool_choice:       bool,
+	pub forced_tool_choice: bool,
 	/// Tool strictness projection.
-	pub tool_strict:              ToolStrictWire,
+	pub tool_strict: ToolStrictWire,
+	/// Whether object-root tool-parameter unions are flattened or withheld.
+	pub flatten_root_unions: bool,
 	/// Tool-call identifier projection.
-	pub tool_id:                  ToolIdWireProfile,
+	pub tool_id: ToolIdWireProfile,
 	/// Reasoning request shape.
-	pub reasoning:                ReasoningWireFormat,
+	pub reasoning: ReasoningWireFormat,
+	/// Whether Qwen-style template dialects route the selected effort onto the
+	/// chat template's `reasoning_effort` kwarg.
+	pub template_reasoning_effort: bool,
 	/// Historical reasoning text field.
-	pub reasoning_history:        ReasoningHistoryField,
+	pub reasoning_history: ReasoningHistoryField,
 	/// Whether provider-scoped continuation proofs may be replayed.
-	pub reasoning_proofs:         bool,
+	pub reasoning_proofs: bool,
 	/// Hosted-tool shape.
-	pub hosted_tools:             HostedToolWireFormat,
+	pub hosted_tools: HostedToolWireFormat,
 	/// Request body size bound.
-	pub max_request_bytes:        u64,
+	pub max_request_bytes: u64,
 	/// Individual response-frame bound.
-	pub max_frame_bytes:          u64,
+	pub max_frame_bytes: u64,
 	/// Aggregate response bound.
-	pub max_response_bytes:       u64,
+	pub max_response_bytes: u64,
 }
 
 impl Default for OpenAiChatProfile {
 	fn default() -> Self {
 		Self {
-			path:                     Str::from("/v1/chat/completions"),
-			system_role:              WireRole::System,
+			path: Str::from("/v1/chat/completions"),
+			system_role: WireRole::System,
 			multiple_system_messages: true,
-			sampling:                 true,
-			penalties:                true,
-			stop_sequences:           true,
-			max_tokens_field:         MaxTokensField::MaxCompletionTokens,
-			streaming_usage:          true,
-			disable_store:            false,
-			tool_choice:              true,
-			named_tool_choice:        true,
-			forced_tool_choice:       true,
-			tool_strict:              ToolStrictWire::Mixed,
-			tool_id:                  ToolIdWireProfile::Preserve,
-			reasoning:                ReasoningWireFormat::OpenAiEffort,
-			reasoning_history:        ReasoningHistoryField::ReasoningContent,
-			reasoning_proofs:         false,
-			hosted_tools:             HostedToolWireFormat::Unsupported,
-			max_request_bytes:        16 * 1024 * 1024,
-			max_frame_bytes:          16 * 1024 * 1024,
-			max_response_bytes:       256 * 1024 * 1024,
+			sampling: true,
+			penalties: true,
+			stop_sequences: true,
+			max_tokens_field: MaxTokensField::MaxCompletionTokens,
+			streaming_usage: true,
+			disable_store: false,
+			tool_choice: true,
+			named_tool_choice: true,
+			forced_tool_choice: true,
+			tool_strict: ToolStrictWire::Mixed,
+			flatten_root_unions: false,
+			tool_id: ToolIdWireProfile::Preserve,
+			reasoning: ReasoningWireFormat::OpenAiEffort,
+			template_reasoning_effort: false,
+			reasoning_history: ReasoningHistoryField::ReasoningContent,
+			reasoning_proofs: false,
+			hosted_tools: HostedToolWireFormat::Unsupported,
+			max_request_bytes: 16 * 1024 * 1024,
+			max_frame_bytes: 16 * 1024 * 1024,
+			max_response_bytes: 256 * 1024 * 1024,
 		}
 	}
 }
@@ -230,6 +237,9 @@ impl OpenAiChatProfile {
 				ToolStrictMode::None => ToolStrictWire::Unsupported,
 			};
 		}
+		if let Some(value) = policy.tool.flatten_root_unions {
+			self.flatten_root_unions = value;
+		}
 		if let Some(value) = policy.tool.id_profile {
 			self.tool_id = match value {
 				CatalogToolCallIdProfile::Unconstrained => ToolIdWireProfile::Preserve,
@@ -246,6 +256,12 @@ impl OpenAiChatProfile {
 				CatalogReasoningWireFormat::NvidiaChatTemplateKwargs => ReasoningWireFormat::Nvidia,
 				_ => ReasoningWireFormat::Unsupported,
 			};
+		}
+		if let Some(value) = policy.reasoning.supports_effort {
+			// Qwen 3.8+ chat templates expose a `reasoning_effort` kwarg; the
+			// dialect arms consult this flag so older templates never receive
+			// an unknown template variable (pi bf490ae024).
+			self.template_reasoning_effort = value;
 		}
 		if let Some(value) = policy.reasoning.include_encrypted {
 			self.reasoning_proofs = value;
@@ -328,9 +344,10 @@ impl OpenAiChatCodec {
 
 	fn lower_request(&self, model: &str, request: &ChatRequest) -> Result<WireRequest, Error> {
 		let messages = lower_messages(&self.profile, &request.messages)?;
-		let mut tools = lower_tools(&self.profile, &request.tools)?;
+		let (mut tools, withheld) = lower_tools(&self.profile, &request.tools)?;
 		tools.extend(lower_hosted_tools(&self.profile, &request.hosted_tools)?);
-		let tool_choice = lower_tool_choice(&self.profile, &mut tools, &request.tool_choice)?;
+		let tool_choice =
+			lower_tool_choice(&self.profile, &mut tools, &request.tool_choice, &withheld)?;
 		let response_format = lower_output(&request.output)?;
 		let reasoning = lower_reasoning(&self.profile, &request.reasoning)?;
 		let sampling = &request.sampling;
@@ -756,7 +773,10 @@ enum ThinkingType {
 
 #[derive(Serialize)]
 struct ChatTemplateKwargs {
-	enable_thinking: bool,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	enable_thinking:  Option<bool>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	reasoning_effort: Option<WireEffort>,
 }
 
 #[derive(Serialize)]
@@ -1059,36 +1079,133 @@ fn coalesce_system_messages(messages: &mut Vec<WireMessage>, role: WireRole) -> 
 fn lower_tools(
 	profile: &OpenAiChatProfile,
 	tools: &[ToolDefinition],
-) -> Result<Vec<WireTool>, Error> {
-	tools
-		.iter()
-		.map(|tool| {
-			let Some((parameters, declared_strict)) = tool.input.json_schema() else {
-				return Err(tool_capability_error("openai.chat.tools.grammar_unsupported"));
-			};
-			let (strict, normalize) = match profile.tool_strict {
-				ToolStrictWire::Mixed => (Some(declared_strict), declared_strict),
-				ToolStrictWire::All => (Some(true), true),
-				ToolStrictWire::Unsupported if declared_strict => {
-					return Err(tool_capability_error("openai.chat.tools.strict_unsupported"));
-				},
-				ToolStrictWire::Unsupported => (None, false),
-			};
-			let parameters = if normalize {
-				strict_schema(parameters.as_value())?
-			} else {
-				parameters.as_value().clone()
-			};
-			Ok(WireTool::Function {
-				function: WireFunction {
-					name: tool.name.clone(),
-					description: tool.description.clone(),
-					parameters,
-					strict,
-				},
+) -> Result<(Vec<WireTool>, Vec<Str>), Error> {
+	let mut lowered = Vec::with_capacity(tools.len());
+	let mut withheld = Vec::new();
+	for tool in tools {
+		let Some((parameters, declared_strict)) = tool.input.json_schema() else {
+			return Err(tool_capability_error("openai.chat.tools.grammar_unsupported"));
+		};
+		let (strict, normalize) = match profile.tool_strict {
+			ToolStrictWire::Mixed => (Some(declared_strict), declared_strict),
+			ToolStrictWire::All => (Some(true), true),
+			ToolStrictWire::Unsupported if declared_strict => {
+				return Err(tool_capability_error("openai.chat.tools.strict_unsupported"));
+			},
+			ToolStrictWire::Unsupported => (None, false),
+		};
+		let flattened = if profile.flatten_root_unions {
+			flatten_exclusive_required_root_union(parameters.as_value())
+		} else {
+			None
+		};
+		let parameters = match (normalize, flattened) {
+			(true, Some(flattened)) => strict_schema(&flattened)?,
+			(true, None) => strict_schema(parameters.as_value())?,
+			(false, Some(flattened)) => flattened,
+			(false, None) => parameters.as_value().clone(),
+		};
+		if profile.flatten_root_unions && leftover_root_object_union(&parameters) {
+			// xAI rejects the entire request over one leftover object-root
+			// union ("tool parameter root must be an object type"); withhold
+			// just the offending tool so the other tools stay usable.
+			withheld.push(tool.name.clone());
+			continue;
+		}
+		lowered.push(WireTool::Function {
+			function: WireFunction {
+				name: tool.name.clone(),
+				description: tool.description.clone(),
+				parameters,
+				strict,
+			},
+		});
+	}
+	Ok((lowered, withheld))
+}
+
+/// Returns a copy of an object-root schema with its `anyOf`/`oneOf` union
+/// removed when every branch is a typeless exclusive-`required` fragment.
+/// Returns `None` — leave the schema untouched — for every other shape: away
+/// from providers that reject object-root unions, the union is a real
+/// model-facing constraint.
+pub(crate) fn flatten_exclusive_required_root_union(schema: &Value) -> Option<Value> {
+	let object = schema.as_object()?;
+	let union_key = ["anyOf", "oneOf"]
+		.into_iter()
+		.find(|key| object.get(*key).is_some_and(Value::is_array))?;
+	let branches = object.get(union_key).and_then(Value::as_array)?;
+	if branches.is_empty()
+		|| !declares_object_root(object)
+		|| !branches.iter().all(exclusive_required_branch)
+	{
+		return None;
+	}
+	let mut flattened = object.clone();
+	flattened.remove(union_key);
+	Some(Value::Object(flattened))
+}
+
+/// True when an object-root schema still carries an `anyOf`/`oneOf` with a
+/// typeless or non-object branch; xAI rejects the whole request for one such
+/// tool ("tool parameter root must be an object type"). Nested unions and
+/// pure (untyped) root unions are not this error.
+pub(crate) fn leftover_root_object_union(schema: &Value) -> bool {
+	let Some(object) = schema.as_object() else {
+		return false;
+	};
+	if !declares_object_root(object) {
+		return false;
+	}
+	["anyOf", "oneOf"].into_iter().any(|key| {
+		object
+			.get(key)
+			.and_then(Value::as_array)
+			.is_some_and(|branches| {
+				!branches.is_empty()
+					&& branches
+						.iter()
+						.any(|branch| !branch.as_object().is_some_and(declares_object_type))
 			})
-		})
-		.collect()
+	})
+}
+
+/// Whether the node's declared `type` names or includes `object`.
+fn declares_object_type(object: &serde_json::Map<String, Value>) -> bool {
+	match object.get("type") {
+		Some(Value::String(kind)) => kind == "object",
+		Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind.as_str() == Some("object")),
+		_ => false,
+	}
+}
+
+/// Whether the schema root is object-shaped: object-typed or property-bearing.
+fn declares_object_root(object: &serde_json::Map<String, Value>) -> bool {
+	declares_object_type(object) || object.get("properties").is_some_and(Value::is_object)
+}
+
+/// One branch of an exclusive-required union: a typeless fragment carrying
+/// only a non-empty `required` list plus optional `description`/`title`.
+fn exclusive_required_branch(branch: &Value) -> bool {
+	let Some(object) = branch.as_object() else {
+		return false;
+	};
+	if object.contains_key("type") {
+		return false;
+	}
+	let Some(required) = object.get("required").and_then(Value::as_array) else {
+		return false;
+	};
+	if required.is_empty()
+		|| !required
+			.iter()
+			.all(|name| name.as_str().is_some_and(|name| !name.is_empty()))
+	{
+		return false;
+	}
+	object
+		.keys()
+		.all(|key| matches!(key.as_str(), "required" | "description" | "title"))
 }
 
 fn strict_schema(schema: &Value) -> Result<Value, Error> {
@@ -1159,6 +1276,7 @@ fn lower_tool_choice(
 	profile: &OpenAiChatProfile,
 	tools: &mut Vec<WireTool>,
 	choice: &Setting<ToolChoice>,
+	withheld: &[Str],
 ) -> Result<Option<WireToolChoice>, Error> {
 	let choice = match choice {
 		Setting::Unset => return Ok(None),
@@ -1166,6 +1284,22 @@ fn lower_tool_choice(
 	};
 	if !profile.tool_choice {
 		return Err(capability_error());
+	}
+	// A force naming a withheld tool — or a bare `required` once withholding
+	// emptied the list — would 400 exactly like the schema it was withheld
+	// for; drop the force and let the model choose.
+	match choice {
+		ToolChoice::Named(name)
+			if withheld
+				.iter()
+				.any(|withheld| withheld.as_str() == name.as_str()) =>
+		{
+			return Ok(None);
+		},
+		ToolChoice::Required if tools.is_empty() && !withheld.is_empty() => {
+			return Ok(None);
+		},
+		_ => {},
 	}
 	Ok(Some(match choice {
 		ToolChoice::Disabled => WireToolChoice::Mode(ToolChoiceMode::None),
@@ -1258,19 +1392,41 @@ fn lower_reasoning(
 			qwen:       None,
 			nvidia:     None,
 		},
-		ReasoningWireFormat::Qwen => ReasoningFields {
-			effort:     None,
-			openrouter: None,
-			zai:        None,
-			qwen:       Some(true),
-			nvidia:     None,
+		ReasoningWireFormat::Qwen => {
+			// Twin emission for Qwen 3.8+ templates (pi bf490ae024): newer
+			// llama.cpp builds map the top-level `reasoning_effort` into the
+			// template, older builds read only the kwargs copy. Older Qwen
+			// templates have no `reasoning_effort` kwarg, so the policy flag
+			// gates the emission entirely.
+			let template_effort = profile
+				.template_reasoning_effort
+				.then_some(effort)
+				.flatten();
+			ReasoningFields {
+				effort:     template_effort,
+				openrouter: None,
+				zai:        None,
+				qwen:       Some(true),
+				nvidia:     template_effort.map(|effort| ChatTemplateKwargs {
+					enable_thinking:  None,
+					reasoning_effort: Some(effort),
+				}),
+			}
 		},
 		ReasoningWireFormat::Nvidia => ReasoningFields {
 			effort:     None,
 			openrouter: None,
 			zai:        None,
 			qwen:       None,
-			nvidia:     Some(ChatTemplateKwargs { enable_thinking: true }),
+			// NIM-style request schemas reject unknown top-level fields, so
+			// the effort rides `chat_template_kwargs` alone on this dialect.
+			nvidia:     Some(ChatTemplateKwargs {
+				enable_thinking:  Some(true),
+				reasoning_effort: profile
+					.template_reasoning_effort
+					.then_some(effort)
+					.flatten(),
+			}),
 		},
 		ReasoningWireFormat::Unsupported => return Err(capability_error()),
 	};
@@ -1786,7 +1942,9 @@ impl WireFinishReason {
 			Self::ToolCalls | Self::FunctionCall | Self::ToolUse => FinishReason::ToolCalls,
 			Self::Length | Self::MaxTokens | Self::MaxOutputTokens => FinishReason::Length,
 			Self::ContentFilter | Self::Safety => FinishReason::ContentFilter,
-			Self::InsufficientSystemResource => unreachable!("resource finish is handled before normalization"),
+			Self::InsufficientSystemResource => {
+				unreachable!("resource finish is handled before normalization")
+			},
 		}
 	}
 }
@@ -1833,29 +1991,62 @@ fn classify_error(error: WireError, committed: bool) -> Error {
 	let code = error.code.as_ref().map(ErrorCode::text);
 	let code_text = code.as_ref().map(Str::as_str).unwrap_or_default();
 	let message = error.message.as_ref().map(Str::as_str).unwrap_or_default();
+	// DashScope / Bailian reports its per-minute TPM/TPS throttle (429
+	// `Throttling.AllocationQuota`, type `insufficient_quota`) with
+	// OpenAI-compatible billing wording, but links the error-code doc's
+	// `token-limit` anchor. That doc anchor also covers permanent errors such
+	// as "Free allocated quota exceeded", so BOTH the anchor and the exact
+	// throttle wording are required. The identical wording WITHOUT the anchor
+	// is OpenAI's real account-quota error and stays quota-exhausted.
 	let dashscope_token_limit = code_text == "insufficient_quota"
-		&& contains_ascii_case_insensitive(message.as_bytes(), b"error-code")
-		&& contains_ascii_case_insensitive(message.as_bytes(), b"#token-limit");
-	let kind = if matches!(code_text, "invalid_api_key" | "authentication_error" | "401") {
-		ErrorKind::Authentication
+		&& dashscope_token_limit_anchor(message.as_bytes())
+		&& contains_ascii_case_insensitive(
+			message.as_bytes(),
+			b"you exceeded your current quota, please check your plan and billing details",
+		);
+	// llama.cpp reports deterministic tool-call JSON parse failures as HTTP
+	// 500; replaying the same prompt produces the same malformed output, so
+	// they never enter the transient lane.
+	let deterministic_parse_failure =
+		contains_ascii_case_insensitive(
+			message.as_bytes(),
+			b"failed to parse tool call arguments as json",
+		) || contains_ascii_case_insensitive(message.as_bytes(), b"[json.exception.parse_error.101]");
+	let transient_server_error = !deterministic_parse_failure
+		&& matches!(
+			code_text,
+			"500"
+				| "502" | "503"
+				| "529" | "server_error"
+				| "internal_server_error"
+				| "overloaded_error"
+		);
+	let (kind, action) = if matches!(code_text, "invalid_api_key" | "authentication_error" | "401") {
+		(ErrorKind::Authentication, RetryAction::Never)
 	} else if matches!(code_text, "permission_denied" | "403") {
-		ErrorKind::Authorization
+		(ErrorKind::Authorization, RetryAction::Never)
 	} else if matches!(code_text, "rate_limit_exceeded" | "429") {
-		ErrorKind::RateLimited
+		// Transient rate throttle: short backoff on the same credential.
+		(ErrorKind::RateLimited, RetryAction::SameRoute { after: Duration::from_secs(30) })
 	} else if code_text == "insufficient_quota" && dashscope_token_limit {
-		ErrorKind::RateLimited
+		(ErrorKind::RateLimited, RetryAction::SameRoute { after: Duration::from_secs(30) })
 	} else if code_text == "insufficient_quota" {
-		ErrorKind::QuotaExhausted
+		(ErrorKind::QuotaExhausted, RetryAction::Never)
 	} else if matches!(code_text, "content_filter" | "safety") {
-		ErrorKind::ContentFilter
+		(ErrorKind::ContentFilter, RetryAction::Never)
 	} else if code_text == "context_length_exceeded" || message.contains("context length") {
-		ErrorKind::ContextOverflow
+		(ErrorKind::ContextOverflow, RetryAction::Never)
+	} else if transient_server_error {
+		// A oneshot blip (HTTP 500/502/503/529, provider overload) replays
+		// safely pre-commit; the retry layer bounds attempts and refuses once
+		// output committed.
+		(ErrorKind::ResourceExhausted, RetryAction::SameRoute { after: Duration::from_millis(500) })
 	} else if matches!(code_text, "402" | "payment_required") {
-		ErrorKind::PaymentRequired
+		(ErrorKind::PaymentRequired, RetryAction::Never)
 	} else if matches!(code_text, "400" | "invalid_request_error") {
-		ErrorKind::InvalidRequest
+		(ErrorKind::InvalidRequest, RetryAction::Never)
 	} else {
-		ErrorKind::ProviderContractMismatch
+		(ErrorKind::ProviderContractMismatch, RetryAction::Never)
 	};
 	Error::new(
 		kind,
@@ -1864,16 +2055,37 @@ fn classify_error(error: WireError, committed: bool) -> Error {
 		} else {
 			ErrorPhase::Handshake
 		},
-		if dashscope_token_limit {
-			RetryAction::SameRoute { after: Duration::from_secs(30) }
-		} else {
-			RetryAction::Never
-		},
+		action,
 		ExecutionReceipt::default(),
 	)
 	.status(status)
 	.optional_code(error.metadata.and_then(|metadata| metadata.raw).or(code))
 	.committed(committed)
+}
+
+/// True when `error-code` and `#token-limit` occur inside one URL-like token,
+/// mirroring DashScope's documented `error-code…#token-limit` doc anchor.
+fn dashscope_token_limit_anchor(message: &[u8]) -> bool {
+	const PREFIX: &[u8] = b"error-code";
+	const ANCHOR: &[u8] = b"#token-limit";
+	let mut offset = 0;
+	while offset + PREFIX.len() <= message.len() {
+		let window = &message[offset..];
+		if !window[..PREFIX.len()].eq_ignore_ascii_case(PREFIX) {
+			offset += 1;
+			continue;
+		}
+		let token = &window[PREFIX.len()..];
+		let token_end = token
+			.iter()
+			.position(|&byte| byte.is_ascii_whitespace() || matches!(byte, b'(' | b')'))
+			.unwrap_or(token.len());
+		if contains_ascii_case_insensitive(&token[..token_end], ANCHOR) {
+			return true;
+		}
+		offset += 1;
+	}
+	false
 }
 fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
 	haystack
@@ -1982,11 +2194,11 @@ mod tests {
 	use bytes::Bytes;
 	use serde::Deserialize;
 
-	use super::{OpenAiChatCodec, OpenAiChatDecoder};
+	use super::{OpenAiChatCodec, OpenAiChatDecoder, OpenAiChatProfile, ToolIdWireProfile};
 	use crate::{
 		call::{
 			ChatRequest, ContentPart, Message, NegotiationPolicy, OpaqueJson, Role, Sampling, Setting,
-			ToolDefinition, ToolInputConstraint,
+			ToolDefinition, ToolInputConstraint, ToolResultContent,
 		},
 		codec::{Decoder, RawEvent},
 		error::{ErrorKind, RetryAction},
@@ -2102,6 +2314,266 @@ mod tests {
 		assert!(function.parameters.properties.contains_key("q"));
 	}
 
+	#[derive(Deserialize)]
+	struct UnionEnvelope {
+		#[serde(default)]
+		tools:       Vec<UnionTool>,
+		#[serde(default)]
+		tool_choice: Option<serde_json::Value>,
+	}
+
+	#[derive(Deserialize)]
+	struct UnionTool {
+		function: UnionFunction,
+	}
+
+	#[derive(Deserialize)]
+	struct UnionFunction {
+		name:       String,
+		parameters: serde_json::Value,
+	}
+
+	fn json_tool(name: &str, parameters: serde_json::Value) -> ToolDefinition {
+		ToolDefinition {
+			name:        name.into(),
+			description: None,
+			input:       ToolInputConstraint::JsonSchema {
+				parameters: OpaqueJson::new(parameters),
+				strict:     false,
+			},
+		}
+	}
+
+	/// Exclusive-required MCP shape from pi issue #2652 / the xAI 400 class.
+	fn coverage_tool() -> ToolDefinition {
+		json_tool(
+			"mcp__codebase_memory_check_index_coverage",
+			serde_json::json!({
+				"type": "object",
+				"properties": {
+					"project": {"type": "string"},
+					"paths": {"type": "array", "items": {"type": "string"}},
+					"scopes": {"type": "array", "items": {"type": "string"}}
+				},
+				"required": ["project"],
+				"anyOf": [{"required": ["paths"]}, {"required": ["scopes"]}]
+			}),
+		)
+	}
+
+	/// A root union whose branches carry real constraints and must survive.
+	fn leftover_tool() -> ToolDefinition {
+		json_tool(
+			"mcp__leftover_union",
+			serde_json::json!({
+				"type": "object",
+				"properties": {"kind": {"type": "string"}},
+				"anyOf": [
+					{"required": ["kind"], "minProperties": 1},
+					{"required": ["kind"], "minProperties": 2}
+				]
+			}),
+		)
+	}
+
+	fn good_tool() -> ToolDefinition {
+		json_tool(
+			"read_file",
+			serde_json::json!({
+				"type": "object",
+				"properties": {"path": {"type": "string"}},
+				"required": ["path"]
+			}),
+		)
+	}
+
+	fn flatten_codec() -> OpenAiChatCodec {
+		OpenAiChatCodec::new(
+			super::OpenAiChatProfile {
+				flatten_root_unions: true,
+				..super::OpenAiChatProfile::default()
+			},
+			None,
+		)
+	}
+
+	fn encode_union_request(
+		codec: &OpenAiChatCodec,
+		tools: Arc<[ToolDefinition]>,
+		tool_choice: Setting<crate::call::ToolChoice>,
+	) -> UnionEnvelope {
+		let mut request = request(Arc::from([text_message("check coverage")]));
+		request.tools = tools;
+		request.tool_choice = tool_choice;
+		let bytes = codec
+			.encode_chat("grok-4", &request)
+			.expect("request encodes");
+		serde_json::from_slice(&bytes).expect("typed wire request")
+	}
+
+	fn tool_names(envelope: &UnionEnvelope) -> Vec<&str> {
+		envelope
+			.tools
+			.iter()
+			.map(|tool| tool.function.name.as_str())
+			.collect()
+	}
+
+	#[test]
+	fn flatten_profile_flattens_exclusive_required_root_union() {
+		let envelope = encode_union_request(
+			&flatten_codec(),
+			Arc::from([coverage_tool(), good_tool()]),
+			Setting::Unset,
+		);
+		assert_eq!(tool_names(&envelope), ["mcp__codebase_memory_check_index_coverage", "read_file"]);
+		assert!(envelope.tools[0].function.parameters.get("anyOf").is_none());
+		assert!(
+			envelope.tools[0]
+				.function
+				.parameters
+				.get("required")
+				.is_some()
+		);
+	}
+
+	#[test]
+	fn default_profile_preserves_exclusive_required_root_union() {
+		let envelope = encode_union_request(
+			&OpenAiChatCodec::default(),
+			Arc::from([coverage_tool(), good_tool()]),
+			Setting::Unset,
+		);
+		assert_eq!(tool_names(&envelope), ["mcp__codebase_memory_check_index_coverage", "read_file"]);
+		assert_eq!(
+			envelope.tools[0]
+				.function
+				.parameters
+				.get("anyOf")
+				.and_then(serde_json::Value::as_array)
+				.map(Vec::len),
+			Some(2)
+		);
+	}
+
+	#[test]
+	fn default_profile_keeps_leftover_object_root_union() {
+		let envelope = encode_union_request(
+			&OpenAiChatCodec::default(),
+			Arc::from([leftover_tool(), good_tool()]),
+			Setting::Unset,
+		);
+		assert_eq!(tool_names(&envelope), ["mcp__leftover_union", "read_file"]);
+		assert_eq!(
+			envelope.tools[0]
+				.function
+				.parameters
+				.get("anyOf")
+				.and_then(serde_json::Value::as_array)
+				.map(Vec::len),
+			Some(2)
+		);
+	}
+
+	#[test]
+	fn flatten_profile_withholds_leftover_object_root_union() {
+		let envelope = encode_union_request(
+			&flatten_codec(),
+			Arc::from([leftover_tool(), good_tool()]),
+			Setting::Unset,
+		);
+		assert_eq!(tool_names(&envelope), ["read_file"]);
+	}
+
+	#[test]
+	fn forced_choice_naming_a_withheld_tool_is_dropped() {
+		let envelope = encode_union_request(
+			&flatten_codec(),
+			Arc::from([leftover_tool(), good_tool()]),
+			Setting::Require(crate::call::ToolChoice::Named("mcp__leftover_union".into())),
+		);
+		assert_eq!(tool_names(&envelope), ["read_file"]);
+		assert!(envelope.tool_choice.is_none());
+	}
+
+	#[test]
+	fn required_choice_is_dropped_once_withholding_empties_the_tools() {
+		let envelope = encode_union_request(
+			&flatten_codec(),
+			Arc::from([leftover_tool()]),
+			Setting::Require(crate::call::ToolChoice::Required),
+		);
+		assert!(envelope.tools.is_empty());
+		assert!(envelope.tool_choice.is_none());
+	}
+
+	#[test]
+	fn root_union_flattening_is_scoped_to_the_tool_root() {
+		// Nested exclusive-required unions are real constraints; only the tool
+		// root 400s xAI.
+		let nested = serde_json::json!({
+			"type": "object",
+			"properties": {
+				"outputSchema": {
+					"type": "object",
+					"properties": {
+						"paths": {"type": "array", "items": {"type": "string"}},
+						"scopes": {"type": "array", "items": {"type": "string"}}
+					},
+					"anyOf": [{"required": ["paths"]}, {"required": ["scopes"]}]
+				}
+			},
+			"required": ["outputSchema"]
+		});
+		assert_eq!(super::flatten_exclusive_required_root_union(&nested), None);
+		assert!(!super::leftover_root_object_union(&nested));
+
+		let flattened = super::flatten_exclusive_required_root_union(
+			coverage_tool()
+				.input
+				.json_schema()
+				.expect("json schema")
+				.0
+				.as_value(),
+		)
+		.expect("exclusive-required root union flattens");
+		assert!(flattened.get("anyOf").is_none());
+		assert_eq!(flattened.get("required"), Some(&serde_json::json!(["project"])));
+	}
+
+	#[test]
+	fn root_union_constraining_properties_is_not_flattened_but_is_withheld() {
+		let constraining = serde_json::json!({
+			"type": "object",
+			"properties": {"kind": {"type": "string"}},
+			"anyOf": [
+				{"properties": {"kind": {"const": "a"}}},
+				{"properties": {"kind": {"const": "b"}}}
+			]
+		});
+		assert_eq!(super::flatten_exclusive_required_root_union(&constraining), None);
+		assert!(super::leftover_root_object_union(&constraining));
+	}
+
+	#[test]
+	fn pure_and_object_branch_root_unions_are_not_leftover_violations() {
+		// A pure (untyped, property-less) root union is not this error class.
+		let pure = serde_json::json!({
+			"anyOf": [{"type": "string"}, {"type": "number"}]
+		});
+		assert!(!super::leftover_root_object_union(&pure));
+		// All-object branches are valid object-root unions everywhere.
+		let object_branches = serde_json::json!({
+			"type": "object",
+			"properties": {"kind": {"type": "string"}},
+			"oneOf": [
+				{"type": "object", "required": ["kind"]},
+				{"type": "object", "properties": {"extra": {"type": "string"}}}
+			]
+		});
+		assert!(!super::leftover_root_object_union(&object_branches));
+	}
+
 	#[test]
 	fn fragmented_tool_arguments_remain_byte_exact_and_unvalidated() {
 		let events = decode_fixture(include_str!(
@@ -2159,6 +2631,11 @@ mod tests {
 
 	#[test]
 	fn typed_error_envelopes_preserve_classification_evidence() {
+		// The OpenRouter fixture is a gateway 502 for an upstream model failure
+		// (metadata.raw carries the upstream detail). pi auto-retries bare
+		// gateway upstream failures as transient (PR #8370's 429/500/502/503/529
+		// set), so the 502 classifies as a retryable capacity failure rather
+		// than a terminal provider-contract mismatch.
 		for (fixture, kind, code) in [
 			(
 				include_bytes!("../../../../fixtures/llm-oracle/openai/chat/error.azure.json")
@@ -2169,7 +2646,7 @@ mod tests {
 			(
 				include_bytes!("../../../../fixtures/llm-oracle/openai/chat/error.openrouter.json")
 					.as_slice(),
-				ErrorKind::ProviderContractMismatch,
+				ErrorKind::ResourceExhausted,
 				"MALFORMED_FUNCTION_CALL",
 			),
 			(
@@ -2203,7 +2680,7 @@ mod tests {
 	}
 
 	#[test]
-	fn dashscope_token_limit_anchor_stays_transient_but_free_quota_is_permanent() {
+	fn dashscope_token_limit_requires_anchor_and_exact_billing_wording() {
 		let classify = |message: &str| {
 			super::classify_error(
 				super::WireError {
@@ -2215,18 +2692,113 @@ mod tests {
 				false,
 			)
 		};
+		// Documented Bailian TPM/TPS throttle: billing wording plus doc anchor.
 		let throttle = classify(
-			"You exceeded your current quota. See \
-			 https://help.aliyun.com/zh/model-studio/error-code#token-limit",
+			"You exceeded your current quota, please check your plan and billing details. See \
+			 https://help.aliyun.com/zh/model-studio/error-code#token-limit \
+			 (type=insufficient_quota param=insufficient_quota)",
 		);
 		assert_eq!(throttle.kind, ErrorKind::RateLimited);
 		assert!(matches!(throttle.action, RetryAction::SameRoute { .. }));
 
-		let permanent = classify(
-			"Free allocated quota exceeded. See https://platform.openai.com/account/usage",
+		// OpenAI's real account-quota error: identical wording, no doc anchor.
+		let openai_quota = classify(
+			"You exceeded your current quota, please check your plan and billing details. See \
+			 https://platform.openai.com/account/usage",
 		);
-		assert_eq!(permanent.kind, ErrorKind::QuotaExhausted);
-		assert!(!matches!(permanent.action, RetryAction::SameRoute { .. }));
+		assert_eq!(openai_quota.kind, ErrorKind::QuotaExhausted);
+		assert_eq!(openai_quota.action, RetryAction::Never);
+
+		// Same doc anchor with permanent wording ("Free allocated quota
+		// exceeded") must stay quota-exhausted: the anchor alone is not a
+		// throttle signature.
+		let free_quota = classify(
+			"Free allocated quota exceeded. See \
+			 https://help.aliyun.com/zh/model-studio/error-code#token-limit",
+		);
+		assert_eq!(free_quota.kind, ErrorKind::QuotaExhausted);
+		assert_eq!(free_quota.action, RetryAction::Never);
+
+		// Anchor split across separate tokens is not the documented signature.
+		let split_anchor = classify(
+			"You exceeded your current quota, please check your plan and billing details. See \
+			 error-code docs (#token-limit)",
+		);
+		assert_eq!(split_anchor.kind, ErrorKind::QuotaExhausted);
+		assert_eq!(split_anchor.action, RetryAction::Never);
+	}
+
+	#[test]
+	fn transient_provider_blips_retry_same_route_and_deterministic_denials_do_not() {
+		let classify = |code: &str, message: &str| {
+			super::classify_error(
+				super::WireError {
+					code:     Some(super::ErrorCode::Text(code.into())),
+					message:  Some(message.into()),
+					_param:   None,
+					metadata: None,
+				},
+				false,
+			)
+		};
+		// The oneshot transient set: HTTP 429/500/502/503/529 and overload.
+		for code in ["429", "rate_limit_exceeded"] {
+			let error = classify(code, "slow down");
+			assert_eq!(error.kind, ErrorKind::RateLimited, "{code}");
+			assert!(matches!(error.action, RetryAction::SameRoute { .. }), "{code}");
+		}
+		for code in ["500", "502", "503", "529", "server_error", "overloaded_error"] {
+			let error = classify(code, "upstream blip");
+			assert_eq!(error.kind, ErrorKind::ResourceExhausted, "{code}");
+			assert!(matches!(error.action, RetryAction::SameRoute { .. }), "{code}");
+		}
+		// Deterministic denials never enter the transient lane.
+		for (code, kind) in [
+			("invalid_api_key", ErrorKind::Authentication),
+			("permission_denied", ErrorKind::Authorization),
+			("content_filter", ErrorKind::ContentFilter),
+			("invalid_request_error", ErrorKind::InvalidRequest),
+		] {
+			let error = classify(code, "denied");
+			assert_eq!(error.kind, kind, "{code}");
+			assert_eq!(error.action, RetryAction::Never, "{code}");
+		}
+		// llama.cpp deterministic tool-call parse failures arrive as HTTP 500
+		// but replay identically: never transient.
+		let parse_failure = classify(
+			"500",
+			"Failed to parse tool call arguments as JSON: [json.exception.parse_error.101]",
+		);
+		assert_eq!(parse_failure.action, RetryAction::Never);
+	}
+
+	#[test]
+	fn context_overflow_classifies_as_never_retried() {
+		// A deterministic overflow replays identically: the summarizer (or any
+		// caller) must see a fail-fast `ContextOverflow` rather than a transient
+		// classification that burns the attempt budget on identical calls.
+		let classify = |code: &str, message: &str| {
+			super::classify_error(
+				super::WireError {
+					code:     Some(super::ErrorCode::Text(code.into())),
+					message:  Some(message.into()),
+					_param:   None,
+					metadata: None,
+				},
+				false,
+			)
+		};
+		let coded = classify("context_length_exceeded", "input exceeds the model window");
+		assert_eq!(coded.kind, ErrorKind::ContextOverflow);
+		assert_eq!(coded.action, RetryAction::Never);
+
+		let textual = classify(
+			"400",
+			"This model's maximum context length is 200000 tokens, however you requested 3031925 \
+			 tokens",
+		);
+		assert_eq!(textual.kind, ErrorKind::ContextOverflow);
+		assert_eq!(textual.action, RetryAction::Never);
 	}
 
 	#[test]
@@ -2244,11 +2816,10 @@ mod tests {
 			matches!(event, RawEvent::Completion(completion) if completion.reason == FinishReason::Stop)
 		}));
 
-
 		let events = decode_fixture(
-			"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n\
-			 data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"insufficient_system_resource\"}]}\n\n\
-			 data: [DONE]\n\n",
+			"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\ndata: \
+			 {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"\
+			 insufficient_system_resource\"}]}\n\ndata: [DONE]\n\n",
 		)
 		.expect("resource finish decodes to a typed failure");
 		let failure = events
@@ -2292,5 +2863,164 @@ mod tests {
 			.finish(&mut |event| events.push(event))
 			.expect("second finish");
 		assert_eq!(events.len(), count);
+	}
+
+	#[test]
+	fn opaque_tool_call_ids_round_trip_verbatim_on_unconstrained_routes() {
+		// Provider-issued correlation tokens (vLLM/SGLang gateways emit pipe-
+		// and plus-laden ids) must replay byte-for-byte on the route that
+		// issued them; only a route whose policy declares the OpenAI
+		// 40-character projection may rewrite them.
+		let opaque = "call_abc||gateway_state||opaque+/=";
+		let chunk = serde_json::json!({
+			"choices": [{"index": 0, "delta": {"tool_calls": [{
+				"index": 0,
+				"id": opaque,
+				"type": "function",
+				"function": {"name": "read", "arguments": "{\"path\":\"README.md\"}"}
+			}]}}]
+		});
+		let fixture = format!(
+			"data: {chunk}\n\ndata: \
+			 {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\\
+			 ndata: [DONE]\n\n"
+		);
+		let events = decode_fixture(&fixture).expect("tool stream decodes");
+		let call = events
+			.iter()
+			.find_map(|event| match event {
+				RawEvent::ToolCallComplete { call, .. } => Some(call),
+				_ => None,
+			})
+			.expect("complete tool call");
+		assert_eq!(call.id.as_str(), opaque);
+
+		let replay = request(Arc::from([
+			Message {
+				role:    Role::User,
+				content: Arc::from([ContentPart::Text { text: "Read README".into(), proof: None }]),
+				name:    None,
+			},
+			Message {
+				role:    Role::Assistant,
+				content: Arc::from([ContentPart::ToolCall {
+					call:      call.id.clone(),
+					name:      call.name.clone(),
+					arguments: OpaqueJson::new(serde_json::json!({"path": "README.md"})),
+					proof:     None,
+				}]),
+				name:    None,
+			},
+			Message {
+				role:    Role::Tool,
+				content: Arc::from([ContentPart::ToolResult {
+					call:     call.id.clone(),
+					name:     Some("read".into()),
+					content:  Arc::from([ToolResultContent::Text("done".into())]),
+					is_error: false,
+				}]),
+				name:    None,
+			},
+		]));
+		let body = OpenAiChatCodec::default()
+			.encode_chat("gateway-model", &replay)
+			.expect("replay encodes");
+		let wire: serde_json::Value = serde_json::from_slice(&body).expect("wire body is JSON");
+		assert_eq!(wire["messages"][1]["tool_calls"][0]["id"], opaque);
+		assert_eq!(wire["messages"][2]["tool_call_id"], opaque);
+
+		// The 40-character projection stays a route-scoped policy, not a
+		// blanket rewrite of provider-issued ids.
+		let profile =
+			OpenAiChatProfile { tool_id: ToolIdWireProfile::OpenAi40, ..OpenAiChatProfile::default() };
+		let projected = OpenAiChatCodec::new(profile, None)
+			.encode_chat("gpt-4o-mini", &replay)
+			.expect("projected replay encodes");
+		let wire: serde_json::Value =
+			serde_json::from_slice(&projected).expect("projected body is JSON");
+		let id = wire["messages"][1]["tool_calls"][0]["id"]
+			.as_str()
+			.expect("projected id");
+		assert!(id.len() <= 40);
+		assert!(
+			id.chars()
+				.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+		);
+		assert_eq!(wire["messages"][2]["tool_call_id"].as_str(), Some(id));
+	}
+
+	fn thinking_request(effort: crate::catalog::ReasoningEffort) -> ChatRequest {
+		let mut request = request(Arc::from([text_message("think")]));
+		request.reasoning = Setting::Require(crate::call::ReasoningRequest {
+			visibility:          crate::call::ReasoningVisibility::Visible,
+			effort:              Some(effort),
+			max_tokens:          None,
+			preserve_signatures: false,
+		});
+		request
+	}
+
+	#[test]
+	fn qwen_template_effort_rides_top_level_and_kwargs() {
+		// pi bf490ae024: without routing the selected effort onto the Qwen 3.8+
+		// template's `reasoning_effort` kwarg, `enable_thinking` alone leaves
+		// the model reasoning at its xhigh default. Twin emission: top-level
+		// for newer llama.cpp builds, kwargs for older builds.
+		let profile = OpenAiChatProfile {
+			reasoning: super::ReasoningWireFormat::Qwen,
+			template_reasoning_effort: true,
+			..OpenAiChatProfile::default()
+		};
+		let body = OpenAiChatCodec::new(profile, None)
+			.encode_chat("qwen3.8-27b", &thinking_request(crate::catalog::ReasoningEffort::Medium))
+			.expect("request encodes");
+		let wire: serde_json::Value = serde_json::from_slice(&body).expect("wire body is JSON");
+		assert_eq!(wire["enable_thinking"], true);
+		assert_eq!(wire["reasoning_effort"], "medium");
+		assert_eq!(wire["chat_template_kwargs"]["reasoning_effort"], "medium");
+		assert!(
+			wire["chat_template_kwargs"]
+				.as_object()
+				.expect("kwargs object")
+				.get("enable_thinking")
+				.is_none(),
+			"the qwen dialect keeps enable_thinking top-level only"
+		);
+	}
+
+	#[test]
+	fn qwen_pre_38_templates_keep_the_bare_enable_thinking_toggle() {
+		// Older Qwen templates have no `reasoning_effort` kwarg; leaking one
+		// would inject an undefined template variable.
+		let profile = OpenAiChatProfile {
+			reasoning: super::ReasoningWireFormat::Qwen,
+			..OpenAiChatProfile::default()
+		};
+		let body = OpenAiChatCodec::new(profile, None)
+			.encode_chat("qwen3.6-27b", &thinking_request(crate::catalog::ReasoningEffort::High))
+			.expect("request encodes");
+		let wire: serde_json::Value = serde_json::from_slice(&body).expect("wire body is JSON");
+		assert_eq!(wire["enable_thinking"], true);
+		assert!(wire.get("reasoning_effort").is_none());
+		assert!(wire.get("chat_template_kwargs").is_none());
+	}
+
+	#[test]
+	fn qwen_chat_template_dialect_rides_kwargs_only() {
+		// vLLM/NIM-style schemas reject unknown top-level fields; the effort
+		// rides `chat_template_kwargs` alone on the kwargs dialect.
+		let profile = OpenAiChatProfile {
+			reasoning: super::ReasoningWireFormat::Nvidia,
+			template_reasoning_effort: true,
+			..OpenAiChatProfile::default()
+		};
+		let body = OpenAiChatCodec::new(profile, None)
+			.encode_chat("qwen3.8-27b", &thinking_request(crate::catalog::ReasoningEffort::Xhigh))
+			.expect("request encodes");
+		let wire: serde_json::Value = serde_json::from_slice(&body).expect("wire body is JSON");
+		assert!(wire.get("reasoning_effort").is_none());
+		assert!(wire.get("enable_thinking").is_none());
+		assert_eq!(wire["chat_template_kwargs"]["enable_thinking"], true);
+		assert_eq!(wire["chat_template_kwargs"]["reasoning_effort"], "xhigh");
 	}
 }

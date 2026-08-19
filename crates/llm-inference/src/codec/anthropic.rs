@@ -246,8 +246,9 @@ pub enum ContentBlock {
 		id:            Option<Str>,
 		/// Whether tool execution produced an error.
 		is_error:      bool,
-		/// Nested result content blocks.
-		content:       Vec<Self>,
+		/// Nested result content, or the empty string for an empty successful
+		/// result.
+		content:       ToolResultWireContent,
 		/// Ephemeral prompt cache control.
 		#[serde(skip_serializing_if = "Option::is_none")]
 		cache_control: Option<CacheControl>,
@@ -311,6 +312,16 @@ pub enum ContentBlock {
 		/// Fallback model selected.
 		to:   Value,
 	},
+}
+/// Tool-result wire content: nested blocks or a bare string.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum ToolResultWireContent {
+	/// Bare string form; the empty string encodes an empty successful result,
+	/// which strict Anthropic-compatible endpoints require instead of `[]`.
+	Text(Str),
+	/// Nested result content blocks.
+	Blocks(Vec<ContentBlock>),
 }
 
 /// One Anthropic message.
@@ -853,11 +864,20 @@ fn lower_parts(
 				}
 			},
 			CanonicalPart::ToolResult { call, name: _, content, is_error } => {
+				let blocks = lower_tool_result(content)?;
+				// An empty block array is valid for the official API, but strict
+				// Anthropic-compatible endpoints reject it (Z.AI GLM: 400 code
+				// 1213); the empty-string form is accepted by both.
+				let content = if blocks.is_empty() && !*is_error {
+					ToolResultWireContent::Text(Str::default())
+				} else {
+					ToolResultWireContent::Blocks(blocks)
+				};
 				ContentBlock::ToolResult {
-					tool_use_id:   Str::new(call.as_str()),
-					id:            None,
-					is_error:      *is_error,
-					content:       lower_tool_result(content)?,
+					tool_use_id: Str::new(call.as_str()),
+					id: None,
+					is_error: *is_error,
+					content,
 					cache_control: cache.clone(),
 				}
 			},
@@ -1768,8 +1788,7 @@ impl AnthropicDecoder {
 							.outcome
 							.server_blocks
 							.push((index, ContentBlock::ServerToolUse { id, name, input }));
-						self.blocks[index as usize] =
-							Some(BlockState::ServerTool { history, arguments });
+						self.blocks[index as usize] = Some(BlockState::ServerTool { history, arguments });
 					},
 					IncomingBlock::WebSearchToolResult { tool_use_id, content } => {
 						self
@@ -1779,10 +1798,10 @@ impl AnthropicDecoder {
 						self.blocks[index as usize] = Some(BlockState::Server);
 					},
 					IncomingBlock::ToolSearchToolResult { tool_use_id, content } => {
-						self.outcome.server_blocks.push((
-							index,
-							ContentBlock::ToolSearchToolResult { tool_use_id, content },
-						));
+						self
+							.outcome
+							.server_blocks
+							.push((index, ContentBlock::ToolSearchToolResult { tool_use_id, content }));
 						self.blocks[index as usize] = Some(BlockState::Server);
 					},
 					IncomingBlock::WebFetchToolResult { tool_use_id, content } => {
@@ -2169,15 +2188,23 @@ fn protocol_error(reason: &'static str, committed: bool) -> Error {
 }
 
 fn provider_error(kind: Str, _message: Str, committed: bool) -> Error {
-	let (error_kind, status) = match kind.as_str() {
-		"authentication_error" => (ErrorKind::Authentication, Some(401)),
-		"permission_error" => (ErrorKind::Authorization, Some(403)),
-		"rate_limit_error" => (ErrorKind::RateLimited, Some(429)),
-		"overloaded_error" => (ErrorKind::ResourceExhausted, Some(529)),
-		"invalid_request_error" => (ErrorKind::InvalidRequest, Some(400)),
-		_ => (ErrorKind::Protocol, None),
+	use std::time::Duration;
+	let (error_kind, status, action) = match kind.as_str() {
+		"authentication_error" => (ErrorKind::Authentication, Some(401), RetryAction::Never),
+		"permission_error" => (ErrorKind::Authorization, Some(403), RetryAction::Never),
+		// Transient throttle: short backoff on the same credential; the retry
+		// layer refuses once output has committed.
+		"rate_limit_error" => (ErrorKind::RateLimited, Some(429), RetryAction::SameRoute {
+			after: Duration::from_secs(30),
+		}),
+		// Provider overload clears on its own; a oneshot replay is safe.
+		"overloaded_error" => (ErrorKind::ResourceExhausted, Some(529), RetryAction::SameRoute {
+			after: Duration::from_millis(500),
+		}),
+		"invalid_request_error" => (ErrorKind::InvalidRequest, Some(400), RetryAction::Never),
+		_ => (ErrorKind::Protocol, None, RetryAction::Never),
 	};
-	Error::new(error_kind, ErrorPhase::Streaming, RetryAction::Never, ExecutionReceipt::default())
+	Error::new(error_kind, ErrorPhase::Streaming, action, ExecutionReceipt::default())
 		.status(status)
 		.code(kind)
 		.committed(committed)
@@ -2252,7 +2279,7 @@ mod tests {
 	use super::*;
 	use crate::transport::EventStreamDecoder;
 
-	const ORACLE_FILES: [&[u8]; 30] = [
+	const ORACLE_FILES: [&[u8]; 31] = [
 		include_bytes!(
 			"../../../../fixtures/llm-oracle/anthropic/adapters/bedrock-anthropic.encoder.json"
 		),
@@ -2319,6 +2346,9 @@ mod tests {
 			"../../../../fixtures/llm-oracle/anthropic/requests/history-replay.encoder.json"
 		),
 		include_bytes!(
+			"../../../../fixtures/llm-oracle/anthropic/requests/empty-tool-result.encoder.json"
+		),
+		include_bytes!(
 			"../../../../fixtures/llm-oracle/anthropic/requests/prompt-cache-breakpoints.encoder.json"
 		),
 		include_bytes!(
@@ -2328,8 +2358,8 @@ mod tests {
 	];
 
 	#[test]
-	fn all_thirty_oracle_files_are_present_and_nonempty() {
-		assert_eq!(ORACLE_FILES.len(), 30);
+	fn all_thirty_one_oracle_files_are_present_and_nonempty() {
+		assert_eq!(ORACLE_FILES.len(), 31);
 		assert!(ORACLE_FILES.iter().all(|fixture| !fixture.is_empty()));
 	}
 
@@ -2448,6 +2478,10 @@ mod tests {
 			)
 			.as_slice(),
 			include_bytes!(
+				"../../../../fixtures/llm-oracle/anthropic/requests/empty-tool-result.encoder.json"
+			)
+			.as_slice(),
+			include_bytes!(
 				"../../../../fixtures/llm-oracle/anthropic/legacy/request.media_projection.json"
 			)
 			.as_slice(),
@@ -2472,6 +2506,117 @@ mod tests {
 			assert!(!fixture.wire_body.messages.is_empty());
 			serde_json::to_vec(&fixture.wire_body).unwrap();
 		}
+	}
+	#[test]
+	fn empty_tool_result_oracle_round_trips_string_and_block_content_verbatim() {
+		let fixture: AdapterFixture = serde_json::from_slice(include_bytes!(
+			"../../../../fixtures/llm-oracle/anthropic/requests/empty-tool-result.encoder.json"
+		))
+		.unwrap();
+		let content = &fixture.wire_body.messages[0].content;
+		assert!(matches!(
+			&content[0],
+			ContentBlock::ToolResult { is_error: false, content: ToolResultWireContent::Text(text), .. }
+				if text.is_empty()
+		));
+		assert!(matches!(
+			&content[1],
+			ContentBlock::ToolResult { is_error: true, content: ToolResultWireContent::Blocks(blocks), .. }
+				if blocks.is_empty()
+		));
+		assert!(matches!(
+			&content[2],
+			ContentBlock::ToolResult { is_error: false, content: ToolResultWireContent::Blocks(blocks), .. }
+				if blocks.len() == 1
+		));
+		let encoded = serde_json::to_string(&fixture.wire_body.messages[0]).unwrap();
+		assert!(
+			encoded.contains(r#""tool_use_id":"toolu_empty_success","is_error":false,"content":"""#)
+		);
+		assert!(
+			encoded.contains(r#""tool_use_id":"toolu_empty_error","is_error":true,"content":[]"#)
+		);
+	}
+
+	#[test]
+	fn empty_successful_tool_results_lower_to_the_empty_string_not_an_empty_array() {
+		let provider = ProviderId::new("anthropic");
+		let codec = CodecId::new("anthropic");
+		let blocks = lower_parts(
+			&[
+				CanonicalPart::ToolResult {
+					call:     ToolCallId::new("toolu_empty_success"),
+					name:     None,
+					content:  Vec::new().into(),
+					is_error: false,
+				},
+				CanonicalPart::ToolResult {
+					call:     ToolCallId::new("toolu_empty_error"),
+					name:     None,
+					content:  Vec::new().into(),
+					is_error: true,
+				},
+				CanonicalPart::ToolResult {
+					call:     ToolCallId::new("toolu_text"),
+					name:     None,
+					content:  vec![ToolResultContent::Text(Str::new_static("ok"))].into(),
+					is_error: false,
+				},
+			],
+			None,
+			&provider,
+			&codec,
+		)
+		.expect("tool results lower");
+		assert_eq!(
+			serde_json::to_string(&blocks[0]).unwrap(),
+			r#"{"type":"tool_result","tool_use_id":"toolu_empty_success","is_error":false,"content":""}"#
+		);
+		assert_eq!(
+			serde_json::to_string(&blocks[1]).unwrap(),
+			r#"{"type":"tool_result","tool_use_id":"toolu_empty_error","is_error":true,"content":[]}"#
+		);
+		assert_eq!(
+			serde_json::to_string(&blocks[2]).unwrap(),
+			r#"{"type":"tool_result","tool_use_id":"toolu_text","is_error":false,"content":[{"type":"text","text":"ok"}]}"#
+		);
+	}
+
+	#[test]
+	fn thinking_start_content_is_preserved_as_a_leading_delta() {
+		let mut decoder = AnthropicDecoder::new();
+		let mut events = Vec::new();
+		for data in [
+			br#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"Summary prefix"}}"#.as_slice(),
+			br#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" summary tail"}}"#.as_slice(),
+			br#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig_tail"}}"#.as_slice(),
+			br#"{"type":"content_block_stop","index":0}"#.as_slice(),
+		] {
+			events.extend(decoder.push_data(data).expect("thinking stream decodes"));
+		}
+		let deltas: Vec<&str> = events
+			.iter()
+			.filter_map(|event| match event {
+				AnthropicEvent::Chat(ChatEvent::ThinkingDelta { text, .. }) => Some(text.as_str()),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(deltas, ["Summary prefix", " summary tail"]);
+		assert_eq!(decoder.outcome().signatures, vec![(0, Str::new_static("sig_tail"))]);
+	}
+
+	#[test]
+	fn immutable_anthropic_thinking_bad_request_is_terminal_without_fallback() {
+		// Anthropic rejects a mutated latest assistant message containing signed
+		// or redacted thinking with a deterministic 400. That failure must never
+		// enter same-route retries or route fallback (pi #8558).
+		let error = classify_http_error(
+			400,
+			br#"{"type":"error","error":{"type":"invalid_request_error","message":"messages.3.content.0.type: Expected `thinking` or `redacted_thinking`, but found `text`. The latest assistant message cannot be modified when thinking is enabled."}}"#,
+		);
+		assert_eq!(error.kind, ErrorKind::InvalidRequest);
+		assert_eq!(error.status, Some(400));
+		assert_eq!(error.action, RetryAction::Never);
 	}
 
 	#[test]
@@ -2672,8 +2817,8 @@ mod tests {
 		};
 		let proof = ProviderProof {
 			provider: provider.clone(),
-			codec: codec.clone(),
-			value: Bytes::from(serde_json::to_vec(&history).expect("history serializes")),
+			codec:    codec.clone(),
+			value:    Bytes::from(serde_json::to_vec(&history).expect("history serializes")),
 		};
 		let blocks = lower_parts(
 			&[CanonicalPart::Text { text: Str::default(), proof: Some(proof) }],
@@ -2783,5 +2928,40 @@ mod tests {
 			name: Str::new_static("eval"),
 			disable_parallel_tool_use: Some(true),
 		});
+	}
+
+	#[test]
+	fn transient_anthropic_failures_retry_same_route_and_denials_never_do() {
+		use crate::error::RetryAction;
+		// Anthropic reports transient failures (`overloaded_error`,
+		// `rate_limit_error`) as resolved error envelopes; a oneshot caller must
+		// retry them on the same credential instead of failing on the first blip.
+		let overloaded = classify_http_error(
+			529,
+			br#"{"error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+		);
+		assert_eq!(overloaded.kind, ErrorKind::ResourceExhausted);
+		assert!(matches!(overloaded.action, RetryAction::SameRoute { .. }));
+		assert!(!overloaded.committed);
+
+		let throttled = classify_http_error(429, br#"{"error":{"type":"rate_limit_error","message":"Number of requests has exceeded your rate limit"}}"#);
+		assert_eq!(throttled.kind, ErrorKind::RateLimited);
+		assert!(matches!(throttled.action, RetryAction::SameRoute { .. }));
+
+		// Deterministic failures replay identically and must fail fast; the
+		// immutable-thinking guard depends on 400s never entering a retry lane.
+		let invalid = classify_http_error(
+			400,
+			br#"{"error":{"type":"invalid_request_error","message":"thinking blocks are immutable"}}"#,
+		);
+		assert_eq!(invalid.kind, ErrorKind::InvalidRequest);
+		assert_eq!(invalid.action, RetryAction::Never);
+
+		let unauthenticated = classify_http_error(
+			401,
+			br#"{"error":{"type":"authentication_error","message":"invalid x-api-key"}}"#,
+		);
+		assert_eq!(unauthenticated.kind, ErrorKind::Authentication);
+		assert_eq!(unauthenticated.action, RetryAction::Never);
 	}
 }

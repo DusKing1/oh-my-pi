@@ -780,15 +780,20 @@ impl GeminiCodec {
 		} else {
 			match structural {
 				GoogleThinkingPolicy::Level => {
-					let level = selection.native_effort.as_ref().ok_or_else(|| {
-						GoogleCodecError::encoding(
-							"Google level thinking selection is missing its resolved native effort",
-						)
-					})?;
+					// The catalog's native spelling override wins; otherwise
+					// the canonical wire effort is spelled directly.
+					// `wire_effort` already collapses `minimal` onto `low`
+					// when a collapsed family aliases both onto the same
+					// `-low` SKU — Cloud Code Assist rejects `MINIMAL` there
+					// (pi f7df5d4970).
+					let level = selection
+						.native_effort
+						.clone()
+						.unwrap_or_else(|| selection_thinking_level(selection.wire_effort));
 					Some(GoogleThinkingConfig {
 						include_thoughts,
 						thinking_budget: None,
-						thinking_level: Some(level.clone()),
+						thinking_level: Some(level),
 					})
 				},
 				GoogleThinkingPolicy::Budget(_) => Some(GoogleThinkingConfig {
@@ -1219,6 +1224,17 @@ fn thinking_level(effort: ReasoningEffort) -> Str {
 		ReasoningEffort::Xhigh => "THINKING_LEVEL_UNSPECIFIED",
 	}
 	.into()
+}
+
+/// Spells a resolved catalog wire effort as Google's `thinkingLevel` value.
+fn selection_thinking_level(effort: ThinkingEffort) -> Str {
+	Str::new_static(match effort {
+		ThinkingEffort::Off | ThinkingEffort::Minimal => "MINIMAL",
+		ThinkingEffort::Low => "LOW",
+		ThinkingEffort::Medium => "MEDIUM",
+		ThinkingEffort::High | ThinkingEffort::Max => "HIGH",
+		ThinkingEffort::XHigh => "THINKING_LEVEL_UNSPECIFIED",
+	})
 }
 
 const fn thinking_budget(effort: ReasoningEffort, budgets: GoogleThinkingBudgets) -> u64 {
@@ -1743,6 +1759,9 @@ pub struct GeminiDecoder {
 	completed:       bool,
 	observed_finish: bool,
 	response_id:     Option<Str>,
+	/// Heals leaked ```` ```thinking ```` opener lines that Gemini thought
+	/// summaries emit as between-summary delimiters (pi #8719).
+	thinking_fence:  crate::recovery::thinking::ThinkingFenceStripper,
 }
 
 impl GeminiDecoder {
@@ -1767,13 +1786,27 @@ impl GeminiDecoder {
 			return Ok(Vec::new());
 		}
 		self.completed = true;
-		if self.observed_finish {
-			Ok(Vec::new())
-		} else {
-			Ok(vec![GoogleDecodedEvent::Error(GoogleCodecError::upstream(
+		let mut events = Vec::new();
+		self.flush_thinking_fence(&mut events);
+		if !self.observed_finish {
+			events.push(GoogleDecodedEvent::Error(GoogleCodecError::upstream(
 				"Google stream ended without a finish reason",
-			))])
+			)));
 		}
+		Ok(events)
+	}
+
+	/// Drains the fence stripper's held partial line into a final thinking
+	/// delta.
+	fn flush_thinking_fence(&mut self, events: &mut Vec<GoogleDecodedEvent>) {
+		let tail = self.thinking_fence.flush();
+		if tail.is_empty() {
+			return;
+		}
+		let index = *self
+			.thinking_index
+			.get_or_insert_with(|| take_index(&mut self.next_index));
+		events.push(GoogleDecodedEvent::Thinking { index, text: Str::from(tail), signature: None });
 	}
 
 	/// Decodes one already typed embedded response envelope.
@@ -1842,6 +1875,7 @@ impl GeminiDecoder {
 		if let Some(reason) = finish {
 			self.observed_finish = true;
 			self.completed = true;
+			self.flush_thinking_fence(&mut events);
 			match map_finish_reason(reason.as_str()) {
 				Ok(reason) => events.push(GoogleDecodedEvent::Completed(reason)),
 				Err(error) => events.push(GoogleDecodedEvent::Error(error)),
@@ -1885,14 +1919,20 @@ impl GeminiDecoder {
 			&& !text.is_empty()
 		{
 			if part.thought.unwrap_or(false) {
-				let index = *self
-					.thinking_index
-					.get_or_insert_with(|| take_index(&mut self.next_index));
-				events.push(GoogleDecodedEvent::Thinking {
-					index,
-					text,
-					signature: part.thought_signature,
-				});
+				// Structured thought parts bypass the visible-channel leaked
+				// reasoning healers, so a leaked ```thinking delimiter would
+				// reach display and persistence verbatim (pi #8719).
+				let cleaned = self.thinking_fence.push(&text);
+				if !cleaned.is_empty() || part.thought_signature.is_some() {
+					let index = *self
+						.thinking_index
+						.get_or_insert_with(|| take_index(&mut self.next_index));
+					events.push(GoogleDecodedEvent::Thinking {
+						index,
+						text: Str::from(cleaned),
+						signature: part.thought_signature,
+					});
+				}
 			} else {
 				let index = *self
 					.text_index
@@ -3234,6 +3274,7 @@ mod tests {
 				ThinkingPolicy::new(mode, [ThinkingEffort::Low]).expect("valid CCA thinking policy");
 			let selection = ThinkingSelection {
 				effort: ThinkingEffort::Off,
+				wire_effort: ThinkingEffort::Off,
 				native_effort,
 				budget,
 				wire_model: omp_llm_catalog::WireModelId::new("cca-wire-model"),
@@ -3482,6 +3523,7 @@ mod tests {
 	fn encode_projection_uses_resolved_thinking_selection() {
 		let selection = ThinkingSelection {
 			effort:            ThinkingEffort::High,
+			wire_effort:       ThinkingEffort::High,
 			native_effort:     Some("HIGH".into()),
 			budget:            None,
 			wire_model:        omp_llm_catalog::WireModelId::new("gemini-selected"),
@@ -3520,6 +3562,58 @@ mod tests {
 			.expect("thinking config");
 		assert_eq!(thinking.thinking_level.as_deref(), Some("HIGH"));
 		assert_eq!(thinking.thinking_budget, None);
+	}
+
+	#[test]
+	fn cca_minimal_aliased_onto_the_low_sku_sends_low_level() {
+		// pi f7df5d4970: Cloud Code Assist Gemini 3.6/3.7 Flash alias user
+		// `minimal` onto the same `-low` wire SKU as `low`; that SKU rejects
+		// `thinkingLevel: MINIMAL` with HTTP 400, so the wire must spell LOW.
+		let policy = ThinkingPolicy::new(ThinkingMode::GoogleLevel, [
+			ThinkingEffort::Minimal,
+			ThinkingEffort::Low,
+			ThinkingEffort::Medium,
+			ThinkingEffort::High,
+		])
+		.expect("valid thinking policy");
+		let mut routing = omp_llm_catalog::ThinkingRouting::default();
+		routing
+			.effort_routing
+			.insert(ThinkingEffort::Minimal, "gemini-3.7-flash-low".into());
+		routing
+			.effort_routing
+			.insert(ThinkingEffort::Low, "gemini-3.7-flash-low".into());
+		routing
+			.effort_routing
+			.insert(ThinkingEffort::Medium, "gemini-3.7-flash-medium".into());
+		let selection = routing
+			.resolve(
+				&policy,
+				Some(ThinkingEffort::Minimal),
+				&omp_llm_catalog::WireModelId::new("gemini-3.7-flash"),
+			)
+			.expect("minimal resolves");
+		assert_eq!(selection.wire_model, "gemini-3.7-flash-low");
+		let mut request = empty_chat_request();
+		request.reasoning = Setting::Require(ReasoningRequest {
+			visibility:          ReasoningVisibility::Visible,
+			effort:              Some(ReasoningEffort::Minimal),
+			max_tokens:          None,
+			preserve_signatures: false,
+		});
+		let thinking = GeminiCodec::cloud_code_assist(None)
+			.project_for_encode(
+				&request,
+				&GoogleRequestOptions::default(),
+				Some(&policy),
+				Some(&selection),
+			)
+			.expect("aliased minimal projects")
+			.request
+			.generation_config
+			.and_then(|generation| generation.thinking_config)
+			.expect("thinking config");
+		assert_eq!(thinking.thinking_level.as_deref(), Some("LOW"));
 	}
 
 	#[test]
@@ -3699,6 +3793,34 @@ mod tests {
 				GoogleDecodedEvent::Completed(GoogleFinishReason::EndTurn)
 			))
 		);
+	}
+
+	#[test]
+	fn leaked_thinking_fence_openers_are_stripped_from_thought_parts() {
+		// pi #8719: Gemini thought summaries occasionally emit a bare
+		// ```thinking opener line as a between-summary delimiter; structured
+		// thought parts bypass the visible-channel healers, so the decoder
+		// strips it while preserving legitimate fenced code.
+		let mut decoder = GeminiDecoder::default();
+		let mut thinking = String::new();
+		let mut collect = |events: Vec<GoogleDecodedEvent>| {
+			for event in events {
+				if let GoogleDecodedEvent::Thinking { text, .. } = event {
+					thinking.push_str(text.as_str());
+				}
+			}
+		};
+		collect(
+			decoder
+				.push_json(br#"{"candidates":[{"content":{"parts":[{"text":"```thinking\nplan","thought":true}]}}]}"#)
+				.expect("first thought frame"),
+		);
+		collect(
+			decoder
+				.push_json(br#"{"candidates":[{"content":{"parts":[{"text":"\n```rs\ncode\n```","thought":true}]},"finishReason":"STOP"}]}"#)
+				.expect("terminal thought frame"),
+		);
+		assert_eq!(thinking, "plan\n```rs\ncode\n```");
 	}
 
 	#[test]

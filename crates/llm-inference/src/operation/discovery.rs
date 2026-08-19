@@ -15,13 +15,32 @@ use crate::{
 	answer::{Answer, AnswerBody, ModelDiscoveryPage},
 	call::{DiscoveryRequest, OperationCall},
 	catalog::{
-		DiscoveredModel, DiscoveryNormalizer, ModelSpec, OperationKind, Pricing, ProviderId,
-		RouteDef, RouteId, WireModelId, snapshot::Catalog,
+		DiscoveredModel, DiscoveryNormalizer, ModelKey, ModelSpec, OperationKind, Pricing,
+		ProviderId, RouteDef, RouteId, WireModelId, snapshot::Catalog,
 	},
 	error::{Error, ErrorDetail, ErrorKind, ErrorPhase, RetryAction},
 	operation::{OperationRequest, OperationResponse},
 	receipt::{ExecutionReceipt, ReasonId},
 };
+
+/// Codex worker-mode SKU suffix (`gpt-5.6-luna-wm`).
+///
+/// Codex backend discovery advertises worker-mode routing variants under a
+/// `-wm` suffix. An authoritative listing that only advertises the worker slug
+/// would otherwise prune the bundled plain model, leaving a configured
+/// `openai-codex/gpt-5.6-luna` unresolvable. When the bundled Codex catalog
+/// ships the plain SKU, the worker row is ALSO projected under its plain
+/// identity, and both listings derive base-model metadata (context window,
+/// pricing, thinking) from the canonical plain spec — the suffix is a routing
+/// variant, not a different model. Unknown `-wm` SKUs keep their verbatim
+/// slug-derived metadata so authoritative discovery is preserved for genuinely
+/// distinct worker models (pi PR #8929).
+const CODEX_WORKER_SUFFIX: &str = "-wm";
+
+/// Whether this provider's discovery advertises Codex worker `-wm` variants.
+fn advertises_codex_worker_skus(provider: &ProviderId) -> bool {
+	matches!(provider.as_str(), "openai-codex" | "openai-codex-device")
+}
 
 /// Provider wire rows and continuation state returned by a discovery codec.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -36,17 +55,18 @@ pub struct RawDiscoveryPage {
 /// response recovery.
 #[derive(Clone, Debug)]
 pub struct CatalogDiscoveryProjector {
-	normalizer: DiscoveryNormalizer,
-	allowlist:  Option<Arc<BTreeMap<WireModelId, ModelSpec>>>,
-	provider:   ProviderId,
-	route:      RouteId,
+	normalizer:    DiscoveryNormalizer,
+	allowlist:     Option<Arc<BTreeMap<WireModelId, ModelSpec>>>,
+	codex_bundled: Option<Arc<BTreeMap<WireModelId, ModelSpec>>>,
+	provider:      ProviderId,
+	route:         RouteId,
 }
 
 impl CatalogDiscoveryProjector {
 	/// Constructs a projector from exact route identity and compiler-owned
 	/// normalization defaults.
 	pub const fn new(normalizer: DiscoveryNormalizer, provider: ProviderId, route: RouteId) -> Self {
-		Self { normalizer, allowlist: None, provider, route }
+		Self { normalizer, allowlist: None, codex_bundled: None, provider, route }
 	}
 
 	/// Constructs a mixed bundled/unknown projector from authored provider
@@ -97,11 +117,35 @@ impl CatalogDiscoveryProjector {
 				}
 			}
 		}
+		let codex_bundled = advertises_codex_worker_skus(&route.provider).then(|| {
+			// The route allowlist above is scoped to the discovery route, but
+			// bundled Codex models live on per-model routes. Collect every
+			// bundled wire identity owned by this provider so a discovered
+			// worker `-wm` slug can find its canonical plain counterpart.
+			let owned: BTreeSet<&RouteId> = catalog
+				.routes()
+				.iter()
+				.filter(|definition| definition.provider == route.provider)
+				.map(|definition| &definition.id)
+				.collect();
+			let mut bundled = BTreeMap::new();
+			for model in catalog.models() {
+				for (candidate, wire_model) in &model.wire_ids {
+					if owned.contains(candidate) {
+						bundled
+							.entry(wire_model.clone())
+							.or_insert_with(|| model.clone());
+					}
+				}
+			}
+			Arc::new(bundled)
+		});
 		Ok(Self {
 			normalizer: DiscoveryNormalizer::new(defaults),
-			allowlist:  Some(Arc::new(allowlist)),
-			provider:   route.provider.clone(),
-			route:      route.id.clone(),
+			allowlist: Some(Arc::new(allowlist)),
+			codex_bundled,
+			provider: route.provider.clone(),
+			route: route.id.clone(),
 		})
 	}
 }
@@ -123,6 +167,7 @@ impl crate::layer::recover::DiscoveryProjector for CatalogDiscoveryProjector {
 			),
 			Some(allowlist) => project_mixed_page(
 				allowlist,
+				self.codex_bundled.as_deref(),
 				&self.normalizer,
 				&self.provider,
 				&self.route,
@@ -134,8 +179,13 @@ impl crate::layer::recover::DiscoveryProjector for CatalogDiscoveryProjector {
 	}
 }
 
+#[allow(
+	clippy::too_many_arguments,
+	reason = "route-scoped projection is a single internal seam with exact identity inputs"
+)]
 fn project_mixed_page(
 	allowlist: &BTreeMap<WireModelId, ModelSpec>,
+	codex_bundled: Option<&BTreeMap<WireModelId, ModelSpec>>,
 	normalizer: &DiscoveryNormalizer,
 	provider: &ProviderId,
 	route: &RouteId,
@@ -152,6 +202,19 @@ fn project_mixed_page(
 	let mut seen_wire: BTreeSet<WireModelId> = BTreeSet::new();
 	let mut seen_models = BTreeSet::new();
 	let mut models = Vec::new();
+	let mut push =
+		|model: ModelSpec, seen_models: &mut BTreeSet<ModelKey>, models: &mut Vec<ModelSpec>| {
+			if !seen_models.insert(model.key.clone()) {
+				return;
+			}
+			if request
+				.operation
+				.is_some_and(|operation| !model.capabilities.operations.contains_kind(operation))
+			{
+				return;
+			}
+			models.push(model);
+		};
 	for row in rows {
 		if &row.provider != provider || &row.route != route {
 			return Err(protocol_error("discovery_row_route_mismatch"));
@@ -159,27 +222,61 @@ fn project_mixed_page(
 		if !seen_wire.insert(row.wire_model.clone()) {
 			continue;
 		}
-		let model = match allowlist.get(&row.wire_model) {
+		let bundled = allowlist.get(&row.wire_model).or_else(|| {
+			// The backend's own plain slug wins over any synthesized clone.
+			codex_bundled.and_then(|bundled| bundled.get(&row.wire_model))
+		});
+		let model = match bundled {
 			Some(model) => model.clone(),
-			None => {
-				normalizer
-					.normalize(&row)
-					.map_err(|_| protocol_error("discovery_normalization_failed"))?
-					.model
+			None => match codex_worker_counterpart(codex_bundled, &row.wire_model) {
+				Some(plain) => {
+					// Safe worker SKU: register the `-wm` routing variant with
+					// base-model metadata derived from the canonical plain
+					// slug, then keep the plain identity itself resolvable
+					// under authoritative discovery.
+					push(codex_worker_variant(plain, &row), &mut seen_models, &mut models);
+					plain.clone()
+				},
+				None => {
+					normalizer
+						.normalize(&row)
+						.map_err(|_| protocol_error("discovery_normalization_failed"))?
+						.model
+				},
 			},
 		};
-		if !seen_models.insert(model.key.clone()) {
-			continue;
-		}
-		if request
-			.operation
-			.is_some_and(|operation| !model.capabilities.operations.contains_kind(operation))
-		{
-			continue;
-		}
-		models.push(model);
+		push(model, &mut seen_models, &mut models);
 	}
 	Ok(ModelDiscoveryPage { models, next_cursor })
+}
+
+/// Returns the bundled plain counterpart backing a Codex worker `-wm` slug.
+fn codex_worker_counterpart<'catalog>(
+	codex_bundled: Option<&'catalog BTreeMap<WireModelId, ModelSpec>>,
+	wire_model: &WireModelId,
+) -> Option<&'catalog ModelSpec> {
+	let bundled = codex_bundled?;
+	let plain = wire_model.as_str().strip_suffix(CODEX_WORKER_SUFFIX)?;
+	if plain.is_empty() {
+		return None;
+	}
+	bundled.get(plain)
+}
+
+/// Builds the worker `-wm` listing from its canonical plain spec.
+///
+/// The worker listing binds the advertised `-wm` wire identity to the
+/// discovery route while deriving every base-model fact (context window,
+/// pricing, capabilities, thinking) from the bundled plain SKU.
+fn codex_worker_variant(plain: &ModelSpec, row: &DiscoveredModel) -> ModelSpec {
+	let mut model = plain.clone();
+	model.key = ModelKey::from(format!("{}{CODEX_WORKER_SUFFIX}", plain.key.as_str()));
+	if let Some(display_name) = &row.display_name {
+		model.display_name = display_name.clone();
+	}
+	model.wire_ids = Box::new([(row.route.clone(), row.wire_model.clone())]);
+	model.routes = Box::new([row.route.clone()]);
+	model
 }
 
 /// Concrete discovery service over a provider-specific typed backend.
@@ -378,8 +475,9 @@ mod tests {
 	use crate::{
 		call::DiscoveryRequest,
 		catalog::{
-			ContextStrategy, DiscoveredModel, DiscoveryDefaults, DiscoveryNormalizer, OperationBits,
-			OperationKind, Pricing, ProviderId, RouteId, WireModelId, WirePolicyId,
+			ContextStrategy, DiscoveredModel, DiscoveryDefaults, DiscoveryNormalizer, ModelKey,
+			ModelSpec, OperationBits, OperationKind, Pricing, ProviderId, RouteId, WireModelId,
+			WirePolicyId,
 		},
 		layer::recover::DiscoveryProjector,
 	};
@@ -598,6 +696,7 @@ mod tests {
 		};
 		let page = project_mixed_page(
 			&allowlist,
+			None,
 			&normalizer,
 			&provider,
 			&route,
@@ -611,5 +710,129 @@ mod tests {
 		assert_eq!(page.models[1].thinking, None);
 		assert_eq!(page.models[1].pricing, Pricing::default());
 		assert_eq!(page.next_cursor.as_deref(), Some("next"));
+	}
+
+	fn codex_fixture() -> (ProviderId, RouteId, DiscoveryNormalizer, BTreeMap<WireModelId, ModelSpec>)
+	{
+		let provider = ProviderId::from("openai-codex");
+		let route = RouteId::from("openai-codex/primary");
+		let normalizer = DiscoveryNormalizer::new(DiscoveryDefaults {
+			wire_policy:          WirePolicyId::from("wire"),
+			extended_wire_policy: None,
+			context:              ContextStrategy::Replay,
+			thinking:             None,
+			pricing:              Pricing::default(),
+		});
+		// Canonical bundled plain SKU on its own per-model route, carrying the
+		// enriched base-model metadata a conservative normalization would not
+		// reconstruct.
+		let plain_route = RouteId::from("route-luna");
+		let mut plain = normalizer
+			.normalize(&discovered(&provider, &plain_route, "gpt-5.6-luna"))
+			.expect("plain fixture")
+			.model;
+		plain.key = ModelKey::from("openai-codex/gpt-5.6-luna");
+		plain.limits.context_window = Some(1_000_000);
+		let mut bundled = BTreeMap::new();
+		bundled.insert(WireModelId::from("gpt-5.6-luna"), plain);
+		(provider, route, normalizer, bundled)
+	}
+
+	#[test]
+	fn codex_worker_slug_registers_plain_route_with_canonical_metadata() {
+		let (provider, route, normalizer, bundled) = codex_fixture();
+		let request = DiscoveryRequest {
+			provider:  Some(provider.clone()),
+			route:     Some(route.clone()),
+			cursor:    None,
+			page_size: 4,
+			operation: None,
+		};
+		let page = project_mixed_page(
+			&BTreeMap::new(),
+			Some(&bundled),
+			&normalizer,
+			&provider,
+			&route,
+			&request,
+			vec![discovered(&provider, &route, "gpt-5.6-luna-wm")],
+			None,
+		)
+		.expect("worker page");
+		assert_eq!(page.models.len(), 2, "worker and synthesized plain listings");
+		let worker = &page.models[0];
+		let plain = &page.models[1];
+		assert_eq!(worker.key.as_str(), "openai-codex/gpt-5.6-luna-wm");
+		assert_eq!(worker.wire_ids.as_ref(), &[(
+			route.clone(),
+			WireModelId::from("gpt-5.6-luna-wm")
+		)]);
+		assert_eq!(
+			worker.limits.context_window,
+			Some(1_000_000),
+			"worker listing derives the context floor from the canonical plain slug"
+		);
+		assert_eq!(plain.key.as_str(), "openai-codex/gpt-5.6-luna");
+		assert_eq!(plain.limits.context_window, Some(1_000_000));
+		assert_eq!(worker.pricing, plain.pricing);
+	}
+
+	#[test]
+	fn codex_advertised_plain_slug_wins_over_synthesized_clone() {
+		let (provider, route, normalizer, bundled) = codex_fixture();
+		let request = DiscoveryRequest {
+			provider:  Some(provider.clone()),
+			route:     Some(route.clone()),
+			cursor:    None,
+			page_size: 4,
+			operation: None,
+		};
+		let page = project_mixed_page(
+			&BTreeMap::new(),
+			Some(&bundled),
+			&normalizer,
+			&provider,
+			&route,
+			&request,
+			vec![
+				discovered(&provider, &route, "gpt-5.6-luna"),
+				discovered(&provider, &route, "gpt-5.6-luna-wm"),
+			],
+			None,
+		)
+		.expect("worker page");
+		let keys: Vec<&str> = page.models.iter().map(|model| model.key.as_str()).collect();
+		assert_eq!(keys, ["openai-codex/gpt-5.6-luna", "openai-codex/gpt-5.6-luna-wm"]);
+		assert_eq!(
+			page.models[0].limits.context_window,
+			Some(1_000_000),
+			"the advertised plain slug binds the bundled spec, not a conservative clone"
+		);
+	}
+
+	#[test]
+	fn codex_unknown_worker_slug_stays_verbatim() {
+		let (provider, route, normalizer, bundled) = codex_fixture();
+		let request = DiscoveryRequest {
+			provider:  Some(provider.clone()),
+			route:     Some(route.clone()),
+			cursor:    None,
+			page_size: 4,
+			operation: None,
+		};
+		let page = project_mixed_page(
+			&BTreeMap::new(),
+			Some(&bundled),
+			&normalizer,
+			&provider,
+			&route,
+			&request,
+			vec![discovered(&provider, &route, "gpt-6-nova-wm")],
+			None,
+		)
+		.expect("unknown worker page");
+		assert_eq!(page.models.len(), 1, "no plain counterpart is synthesized");
+		assert_eq!(page.models[0].limits.context_window, None);
+		assert!(!page.models[0].key.as_str().ends_with("-wm/gpt-6-nova"));
 	}
 }

@@ -7,7 +7,7 @@ use std::{
 
 use futures::FutureExt as _;
 use http::{HeaderMap, HeaderValue, Method, header::AUTHORIZATION};
-use omp_core::Str;
+use omp_core::{Str, parse_rfc3339};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::Value;
 
@@ -159,6 +159,14 @@ fn parse_response(body: &str, now: SystemTime) -> Result<ParsedResponse, UsageFe
 		Box::default()
 	};
 	let mut windows = Vec::with_capacity(3);
+	// The 5h window is rolling (FIFO: each request ages out five hours after it
+	// fired), but the payload still reports an absolute `resets_at` for the
+	// current window epoch — surface it as an incremental countdown ("tick")
+	// rather than a hard reset.
+	let resets_at = payload
+		.pointer("/window/resets_at")
+		.and_then(Value::as_str)
+		.and_then(parse_rfc3339);
 	let request_limit = number(payload.pointer("/limits/requests/limit"));
 	let hard_cap = number(payload.pointer("/limits/requests/hard_cap"));
 	let raw_used = number(payload.pointer("/usage/requests_in_window"));
@@ -170,14 +178,27 @@ fn parse_response(body: &str, now: SystemTime) -> Result<ParsedResponse, UsageFe
 			number(payload.pointer("/limits/requests/window_seconds")).unwrap_or(5 * 60 * 60);
 		let split = weighted_used.is_some() && hard_cap.is_some();
 		windows.push(window(
-			if split { "umans:requests:soft" } else { "umans:requests" },
+			if split {
+				"umans:requests:soft"
+			} else {
+				"umans:requests"
+			},
 			"requests",
-			if split { "Requests (soft cap)" } else { "Requests (rolling 5h)" },
+			if split {
+				"Requests (soft cap)"
+			} else {
+				"Requests (rolling 5h)"
+			},
 			Some("shared"),
 			used,
-			if weighted_used.is_some() { weighted_remaining } else { raw_remaining },
+			if weighted_used.is_some() {
+				weighted_remaining
+			} else {
+				raw_remaining
+			},
 			limit,
 			Some(Duration::from_secs(duration)),
+			resets_at,
 			now,
 			!split,
 		));
@@ -193,6 +214,7 @@ fn parse_response(body: &str, now: SystemTime) -> Result<ParsedResponse, UsageFe
 				None,
 				hard_cap,
 				Some(Duration::from_secs(duration)),
+				resets_at,
 				now,
 				true,
 			));
@@ -210,6 +232,7 @@ fn parse_response(body: &str, now: SystemTime) -> Result<ParsedResponse, UsageFe
 			used,
 			None,
 			limit,
+			None,
 			None,
 			now,
 			true,
@@ -233,6 +256,7 @@ fn window(
 	remaining: Option<u64>,
 	limit: u64,
 	duration: Option<Duration>,
+	resets_at: Option<SystemTime>,
 	now: SystemTime,
 	allow_exhausted: bool,
 ) -> UsageWindow {
@@ -259,8 +283,8 @@ fn window(
 		},
 		status: Some(status),
 		duration,
-		resets_at: None,
-		reset_label: None,
+		resets_at,
+		reset_label: resets_at.is_some().then(|| Str::new_static("tick")),
 		notes: Box::default(),
 		source: UsageSource::Provider,
 		observed_at: now,
@@ -273,6 +297,7 @@ mod tests {
 
 	use futures::{FutureExt as _, future::BoxFuture};
 	use http::HeaderMap;
+	use omp_core::parse_rfc3339;
 	use parking_lot::Mutex;
 	use secrecy::SecretString;
 
@@ -330,6 +355,8 @@ mod tests {
 		assert_eq!(report.account_meta.provider_account_id.as_deref(), Some("acct-42"));
 		assert_eq!(report.account_meta.email.as_deref(), Some("dev@example.com"));
 		assert_eq!(report.notes[0], "Requests deprioritized after a rate-limit burst.");
+		assert_eq!(report.windows[0].resets_at, None);
+		assert_eq!(report.windows[0].reset_label, None);
 		assert_eq!(report.windows.len(), 2);
 		assert_eq!(report.windows[0].amount.consumed.unwrap().units, 48);
 		assert_eq!(report.windows[0].amount.remaining.unwrap().units, 152);
@@ -346,7 +373,7 @@ mod tests {
 		let http = Arc::new(Http::new([
 			(
 				200,
-				r#"{"limits":{"requests":{"limit":500,"hard_cap":1000,"window_seconds":18000}},"usage":{"requests_in_window":838,"remaining_requests":0,"weighted_in_window":207,"weighted_remaining_requests":293}}"#,
+				r#"{"limits":{"requests":{"limit":500,"hard_cap":1000,"window_seconds":18000}},"window":{"resets_at":"2026-08-06T21:52:21.202174+00:00"},"usage":{"requests_in_window":838,"remaining_requests":0,"weighted_in_window":207,"weighted_remaining_requests":293}}"#,
 			),
 			(
 				200,
@@ -368,6 +395,10 @@ mod tests {
 		assert_eq!(soft.amount.consumed.unwrap().units, 207);
 		assert_eq!(soft.amount.remaining.unwrap().units, 293);
 		assert_eq!(soft.status, Some(UsageStatus::Ok));
+		// The rolling 5h window still exposes its absolute `resets_at` as an
+		// incremental countdown for the status line.
+		assert_eq!(soft.resets_at, parse_rfc3339("2026-08-06T21:52:21.202174+00:00"));
+		assert_eq!(soft.reset_label.as_deref(), Some("tick"));
 		let hard = headroom
 			.windows
 			.iter()
@@ -376,7 +407,13 @@ mod tests {
 		assert_eq!(hard.amount.consumed.unwrap().units, 838);
 		assert_eq!(hard.amount.limit.unwrap().units, 1_000);
 		assert_eq!(hard.status, Some(UsageStatus::Ok));
-		assert!(headroom.windows.iter().all(|window| window.status != Some(UsageStatus::Exhausted)));
+		assert_eq!(hard.resets_at, parse_rfc3339("2026-08-06T21:52:21.202174+00:00"));
+		assert!(
+			headroom
+				.windows
+				.iter()
+				.all(|window| window.status != Some(UsageStatus::Exhausted))
+		);
 
 		let soft_cap = fetcher
 			.fetch(Some(&key), SystemTime::now(), None)
@@ -391,7 +428,66 @@ mod tests {
 				.status,
 			Some(UsageStatus::Warning)
 		);
-		assert!(soft_cap.windows.iter().all(|window| window.status != Some(UsageStatus::Exhausted)));
+		assert!(
+			soft_cap
+				.windows
+				.iter()
+				.all(|window| window.status != Some(UsageStatus::Exhausted))
+		);
+	}
+	#[tokio::test]
+	async fn collapses_to_single_weighted_row_that_can_exhaust_without_burst_ceiling() {
+		// Weighted counters present but `hard_cap` absent: without a burst
+		// ceiling there is no hard row to defer exhaustion to, so the weighted
+		// effective-request budget is the operative ceiling — the single row
+		// must be able to report exhausted or a spent account could never
+		// trigger the usage-aware fallback.
+		let http = Arc::new(Http::new([
+			(
+				200,
+				r#"{"limits":{"requests":{"limit":200,"window_seconds":18000}},"usage":{"requests_in_window":400,"remaining_requests":0,"weighted_in_window":200,"weighted_remaining_requests":0}}"#,
+			),
+			(
+				200,
+				r#"{"limits":{"requests":{"limit":200,"window_seconds":18000}},"usage":{"requests_in_window":300,"remaining_requests":0,"weighted_in_window":100,"weighted_remaining_requests":100}}"#,
+			),
+		]));
+		let fetcher = UmansUsageFetcher::new(http);
+		let key = SecretString::from("k".to_owned());
+
+		let spent = fetcher
+			.fetch(Some(&key), SystemTime::now(), None)
+			.await
+			.unwrap();
+		// No soft/hard split without a reported burst ceiling.
+		assert_eq!(spent.windows.len(), 1);
+		let requests = &spent.windows[0];
+		assert_eq!(requests.id, "umans:requests");
+		// Weighted effective requests stay authoritative: raw 400 overshoots the
+		// 200 limit, but it is the weighted 200/200 that reports exhausted.
+		assert_eq!(requests.amount.consumed.unwrap().units, 200);
+		assert_eq!(requests.amount.limit.unwrap().units, 200);
+		assert_eq!(requests.status, Some(UsageStatus::Exhausted));
+
+		// Same #7858 shape (raw usage over the soft limit, weighted headroom
+		// remaining) but with no `hard_cap`: the weighted counter must still
+		// decide, so raw burst traffic cannot fabricate an exhausted state even
+		// when there is no hard row to buffer it.
+		let headroom = fetcher
+			.fetch(Some(&key), SystemTime::now(), None)
+			.await
+			.unwrap();
+		let requests = &headroom.windows[0];
+		assert_eq!(requests.id, "umans:requests");
+		assert_eq!(requests.amount.consumed.unwrap().units, 100);
+		assert_eq!(requests.amount.remaining.unwrap().units, 100);
+		assert_eq!(requests.status, Some(UsageStatus::Ok));
+		assert!(
+			headroom
+				.windows
+				.iter()
+				.all(|window| window.status != Some(UsageStatus::Exhausted))
+		);
 	}
 	#[tokio::test]
 	async fn normalizes_all_custom_base_url_forms() {
