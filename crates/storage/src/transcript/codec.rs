@@ -29,8 +29,11 @@ pub enum Error {
 	/// A file-system operation failed.
 	#[error("transcript I/O failed: {0}")]
 	Io(#[from] std::io::Error),
-	/// An append failed after writing bytes and the original file length could not be restored.
-	#[error("transcript append failed and partial bytes could not be rolled back: {write}; {rollback}")]
+	/// An append failed after writing bytes and the original file length could
+	/// not be restored.
+	#[error(
+		"transcript append failed and partial bytes could not be rolled back: {write}; {rollback}"
+	)]
 	AppendRollback {
 		/// The original append failure.
 		write:    std::io::Error,

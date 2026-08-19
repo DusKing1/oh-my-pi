@@ -70,7 +70,8 @@ impl Writer {
 		Ok(Self { file, next_index: 0, line })
 	}
 
-	/// Opens an existing transcript for append, repairing malformed trailing records.
+	/// Opens an existing transcript for append, repairing malformed trailing
+	/// records.
 	///
 	/// Complete malformed lines in the middle remain in place as tombstones so
 	/// physical event indexes stay stable. A malformed trailing run cannot be
@@ -103,10 +104,8 @@ impl Writer {
 			if read_line(line).is_ok() {
 				malformed_tail = None;
 			} else if malformed_tail.is_none() {
-				malformed_tail = Some((
-					u64::try_from(start).expect("file offsets fit in u64"),
-					next_index,
-				));
+				malformed_tail =
+					Some((u64::try_from(start).expect("file offsets fit in u64"), next_index));
 			}
 			next_index = next_index.saturating_add(1);
 			start = end + 1;
@@ -123,10 +122,8 @@ impl Writer {
 				file.seek(SeekFrom::End(0))?;
 				file.write_all(b"\n")?;
 			} else if malformed_tail.is_none() {
-				malformed_tail = Some((
-					u64::try_from(start).expect("file offsets fit in u64"),
-					next_index,
-				));
+				malformed_tail =
+					Some((u64::try_from(start).expect("file offsets fit in u64"), next_index));
 			}
 		}
 		if let Some((offset, repaired_next_index)) = malformed_tail {

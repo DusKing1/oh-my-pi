@@ -364,7 +364,9 @@ fn malformed_trailing_record_is_repaired_before_append() {
 		.append(true)
 		.open(&path)
 		.expect("append malformed record");
-	file.write_all(b"{not json}\n").expect("write malformed record");
+	file
+		.write_all(b"{not json}\n")
+		.expect("write malformed record");
 	drop(file);
 
 	let mut writer = Writer::open_append(&path).expect("repair malformed tail");
@@ -393,6 +395,74 @@ fn malformed_middle_line_is_a_tombstone() {
 	assert!(matches!(
 		log.get(2),
 		Some(Entry::Ok(event)) if matches!(&event.kind, Kind::Title { title, .. } if title.as_str() == "later")
+	));
+}
+
+#[test]
+fn oversized_tool_search_history_round_trips_byte_for_byte() {
+	let directory = tempdir().expect("temporary directory");
+	let path = directory.path().join("session.jsonl");
+	let oversized = "W".repeat(600_000);
+	let server_tool = |kind: thread_pb::server_tool::Kind, payload: Vec<u8>| thread_pb::Part {
+		kind: Some(thread_pb::part::Kind::ServerTool(thread_pb::ServerTool {
+			provider:          "anthropic".to_owned(),
+			kind:              kind as i32,
+			id:                "srvtoolu_tool_search".to_owned(),
+			name:              "tool_search_tool_bm25".to_owned(),
+			payload_json:      payload.into(),
+			provider_metadata: None,
+		})),
+	};
+	let event = Event {
+		ts:   1,
+		kind: Kind::Item(ItemRecord {
+			item:        thread_pb::Item {
+				seq:           0,
+				created_at_ms: 1,
+				kind:          Some(thread_pb::item::Kind::Message(thread_pb::Message {
+					role:  thread_pb::Role::Assistant as i32,
+					parts: vec![
+						server_tool(
+							thread_pb::server_tool::Kind::Call,
+							br#"{"query":"read"}"#.to_vec(),
+						),
+						server_tool(
+							thread_pb::server_tool::Kind::Result,
+							format!(
+								r#"{{"type":"tool_search_tool_search_result","tool_references":[{{"type":"tool_reference","tool_name":"READ_TOOL_{oversized}"}}]}}"#
+							)
+							.into_bytes(),
+						),
+					],
+				})),
+				props:         None,
+			},
+			turn_id:     Some(text("turn-1")),
+			prompt_hash: None,
+		}),
+	};
+	let mut writer = Writer::create(&path, &header()).expect("new transcript");
+	assert_eq!(writer.append(&event).expect("server-tool item appends"), 0);
+	drop(writer);
+
+	let log = load(&path).expect("transcript loads");
+	let Some(Entry::Ok(loaded)) = log.get(0) else {
+		panic!("server-tool item survives reload as a decoded event");
+	};
+	assert_eq!(**loaded, event);
+	let mut expected = Vec::new();
+	write_line(&event, &mut expected).expect("server-tool item encodes");
+	let mut reencoded = Vec::new();
+	write_line(loaded, &mut reencoded).expect("loaded server-tool item re-encodes");
+	assert_eq!(reencoded, expected, "tool-search history must persist byte-for-byte");
+
+	let mut writer = Writer::open_append(&path).expect("reopen for append");
+	assert_eq!(writer.append(&title(2, "after")).expect("subsequent event"), 1);
+	drop(writer);
+	let log = load(&path).expect("reopened transcript loads");
+	assert!(matches!(
+		log.get(0),
+		Some(Entry::Ok(kept)) if **kept == event
 	));
 }
 
