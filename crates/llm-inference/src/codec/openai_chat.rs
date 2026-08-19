@@ -1952,13 +1952,17 @@ impl WireFinishReason {
 #[derive(Deserialize)]
 struct WireError {
 	#[serde(default)]
-	code:     Option<ErrorCode>,
+	code:            Option<ErrorCode>,
 	#[serde(default)]
-	message:  Option<Str>,
+	message:         Option<Str>,
 	#[serde(default, rename = "param")]
-	_param:   Option<Str>,
+	_param:          Option<Str>,
 	#[serde(default)]
-	metadata: Option<ErrorMetadata>,
+	metadata:        Option<ErrorMetadata>,
+	/// `LiteLLM`'s structured limiter discriminator, e.g.
+	/// `max_parallel_requests` for a proxy concurrency-admission 429.
+	#[serde(default)]
+	rate_limit_type: Option<Str>,
 }
 
 #[derive(Deserialize)]
@@ -2021,10 +2025,25 @@ fn classify_error(error: WireError, committed: bool) -> Error {
 				| "internal_server_error"
 				| "overloaded_error"
 		);
+	// LiteLLM (and compatible proxies) shed over-concurrency requests *before*
+	// dispatching to the model backend, marking the immediate 429 with
+	// `rate_limit_type: max_parallel_requests`. That is an admission failure,
+	// not an upstream RPM/TPM throttle: the request never reached a model, and
+	// sleeping on the same route (honoring the proxy's ~60s hint) duplicates
+	// the backoff and model fallback the router already owns, stalling one
+	// turn for minutes (pi #8854). Genuine quota 429s carry no marker.
+	let concurrency_admission = error
+		.rate_limit_type
+		.as_ref()
+		.is_some_and(|value| value.as_str().trim() == "max_parallel_requests");
 	let (kind, action) = if matches!(code_text, "invalid_api_key" | "authentication_error" | "401") {
 		(ErrorKind::Authentication, RetryAction::Never)
 	} else if matches!(code_text, "permission_denied" | "403") {
 		(ErrorKind::Authorization, RetryAction::Never)
+	} else if concurrency_admission {
+		// Concurrency-admission shed: surface immediately so the fallback walk
+		// owns retry instead of the transport's same-route sleep.
+		(ErrorKind::RateLimited, RetryAction::ReselectRoute)
 	} else if matches!(code_text, "rate_limit_exceeded" | "429") {
 		// Transient rate throttle: short backoff on the same credential.
 		(ErrorKind::RateLimited, RetryAction::SameRoute { after: Duration::from_secs(30) })
@@ -2064,7 +2083,7 @@ fn classify_error(error: WireError, committed: bool) -> Error {
 }
 
 /// True when `error-code` and `#token-limit` occur inside one URL-like token,
-/// mirroring DashScope's documented `error-code…#token-limit` doc anchor.
+/// mirroring `DashScope`'s documented `error-code…#token-limit` doc anchor.
 fn dashscope_token_limit_anchor(message: &[u8]) -> bool {
 	const PREFIX: &[u8] = b"error-code";
 	const ANCHOR: &[u8] = b"#token-limit";
@@ -2684,10 +2703,11 @@ mod tests {
 		let classify = |message: &str| {
 			super::classify_error(
 				super::WireError {
-					code:     Some(super::ErrorCode::Text("insufficient_quota".into())),
-					message:  Some(message.into()),
-					_param:   None,
-					metadata: None,
+					code:            Some(super::ErrorCode::Text("insufficient_quota".into())),
+					message:         Some(message.into()),
+					_param:          None,
+					metadata:        None,
+					rate_limit_type: None,
 				},
 				false,
 			)
@@ -2733,10 +2753,11 @@ mod tests {
 		let classify = |code: &str, message: &str| {
 			super::classify_error(
 				super::WireError {
-					code:     Some(super::ErrorCode::Text(code.into())),
-					message:  Some(message.into()),
-					_param:   None,
-					metadata: None,
+					code:            Some(super::ErrorCode::Text(code.into())),
+					message:         Some(message.into()),
+					_param:          None,
+					metadata:        None,
+					rate_limit_type: None,
 				},
 				false,
 			)
@@ -2773,6 +2794,74 @@ mod tests {
 	}
 
 	#[test]
+	fn litellm_concurrency_admission_429_reselects_route_without_backoff() {
+		// LiteLLM (and compatible proxies) shed over-concurrency requests
+		// before dispatching upstream, marking the immediate 429 with
+		// `rate_limit_type: max_parallel_requests`. The admission failure must
+		// skip the transport's same-route sleep so the router's fallback walk
+		// owns retry/fallback immediately (pi #8854).
+		let classify = |code: Option<&str>, rate_limit_type: Option<&str>| {
+			super::classify_error(
+				super::WireError {
+					code:            code.map(|value| super::ErrorCode::Text(value.into())),
+					message:         Some("Max parallel request limit reached".into()),
+					_param:          None,
+					metadata:        None,
+					rate_limit_type: rate_limit_type.map(Into::into),
+				},
+				false,
+			)
+		};
+		// Structured body marker alongside LiteLLM's stringly HTTP code.
+		let marked = classify(Some("429"), Some("max_parallel_requests"));
+		assert_eq!(marked.kind, ErrorKind::RateLimited);
+		assert_eq!(marked.action, RetryAction::ReselectRoute);
+		assert!(!marked.committed);
+		// The marker is decisive even when the envelope carries no error code.
+		let uncoded = classify(None, Some("max_parallel_requests"));
+		assert_eq!(uncoded.kind, ErrorKind::RateLimited);
+		assert_eq!(uncoded.action, RetryAction::ReselectRoute);
+		// Scope guards: a plain 429 without the marker keeps the same-route
+		// backoff, and a different limiter discriminator is not the admission
+		// marker.
+		let plain = classify(Some("429"), None);
+		assert_eq!(plain.kind, ErrorKind::RateLimited);
+		assert!(matches!(plain.action, RetryAction::SameRoute { .. }));
+		let other_limiter = classify(Some("429"), Some("tokens_per_minute"));
+		assert_eq!(other_limiter.kind, ErrorKind::RateLimited);
+		assert!(matches!(other_limiter.action, RetryAction::SameRoute { .. }));
+	}
+
+	#[test]
+	fn litellm_concurrency_admission_envelope_decodes_from_the_error_body() {
+		// Serde-capture guard: the marker rides inside the `error` object of
+		// LiteLLM's structured 429 body and must survive envelope decoding.
+		let mut decoder = OpenAiChatDecoder::default();
+		let mut events = Vec::new();
+		decoder
+			.push(
+				Frame::Sse(crate::transport::SseEvent {
+					name: None,
+					data: Bytes::from_static(
+						br#"{"error":{"message":"Max parallel request limit reached","type":"rate_limit_error","rate_limit_type":"max_parallel_requests","code":"429"}}"#,
+					),
+				}),
+				&mut |event| events.push(event),
+			)
+			.expect("typed provider error decodes");
+		let error = events
+			.into_iter()
+			.find_map(|event| match event {
+				RawEvent::Failure(error) => Some(error),
+				_ => None,
+			})
+			.expect("terminal error");
+		assert_eq!(error.kind, ErrorKind::RateLimited);
+		assert_eq!(error.action, RetryAction::ReselectRoute);
+		assert!(!error.committed);
+	}
+
+	#[test]
 	fn context_overflow_classifies_as_never_retried() {
 		// A deterministic overflow replays identically: the summarizer (or any
 		// caller) must see a fail-fast `ContextOverflow` rather than a transient
@@ -2780,10 +2869,11 @@ mod tests {
 		let classify = |code: &str, message: &str| {
 			super::classify_error(
 				super::WireError {
-					code:     Some(super::ErrorCode::Text(code.into())),
-					message:  Some(message.into()),
-					_param:   None,
-					metadata: None,
+					code:            Some(super::ErrorCode::Text(code.into())),
+					message:         Some(message.into()),
+					_param:          None,
+					metadata:        None,
+					rate_limit_type: None,
 				},
 				false,
 			)

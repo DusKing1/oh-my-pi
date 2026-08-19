@@ -63,6 +63,16 @@ const PUBLIC_NUMERIC_HEADERS: [&str; 13] = [
 	"x-ratelimit-reset-tokens",
 ];
 
+/// `LiteLLM` (and compatible proxies) shed over-concurrency requests *before*
+/// the upstream call with an immediate HTTP 429 marked `rate_limit_type:
+/// max_parallel_requests` — as a response header and/or a structured body
+/// field (the codec classifies the body form). The admission failure never
+/// reached a model, so honoring the proxy's `Retry-After`-scale hint on the
+/// same route duplicates the backoff and model fallback the router already
+/// owns, stalling one turn for minutes (pi #8854).
+const CONCURRENCY_ADMISSION_HEADER: &str = "rate_limit_type";
+const CONCURRENCY_ADMISSION_LIMITER: &[u8] = b"max_parallel_requests";
+
 const MAX_REQUEST_ID_BYTES: usize = 128;
 const PUBLIC_REQUEST_ID_HEADERS: [&str; 5] =
 	["x-request-id", "request-id", "x-amzn-requestid", "x-goog-request-id", "cf-ray"];
@@ -381,6 +391,7 @@ async fn execute(
 	let status = parts.status.as_u16();
 	let headers = sanitize_headers(&parts.headers);
 	let provider_request_id = request_id(&parts.headers);
+	let concurrency_admission = concurrency_admission_rejection(&parts.headers);
 	let capture = Arc::new(Mutex::new(HttpCapture {
 		attempt: transport.attempt.index,
 		status,
@@ -430,6 +441,7 @@ async fn execute(
 			Some(Err(error)) => {
 				let mut error = error.status(Some(status)).committed(false);
 				error.phase = ErrorPhase::Handshake;
+				surface_concurrency_admission(&mut error, concurrency_admission);
 				return Err(error);
 			},
 			None => {
@@ -547,6 +559,28 @@ pub(crate) fn sanitize_headers(headers: &HeaderMap) -> Box<[RequestHeader]> {
 		.take(MAX_CAPTURED_HEADERS)
 		.collect::<Vec<_>>()
 		.into_boxed_slice()
+}
+
+/// `true` for a response carrying `LiteLLM`'s concurrency-admission marker
+/// header. Only equality against the fixed limiter token is observed; the
+/// provider-controlled value is never retained, preserving the numeric-only
+/// header sanitization contract.
+fn concurrency_admission_rejection(headers: &HeaderMap) -> bool {
+	headers
+		.get(CONCURRENCY_ADMISSION_HEADER)
+		.is_some_and(|value| value.as_bytes().trim_ascii() == CONCURRENCY_ADMISSION_LIMITER)
+}
+
+/// Upgrades a pre-commit same-route rate-limit retry into immediate route
+/// reselection when the response was a concurrency-admission shed, so the
+/// preplanned fallback walk owns retry instead of a transport-level sleep.
+fn surface_concurrency_admission(error: &mut Error, admission_marker: bool) {
+	if admission_marker
+		&& error.kind == ErrorKind::RateLimited
+		&& matches!(error.action, RetryAction::SameRoute { .. })
+	{
+		error.action = RetryAction::ReselectRoute;
+	}
 }
 
 struct LimitedBodyStream {
@@ -1145,6 +1179,69 @@ mod tests {
 			committed.detail_ref(),
 			Some(&ErrorDetail::protocol(ReasonId(Str::new_static("http-response-body")))),
 			"the stable reason survives for resume classification"
+		);
+	}
+
+	#[test]
+	fn concurrency_admission_marker_is_detected_only_for_the_exact_limiter_token() {
+		let mut headers = HeaderMap::new();
+		assert!(!concurrency_admission_rejection(&headers), "absent header is no marker");
+		headers.insert(
+			HeaderName::from_static(CONCURRENCY_ADMISSION_HEADER),
+			HeaderValue::from_static("max_parallel_requests"),
+		);
+		assert!(concurrency_admission_rejection(&headers));
+		headers.insert(
+			HeaderName::from_static(CONCURRENCY_ADMISSION_HEADER),
+			HeaderValue::from_static(" max_parallel_requests "),
+		);
+		assert!(concurrency_admission_rejection(&headers), "padded token still matches");
+		headers.insert(
+			HeaderName::from_static(CONCURRENCY_ADMISSION_HEADER),
+			HeaderValue::from_static("tokens_per_minute"),
+		);
+		assert!(!concurrency_admission_rejection(&headers), "other limiter types are not sheds");
+		// The marker never enters the sanitized public header surface: only
+		// the boolean comparison against the fixed token is observed.
+		assert!(sanitize_headers(&headers).is_empty());
+	}
+
+	/// A header-marked LiteLLM concurrency-admission 429 (pi #8854) must
+	/// surface for immediate route reselection instead of sleeping through the
+	/// transport's same-route retry lane; unmarked rate limits and every other
+	/// classification keep their action.
+	#[test]
+	fn header_marked_admission_429_upgrades_same_route_retry_to_reselection() {
+		let rate_limited = || {
+			Error::new(
+				ErrorKind::RateLimited,
+				ErrorPhase::Handshake,
+				RetryAction::SameRoute { after: std::time::Duration::from_secs(30) },
+				ExecutionReceipt::default(),
+			)
+		};
+		let mut marked = rate_limited();
+		surface_concurrency_admission(&mut marked, true);
+		assert_eq!(marked.action, RetryAction::ReselectRoute);
+
+		let mut unmarked = rate_limited();
+		surface_concurrency_admission(&mut unmarked, false);
+		assert!(
+			matches!(unmarked.action, RetryAction::SameRoute { .. }),
+			"a plain 429 keeps honoring the same-route backoff"
+		);
+
+		let mut terminal = rate_limited();
+		terminal.action = RetryAction::Never;
+		surface_concurrency_admission(&mut terminal, true);
+		assert_eq!(terminal.action, RetryAction::Never, "non-retryable classifications never widen");
+
+		let mut transient = rate_limited();
+		transient.kind = ErrorKind::ResourceExhausted;
+		surface_concurrency_admission(&mut transient, true);
+		assert!(
+			matches!(transient.action, RetryAction::SameRoute { .. }),
+			"only rate-limit classifications are admission sheds"
 		);
 	}
 }
