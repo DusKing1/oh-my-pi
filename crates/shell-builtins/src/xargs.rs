@@ -1491,6 +1491,14 @@ mod tests {
 	}
 
 	#[test]
+	fn replace_mode_skips_empty_input_with_r() {
+		// `-r` and `-I` each independently suppress the empty-input run; both
+		// together must not cancel out.
+		let result = run_simple(&["-r", "-I", "{}", "echo", "{}"], "");
+		assert_eq!(result, (0, String::new(), String::new()));
+	}
+
+	#[test]
 	fn verbose_echoes_command_line_to_stderr() {
 		let (code, out, err) = run_simple(&["-t", "echo", "a"], "b\n");
 		assert_eq!(code, 0);
