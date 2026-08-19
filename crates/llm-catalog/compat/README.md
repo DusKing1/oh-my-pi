@@ -14,7 +14,7 @@ Both grammars are KDL v2. Unknown nodes/directives and malformed value shapes ar
 
 ## Taxonomy grammar
 
-At a taxonomy document root, the only permitted nodes are `class` and `collapse`; a source may contain multiple class nodes. Class names and override IDs must be unique across all bundled sources. Exactly one non-empty `collapse` definition is required across the inventory.
+At a taxonomy document root, the only permitted nodes are `class`, `collapse`, and `discovery`; a source may contain multiple class nodes. Class names and override IDs must be unique across all bundled sources. Exactly one non-empty `collapse` definition is required across the inventory; at most one `discovery` definition may appear.
 
 ```kdl
 class "anthropic" {
@@ -108,11 +108,22 @@ collapse {
     effort-suffix "-minimal" tier="minimal"
     effort-suffix "-xhigh" tier="xhigh"
     effort-suffix "-max" tier="max" except-bare-prefix="qwen"
+    effort-lane-suffix "-fast" "cursor" bare-prefix="cursor-grok"
     routing-variant-suffix "-wm" "openai-codex" "openai-codex-device"
 }
 ```
 
-`thinking-suffix` accepts one non-empty suffix and no properties. `effort-suffix` additionally requires `tier` with one of the effort values above, and may have `except-bare-prefix`. `routing-variant-suffix` takes one non-empty suffix followed by one or more provider IDs: a wire identifier carrying the suffix on one of those providers is a **routing variant** of its plain identifier — discovery derives base-model metadata (key, limits, pricing, thinking) from the plain bundled SKU while keeping the suffixed wire identifier for requests; routing variants never participate in effort collapse. Suffixes are unique case-insensitively across all three directives. Matching is case-insensitive against the end of the full model identifier; the longest matching suffix wins. The exception tests the lowercased bare name prefix.
+`thinking-suffix` accepts one non-empty suffix and no properties. `effort-suffix` additionally requires `tier` with one of the effort values above, and may have `except-bare-prefix`. `routing-variant-suffix` takes one non-empty suffix followed by one or more provider IDs: a wire identifier carrying the suffix on one of those providers is a **routing variant** of its plain identifier — discovery derives base-model metadata (key, limits, pricing, thinking) from the plain bundled SKU while keeping the suffixed wire identifier for requests; routing variants never participate in effort collapse. `effort-lane-suffix` takes one non-empty lane suffix followed by one or more provider IDs, plus an optional `bare-prefix` gate: on a declared provider, an identifier ending in the lane suffix collapses by the effort-suffix vocabulary applied immediately before the lane token, and the collapsed logical identifier keeps the lane suffix (`cursor-grok-4.6-low-fast` → `cursor-grok-4.6-fast` at effort `low`) — one logical model per service-tier lane. The lane wraps effort tiers only; thinking suffixes never lane. Suffixes are unique case-insensitively across all four directives. Matching is case-insensitive against the end of the full model identifier; the longest matching suffix wins. The exception tests the lowercased bare name prefix.
+
+### Discovery vocabulary
+
+```kdl
+discovery {
+    recover-canonical-params "gmi-cloud"
+}
+```
+
+`recover-canonical-params` takes one or more provider IDs (unique case-insensitively). On a declared provider, runtime discovery recovers intrinsic base-model parameters — display name, context window, output limit, and the interned thinking policy — for a discovered **namespaced** identity (`deepseek-ai/…`) from the bundled canonical reference index built across all providers; the first entry in frozen catalog order wins. Pricing, wire policy, and effort routing are never borrowed across providers, and bare un-namespaced slugs never match.
 
 ## Cascade grammar
 
@@ -334,9 +345,9 @@ This verifies the source lock and rewrites:
 - `crates/llm-catalog/data/catalog.normalized.json`
 - `crates/llm-catalog/data/catalog.postcard`
 
-`crates/llm-catalog/data/catalog.normalized.json` is the full compiled catalog: providers, routes, models, wire policies, thinking policies, and revision. `fixtures/llm-oracle/catalog/models.normalized.json` is a different, reduced 4,227-model archival schema. Never copy or compare the full compiled artifact over the reduced fixture.
+`crates/llm-catalog/data/catalog.normalized.json` is the full compiled catalog: providers, routes, models, wire policies, thinking policies, and revision. `fixtures/llm-oracle/catalog/models.normalized.json` is a different, reduced 4,225-model archival schema. Never copy or compare the full compiled artifact over the reduced fixture.
 
-The reduced fixture changes only when `models.json.zst` changes. Its loader is pinned to
+The reduced fixture changes only when `models.json.zst` changes or a reviewed collapse-policy port folds frozen siblings (for example the Cursor Grok `-fast` lane, pi PR #8988). Its loader is pinned to
 `52b111a4abc8d76064abc4f58afda931edee9833`; the checked-in projector preserves the
 historical baseline-plus-overlay encoding and sorts models by `(provider, model)`.
 

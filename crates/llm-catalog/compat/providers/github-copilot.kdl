@@ -56,6 +56,13 @@ provider "github-copilot" {
 	models "grok-4.5" "mai-code-1-flash-picker" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}
+	// Dormant until a catalog snapshot ships grok-4.6: Copilot serves
+	// grok-4.6 / grok-4.6-1m only via /responses, whose policy adds the
+	// native xhigh tier and drops the chat-completions compat block
+	// (pi PR #8981). Discovered rows ride the openai-responses primary route.
+	models "grok-4.6" "grok-4.6-1m" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
+	}
 	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "grok-code-fast-1" {
 		supports-store #false

@@ -6,7 +6,7 @@
 //! cascade adds beyond the oracle must be one of the documented census
 //! composition overlays (pi-openai-chat:012–015) — nothing else. Thinking
 //! verification is exact against `thinking-profiles.json`, resolved over all
-//! 4,227 catalog models with the catalog's reasoning capability as the gate,
+//! 4,225 catalog models with the catalog's reasoning capability as the gate,
 //! which proves class and `on` thinking rules never leak onto non-reasoning
 //! siblings. Every `ready` quirk-census case executes against the real
 //! machinery.
@@ -389,7 +389,7 @@ fn cascade_resolves_every_catalog_model_to_oracle_plus_census_overlay() {
 		}
 		checked += 1;
 	}
-	assert_eq!(checked, 4_227, "full catalog roster resolved");
+	assert_eq!(checked, 4_225, "full catalog roster resolved");
 	assert_eq!(wire_overridden, 312, "archived wire override census");
 	assert_eq!(thinking_profiled, 2_292, "thinking profile census");
 	assert!(overlay_applied > 500, "census overlay must reach real models: {overlay_applied}");
@@ -535,6 +535,50 @@ fn glm_53_uniform_ladder_resolves_on_every_host() {
 		Some(&Value::from(vec!["low", "high", "max"])),
 		"glm-5.3v must not inherit the coding-SKU ladder"
 	);
+}
+
+#[test]
+fn copilot_grok_46_residue_grants_the_responses_xhigh_ladder() {
+	// pi PR #8981: Copilot serves grok-4.6 / grok-4.6-1m only via /responses,
+	// whose policy carries the native xhigh tier. Dormant until a catalog
+	// snapshot ships the ids; discovery classification already resolves them.
+	let cascade = CompatCascade::bundled().expect("bundled cascade parses");
+	for model in ["grok-4.6", "grok-4.6-1m"] {
+		let classification = classify(ClassificationInput {
+			phase: ClassificationPhase::CatalogCompiler,
+			provider: "github-copilot",
+			model,
+			observed_at_ms: None,
+		});
+		assert_eq!(classification.class.as_str(), "xai", "github-copilot/{model}: class");
+		let resolved = cascade
+			.resolve(&ResolveTarget {
+				provider: "github-copilot",
+				class: classification.class.as_str(),
+				family: classification.family.as_ref().map(|family| family.as_str()),
+				revision: classification.revision,
+				model,
+				reasoning: true,
+			})
+			.unwrap_or_else(|error| panic!("github-copilot/{model}: {error}"));
+		assert_eq!(
+			resolved.thinking.get("efforts"),
+			Some(&Value::from(vec!["minimal", "low", "medium", "high", "xhigh"])),
+			"github-copilot/{model}: responses ladder"
+		);
+		assert_eq!(
+			resolved.thinking.get("mode"),
+			Some(&Value::from("effort")),
+			"github-copilot/{model}: effort mode"
+		);
+		// The /responses policy drops the chat-completions compat residue:
+		// no wire overrides survive for the migrated ids.
+		assert!(
+			resolved.wire.is_empty(),
+			"github-copilot/{model}: unexpected wire residue {:?}",
+			resolved.wire
+		);
+	}
 }
 
 #[test]

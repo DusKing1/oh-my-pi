@@ -50,7 +50,7 @@ pub const COMPILED_SCHEMA_VERSION: u32 = 1;
 /// Verified raw row count of the checked-in oracle.
 pub const ORACLE_RAW_MODELS: usize = 4_302;
 /// Verified normalized logical model count of the checked-in oracle.
-pub const ORACLE_LOGICAL_MODELS: usize = 4_227;
+pub const ORACLE_LOGICAL_MODELS: usize = 4_225;
 /// Verified curated provider count.
 pub const ORACLE_PROVIDERS: usize = 94;
 /// Verified number of provider keys present in raw model records.

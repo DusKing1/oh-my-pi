@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "revision": "catalog-1a99ea5c99cb4e1b572763083b842dd6392d419da73a5f0a8fa83fa1b657ff52",
+  "revision": "catalog-bbde5babbe2a47d40451ef01fe937b95860ee80b7ac1eb3fb483d17f786a7387",
   "census": {
     "raw_models": 4302,
-    "logical_models": 4227,
+    "logical_models": 4225,
     "providers": 94,
     "raw_provider_keys": 80,
     "urls": 108,
@@ -86796,209 +86796,25 @@
       "premium_multiplier_millionths": null
     },
     {
-      "key": "cursor/cursor-grok-4.5-high-fast",
+      "key": "cursor/cursor-grok-4.5-fast",
       "class": "unknown",
       "display_name": "Cursor Grok 4.5 Fast",
       "wire_ids": [
         [
           "route-a31f3426d580450144ac569cbf940c5fb7bd6d6b022484ccf4a232c50b9532b3",
           "cursor-grok-4.5-high-fast"
-        ]
-      ],
-      "routes": [
-        "route-a31f3426d580450144ac569cbf940c5fb7bd6d6b022484ccf4a232c50b9532b3"
-      ],
-      "capabilities": {
-        "operations": 1,
-        "chat": {
-          "roles": "unknown",
-          "mid_session_roles": "unknown",
-          "tools": "unknown",
-          "structured_output": "unknown",
-          "grammar": "unknown",
-          "text_verbosity": "unknown",
-          "reasoning": "unsupported",
-          "input_modalities": {
-            "native": 1
-          },
-          "hosted_tools": "unknown",
-          "prompt_caching": "unknown",
-          "service_tiers": "unknown",
-          "sampling": "unknown",
-          "safety": "unknown",
-          "determinism": "unknown",
-          "server_state": "unknown",
-          "logprobs": "unknown"
-        },
-        "embeddings": null,
-        "image": null,
-        "video": null,
-        "speech": null,
-        "transcription": null,
-        "realtime": null,
-        "search": null,
-        "tokenization": null
-      },
-      "limits": {
-        "context_window": 200000,
-        "maximum_input_tokens": null,
-        "maximum_output_tokens": 64000,
-        "maximum_batch": null
-      },
-      "thinking": null,
-      "thinking_routing": {
-        "effortMap": {},
-        "effortRouting": {},
-        "reasoningMode": null
-      },
-      "wire_policy": "wire-sha256-1e0adcbc07347d8a68ce79fe93ffaa346f3c2c7d2d8cb3a6eb837528be201f20",
-      "context": "replay",
-      "pricing": {
-        "components": [
-          {
-            "unit": "mtok_input",
-            "nanos_usd": 0
-          },
-          {
-            "unit": "mtok_output",
-            "nanos_usd": 0
-          },
-          {
-            "unit": "mtok_cache_read",
-            "nanos_usd": 0
-          },
-          {
-            "unit": "mtok_cache_write",
-            "nanos_usd": 0
-          }
         ],
-        "tiers": []
-      },
-      "availability": "unspecified",
-      "provenance": {
-        "sources": [
-          {
-            "kind": "bundled",
-            "origin": "catalog-oracle/models.json.zst",
-            "revision": null,
-            "confidence": "declared",
-            "observed_at_ms": null
-          }
-        ],
-        "updated_at_ms": null,
-        "blocked_until_ms": null,
-        "deprecated": false
-      },
-      "context_promotion_target": null,
-      "remote_compaction": null,
-      "premium_multiplier_millionths": null
-    },
-    {
-      "key": "cursor/cursor-grok-4.5-low-fast",
-      "class": "unknown",
-      "display_name": "Cursor Grok 4.5 Low Fast",
-      "wire_ids": [
         [
           "route-a31f3426d580450144ac569cbf940c5fb7bd6d6b022484ccf4a232c50b9532b3",
           "cursor-grok-4.5-low-fast"
-        ]
-      ],
-      "routes": [
-        "route-a31f3426d580450144ac569cbf940c5fb7bd6d6b022484ccf4a232c50b9532b3"
-      ],
-      "capabilities": {
-        "operations": 1,
-        "chat": {
-          "roles": "unknown",
-          "mid_session_roles": "unknown",
-          "tools": "unknown",
-          "structured_output": "unknown",
-          "grammar": "unknown",
-          "text_verbosity": "unknown",
-          "reasoning": "unsupported",
-          "input_modalities": {
-            "native": 1
-          },
-          "hosted_tools": "unknown",
-          "prompt_caching": "unknown",
-          "service_tiers": "unknown",
-          "sampling": "unknown",
-          "safety": "unknown",
-          "determinism": "unknown",
-          "server_state": "unknown",
-          "logprobs": "unknown"
-        },
-        "embeddings": null,
-        "image": null,
-        "video": null,
-        "speech": null,
-        "transcription": null,
-        "realtime": null,
-        "search": null,
-        "tokenization": null
-      },
-      "limits": {
-        "context_window": 200000,
-        "maximum_input_tokens": null,
-        "maximum_output_tokens": 64000,
-        "maximum_batch": null
-      },
-      "thinking": null,
-      "thinking_routing": {
-        "effortMap": {},
-        "effortRouting": {},
-        "reasoningMode": null
-      },
-      "wire_policy": "wire-sha256-1e0adcbc07347d8a68ce79fe93ffaa346f3c2c7d2d8cb3a6eb837528be201f20",
-      "context": "replay",
-      "pricing": {
-        "components": [
-          {
-            "unit": "mtok_input",
-            "nanos_usd": 0
-          },
-          {
-            "unit": "mtok_output",
-            "nanos_usd": 0
-          },
-          {
-            "unit": "mtok_cache_read",
-            "nanos_usd": 0
-          },
-          {
-            "unit": "mtok_cache_write",
-            "nanos_usd": 0
-          }
         ],
-        "tiers": []
-      },
-      "availability": "unspecified",
-      "provenance": {
-        "sources": [
-          {
-            "kind": "bundled",
-            "origin": "catalog-oracle/models.json.zst",
-            "revision": null,
-            "confidence": "declared",
-            "observed_at_ms": null
-          }
-        ],
-        "updated_at_ms": null,
-        "blocked_until_ms": null,
-        "deprecated": false
-      },
-      "context_promotion_target": null,
-      "remote_compaction": null,
-      "premium_multiplier_millionths": null
-    },
-    {
-      "key": "cursor/cursor-grok-4.5-medium-fast",
-      "class": "unknown",
-      "display_name": "Cursor Grok 4.5 Medium Fast",
-      "wire_ids": [
         [
           "route-a31f3426d580450144ac569cbf940c5fb7bd6d6b022484ccf4a232c50b9532b3",
           "cursor-grok-4.5-medium-fast"
+        ],
+        [
+          "route-a31f3426d580450144ac569cbf940c5fb7bd6d6b022484ccf4a232c50b9532b3",
+          "cursor-grok-4.5-fast"
         ]
       ],
       "routes": [
@@ -87013,7 +86829,7 @@
           "structured_output": "unknown",
           "grammar": "unknown",
           "text_verbosity": "unknown",
-          "reasoning": "unsupported",
+          "reasoning": "unknown",
           "input_modalities": {
             "native": 1
           },
@@ -87041,10 +86857,14 @@
         "maximum_output_tokens": 64000,
         "maximum_batch": null
       },
-      "thinking": null,
+      "thinking": "thinking-sha256-73fd20622d84913a852b65bbceee0d3892c117f2db8d7f116e3841f43a62a64d",
       "thinking_routing": {
         "effortMap": {},
-        "effortRouting": {},
+        "effortRouting": {
+          "low": "cursor-grok-4.5-low-fast",
+          "medium": "cursor-grok-4.5-medium-fast",
+          "high": "cursor-grok-4.5-high-fast"
+        },
         "reasoningMode": null
       },
       "wire_policy": "wire-sha256-1e0adcbc07347d8a68ce79fe93ffaa346f3c2c7d2d8cb3a6eb837528be201f20",
@@ -453399,14 +453219,32 @@
       "provenance": "catalog-compiler"
     },
     {
+      "alias": "cursor/cursor-grok-4.5-high-fast",
+      "target": "cursor/cursor-grok-4.5-fast",
+      "rationale": "provider row is a structurally named effort route of one logical model",
+      "provenance": "catalog-compiler"
+    },
+    {
       "alias": "cursor/cursor-grok-4.5-low",
       "target": "cursor/cursor-grok-4.5",
       "rationale": "provider row is a structurally named effort route of one logical model",
       "provenance": "catalog-compiler"
     },
     {
+      "alias": "cursor/cursor-grok-4.5-low-fast",
+      "target": "cursor/cursor-grok-4.5-fast",
+      "rationale": "provider row is a structurally named effort route of one logical model",
+      "provenance": "catalog-compiler"
+    },
+    {
       "alias": "cursor/cursor-grok-4.5-medium",
       "target": "cursor/cursor-grok-4.5",
+      "rationale": "provider row is a structurally named effort route of one logical model",
+      "provenance": "catalog-compiler"
+    },
+    {
+      "alias": "cursor/cursor-grok-4.5-medium-fast",
+      "target": "cursor/cursor-grok-4.5-fast",
       "rationale": "provider row is a structurally named effort route of one logical model",
       "provenance": "catalog-compiler"
     },

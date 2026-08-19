@@ -140,12 +140,12 @@ fn classify_with_taxonomy(
 	}
 
 	let (logical, collapsed_effort, collapsed_thinking) = if trimmed.len() == input.model.len() {
-		taxonomy.collapse(trimmed)
+		taxonomy.collapse(input.provider, trimmed)
 	} else {
-		(trimmed, None, false)
+		(std::borrow::Cow::Borrowed(trimmed), None, false)
 	};
 	let (inferred_class, inferred_family, inferred_revision) =
-		classify_ranks(taxonomy, input.phase, logical);
+		classify_ranks(taxonomy, input.phase, &logical);
 
 	let structural = collapsed_effort.is_some() || collapsed_thinking;
 	let method = if structural {
@@ -156,7 +156,7 @@ fn classify_with_taxonomy(
 		ClassificationMethod::ClassRule
 	};
 	ModelClassification {
-		logical_model:    Str::from(logical),
+		logical_model:    Str::from(logical.as_ref()),
 		class:            inferred_class,
 		family:           inferred_family,
 		revision:         inferred_revision,
@@ -375,6 +375,41 @@ mod tests {
 			assert_eq!(value.logical_model.as_str(), "gpt-5-luna");
 			assert_eq!(value.effort, Some(effort));
 		}
+	}
+
+	#[test]
+	fn collapses_cursor_grok_effort_lanes_per_service_tier() {
+		// pi PR #8988: each Cursor Grok service-tier lane is one logical
+		// model; the `-fast` lane routes efforts onto the `-<effort>-fast`
+		// wire siblings while the standard lane keeps the plain collapse.
+		let cursor = |model: &str| {
+			classify(ClassificationInput {
+				phase: ClassificationPhase::CatalogCompiler,
+				provider: "cursor",
+				model,
+				observed_at_ms: None,
+			})
+		};
+		let fast = cursor("cursor-grok-4.6-low-fast");
+		assert_eq!(fast.logical_model.as_str(), "cursor-grok-4.6-fast");
+		assert_eq!(fast.effort, Some(EffortTier::Low));
+		assert_eq!(fast.evidence.method, ClassificationMethod::StructuralSuffix);
+		let xhigh = cursor("cursor-grok-4.6-xhigh-fast");
+		assert_eq!(xhigh.logical_model.as_str(), "cursor-grok-4.6-fast");
+		assert_eq!(xhigh.effort, Some(EffortTier::XHigh));
+		let plain = cursor("cursor-grok-4.6-high");
+		assert_eq!(plain.logical_model.as_str(), "cursor-grok-4.6");
+		assert_eq!(plain.effort, Some(EffortTier::High));
+		// The lane is provider-scoped; other hosts keep the sibling identity.
+		let elsewhere = compiler("cursor-grok-4.6-low-fast");
+		assert_eq!(elsewhere.logical_model.as_str(), "cursor-grok-4.6-low-fast");
+		assert_eq!(elsewhere.effort, None);
+		// Coding SKUs and non-Grok fast tiers stay out of the lane.
+		assert_eq!(cursor("grok-code-fast-1").logical_model.as_str(), "grok-code-fast-1");
+		assert_eq!(
+			cursor("claude-opus-5-high-fast").logical_model.as_str(),
+			"claude-opus-5-high-fast"
+		);
 	}
 
 	#[test]

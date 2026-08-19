@@ -58961,9 +58961,9 @@
       }
     },
     {
-      "id": "cursor/cursor-grok-4.5-high-fast",
+      "id": "cursor/cursor-grok-4.5-fast",
       "provider": "cursor",
-      "model": "cursor-grok-4.5-high-fast",
+      "model": "cursor-grok-4.5-fast",
       "name": "Cursor Grok 4.5 Fast",
       "family": "",
       "facets": [
@@ -58977,8 +58977,12 @@
           "text"
         ]
       },
-      "reasoning": false,
-      "efforts": [],
+      "reasoning": true,
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
       "limits": {
         "context_window": 200000,
         "max_output_tokens": 64000
@@ -59008,153 +59012,11 @@
       "deprecated": false,
       "updated_at_ms": 0,
       "props": {},
-      "effort_routing": {},
-      "wire": {
-        "transport": "cursor",
-        "base_url": "https://api2.cursor.sh"
+      "effort_routing": {
+        "low": "cursor-grok-4.5-low-fast",
+        "medium": "cursor-grok-4.5-medium-fast",
+        "high": "cursor-grok-4.5-high-fast"
       },
-      "behavior": {
-        "thinking": null,
-        "supports_tools": null,
-        "supports_computer_use": false,
-        "supports_computer_use_config": false,
-        "cursor_max_mode": false,
-        "omit_max_output_tokens": null,
-        "apply_patch_tool_type": null,
-        "context_promotion_target": null,
-        "request_model_id": null,
-        "remote_compaction": null,
-        "premium_multiplier": null,
-        "reasoning_mode": null,
-        "use_responses_lite": null,
-        "prefer_websockets": null,
-        "priority": null,
-        "headers": {},
-        "compat": {}
-      }
-    },
-    {
-      "id": "cursor/cursor-grok-4.5-low-fast",
-      "provider": "cursor",
-      "model": "cursor-grok-4.5-low-fast",
-      "name": "Cursor Grok 4.5 Low Fast",
-      "family": "",
-      "facets": [
-        "chat"
-      ],
-      "modalities": {
-        "inputs": [
-          "text"
-        ],
-        "outputs": [
-          "text"
-        ]
-      },
-      "reasoning": false,
-      "efforts": [],
-      "limits": {
-        "context_window": 200000,
-        "max_output_tokens": 64000
-      },
-      "pricing": [
-        {
-          "unit": "mtok_input",
-          "nanos_usd": 0
-        },
-        {
-          "unit": "mtok_output",
-          "nanos_usd": 0
-        },
-        {
-          "unit": "mtok_cache_read",
-          "nanos_usd": 0
-        },
-        {
-          "unit": "mtok_cache_write",
-          "nanos_usd": 0
-        }
-      ],
-      "pricing_tiers": [],
-      "availability": "unspecified",
-      "source": "bundled",
-      "blocked_until_ms": 0,
-      "deprecated": false,
-      "updated_at_ms": 0,
-      "props": {},
-      "effort_routing": {},
-      "wire": {
-        "transport": "cursor",
-        "base_url": "https://api2.cursor.sh"
-      },
-      "behavior": {
-        "thinking": null,
-        "supports_tools": null,
-        "supports_computer_use": false,
-        "supports_computer_use_config": false,
-        "cursor_max_mode": false,
-        "omit_max_output_tokens": null,
-        "apply_patch_tool_type": null,
-        "context_promotion_target": null,
-        "request_model_id": null,
-        "remote_compaction": null,
-        "premium_multiplier": null,
-        "reasoning_mode": null,
-        "use_responses_lite": null,
-        "prefer_websockets": null,
-        "priority": null,
-        "headers": {},
-        "compat": {}
-      }
-    },
-    {
-      "id": "cursor/cursor-grok-4.5-medium-fast",
-      "provider": "cursor",
-      "model": "cursor-grok-4.5-medium-fast",
-      "name": "Cursor Grok 4.5 Medium Fast",
-      "family": "",
-      "facets": [
-        "chat"
-      ],
-      "modalities": {
-        "inputs": [
-          "text"
-        ],
-        "outputs": [
-          "text"
-        ]
-      },
-      "reasoning": false,
-      "efforts": [],
-      "limits": {
-        "context_window": 200000,
-        "max_output_tokens": 64000
-      },
-      "pricing": [
-        {
-          "unit": "mtok_input",
-          "nanos_usd": 0
-        },
-        {
-          "unit": "mtok_output",
-          "nanos_usd": 0
-        },
-        {
-          "unit": "mtok_cache_read",
-          "nanos_usd": 0
-        },
-        {
-          "unit": "mtok_cache_write",
-          "nanos_usd": 0
-        }
-      ],
-      "pricing_tiers": [],
-      "availability": "unspecified",
-      "source": "bundled",
-      "blocked_until_ms": 0,
-      "deprecated": false,
-      "updated_at_ms": 0,
-      "props": {},
-      "effort_routing": {},
       "wire": {
         "transport": "cursor",
         "base_url": "https://api2.cursor.sh"

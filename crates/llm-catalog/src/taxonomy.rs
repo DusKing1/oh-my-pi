@@ -1,6 +1,6 @@
 //! Checked-in model identity taxonomy.
 
-use std::{collections::BTreeSet, sync::LazyLock};
+use std::{borrow::Cow, collections::BTreeSet, sync::LazyLock};
 
 use kdl::{KdlDocument, KdlNode, KdlValue};
 use omp_core::{IntoStr, SemVer, Str};
@@ -21,6 +21,7 @@ macro_rules! sources {
 /// Checked-in collapse vocabulary and class taxonomy sources.
 pub const BUNDLED_TAXONOMY: &[(&str, &str)] = sources![
 	"_collapse",
+	"_discovery",
 	"ai21",
 	"amazon",
 	"anthropic",
@@ -164,6 +165,24 @@ struct SuffixDef {
 	except_bare_prefix: Option<Str>,
 }
 
+/// One provider-scoped effort-lane suffix rule.
+///
+/// A provider may serve one logical model as parallel per-effort sibling
+/// lanes (`cursor-grok-4.6-low-fast`, pi PR #8988): the trailing lane token
+/// is transparent to effort collapse, so the effort-suffix vocabulary is
+/// applied immediately before the lane suffix and the collapsed logical
+/// identifier keeps the lane suffix — one logical model per service-tier
+/// lane, never a second routing dimension.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct EffortLaneSuffix {
+	/// Lowercased lane suffix (`-fast`).
+	suffix:      Str,
+	/// Providers whose rosters advertise this lane vocabulary.
+	providers:   Box<[Str]>,
+	/// Optional lowercased bare-name prefix gate for the lane.
+	bare_prefix: Option<Str>,
+}
+
 /// One provider-scoped routing-variant suffix rule.
 ///
 /// A discovered wire identifier carrying the suffix is a routing variant of
@@ -181,9 +200,11 @@ pub struct RoutingVariantSuffix {
 /// Parsed checked-in identity taxonomy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Taxonomy {
-	classes:          Vec<ClassDef>,
-	collapse:         Vec<SuffixDef>,
-	routing_variants: Vec<RoutingVariantSuffix>,
+	classes:            Vec<ClassDef>,
+	collapse:           Vec<SuffixDef>,
+	lanes:              Vec<EffortLaneSuffix>,
+	routing_variants:   Vec<RoutingVariantSuffix>,
+	canonical_recovery: Vec<Str>,
 }
 
 /// Data-dependent taxonomy ambiguity.
@@ -221,10 +242,13 @@ impl Taxonomy {
 	pub fn parse(sources: &[(&str, &str)]) -> Result<Self, CascadeError> {
 		let mut classes = Vec::new();
 		let mut collapse = Vec::new();
+		let mut lanes = Vec::new();
 		let mut routing_variants = Vec::new();
+		let mut canonical_recovery = Vec::new();
 		let mut source_names = BTreeSet::new();
 		let mut class_names = BTreeSet::new();
 		let mut saw_collapse = false;
+		let mut saw_discovery = false;
 		let mut override_ids = BTreeSet::new();
 		let mut override_keys = BTreeSet::new();
 
@@ -268,7 +292,14 @@ impl Taxonomy {
 							return malformed(file, "collapse");
 						}
 						saw_collapse = true;
-						(collapse, routing_variants) = parse_collapse(file, node)?;
+						(collapse, lanes, routing_variants) = parse_collapse(file, node)?;
+					},
+					"discovery" => {
+						if saw_discovery {
+							return malformed(file, "discovery");
+						}
+						saw_discovery = true;
+						canonical_recovery = parse_discovery(file, node)?;
 					},
 					other => return unexpected(file, other, "taxonomy"),
 				}
@@ -277,7 +308,7 @@ impl Taxonomy {
 		if !saw_collapse || collapse.is_empty() {
 			return malformed("taxonomy", "collapse");
 		}
-		Ok(Self { classes, collapse, routing_variants })
+		Ok(Self { classes, collapse, lanes, routing_variants, canonical_recovery })
 	}
 
 	/// Returns the plain wire identifier when `wire_model` is a declared
@@ -316,6 +347,15 @@ impl Taxonomy {
 				.iter()
 				.any(|candidate| candidate.eq_ignore_ascii_case(provider))
 		})
+	}
+
+	/// Whether `provider`'s discovery recovers intrinsic model parameters from
+	/// the bundled canonical reference index (pi PR #8991).
+	pub fn recovers_canonical_params(&self, provider: &str) -> bool {
+		self
+			.canonical_recovery
+			.iter()
+			.any(|candidate| candidate.eq_ignore_ascii_case(provider))
 	}
 
 	/// Parses the checked-in taxonomy inventory.
@@ -359,7 +399,17 @@ impl Taxonomy {
 	}
 
 	/// Collapses a declared thinking or effort suffix from a model identifier.
-	pub fn collapse<'a>(&self, model: &'a str) -> (&'a str, Option<EffortTier>, bool) {
+	///
+	/// A provider-scoped effort lane (`effort-lane-suffix`) additionally
+	/// collapses an effort suffix wedged before the lane token: on a declared
+	/// provider, `cursor-grok-4.6-low-fast` collapses to the logical
+	/// `cursor-grok-4.6-fast` with effort `low` — one logical model per
+	/// service-tier lane.
+	pub fn collapse<'a>(
+		&self,
+		provider: &str,
+		model: &'a str,
+	) -> (Cow<'a, str>, Option<EffortTier>, bool) {
 		let lower = model.to_ascii_lowercase();
 		let bare = lower.rsplit('/').next().unwrap_or(lower.as_str());
 		let winner = self
@@ -373,10 +423,54 @@ impl Taxonomy {
 					.is_some_and(|prefix| bare.starts_with(prefix.as_str()))
 			})
 			.max_by_key(|rule| rule.suffix.len());
-		match winner {
-			Some(rule) => (&model[..model.len() - rule.suffix.len()], rule.effort, rule.thinking),
-			None => (model, None, false),
+		if let Some(rule) = winner {
+			return (
+				Cow::Borrowed(&model[..model.len() - rule.suffix.len()]),
+				rule.effort,
+				rule.thinking,
+			);
 		}
+		for lane in &self.lanes {
+			if !lane
+				.providers
+				.iter()
+				.any(|candidate| candidate.eq_ignore_ascii_case(provider))
+				|| !lower.ends_with(lane.suffix.as_str())
+			{
+				continue;
+			}
+			let trimmed = &lower[..lower.len() - lane.suffix.len()];
+			let trimmed_bare = trimmed.rsplit('/').next().unwrap_or(trimmed);
+			if lane
+				.bare_prefix
+				.as_ref()
+				.is_some_and(|prefix| !trimmed_bare.starts_with(prefix.as_str()))
+			{
+				continue;
+			}
+			// The lane wraps effort tiers only; thinking variants never lane.
+			let effort = self
+				.collapse
+				.iter()
+				.filter(|rule| rule.effort.is_some())
+				.filter(|rule| trimmed.ends_with(rule.suffix.as_str()))
+				.filter(|rule| {
+					!rule
+						.except_bare_prefix
+						.as_ref()
+						.is_some_and(|prefix| trimmed_bare.starts_with(prefix.as_str()))
+				})
+				.max_by_key(|rule| rule.suffix.len());
+			if let Some(rule) = effort {
+				let base = &model[..trimmed.len() - rule.suffix.len()];
+				if base.is_empty() || base.ends_with('/') {
+					continue;
+				}
+				// Preserve the caller's original lane bytes on the logical id.
+				return (Cow::Owned(format!("{base}{}", &model[trimmed.len()..])), rule.effort, false);
+			}
+		}
+		(Cow::Borrowed(model), None, false)
 	}
 
 	/// Classifies a model into class, product family, and revision ranks.
@@ -665,10 +759,14 @@ fn parse_override(file: &str, node: &KdlNode) -> Result<IdentityOverride, Cascad
 	})
 }
 
+#[allow(
+	clippy::type_complexity,
+	reason = "one internal parse seam returns the three collapse vocabularies"
+)]
 fn parse_collapse(
 	file: &str,
 	node: &KdlNode,
-) -> Result<(Vec<SuffixDef>, Vec<RoutingVariantSuffix>), CascadeError> {
+) -> Result<(Vec<SuffixDef>, Vec<EffortLaneSuffix>, Vec<RoutingVariantSuffix>), CascadeError> {
 	validate_properties(file, node, "collapse", &[])?;
 	if !positional_strings(node).is_empty() {
 		return malformed(file, "collapse");
@@ -677,22 +775,29 @@ fn parse_collapse(
 		return malformed(file, "collapse");
 	};
 	let mut rules = Vec::new();
+	let mut lanes = Vec::new();
 	let mut routing_variants = Vec::new();
 	let mut suffixes = BTreeSet::new();
 	for child in children.nodes() {
 		let directive = child.name().value();
-		if !matches!(directive, "thinking-suffix" | "effort-suffix" | "routing-variant-suffix") {
+		if !matches!(
+			directive,
+			"thinking-suffix" | "effort-suffix" | "effort-lane-suffix" | "routing-variant-suffix"
+		) {
 			return unexpected(file, directive, "collapse");
 		}
-		let allowed = if directive == "effort-suffix" {
-			&["tier", "except-bare-prefix"][..]
-		} else {
-			&[][..]
+		let allowed = match directive {
+			"effort-suffix" => &["tier", "except-bare-prefix"][..],
+			"effort-lane-suffix" => &["bare-prefix"][..],
+			_ => &[][..],
 		};
 		validate_properties(file, child, directive, allowed)?;
 		if child.get("except-bare-prefix").is_some()
 			&& property_string(child, "except-bare-prefix").is_none()
 		{
+			return malformed(file, directive);
+		}
+		if child.get("bare-prefix").is_some() && property_string(child, "bare-prefix").is_none() {
 			return malformed(file, directive);
 		}
 		let arguments = positional_strings(child);
@@ -717,6 +822,32 @@ fn parse_collapse(
 					.iter()
 					.map(|provider| provider.to_ascii_lowercase().to_str())
 					.collect(),
+			});
+			continue;
+		}
+		if directive == "effort-lane-suffix" {
+			// One lane suffix followed by one or more provider ids, with an
+			// optional bare-prefix gate; the lane shares the case-insensitive
+			// suffix uniqueness namespace with the collapse vocabulary.
+			let [suffix, providers @ ..] = arguments.as_slice() else {
+				return malformed(file, directive);
+			};
+			if suffix.is_empty()
+				|| providers.is_empty()
+				|| providers.iter().any(String::is_empty)
+				|| child.children().is_some()
+				|| !suffixes.insert(suffix.to_ascii_lowercase())
+			{
+				return malformed(file, directive);
+			}
+			lanes.push(EffortLaneSuffix {
+				suffix:      suffix.to_ascii_lowercase().to_str(),
+				providers:   providers
+					.iter()
+					.map(|provider| provider.to_ascii_lowercase().to_str())
+					.collect(),
+				bare_prefix: property_string(child, "bare-prefix")
+					.map(|value| value.to_ascii_lowercase().to_str()),
 			});
 			continue;
 		}
@@ -747,7 +878,43 @@ fn parse_collapse(
 				.map(|value| value.to_ascii_lowercase().to_str()),
 		});
 	}
-	Ok((rules, routing_variants))
+	Ok((rules, lanes, routing_variants))
+}
+
+fn parse_discovery(file: &str, node: &KdlNode) -> Result<Vec<Str>, CascadeError> {
+	validate_properties(file, node, "discovery", &[])?;
+	if !positional_strings(node).is_empty() {
+		return malformed(file, "discovery");
+	}
+	let Some(children) = node.children() else {
+		return malformed(file, "discovery");
+	};
+	let mut providers: Vec<Str> = Vec::new();
+	for child in children.nodes() {
+		let directive = child.name().value();
+		if directive != "recover-canonical-params" {
+			return unexpected(file, directive, "discovery");
+		}
+		validate_properties(file, child, directive, &[])?;
+		let arguments = positional_strings(child);
+		if arguments.is_empty()
+			|| arguments.iter().any(String::is_empty)
+			|| child.children().is_some()
+		{
+			return malformed(file, directive);
+		}
+		for provider in arguments {
+			let provider = provider.to_ascii_lowercase();
+			if providers.iter().any(|held| held.as_str() == provider) {
+				return malformed(file, directive);
+			}
+			providers.push(provider.to_str());
+		}
+	}
+	if providers.is_empty() {
+		return malformed(file, "discovery");
+	}
+	Ok(providers)
 }
 
 fn matcher_matches(matcher: &Matcher, lower: &str, bare: &str) -> bool {
@@ -972,7 +1139,7 @@ mod tests {
 
 	#[test]
 	fn bundled_inventory_parses_once() {
-		assert_eq!(BUNDLED_TAXONOMY.len(), 22);
+		assert_eq!(BUNDLED_TAXONOMY.len(), 23);
 		Taxonomy::bundled().expect("bundled taxonomy parses");
 		let unique: BTreeSet<_> = BUNDLED_TAXONOMY.iter().map(|(name, _)| *name).collect();
 		assert_eq!(unique.len(), BUNDLED_TAXONOMY.len());
@@ -1086,8 +1253,14 @@ mod tests {
 
 	#[test]
 	fn qwen_max_is_product_but_xhigh_is_longest_suffix() {
-		assert_eq!(taxonomy().collapse("qwen3.8-max"), ("qwen3.8-max", None, false));
-		assert_eq!(taxonomy().collapse("gpt-5-xhigh"), ("gpt-5", Some(EffortTier::XHigh), false));
+		assert_eq!(
+			taxonomy().collapse("fixture", "qwen3.8-max"),
+			(Cow::Borrowed("qwen3.8-max"), None, false)
+		);
+		assert_eq!(
+			taxonomy().collapse("fixture", "gpt-5-xhigh"),
+			(Cow::Borrowed("gpt-5"), Some(EffortTier::XHigh), false)
+		);
 	}
 
 	#[test]
@@ -1182,7 +1355,7 @@ mod tests {
 		assert!(!taxonomy.has_routing_variants("openrouter"));
 		// Routing variants are route vocabulary, not effort siblings: the
 		// classifier's suffix collapse must ignore them.
-		assert_eq!(taxonomy.collapse("gpt-5.6-luna-wm").0, "gpt-5.6-luna-wm");
+		assert_eq!(taxonomy.collapse("openai-codex", "gpt-5.6-luna-wm").0, "gpt-5.6-luna-wm");
 	}
 
 	#[test]
@@ -1204,21 +1377,167 @@ mod tests {
 	fn malformed_routing_variant_suffixes_are_rejected() {
 		for source in [
 			// No providers.
-			r#"collapse { thinking-suffix "-thinking" routing-variant-suffix "-wm" }"#,
+			r#"collapse { thinking-suffix "-thinking"; routing-variant-suffix "-wm" }"#,
 			// Empty provider.
-			r#"collapse { thinking-suffix "-thinking" routing-variant-suffix "-wm" "" }"#,
+			r#"collapse { thinking-suffix "-thinking"; routing-variant-suffix "-wm" "" }"#,
 			// Empty suffix.
-			r#"collapse { thinking-suffix "-thinking" routing-variant-suffix "" "openai-codex" }"#,
+			r#"collapse { thinking-suffix "-thinking"; routing-variant-suffix "" "openai-codex" }"#,
 			// Suffix spelling already owned by the collapse vocabulary.
-			r#"collapse { thinking-suffix "-thinking" routing-variant-suffix "-thinking" "openai-codex" }"#,
+			r#"collapse { thinking-suffix "-thinking"; routing-variant-suffix "-thinking" "openai-codex" }"#,
+		] {
+			let result = Taxonomy::parse(&[("bad", source)]);
+			assert!(
+				matches!(result, Err(CascadeError::MalformedDirective { .. })),
+				"{source} -> {result:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn effort_lane_suffixes_collapse_per_service_tier_lane() {
+		let taxonomy = parse(&[(
+			"collapse",
+			r#"collapse {
+				effort-suffix "-low" tier="low"
+				effort-suffix "-xhigh" tier="xhigh"
+				effort-suffix "-max" tier="max" except-bare-prefix="qwen"
+				effort-lane-suffix "-fast" "cursor" bare-prefix="cursor-grok"
+			}"#,
+		)]);
+		assert_eq!(
+			taxonomy.collapse("cursor", "cursor-grok-4.6-low-fast"),
+			(Cow::Owned::<str>("cursor-grok-4.6-fast".into()), Some(EffortTier::Low), false)
+		);
+		assert_eq!(
+			taxonomy.collapse("cursor", "cursor-grok-4.6-xhigh-fast"),
+			(Cow::Owned::<str>("cursor-grok-4.6-fast".into()), Some(EffortTier::XHigh), false)
+		);
+		// Provider and suffix matching are case-insensitive; the logical id
+		// preserves the caller's original lane bytes.
+		assert_eq!(
+			taxonomy.collapse("CURSOR", "Cursor-Grok-4.6-Low-FAST"),
+			(Cow::Owned::<str>("Cursor-Grok-4.6-FAST".into()), Some(EffortTier::Low), false)
+		);
+		// The plain lane keeps collapsing by the ordinary effort vocabulary.
+		assert_eq!(
+			taxonomy.collapse("cursor", "cursor-grok-4.6-low"),
+			(Cow::Borrowed("cursor-grok-4.6"), Some(EffortTier::Low), false)
+		);
+		// Undeclared provider, gated bare prefix, and lanes without a wedged
+		// effort suffix never collapse.
+		assert_eq!(
+			taxonomy.collapse("devin", "cursor-grok-4.6-low-fast").0,
+			"cursor-grok-4.6-low-fast"
+		);
+		assert_eq!(taxonomy.collapse("cursor", "claude-opus-5-low-fast").0, "claude-opus-5-low-fast");
+		assert_eq!(taxonomy.collapse("cursor", "cursor-grok-4.6-fast").0, "cursor-grok-4.6-fast");
+		// `except-bare-prefix` gates the wedged effort suffix inside a lane.
+		let ungated = parse(&[(
+			"collapse",
+			r#"collapse {
+				effort-suffix "-max" tier="max" except-bare-prefix="qwen"
+				effort-lane-suffix "-fast" "cursor"
+			}"#,
+		)]);
+		assert_eq!(ungated.collapse("cursor", "qwen3.8-max-fast").0, "qwen3.8-max-fast");
+		assert_eq!(
+			ungated.collapse("cursor", "grok-5-max-fast"),
+			(Cow::Owned::<str>("grok-5-fast".into()), Some(EffortTier::Max), false)
+		);
+	}
+
+	#[test]
+	fn bundled_collapse_declares_the_cursor_grok_fast_lane() {
+		// pi PR #8988: Cursor serves Grok 4.5/4.6 as per-effort sibling ids
+		// alongside a parallel `-fast` service-tier lane; each lane collapses
+		// into its own logical model.
+		let taxonomy = taxonomy();
+		assert_eq!(
+			taxonomy.collapse("cursor", "cursor-grok-4.6-medium-fast"),
+			(Cow::Owned::<str>("cursor-grok-4.6-fast".into()), Some(EffortTier::Medium), false)
+		);
+		assert_eq!(
+			taxonomy.collapse("cursor", "cursor-grok-4.5-high-fast"),
+			(Cow::Owned::<str>("cursor-grok-4.5-fast".into()), Some(EffortTier::High), false)
+		);
+		// The non-reasoning coding SKU keeps its identity: it neither ends in
+		// the lane token nor carries the versioned prefix.
+		assert_eq!(taxonomy.collapse("cursor", "grok-code-fast-1").0, "grok-code-fast-1");
+		// Cursor's Claude/GPT fast tiers stay outside the Grok lane gate.
+		assert_eq!(
+			taxonomy.collapse("cursor", "claude-opus-5-high-fast").0,
+			"claude-opus-5-high-fast"
+		);
+	}
+
+	#[test]
+	fn malformed_effort_lane_suffixes_are_rejected() {
+		for source in [
+			// No providers.
+			r#"collapse { thinking-suffix "-thinking"; effort-lane-suffix "-fast" }"#,
+			// Empty provider.
+			r#"collapse { thinking-suffix "-thinking"; effort-lane-suffix "-fast" "" }"#,
+			// Empty suffix.
+			r#"collapse { thinking-suffix "-thinking"; effort-lane-suffix "" "cursor" }"#,
+			// Suffix spelling already owned by the collapse vocabulary.
+			r#"collapse { thinking-suffix "-thinking"; effort-lane-suffix "-thinking" "cursor" }"#,
+			// Non-string bare-prefix gate.
+			r#"collapse { thinking-suffix "-thinking"; effort-lane-suffix "-fast" "cursor" bare-prefix=1 }"#,
+		] {
+			let result = Taxonomy::parse(&[("bad", source)]);
+			assert!(
+				matches!(result, Err(CascadeError::MalformedDirective { .. })),
+				"{source} -> {result:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn discovery_canonical_recovery_is_provider_scoped() {
+		let taxonomy = parse(&[
+			("collapse", r#"collapse { thinking-suffix "-thinking" }"#),
+			("discovery", r#"discovery { recover-canonical-params "gmi-cloud" }"#),
+		]);
+		assert!(taxonomy.recovers_canonical_params("gmi-cloud"));
+		assert!(taxonomy.recovers_canonical_params("GMI-CLOUD"));
+		assert!(!taxonomy.recovers_canonical_params("siliconflow"));
+		// pi PR #8991: the bundled inventory declares GMI Cloud's recovery.
+		assert!(super::taxonomy().recovers_canonical_params("gmi-cloud"));
+		assert!(!super::taxonomy().recovers_canonical_params("openrouter"));
+	}
+
+	#[test]
+	fn malformed_discovery_nodes_are_rejected() {
+		let collapse = ("collapse", r#"collapse { thinking-suffix "-thinking" }"#);
+		for source in [
+			// Empty block.
+			"discovery {}",
+			// No providers.
+			r#"discovery { recover-canonical-params }"#,
+			// Empty provider.
+			r#"discovery { recover-canonical-params "" }"#,
+			// Duplicate provider.
+			r#"discovery { recover-canonical-params "gmi-cloud" "GMI-Cloud" }"#,
 		] {
 			assert!(
 				matches!(
-					Taxonomy::parse(&[("bad", source)]),
+					Taxonomy::parse(&[collapse, ("bad", source)]),
 					Err(CascadeError::MalformedDirective { .. })
 				),
 				"{source}"
 			);
 		}
+		assert!(matches!(
+			Taxonomy::parse(&[collapse, ("bad", r#"discovery { mystery "x" }"#)]),
+			Err(CascadeError::UnexpectedNode { .. })
+		));
+		assert!(matches!(
+			Taxonomy::parse(&[
+				collapse,
+				("one", r#"discovery { recover-canonical-params "a" }"#),
+				("two", r#"discovery { recover-canonical-params "b" }"#),
+			]),
+			Err(CascadeError::MalformedDirective { .. })
+		));
 	}
 }

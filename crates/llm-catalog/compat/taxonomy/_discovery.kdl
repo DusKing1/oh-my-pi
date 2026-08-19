@@ -1,0 +1,12 @@
+// Provider-scoped runtime-discovery vocabulary.
+
+discovery {
+	// GMI Cloud's /v1/models returns bare {id} rows for the open-weight
+	// models it resells under canonical namespaced ids (deepseek-ai/*,
+	// Qwen/*, moonshotai/*, zai-org/*), so conservative normalization left
+	// every unseeded row with no context window, output limit, or thinking
+	// config (pi PR #8991). Recovery derives those intrinsic base-model
+	// parameters from the bundled canonical reference index; pricing is
+	// never borrowed across providers.
+	recover-canonical-params "gmi-cloud"
+}

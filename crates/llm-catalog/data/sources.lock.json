@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source_digest": "c46b1e93915c1764adc572a98f0a7f90f86009860b9e72f9c9bf545ce11a62bf",
+  "source_digest": "6de57f340da7f73fafb4d0a973dc1106b0627843230d89ebf86a57173e2bc6b8",
   "inputs": [
     {
       "id": "catalog-policy.manifest.v1",
@@ -11,7 +11,7 @@
     {
       "id": "catalog.census.v1",
       "path": "fixtures/llm-oracle/catalog/census.json",
-      "sha256": "7484b6349d60661028796c1108574841003fd7c0c2a0dd6787023a1d6cdff66b",
+      "sha256": "49d623c86d34b2fe73c9af71648b42dc0fc69d53ef9cade38cfabf9b5cc81960",
       "source": "oracle:catalog.census.v1"
     },
     {
@@ -29,7 +29,7 @@
     {
       "id": "catalog.models.normalized.v1",
       "path": "fixtures/llm-oracle/catalog/models.normalized.json",
-      "sha256": "784b7b637defdc04f47f178498dd970a7d6beaa056150b3e5f7fffdeac8df4f2",
+      "sha256": "95037fe800b694f6162bc09022db92f1edf5ec61c0cc74ed661137d0b4b5ca86",
       "source": "oracle:catalog.models.normalized.v1"
     },
     {
@@ -389,7 +389,7 @@
     {
       "id": "compat.cascade.providers.github-copilot.v1",
       "path": "crates/llm-catalog/compat/providers/github-copilot.kdl",
-      "sha256": "97a5e42979b58d2ad43cc95065732ce8b541dd56345121575fe04a32a1112181",
+      "sha256": "c3db6e2fdbaee28031f7ba8c83f8fa06a357c15afec01bf728bc7980ad8ad3c0",
       "source": "census 2026-08: .omp/local/quirks + frozen oracle"
     },
     {
@@ -689,7 +689,13 @@
     {
       "id": "compat.cascade.taxonomy._collapse.v1",
       "path": "crates/llm-catalog/compat/taxonomy/_collapse.kdl",
-      "sha256": "2cab26eb4b344983703b6688d196bdaa2f7c0c881744f33d3b6b52693bf48446",
+      "sha256": "a544e1c0f41350d54675db1d3f2dbc991ae14e7501810712213c8950f017ec8c",
+      "source": "census 2026-08: .omp/local/quirks + frozen oracle"
+    },
+    {
+      "id": "compat.cascade.taxonomy._discovery.v1",
+      "path": "crates/llm-catalog/compat/taxonomy/_discovery.kdl",
+      "sha256": "c4d5be7c1ad4159d5171aec3dcf0ec105f067e7fd9b0e3c5d8914d60330e98d5",
       "source": "census 2026-08: .omp/local/quirks + frozen oracle"
     },
     {

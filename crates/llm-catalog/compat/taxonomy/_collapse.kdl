@@ -10,4 +10,12 @@ collapse {
 	// `-wm` suffix (`gpt-5.6-luna-wm`, pi PR #8929): the same model behind a
 	// different route, with base-model metadata owned by the plain bundled SKU.
 	routing-variant-suffix "-wm" "openai-codex" "openai-codex-device"
+	// Cursor serves Grok 4.5/4.6 as per-effort sibling ids
+	// (`cursor-grok-4.6-low|-medium|-high|-xhigh`) alongside a parallel
+	// `-fast` service-tier lane (`-low-fast`, ..., pi PR #8988). Each lane
+	// collapses into its own logical model, so the lane token is transparent
+	// to effort collapse and the logical id keeps the `-fast` suffix. The
+	// gate keeps Cursor's Claude/GPT fast tiers and the non-reasoning
+	// `grok-code-*` coding SKUs out of the lane.
+	effort-lane-suffix "-fast" "cursor" bare-prefix="cursor-grok"
 }

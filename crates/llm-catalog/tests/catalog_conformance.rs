@@ -53,6 +53,11 @@ const CENSUS: &str = include_str!("../../../fixtures/llm-oracle/catalog/census.j
 const INFERRED_CURSOR_THINKING: &[(&str, &[ThinkingEffort])] = &[
 	("cursor/claude-opus-5-thinking", &[ThinkingEffort::XHigh, ThinkingEffort::Max]),
 	("cursor/cursor-grok-4.5", &[ThinkingEffort::Low, ThinkingEffort::Medium, ThinkingEffort::High]),
+	("cursor/cursor-grok-4.5-fast", &[
+		ThinkingEffort::Low,
+		ThinkingEffort::Medium,
+		ThinkingEffort::High,
+	]),
 	("cursor/gemini-3.6-flash", &[
 		ThinkingEffort::Minimal,
 		ThinkingEffort::Low,
@@ -121,6 +126,16 @@ fn inferred_cursor_efforts(model: &str) -> Option<&'static [ThinkingEffort]> {
 	INFERRED_CURSOR_THINKING
 		.iter()
 		.find_map(|(key, efforts)| (*key == model).then_some(*efforts))
+}
+
+/// Effort-routed wire id for an inferred Cursor family. A `-fast`
+/// service-tier lane wedges the effort before the lane token
+/// (`cursor-grok-4.5-low-fast`, pi PR #8988); plain families append it.
+fn cursor_effort_wire(base: &str, effort: ThinkingEffort) -> String {
+	match base.strip_suffix("-fast") {
+		Some(stem) => format!("{stem}-{}-fast", effort.into_str()),
+		None => format!("{base}-{}", effort.into_str()),
+	}
 }
 
 #[derive(Debug, Deserialize)]
@@ -1041,11 +1056,11 @@ fn compiled_catalog_matches_the_complete_frozen_census() {
 	assert_eq!(expected.schema_version, 1);
 	assert_eq!(compiled.schema_version, 1);
 	assert_eq!(expected.curated_provider_catalog.provider_count, 94);
-	assert_eq!(expected.normalized_catalog.model_count, 4_227);
-	assert_eq!(expected.normalized_catalog.unique_identity_count, 4_227);
+	assert_eq!(expected.normalized_catalog.model_count, 4_225);
+	assert_eq!(expected.normalized_catalog.unique_identity_count, 4_225);
 	assert_eq!(expected.raw_catalog.provider_key_count, 80);
 	assert_eq!(expected.raw_catalog.row_count, 4_302);
-	assert_eq!(expected.raw_catalog.row_count - expected.normalized_catalog.model_count, 75);
+	assert_eq!(expected.raw_catalog.row_count - expected.normalized_catalog.model_count, 77);
 	assert_eq!(expected.transports.variant_count, 16);
 	assert_eq!(expected.transports.active_count, 13);
 	assert_eq!(expected.urls.distinct_count, 108);
@@ -1195,7 +1210,7 @@ fn compiled_catalog_matches_the_complete_frozen_census() {
 		.iter()
 		.map(|route| route.endpoint.base_url.as_str().to_owned())
 		.collect::<BTreeSet<_>>();
-	assert_eq!(compiled.aliases.len(), 96, "frozen alias census");
+	assert_eq!(compiled.aliases.len(), 99, "frozen alias census");
 	assert!(
 		compiled
 			.aliases
@@ -1284,7 +1299,7 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 	let raw: RawPricingOracle =
 		serde_json::from_slice(&raw_bytes).expect("raw pricing projection is valid");
 	let mut inherited_price_models = 0usize;
-	assert_eq!(oracle.models.len(), 4_227);
+	assert_eq!(oracle.models.len(), 4_225);
 	assert_eq!(compiled.models.len(), oracle.models.len());
 	let actual_by_key = compiled
 		.models
@@ -1481,7 +1496,7 @@ fn every_normalized_logical_model_matches_typed_semantic_oracle_fields() {
 				.strip_prefix("cursor/")
 				.expect("Cursor model key");
 			for effort in efforts {
-				let expected_wire = format!("{wire}-{}", effort.into_str());
+				let expected_wire = cursor_effort_wire(wire, *effort);
 				assert_eq!(
 					actual.thinking_routing.effort_routing[effort].as_str(),
 					expected_wire,
@@ -2306,11 +2321,88 @@ fn cursor_effort_suffixes_compile_to_routable_thinking_profiles() {
 		assert_eq!(model.thinking_routing.effort_routing.len(), efforts.len(), "{key} routes");
 		let wire = key.strip_prefix("cursor/").expect("Cursor model key");
 		for effort in efforts {
-			let expected = format!("{wire}-{}", effort.into_str());
+			let expected = cursor_effort_wire(wire, *effort);
 			assert_eq!(
 				model.thinking_routing.effort_routing[effort].as_str(),
 				expected,
 				"{key} {effort} route"
+			);
+		}
+	}
+}
+
+#[test]
+fn cursor_grok_fast_lane_collapses_into_one_logical_model_with_aliases() {
+	// pi PR #8988: Cursor's `-fast` service-tier siblings collapse into one
+	// logical model per lane; each collapsed wire id survives as an alias and
+	// never as its own catalog listing.
+	let compiled = compile_frozen_oracle();
+	let key = "cursor/cursor-grok-4.5-fast";
+	let model = compiled
+		.models
+		.iter()
+		.find(|model| model.key.as_str() == key)
+		.expect("collapsed Cursor Grok fast lane is compiled");
+	assert_eq!(model.display_name.as_str(), "Cursor Grok 4.5 Fast");
+	for sibling in [
+		"cursor/cursor-grok-4.5-low-fast",
+		"cursor/cursor-grok-4.5-medium-fast",
+		"cursor/cursor-grok-4.5-high-fast",
+	] {
+		assert!(
+			!compiled
+				.models
+				.iter()
+				.any(|model| model.key.as_str() == sibling),
+			"uncollapsed sibling {sibling}"
+		);
+		let alias = compiled
+			.aliases
+			.iter()
+			.find(|alias| alias.alias.as_str() == sibling)
+			.unwrap_or_else(|| panic!("collapsed sibling alias {sibling} is missing"));
+		assert_eq!(alias.target.as_str(), key, "{sibling} alias target");
+	}
+	// The standard lane keeps its own logical model: the lane is a sibling
+	// family, never a second routing dimension.
+	assert!(
+		compiled
+			.models
+			.iter()
+			.any(|model| model.key.as_str() == "cursor/cursor-grok-4.5"),
+		"standard lane stays collapsed separately"
+	);
+}
+
+#[test]
+fn copilot_and_opencode_go_discovery_defaults_ride_the_responses_route() {
+	// pi PR #8981 / #8980: GitHub Copilot serves grok-4.6 / grok-4.6-1m and
+	// OpenCode Go serves muse-spark-1.2 / muse-spark-1.2-contributor only via
+	// their /responses endpoints. Neither id is bundled in the frozen census,
+	// so runtime discovery materializes them on the provider's primary route,
+	// which must therefore keep the openai-responses codec.
+	let compiled = compile_frozen_oracle();
+	for (route_id, absent) in [
+		("github-copilot/primary", &["github-copilot/grok-4.6", "github-copilot/grok-4.6-1m"][..]),
+		(
+			"opencode-go/primary",
+			&["opencode-go/muse-spark-1.2", "opencode-go/muse-spark-1.2-contributor"][..],
+		),
+	] {
+		let route = compiled
+			.routes
+			.iter()
+			.find(|route| route.id.as_str() == route_id)
+			.unwrap_or_else(|| panic!("missing primary route {route_id}"));
+		assert_eq!(route.codec.as_str(), "openai-responses", "{route_id} codec");
+		assert!(route.discovery.is_some(), "{route_id} discovery spec");
+		for key in absent {
+			assert!(
+				!compiled
+					.models
+					.iter()
+					.any(|model| model.key.as_str() == *key),
+				"{key} must stay a discovery-time listing until a snapshot ships it"
 			);
 		}
 	}

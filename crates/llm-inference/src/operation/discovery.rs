@@ -36,18 +36,26 @@ pub struct RawDiscoveryPage {
 /// response recovery.
 #[derive(Clone, Debug)]
 pub struct CatalogDiscoveryProjector {
-	normalizer:      DiscoveryNormalizer,
-	allowlist:       Option<Arc<BTreeMap<WireModelId, ModelSpec>>>,
-	variant_bundled: Option<Arc<BTreeMap<WireModelId, ModelSpec>>>,
-	provider:        ProviderId,
-	route:           RouteId,
+	normalizer:        DiscoveryNormalizer,
+	allowlist:         Option<Arc<BTreeMap<WireModelId, ModelSpec>>>,
+	provider_bundled:  Option<Arc<BTreeMap<WireModelId, ModelSpec>>>,
+	canonical_bundled: Option<Arc<BTreeMap<Str, ModelSpec>>>,
+	provider:          ProviderId,
+	route:             RouteId,
 }
 
 impl CatalogDiscoveryProjector {
 	/// Constructs a projector from exact route identity and compiler-owned
 	/// normalization defaults.
 	pub const fn new(normalizer: DiscoveryNormalizer, provider: ProviderId, route: RouteId) -> Self {
-		Self { normalizer, allowlist: None, variant_bundled: None, provider, route }
+		Self {
+			normalizer,
+			allowlist: None,
+			provider_bundled: None,
+			canonical_bundled: None,
+			provider,
+			route,
+		}
 	}
 
 	/// Constructs a mixed bundled/unknown projector from authored provider
@@ -98,36 +106,71 @@ impl CatalogDiscoveryProjector {
 				}
 			}
 		}
-		let variant_bundled = taxonomy()
-			.has_routing_variants(route.provider.as_str())
-			.then(|| {
-				// The taxonomy declares provider-scoped routing-variant suffixes
-				// (`gpt-5.6-luna-wm`, pi PR #8929). The route allowlist above is
-				// scoped to the discovery route, but the plain bundled SKUs may
-				// live on per-model routes, so collect every bundled wire identity
-				// owned by this provider for the plain-counterpart lookup.
-				let owned: BTreeSet<&RouteId> = catalog
-					.routes()
-					.iter()
-					.filter(|definition| definition.provider == route.provider)
-					.map(|definition| &definition.id)
-					.collect();
-				let mut bundled = BTreeMap::new();
-				for model in catalog.models() {
-					for (candidate, wire_model) in &model.wire_ids {
-						if owned.contains(candidate) {
-							bundled
-								.entry(wire_model.clone())
-								.or_insert_with(|| model.clone());
-						}
+		let provider_bundled = (taxonomy().has_routing_variants(route.provider.as_str())
+			|| taxonomy().recovers_canonical_params(route.provider.as_str()))
+		.then(|| {
+			// The taxonomy declares provider-scoped routing-variant suffixes
+			// (`gpt-5.6-luna-wm`, pi PR #8929) or canonical-parameter recovery
+			// (pi PR #8991). The route allowlist above is scoped to the
+			// discovery route, but the bundled SKUs may live on per-model
+			// routes, so collect every bundled wire identity owned by this
+			// provider for the plain-counterpart and seeded-row lookups.
+			let owned: BTreeSet<&RouteId> = catalog
+				.routes()
+				.iter()
+				.filter(|definition| definition.provider == route.provider)
+				.map(|definition| &definition.id)
+				.collect();
+			let mut bundled = BTreeMap::new();
+			for model in catalog.models() {
+				for (candidate, wire_model) in &model.wire_ids {
+					if owned.contains(candidate) {
+						bundled
+							.entry(wire_model.clone())
+							.or_insert_with(|| model.clone());
 					}
 				}
-				Arc::new(bundled)
+			}
+			Arc::new(bundled)
+		});
+		let canonical_bundled = taxonomy()
+			.recovers_canonical_params(route.provider.as_str())
+			.then(|| {
+				// Discovered open-weight rows carry canonical namespaced ids
+				// (`deepseek-ai/…`, pi PR #8991): index every bundled
+				// namespaced identity across providers so intrinsic
+				// parameters can be recovered. The first entry in frozen
+				// catalog order wins deterministically.
+				let owners: BTreeMap<&RouteId, &ProviderId> = catalog
+					.routes()
+					.iter()
+					.map(|definition| (&definition.id, &definition.provider))
+					.collect();
+				let mut index = BTreeMap::new();
+				for model in catalog.models() {
+					let Some(relative) = model
+						.routes
+						.first()
+						.and_then(|route_id| owners.get(route_id))
+						.and_then(|owner| model.key.as_str().strip_prefix(owner.as_str()))
+						.and_then(|rest| rest.strip_prefix('/'))
+					else {
+						continue;
+					};
+					if !relative.contains('/') {
+						continue;
+					}
+					index
+						.entry(Str::from(relative.to_ascii_lowercase()))
+						.or_insert_with(|| model.clone());
+				}
+				Arc::new(index)
 			});
 		Ok(Self {
 			normalizer: DiscoveryNormalizer::new(defaults),
 			allowlist: Some(Arc::new(allowlist)),
-			variant_bundled,
+			provider_bundled,
+			canonical_bundled,
 			provider: route.provider.clone(),
 			route: route.id.clone(),
 		})
@@ -151,7 +194,8 @@ impl crate::layer::recover::DiscoveryProjector for CatalogDiscoveryProjector {
 			),
 			Some(allowlist) => project_mixed_page(
 				allowlist,
-				self.variant_bundled.as_deref(),
+				self.provider_bundled.as_deref(),
+				self.canonical_bundled.as_deref(),
 				&self.normalizer,
 				&self.provider,
 				&self.route,
@@ -169,7 +213,8 @@ impl crate::layer::recover::DiscoveryProjector for CatalogDiscoveryProjector {
 )]
 fn project_mixed_page(
 	allowlist: &BTreeMap<WireModelId, ModelSpec>,
-	variant_bundled: Option<&BTreeMap<WireModelId, ModelSpec>>,
+	provider_bundled: Option<&BTreeMap<WireModelId, ModelSpec>>,
+	canonical_bundled: Option<&BTreeMap<Str, ModelSpec>>,
 	normalizer: &DiscoveryNormalizer,
 	provider: &ProviderId,
 	route: &RouteId,
@@ -186,7 +231,7 @@ fn project_mixed_page(
 	let mut seen_wire: BTreeSet<WireModelId> = BTreeSet::new();
 	let mut seen_models = BTreeSet::new();
 	let mut models = Vec::new();
-	let mut push =
+	let push =
 		|model: ModelSpec, seen_models: &mut BTreeSet<ModelKey>, models: &mut Vec<ModelSpec>| {
 			if !seen_models.insert(model.key.clone()) {
 				return;
@@ -207,28 +252,31 @@ fn project_mixed_page(
 			continue;
 		}
 		let bundled = allowlist.get(&row.wire_model).or_else(|| {
-			// The backend's own plain slug wins over any synthesized clone.
-			variant_bundled.and_then(|bundled| bundled.get(&row.wire_model))
+			// The backend's own bundled slug wins over any synthesized clone
+			// or conservative normalization, even off the discovery route.
+			provider_bundled.and_then(|bundled| bundled.get(&row.wire_model))
 		});
-		let model = match bundled {
-			Some(model) => model.clone(),
-			None => match routing_variant_counterpart(variant_bundled, provider, &row.wire_model) {
-				Some(plain) => {
-					// Declared routing variant of a bundled plain SKU:
-					// register the suffixed wire identity with base-model
-					// metadata derived from the plain spec, then keep the
-					// plain identity itself resolvable under authoritative
-					// discovery.
-					push(routing_variant_spec(plain, &row), &mut seen_models, &mut models);
-					plain.clone()
-				},
-				None => {
-					normalizer
-						.normalize(&row)
-						.map_err(|_| protocol_error("discovery_normalization_failed"))?
-						.model
-				},
-			},
+		let model = if let Some(model) = bundled {
+			model.clone()
+		} else if let Some(plain) =
+			routing_variant_counterpart(provider_bundled, provider, &row.wire_model)
+		{
+			// Declared routing variant of a bundled plain SKU:
+			// register the suffixed wire identity with base-model
+			// metadata derived from the plain spec, then keep the
+			// plain identity itself resolvable under authoritative
+			// discovery.
+			push(routing_variant_spec(plain, &row), &mut seen_models, &mut models);
+			plain.clone()
+		} else {
+			let mut model = normalizer
+				.normalize(&row)
+				.map_err(|_| protocol_error("discovery_normalization_failed"))?
+				.model;
+			if let Some(canonical) = canonical_reference(canonical_bundled, &model.key) {
+				recover_canonical_params(&mut model, canonical, &row);
+			}
+			model
 		};
 		push(model, &mut seen_models, &mut models);
 	}
@@ -238,13 +286,68 @@ fn project_mixed_page(
 /// Returns the bundled plain counterpart backing a declared routing-variant
 /// wire identifier (`gpt-5.6-luna-wm` → the bundled `gpt-5.6-luna` spec).
 fn routing_variant_counterpart<'catalog>(
-	variant_bundled: Option<&'catalog BTreeMap<WireModelId, ModelSpec>>,
+	provider_bundled: Option<&'catalog BTreeMap<WireModelId, ModelSpec>>,
 	provider: &ProviderId,
 	wire_model: &WireModelId,
 ) -> Option<&'catalog ModelSpec> {
-	let bundled = variant_bundled?;
+	let bundled = provider_bundled?;
 	let plain = taxonomy().routing_variant_plain(provider.as_str(), wire_model.as_str())?;
 	bundled.get(plain)
+}
+
+/// Returns the bundled canonical reference backing a discovered open-weight
+/// identity (`deepseek-ai/DeepSeek-V4-Pro` resold under its canonical id).
+///
+/// Matching is ASCII-case-insensitive and restricted to namespaced ids, so
+/// bare generic slugs never inherit another provider's card (pi PR #8991).
+fn canonical_reference<'catalog>(
+	canonical_bundled: Option<&'catalog BTreeMap<Str, ModelSpec>>,
+	key: &ModelKey,
+) -> Option<&'catalog ModelSpec> {
+	let index = canonical_bundled?;
+	let lookup = key.as_str().to_ascii_lowercase();
+	if !lookup.contains('/') {
+		return None;
+	}
+	index.get(lookup.as_str())
+}
+
+/// Recovers intrinsic base-model parameters for a discovered open-weight row
+/// from its bundled canonical reference (pi PR #8991).
+///
+/// Only intrinsic facts transfer — display name, context window, output
+/// limit, the interned thinking policy, and unknown chat modality/reasoning
+/// evidence. Pricing, wire policy, routes, and effort routing stay
+/// provider-specific: discovery never borrows a tariff across providers.
+fn recover_canonical_params(model: &mut ModelSpec, canonical: &ModelSpec, row: &DiscoveredModel) {
+	if row.display_name.is_none() {
+		model.display_name.clone_from(&canonical.display_name);
+	}
+	if model.limits.context_window.is_none() {
+		model.limits.context_window = canonical.limits.context_window;
+	}
+	if model.limits.maximum_output_tokens.is_none() {
+		model.limits.maximum_output_tokens =
+			match (canonical.limits.maximum_output_tokens, model.limits.context_window) {
+				(Some(tokens), Some(window)) => Some(tokens.min(window)),
+				(tokens, _) => tokens,
+			};
+	}
+	if model.thinking.is_none() {
+		model.thinking.clone_from(&canonical.thinking);
+	}
+	if let (Some(chat), Some(reference)) =
+		(model.capabilities.chat.as_mut(), canonical.capabilities.chat.as_ref())
+	{
+		if chat.input_modalities.is_unknown() {
+			chat
+				.input_modalities
+				.clone_from(&reference.input_modalities);
+		}
+		if chat.reasoning.is_unknown() {
+			chat.reasoning.clone_from(&reference.reasoning);
+		}
+	}
 }
 
 /// Builds the routing-variant listing from its canonical plain spec.
@@ -459,6 +562,8 @@ fn protocol_error(reason: &'static str) -> Error {
 mod tests {
 	use std::{collections::BTreeMap, num::NonZeroU32};
 
+	use omp_core::Str;
+
 	use super::{
 		CatalogDiscoveryProjector, DiscoveryService, RawDiscoveryPage, normalize_page,
 		project_mixed_page,
@@ -467,8 +572,8 @@ mod tests {
 		call::DiscoveryRequest,
 		catalog::{
 			ContextStrategy, DiscoveredModel, DiscoveryDefaults, DiscoveryNormalizer, ModelKey,
-			ModelSpec, OperationBits, OperationKind, Pricing, ProviderId, RouteId, WireModelId,
-			WirePolicyId,
+			ModelSpec, OperationBits, OperationKind, Price, PriceUnit, Pricing, ProviderId, RouteId,
+			ThinkingPolicyId, WireModelId, WirePolicyId,
 		},
 		layer::recover::DiscoveryProjector,
 	};
@@ -688,6 +793,7 @@ mod tests {
 		let page = project_mixed_page(
 			&allowlist,
 			None,
+			None,
 			&normalizer,
 			&provider,
 			&route,
@@ -742,6 +848,7 @@ mod tests {
 		let page = project_mixed_page(
 			&BTreeMap::new(),
 			Some(&bundled),
+			None,
 			&normalizer,
 			&provider,
 			&route,
@@ -781,6 +888,7 @@ mod tests {
 		let page = project_mixed_page(
 			&BTreeMap::new(),
 			Some(&bundled),
+			None,
 			&normalizer,
 			&provider,
 			&route,
@@ -814,6 +922,7 @@ mod tests {
 		let page = project_mixed_page(
 			&BTreeMap::new(),
 			Some(&bundled),
+			None,
 			&normalizer,
 			&provider,
 			&route,
@@ -825,5 +934,207 @@ mod tests {
 		assert_eq!(page.models.len(), 1, "no plain counterpart is synthesized");
 		assert_eq!(page.models[0].limits.context_window, None);
 		assert!(!page.models[0].key.as_str().ends_with("-wm/gpt-6-nova"));
+	}
+
+	fn gmi_fixture() -> (ProviderId, RouteId, DiscoveryNormalizer, BTreeMap<Str, ModelSpec>) {
+		let provider = ProviderId::from("gmi-cloud");
+		let route = RouteId::from("gmi-cloud/primary");
+		let normalizer = DiscoveryNormalizer::new(DiscoveryDefaults {
+			wire_policy:          WirePolicyId::from("wire"),
+			extended_wire_policy: None,
+			context:              ContextStrategy::Replay,
+			thinking:             None,
+			pricing:              Pricing::default(),
+		});
+		// Canonical reference bundled by another provider under the same
+		// namespaced open-weight identity, carrying limits, thinking, and a
+		// tariff that must never transfer.
+		let reference_provider = ProviderId::from("huggingface");
+		let reference_route = RouteId::from("huggingface/primary");
+		let mut canonical = normalizer
+			.normalize(&discovered(
+				&reference_provider,
+				&reference_route,
+				"deepseek-ai/DeepSeek-V4-Pro",
+			))
+			.expect("canonical fixture")
+			.model;
+		canonical.key = ModelKey::from("huggingface/deepseek-ai/DeepSeek-V4-Pro");
+		canonical.display_name = "DeepSeek V4 Pro".into();
+		canonical.limits.context_window = Some(1_000_000);
+		canonical.limits.maximum_output_tokens = Some(384_000);
+		canonical.thinking = Some(ThinkingPolicyId::from("thinking-deepseek-v4"));
+		canonical.pricing = Pricing::new(
+			vec![Price { unit: PriceUnit::MtokInput, nanos_usd: 280_000_000 }],
+			Vec::new(),
+		)
+		.expect("valid canonical pricing");
+		let mut index = BTreeMap::new();
+		index.insert(Str::from("deepseek-ai/deepseek-v4-pro"), canonical);
+		(provider, route, normalizer, index)
+	}
+
+	#[test]
+	fn gmi_bare_row_recovers_canonical_params_but_never_pricing() {
+		// pi PR #8991: GMI's /v1/models returns bare {id} rows for open-weight
+		// models it resells under canonical ids; intrinsic parameters come
+		// from the bundled canonical reference index, the tariff never does.
+		let (provider, route, normalizer, canonical) = gmi_fixture();
+		let request = DiscoveryRequest {
+			provider:  Some(provider.clone()),
+			route:     Some(route.clone()),
+			cursor:    None,
+			page_size: 4,
+			operation: None,
+		};
+		let page = project_mixed_page(
+			&BTreeMap::new(),
+			None,
+			Some(&canonical),
+			&normalizer,
+			&provider,
+			&route,
+			&request,
+			vec![discovered(&provider, &route, "deepseek-ai/DeepSeek-V4-Pro")],
+			None,
+		)
+		.expect("recovered page");
+		assert_eq!(page.models.len(), 1);
+		let model = &page.models[0];
+		assert_eq!(model.key.as_str(), "deepseek-ai/DeepSeek-V4-Pro");
+		assert_eq!(model.display_name.as_str(), "DeepSeek V4 Pro");
+		assert_eq!(model.limits.context_window, Some(1_000_000));
+		assert_eq!(model.limits.maximum_output_tokens, Some(384_000));
+		assert_eq!(
+			model.thinking.as_ref().map(|id| id.as_str()),
+			Some("thinking-deepseek-v4"),
+			"reasoning ladder is recovered from the canonical reference"
+		);
+		assert_eq!(model.pricing, Pricing::default(), "tariffs never cross providers");
+		assert_eq!(model.wire_ids.as_ref(), &[(
+			route.clone(),
+			WireModelId::from("deepseek-ai/DeepSeek-V4-Pro")
+		)]);
+		assert_eq!(model.routes.as_ref(), &[route.clone()], "discovery route binding is kept");
+	}
+
+	#[test]
+	fn gmi_declared_evidence_outranks_the_canonical_reference() {
+		let (provider, route, normalizer, canonical) = gmi_fixture();
+		let mut row = discovered(&provider, &route, "deepseek-ai/DeepSeek-V4-Pro");
+		row.display_name = Some("GMI DeepSeek".into());
+		row.declared_limits = Some(crate::catalog::ModelLimits {
+			context_window:        Some(131_072),
+			maximum_input_tokens:  None,
+			maximum_output_tokens: Some(8_192),
+			maximum_batch:         None,
+		});
+		let request = DiscoveryRequest {
+			provider:  Some(provider.clone()),
+			route:     Some(route.clone()),
+			cursor:    None,
+			page_size: 4,
+			operation: None,
+		};
+		let page = project_mixed_page(
+			&BTreeMap::new(),
+			None,
+			Some(&canonical),
+			&normalizer,
+			&provider,
+			&route,
+			&request,
+			vec![row],
+			None,
+		)
+		.expect("declared page");
+		let model = &page.models[0];
+		assert_eq!(model.display_name.as_str(), "GMI DeepSeek");
+		assert_eq!(model.limits.context_window, Some(131_072));
+		assert_eq!(model.limits.maximum_output_tokens, Some(8_192));
+	}
+
+	#[test]
+	fn bare_generic_slugs_never_inherit_a_canonical_card() {
+		let (provider, route, normalizer, mut canonical) = gmi_fixture();
+		let stray = canonical
+			.get("deepseek-ai/deepseek-v4-pro")
+			.expect("fixture entry")
+			.clone();
+		canonical.insert(Str::from("deepseek-v4"), stray);
+		let request = DiscoveryRequest {
+			provider:  Some(provider.clone()),
+			route:     Some(route.clone()),
+			cursor:    None,
+			page_size: 4,
+			operation: None,
+		};
+		let page = project_mixed_page(
+			&BTreeMap::new(),
+			None,
+			Some(&canonical),
+			&normalizer,
+			&provider,
+			&route,
+			&request,
+			vec![discovered(&provider, &route, "deepseek-v4")],
+			None,
+		)
+		.expect("conservative page");
+		let model = &page.models[0];
+		assert_eq!(model.limits.context_window, None, "bare slugs stay conservative");
+		assert_eq!(model.thinking, None);
+	}
+
+	#[test]
+	fn gmi_cloud_route_wires_canonical_recovery_from_the_embedded_catalog() {
+		// pi PR #8991 end-to-end: the bundled taxonomy declares gmi-cloud's
+		// canonical-parameter recovery, so the route projector recovers
+		// intrinsic params for a bare discovered open-weight row from another
+		// provider's bundled card (never its tariff), while the provider's own
+		// bundled seed keeps its full card — including GMI's published prices —
+		// even though it lives on a per-model route.
+		use crate::catalog::snapshot::Catalog;
+		let catalog = Catalog::embedded();
+		let route = catalog
+			.route(&RouteId::from("gmi-cloud/primary"))
+			.expect("gmi-cloud primary route is bundled");
+		let projector =
+			CatalogDiscoveryProjector::for_route(catalog, route).expect("gmi-cloud projector");
+		let provider = ProviderId::from("gmi-cloud");
+		let request = DiscoveryRequest {
+			provider:  Some(provider.clone()),
+			route:     Some(route.id.clone()),
+			cursor:    None,
+			page_size: 4,
+			operation: None,
+		};
+		let page = projector
+			.project(
+				&request,
+				vec![
+					discovered(&provider, &route.id, "deepseek-ai/DeepSeek-V4-Pro"),
+					discovered(&provider, &route.id, "deepseek-ai/DeepSeek-V4-Flash"),
+				],
+				None,
+			)
+			.expect("gmi discovery page");
+		let pro = page
+			.models
+			.iter()
+			.find(|model| model.key.as_str().ends_with("DeepSeek-V4-Pro"))
+			.expect("recovered V4-Pro listing");
+		assert!(pro.limits.context_window.is_some(), "context window recovered");
+		assert!(pro.limits.maximum_output_tokens.is_some(), "output limit recovered");
+		assert!(pro.thinking.is_some(), "thinking ladder recovered from the canonical card");
+		assert_eq!(pro.pricing, Pricing::default(), "tariffs never cross providers");
+		assert_eq!(pro.routes.as_ref(), &[route.id.clone()], "discovery route binding");
+		let flash = page
+			.models
+			.iter()
+			.find(|model| model.key.as_str().ends_with("DeepSeek-V4-Flash"))
+			.expect("seeded V4-Flash listing");
+		assert_ne!(flash.pricing, Pricing::default(), "the provider's own seed keeps its tariff");
+		assert!(flash.thinking.is_some(), "the provider's own seed keeps its thinking policy");
 	}
 }
