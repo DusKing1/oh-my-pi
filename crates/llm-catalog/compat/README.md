@@ -108,10 +108,11 @@ collapse {
     effort-suffix "-minimal" tier="minimal"
     effort-suffix "-xhigh" tier="xhigh"
     effort-suffix "-max" tier="max" except-bare-prefix="qwen"
+    routing-variant-suffix "-wm" "openai-codex" "openai-codex-device"
 }
 ```
 
-`thinking-suffix` accepts one non-empty suffix and no properties. `effort-suffix` additionally requires `tier` with one of the effort values above, and may have `except-bare-prefix`. Suffixes are unique case-insensitively. Matching is case-insensitive against the end of the full model identifier; the longest matching suffix wins. The exception tests the lowercased bare name prefix.
+`thinking-suffix` accepts one non-empty suffix and no properties. `effort-suffix` additionally requires `tier` with one of the effort values above, and may have `except-bare-prefix`. `routing-variant-suffix` takes one non-empty suffix followed by one or more provider IDs: a wire identifier carrying the suffix on one of those providers is a **routing variant** of its plain identifier — discovery derives base-model metadata (key, limits, pricing, thinking) from the plain bundled SKU while keeping the suffixed wire identifier for requests; routing variants never participate in effort collapse. Suffixes are unique case-insensitively across all three directives. Matching is case-insensitive against the end of the full model identifier; the longest matching suffix wins. The exception tests the lowercased bare name prefix.
 
 ## Cascade grammar
 

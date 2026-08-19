@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source_digest": "645344d94deb1dd52db94ba54ef9bd3d0adea2337a872b6c3465731cd2961af1",
+  "source_digest": "c46b1e93915c1764adc572a98f0a7f90f86009860b9e72f9c9bf545ce11a62bf",
   "inputs": [
     {
       "id": "catalog-policy.manifest.v1",
@@ -689,7 +689,7 @@
     {
       "id": "compat.cascade.taxonomy._collapse.v1",
       "path": "crates/llm-catalog/compat/taxonomy/_collapse.kdl",
-      "sha256": "f5bc6d0d44c6e1b6ea90e045461cd2424aa3a399f0944401f0c332a859a6ed56",
+      "sha256": "2cab26eb4b344983703b6688d196bdaa2f7c0c881744f33d3b6b52693bf48446",
       "source": "census 2026-08: .omp/local/quirks + frozen oracle"
     },
     {

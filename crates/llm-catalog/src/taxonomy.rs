@@ -164,11 +164,26 @@ struct SuffixDef {
 	except_bare_prefix: Option<Str>,
 }
 
+/// One provider-scoped routing-variant suffix rule.
+///
+/// A discovered wire identifier carrying the suffix is a routing variant of
+/// its plain identifier — the same backend model behind a different route —
+/// so discovery derives base-model metadata from the plain bundled SKU while
+/// keeping the suffixed wire identifier for requests.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoutingVariantSuffix {
+	/// Lowercased suffix marking the routing variant.
+	pub suffix:    Str,
+	/// Providers whose discovery advertises this variant vocabulary.
+	pub providers: Box<[Str]>,
+}
+
 /// Parsed checked-in identity taxonomy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Taxonomy {
-	classes:  Vec<ClassDef>,
-	collapse: Vec<SuffixDef>,
+	classes:          Vec<ClassDef>,
+	collapse:         Vec<SuffixDef>,
+	routing_variants: Vec<RoutingVariantSuffix>,
 }
 
 /// Data-dependent taxonomy ambiguity.
@@ -206,6 +221,7 @@ impl Taxonomy {
 	pub fn parse(sources: &[(&str, &str)]) -> Result<Self, CascadeError> {
 		let mut classes = Vec::new();
 		let mut collapse = Vec::new();
+		let mut routing_variants = Vec::new();
 		let mut source_names = BTreeSet::new();
 		let mut class_names = BTreeSet::new();
 		let mut saw_collapse = false;
@@ -252,7 +268,7 @@ impl Taxonomy {
 							return malformed(file, "collapse");
 						}
 						saw_collapse = true;
-						collapse = parse_collapse(file, node)?;
+						(collapse, routing_variants) = parse_collapse(file, node)?;
 					},
 					other => return unexpected(file, other, "taxonomy"),
 				}
@@ -261,7 +277,45 @@ impl Taxonomy {
 		if !saw_collapse || collapse.is_empty() {
 			return malformed("taxonomy", "collapse");
 		}
-		Ok(Self { classes, collapse })
+		Ok(Self { classes, collapse, routing_variants })
+	}
+
+	/// Returns the plain wire identifier when `wire_model` is a declared
+	/// provider-scoped routing variant (`gpt-5.6-luna-wm` → `gpt-5.6-luna`).
+	///
+	/// Matching is ASCII-case-insensitive on both the provider and the suffix;
+	/// the returned slice preserves the caller's original bytes. A suffix that
+	/// would leave an empty plain identifier never matches.
+	pub fn routing_variant_plain<'model>(
+		&self,
+		provider: &str,
+		wire_model: &'model str,
+	) -> Option<&'model str> {
+		self.routing_variants.iter().find_map(|rule| {
+			if !rule
+				.providers
+				.iter()
+				.any(|candidate| candidate.eq_ignore_ascii_case(provider))
+			{
+				return None;
+			}
+			let split = wire_model.len().checked_sub(rule.suffix.len())?;
+			if !wire_model.is_char_boundary(split) {
+				return None;
+			}
+			let (plain, suffix) = wire_model.split_at(split);
+			(!plain.is_empty() && suffix.eq_ignore_ascii_case(rule.suffix.as_str())).then_some(plain)
+		})
+	}
+
+	/// Whether any routing-variant suffix is declared for `provider`.
+	pub fn has_routing_variants(&self, provider: &str) -> bool {
+		self.routing_variants.iter().any(|rule| {
+			rule
+				.providers
+				.iter()
+				.any(|candidate| candidate.eq_ignore_ascii_case(provider))
+		})
 	}
 
 	/// Parses the checked-in taxonomy inventory.
@@ -611,7 +665,10 @@ fn parse_override(file: &str, node: &KdlNode) -> Result<IdentityOverride, Cascad
 	})
 }
 
-fn parse_collapse(file: &str, node: &KdlNode) -> Result<Vec<SuffixDef>, CascadeError> {
+fn parse_collapse(
+	file: &str,
+	node: &KdlNode,
+) -> Result<(Vec<SuffixDef>, Vec<RoutingVariantSuffix>), CascadeError> {
 	validate_properties(file, node, "collapse", &[])?;
 	if !positional_strings(node).is_empty() {
 		return malformed(file, "collapse");
@@ -620,10 +677,11 @@ fn parse_collapse(file: &str, node: &KdlNode) -> Result<Vec<SuffixDef>, CascadeE
 		return malformed(file, "collapse");
 	};
 	let mut rules = Vec::new();
+	let mut routing_variants = Vec::new();
 	let mut suffixes = BTreeSet::new();
 	for child in children.nodes() {
 		let directive = child.name().value();
-		if !matches!(directive, "thinking-suffix" | "effort-suffix") {
+		if !matches!(directive, "thinking-suffix" | "effort-suffix" | "routing-variant-suffix") {
 			return unexpected(file, directive, "collapse");
 		}
 		let allowed = if directive == "effort-suffix" {
@@ -638,6 +696,30 @@ fn parse_collapse(file: &str, node: &KdlNode) -> Result<Vec<SuffixDef>, CascadeE
 			return malformed(file, directive);
 		}
 		let arguments = positional_strings(child);
+		if directive == "routing-variant-suffix" {
+			// One suffix followed by one or more provider ids; the suffix
+			// shares the case-insensitive uniqueness namespace with the
+			// collapse suffixes so one spelling never carries two meanings.
+			let [suffix, providers @ ..] = arguments.as_slice() else {
+				return malformed(file, directive);
+			};
+			if suffix.is_empty()
+				|| providers.is_empty()
+				|| providers.iter().any(String::is_empty)
+				|| child.children().is_some()
+				|| !suffixes.insert(suffix.to_ascii_lowercase())
+			{
+				return malformed(file, directive);
+			}
+			routing_variants.push(RoutingVariantSuffix {
+				suffix:    suffix.to_ascii_lowercase().to_str(),
+				providers: providers
+					.iter()
+					.map(|provider| provider.to_ascii_lowercase().to_str())
+					.collect(),
+			});
+			continue;
+		}
 		let [suffix] = arguments.as_slice() else {
 			return malformed(file, directive);
 		};
@@ -665,7 +747,7 @@ fn parse_collapse(file: &str, node: &KdlNode) -> Result<Vec<SuffixDef>, CascadeE
 				.map(|value| value.to_ascii_lowercase().to_str()),
 		});
 	}
-	Ok(rules)
+	Ok((rules, routing_variants))
 }
 
 fn matcher_matches(matcher: &Matcher, lower: &str, bare: &str) -> bool {
@@ -1073,5 +1155,70 @@ mod tests {
 			Taxonomy::parse(&[collapse, ("bad", "class \"x\" { family \"\" glob=\"*\" }")]),
 			Err(CascadeError::MalformedDirective { .. })
 		));
+	}
+
+	#[test]
+	fn routing_variant_suffixes_are_provider_scoped_and_never_collapse() {
+		let taxonomy = parse(&[(
+			"collapse",
+			r#"collapse {
+				thinking-suffix "-thinking"
+				routing-variant-suffix "-wm" "openai-codex" "openai-codex-device"
+			}"#,
+		)]);
+		assert_eq!(
+			taxonomy.routing_variant_plain("openai-codex", "gpt-5.6-luna-wm"),
+			Some("gpt-5.6-luna")
+		);
+		assert_eq!(
+			taxonomy.routing_variant_plain("OPENAI-CODEX-DEVICE", "GPT-5.6-LUNA-WM"),
+			Some("GPT-5.6-LUNA"),
+			"provider and suffix matching are case-insensitive"
+		);
+		assert_eq!(taxonomy.routing_variant_plain("openrouter", "gpt-5.6-luna-wm"), None);
+		assert_eq!(taxonomy.routing_variant_plain("openai-codex", "gpt-5.6-luna"), None);
+		assert_eq!(taxonomy.routing_variant_plain("openai-codex", "-wm"), None);
+		assert!(taxonomy.has_routing_variants("openai-codex"));
+		assert!(!taxonomy.has_routing_variants("openrouter"));
+		// Routing variants are route vocabulary, not effort siblings: the
+		// classifier's suffix collapse must ignore them.
+		assert_eq!(taxonomy.collapse("gpt-5.6-luna-wm").0, "gpt-5.6-luna-wm");
+	}
+
+	#[test]
+	fn bundled_collapse_declares_the_codex_worker_routing_variant() {
+		// pi PR #8929: Codex discovery advertises worker-mode `-wm` routing
+		// variants of its plain SKUs.
+		let taxonomy = taxonomy();
+		for provider in ["openai-codex", "openai-codex-device"] {
+			assert_eq!(
+				taxonomy.routing_variant_plain(provider, "gpt-5.6-luna-wm"),
+				Some("gpt-5.6-luna"),
+				"{provider}"
+			);
+		}
+		assert_eq!(taxonomy.routing_variant_plain("openai", "gpt-5.6-luna-wm"), None);
+	}
+
+	#[test]
+	fn malformed_routing_variant_suffixes_are_rejected() {
+		for source in [
+			// No providers.
+			r#"collapse { thinking-suffix "-thinking" routing-variant-suffix "-wm" }"#,
+			// Empty provider.
+			r#"collapse { thinking-suffix "-thinking" routing-variant-suffix "-wm" "" }"#,
+			// Empty suffix.
+			r#"collapse { thinking-suffix "-thinking" routing-variant-suffix "" "openai-codex" }"#,
+			// Suffix spelling already owned by the collapse vocabulary.
+			r#"collapse { thinking-suffix "-thinking" routing-variant-suffix "-thinking" "openai-codex" }"#,
+		] {
+			assert!(
+				matches!(
+					Taxonomy::parse(&[("bad", source)]),
+					Err(CascadeError::MalformedDirective { .. })
+				),
+				"{source}"
+			);
+		}
 	}
 }

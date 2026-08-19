@@ -16,31 +16,12 @@ use crate::{
 	call::{DiscoveryRequest, OperationCall},
 	catalog::{
 		DiscoveredModel, DiscoveryNormalizer, ModelKey, ModelSpec, OperationKind, Pricing,
-		ProviderId, RouteDef, RouteId, WireModelId, snapshot::Catalog,
+		ProviderId, RouteDef, RouteId, WireModelId, snapshot::Catalog, taxonomy,
 	},
 	error::{Error, ErrorDetail, ErrorKind, ErrorPhase, RetryAction},
 	operation::{OperationRequest, OperationResponse},
 	receipt::{ExecutionReceipt, ReasonId},
 };
-
-/// Codex worker-mode SKU suffix (`gpt-5.6-luna-wm`).
-///
-/// Codex backend discovery advertises worker-mode routing variants under a
-/// `-wm` suffix. An authoritative listing that only advertises the worker slug
-/// would otherwise prune the bundled plain model, leaving a configured
-/// `openai-codex/gpt-5.6-luna` unresolvable. When the bundled Codex catalog
-/// ships the plain SKU, the worker row is ALSO projected under its plain
-/// identity, and both listings derive base-model metadata (context window,
-/// pricing, thinking) from the canonical plain spec — the suffix is a routing
-/// variant, not a different model. Unknown `-wm` SKUs keep their verbatim
-/// slug-derived metadata so authoritative discovery is preserved for genuinely
-/// distinct worker models (pi PR #8929).
-const CODEX_WORKER_SUFFIX: &str = "-wm";
-
-/// Whether this provider's discovery advertises Codex worker `-wm` variants.
-fn advertises_codex_worker_skus(provider: &ProviderId) -> bool {
-	matches!(provider.as_str(), "openai-codex" | "openai-codex-device")
-}
 
 /// Provider wire rows and continuation state returned by a discovery codec.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,18 +36,18 @@ pub struct RawDiscoveryPage {
 /// response recovery.
 #[derive(Clone, Debug)]
 pub struct CatalogDiscoveryProjector {
-	normalizer:    DiscoveryNormalizer,
-	allowlist:     Option<Arc<BTreeMap<WireModelId, ModelSpec>>>,
-	codex_bundled: Option<Arc<BTreeMap<WireModelId, ModelSpec>>>,
-	provider:      ProviderId,
-	route:         RouteId,
+	normalizer:      DiscoveryNormalizer,
+	allowlist:       Option<Arc<BTreeMap<WireModelId, ModelSpec>>>,
+	variant_bundled: Option<Arc<BTreeMap<WireModelId, ModelSpec>>>,
+	provider:        ProviderId,
+	route:           RouteId,
 }
 
 impl CatalogDiscoveryProjector {
 	/// Constructs a projector from exact route identity and compiler-owned
 	/// normalization defaults.
 	pub const fn new(normalizer: DiscoveryNormalizer, provider: ProviderId, route: RouteId) -> Self {
-		Self { normalizer, allowlist: None, codex_bundled: None, provider, route }
+		Self { normalizer, allowlist: None, variant_bundled: None, provider, route }
 	}
 
 	/// Constructs a mixed bundled/unknown projector from authored provider
@@ -117,33 +98,36 @@ impl CatalogDiscoveryProjector {
 				}
 			}
 		}
-		let codex_bundled = advertises_codex_worker_skus(&route.provider).then(|| {
-			// The route allowlist above is scoped to the discovery route, but
-			// bundled Codex models live on per-model routes. Collect every
-			// bundled wire identity owned by this provider so a discovered
-			// worker `-wm` slug can find its canonical plain counterpart.
-			let owned: BTreeSet<&RouteId> = catalog
-				.routes()
-				.iter()
-				.filter(|definition| definition.provider == route.provider)
-				.map(|definition| &definition.id)
-				.collect();
-			let mut bundled = BTreeMap::new();
-			for model in catalog.models() {
-				for (candidate, wire_model) in &model.wire_ids {
-					if owned.contains(candidate) {
-						bundled
-							.entry(wire_model.clone())
-							.or_insert_with(|| model.clone());
+		let variant_bundled = taxonomy()
+			.has_routing_variants(route.provider.as_str())
+			.then(|| {
+				// The taxonomy declares provider-scoped routing-variant suffixes
+				// (`gpt-5.6-luna-wm`, pi PR #8929). The route allowlist above is
+				// scoped to the discovery route, but the plain bundled SKUs may
+				// live on per-model routes, so collect every bundled wire identity
+				// owned by this provider for the plain-counterpart lookup.
+				let owned: BTreeSet<&RouteId> = catalog
+					.routes()
+					.iter()
+					.filter(|definition| definition.provider == route.provider)
+					.map(|definition| &definition.id)
+					.collect();
+				let mut bundled = BTreeMap::new();
+				for model in catalog.models() {
+					for (candidate, wire_model) in &model.wire_ids {
+						if owned.contains(candidate) {
+							bundled
+								.entry(wire_model.clone())
+								.or_insert_with(|| model.clone());
+						}
 					}
 				}
-			}
-			Arc::new(bundled)
-		});
+				Arc::new(bundled)
+			});
 		Ok(Self {
 			normalizer: DiscoveryNormalizer::new(defaults),
 			allowlist: Some(Arc::new(allowlist)),
-			codex_bundled,
+			variant_bundled,
 			provider: route.provider.clone(),
 			route: route.id.clone(),
 		})
@@ -167,7 +151,7 @@ impl crate::layer::recover::DiscoveryProjector for CatalogDiscoveryProjector {
 			),
 			Some(allowlist) => project_mixed_page(
 				allowlist,
-				self.codex_bundled.as_deref(),
+				self.variant_bundled.as_deref(),
 				&self.normalizer,
 				&self.provider,
 				&self.route,
@@ -185,7 +169,7 @@ impl crate::layer::recover::DiscoveryProjector for CatalogDiscoveryProjector {
 )]
 fn project_mixed_page(
 	allowlist: &BTreeMap<WireModelId, ModelSpec>,
-	codex_bundled: Option<&BTreeMap<WireModelId, ModelSpec>>,
+	variant_bundled: Option<&BTreeMap<WireModelId, ModelSpec>>,
 	normalizer: &DiscoveryNormalizer,
 	provider: &ProviderId,
 	route: &RouteId,
@@ -224,17 +208,18 @@ fn project_mixed_page(
 		}
 		let bundled = allowlist.get(&row.wire_model).or_else(|| {
 			// The backend's own plain slug wins over any synthesized clone.
-			codex_bundled.and_then(|bundled| bundled.get(&row.wire_model))
+			variant_bundled.and_then(|bundled| bundled.get(&row.wire_model))
 		});
 		let model = match bundled {
 			Some(model) => model.clone(),
-			None => match codex_worker_counterpart(codex_bundled, &row.wire_model) {
+			None => match routing_variant_counterpart(variant_bundled, provider, &row.wire_model) {
 				Some(plain) => {
-					// Safe worker SKU: register the `-wm` routing variant with
-					// base-model metadata derived from the canonical plain
-					// slug, then keep the plain identity itself resolvable
-					// under authoritative discovery.
-					push(codex_worker_variant(plain, &row), &mut seen_models, &mut models);
+					// Declared routing variant of a bundled plain SKU:
+					// register the suffixed wire identity with base-model
+					// metadata derived from the plain spec, then keep the
+					// plain identity itself resolvable under authoritative
+					// discovery.
+					push(routing_variant_spec(plain, &row), &mut seen_models, &mut models);
 					plain.clone()
 				},
 				None => {
@@ -250,27 +235,33 @@ fn project_mixed_page(
 	Ok(ModelDiscoveryPage { models, next_cursor })
 }
 
-/// Returns the bundled plain counterpart backing a Codex worker `-wm` slug.
-fn codex_worker_counterpart<'catalog>(
-	codex_bundled: Option<&'catalog BTreeMap<WireModelId, ModelSpec>>,
+/// Returns the bundled plain counterpart backing a declared routing-variant
+/// wire identifier (`gpt-5.6-luna-wm` → the bundled `gpt-5.6-luna` spec).
+fn routing_variant_counterpart<'catalog>(
+	variant_bundled: Option<&'catalog BTreeMap<WireModelId, ModelSpec>>,
+	provider: &ProviderId,
 	wire_model: &WireModelId,
 ) -> Option<&'catalog ModelSpec> {
-	let bundled = codex_bundled?;
-	let plain = wire_model.as_str().strip_suffix(CODEX_WORKER_SUFFIX)?;
-	if plain.is_empty() {
-		return None;
-	}
+	let bundled = variant_bundled?;
+	let plain = taxonomy().routing_variant_plain(provider.as_str(), wire_model.as_str())?;
 	bundled.get(plain)
 }
 
-/// Builds the worker `-wm` listing from its canonical plain spec.
+/// Builds the routing-variant listing from its canonical plain spec.
 ///
-/// The worker listing binds the advertised `-wm` wire identity to the
+/// The variant listing binds the advertised suffixed wire identity to the
 /// discovery route while deriving every base-model fact (context window,
 /// pricing, capabilities, thinking) from the bundled plain SKU.
-fn codex_worker_variant(plain: &ModelSpec, row: &DiscoveredModel) -> ModelSpec {
+fn routing_variant_spec(plain: &ModelSpec, row: &DiscoveredModel) -> ModelSpec {
 	let mut model = plain.clone();
-	model.key = ModelKey::from(format!("{}{CODEX_WORKER_SUFFIX}", plain.key.as_str()));
+	// The counterpart lookup already proved the wire identifier carries a
+	// declared routing-variant suffix; append that exact suffix to the plain
+	// key so the variant stays a distinct, explicitly selectable listing.
+	let plain_wire_len = taxonomy()
+		.routing_variant_plain(row.provider.as_str(), row.wire_model.as_str())
+		.map_or(row.wire_model.as_str().len(), str::len);
+	let suffix = &row.wire_model.as_str()[plain_wire_len..];
+	model.key = ModelKey::from(format!("{}{suffix}", plain.key.as_str()));
 	if let Some(display_name) = &row.display_name {
 		model.display_name = display_name.clone();
 	}
