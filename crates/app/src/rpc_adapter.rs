@@ -9,7 +9,7 @@ use std::{
 
 use bytes::Bytes;
 use futures::{Stream, StreamExt as _, stream};
-use omp_agent::project_thread_history;
+use omp_agent::{empty_stop, project_thread_history};
 use omp_core::{Str, encoding::hex};
 use omp_llm_catalog::{
 	GrammarBits, ModelAvailability, ModelKey, ModelSpec, OperationKind, ProviderDef, ProviderId,
@@ -42,7 +42,7 @@ use omp_llm_inference::{
 		TurnId as ProviderTurnId,
 	},
 	operation::job::{JobCancelError, JobCancellationReceipt},
-	receipt::{Cost, ExecutionBudget, Usage, UsageSource},
+	receipt::{Cost, ExecutionBudget, RecoveryKind, Usage, UsageSource},
 	router::Router,
 	session::{ConversationSessionPlanner, TurnReplay},
 };
@@ -1455,7 +1455,7 @@ fn inference_turn_error(error: Error) -> pb::TurnEvent {
 		| ErrorKind::PaymentRequired => pb::turn_error::Kind::Auth,
 		ErrorKind::RateLimited | ErrorKind::QuotaExhausted => pb::turn_error::Kind::RateLimited,
 		ErrorKind::BudgetExhausted | ErrorKind::ResourceExhausted => pb::turn_error::Kind::Overloaded,
-		ErrorKind::EmptyOutput => pb::turn_error::Kind::EmptyOutput,
+		ErrorKind::EmptyOutput | ErrorKind::EmptyCompletion => pb::turn_error::Kind::EmptyOutput,
 		_ => pb::turn_error::Kind::Upstream,
 	};
 	let detail = if error.kind == ErrorKind::Authentication {
@@ -1488,6 +1488,11 @@ fn inference_turn_error(error: Error) -> pb::TurnEvent {
 		},
 		_ => 0,
 	};
+	let diagnostics = if kind == pb::turn_error::Kind::EmptyOutput {
+		vec![empty_stop_diagnostic(&error)]
+	} else {
+		Vec::new()
+	};
 	pb::TurnEvent {
 		event: Some(pb::turn_event::Event::Error(pb::TurnError {
 			kind: kind as i32,
@@ -1495,9 +1500,54 @@ fn inference_turn_error(error: Error) -> pb::TurnEvent {
 			actual: None,
 			unsupported: Vec::new(),
 			retry_after_ms,
-			diagnostics: Vec::new(),
+			diagnostics,
 			error_id: None,
 		})),
+	}
+}
+
+/// Projects the gateway's empty-completion classification into one stable
+/// diagnostic so the session loop can choose an honest retry-cap message.
+///
+/// Billed-output evidence uses the final attempt only: earlier hidden
+/// attempts bill their own tokens without saying anything about why the last
+/// stop was empty. [`Usage::output_tokens`] already excludes separately
+/// reported reasoning tokens, so known reasoning-only billing keeps the
+/// context hint instead of alleging dropped content.
+fn empty_stop_diagnostic(error: &Error) -> pb::Diagnostic {
+	let receipt = error.receipt();
+	let last_attempt = receipt.attempts.last();
+	let billed = last_attempt.map_or(0, |attempt| attempt.usage.output_tokens);
+	// The final empty-output recovery record carries the stream classification
+	// as `empty-completion/<wire-policy>/<kind>`; only a truly block-free stop
+	// (`no-content`) can prove content was dropped downstream.
+	let zero_block = receipt
+		.recoveries
+		.iter()
+		.rev()
+		.find(|recovery| recovery.kind == RecoveryKind::EmptyOutput)
+		.is_some_and(|recovery| recovery.rule.0.as_str().ends_with("/no-content"));
+	let (code, detail) = if error.kind == ErrorKind::EmptyOutput {
+		(empty_stop::NO_FINAL_OUTPUT, String::new())
+	} else if zero_block && billed > 0 {
+		(empty_stop::BILLED_OUTPUT, billed.to_string())
+	} else {
+		(empty_stop::EMPTY, String::new())
+	};
+	pb::Diagnostic {
+		provider: error
+			.provider
+			.as_deref()
+			.map_or_else(String::new, |provider| provider.as_str().to_owned()),
+		model: receipt
+			.plan
+			.model
+			.as_ref()
+			.map_or_else(String::new, |model| model.as_str().to_owned()),
+		attempt: last_attempt.map_or(0, |attempt| attempt.index.saturating_add(1)),
+		code: code.to_owned(),
+		detail,
+		retryability: pb::Retryability::Never as i32,
 	}
 }
 
@@ -3129,31 +3179,103 @@ mod tests {
 		assert_eq!(outcome.diagnostics[0].detail, "Fork");
 	}
 
+	fn empty_stop_receipt(classification: &str, billed_output: u64) -> ExecutionReceipt {
+		use omp_llm_inference::{
+			body::{AttemptBodyEvidence, Replayability, RetryDecision, RetryDecisionReason},
+			receipt::{AttemptOutcome, AttemptReceipt, ProviderEvidence},
+		};
+		let mut receipt = ExecutionReceipt::default();
+		receipt.plan.model = Some(ModelKey::from("model-a"));
+		receipt.record_attempt(AttemptReceipt {
+			index:             0,
+			hidden:            false,
+			provider:          None,
+			route:             None,
+			account:           None,
+			principal:         None,
+			body:              AttemptBodyEvidence {
+				opened:         true,
+				consumed:       true,
+				replayability:  Replayability::Replayable,
+				retry_decision: RetryDecision::Allow,
+				reason:         RetryDecisionReason::ReplayableSource,
+			},
+			outcome:           AttemptOutcome::FailedPreCommit,
+			usage:             Usage { output_tokens: billed_output, ..Usage::default() },
+			cost:              Cost::default(),
+			provider_evidence: ProviderEvidence::default(),
+			elapsed:           Duration::ZERO,
+		});
+		receipt.recoveries.push(RecoveryRecord {
+			attempt:     1,
+			kind:        RecoveryKind::EmptyOutput,
+			rule:        ReasonId(Str::from(format!("empty-completion/wire/{classification}"))),
+			input_bytes: 0,
+			steps:       0,
+		});
+		receipt
+	}
+
+	fn empty_stop_error(kind: ErrorKind, receipt: ExecutionReceipt) -> Error {
+		Error::new(kind, ErrorPhase::Recovery, RetryAction::Never, receipt)
+	}
+
+	#[track_caller]
+	fn expect_turn_error(event: pb::TurnEvent) -> pb::TurnError {
+		match event.event {
+			Some(pb::turn_event::Event::Error(error)) => error,
+			other => panic!("expected a turn error event, got {other:?}"),
+		}
+	}
+
 	#[test]
 	fn empty_output_projects_dedicated_turn_error_kind() {
-		let thought_only = Error::new(
-			ErrorKind::EmptyOutput,
-			ErrorPhase::Recovery,
-			RetryAction::Never,
-			ExecutionReceipt::default(),
-		);
-		let no_content = Error::new(
-			ErrorKind::EmptyCompletion,
-			ErrorPhase::Recovery,
-			RetryAction::SemanticRetry,
-			ExecutionReceipt::default(),
-		);
+		let thought_only = empty_stop_error(ErrorKind::EmptyOutput, ExecutionReceipt::default());
+		let no_content = empty_stop_error(ErrorKind::EmptyCompletion, ExecutionReceipt::default());
 
-		assert!(matches!(
-			inference_turn_error(thought_only).event,
-			Some(pb::turn_event::Event::Error(pb::TurnError { kind, .. }))
-				if kind == pb::turn_error::Kind::EmptyOutput as i32
-		));
-		assert!(matches!(
-			inference_turn_error(no_content).event,
-			Some(pb::turn_event::Event::Error(pb::TurnError { kind, .. }))
-				if kind == pb::turn_error::Kind::Upstream as i32
-		));
+		let thought_only = expect_turn_error(inference_turn_error(thought_only));
+		assert_eq!(thought_only.kind, pb::turn_error::Kind::EmptyOutput as i32);
+		assert_eq!(thought_only.diagnostics.len(), 1);
+		assert_eq!(thought_only.diagnostics[0].code, omp_agent::empty_stop::NO_FINAL_OUTPUT);
+
+		// Zero-block empty stops join the session-level bounded continuation
+		// instead of failing as opaque upstream errors.
+		let no_content = expect_turn_error(inference_turn_error(no_content));
+		assert_eq!(no_content.kind, pb::turn_error::Kind::EmptyOutput as i32);
+		assert_eq!(no_content.diagnostics.len(), 1);
+		assert_eq!(no_content.diagnostics[0].code, omp_agent::empty_stop::EMPTY);
+	}
+
+	#[test]
+	fn billed_zero_block_empty_stop_names_the_dropped_output_tokens() {
+		let error =
+			empty_stop_error(ErrorKind::EmptyCompletion, empty_stop_receipt("no-content", 42));
+		let error = expect_turn_error(inference_turn_error(error));
+		assert_eq!(error.kind, pb::turn_error::Kind::EmptyOutput as i32);
+		assert_eq!(error.diagnostics.len(), 1);
+		assert_eq!(error.diagnostics[0].code, omp_agent::empty_stop::BILLED_OUTPUT);
+		assert_eq!(error.diagnostics[0].detail, "42");
+		assert_eq!(error.diagnostics[0].model, "model-a");
+		assert_eq!(error.diagnostics[0].attempt, 1);
+		assert_eq!(error.diagnostics[0].retryability, pb::Retryability::Never as i32);
+	}
+
+	#[test]
+	fn billed_output_diagnosis_requires_a_zero_block_stop() {
+		// Whitespace-only stops retain a text block: billed usage there is not
+		// evidence that deliverable content was dropped downstream.
+		let whitespace =
+			empty_stop_error(ErrorKind::EmptyCompletion, empty_stop_receipt("whitespace-only", 42));
+		let whitespace = expect_turn_error(inference_turn_error(whitespace));
+		assert_eq!(whitespace.diagnostics[0].code, omp_agent::empty_stop::EMPTY);
+
+		// Reasoning-only billing is reported in the separate reasoning
+		// dimension; a zero-block stop without billed output keeps the
+		// context hint.
+		let reasoning_only =
+			empty_stop_error(ErrorKind::EmptyCompletion, empty_stop_receipt("no-content", 0));
+		let reasoning_only = expect_turn_error(inference_turn_error(reasoning_only));
+		assert_eq!(reasoning_only.diagnostics[0].code, omp_agent::empty_stop::EMPTY);
 	}
 
 	#[test]

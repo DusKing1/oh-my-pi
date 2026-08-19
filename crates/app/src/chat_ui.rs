@@ -1148,7 +1148,15 @@ fn send_tool_result_output(backend: &flume::Sender<BackendEvent>, call_id: &Str,
 	for part in &result.parts {
 		let chunk = match &part.kind {
 			Some(part::Kind::Text(text)) if !text.is_empty() => Str::from(text.as_str()),
-			Some(part::Kind::Blob(blob)) => blob_label(blob),
+			Some(part::Kind::Blob(blob)) => {
+				if let Some(source) = persist_tool_image(blob) {
+					// The scene renders persisted PNG payloads inline via the
+					// terminal graphics tiers (pi UI-06/UI-20).
+					send_backend(backend, BackendEvent::ToolImage { id: call_id.clone(), source });
+					continue;
+				}
+				blob_label(blob)
+			},
 			_ => continue,
 		};
 		if has_output {
@@ -1160,6 +1168,32 @@ fn send_tool_result_output(backend: &flume::Sender<BackendEvent>, call_id: &Str,
 		send_backend(backend, BackendEvent::ToolOutput { id: call_id.clone(), chunk });
 		has_output = true;
 	}
+}
+
+/// Persists an inline PNG tool-result payload to a content-addressed temp
+/// file for inline terminal rendering, returning its path. Non-PNG payloads
+/// and by-reference blobs keep their text label: the terminal graphics
+/// tiers transmit PNG only.
+fn persist_tool_image(blob: &Blob) -> Option<Str> {
+	if blob.mime != "image/png" || blob.inline.is_empty() {
+		return None;
+	}
+	let name = if blob.hash.is_empty() {
+		format!("omp-tool-image-{}.png", ulid::Ulid::generate())
+	} else {
+		let hex: String = blob
+			.hash
+			.iter()
+			.take(16)
+			.map(|byte| format!("{byte:02x}"))
+			.collect();
+		format!("omp-tool-image-{hex}.png")
+	};
+	let path = std::env::temp_dir().join(name);
+	if !path.exists() {
+		std::fs::write(&path, &blob.inline).ok()?;
+	}
+	Some(Str::from(path.to_string_lossy().as_ref()))
 }
 
 fn tool_summary(name: &Str, item: &Item) -> Vec<Str> {
@@ -1695,6 +1729,75 @@ mod tests {
 		assert_eq!(blob.inline.as_ref(), bytes);
 		assert_eq!(blob.hash.as_ref(), blake3::hash(bytes).as_bytes());
 		assert_eq!(chips.len(), 1);
+	}
+
+	#[test]
+	fn png_tool_result_blobs_surface_as_inline_image_events() {
+		let (tx, rx) = flume::unbounded();
+		let png: &[u8] = b"\x89PNG\r\n\x1a\nfake";
+		let item = Item {
+			kind: Some(item::Kind::ToolResult(omp_proto::thread::v1::ToolResult {
+				call_id: "call-1".to_owned(),
+				name: "read".to_owned(),
+				parts: vec![
+					Part { kind: Some(part::Kind::Text("rendered page 1".to_owned())) },
+					Part {
+						kind: Some(part::Kind::Blob(Blob {
+							hash:   Bytes::from_static(b"0123456789abcdef0123456789abcdef"),
+							mime:   "image/png".to_owned(),
+							size:   png.len() as u64,
+							inline: Bytes::from_static(png),
+							detail: blob::Detail::Original as i32,
+						})),
+					},
+				],
+				..Default::default()
+			})),
+			..Default::default()
+		};
+		send_tool_result_output(&tx, &Str::from("call-1"), &item);
+		let events: Vec<_> = rx.drain().collect();
+		assert!(matches!(
+			&events[0],
+			BackendEvent::ToolOutput { chunk, .. } if chunk.as_str() == "rendered page 1"
+		));
+		let Some(BackendEvent::ToolImage { id, source }) = events.get(1) else {
+			panic!("PNG blob produces a ToolImage event");
+		};
+		assert_eq!(id.as_str(), "call-1");
+		let persisted = std::fs::read(source.as_str()).expect("persisted image payload");
+		assert_eq!(persisted, png);
+		assert_eq!(events.len(), 2, "the image replaces the blob text label");
+		std::fs::remove_file(source.as_str()).ok();
+	}
+
+	#[test]
+	fn non_png_tool_result_blobs_keep_their_text_label() {
+		let (tx, rx) = flume::unbounded();
+		let item = Item {
+			kind: Some(item::Kind::ToolResult(omp_proto::thread::v1::ToolResult {
+				call_id: "call-2".to_owned(),
+				name: "read".to_owned(),
+				parts: vec![Part {
+					kind: Some(part::Kind::Blob(Blob {
+						hash:   Bytes::new(),
+						mime:   "image/jpeg".to_owned(),
+						size:   4,
+						inline: Bytes::from_static(b"jpeg"),
+						detail: blob::Detail::Original as i32,
+					})),
+				}],
+				..Default::default()
+			})),
+			..Default::default()
+		};
+		send_tool_result_output(&tx, &Str::from("call-2"), &item);
+		let events: Vec<_> = rx.drain().collect();
+		assert_eq!(events.len(), 1);
+		assert!(matches!(
+			&events[0],
+			BackendEvent::ToolOutput { chunk, .. } if chunk.contains("image/jpeg")
+		));
 	}
 
 	#[test]

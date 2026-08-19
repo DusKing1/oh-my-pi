@@ -2117,6 +2117,205 @@ mod tests {
 			warnings: Vec::new(),
 		}
 	}
+
+	// Seen-line guard contracts ported from pi's `Patcher seen-line
+	// provenance` and `read → edit seen-line guard` suites (final state after
+	// the #8461 retry-token revert): rejections resend the full patch, full
+	// inline reveals unblock a straight same-tag retry, and truncated reveals
+	// keep the merge gate closed.
+	const GUARD_PATH: &str = "notes.txt";
+	const GUARD_CONTENT: &str = "l1\nl2\nl3\nl4\nl5\n";
+
+	fn guard_store(content: &str, seen: Vec<usize>) -> (omp_hashline::SnapshotStore, Str) {
+		let mut store = omp_hashline::SnapshotStore::default();
+		let tag = store
+			.record(
+				GUARD_PATH,
+				RevisionToken::new("r1"),
+				Bytes::copy_from_slice(content.as_bytes()),
+				seen,
+			)
+			.expect("record guard snapshot");
+		(store, tag)
+	}
+
+	fn guard_check(
+		store: &mut omp_hashline::SnapshotStore,
+		tag: &str,
+		anchors: &[usize],
+	) -> Result<(), EditFault> {
+		let snapshot = store
+			.by_revision(GUARD_PATH, &RevisionToken::new("r1"))
+			.expect("retained guard snapshot");
+		validate_seen_lines(store, &snapshot, GUARD_PATH, tag, anchors)
+	}
+
+	fn guard_message(result: Result<(), EditFault>) -> Str {
+		match result.expect_err("seen-line guard must reject").reason {
+			RejectionReason::InvalidPatch { message } => message,
+			other => panic!("unexpected rejection reason: {other:?}"),
+		}
+	}
+
+	#[test]
+	fn seen_line_guard_skips_when_no_lines_were_recorded() {
+		// Absent provenance (externally minted or aged-out tag) → allow.
+		let (mut store, tag) = guard_store(GUARD_CONTENT, vec![]);
+		assert!(guard_check(&mut store, &tag, &[4]).is_ok());
+	}
+
+	#[test]
+	fn seen_line_guard_accepts_displayed_anchors() {
+		let (mut store, tag) = guard_store(GUARD_CONTENT, vec![1, 2]);
+		assert!(guard_check(&mut store, &tag, &[1, 2]).is_ok());
+	}
+
+	#[test]
+	fn seen_line_guard_rejects_an_anchor_the_read_never_displayed() {
+		let (mut store, tag) = guard_store(GUARD_CONTENT, vec![1, 2]);
+		let message = guard_message(guard_check(&mut store, &tag, &[4]));
+		assert!(message.contains("never displayed"));
+		assert!(message.contains("lines 4 of notes.txt"));
+	}
+
+	#[test]
+	fn seen_line_guard_widens_coverage_on_reread_fusion() {
+		// A second read of identical content displaying lines 4-5 unions into
+		// the same revision's seen set.
+		let (mut store, tag) = guard_store(GUARD_CONTENT, vec![1, 2]);
+		store
+			.record(
+				GUARD_PATH,
+				RevisionToken::new("r1"),
+				Bytes::copy_from_slice(GUARD_CONTENT.as_bytes()),
+				vec![4, 5],
+			)
+			.expect("re-record identical revision");
+		assert!(guard_check(&mut store, &tag, &[4]).is_ok());
+	}
+
+	#[test]
+	fn seen_line_guard_reveals_content_and_unblocks_a_straight_retry() {
+		let (mut store, tag) = guard_store(GUARD_CONTENT, vec![1, 2]);
+		let message = guard_message(guard_check(&mut store, &tag, &[4]));
+		// The rejection surfaces the ACTUAL file content at the unseen anchor.
+		assert!(message.contains("Actual file content at those lines:"));
+		assert!(message.contains("  4:l4"));
+		assert!(message.contains("straight retry now succeeds"));
+		// The revealed line joined the snapshot's seen set: a straight retry
+		// with the same [path#tag] header passes without a re-read.
+		assert!(guard_check(&mut store, &tag, &[4]).is_ok());
+	}
+
+	#[test]
+	fn seen_line_guard_caps_the_reveal_and_keeps_retries_rejected() {
+		let content = (1..=200).fold(String::new(), |mut text, line| {
+			text.push_str(&format!("l{line}\n"));
+			text
+		});
+		let (mut store, tag) = guard_store(&content, vec![1]);
+		// Anchor 60 unseen lines — over the 40-line inline reveal cap.
+		let anchors = (100..=159).collect::<Vec<usize>>();
+		let message = guard_message(guard_check(&mut store, &tag, &anchors));
+		assert!(message.contains("first 40 unseen line(s)"));
+		assert!(message.contains("  100:l100"));
+		assert!(message.contains("  139:l139"));
+		assert!(!message.contains("140:l140"));
+		// Guidance directs at a range re-read of the FULL anchor range.
+		assert!(message.contains("notes.txt:100-159"));
+		// A straight retry STILL rejects: a truncated reveal must not merge
+		// its prefix into the seen set, or the model could split a blind
+		// over-cap edit into <=cap-line retries and slip past the re-read
+		// gate. The reveal window stays anchored at the head.
+		let retry = guard_message(guard_check(&mut store, &tag, &anchors));
+		assert!(retry.contains("first 40 unseen line(s)"));
+		assert!(retry.contains("  100:l100"));
+		assert!(!retry.contains("140:l140"));
+	}
+
+	#[test]
+	fn seen_line_guard_clips_wide_lines_and_keeps_the_merge_gate_closed() {
+		// Minified-bundle-style single wide line at anchor 2; anchor 3 stays
+		// short so the width clip applies only where needed.
+		let wide = "a".repeat(4096);
+		let content = format!("l1\n{wide}\nl3\nl4\n");
+		let (mut store, tag) = guard_store(&content, vec![1]);
+		let message = guard_message(guard_check(&mut store, &tag, &[2, 3]));
+		assert!(message.contains("first 2 unseen line(s)"));
+		// Line 2 is clipped at 512 chars + ellipsis; the full 4KB never leaks
+		// into the error preview.
+		assert!(message.contains(&format!("2:{}…", "a".repeat(512))));
+		assert!(!message.contains(&"a".repeat(513)));
+		// The short line surfaces verbatim.
+		assert!(message.contains("  3:l3"));
+		assert!(message.contains("notes.txt:2-3"));
+		// A straight retry STILL rejects: column-truncated reveals must not
+		// merge, otherwise the model would land the edit having seen only the
+		// first 512 chars of a >4KB line.
+		let retry = guard_message(guard_check(&mut store, &tag, &[2, 3]));
+		assert!(retry.contains(&format!("2:{}…", "a".repeat(512))));
+	}
+
+	#[test]
+	fn seen_line_guard_out_of_range_anchors_keep_the_reread_fallback() {
+		let (mut store, tag) = guard_store("l1\nl2\nl3\n", vec![1]);
+		let message = guard_message(guard_check(&mut store, &tag, &[9]));
+		// Nothing to reveal — the message keeps the range re-read guidance
+		// and the anchor never joins the seen set.
+		assert!(message.contains("Re-read them in full first"));
+		assert!(guard_check(&mut store, &tag, &[9]).is_err());
+	}
+
+	fn committed_operation(hash: u8) -> pb::OperationResult {
+		pb::OperationResult {
+			head: Some(pb::DocumentHead {
+				revision: Some(pb::Revision {
+					sequence:     1,
+					content_hash: Bytes::from(vec![hash; 32]),
+				}),
+				..Default::default()
+			}),
+			..Default::default()
+		}
+	}
+
+	#[test]
+	fn committed_snapshot_marks_every_line_seen() {
+		// A committed write is full-file provenance: the guard must not force
+		// a re-read before the next edit against the freshly minted tag.
+		let mut store = omp_hashline::SnapshotStore::default();
+		record_committed_snapshot(
+			&mut store,
+			Str::from(GUARD_PATH),
+			&committed_operation(0xab),
+			Bytes::from_static(b"l1\nl2\nl3\n"),
+		)
+		.expect("record committed snapshot");
+		let snapshot = store
+			.by_revision(GUARD_PATH, &RevisionToken::new([0xab_u8; 32]))
+			.expect("retained committed snapshot");
+		assert!(snapshot.seen_lines().contains(&1));
+		assert!(snapshot.seen_lines().contains(&4));
+		assert!(!snapshot.seen_lines().contains(&5));
+		let tag = Str::from(snapshot.tag());
+		assert!(validate_seen_lines(&mut store, &snapshot, GUARD_PATH, &tag, &[1, 2, 3, 4]).is_ok());
+	}
+
+	#[test]
+	fn oversized_committed_snapshot_invalidates_retained_history() {
+		let mut store = omp_hashline::SnapshotStore::default();
+		store
+			.record(GUARD_PATH, RevisionToken::new("r1"), Bytes::from_static(b"l1\n"), vec![1])
+			.expect("record small snapshot");
+		record_committed_snapshot(
+			&mut store,
+			Str::from(GUARD_PATH),
+			&committed_operation(0xcd),
+			Bytes::from(vec![b'a'; SNAPSHOT_MAX_BYTES + 1]),
+		)
+		.expect("oversized commit invalidates instead of failing");
+		assert!(store.head(GUARD_PATH).is_none());
+	}
 }
 
 fn write_archive_member_blocking(

@@ -1058,10 +1058,17 @@ fn resume_choices(
 		if strict_session_id(&id).is_err() {
 			continue;
 		}
-		let Some((header, label)) = session_metadata(&path) else {
+		let Some(metadata) = session_metadata(&path) else {
 			continue;
 		};
-		if header.id.0 != id || header.cwd != root {
+		if metadata.header.id.0 != id || metadata.header.cwd != root {
+			continue;
+		}
+		// A journal holding only its header carries nothing to resume: sessions
+		// are created eagerly on disk, so a launch-then-quit leaves an empty
+		// shell that would resume to a blank conversation. Never advertise it
+		// (pi issue #8860: only advertise resume for actually-persisted work).
+		if !metadata.has_entries {
 			continue;
 		}
 		let modified = entry
@@ -1069,7 +1076,9 @@ fn resume_choices(
 			.and_then(|metadata| metadata.modified())
 			.unwrap_or(UNIX_EPOCH);
 		let age = relative_time(modified);
-		let label = label.unwrap_or_else(|| Str::new_static("Untitled session"));
+		let label = metadata
+			.label
+			.unwrap_or_else(|| Str::new_static("Untitled session"));
 		let detail = if current_id.is_some_and(|current| current == &id) {
 			fmts!("current · {age} · {id}")
 		} else {
@@ -1081,7 +1090,19 @@ fn resume_choices(
 	Ok(choices.into_iter().map(|(_, choice)| choice).collect())
 }
 
-fn session_metadata(path: &Path) -> Option<(Header, Option<Str>)> {
+/// Streamed session-journal probe results consumed by the resume picker.
+struct SessionMetadata {
+	/// Parsed first-line journal header.
+	header:      Header,
+	/// Best display label: latest title, else the first user prompt.
+	label:       Option<Str>,
+	/// Whether any decodable journal entry follows the header. Journals are
+	/// created eagerly with a lone header line, so this distinguishes sessions
+	/// with persisted conversation from empty shells.
+	has_entries: bool,
+}
+
+fn session_metadata(path: &Path) -> Option<SessionMetadata> {
 	let mut reader = BufReader::new(File::open(path).ok()?);
 	let mut line = Vec::new();
 	if reader.read_until(b'\n', &mut line).ok()? == 0 {
@@ -1096,6 +1117,7 @@ fn session_metadata(path: &Path) -> Option<(Header, Option<Str>)> {
 	let header = read_header(&line).ok()?;
 	let mut title = None;
 	let mut first_message = None;
+	let mut has_entries = false;
 	loop {
 		line.clear();
 		if reader.read_until(b'\n', &mut line).ok()? == 0 {
@@ -1110,6 +1132,7 @@ fn session_metadata(path: &Path) -> Option<(Header, Option<Str>)> {
 		let Ok(event) = read_line(&line) else {
 			continue;
 		};
+		has_entries = true;
 		match &event.kind {
 			Kind::Title { title: value, .. } => title = sanitize_session_label(value),
 			Kind::Item(record) if first_message.is_none() => {
@@ -1127,7 +1150,7 @@ fn session_metadata(path: &Path) -> Option<(Header, Option<Str>)> {
 			_ => {},
 		}
 	}
-	Some((header, title.or(first_message)))
+	Some(SessionMetadata { header, label: title.or(first_message), has_entries })
 }
 
 fn sanitize_session_label(value: &str) -> Option<Str> {
@@ -1295,6 +1318,77 @@ mod tests {
 			suggestions.contains("apple-intelligence/apple-intelligence"),
 			"suggestions name the canonical key: {suggestions}",
 		);
+	}
+
+	/// Port of pi PR #8833: a provider-qualified selector must resolve within
+	/// its named provider or fail closed — it must never shadow onto an
+	/// aggregator's verbatim flat id (e.g. `anthropic/claude-fable-5` re-binding
+	/// to `openrouter/anthropic/claude-fable-5`), which would silently bill the
+	/// aggregator instead of failing a misconfigured provider.
+	#[test]
+	fn provider_qualified_selectors_never_shadow_onto_aggregator_flat_ids() {
+		let catalog = omp_llm_catalog::snapshot::Catalog::try_embedded().expect("embedded catalog");
+
+		// Explicit precedence pair: the same flat id exists both as a canonical
+		// provider key and verbatim under the aggregator.
+		let native = omp_llm_catalog::ModelKey::from("anthropic/claude-fable-5");
+		let shadowed = omp_llm_catalog::ModelKey::from("openrouter/anthropic/claude-fable-5");
+		assert!(catalog.model(&native).is_some(), "fixture key missing from catalog");
+		assert!(catalog.model(&shadowed).is_some(), "fixture aggregator key missing from catalog");
+		assert_eq!(
+			resolve_model_selector(catalog, "anthropic/claude-fable-5")
+				.expect("canonical provider key resolves")
+				.as_str(),
+			"anthropic/claude-fable-5",
+			"the named provider wins over the aggregator's flat id",
+		);
+		assert_eq!(
+			resolve_model_selector(catalog, "openrouter/anthropic/claude-fable-5")
+				.expect("explicit aggregator selection resolves")
+				.as_str(),
+			"openrouter/anthropic/claude-fable-5",
+			"an explicit aggregator prefix still selects the aggregator",
+		);
+
+		// Matrix over every aggregator-hosted flat id whose named provider is a
+		// real catalog provider: the bare flat id either resolves within that
+		// provider or fails closed; it never re-binds to the aggregator copy.
+		// `resolve_model_selector` can only produce a model through these two
+		// exact lookups (key, then declared alias) before failing closed, so the
+		// matrix checks them directly instead of paying the unknown-selector
+		// suggestion scan a thousand times over.
+		let mut flat_ids = std::collections::BTreeSet::new();
+		for spec in catalog.models() {
+			let Some((_aggregator, flat_id)) = spec.key.as_str().split_once('/') else {
+				continue;
+			};
+			let Some((named_provider, _)) = flat_id.split_once('/') else {
+				continue;
+			};
+			if catalog
+				.provider(&omp_llm_catalog::ProviderId::from(named_provider))
+				.is_some()
+			{
+				flat_ids.insert((flat_id, named_provider));
+			}
+		}
+		assert!(!flat_ids.is_empty(), "the catalog carries aggregator flat ids to check");
+		for (flat_id, named_provider) in flat_ids {
+			let resolved = catalog
+				.model(&omp_llm_catalog::ModelKey::from(flat_id))
+				.or_else(|| catalog.resolve_alias(flat_id));
+			if let Some(spec) = resolved {
+				assert!(
+					spec
+						.key
+						.as_str()
+						.strip_prefix(named_provider)
+						.is_some_and(|rest| rest.starts_with('/')),
+					"`{flat_id}` must stay locked to `{named_provider}`, resolved `{}`",
+					spec.key.as_str(),
+				);
+			}
+		}
 	}
 
 	#[derive(Clone)]
@@ -1507,6 +1601,119 @@ mod tests {
 			.expect("title-named session");
 		assert_eq!(titled.label, "Renamed");
 		assert!(titled.detail.starts_with("current · "));
+	}
+
+	#[test]
+	fn session_metadata_streams_past_torn_records_and_keeps_latest_title() {
+		let scratch = tempfile::tempdir().expect("scratch directory");
+		let root = scratch.path().join("project");
+		let sessions_dir = root.join("sessions");
+		std::fs::create_dir_all(&sessions_dir).expect("session directory");
+		let id = write_session(&sessions_dir, &root, "first prompt", Some("Early title"));
+		let path = sessions_dir.join(format!("{id}.jsonl"));
+
+		// A malformed mid-file record, a later title, and a torn trailing append
+		// must not stop the streamed probe or lose title updates behind them.
+		let mut fixture = Vec::new();
+		fixture.extend_from_slice(b"{not json}\n");
+		omp_storage::transcript::write_line(
+			&Event {
+				ts:   4,
+				kind: Kind::Title {
+					title:  Str::new_static("Recovered title"),
+					source: TitleSource::User,
+				},
+			},
+			&mut fixture,
+		)
+		.expect("title line encodes");
+		fixture.extend_from_slice(b"\n{\"ts\":5,\"k\":\"title\",\"title\":\"torn");
+		let mut file = std::fs::OpenOptions::new()
+			.append(true)
+			.open(&path)
+			.expect("append fixture");
+		std::io::Write::write_all(&mut file, &fixture).expect("append torn records");
+		drop(file);
+
+		let metadata = session_metadata(&path).expect("probe survives torn records");
+		assert_eq!(metadata.header.id.0, id);
+		assert_eq!(metadata.label.expect("latest title wins").as_str(), "Recovered title");
+		assert!(metadata.has_entries, "real entries behind torn records still count");
+	}
+
+	/// Port of pi issue #8860: never advertise resuming a session that has no
+	/// persisted conversation. Journals are created eagerly with a lone header
+	/// line, so a launch-then-quit leaves an empty shell on disk; the resume
+	/// picker must skip it until an actual journal entry lands.
+	#[test]
+	fn resume_choices_skip_header_only_sessions() {
+		let scratch = tempfile::tempdir().expect("scratch directory");
+		let root = scratch.path().join("project");
+		let sessions_dir = root.join("sessions");
+		std::fs::create_dir_all(&sessions_dir).expect("session directory");
+
+		// An eagerly created, immediately abandoned session: header only.
+		let empty_id = Str::from(ulid::Ulid::generate().to_string());
+		let empty_path = sessions_dir.join(format!("{empty_id}.jsonl"));
+		drop(
+			Writer::create(&empty_path, &Header {
+				v:       4,
+				id:      SessionId(empty_id.clone()),
+				created: 1,
+				cwd:     root.clone(),
+			})
+			.expect("create header-only transcript"),
+		);
+		let probe = session_metadata(&empty_path).expect("header-only journal still probes");
+		assert!(!probe.has_entries, "a lone header carries no entries");
+
+		// A session with persisted conversation is still advertised.
+		let real_id = write_session(&sessions_dir, &root, "kept prompt", None);
+
+		let choices = resume_choices(&sessions_dir, &root, None).expect("list sessions");
+		assert_eq!(choices.len(), 1, "header-only session must not be advertised");
+		assert_eq!(choices[0].id, real_id);
+
+		// The current session is not exempt: an empty current session resumes
+		// to nothing and must not be offered either.
+		let current = resume_choices(&sessions_dir, &root, Some(&empty_id)).expect("list sessions");
+		assert!(current.iter().all(|choice| choice.id != empty_id));
+	}
+
+	#[test]
+	fn session_metadata_rejects_files_without_a_valid_header() {
+		let scratch = tempfile::tempdir().expect("scratch directory");
+		let empty = scratch.path().join("empty.jsonl");
+		std::fs::write(&empty, b"").expect("empty fixture");
+		assert!(session_metadata(&empty).is_none());
+
+		let garbage = scratch.path().join("garbage.jsonl");
+		std::fs::write(&garbage, b"{not a header}\n{\"ts\":1,\"k\":\"reset\"}\n")
+			.expect("garbage fixture");
+		assert!(session_metadata(&garbage).is_none());
+	}
+
+	#[test]
+	fn resume_repairs_torn_trailing_append() {
+		let scratch = tempfile::tempdir().expect("scratch directory");
+		let root = scratch.path().join("project");
+		let sessions_dir = root.join("sessions");
+		std::fs::create_dir_all(&sessions_dir).expect("session directory");
+		let id = write_session(&sessions_dir, &root, "resume me", None);
+		let path = sessions_dir.join(format!("{id}.jsonl"));
+		let mut file = std::fs::OpenOptions::new()
+			.append(true)
+			.open(&path)
+			.expect("append torn fragment");
+		std::io::Write::write_all(&mut file, br#"{"ts":9,"k":"title","title":"tor"#)
+			.expect("write torn fragment");
+		drop(file);
+
+		let session = open_session(&root, &sessions_dir, Some(&id), &Registry::new())
+			.expect("torn session resumes");
+		assert_eq!(session.id, id);
+		let log = session.journal.load().expect("repaired journal loads");
+		assert_eq!(log.len(), 1, "the torn fragment is truncated, intact events remain");
 	}
 
 	#[tokio::test]
