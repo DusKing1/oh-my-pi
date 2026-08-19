@@ -2,13 +2,12 @@
 
 use std::path::Path;
 
-use ast_grep_core::tree_sitter::LanguageExt;
 use omp_core::SparseSet;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
-use crate::{AstError, Result, language::SupportLang};
+use crate::{Result, language::SupportLang, parse_cache::parse_cached};
 
 const DEFAULT_MIN_BODY_LINES: u32 = 4;
 const DEFAULT_MIN_COMMENT_LINES: u32 = 6;
@@ -216,11 +215,7 @@ pub fn summarize_source(source: &str, settings: SummarySettings<'_>) -> Result<S
 		return Ok(unparsed_result(source, total_lines));
 	};
 
-	let mut parser = Parser::new();
-	parser
-		.set_language(&language.get_ts_language())
-		.map_err(|source| AstError::LoadLanguage { source })?;
-	let Some(tree) = parser.parse(source, None) else {
+	let Some(tree) = parse_cached(source, language)? else {
 		return Ok(unparsed_result(source, total_lines));
 	};
 	let root = tree.root_node();

@@ -8,6 +8,8 @@ pub mod error;
 pub mod language;
 /// Structural search and rewrite operations.
 pub mod ops;
+/// Bounded, content-addressed tree-sitter parse cache.
+pub mod parse_cache;
 /// Structural source summarization.
 pub mod summary;
 
