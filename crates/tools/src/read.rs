@@ -1,6 +1,6 @@
 //! Pi-compatible reads of local and special resources.
 
-use std::{future::Future, path::Path, sync::Arc};
+use std::{borrow::Cow, future::Future, path::Path, sync::Arc};
 
 use async_stream::stream;
 use bytes::Bytes;
@@ -61,6 +61,12 @@ const MIN_SUMMARY_LINES: usize = 100;
 const MAX_SUMMARY_LINES: usize = 20_000;
 /// Maximum editable whole-file snapshot retained across read and write.
 pub const SNAPSHOT_MAX_BYTES: usize = 4 * 1024 * 1024;
+/// Header window sniffed for the binary heuristic; mirrors git's 8000-byte
+/// scan.
+///
+/// Callers holding the whole file in memory sniff the identical prefix
+/// through [`is_probably_binary_header`] instead of reopening.
+pub const BINARY_SNIFF_BYTES: usize = 8192;
 
 /// Arguments accepted by `read@1`.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -602,9 +608,7 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 			if let Ok(text) = std::str::from_utf8(&bytes)
 				&& let Some(summary) = profile::render_profile(path, text)
 			{
-				return self
-					.text_parts(&stat, &summary, &parsed, None, suffix_from)
-					.await;
+				return self.text_parts(&stat, &summary, &parsed, None, suffix_from);
 			}
 		}
 		let image_by_extension = image::is_supported_extension(path);
@@ -630,15 +634,13 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 			let rendered = notebook::render(&source_bytes, &stat.display_path)
 				.map_err(|error| Fault::Source { message: Str::from(error.message().to_owned()) })?;
 			let rendered_bytes = Bytes::copy_from_slice(rendered.text.as_bytes());
-			return self
-				.text_parts(
-					&stat,
-					&rendered.text,
-					&parsed,
-					Some((lease.canonical_path(), lease.revision(), &rendered_bytes)),
-					suffix_from,
-				)
-				.await;
+			return self.text_parts(
+				&stat,
+				&rendered.text,
+				&parsed,
+				Some((lease.canonical_path(), lease.revision(), &rendered_bytes)),
+				suffix_from,
+			);
 		}
 		if markit::supports_path(path) {
 			let bytes = self.sources.read_bytes(stat.canonical_path.clone()).await?;
@@ -648,9 +650,7 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 					if let Some(note) = converted.note {
 						text = format!("{note}\n{text}");
 					}
-					return self
-						.text_parts(&stat, &text, &parsed, None, suffix_from)
-						.await;
+					return self.text_parts(&stat, &text, &parsed, None, suffix_from);
 				},
 				Ok(None) => {},
 				Err(_) => {
@@ -666,9 +666,17 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 
 		let lease = self.sources.open(stat.canonical_path.clone()).await?;
 		let bytes = lease.read_all().await?;
-		let text = match String::from_utf8(bytes.to_vec()) {
-			Ok(text) => text,
-			Err(error) if raw => String::from_utf8_lossy(error.as_bytes()).into_owned(),
+		// Sniff the leading bytes before deriving any text view: a binary file
+		// (font, object, archive, packed blob) is refused for one read and no
+		// decode, and NUL-padded UTF-16-style content that would pass strict
+		// UTF-8 validation is refused instead of rendering as mojibake. `:raw`
+		// stays the explicit escape hatch for reading bytes verbatim.
+		if !raw && is_probably_binary_header(&bytes[..bytes.len().min(BINARY_SNIFF_BYTES)]) {
+			return Err(Fault::Source { message: Str::from(binary_notice(&stat)) });
+		}
+		let text: Cow<'_, str> = match std::str::from_utf8(&bytes) {
+			Ok(text) => Cow::Borrowed(text),
+			Err(_) if raw => String::from_utf8_lossy(&bytes),
 			Err(_) => {
 				return Err(Fault::Source { message: Str::from(binary_notice(&stat)) });
 			},
@@ -679,26 +687,22 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 			&& (MIN_SUMMARY_LINES..=MAX_SUMMARY_LINES).contains(&text.lines().count())
 			&& let Some(summary) = structural_summary(&stat.display_path, &text)
 		{
-			return self
-				.structural_parts(
-					&stat,
-					summary,
-					lease.canonical_path(),
-					lease.revision(),
-					&bytes,
-					suffix_from,
-				)
-				.await;
-		}
-		self
-			.text_parts(
+			return self.structural_parts(
 				&stat,
-				&text,
-				&parsed,
-				Some((lease.canonical_path(), lease.revision(), &bytes)),
+				summary,
+				lease.canonical_path(),
+				lease.revision(),
+				&bytes,
 				suffix_from,
-			)
-			.await
+			);
+		}
+		self.text_parts(
+			&stat,
+			&text,
+			&parsed,
+			Some((lease.canonical_path(), lease.revision(), &bytes)),
+			suffix_from,
+		)
 	}
 
 	async fn read_web(&self, target: web::ParsedTarget) -> Result<Vec<PayloadPart>, Fault> {
@@ -733,7 +737,7 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 		) {
 			vec![PayloadPart::Text { text: Str::from(framed) }]
 		} else {
-			self.virtual_text_parts(&framed, &target.selector)
+			Self::virtual_text_parts(&framed, &target.selector)
 		};
 		if let Some(image) = fetched.image {
 			let blob = self.blobs.store(image.data, image.media_type).await?;
@@ -822,9 +826,8 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 					Str::from(format!("{}:{}", stat.display_path, member_text.node.path))
 				};
 				let member_stat = SourceStat { display_path, ..stat.clone() };
-				let mut parts = self
-					.text_parts(&member_stat, &member_text.text, &result.selector, None, None)
-					.await?;
+				let mut parts =
+					self.text_parts(&member_stat, &member_text.text, &result.selector, None, None)?;
 				if let Some(from) = suffix_from
 					&& let Some(PayloadPart::Text { text }) = parts
 						.iter_mut()
@@ -890,7 +893,7 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 		}]))
 	}
 
-	async fn structural_parts(
+	fn structural_parts(
 		&self,
 		stat: &SourceStat,
 		mut summary: StructuralRender,
@@ -931,7 +934,7 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 		Ok(vec![PayloadPart::Text { text: Str::from(summary.text) }])
 	}
 
-	async fn text_parts(
+	fn text_parts(
 		&self,
 		stat: &SourceStat,
 		text: &str,
@@ -973,7 +976,7 @@ impl<S: ReadSources, B: ReadBlobs> ReadTool<S, B> {
 		Ok(vec![PayloadPart::Text { text: Str::from(projection) }])
 	}
 
-	fn virtual_text_parts(&self, text: &str, parsed: &selector::ParsedSelector) -> Vec<PayloadPart> {
+	fn virtual_text_parts(text: &str, parsed: &selector::ParsedSelector) -> Vec<PayloadPart> {
 		let formatted =
 			format::format_text(text, parsed, format::TextFormatOptions::new("URL output"));
 		let (projection, _) = formatted.into_projection();
@@ -1125,6 +1128,26 @@ fn pdf_image_member(input: &str) -> Option<&str> {
 		.iter()
 		.any(|extension| member.ends_with(extension))
 		.then_some(&input[..index + 4])
+}
+
+/// Classifies an in-memory byte header as binary (non-UTF-8 text).
+///
+/// Binary when the header contains a NUL byte (true binary, plus UTF-16/UTF-32
+/// text whose ASCII range is NUL-padded) or when it is not valid UTF-8. A
+/// multibyte sequence truncated at the sniff boundary is tolerated, while any
+/// genuinely invalid byte still fails — matching the strict whole-file decode
+/// the plain-text read path performs afterwards.
+#[must_use]
+pub fn is_probably_binary_header(header: &[u8]) -> bool {
+	if header.contains(&0) {
+		return true;
+	}
+	match std::str::from_utf8(header) {
+		Ok(_) => false,
+		// `error_len()` is `None` only for an unexpected end of input: an
+		// incomplete trailing sequence cut off by the sniff window.
+		Err(error) => error.error_len().is_some(),
+	}
 }
 
 fn binary_notice(stat: &SourceStat) -> String {

@@ -505,6 +505,75 @@ async fn raw_is_verbatim_and_multi_range_uses_one_hashline_header_and_ellipsis()
 	);
 }
 
+#[test]
+fn binary_header_classifier_covers_the_sniff_boundary_cases() {
+	assert!(!read::is_probably_binary_header(b""));
+	assert!(!read::is_probably_binary_header(b"plain ascii text\n"));
+	assert!(!read::is_probably_binary_header("caf\u{e9} \u{20ac}".as_bytes()));
+	// NUL bytes mark true binary plus NUL-padded UTF-16/UTF-32 text.
+	assert!(read::is_probably_binary_header(b"v\0a\0l\0i\0d\0"));
+	// A genuinely invalid byte fails wherever it sits.
+	assert!(read::is_probably_binary_header(b"ok\xFFnope"));
+	assert!(read::is_probably_binary_header(b"\xC3\x28"));
+	// A multibyte sequence truncated at the sniff window is tolerated.
+	assert!(!read::is_probably_binary_header(b"tail\xE2\x82"));
+	assert!(!read::is_probably_binary_header(b"tail\xF0\x9F\x98"));
+}
+
+#[tokio::test]
+async fn binary_content_is_refused_before_decoding_and_raw_stays_the_escape_hatch() {
+	// Valid UTF-8 with NUL padding is refused as binary rather than rendered.
+	let sources = Sources::default();
+	sources.file("padded.txt", Bytes::from_static(b"v\0a\0l\0i\0d\0"));
+	assert_eq!(
+		text(sources.clone(), r#"{"path":"padded.txt"}"#).await,
+		"[Cannot read binary file 'padded.txt' (10B); not valid UTF-8 text. Use ':raw' to read \
+		 bytes verbatim.]"
+	);
+	// `:raw` bypasses the sniff; NUL bytes are valid UTF-8 and stay verbatim.
+	assert_eq!(text(sources, r#"{"path":"padded.txt:raw"}"#).await, "v\0a\0l\0i\0d\0");
+
+	// An invalid byte inside the sniff window is refused without decoding.
+	let sources = Sources::default();
+	sources.file("garbage.txt", Bytes::from_static(b"ok\xFF\xFEnot text"));
+	assert_eq!(
+		text(sources.clone(), r#"{"path":"garbage.txt"}"#).await,
+		"[Cannot read binary file 'garbage.txt' (12B); not valid UTF-8 text. Use ':raw' to read \
+		 bytes verbatim.]"
+	);
+	// `:raw` decodes losses: invalid bytes surface as U+FFFD replacements.
+	assert_eq!(text(sources, r#"{"path":"garbage.txt:raw"}"#).await, "ok\u{fffd}\u{fffd}not text");
+}
+
+#[tokio::test]
+async fn invalid_bytes_past_the_sniff_window_still_refuse_non_raw_reads() {
+	// 8 KiB of clean text keeps the sniff quiet; the strict whole-file decode
+	// still refuses the invalid tail.
+	let mut bytes = "a".repeat(read::BINARY_SNIFF_BYTES).into_bytes();
+	bytes.extend_from_slice(b"\xFFtail");
+	let sources = Sources::default();
+	sources.file("late-garbage.txt", bytes);
+	assert_eq!(
+		text(sources, r#"{"path":"late-garbage.txt"}"#).await,
+		"[Cannot read binary file 'late-garbage.txt' (8.0KB); not valid UTF-8 text. Use ':raw' to \
+		 read bytes verbatim.]"
+	);
+}
+
+#[tokio::test]
+async fn multibyte_sequence_split_at_the_sniff_boundary_reads_as_text() {
+	// "€" (3 bytes) straddles the 8192-byte sniff window; the truncated tail
+	// must not classify the file as binary.
+	let mut body = "aaaaaaa\n".repeat(1023);
+	body.push_str("aaaaaa\u{20ac}ok");
+	assert_eq!(body.as_bytes()[read::BINARY_SNIFF_BYTES - 2], 0xe2);
+	let sources = Sources::default();
+	sources.file("boundary.txt", body);
+	let projected = text(sources, r#"{"path":"boundary.txt"}"#).await;
+	assert!(projected.starts_with("[boundary.txt#A1B2]\n1:aaaaaaa\n"), "{projected}");
+	assert!(projected.ends_with("1024:aaaaaa\u{20ac}ok"), "{projected}");
+}
+
 #[tokio::test]
 async fn standard_text_truncation_spills_the_complete_numbered_projection() {
 	let sources = Sources::default();
