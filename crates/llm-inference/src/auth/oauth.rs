@@ -1971,8 +1971,7 @@ mod tests {
 		let identity = format!(
 			r#"{{"profile":{{"id":"response-principal"}},"id_token":"e30.{payload}.signature"}}"#,
 		);
-		let access_payload =
-			base64_url::encode_raw(br#"{"sub":"access-principal"}"#).into_string();
+		let access_payload = base64_url::encode_raw(br#"{"sub":"access-principal"}"#).into_string();
 		let tokens = OAuthTokenSet {
 			access_token:      SecretString::from(format!("e30.{access_payload}.signature")),
 			refresh_token:     Some(SecretString::from("refresh-secret".to_owned())),

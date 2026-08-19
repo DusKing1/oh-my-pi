@@ -569,6 +569,15 @@ pub struct OAuthParameter {
 	pub value: Str,
 }
 
+/// Name of the runtime-injected [`OAuthParameter`] carrying the human-readable
+/// name of the provider being logged in.
+///
+/// Interactive custom exchanges use it to address the user by the selected
+/// provider: several providers mint keys from one shared console (`OpenCode
+/// Zen` and `OpenCode Go` both use `opencode.ai/auth`), so a generic prompt
+/// would not say which provider's key is being collected.
+pub const PROVIDER_NAME_PARAMETER: &str = "provider_name";
+
 /// Completion mechanism for an authorization-code flow.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -685,7 +694,16 @@ pub struct OAuthCustomSpec {
 
 impl OAuthCustomSpec {
 	fn validate(&self) -> Result<(), AuthSpecError> {
-		self.client.validate()?;
+		// API-key paste performs no standard token exchange: the catalog
+		// legitimately omits the OAuth client id and token endpoint (the shared
+		// OpenCode console spec carries both empty), so only the credential
+		// sources and key placement are structural for that exchange.
+		if self.exchange == omp_llm_catalog::provider::OAuthExchangeKind::ApiKeyPaste {
+			validate_sources(&self.client.sources)?;
+			self.client.placement.validate()?;
+		} else {
+			self.client.validate()?;
+		}
 		valid_url(&self.authorize_url, "custom OAuth authorization URL")?;
 		if let Some(polling) = self.polling
 			&& (polling.max_polls == 0
@@ -938,6 +956,39 @@ mod tests {
 			prefix: "bad\r\n".into(),
 		});
 		assert_eq!(placement.validate(), Err(AuthSpecError::InvalidHeaderPrefix));
+	}
+
+	#[test]
+	fn clientless_custom_spec_validates_only_for_api_key_paste() {
+		// The catalog's shared OpenCode console spec carries an empty client id
+		// and token endpoint: api-key paste performs no token exchange, so only
+		// that exchange kind may omit the OAuth client.
+		let spec = |exchange| {
+			AuthSpec::OAuthCustom(OAuthCustomSpec {
+				client: OAuthClientSpec {
+					sources:      vec![CredentialSourceSpec::Interactive],
+					client_id:    "".into(),
+					refresh:      OAuthRefreshSpec::Unsupported,
+					token_url:    "".into(),
+					scopes:       Vec::new(),
+					audience:     None,
+					token_params: Vec::new(),
+					placement:    HeaderPlacement::bearer().into(),
+				},
+				authorize_url: "https://opencode.ai/auth".into(),
+				exchange,
+				parameters: Vec::new(),
+				polling: None,
+			})
+		};
+		assert_eq!(
+			spec(omp_llm_catalog::provider::OAuthExchangeKind::ApiKeyPaste).validate(),
+			Ok(())
+		);
+		assert_eq!(
+			spec(omp_llm_catalog::provider::OAuthExchangeKind::PerplexityEmailOtp).validate(),
+			Err(AuthSpecError::EmptyField("OAuth client id"))
+		);
 	}
 
 	#[test]

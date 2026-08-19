@@ -810,8 +810,7 @@ impl SessionCompletion for DurableCompletion {
 							other => other,
 						};
 						blocks.insert(*index, block);
-					}
-					else {
+					} else {
 						blocks.insert(
 							*index,
 							AssistantBlock::Tool(StoredContent::Text {

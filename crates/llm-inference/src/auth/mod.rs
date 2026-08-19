@@ -64,8 +64,8 @@ pub use spec::{
 	AdcSourceSpec, AdcSpec, AuthSpec, AuthSpecError, BearerScheme, BodyPlacement,
 	CatalogAuthSpecError, CredentialSourceSpec, HeaderPlacement, KeyPlacement, OAuthClientSpec,
 	OAuthCustomSpec, OAuthDeviceSpec, OAuthParameter, OAuthPasteSpec, OAuthPkceSpec,
-	OAuthPollingSpec, OAuthRefreshSpec, PkceCompletion, PublicHeader, QueryPlacement,
-	SessionTokenSpec, SigV4Spec,
+	OAuthPollingSpec, OAuthRefreshSpec, PROVIDER_NAME_PARAMETER, PkceCompletion, PublicHeader,
+	QueryPlacement, SessionTokenSpec, SigV4Spec,
 };
 pub use store::{
 	CredentialMetadata, CredentialOrigin, CredentialStore, CredentialWrite, LeaseOutcome,

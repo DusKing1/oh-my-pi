@@ -24,7 +24,8 @@ use super::{
 	AuthSpec, CredentialBroker, CredentialError, CredentialNeed, CredentialOrigin, CredentialSource,
 	CredentialStore, CredentialWrite, KeyError, LoginChannelError, OAuthClientSpec, OAuthClock,
 	OAuthCredentialManagerError, OAuthCustomDispatchError, OAuthCustomDispatcher, OAuthCustomSpec,
-	OAuthEngine, OAuthError, OAuthHttpClient, StoreError, default_login_channels,
+	OAuthEngine, OAuthError, OAuthHttpClient, OAuthParameter, PROVIDER_NAME_PARAMETER, StoreError,
+	default_login_channels,
 };
 use crate::{
 	account::{AccountPool, AccountRecord, CredentialFreshness, RefreshCoordinator, RefreshRequest},
@@ -386,11 +387,24 @@ where
 				.principal_resolution
 				.clone()
 				.ok_or_else(principal_unresolved)?;
-			let runtime =
+			let mut runtime =
 				AuthSpec::from_catalog(auth, Some(oauth), None).map_err(|_| auth_unavailable())?;
 			let provider = catalog
 				.provider(&request.provider)
 				.ok_or_else(auth_not_found)?;
+			if let AuthSpec::OAuthCustom(spec) = &mut runtime
+				&& spec.exchange == omp_llm_catalog::provider::OAuthExchangeKind::ApiKeyPaste
+			{
+				// The API-key paste prompt addresses the user by provider: the
+				// shared OpenCode console mints keys for both Zen and Go, so the
+				// prompt must name the selected provider rather than a generic
+				// (or wrong) one. Gated to the paste exchange because other custom
+				// handlers forward catalog parameters onto wire URLs.
+				spec.parameters.push(OAuthParameter {
+					name:  PROVIDER_NAME_PARAMETER.into(),
+					value: provider.name.clone(),
+				});
+			}
 			let routes = provider.routes.iter().cloned().collect();
 			let provider_id = request.provider;
 			let session_id = next_login_session_id();
@@ -1097,7 +1111,7 @@ mod tests {
 			OAuthClock, OAuthCustomDispatcher, OAuthHttpClient, OAuthHttpRequest, OAuthHttpResponse,
 			OAuthTransportError, SecretLoginEngine, StoreError,
 		},
-		call::{AuthMethod, LoginRequest},
+		call::{AuthInput, AuthMethod, LoginRequest},
 		error::ErrorKind,
 	};
 
@@ -1362,6 +1376,95 @@ mod tests {
 		assert!(requests[2].1.contains("grant_type=refresh_token"));
 		assert!(requests[2].1.contains("refresh_token=refresh"));
 		drop(requests);
+		drop(session);
+		drop(engine);
+		let _ = std::fs::remove_file(store_path);
+	}
+
+	#[tokio::test]
+	async fn embedded_opencode_go_login_prompt_names_the_selected_provider() {
+		let catalog = Arc::new(Catalog::embedded().clone());
+		let provider = ProviderId::from("opencode-go");
+		// opencode-go and opencode-zen share one console (opencode.ai/auth), so
+		// the paste prompt must name the selected provider: choose the custom
+		// api-key-paste OAuth spec, not the plain bearer spec.
+		let auth = catalog
+			.provider(&provider)
+			.expect("OpenCode Go provider")
+			.auth
+			.iter()
+			.find(|id| {
+				catalog.auth_spec(id).is_some_and(|spec| {
+					auth_method(&catalog, spec).is_ok_and(|method| method == AuthMethod::OAuthPkce)
+				})
+			})
+			.cloned()
+			.expect("OpenCode Go paste auth spec");
+		let suffix = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.unwrap()
+			.as_nanos();
+		let store_path = std::env::temp_dir()
+			.join(format!("omp-opencode-login-{}-{suffix}.sqlite", std::process::id()));
+		let store = Arc::new(
+			CredentialStore::open(
+				&store_path,
+				Arc::new(HeadlessKeySource::new(KeyId::new("opencode-login-test"), [7; 32])),
+			)
+			.unwrap(),
+		);
+		let http = Arc::new(FixtureHttp {
+			responses: Mutex::new(VecDeque::new()),
+			requests:  Mutex::new(Vec::new()),
+		});
+		let clock = Arc::new(ImmediateClock(SystemTime::UNIX_EPOCH));
+		let custom = Arc::new(
+			OAuthCustomDispatcher::builtin(http.clone(), clock.clone())
+				.expect("builtin custom dispatcher"),
+		);
+		let engine = OAuthLoginEngine::new(
+			AuthMethod::OAuthPkce,
+			catalog,
+			store,
+			AccountPool::new(),
+			http,
+			clock,
+			custom,
+		)
+		.unwrap();
+		let session = engine
+			.begin(LoginRequest { provider, method: None }, auth)
+			.await
+			.unwrap();
+		let mut saw_prompt = false;
+		loop {
+			let event = tokio::time::timeout(Duration::from_secs(1), session.events.recv_async())
+				.await
+				.expect("OpenCode login event")
+				.expect("OpenCode login event channel")
+				.expect("successful OpenCode login event");
+			match event {
+				AuthEvent::OpenUrl(url) => assert_eq!(url, "https://opencode.ai/auth"),
+				AuthEvent::Prompt(prompt) => {
+					assert_eq!(prompt.message, "Paste your Opencode Go API key");
+					saw_prompt = true;
+					session
+						.responses
+						.send_async(crate::answer::AuthResponse {
+							session: session.id.clone(),
+							input:   AuthInput::ApiKey(SecretString::from("sk-opencode".to_owned())),
+						})
+						.await
+						.expect("API key response");
+				},
+				AuthEvent::Complete(account) => {
+					assert_eq!(account.account.as_str(), "opencode-go:opencode");
+					break;
+				},
+				AuthEvent::Waiting | AuthEvent::ShowDeviceCode { .. } => {},
+			}
+		}
+		assert!(saw_prompt);
 		drop(session);
 		drop(engine);
 		let _ = std::fs::remove_file(store_path);

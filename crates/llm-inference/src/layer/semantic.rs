@@ -419,6 +419,19 @@ mod tests {
 		assert_eq!(error.action, RetryAction::Never);
 		assert_eq!(calls, 2, "{error:?}");
 	}
+	#[tokio::test]
+	async fn repeated_reasoning_exhaustion_resamples_the_same_route_then_stays_terminal() {
+		// A thinking loop is a same-model resample signal, not a route fault:
+		// the loop guard's SemanticRetry re-runs the SAME route, and exhaustion
+		// must never promote to ReselectRoute. Walking preplanned fallbacks
+		// would swap a healthy turn to another model based on chain contents,
+		// not model health (pi #8760).
+		let (error, calls) = exhaust(ErrorKind::RepeatedReasoning).await;
+
+		assert_eq!(calls, 2, "loop-guard retries stay on the same route: {error:?}");
+		assert_eq!(error.kind, ErrorKind::RepeatedReasoning);
+		assert_eq!(error.action, RetryAction::Never);
+	}
 
 	#[test]
 	fn committed_empty_completion_exhaustion_stays_terminal() {

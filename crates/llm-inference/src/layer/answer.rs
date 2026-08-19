@@ -303,15 +303,12 @@ fn chat_stream(
 						timeout: timeout_ms.map(std::time::Duration::from_millis),
 					}));
 				},
-				Some(Ok(RawEvent::Control(ProviderControlEvent::InteractionQuery { id, kind, payload }))) => {
-					yield Ok(ChatEvent::WorkflowAction(WorkflowAction {
-						invocation: Str::from(id.to_string()),
-						call: None,
-						name: kind,
-						arguments: payload,
-						timeout: None,
-						response_kind: WorkflowResponseKind::Invoke,
-					}));
+				Some(Ok(RawEvent::Control(ProviderControlEvent::InteractionQuery { .. }))) => {
+					// Interaction permission gates are answered by the codec itself
+					// (the prepared reply travels on the control event for a
+					// duplex-capable transport). They are not agent workflow
+					// actions: surfacing them as `Invoke` would demand a client
+					// response no consumer can provide and fail the turn.
 				},
 				Some(Err(mut error)) => { context.finalize_error(&mut error); let error = error.committed(context.is_committed()); context.abort_session(); abort.disarm(); yield Err(error); break; },
 				Some(Ok(other)) => { let error = mismatch(OperationKind::Chat, raw_kind(&other), &context); context.abort_session(); abort.disarm(); yield Err(error); break; },

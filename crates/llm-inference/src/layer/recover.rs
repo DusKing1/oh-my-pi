@@ -24,9 +24,7 @@ use crate::{
 		empty::{EmptyCompletionKind, EmptyCompletionStage, EmptyEvent, EmptyInput},
 		json::{JsonEnforcement, JsonRepairLimits, JsonRepairStage},
 		reasoning::{ReasoningLimits, ReasoningObservation, ReasoningStallGuard},
-		repetition::{
-			AttemptRepetitionGuard, OutputVisibility, RepetitionLimits, recovery_record,
-		},
+		repetition::{AttemptRepetitionGuard, OutputVisibility, RepetitionLimits, recovery_record},
 		tools::{
 			ToolAssembler, ToolAssemblyEvent, ToolAssemblyLimits, ToolFragment, validate_schema,
 		},
@@ -745,16 +743,13 @@ mod tests {
 	#[test]
 	fn exact_text_cycles_are_guarded_without_provider_opt_in() {
 		let cycle = "shipped delivered verified validated approved accepted merged deployed live \
-			operational successful excellent perfect final absolute total whole full entire complete \
-			done finished";
+		             operational successful excellent perfect final absolute total whole full \
+		             entire complete done finished";
 		let runaway = cycle.repeat(8);
-		let context = ExecutionContext::new(ExecutionBudget {
-			max_attempts: 3,
-			..ExecutionBudget::default()
-		});
+		let context =
+			ExecutionContext::new(ExecutionBudget { max_attempts: 3, ..ExecutionBudget::default() });
 		let mut reasoning = None;
-		let mut thinking_repetition =
-			AttemptRepetitionGuard::new(RepetitionLimits::default());
+		let mut thinking_repetition = AttemptRepetitionGuard::new(RepetitionLimits::default());
 		let mut text_repetition = AttemptRepetitionGuard::new(RepetitionLimits::default());
 		let mut failure = None;
 		for chunk in runaway.as_bytes().chunks(23) {

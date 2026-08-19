@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use futures::{FutureExt, future::BoxFuture};
+use omp_core::Str;
 use omp_llm_catalog::provider::OAuthExchangeKind;
 use secrecy::{ExposeSecret, SecretString};
 use zeroize::Zeroizing;
@@ -9,7 +10,7 @@ use crate::{
 	answer::{AuthEvent, AuthPrompt, AuthPromptKind},
 	auth::{
 		LoginDriver, OAuthClock, OAuthCustomDispatchError, OAuthCustomDispatcher, OAuthCustomHandler,
-		OAuthCustomSpec, OAuthError, OAuthHttpClient, OAuthTokenSet,
+		OAuthCustomSpec, OAuthError, OAuthHttpClient, OAuthTokenSet, PROVIDER_NAME_PARAMETER,
 	},
 	call::AuthInput,
 };
@@ -30,10 +31,23 @@ impl OAuthCustomHandler for ApiKeyPasteHandler {
 			driver
 				.emit(AuthEvent::OpenUrl(spec.authorize_url.clone()))
 				.await?;
+			// Name the selected provider when the login flow supplies one:
+			// several providers mint keys from a single shared console (OpenCode
+			// Zen and Go both use opencode.ai/auth), so a generic prompt would
+			// not say which provider's key is being collected.
+			let provider_name = spec
+				.parameters
+				.iter()
+				.find(|parameter| parameter.name == PROVIDER_NAME_PARAMETER)
+				.map(|parameter| parameter.value.as_str())
+				.filter(|name| !name.is_empty());
 			driver
 				.emit(AuthEvent::Prompt(AuthPrompt {
 					id:      "oauth-api-key".into(),
-					message: "Paste your API key".into(),
+					message: provider_name.map_or_else(
+						|| Str::new_static("Paste your API key"),
+						|name| Str::from(format!("Paste your {name} API key")),
+					),
 					input:   AuthPromptKind::ApiKey,
 				}))
 				.await?;
@@ -86,7 +100,7 @@ mod tests {
 		answer::AuthResponse,
 		auth::{
 			HeaderPlacement, KeyPlacement, OAuthClientSpec, OAuthHttpRequest, OAuthHttpResponse,
-			OAuthRefreshSpec, OAuthTransportError, default_login_channels,
+			OAuthParameter, OAuthRefreshSpec, OAuthTransportError, default_login_channels,
 		},
 		id::LoginSessionId,
 	};
@@ -176,6 +190,50 @@ mod tests {
 			AuthEvent::Prompt(AuthPrompt { input: AuthPromptKind::ApiKey, .. })
 		));
 		assert!(!format!("{tokens:?}").contains(marker));
+	}
+
+	#[tokio::test]
+	async fn prompt_names_the_selected_provider_when_supplied() {
+		for (index, (parameters, expected)) in [
+			(Vec::new(), "Paste your API key"),
+			(
+				vec![OAuthParameter {
+					name:  PROVIDER_NAME_PARAMETER.into(),
+					value: "OpenCode Go".into(),
+				}],
+				"Paste your OpenCode Go API key",
+			),
+			// An empty injected name falls back to the generic prompt.
+			(
+				vec![OAuthParameter { name: PROVIDER_NAME_PARAMETER.into(), value: "".into() }],
+				"Paste your API key",
+			),
+		]
+		.into_iter()
+		.enumerate()
+		{
+			let mut spec = spec();
+			spec.parameters = parameters;
+			let (session, driver, _) =
+				default_login_channels(LoginSessionId::from(format!("api-key-name-{index}")));
+			session
+				.responses
+				.send(AuthResponse {
+					session: session.id.clone(),
+					input:   AuthInput::ApiKey(SecretString::from("key".to_owned())),
+				})
+				.expect("response");
+			dispatcher()
+				.exchange(&spec, &driver)
+				.await
+				.expect("exchange");
+			let _ = session.events.recv().expect("URL").expect("event");
+			let AuthEvent::Prompt(prompt) = session.events.recv().expect("prompt").expect("event")
+			else {
+				panic!("prompt expected")
+			};
+			assert_eq!(prompt.message, expected, "case {index}");
+		}
 	}
 
 	#[tokio::test]

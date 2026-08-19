@@ -10,8 +10,10 @@ use std::{
 use omp_core::Str;
 
 use crate::{
-	call::{Call, OperationCall, Target},
-	catalog::{ModelKey, OperationKind, PolicyModel, PriceUnit, ProviderId, RouteId, WireTarget},
+	call::{Call, ContentPart, OperationCall, Role, Target},
+	catalog::{
+		CodecId, ModelKey, OperationKind, PolicyModel, PriceUnit, ProviderId, RouteId, WireTarget,
+	},
 	error::{Error, ErrorDetail, ErrorKind},
 	plan::{
 		CapabilityAvailability, CapabilityRequirement, ExecutionPlan, FallbackScope,
@@ -381,6 +383,14 @@ impl Router {
 					candidate,
 					model == primary,
 				) {
+					continue;
+				}
+				if model != primary
+					&& anthropic_thinking_binds_model(
+						request.operation_call.as_ref(),
+						&candidate.provider,
+						&candidate.wire_target.codec,
+					) {
 					continue;
 				}
 				match self.evaluate_candidate(request, candidate, runtime) {
@@ -1027,6 +1037,42 @@ fn selector_accepts(
 		Target::ProviderService(_) | Target::RouteService(_) => false,
 	}
 }
+/// True when replaying this chat on a fallback candidate would break a
+/// model-bound Anthropic thinking signature.
+///
+/// Anthropic signatures and redacted blocks are bound to the model that
+/// produced them, while the latest assistant message must replay
+/// byte-identically. A same-provider Anthropic cross-model switch can satisfy
+/// neither constraint, so fallback candidates whose provider and codec match
+/// the newest assistant turn's reasoning proof are skipped; the primary model
+/// (same-model retry) and other providers stay eligible.
+fn anthropic_thinking_binds_model(
+	operation_call: Option<&OperationCall>,
+	provider: &ProviderId,
+	codec: &CodecId,
+) -> bool {
+	if codec.as_str() != "anthropic" {
+		return false;
+	}
+	let Some(OperationCall::Chat(request)) = operation_call else {
+		return false;
+	};
+	let Some(latest) = request
+		.messages
+		.iter()
+		.rev()
+		.find(|message| matches!(message.role, Role::Assistant))
+	else {
+		return false;
+	};
+	latest.content.iter().any(|part| {
+		matches!(
+			part,
+			ContentPart::Reasoning { proof: Some(proof), .. }
+				if &proof.provider == provider && &proof.codec == codec
+		)
+	})
+}
 
 fn compare_evaluated(left: &EvaluatedCandidate, right: &EvaluatedCandidate) -> Ordering {
 	let left_affinity = left.runtime.affinity;
@@ -1205,5 +1251,78 @@ mod tests {
 				operation
 			));
 		}
+	}
+	#[test]
+	fn anthropic_thinking_proofs_bind_fallback_candidates_to_the_signing_scope() {
+		use bytes::Bytes;
+
+		use crate::call::{
+			ChatRequest, Message, NegotiationPolicy, ProviderProof, Sampling, Setting,
+		};
+
+		let anthropic = ProviderId::new("anthropic");
+		let bedrock = ProviderId::new("amazon-bedrock");
+		let codec = CodecId::from("anthropic");
+		let other_codec = CodecId::from("openai-chat");
+		let proof = ProviderProof {
+			provider: anthropic.clone(),
+			codec:    codec.clone(),
+			value:    Bytes::from_static(b"sig_model_bound"),
+		};
+		let chat = |assistant_parts: Vec<ContentPart>,
+		            trailing_assistant: Option<Vec<ContentPart>>| {
+			let mut messages = vec![Message {
+				role:    Role::Assistant,
+				content: assistant_parts.into(),
+				name:    None,
+			}];
+			if let Some(parts) = trailing_assistant {
+				messages.push(Message {
+					role:    Role::Assistant,
+					content: parts.into(),
+					name:    None,
+				});
+			}
+			messages.push(Message {
+				role:    Role::User,
+				content: Arc::from([ContentPart::Text { text: Str::from("continue"), proof: None }]),
+				name:    None,
+			});
+			OperationCall::Chat(Arc::new(ChatRequest {
+				messages:          messages.into(),
+				tools:             Arc::from([]),
+				hosted_tools:      Arc::from([]),
+				tool_choice:       Setting::Unset,
+				output:            Setting::Unset,
+				reasoning:         Setting::Unset,
+				verbosity:         Setting::Unset,
+				cache_retention:   Setting::Unset,
+				service_tier:      Setting::Unset,
+				sampling:          Sampling::default(),
+				max_output_tokens: None,
+				top_logprobs:      None,
+				safety:            Arc::from([]),
+				negotiation:       NegotiationPolicy::default(),
+			}))
+		};
+		let signed =
+			vec![ContentPart::Reasoning { text: Str::from("signed plan"), proof: Some(proof) }];
+		let unsigned = vec![ContentPart::Text { text: Str::from("plain answer"), proof: None }];
+
+		// Signed latest assistant binds same-provider Anthropic candidates.
+		let bound = chat(signed.clone(), None);
+		assert!(anthropic_thinking_binds_model(Some(&bound), &anthropic, &codec));
+		// Other providers and other codecs stay eligible.
+		assert!(!anthropic_thinking_binds_model(Some(&bound), &bedrock, &codec));
+		assert!(!anthropic_thinking_binds_model(Some(&bound), &anthropic, &other_codec));
+		// Unsigned history never binds.
+		let unbound = chat(unsigned.clone(), None);
+		assert!(!anthropic_thinking_binds_model(Some(&unbound), &anthropic, &codec));
+		// Only the newest assistant turn is authoritative: an older signed turn
+		// followed by an unsigned one no longer pins the scope.
+		let superseded = chat(signed, Some(unsigned));
+		assert!(!anthropic_thinking_binds_model(Some(&superseded), &anthropic, &codec));
+		// A history without any assistant turn never binds.
+		assert!(!anthropic_thinking_binds_model(None, &anthropic, &codec));
 	}
 }

@@ -303,6 +303,68 @@ mod tests {
 		}
 	}
 
+	#[derive(Clone)]
+	struct OverflowFailing {
+		calls: Arc<AtomicUsize>,
+	}
+	impl Service<LayerCall<()>> for OverflowFailing {
+		type Error = Error;
+		type Future = Ready<Result<(), Error>>;
+		type Response = ();
+
+		fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Error>> {
+			Poll::Ready(Ok(()))
+		}
+
+		fn call(&mut self, _: LayerCall<()>) -> Self::Future {
+			let index = self.calls.fetch_add(1, Ordering::SeqCst) as u32;
+			let mut receipt = ExecutionReceipt::default();
+			receipt.record_attempt(AttemptReceipt {
+				index,
+				hidden: false,
+				provider: None,
+				route: None,
+				account: None,
+				principal: None,
+				body: replayable(),
+				outcome: AttemptOutcome::FailedPreCommit,
+				usage: Usage { input_tokens: 1, ..Usage::default() },
+				cost: Cost::from_micro_usd(1),
+				provider_evidence: ProviderEvidence::default(),
+				elapsed: Duration::ZERO,
+			});
+			ready(Err(Error::new(
+				ErrorKind::ContextOverflow,
+				ErrorPhase::Handshake,
+				RetryAction::Never,
+				receipt,
+			)))
+		}
+	}
+
+	#[tokio::test]
+	async fn deterministic_context_overflow_fails_fast_despite_replayable_body() {
+		// A retried transport call replays a fixed request, so an input the model
+		// cannot fit fails identically on every attempt. Replay-safe body evidence
+		// must not override the classifier's `Never`: retrying burns the caller's
+		// budget instead of reaching the layer that can actually shrink the input.
+		let calls = Arc::new(AtomicUsize::new(0));
+		let mut service = TransportRetryService {
+			inner:       OverflowFailing { calls: calls.clone() },
+			max_retries: 2,
+		};
+		futures::future::poll_fn(|cx| service.poll_ready(cx))
+			.await
+			.unwrap();
+		let error = service
+			.call(LayerCall { payload: (), context: context() })
+			.await
+			.unwrap_err();
+		assert_eq!(error.kind, ErrorKind::ContextOverflow);
+		assert_eq!(error.action, RetryAction::Never);
+		assert_eq!(calls.load(Ordering::SeqCst), 1);
+	}
+
 	#[tokio::test]
 	async fn fail_then_success_retains_prior_attempt_once() {
 		let calls = Arc::new(AtomicUsize::new(0));
@@ -348,5 +410,69 @@ mod tests {
 		);
 		assert_eq!(error.receipt().usage.input_tokens, 2);
 		assert_eq!(error.receipt().cost.micro_usd, 2);
+	}
+
+	#[derive(Clone)]
+	struct CommittedFailing {
+		calls: Arc<AtomicUsize>,
+	}
+	impl Service<LayerCall<()>> for CommittedFailing {
+		type Error = Error;
+		type Future = Ready<Result<(), Error>>;
+		type Response = ();
+
+		fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Error>> {
+			Poll::Ready(Ok(()))
+		}
+
+		fn call(&mut self, _: LayerCall<()>) -> Self::Future {
+			self.calls.fetch_add(1, Ordering::SeqCst);
+			let mut receipt = ExecutionReceipt::default();
+			receipt.record_attempt(AttemptReceipt {
+				index:             0,
+				hidden:            false,
+				provider:          None,
+				route:             None,
+				account:           None,
+				principal:         None,
+				body:              replayable(),
+				outcome:           AttemptOutcome::FailedCommitted,
+				usage:             Usage::default(),
+				cost:              Cost::default(),
+				provider_evidence: ProviderEvidence::default(),
+				elapsed:           Duration::ZERO,
+			});
+			ready(Err(
+				Error::new(
+					ErrorKind::ResourceExhausted,
+					ErrorPhase::Streaming,
+					RetryAction::SameRoute { after: Duration::ZERO },
+					receipt,
+				)
+				.committed(true),
+			))
+		}
+	}
+
+	#[tokio::test]
+	async fn committed_transient_failure_is_never_replayed() {
+		// A transient classification (overload, throttle) is only replay-safe
+		// before output becomes visible; once committed, the same-route retry
+		// lane must surface the failure instead of duplicating streamed output.
+		let calls = Arc::new(AtomicUsize::new(0));
+		let mut service = TransportRetryService {
+			inner:       CommittedFailing { calls: calls.clone() },
+			max_retries: 2,
+		};
+		futures::future::poll_fn(|cx| service.poll_ready(cx))
+			.await
+			.unwrap();
+		let error = service
+			.call(LayerCall { payload: (), context: context() })
+			.await
+			.unwrap_err();
+		assert_eq!(error.kind, ErrorKind::ResourceExhausted);
+		assert!(error.committed);
+		assert_eq!(calls.load(Ordering::SeqCst), 1);
 	}
 }

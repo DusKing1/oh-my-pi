@@ -151,10 +151,22 @@ impl OAuthCustomHandler for PerplexityEmailOtp {
 			if !(200..300).contains(&verify_response.status) {
 				return Err(provider_error(verify_response.status, &verify_response.body, false));
 			}
+			// Explicit rejection markers invalidate an otherwise 2xx body, and an
+			// OTP challenge may mint the login token as `challenge_token` instead
+			// of `token`; accept either, preferring the challenge variant.
+			if verify.error_code.is_some()
+				|| verify
+					.status
+					.as_deref()
+					.is_some_and(|status| status != "success")
+			{
+				return Err(OAuthError::MalformedResponse);
+			}
 			let token = SecretString::from(
 				verify
-					.token
+					.challenge_token
 					.filter(|value| !value.is_empty())
+					.or_else(|| verify.token.filter(|value| !value.is_empty()))
 					.ok_or(OAuthError::MalformedResponse)?,
 			);
 			token_set(token, Some(&email), self.clock.now())
@@ -324,7 +336,11 @@ struct VerifyCodeRequest<'a> {
 
 #[derive(Deserialize)]
 struct VerifyResponse {
-	token: Option<String>,
+	token:           Option<String>,
+	/// OTP challenge variant of the login token; preferred when present.
+	challenge_token: Option<String>,
+	status:          Option<String>,
+	error_code:      Option<String>,
 }
 
 #[derive(Serialize)]
@@ -641,6 +657,56 @@ mod tests {
 				.expose_secret(),
 			r#"{"email":"user@example.com","otp":"123456","csrfToken":"csrf-secret"}"#,
 		);
+	}
+
+	#[tokio::test]
+	async fn challenge_token_and_rejection_markers_drive_verify_acceptance() {
+		for (body, accepted) in [
+			// OTP challenge variant of the login token is accepted.
+			(r#"{"challenge_token":"header.e30.signature","status":"success"}"#, true),
+			// Plain token responses keep working, with or without a status.
+			(r#"{"token":"header.e30.signature"}"#, true),
+			// Empty challenge token falls back to the plain token.
+			(r#"{"challenge_token":"","token":"header.e30.signature"}"#, true),
+			// Explicit rejection markers invalidate an otherwise 2xx body.
+			(r#"{"token":"header.e30.signature","status":"failed"}"#, false),
+			(r#"{"token":"header.e30.signature","error_code":"otp_expired"}"#, false),
+			// A body with neither token form is malformed.
+			(r#"{"status":"success"}"#, false),
+		] {
+			let http = Arc::new(ScriptedHttp {
+				responses: Mutex::new(VecDeque::from([
+					response(200, r#"{"csrfToken":"csrf"}"#, &[]),
+					response(200, "{}", &[]),
+					response(200, body, &[]),
+				])),
+				requests:  Mutex::new(Vec::new()),
+			});
+			let handler = handler(http, SystemTime::UNIX_EPOCH);
+			let (session, driver, _) =
+				default_login_channels(LoginSessionId::from(format!("challenge-{accepted}-{body}")));
+			let interaction = async {
+				let _ = next_prompt(&session).await;
+				respond(&session, AuthInput::PlainText("user@example.com".into())).await;
+				let _ = next_prompt(&session).await;
+				respond(
+					&session,
+					AuthInput::AuthorizationCode(SecretString::from("123456".to_owned())),
+				)
+				.await;
+			};
+			let spec = spec();
+			let (result, ()) = futures::join!(handler.exchange(&spec, &driver), interaction);
+			if accepted {
+				let tokens = result.unwrap_or_else(|error| panic!("{body}: {error:?}"));
+				assert_eq!(tokens.access_token.expose_secret(), "header.e30.signature");
+			} else {
+				assert!(
+					matches!(result, Err(OAuthError::MalformedResponse)),
+					"{body}: expected typed rejection"
+				);
+			}
+		}
 	}
 
 	#[tokio::test]
