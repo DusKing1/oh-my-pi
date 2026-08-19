@@ -121,6 +121,13 @@
       "secret_free": true
     },
     {
+      "id": "agent.protocols.cursor.interaction.queries.json.v1",
+      "path": "cursor/interaction.queries.json",
+      "source": "pi 271e7ba892/1b220a4f65/0ac4e01b7b/3566bd9b41: packages/ai/test/cursor-interaction-query.test.ts and cursor-webfetch-interaction-query.test.ts",
+      "sha256": "9c16de52a07349f25769ed75a77cc2f3037d58adcf214c7a8c2c751106134613",
+      "secret_free": true
+    },
+    {
       "id": "agent.protocols.cursor.request.tool.call.json.v1",
       "path": "cursor/request.tool_call.json",
       "source": "archive/llm-legacy/llm-cursor/tests/fixtures/cursor/request.tool_call.json",

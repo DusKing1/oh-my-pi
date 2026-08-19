@@ -195,6 +195,13 @@
       "secret_free": true
     },
     {
+      "id": "anthropic.request.empty-tool-result.v1",
+      "path": "requests/empty-tool-result.encoder.json",
+      "source": "pi#8768 fix(ai): encode empty successful tool_result content as empty string",
+      "sha256": "796931bd134213fff85a7578cc49206705e1bb4b69f7708c9819e7a99ef84e0e",
+      "secret_free": true
+    },
+    {
       "id": "anthropic.request.history-replay.v1",
       "path": "requests/history-replay.encoder.json",
       "source": "archive/llm-legacy/llm-anthropic/src/lib.rs#message_blocks",

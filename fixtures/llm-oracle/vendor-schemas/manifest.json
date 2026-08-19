@@ -5,8 +5,9 @@
       "id": "vendor-schemas.cursor.agent.v1",
       "path": "cursor/agent.proto",
       "secret_free": true,
-      "sha256": "aa6d1715e8ba8309c9049d3d1d9acbea75454f852a82ff22292843c1010ae527",
-      "source": "b6e01c8a3c836032823e13a404ceca2e968b6411:packages/ai/src/providers/cursor/proto/agent.proto"
+      "sha256": "fc1ac3ed472676e6d863fe2238ab1529247b68d3ea21f33b3fae1abae481892c",
+      "source": "b6e01c8a3c836032823e13a404ceca2e968b6411:packages/ai/src/providers/cursor/proto/agent.proto",
+      "notes": "Extended with the hosted WebFetch interaction gate (ToolCall.web_fetch_tool_call = 37, InteractionQuery/InteractionResponse field 9) verified against pi 1b220a4f65554ffb3a505a5df92a2eebf2d60545."
     },
     {
       "id": "vendor-schemas.devin.buf.validate.validate.v1",

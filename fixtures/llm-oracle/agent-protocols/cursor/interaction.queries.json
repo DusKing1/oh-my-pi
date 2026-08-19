@@ -1,0 +1,83 @@
+{
+  "contract": {
+    "reply_transport": "AgentClientMessage.interaction_response written on the live Run stream",
+    "connect_envelope": "flags 0x00 + unsigned 32-bit big-endian payload length",
+    "unknown_variant_reply": "approved {} mirrored on the query's own field number; the embedded variant payload MUST carry its LEN prefix (0x02 0x0a 0x00), a bare 0x0a 0x00 corrupts the frame",
+    "vm_setup": "SetupVmEnvironmentResult is success-only; the query is deliberately left unanswered instead of faking a VM"
+  },
+  "cases": [
+    {
+      "query": "web_search_request_query",
+      "field": 2,
+      "id": 11,
+      "kind": "web_search",
+      "disposition": "approved"
+    },
+    {
+      "query": "ask_question_interaction_query",
+      "field": 3,
+      "id": 14,
+      "kind": "ask_question",
+      "disposition": "rejected",
+      "reason": "Interactive questions are not implemented by this client"
+    },
+    {
+      "query": "switch_mode_request_query",
+      "field": 4,
+      "id": 15,
+      "kind": "switch_mode",
+      "disposition": "rejected",
+      "reason": "Mode switches are not implemented by this client"
+    },
+    {
+      "query": "exa_search_request_query",
+      "field": 5,
+      "id": 13,
+      "kind": "exa_search",
+      "disposition": "approved"
+    },
+    {
+      "query": "exa_fetch_request_query",
+      "field": 6,
+      "id": 12,
+      "kind": "exa_fetch",
+      "disposition": "approved"
+    },
+    {
+      "query": "create_plan_request_query",
+      "field": 7,
+      "id": 16,
+      "kind": "create_plan",
+      "disposition": "error",
+      "reason": "Plan files are not implemented by this client"
+    },
+    {
+      "query": "setup_vm_environment_args",
+      "field": 8,
+      "id": 17,
+      "kind": "setup_vm_environment",
+      "disposition": "unanswered"
+    },
+    {
+      "query": "web_fetch_request_query",
+      "field": 9,
+      "id": 18,
+      "kind": "web_fetch",
+      "disposition": "approved"
+    },
+    {
+      "query": "unknown",
+      "field": 12,
+      "id": 21,
+      "kind": "unknown",
+      "disposition": "approved_raw",
+      "query_frame_hex": "3a06081562020a00",
+      "reply_frame_hex": "00000000083206081562020a00"
+    },
+    {
+      "query": "none",
+      "id": 17,
+      "disposition": "dropped"
+    }
+  ]
+}

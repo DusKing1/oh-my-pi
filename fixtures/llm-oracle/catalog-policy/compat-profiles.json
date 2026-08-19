@@ -117,13 +117,15 @@
       "profile_id": "compat-07",
       "shape": {
         "wire/filter_reasoning_history": true,
+        "wire/flatten_root_unions": true,
         "wire/include_encrypted_reasoning": false,
         "wire/omit_reasoning_effort": false,
         "wire/reasoning_effort_map": {
           "minimal": "low"
         },
         "wire/supports_image_detail_original": false,
-        "wire/supports_reasoning_effort": true
+        "wire/supports_reasoning_effort": true,
+        "wire/supports_reasoning_summary": false
       }
     },
     {
@@ -138,13 +140,15 @@
       "profile_id": "compat-08",
       "shape": {
         "wire/filter_reasoning_history": true,
+        "wire/flatten_root_unions": true,
         "wire/include_encrypted_reasoning": false,
         "wire/omit_reasoning_effort": true,
         "wire/reasoning_effort_map": {
           "minimal": "low"
         },
         "wire/supports_image_detail_original": false,
-        "wire/supports_reasoning_effort": false
+        "wire/supports_reasoning_effort": false,
+        "wire/supports_reasoning_summary": false
       }
     },
     {

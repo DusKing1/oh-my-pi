@@ -132,12 +132,15 @@ facets = ["chat", "image_generation"]
 compat = { "max_tokens_field" = "max_output_tokens", "reasoning_wire_format" = "open_ai_responses", "stream_protocol" = "sse_events" }
 
 [providers."xai"]
-transport = "open-ai-chat"
+# pi PR #7454: first-party xAI routes through /v1/responses like SuperGrok.
+# api.x.ai rejects presence/frequency penalties and stop sequences on its
+# Grok reasoning routes (pi 3fb57803f3, 86866b8bbf).
+transport = "open-ai-responses"
 base_url = "https://api.x.ai/v1"
 auth = { type = "bearer", env = ["OMP_XAI_API_KEY"] }
 discovery = { kind = "open-ai-models", label = "xAI API", authoritative = false }
 facets = ["chat", "image_generation"]
-compat = { "tool_strict_mode" = "none" }
+compat = { "tool_strict_mode" = "none", "penalties" = false, "stop_sequences" = false }
 
 [providers."xai-oauth"]
 transport = "open-ai-responses"
@@ -147,6 +150,7 @@ oauth_flow = "xai"
 discovery = { kind = "open-ai-models", label = "xAI Grok OAuth (SuperGrok)", authoritative = false }
 facets = ["chat"]
 usage = true
+compat = { "penalties" = false }
 
 [providers."gitlab-duo"]
 transport = "anthropic-messages"
@@ -525,7 +529,10 @@ facets = ["chat"]
 transport = "open-ai-chat"
 base_url = "https://api.inference.wandb.ai/v1"
 auth = { type = "bearer", env = ["OMP_COREWEAVE_API_KEY", "OMP_WANDB_API_KEY"] }
-discovery = { kind = "open-ai-models", label = "CoreWeave Serverless Inference", authoritative = false }
+# CoreWeave (W&B Inference) is a reseller with a rotating model menu; runtime
+# /v1/models discovery replaces stale bundled rows instead of merging over them
+# (pi 309d5712af, PR #8923).
+discovery = { kind = "open-ai-models", label = "CoreWeave Serverless Inference", authoritative = true }
 facets = ["chat"]
 
 [providers."vercel-ai-gateway"]
