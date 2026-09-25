@@ -8,11 +8,9 @@ import {
 	type FactoryDroidModelInput,
 	factoryDroidApiBaseUrl,
 	factoryDroidEdgeRegion,
-	factoryDroidServingEdge,
 	factoryDroidWireBaseUrl,
 	resolveFactoryDroidRotation,
 } from "./factory-droid-models";
-import { readFactoryDroidRegionBlockedIds } from "./factory-droid-region-blocks";
 
 /**
  * Factory Droid (Droid Core + Standard Credits subscription) — direct HTTP
@@ -120,10 +118,6 @@ export interface FactoryDroidModelDiscoveryOptions {
 	 * EU-serving upstream, and resolves EU rotations. Absent ⇒ `"global"`.
 	 */
 	region?: string;
-	/** Additional model IDs to hide for this discovery cycle (caller-provided). */
-	excludeModelIds?: readonly string[];
-	/** Override for the persisted edge blocklist path (tests and isolated runtimes). */
-	agentDir?: string;
 	fetch?: FetchImpl;
 }
 
@@ -150,7 +144,6 @@ export async function fetchFactoryDroidModels(
 	let flags: Record<string, unknown>;
 	let policy: FactoryModelPolicy | null = null;
 	let routing: FactoryProviderRouting | null = null;
-	let servingEdge: string | undefined;
 	// Account residency selects the host; serving geography (residency, else
 	// the response's edge PoP) selects availability and rotations. The edge
 	// matters because Factory's proxy enforces per-request geography even for
@@ -163,9 +156,6 @@ export async function fetchFactoryDroidModels(
 			fetchImpl(managedSettingsUrl(options.region), { headers }).catch(() => null),
 		]);
 		if (!flagsResponse.ok) return null;
-		servingEdge =
-			factoryDroidServingEdge(flagsResponse.headers) ??
-			(settingsResponse?.ok ? factoryDroidServingEdge(settingsResponse.headers) : undefined);
 		servingRegion =
 			accountRegion ??
 			factoryDroidEdgeRegion(flagsResponse.headers) ??
@@ -182,13 +172,7 @@ export async function fetchFactoryDroidModels(
 	} catch {
 		return null;
 	}
-	const excluded = new Set([
-		...(options.excludeModelIds ?? []),
-		...(await readFactoryDroidRegionBlockedIds(servingEdge, options.agentDir)),
-	]);
-	return FACTORY_DROID_MODELS.filter(
-		model => !excluded.has(model.id) && isModelAvailable(model, flags, policy, servingRegion),
-	).map(model =>
+	return FACTORY_DROID_MODELS.filter(model => isModelAvailable(model, flags, policy, servingRegion)).map(model =>
 		buildFactoryDroidModel(model, resolveRotation(model, routing?.models?.[model.id], servingRegion), options.region),
 	);
 }
@@ -254,9 +238,6 @@ export function projectFactoryDroidCredits(
 		input: rate(credits.input),
 		output: rate(credits.input * (credits.output ?? 1)),
 		...(credits.cacheRead != null ? { cacheRead: rate(credits.input * credits.cacheRead) } : {}),
-		// Promo windows ride through untouched: they are display metadata, and
-		// which one applies is a clock question the badge layer owns.
-		...(credits.promotions != null ? { promotions: credits.promotions } : {}),
 	};
 }
 

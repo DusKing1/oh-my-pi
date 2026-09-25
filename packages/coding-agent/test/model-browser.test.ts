@@ -442,7 +442,7 @@ describe("ModelBrowser native model metadata", () => {
 	});
 });
 
-describe("credits badge promos", () => {
+describe("Factory Droid credits badge", () => {
 	beforeAll(async () => {
 		await initTheme(false);
 	});
@@ -456,55 +456,10 @@ describe("credits badge promos", () => {
 		};
 	}
 
-	const NOW = Date.parse("2026-08-25T00:00:00Z");
-
-	test("a live promo shows the discounted rate and marks it", () => {
-		// gpt-5.6-sol: 2 credits/M input, 20% off through 2026-11-22.
-		const model = makeDroidModel("gpt-5.6-sol", {
-			input: 2,
-			output: 2,
-			promotions: [
-				{
-					discount: 0.2,
-					startsAt: "2026-08-22T00:00:00Z",
-					expiresAt: "2026-11-22T00:00:00Z",
-					label: ", Promo Pricing",
-				},
-			],
-		});
-
-		expect(formatCostPair(model, NOW)).toBe("$1.25/10 1.6×*");
-	});
-
-	test("a lapsed promo shows the list rate with no marker", () => {
-		// kimi-k3 still carries its 50%-off promo because the registry mirrors
-		// Factory's catalog verbatim — but it expired on 2026-08-10, so the
-		// badge must bill at the standing 1.2 rate.
-		const model = makeDroidModel("kimi-k3", {
-			input: 1.2,
-			output: 6,
-			promotions: [{ discount: 0.5, expiresAt: "2026-08-10T00:00:00Z", label: ", 50% Off" }],
-		});
-
-		expect(formatCostPair(model, NOW)).toBe("$1.25/10 1.2×");
-	});
-
-	test("the promo lapses at its expiry instant, not after it", () => {
-		const credits: FactoryDroidCredits = {
-			input: 1.2,
-			output: 6,
-			promotions: [{ discount: 0.5, expiresAt: "2026-08-25T00:00:00Z" }],
-		};
-
-		expect(formatCostPair(makeDroidModel("kimi-k3", credits), NOW - 1)).toBe("$1.25/10 0.6×*");
-		expect(formatCostPair(makeDroidModel("kimi-k3", credits), NOW)).toBe("$1.25/10 1.2×");
-	});
-
-	test("a model with no promo renders exactly as it did before promos existed", () => {
+	test("displays upstream list price and the base credit multiplier", () => {
 		const model = makeDroidModel("claude-opus-5", { input: 2, output: 2 });
-
-		expect(formatCostPair(model, NOW)).toBe("$1.25/10 2×");
-		expect(formatCostPair(makeModel("openai", "gpt-5"), NOW)).toBe("free");
+		expect(formatCostPair(model)).toBe("$1.25/10 2×");
+		expect(formatCostPair(makeModel("openai", "gpt-5"))).toBe("free");
 	});
 
 	test("does not advertise a credit-billed model with unknown list prices as free", () => {
@@ -518,23 +473,5 @@ describe("credits badge promos", () => {
 		expect(paidRow).not.toContain("free");
 		browser.setQuery("free");
 		expect(browser.visibleCount).toBe(0);
-	});
-
-	test("the promo marker reaches the rendered row", () => {
-		// Clock-independent: the promo runs a day out from whenever this runs.
-		const promoted = makeDroidModel("gpt-5.6-sol", {
-			input: 2,
-			output: 2,
-			promotions: [{ discount: 0.2, expiresAt: new Date(Date.now() + 86_400_000).toISOString() }],
-		});
-		const plain = makeDroidModel("claude-opus-5", { input: 2, output: 2 });
-		const browser = makeBrowser([promoted, plain], []);
-
-		const rows = browser.render(120).map(line => Bun.stripANSI(line));
-
-		expect(rows.find(row => row.includes("gpt-5.6-sol"))).toContain("1.6×*");
-		const plainRow = rows.find(row => row.includes("claude-opus-5"));
-		expect(plainRow).toContain("2×");
-		expect(plainRow).not.toContain("*");
 	});
 });

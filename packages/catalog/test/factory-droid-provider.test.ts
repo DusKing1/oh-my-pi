@@ -2,12 +2,10 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getFactoryDroidRegionBlocklistPath } from "@oh-my-pi/pi-utils";
 import { buildModel } from "../src/build";
 import { supportsOutputTokenLimit } from "../src/compat/output-limits";
 import { buildFactoryDroidModel, fetchFactoryDroidModels } from "../src/discovery/factory-droid";
 import { resolveProviderModels } from "../src/model-manager";
-import { activeFactoryDroidPromotion } from "../src/types";
 import {
 	FACTORY_DROID_ANTHROPIC_BASE_URL,
 	FACTORY_DROID_COMPLETIONS_BASE_URL,
@@ -15,17 +13,10 @@ import {
 	FACTORY_DROID_MODEL_META,
 	FACTORY_DROID_MODELS,
 	FACTORY_DROID_RESPONSES_BASE_URL,
-	FACTORY_DROID_WIRE_BASE_URLS,
 	factoryDroidEdgeRegion,
 	factoryDroidPoolForModel,
-	factoryDroidServingEdge,
-	factoryDroidWireBaseUrl,
 	resolveFactoryDroidRotation,
 } from "../src/discovery/factory-droid-models";
-import {
-	readFactoryDroidRegionBlockedIds,
-	recordFactoryDroidRegionBlock,
-} from "../src/discovery/factory-droid-region-blocks";
 import { ANTHROPIC_THINKING, Effort } from "../src/effort";
 import { getBundledModel } from "../src/models";
 import { resolveModelCacheProviderId } from "../src/provider-models/cache-provider-id";
@@ -96,11 +87,6 @@ describe("Factory Droid catalog", () => {
 
 		expect(model.reasoning).toBe(false);
 		expect(model.thinking).toBeUndefined();
-	});
-
-	it("does not advertise the retired Inkling model in the offline picker", () => {
-		const models = factoryDroidModelManagerOptions().staticModels ?? [];
-		expect(models.some(model => model.id === "inkling")).toBe(false);
 	});
 
 	it("keeps the offline fallback on the account's EU host and hides unavailable models", () => {
@@ -299,16 +285,6 @@ describe("Factory Droid catalog", () => {
 		expect(await fetchFactoryDroidModels({ apiKey: "token", fetch: fetchImpl })).toBeNull();
 	});
 
-	it("distinguishes an off/none control rung from mandatory reasoning", () => {
-		for (const id of ["kimi-k3", "gpt-5.6-sol"]) {
-			const thinking = buildFactoryDroidModel(FACTORY_DROID_MODEL_META[id]).thinking;
-			expect(thinking?.requiresEffort).toBe(false);
-			expect(thinking?.efforts).not.toContain("off");
-			expect(thinking?.efforts).not.toContain("none");
-		}
-		expect(buildFactoryDroidModel(FACTORY_DROID_MODEL_META["gpt-5.1-codex-max"]).thinking?.requiresEffort).toBe(true);
-	});
-
 	it("bakes the shared anthropic budget ladder for budget-style thinking", () => {
 		for (const id of ["claude-sonnet-4-5-20250929", "claude-opus-4-5-20251101", "claude-haiku-4-5-20251001"]) {
 			const thinking = buildFactoryDroidModel(FACTORY_DROID_MODEL_META[id]).thinking;
@@ -343,12 +319,6 @@ describe("Factory Droid catalog", () => {
 			const model = buildFactoryDroidModel({ id: `m-${label}`, name: label, wire, ...base });
 			expect(model.baseUrl).toBe(expected);
 		}
-		// The WebSocket Responses transport is a resolved wire the provider
-		// dispatches on, never a registry entry's, and shares the Responses
-		// namespace on both hosts.
-		expect(FACTORY_DROID_WIRE_BASE_URLS["openai-responses-ws"]).toBe(FACTORY_DROID_RESPONSES_BASE_URL);
-		expect(factoryDroidWireBaseUrl("openai-responses-ws", "eu")).toBe("https://api.eu.factory.ai/api/llm/o/v1");
-		expect(FACTORY_DROID_MODELS.some(model => model.wire === "openai-responses-ws")).toBe(false);
 	});
 
 	it("enables summarized thinking display for adaptive Anthropic models", () => {
@@ -365,12 +335,7 @@ describe("Factory Droid catalog", () => {
 		// Cache-read-metered models project the relative multiplier through the input rate.
 		const grok = buildFactoryDroidModel(FACTORY_DROID_MODEL_META["grok-4.5"]);
 		expect(grok.cost).toEqual(getBundledModel("xai", "grok-4.5").cost);
-		expect(grok.factoryDroidCredits).toEqual({
-			input: 0.8,
-			output: 2.4,
-			cacheRead: 0.12,
-			promotions: [{ discount: 0.6, expiresAt: "2026-09-05T02:00:00Z", label: ", 60% Off" }],
-		});
+		expect(grok.factoryDroidCredits).toEqual({ input: 0.8, output: 2.4, cacheRead: 0.12 });
 
 		// No outputTokenMultiplier -> output billed at the input rate.
 		const opus = buildFactoryDroidModel(FACTORY_DROID_MODEL_META["claude-opus-5"]);
@@ -392,52 +357,6 @@ describe("Factory Droid catalog", () => {
 		const atlas = buildFactoryDroidModel(FACTORY_DROID_MODEL_META["atlas-07-21"]);
 		expect(atlas.cost).toEqual(zeroCost);
 		expect(atlas.factoryDroidCredits).toEqual({ input: 2, output: 2 });
-	});
-
-	it("applies the first active promo window, then expires it", () => {
-		const sol = buildFactoryDroidModel(FACTORY_DROID_MODEL_META["gpt-5.6-sol"]).factoryDroidCredits!;
-		// The CLI applies the first currently-active window: 60% off until
-		// 2026-09-05, then the 20% fallback through 2026-11-22, then list.
-		expect(activeFactoryDroidPromotion(sol, new Date("2026-09-04T00:00:00Z"))?.discount).toBe(0.6);
-		expect(activeFactoryDroidPromotion(sol, new Date("2026-09-06T00:00:00Z"))?.discount).toBe(0.2);
-		expect(activeFactoryDroidPromotion(sol, new Date("2026-11-23T00:00:00Z"))).toBeUndefined();
-		// Kimi K3's old promo expired and no longer grants an active discount.
-		expect(
-			activeFactoryDroidPromotion(buildFactoryDroidModel(FACTORY_DROID_MODEL_META["kimi-k3"]).factoryDroidCredits!),
-		).toBeUndefined();
-	});
-
-	it("ships gemini-3.7-flash on the google ladder with no upstream list price yet", () => {
-		// This Factory-only catalog entry has no upstream list price.
-		const meta = FACTORY_DROID_MODEL_META["gemini-3.7-flash"];
-
-		const model = buildFactoryDroidModel(meta);
-		expect(model.baseUrl).toBe(FACTORY_DROID_GOOGLE_BASE_URL);
-		expect(model.cost).toEqual(zeroCost);
-		expect(model.thinking).toMatchObject({
-			mode: "google-level",
-			efforts: [Effort.Low, Effort.Medium, Effort.High],
-			defaultLevel: Effort.High,
-			requiresEffort: true,
-		});
-		expect(model.factoryDroidCredits).toEqual({
-			input: 0.6,
-			output: 3,
-			promotions: [
-				{
-					discount: 0.5,
-					startsAt: "2026-08-17T21:10:19Z",
-					expiresAt: "2027-01-01T00:00:00Z",
-					label: ", 50% Off",
-				},
-			],
-		});
-		// The predecessor lost its minimal rung, while 3.7 never exposed it.
-		expect(buildFactoryDroidModel(FACTORY_DROID_MODEL_META["gemini-3.6-flash"]).thinking?.efforts).toEqual([
-			Effort.Low,
-			Effort.Medium,
-			Effort.High,
-		]);
 	});
 
 	it("resolves every registry priceRef in the bundled catalog", () => {
@@ -478,24 +397,6 @@ describe("Factory Droid EU region", () => {
 		expect(resolveFactoryDroidRotation(opus5, undefined)).toEqual(opus5.apiProviders);
 		expect(resolveFactoryDroidRotation(opus5, "global")).toEqual(opus5.apiProviders);
 		expect(resolveFactoryDroidRotation(kimi, "global")).toEqual(["fireworks", "baseten"]);
-	});
-
-	it("keeps the 0.203.0 azure and mistral additions out of EU rotations", () => {
-		const gpt52 = FACTORY_DROID_MODELS.find(m => m.id === "gpt-5.2")!;
-		const gpt54 = FACTORY_DROID_MODELS.find(m => m.id === "gpt-5.4")!;
-		const glm52 = FACTORY_DROID_MODELS.find(m => m.id === "glm-5.2")!;
-
-		// azure_openai joined the GPT rotations in second position...
-		expect(gpt52.apiProviders).toEqual(["openai", "azure_openai"]);
-		expect(resolveFactoryDroidRotation(gpt52, "global")).toEqual(["openai", "azure_openai"]);
-		// ...but serves the global region only, so EU accounts never route to it.
-		expect(resolveFactoryDroidRotation(gpt52, "eu")).toEqual(["openai"]);
-		// An explicit EU override still wins verbatim over that filter.
-		expect(gpt54.apiProviders).toEqual(["openai", "azure_openai", "bedrock_openai"]);
-		expect(resolveFactoryDroidRotation(gpt54, "eu")).toEqual(["openai"]);
-		// mistral is global-only too, so GLM-5.2 stays EU-unavailable.
-		expect(glm52.apiProviders).toEqual(["fireworks", "baseten", "mistral"]);
-		expect(resolveFactoryDroidRotation(glm52, "eu")).toEqual([]);
 	});
 
 	it("queries the EU host and hides models with no EU-serving upstream", async () => {
@@ -589,8 +490,6 @@ describe("Factory Droid serving edge", () => {
 		expect(factoryDroidEdgeRegion(new Headers({ "x-vercel-id": "cpt1::sfo1::x" }))).toBeUndefined();
 		expect(factoryDroidEdgeRegion(new Headers())).toBeUndefined();
 		expect(factoryDroidEdgeRegion(new Headers({ "x-vercel-id": "" }))).toBeUndefined();
-		expect(factoryDroidServingEdge(new Headers({ "x-vercel-id": "cdg1::sfo1::req-123" }))).toBe("cdg1");
-		expect(factoryDroidServingEdge(new Headers({ "x-vercel-id": "not-a-pop" }))).toBeUndefined();
 	});
 
 	it("hides global-only-upstream models and resolves EU rotations on an EU edge, keeping the global host", async () => {
@@ -645,72 +544,5 @@ describe("Factory Droid serving edge", () => {
 		const ids = models!.map(model => model.id);
 		expect(ids).not.toContain("kimi-k3");
 		expect(models!.find(model => model.id === "claude-opus-5")?.baseUrl).toContain("api.eu.factory.ai");
-	});
-
-	it("hides models excluded by the region blocklist", async () => {
-		const fetchImpl: FetchImpl = async url => {
-			if (String(url).includes("feature-flags")) {
-				return new Response(JSON.stringify({ flags: allFlagsOn }), { status: 200 });
-			}
-			return new Response(JSON.stringify({ settings: {} }), { status: 200 });
-		};
-		const models = await fetchFactoryDroidModels({
-			apiKey: "token",
-			fetch: fetchImpl,
-			excludeModelIds: ["claude-opus-5"],
-		});
-		const ids = models!.map(model => model.id);
-		expect(ids).not.toContain("claude-opus-5");
-		expect(ids).toContain("kimi-k3");
-	});
-
-	it("keeps a region rejection on its own serving edge, including across discovery", async () => {
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "fd-region-blocks-"));
-		try {
-			await recordFactoryDroidRegionBlock("claude-opus-5", "cdg1", dir);
-			const discover = (edge: string) =>
-				fetchFactoryDroidModels({
-					apiKey: "token",
-					agentDir: dir,
-					fetch: async url =>
-						new Response(
-							JSON.stringify(String(url).includes("feature-flags") ? { flags: allFlagsOn } : { settings: {} }),
-							{
-								status: 200,
-								headers: { "x-vercel-id": `${edge}::iad1::request-123` },
-							},
-						),
-				});
-			const denied = await discover("cdg1");
-			const allowed = await discover("sfo1");
-			expect(denied?.some(model => model.id === "claude-opus-5")).toBe(false);
-			expect(allowed?.some(model => model.id === "claude-opus-5")).toBe(true);
-		} finally {
-			await fs.rm(dir, { recursive: true, force: true });
-		}
-	});
-});
-
-describe("Factory Droid region blocklist", () => {
-	it("round-trips edge-specific blocks and ignores legacy or corrupt global exclusions", async () => {
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "fd-region-blocks-"));
-		try {
-			expect(await readFactoryDroidRegionBlockedIds("cdg1", dir)).toEqual([]);
-			await recordFactoryDroidRegionBlock("deepseek-v4-flash-0731", "cdg1", dir);
-			await recordFactoryDroidRegionBlock("kimi-k3", "cdg1", dir);
-			await recordFactoryDroidRegionBlock("kimi-k3", "cdg1", dir);
-			await recordFactoryDroidRegionBlock("gpt-5.4", undefined, dir);
-			expect([...(await readFactoryDroidRegionBlockedIds("cdg1", dir))].sort()).toEqual([
-				"deepseek-v4-flash-0731",
-				"kimi-k3",
-			]);
-			expect(await readFactoryDroidRegionBlockedIds("sfo1", dir)).toEqual([]);
-			await Bun.write(getFactoryDroidRegionBlocklistPath(dir), '{"kimi-k3":123}');
-			expect(await readFactoryDroidRegionBlockedIds("cdg1", dir)).toEqual([]);
-			await Bun.write(getFactoryDroidRegionBlocklistPath(dir), "not json");
-			expect(await readFactoryDroidRegionBlockedIds("cdg1", dir)).toEqual([]);
-		} finally {
-			await fs.rm(dir, { recursive: true, force: true });
-		}
 	});
 });

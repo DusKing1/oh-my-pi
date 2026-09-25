@@ -8,31 +8,16 @@ import {
 	FACTORY_DROID_RESPONSES_BASE_URL,
 	type FactoryDroidModelInput,
 	type FactoryDroidWire,
-	factoryDroidPoolForModel,
-	recordFactoryDroidRegionBlock,
 } from "@oh-my-pi/pi-catalog/discovery";
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
-import { formatDuration } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
-import type {
-	Api,
-	Context,
-	FetchImpl,
-	Model,
-	ModelSpec,
-	ServiceTier,
-	StreamFunction,
-	StreamOptions,
-	ToolChoice,
-} from "../types";
-import { fetchFactoryDroidUsageReport } from "../usage/factory-droid";
+import type { Api, Context, Model, ModelSpec, ServiceTier, StreamFunction, StreamOptions, ToolChoice } from "../types";
 import { deterministicUuid } from "../utils/deterministic-id";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { hasNonThinkingTurnAfterLastUser, hasThinkinglessAssistantHistory } from "./anthropic";
 import { createProviderErrorMessage } from "./error-message";
 import droidIdentity from "./factory-droid/droid-identity.md" with { type: "text" };
 import { streamFactoryDroidGemini } from "./factory-droid/gemini";
-import { createFactoryDroidResponsesWsFetch, shouldUseFactoryDroidResponsesWs } from "./factory-droid/responses-ws";
 import { streamAnthropic, streamOpenAICompletions, streamOpenAIResponses } from "./register-builtins";
 
 /**
@@ -41,8 +26,8 @@ import { streamAnthropic, streamOpenAICompletions, streamOpenAIResponses } from 
  *
  * | family | path | models |
  * |---|---|---|
- * | `openai-completions` | `/api/llm/o/v1/chat/completions` | Droid Core (Kimi, GLM, DeepSeek, Inkling, Nemotron) + Grok |
- * | `openai-responses` | `/api/llm/o/v1/responses` | GPT-5.x |
+ * | `openai-completions` | `/api/llm/o/v1/chat/completions` | Kimi, GLM, DeepSeek, Nemotron |
+ * | `openai-responses` | `/api/llm/o/v1/responses` | GPT + Grok |
  * | `anthropic-messages` | `/api/llm/a/v1/messages` | Claude + MiniMax |
  * | `google-generate` | `/api/llm/g/v1/generate` | Gemini (native generateContent SSE) |
  *
@@ -80,8 +65,6 @@ const FACTORY_DROID_RUNTIME_VERSION = "v24.3.0";
 const FACTORY_DROID_COMPLETIONS_TEMPERATURE = 1;
 
 export interface FactoryDroidOptions extends StreamOptions {
-	/** Accepted for interface compatibility; the direct transport does not spawn processes. */
-	cwd?: string;
 	reasoning?: Effort;
 	disableReasoning?: boolean;
 	toolChoice?: ToolChoice;
@@ -266,75 +249,10 @@ function factoryDroidOrgIdFromToken(accessToken: string): string | undefined {
 
 const REGION_UNAVAILABLE_PATTERN = /not available in this region/i;
 
-/**
- * Factory's proxy answers `400 Provider not available in this region` when
- * the serving edge cannot reach the model's upstreams. Persist exclusions
- * only for a known edge PoP; an unscoped exclusion could hide the model after
- * the user changes networks.
- */
+/** Explain region rejections without persisting an exclusion from the catalog. */
 function asRegionUnavailableError(model: Model<Api>, errorMessage: string | undefined): string | undefined {
 	if (errorMessage == null || !REGION_UNAVAILABLE_PATTERN.test(errorMessage)) return undefined;
-	const edge = /"requestId"\s*:\s*"([a-z]{3}\d)(?=::)/i.exec(errorMessage)?.[1];
-	if (edge) void recordFactoryDroidRegionBlock(model.id, edge);
-	return (
-		`${model.id} is not served from your network's region` +
-		(edge ? ` (serving edge: ${edge})` : "") +
-		(edge
-			? ". It has been hidden from the model picker on this edge; choose another model."
-			: ". Choose another model.")
-	);
-}
-
-const QUOTA_FORBIDDEN_PATTERN = /\b403\b|forbidden/i;
-
-/**
- * Factory's proxy can answer a bare `403 Forbidden` (no detail string) when
- * the model's subscription pool is exhausted — on its face indistinguishable
- * from an auth failure. Re-check the live billing limits and, when the model's
- * catalog-designated pool has an exhausted window, rewrite the error with its
- * binding window's reset and steer to the other pool. The billing pool is
- * independent of the wire protocol (MiniMax is Core on the Anthropic wire).
- *
- * Conservative by design: any ambiguity (limits unreachable, no exhausted
- * window, extra-usage balance remaining, custom unregistered model) leaves
- * the original error untouched, and unlike the region path nothing is
- * recorded — pools recover on their own, so there is nothing to persist.
- */
-async function asQuotaExhaustedError(
-	model: Model<Api>,
-	errorMessage: string | undefined,
-	accessToken: string | undefined,
-	fetchImpl: FetchImpl | undefined,
-): Promise<string | undefined> {
-	if (!accessToken || errorMessage == null || !QUOTA_FORBIDDEN_PATTERN.test(errorMessage)) return undefined;
-	if (REGION_UNAVAILABLE_PATTERN.test(errorMessage)) return undefined;
-	const pool = factoryDroidPoolForModel(model.id);
-	if (!pool) return undefined;
-	const report = await fetchFactoryDroidUsageReport(accessToken, fetchImpl ?? fetch, AbortSignal.timeout(5_000));
-	if (!report) return undefined;
-	if (report.limits.some(limit => limit.id === "factory-droid:extra-balance" && (limit.amount.remaining ?? 0) > 0)) {
-		return undefined;
-	}
-	// The catalog classifies MiniMax as Core even on the Anthropic wire.
-	const poolLabel = pool === "core" ? "Droid Core" : "Standard Credits";
-	const exhausted = report.limits.filter(
-		limit => limit.id.startsWith(`factory-droid:${pool}:`) && limit.status === "exhausted",
-	);
-	if (exhausted.length === 0) return undefined;
-	// The binding window is the last to reset: the model works again only once
-	// every exhausted window has recovered.
-	const binding = exhausted.reduce((a, b) => ((a.window?.resetsAt ?? 0) >= (b.window?.resetsAt ?? 0) ? a : b));
-	const windowId = binding.id.split(":")[2] ?? "";
-	const resetsAt = binding.window?.resetsAt;
-	const resetHint =
-		resetsAt !== undefined && resetsAt > Date.now() ? ` (resets in ${formatDuration(resetsAt - Date.now())})` : "";
-	const otherLabel = pool === "core" ? "Standard Credits" : "Droid Core";
-	const otherPool = pool === "core" ? "standard" : "core";
-	const otherExhausted = report.limits.some(
-		limit => limit.id.startsWith(`factory-droid:${otherPool}:`) && limit.status === "exhausted",
-	);
-	const steer = otherExhausted ? "" : ` ${otherLabel} models remain available.`;
-	return `${model.id} is unavailable: your ${poolLabel} ${windowId} pool is exhausted${resetHint}.${steer}`;
+	return `${model.id} is not served from your network's region. Choose another model.`;
 }
 
 export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
@@ -348,7 +266,6 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 		// Sole credential path: the OMP-stored WorkOS session from `/login
 		// factory-droid`, resolved and refreshed by the harness and passed as
 		// apiKey. The kNoAuth sentinel ("N/A") means no stored credential.
-		// Hoisted above try: the catch path consults it for the quota re-check.
 		const harnessToken = options?.apiKey?.trim();
 		try {
 			if (!harnessToken || harnessToken === "N/A") {
@@ -372,31 +289,8 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 					systemPrompt[0] === DROID_SYSTEM_PREFIX ? systemPrompt : [DROID_SYSTEM_PREFIX, ...systemPrompt],
 			};
 
-			const registryWire = meta?.wire ?? "openai-completions";
-			// Discovery stamps the region-resolved wire URL; the constant is the
-			// global default for hand-registered custom models.
+			const wire = meta?.wire ?? "openai-completions";
 			const responsesBaseUrl = model.baseUrl ?? FACTORY_DROID_RESPONSES_BASE_URL;
-			// `openai-responses-ws` is a transport, not a registry value: no model
-			// entry carries it. The CLI upgrades a Responses turn to its WebSocket
-			// surface when the turn rides a registry model on the openai upstream
-			// and the account's `openai_responses_websocket_mode` gate is on. The
-			// request body, headers, and event stream are the HTTPS ones either
-			// way, so the branch below only swaps what carries them.
-			const wire: FactoryDroidWire =
-				registryWire === "openai-responses" &&
-				(await shouldUseFactoryDroidResponsesWs({
-					accessToken: harnessToken,
-					responsesUrl: `${responsesBaseUrl}/responses`,
-					upstream,
-					registered: meta !== undefined,
-					orgId,
-					fetchImpl: options?.fetch ?? fetch,
-					clientVersion: FACTORY_DROID_CLIENT_VERSION,
-					providerSessionState: options?.providerSessionState,
-					signal: options?.signal,
-				}))
-					? "openai-responses-ws"
-					: registryWire;
 			const baseOptions = {
 				apiKey: harnessToken,
 				signal: options?.signal,
@@ -524,7 +418,7 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 						...options?.headers,
 					},
 				});
-			} else if (wire === "openai-responses" || wire === "openai-responses-ws") {
+			} else if (wire === "openai-responses") {
 				const cfg = meta?.responsesConfig;
 				// Registry-family shaping and retention use the resolved upstream;
 				// max_output_tokens omission is resolved by catalog policy.
@@ -541,25 +435,8 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 					: options?.reasoning === "max"
 						? "xhigh"
 						: options?.reasoning;
-				const wsSessionState = wire === "openai-responses-ws" ? options?.providerSessionState : undefined;
 				innerStream = streamOpenAIResponses(responsesModel, proxiedContext, {
 					...baseOptions,
-					// The WebSocket transport is a fetch shim in front of this very
-					// POST: it replays the body over a socket and hands back an
-					// SSE-framed response, and performs the POST itself on any
-					// failure before the first frame. Everything downstream — event
-					// decoding, usage, the watchdogs — stays on the HTTPS path.
-					...(wsSessionState
-						? {
-								fetch: createFactoryDroidResponsesWsFetch({
-									baseFetch: options?.fetch ?? fetch,
-									provider: model.provider,
-									modelId: model.requestModelId ?? model.id,
-									assistantMessageId: requestId,
-									providerSessionState: wsSessionState,
-								}),
-							}
-						: {}),
 					reasoning: effort as "minimal" | "low" | "medium" | "high" | "xhigh" | undefined,
 					// The CLI omits reasoning.summary for xai-routed models (grok);
 					// null suppresses the shared transport's "auto" default.
@@ -576,10 +453,6 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 					toolChoice: options?.toolChoice,
 					sessionId: sessionUuid,
 					extraBody: {
-						// HTTP-vs-WS translations (verified live): droid's WebSocket
-						// surface accepts top-level `verbosity` and the legacy "900"
-						// retention; the HTTPS Responses route rejects both — verbosity
-						// moved under `text`, and these models require "24h" caching.
 						prompt_cache_key: sessionUuid,
 						// Only extendedCache models routed to the openai upstream
 						// carry retention; the proxy requires "24h" for them, rejects
@@ -698,11 +571,8 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 			for await (const event of innerStream) {
 				if (event.type === "error") {
 					const regionMessage = asRegionUnavailableError(model, event.error.errorMessage);
-					const rewritten =
-						regionMessage ??
-						(await asQuotaExhaustedError(model, event.error.errorMessage, harnessToken, options?.fetch));
-					if (rewritten != null) {
-						stream.push({ ...event, error: { ...event.error, errorMessage: rewritten } });
+					if (regionMessage != null) {
+						stream.push({ ...event, error: { ...event.error, errorMessage: regionMessage } });
 						continue;
 					}
 				}
@@ -712,10 +582,6 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 			const message = createProviderErrorMessage(model, error);
 			const regionMessage = asRegionUnavailableError(model, message.errorMessage);
 			if (regionMessage != null) message.errorMessage = regionMessage;
-			else {
-				const quotaMessage = await asQuotaExhaustedError(model, message.errorMessage, harnessToken, options?.fetch);
-				if (quotaMessage != null) message.errorMessage = quotaMessage;
-			}
 			stream.push({ type: "error", reason: "error", error: message });
 			stream.end();
 		}

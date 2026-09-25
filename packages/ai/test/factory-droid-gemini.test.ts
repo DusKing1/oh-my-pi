@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
+import { type } from "@oh-my-pi/omptype";
 import { streamFactoryDroidGemini } from "../src/providers/factory-droid/gemini";
 import { SKIP_THOUGHT_SIGNATURE } from "../src/providers/google-shared";
 import type { AssistantMessage, Context } from "../src/types";
@@ -65,6 +66,31 @@ describe("Factory Droid gemini wire — history replay", () => {
 		expect(JSON.stringify(modelTurn)).not.toContain('thought":true');
 		expect(JSON.stringify(modelTurn)).not.toContain("text-sig");
 		expect(captured[0].body.systemInstruction).toEqual({ parts: [{ text: "first block\nsecond block" }] });
+	});
+
+	it("replays developer string and multipart messages as user turns in order", async () => {
+		const captured: CapturedRequest[] = [];
+		await streamFactoryDroidGemini(
+			gemini(),
+			{
+				messages: [
+					{ role: "developer", content: "review instructions", timestamp: 1 },
+					{ role: "user", content: "draft", timestamp: 2 },
+					{ role: "developer", content: [{ type: "text", text: "use the new rules" }], timestamp: 3 },
+				],
+			},
+			{
+				baseUrl: "https://api.factory.ai/api/llm/g/v1",
+				headers: { "x-api-provider": "google" },
+				fetch: captureFetch(captured, [finishChunk("STOP")]),
+			},
+		).result();
+
+		expect(captured[0].body.contents).toEqual([
+			{ role: "user", parts: [{ text: "review instructions" }] },
+			{ role: "user", parts: [{ text: "draft" }] },
+			{ role: "user", parts: [{ text: "use the new rules" }] },
+		]);
 	});
 
 	it("starts a fresh block on interleaved thinking/text flips instead of merging spans", async () => {
@@ -485,20 +511,6 @@ describe("Factory Droid gemini wire — generationConfig", () => {
 		// Disabled thinking flips the flag off and never emits a thinkingLevel.
 		expect(generation.thinkingConfig).toEqual({ includeThoughts: false });
 	});
-
-	it("joins system blocks with a single newline", async () => {
-		const captured: CapturedRequest[] = [];
-		await streamFactoryDroidGemini(
-			gemini(),
-			{ systemPrompt: ["a", "b", "c"], messages: [{ role: "user", content: "hi", timestamp: 1 }] },
-			{
-				baseUrl: "https://api.factory.ai/api/llm/g/v1",
-				headers: { "x-api-provider": "google" },
-				fetch: captureFetch(captured, [finishChunk("STOP")]),
-			},
-		).result();
-		expect(captured[0].body.systemInstruction).toEqual({ parts: [{ text: "a\nb\nc" }] });
-	});
 });
 
 describe("Factory Droid gemini wire — tool schema allowlist", () => {
@@ -594,6 +606,82 @@ describe("Factory Droid gemini wire — tool schema allowlist", () => {
 			properties: { deep: { type: "string", pattern: "x" } },
 		});
 		expect(JSON.stringify(properties.nested)).not.toContain("additionalProperties");
+	});
+
+	it("sends canonical ArkType function parameters instead of an empty declaration", async () => {
+		const captured: CapturedRequest[] = [];
+		await streamFactoryDroidGemini(
+			gemini(),
+			{
+				messages: [{ role: "user", content: "read", timestamp: 1 }],
+				tools: [
+					{ name: "read", description: "Read a file", parameters: type({ path: "string", "line?": "number" }) },
+				],
+			},
+			{
+				baseUrl: "https://api.factory.ai/api/llm/g/v1",
+				headers: { "x-api-provider": "google" },
+				fetch: captureFetch(captured, [finishChunk("STOP")]),
+			},
+		).result();
+
+		const declarations = (
+			captured[0].body.tools as Array<{ functionDeclarations: Array<Record<string, unknown>> }>
+		)[0].functionDeclarations;
+		expect(declarations[0].parameters).toMatchObject({
+			type: "object",
+			required: ["path"],
+			properties: { path: { type: "string" }, line: { type: "number" } },
+		});
+	});
+
+	it("inlines local JSON Schema references before restricting the Gemini wire", async () => {
+		const captured: CapturedRequest[] = [];
+		await streamFactoryDroidGemini(
+			gemini(),
+			{
+				messages: [{ role: "user", content: "read", timestamp: 1 }],
+				tools: [
+					{
+						name: "read",
+						description: "Read a file",
+						parameters: {
+							type: "object",
+							properties: { target: { $ref: "#/$defs/Target", description: "Destination" } },
+							required: ["target"],
+							$defs: {
+								Target: {
+									type: "object",
+									properties: { path: { type: "string", pattern: "^/" } },
+									required: ["path"],
+								},
+							},
+						},
+					},
+				],
+			},
+			{
+				baseUrl: "https://api.factory.ai/api/llm/g/v1",
+				headers: { "x-api-provider": "google" },
+				fetch: captureFetch(captured, [finishChunk("STOP")]),
+			},
+		).result();
+
+		const declarations = (
+			captured[0].body.tools as Array<{ functionDeclarations: Array<Record<string, unknown>> }>
+		)[0].functionDeclarations;
+		expect(declarations[0].parameters).toEqual({
+			type: "object",
+			required: ["target"],
+			properties: {
+				target: {
+					type: "object",
+					description: "Destination",
+					required: ["path"],
+					properties: { path: { type: "string", pattern: "^/" } },
+				},
+			},
+		});
 	});
 
 	it("sanitizes tool names on replayed functionCall and functionResponse parts", async () => {

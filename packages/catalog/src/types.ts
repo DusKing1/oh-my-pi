@@ -1204,40 +1204,7 @@ export interface FactoryDroidCredits {
 	input: number;
 	output: number;
 	cacheRead?: number;
-	/**
-	 * Stacked promo windows, mirrored verbatim from the registry (droid
-	 * 0.213.0+): the first currently-active window applies — see
-	 * `activeFactoryDroidPromotion`. Windows may already be in the past, and
-	 * a lapsed window stays in Factory's table until the entry changes.
-	 */
-	promotions?: FactoryDroidCreditPromotion[];
 }
-
-/** One Factory Droid promo window: `discount` is the fraction off the list rate. */
-export interface FactoryDroidCreditPromotion {
-	discount: number;
-	startsAt?: string;
-	expiresAt?: string;
-	/** Suffix Factory appends to the display name while the promo applies. */
-	label?: string;
-}
-
-/**
- * First currently-active promo window, mirroring the CLI's
- * `promotions.find(active)` — a window with no `startsAt`/`expiresAt` bound
- * is open on that side.
- */
-export function activeFactoryDroidPromotion(
-	credits: FactoryDroidCredits,
-	now: Date = new Date(),
-): FactoryDroidCreditPromotion | undefined {
-	return credits.promotions?.find(
-		promo =>
-			(promo.startsAt == null || new Date(promo.startsAt) <= now) &&
-			(promo.expiresAt == null || now < new Date(promo.expiresAt)),
-	);
-}
-
 export interface Model<TApi extends Api = Api> {
 	id: string;
 	/** Role-specific runner capability; omitted for ordinary chat models. */

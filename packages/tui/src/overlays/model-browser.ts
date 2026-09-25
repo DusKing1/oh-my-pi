@@ -11,7 +11,7 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import { activeFactoryDroidPromotion, type FactoryDroidCredits, type ModelKind } from "@oh-my-pi/pi-catalog/types";
+import type { ModelKind } from "@oh-my-pi/pi-catalog/types";
 import type { Component } from "../tui";
 import { fuzzyRank } from "../fuzzy";
 import { Input } from "../components/input";
@@ -533,32 +533,12 @@ function isFreeModel(model: Model): boolean {
 	);
 }
 
-/** Suffix on a Standard Credits badge whose rate is a live promo, not the list rate. */
-const PROMO_MARK = "*";
-
-/**
- * The promo-discounted Standard Credits input rate, or undefined when no
- * promo window is active.
- *
- * The registry mirrors Factory's stacked promo windows verbatim (droid
- * 0.213.0+), expired ones included, so the active window is decided here at
- * render time against the same clock the user reads the badge with — first
- * active window wins, matching the CLI's `promotions.find(active)`.
- */
-function promoCreditRate(credits: FactoryDroidCredits, now: number): number | undefined {
-	const promo = activeFactoryDroidPromotion(credits, new Date(now));
-	if (promo == null || promo.discount <= 0) return undefined;
-	return credits.input * (1 - promo.discount);
-}
-
 /**
  * `$in/out` per-million cost pair; `free` when both legs are zero. Factory
- * Droid models also carry an `N×` Standard Credits badge (effective per-token
- * input rate) — the $ pair is the upstream-list counterfactual, the badge is
- * what the subscription actually burns. A live promo rate is marked `N×*` so
- * the discounted figure cannot be mistaken for the standing list rate.
+ * Droid models also carry an `N×` base Standard Credits rate. Neither the
+ * reference dollar price nor the base credit rate includes live promotions.
  */
-export function formatCostPair(model: Model, now: number = Date.now()): string {
+export function formatCostPair(model: Model): string {
 	const cost = model.cost;
 	const fmt = (n: number): string => {
 		if (!Number.isFinite(n) || n < 0) return "?";
@@ -572,8 +552,7 @@ export function formatCostPair(model: Model, now: number = Date.now()): string {
 	const missingListPrice = credits && (!cost || (cost.input === 0 && cost.output === 0));
 	const base = missingListPrice ? "" : isFreeModel(model) ? "free" : `$${fmt(cost.input)}/${fmt(cost.output)}`;
 	if (!credits) return base;
-	const promo = promoCreditRate(credits, now);
-	const badge = promo === undefined ? `${fmt(credits.input)}×` : `${fmt(promo)}×${PROMO_MARK}`;
+	const badge = `${fmt(credits.input)}×`;
 	return base ? `${base} ${badge}` : badge;
 }
 

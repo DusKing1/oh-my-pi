@@ -1,16 +1,7 @@
 /**
- * Factory droid Gemini tool-schema copier (allowlist semantics).
- *
- * The droid CLI translates tool parameters for the gemini wire with an
- * ALLOWLIST copier: it copies a fixed set of JSON Schema keywords per node and
- * silently drops everything else ($ref, additionalProperties, exclusive*,
- * multipleOf, ...). It never emits `propertyOrdering`, never edits
- * descriptions, stringifies enum values, converts `const` to a single-entry
- * `enum`, merges `allOf` branches, and collapses `anyOf`/`oneOf` unions that
- * contain a `type: "null"` branch into `nullable: true`. This is the opposite
- * strategy of the shared normalizers (which strip keywords and fold the
- * overflow into description text), so it lives here as a wire-local copier
- * instead of an option on the shared engine.
+ * Factory Gemini accepts a restricted Schema shape. Keep this projection
+ * separate from shared normalizers, which preserve unsupported keywords in
+ * description text instead of dropping them.
  */
 import { isJsonObject, type JsonObject } from "./types";
 
@@ -140,11 +131,7 @@ function copyFactoryDroidSchema(node: unknown): JsonObject | undefined {
 	return out;
 }
 
-/**
- * Normalize a JSON Schema tool parameter into the droid CLI's gemini
- * allowlist shape: preserved keywords only, merged combiners, stringified
- * enums, `nullable` from null unions, never `propertyOrdering`.
- */
+/** Project a dereferenced JSON Schema onto Factory Gemini's allowed fields. */
 export function normalizeSchemaForFactoryDroid(value: unknown): unknown {
 	if (!isJsonObject(value)) return value;
 	return copyFactoryDroidSchema(value) ?? {};

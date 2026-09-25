@@ -1,11 +1,32 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, vi } from "bun:test";
 import { SqliteAuthCredentialStore } from "../src/auth-storage";
 import { mergeRefreshedCredential } from "../src/auth/refresh";
 import { buildRefreshableOauthCredential, mergeRefreshedUsageCredential } from "../src/auth/usage";
 import { buildUsageCredential } from "../src/auth/usage-cache";
-import { loginFactoryDroid, refreshFactoryDroidToken } from "../src/registry/oauth/factory-droid";
-import type { OAuthController } from "../src/registry/oauth/types";
+import { getProviderDefinition } from "../src/registry/registry";
+import type { OAuthController, OAuthCredentials } from "../src/registry/oauth/types";
 import type { FetchImpl } from "../src/types";
+
+async function loginViaRegistry(ctrl: OAuthController): Promise<OAuthCredentials> {
+	const result = await getProviderDefinition("factory-droid")?.login?.(ctrl);
+	if (!result || typeof result === "string") throw new Error("Factory Droid login is unavailable");
+	return result;
+}
+
+async function refreshViaRegistry(refreshToken: string, fetchImpl: FetchImpl): Promise<OAuthCredentials> {
+	const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
+		Object.assign((input: string | URL | Request, init?: RequestInit) => fetchImpl(input, init), {
+			preconnect: fetch.preconnect,
+		}),
+	);
+	try {
+		const refresh = getProviderDefinition("factory-droid")?.refreshToken;
+		if (!refresh) throw new Error("Factory Droid refresh is unavailable");
+		return await refresh({ access: "previous", refresh: refreshToken, expires: 0 });
+	} finally {
+		fetchSpy.mockRestore();
+	}
+}
 
 function makeJwt(claims: Record<string, unknown>): string {
 	const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -92,7 +113,7 @@ describe("Factory Droid OAuth", () => {
 			onAuth: info => auths.push({ url: info.url, instructions: info.instructions }),
 		};
 
-		const credentials = await loginFactoryDroid(ctrl);
+		const credentials = await loginViaRegistry(ctrl);
 
 		expect(calls[0].url).toBe("https://api.workos.com/user_management/authorize/device");
 		expect(calls[0].body).toContain("client_id=client_01HNM792M5G5G1A2THWPXKFMXB");
@@ -114,6 +135,21 @@ describe("Factory Droid OAuth", () => {
 		expect(credentials.region).toBe("eu");
 	});
 
+	it("rejects a device token response without a refresh grant", async () => {
+		const access = makeJwt({ sub: "user_1", exp: Math.floor(Date.now() / 1000) + 3600 });
+		let whoamiCalled = false;
+		const fetchImpl: FetchImpl = async url => {
+			if (String(url).endsWith("/authorize/device")) return jsonResponse(200, DEVICE_AUTH);
+			if (String(url).endsWith("/api/cli/whoami")) {
+				whoamiCalled = true;
+				return jsonResponse(200, { region: "eu" });
+			}
+			return jsonResponse(200, { access_token: access });
+		};
+		await expect(loginViaRegistry({ fetch: fetchImpl })).rejects.toThrow(/missing refresh token/);
+		expect(whoamiCalled).toBe(false);
+	});
+
 	it("keeps polling through authorization_pending and slow_down", async () => {
 		const access = makeJwt({ sub: "user_1", exp: Math.floor(Date.now() / 1000) + 3600 });
 		let polls = 0;
@@ -126,7 +162,7 @@ describe("Factory Droid OAuth", () => {
 			return jsonResponse(200, { access_token: access, refresh_token: "refresh-2" });
 		};
 
-		const credentials = await loginFactoryDroid({ fetch: fetchImpl });
+		const credentials = await loginViaRegistry({ fetch: fetchImpl });
 		expect(polls).toBe(3);
 		expect(credentials.refresh).toBe("refresh-2");
 		// The shared poller enforces a 1s floor and +5s after slow_down.
@@ -137,7 +173,7 @@ describe("Factory Droid OAuth", () => {
 			if (String(url).endsWith("/authorize/device")) return jsonResponse(200, DEVICE_AUTH);
 			return jsonResponse(400, { error: "access_denied" });
 		};
-		await expect(loginFactoryDroid({ fetch: fetchImpl })).rejects.toThrow(/denied/);
+		await expect(loginViaRegistry({ fetch: fetchImpl })).rejects.toThrow(/denied/);
 	});
 
 	it("fails with the expiry message when the device code expires mid-poll", async () => {
@@ -145,9 +181,7 @@ describe("Factory Droid OAuth", () => {
 			if (String(url).endsWith("/authorize/device")) return jsonResponse(200, DEVICE_AUTH);
 			return jsonResponse(400, { error: "expired_token" });
 		};
-		// expired_token maps to the dedicated "login expired" message, not the
-		// generic failed-poll text.
-		await expect(loginFactoryDroid({ fetch: fetchImpl })).rejects.toThrow("Factory device login expired");
+		await expect(loginViaRegistry({ fetch: fetchImpl })).rejects.toThrow("device code expired");
 	});
 
 	it("cancels an in-flight device token request instead of waiting for the provider", async () => {
@@ -160,7 +194,7 @@ describe("Factory Droid OAuth", () => {
 			init?.signal?.addEventListener("abort", () => pending.reject(init.signal?.reason), { once: true });
 			return pending.promise;
 		};
-		const login = loginFactoryDroid({ fetch: fetchImpl, signal: abort.signal });
+		const login = loginViaRegistry({ fetch: fetchImpl, signal: abort.signal });
 		await polling.promise;
 		abort.abort();
 		await expect(login).rejects.toThrow("Login cancelled");
@@ -178,7 +212,7 @@ describe("Factory Droid OAuth", () => {
 			init?.signal?.addEventListener("abort", () => pending.reject(init.signal?.reason), { once: true });
 			return pending.promise;
 		};
-		await expect(loginFactoryDroid({ fetch: fetchImpl, signal: caller.signal })).rejects.toThrow(
+		await expect(loginViaRegistry({ fetch: fetchImpl, signal: caller.signal })).rejects.toThrow(
 			"Device flow timed out",
 		);
 		expect(pollSignal?.aborted).toBe(true);
@@ -208,7 +242,7 @@ describe("Factory Droid OAuth", () => {
 			});
 		};
 
-		const credentials = await refreshFactoryDroidToken("refresh-old", fetchImpl);
+		const credentials = await refreshViaRegistry("refresh-old", fetchImpl);
 		expect(calls[0].url).toBe("https://api.workos.com/user_management/authenticate");
 		expect(calls[0].body).toContain("grant_type=refresh_token");
 		expect(calls[0].body).toContain("refresh_token=refresh-old");
@@ -221,13 +255,30 @@ describe("Factory Droid OAuth", () => {
 		expect(credentials.region).toBe("eu");
 	});
 
+	it("uses JWT identity only when the WorkOS user is absent and falls back to one-day expiry", async () => {
+		const access = makeJwt({ sub: "jwt-user", email: "jwt@example.test", external_org_id: "factory-org" });
+		const fetchImpl: FetchImpl = async url =>
+			String(url).endsWith("/api/cli/whoami")
+				? jsonResponse(200, {})
+				: jsonResponse(200, { access_token: access, refresh_token: "rotated" });
+		const beforeRefresh = Date.now();
+		const credentials = await refreshViaRegistry("old", fetchImpl);
+		expect(credentials).toMatchObject({
+			accountId: "jwt-user",
+			email: "jwt@example.test",
+			orgId: "factory-org",
+		});
+		expect(credentials.expires).toBeGreaterThanOrEqual(beforeRefresh + 86_400_000);
+		expect(credentials.expires).toBeLessThanOrEqual(Date.now() + 86_400_000);
+	});
+
 	it("never treats WorkOS organization_id as a Factory external org", async () => {
 		const access = makeJwt({ sub: "user_9", exp: Math.floor(Date.now() / 1000) + 7200 });
 		const fetchImpl: FetchImpl = async url =>
 			String(url).endsWith("/api/cli/whoami")
 				? jsonResponse(200, {})
 				: jsonResponse(200, { access_token: access, refresh_token: "new", organization_id: "org_internal" });
-		const credentials = await refreshFactoryDroidToken("old", fetchImpl);
+		const credentials = await refreshViaRegistry("old", fetchImpl);
 		expect(credentials.orgId).toBeUndefined();
 	});
 
@@ -239,13 +290,13 @@ describe("Factory Droid OAuth", () => {
 			return jsonResponse(200, { access_token: access, refresh_token: "refresh-3" });
 		};
 
-		const credentials = await loginFactoryDroid({ fetch: fetchImpl });
+		const credentials = await loginViaRegistry({ fetch: fetchImpl });
 		expect(credentials.refresh).toBe("refresh-3");
 		expect(credentials.region).toBeUndefined();
 	});
 
 	it("surfaces refresh failures with the provider error", async () => {
 		const fetchImpl: FetchImpl = async () => jsonResponse(401, { error: "invalid_grant" });
-		await expect(refreshFactoryDroidToken("dead", fetchImpl)).rejects.toThrow(/invalid_grant/);
+		await expect(refreshViaRegistry("dead", fetchImpl)).rejects.toThrow(/invalid_grant/);
 	});
 });

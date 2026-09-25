@@ -20,9 +20,7 @@ The bundled Droid catalog is narrowed by account feature flags, hard-deprecation
 
 Requests use Chat Completions, Responses, Anthropic Messages, or native Gemini `generateContent` according to each catalog entry. MiniMax uses the Anthropic wire while drawing from the Core pool. The integration supplies Droid-compatible identity headers and a short Droid system prefix without moving OMP's instructions into user messages. These gateway contracts are version-sensitive.
 
-Responses can use a persistent WebSocket when the account enables it and the selected upstream supports it. `PI_FACTORY_DROID_WS=0` forces HTTPS; `PI_FACTORY_DROID_WS=1` enables the WebSocket attempt on eligible routes. A transport failure before the first frame can fall back to HTTPS; cancellation does not replay the request.
-
-`/usage` and `omp usage` report Standard Credits and Droid Core quota windows when the account uses token-rate-limit billing. Accounts whose billing response explicitly disables that mode remain visible with a note that no quota windows are exposed; OMP does not invent a remaining balance. The model browser shows credit multipliers and marks active promotional rates with `*`; dollar figures are upstream list-price references, not Factory billing. Models without a dollar reference display their credit rate rather than `free`. Factory GPT and Gemini routes omit output-token caps, so bounded ephemeral turns reject a `maxTokens` request instead of silently running uncapped.
+`/usage` and `omp usage` report Standard Credits and Droid Core quota windows when the account uses token-rate-limit billing. Accounts whose billing response explicitly disables that mode remain visible with a note that no quota windows are exposed; OMP does not invent a remaining balance. The model browser shows base credit multipliers; dollar figures are upstream list-price references, not Factory billing. Models without a dollar reference display their credit rate rather than `free`. Factory GPT and Gemini routes omit output-token caps, so bounded ephemeral turns reject a `maxTokens` request instead of silently running uncapped.
 
 ## How `omp` decides a provider is available
 

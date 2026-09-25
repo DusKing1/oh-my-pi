@@ -1,6 +1,4 @@
-import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import * as discovery from "@oh-my-pi/pi-catalog/discovery";
+import { afterEach, describe, expect, it, mock } from "bun:test";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { DROID_SYSTEM_PREFIX, streamFactoryDroid } from "../src/providers/factory-droid";
 import {
@@ -500,186 +498,36 @@ describe("Factory Droid gemini wire (Google series)", () => {
 	});
 });
 
-describe("Factory Droid region availability", () => {
-	it("rewrites a region-400 into actionable guidance and records the model as region-blocked", async () => {
-		const recordSpy = spyOn(discovery, "recordFactoryDroidRegionBlock").mockResolvedValue(undefined);
-		const regionError = {
-			status: 400,
-			title: "Bad Request",
-			detail: "Provider not available in this region",
-			requestId: "cdg1::p123",
-		};
+describe("Factory Droid error handling", () => {
+	it("surfaces a regional rejection without another request", async () => {
+		const fetchImpl = mock(
+			async () => new Response(JSON.stringify({ detail: "Provider not available in this region" }), { status: 400 }),
+		);
 		const result = await streamFactoryDroid(
 			kimiK3(),
 			{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
-			{
-				apiKey: WORKOS_TOKEN,
-				fetch: mock(async () => new Response(JSON.stringify(regionError), { status: 400 })),
-				sessionId: "019fd-test-session",
-			},
+			{ apiKey: WORKOS_TOKEN, fetch: fetchImpl },
 		).result();
-
 		expect(result.stopReason).toBe("error");
-		expect(result.errorMessage).toContain("kimi-k3 is not served from your network's region");
-		expect(result.errorMessage).toContain("serving edge: cdg1");
-		expect(result.errorMessage).toContain("hidden from the model picker");
-		expect(result.errorMessage).not.toContain("Bad Request");
-		expect(recordSpy).toHaveBeenCalledWith("kimi-k3", "cdg1");
+		expect(result.errorStatus).toBe(400);
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
 	});
 
-	it("does not persist a region block when the error omits its serving edge", async () => {
-		const recordSpy = spyOn(discovery, "recordFactoryDroidRegionBlock").mockResolvedValue(undefined);
+	it("preserves a forbidden response without issuing a billing probe", async () => {
+		const urls: string[] = [];
 		const result = await streamFactoryDroid(
 			kimiK3(),
 			{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
 			{
 				apiKey: WORKOS_TOKEN,
-				fetch: mock(
-					async () =>
-						new Response(JSON.stringify({ detail: "Provider not available in this region" }), { status: 400 }),
-				),
+				fetch: async input => {
+					urls.push(input instanceof Request ? input.url : String(input));
+					return new Response(JSON.stringify({ detail: "Forbidden" }), { status: 403 });
+				},
 			},
 		).result();
-		expect(result.errorMessage).toContain("Choose another model");
-		expect(result.errorMessage).not.toContain("hidden from the model picker");
-		expect(recordSpy).not.toHaveBeenCalled();
-	});
-
-	it("passes unrelated errors through untouched", async () => {
-		const recordSpy = spyOn(discovery, "recordFactoryDroidRegionBlock").mockResolvedValue(undefined);
-		const result = await streamFactoryDroid(
-			kimiK3(),
-			{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
-			{
-				apiKey: WORKOS_TOKEN,
-				fetch: mock(
-					async () =>
-						new Response(JSON.stringify({ status: 400, detail: "context length exceeded" }), { status: 400 }),
-				),
-				sessionId: "019fd-test-session",
-			},
-		).result();
-
 		expect(result.stopReason).toBe("error");
-		expect(result.errorMessage).toContain("context length exceeded");
-		expect(recordSpy).not.toHaveBeenCalled();
-	});
-});
-
-describe("Factory Droid quota exhaustion", () => {
-	const forbidden = { status: 403, title: "Forbidden", detail: "Forbidden", requestId: "yul1::q1" };
-
-	function limitsPayload(coreWeeklyPercent: number, extraBalanceCents = 0) {
-		const window = (usedPercent: number) => ({
-			usedPercent,
-			windowEnd: new Date(Date.now() + 2 * 24 * 60 * 60_000).toISOString(),
-		});
-		return {
-			limits: {
-				standard: { fiveHour: window(10), weekly: window(20), monthly: window(30) },
-				core: { fiveHour: window(40), weekly: window(coreWeeklyPercent), monthly: window(50) },
-			},
-			extraUsageBalanceCents: extraBalanceCents,
-		};
-	}
-
-	function quotaFetch(limitsResponse: () => Response) {
-		return mock(async (input: string | URL | Request) => {
-			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-			if (url.includes("/api/billing/limits")) return limitsResponse();
-			return new Response(JSON.stringify(forbidden), { status: 403 });
-		});
-	}
-
-	it("rewrites a bare 403 into pool guidance when the model's pool is exhausted", async () => {
-		const result = await streamFactoryDroid(
-			kimiK3(),
-			{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
-			{
-				apiKey: WORKOS_TOKEN,
-				fetch: quotaFetch(() => new Response(JSON.stringify(limitsPayload(100)), { status: 200 })),
-				sessionId: "019fd-test-session",
-			},
-		).result();
-
-		expect(result.stopReason).toBe("error");
-		expect(result.errorMessage).toContain("kimi-k3 is unavailable");
-		expect(result.errorMessage).toContain("Droid Core weekly pool is exhausted");
-		expect(result.errorMessage).toContain("resets in");
-		expect(result.errorMessage).toContain("Standard Credits models remain available");
-		expect(result.errorMessage).not.toContain("Forbidden");
-	});
-
-	it("names the Standard Credits pool for non-core wires", async () => {
-		const payload = limitsPayload(10);
-		payload.limits.standard.weekly = { usedPercent: 100, windowEnd: new Date(Date.now() + 60_000).toISOString() };
-		const result = await streamFactoryDroid(
-			sonnet5(),
-			{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
-			{
-				apiKey: WORKOS_TOKEN,
-				fetch: quotaFetch(() => new Response(JSON.stringify(payload), { status: 200 })),
-				sessionId: "019fd-test-session",
-			},
-		).result();
-
-		expect(result.errorMessage).toContain("Standard Credits weekly pool is exhausted");
-		expect(result.errorMessage).toContain("Droid Core models remain available");
-	});
-
-	it("uses the Droid Core pool for MiniMax despite its Anthropic wire", async () => {
-		const result = await streamFactoryDroid(
-			buildModel(discovery.buildFactoryDroidModel(discovery.FACTORY_DROID_MODEL_META["minimax-m2.5"]!)),
-			{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
-			{
-				apiKey: WORKOS_TOKEN,
-				fetch: quotaFetch(() => new Response(JSON.stringify(limitsPayload(100)), { status: 200 })),
-			},
-		).result();
-		expect(result.errorMessage).toContain("Droid Core weekly pool is exhausted");
-		expect(result.errorMessage).toContain("Standard Credits models remain available");
-	});
-
-	it("leaves a bare 403 untouched when no pool is exhausted", async () => {
-		const result = await streamFactoryDroid(
-			kimiK3(),
-			{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
-			{
-				apiKey: WORKOS_TOKEN,
-				fetch: quotaFetch(() => new Response(JSON.stringify(limitsPayload(40)), { status: 200 })),
-				sessionId: "019fd-test-session",
-			},
-		).result();
-
-		expect(result.errorMessage).toContain("Forbidden");
-	});
-
-	it("leaves the 403 untouched when the limits re-check fails", async () => {
-		const result = await streamFactoryDroid(
-			kimiK3(),
-			{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
-			{
-				apiKey: WORKOS_TOKEN,
-				fetch: quotaFetch(() => new Response("unavailable", { status: 500 })),
-				sessionId: "019fd-test-session",
-			},
-		).result();
-
-		expect(result.errorMessage).toContain("Forbidden");
-	});
-
-	it("does not rewrite the 403 when extra-usage balance remains", async () => {
-		const result = await streamFactoryDroid(
-			kimiK3(),
-			{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
-			{
-				apiKey: WORKOS_TOKEN,
-				fetch: quotaFetch(() => new Response(JSON.stringify(limitsPayload(100, 500)), { status: 200 })),
-				sessionId: "019fd-test-session",
-			},
-		).result();
-
-		expect(result.errorMessage).toContain("Forbidden");
-		expect(result.errorMessage).not.toContain("pool is exhausted");
+		expect(result.errorStatus).toBe(403);
+		expect(urls).toEqual(["https://api.factory.ai/api/llm/o/v1/chat/completions"]);
 	});
 });

@@ -330,25 +330,6 @@ therefore completes through the paste-code path.
 | `PI_OPENAI_STREAM_FIRST_EVENT_TIMEOUT_MS`   | OpenAI-specific first-event timeout override; `0` disables and takes precedence over the generic value. `omp config set providers.streamFirstEventTimeoutSeconds <seconds>` provides the persisted equivalent |
 | `PI_OPENAI_STREAM_IDLE_TIMEOUT_MS`          | OpenAI-specific idle timeout override; `0` disables and takes precedence over the generic value. `omp config set providers.streamIdleTimeoutSeconds <seconds>` provides the persisted equivalent              |
 
-### Factory Droid Responses WebSocket
-
-Factory authentication uses `/login factory-droid`, not an environment API key. WebSocket controls apply only to eligible Responses models routed through the OpenAI upstream; other wire protocols remain HTTP.
-
-| Variable | Default / behavior |
-| --- | --- |
-| `PI_FACTORY_DROID_WS` | Unset follows the account feature flag; `1`/`true` enables attempts, `0`/`false` forces HTTPS. |
-| `PI_FACTORY_DROID_WS_DEBUG` | Enables transport diagnostic logging. |
-| `PI_FACTORY_DROID_WS_CONNECT_TIMEOUT_MS` | Upgrade timeout; default `10000`. |
-| `PI_FACTORY_DROID_WS_FIRST_FRAME_TIMEOUT_MS` | First-frame timeout; default `60000`. |
-| `PI_FACTORY_DROID_WS_IDLE_TIMEOUT_MS` | Active-stream idle timeout; default `300000`. |
-| `PI_FACTORY_DROID_WS_MAX_IDLE_REUSE_MS` | Maximum idle age for reusing a connection; default `30000`. |
-| `PI_FACTORY_DROID_WS_IDLE_CLOSE_MS` | Close an unused socket after this interval; default `120000`. |
-| `PI_FACTORY_DROID_WS_PING_INTERVAL_MS` | Heartbeat interval; default `10000`. |
-| `PI_FACTORY_DROID_WS_PONG_TIMEOUT_MS` | Heartbeat liveness deadline; default `60000`. |
-| `PI_FACTORY_DROID_WS_MAX_FAILURES` | Transport failures before disabling WebSocket for the session; default `2`. |
-| `PI_FACTORY_DROID_WS_FLAGS_TIMEOUT_MS` | Account feature-flag lookup timeout; default `3000`. |
-| `PI_FACTORY_DROID_WS_FLAGS_TTL_MS` | Account feature-flag cache lifetime; default `300000`. |
-
 ### Cursor provider debug
 
 | Variable           | Behavior                                                                 |

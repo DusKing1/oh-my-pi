@@ -2505,7 +2505,6 @@ function mapOptionsForApi<TApi extends Api>(
 					: undefined;
 			return castApi<"factory-droid-agent">({
 				...base,
-				cwd: options?.cwd,
 				reasoning,
 				disableReasoning: options?.disableReasoning || options?.forceReasoningOff,
 				hideThinkingSummary: options?.hideThinkingSummary,

@@ -6,15 +6,17 @@ import type { AssistantMessage, Context, Model, StreamOptions, Tool } from "../.
 import { AssistantMessageEventStream } from "../../utils/event-stream";
 import { getStreamFirstEventTimeoutMs, getStreamIdleTimeoutMs } from "../../utils/idle-iterator";
 import { notifyProviderResponse } from "../../utils/provider-response";
-import { normalizeSchemaForFactoryDroid } from "../../utils/schema";
-import { mapStopReasonString, nextToolCallId, retainThoughtSignature, SKIP_THOUGHT_SIGNATURE } from "../google-shared";
+import { dereferenceJsonSchema, normalizeSchemaForFactoryDroid, toolWireSchema } from "../../utils/schema";
+import {
+	mapStopReasonString,
+	nextToolCallId,
+	pushBlockEndEvent,
+	retainThoughtSignature,
+	SKIP_THOUGHT_SIGNATURE,
+	startTextOrThinkingBlock,
+} from "../google-shared";
 
-/**
- * Factory's Gemini path (`POST /api/llm/g/v1/generate`) speaks native
- * generateContent SSE — not the standard `:streamGenerateContent` route OMP's
- * google transport composes — so the Droid Core/Standard Gemini models get
- * this dedicated client. Request/response shapes verified against live traffic.
- */
+/** Factory's Gemini endpoint speaks native generateContent SSE at `/api/llm/g/v1/generate`. */
 
 interface GeminiPart {
 	text?: string;
@@ -105,7 +107,7 @@ function mapFactoryDroidFinishReason(reason: string | undefined): {
 /**
  * Message → contents converter for the proxy's gemini history contract:
  *
- * - User text becomes one text part per block; images ride as `inlineData`.
+ * - User and developer turns become user contents; images ride as `inlineData`.
  * - Text and thinking both replay as plain text parts (never `thought: true`).
  *   Thinking block text always resends; a `thoughtSignature` is attached only
  *   when the block carries one — the gemini wire is the only producer of
@@ -125,7 +127,7 @@ function toGeminiContents(context: Context): {
 } {
 	const contents: Array<{ role: "user" | "model"; parts: GeminiPart[] }> = [];
 	for (const message of context.messages) {
-		if (message.role === "user") {
+		if (message.role === "user" || message.role === "developer") {
 			const parts: GeminiPart[] = [];
 			if (typeof message.content === "string") {
 				if (message.content) parts.push({ text: message.content });
@@ -231,9 +233,7 @@ function toGeminiTools(tools: Tool[] | undefined): Array<{ functionDeclarations:
 			functionDeclarations: tools.map(tool => ({
 				name: sanitizeFactoryDroidToolName(tool.name),
 				description: tool.description,
-				// The CLI copies an allowlist of schema keywords and drops the rest
-				// (no propertyOrdering, patterns/limits preserved).
-				parameters: normalizeSchemaForFactoryDroid(tool.parameters),
+				parameters: normalizeSchemaForFactoryDroid(dereferenceJsonSchema(toolWireSchema(tool))),
 			})),
 		},
 	];
@@ -321,9 +321,7 @@ export function streamFactoryDroidGemini(
 				contents,
 				...(systemInstruction ? { systemInstruction } : {}),
 				generationConfig: {
-					// Sampling is caller-driven like the native google transport:
-					// only provided values ride the wire (the proxy accepts a
-					// leaner config — probe-verified) and no maxOutputTokens.
+					// Forward only caller-provided sampling overrides; no maxOutputTokens.
 					...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
 					...(options.topP !== undefined ? { topP: options.topP } : {}),
 					...(options.topK !== undefined ? { topK: options.topK } : {}),
@@ -400,38 +398,20 @@ export function streamFactoryDroidGemini(
 
 			stream.push({ type: "start", partial: output });
 
-			let textIndex = -1;
-			let thinkingIndex = -1;
-			let activeBlock: "thinking" | "text" | undefined;
+			let activeIndex = -1;
 			let finishReason: string | undefined;
 			let blockReason: string | undefined;
-			const toolCalls = new Map<number, { name: string; args: string }>();
-
-			// Block close helpers: flush the open block's end event. Used both
-			// on part-type flips (interleaved Gemini 3 spans) and at the end of
-			// the stream.
-			const closeThinking = () => {
-				if (thinkingIndex < 0) return;
-				const block = output.content[thinkingIndex] as { thinking: string };
-				stream.push({
-					type: "thinking_end",
-					contentIndex: thinkingIndex,
-					content: block.thinking,
-					partial: output,
-				});
-				thinkingIndex = -1;
-			};
-			const closeText = () => {
-				if (textIndex < 0) return;
-				const block = output.content[textIndex] as { text: string };
-				stream.push({ type: "text_end", contentIndex: textIndex, content: block.text, partial: output });
-				textIndex = -1;
+			const toolCallIndices: number[] = [];
+			const closeBlock = () => {
+				if (activeIndex < 0) return;
+				const block = output.content[activeIndex];
+				if (block.type === "thinking" || block.type === "text") {
+					pushBlockEndEvent(block, activeIndex, output, stream);
+				}
+				activeIndex = -1;
 			};
 
-			// Canonical SSE framing (spec-compliant multi-line data: joining,
-			// [DONE] termination, tolerant trailing-JSON recovery) with
-			// abortableSource semantics that re-derive the abort reason after
-			// each read instead of trusting a raw read rejection.
+			// readSseJson handles framing and abortable reads.
 			for await (const chunk of readSseJson<GeminiChunk>(response.body, callSignal, event =>
 				options.onSseEvent?.({ event: event.event, data: event.data, raw: [...event.raw] }, model),
 			)) {
@@ -469,13 +449,7 @@ export function streamFactoryDroidGemini(
 				const parts = chunk.candidates?.[0]?.content?.parts ?? [];
 				for (const part of parts) {
 					if (part.functionCall) {
-						// Tool-call boundaries flush any open block (the
-						// shared google consumer does the same), so a
-						// later part starts fresh instead of appending to
-						// the pre-call span.
-						closeThinking();
-						closeText();
-						activeBlock = undefined;
+						closeBlock();
 						const contentIndex = output.content.length;
 						const argsJson = JSON.stringify(part.functionCall.args ?? {});
 						output.content.push({
@@ -485,26 +459,19 @@ export function streamFactoryDroidGemini(
 							arguments: part.functionCall.args ?? {},
 							...(part.thoughtSignature ? { thoughtSignature: part.thoughtSignature } : {}),
 						} as AssistantMessage["content"][number]);
-						toolCalls.set(contentIndex, { name: part.functionCall.name, args: argsJson });
+						toolCallIndices.push(contentIndex);
 						stream.push({ type: "toolcall_start", contentIndex, partial: output });
 						stream.push({ type: "toolcall_delta", contentIndex, delta: argsJson, partial: output });
 						continue;
 					}
 					if (typeof part.text !== "string") continue;
 					if (part.thought === true) {
-						// Gemini 3 interleaves thinking and text; a
-						// type flip starts a new block (the shared
-						// consumer flushes on every isThinking
-						// transition) so spans never merge and
-						// signatures never bleed across blocks.
-						if (activeBlock === "text") closeText();
-						if (thinkingIndex < 0) {
-							thinkingIndex = output.content.length;
-							output.content.push({ type: "thinking", thinking: "" } as AssistantMessage["content"][number]);
-							stream.push({ type: "thinking_start", contentIndex: thinkingIndex, partial: output });
-							activeBlock = "thinking";
+						if (activeIndex >= 0 && output.content[activeIndex].type !== "thinking") closeBlock();
+						if (activeIndex < 0) {
+							activeIndex = output.content.length;
+							startTextOrThinkingBlock(true, output, stream);
 						}
-						const block = output.content[thinkingIndex] as { thinking: string; thinkingSignature?: string };
+						const block = output.content[activeIndex] as { thinking: string; thinkingSignature?: string };
 						// The CLI keeps the FIRST non-empty signature per block.
 						block.thinkingSignature = retainThoughtSignature(
 							block.thinkingSignature,
@@ -514,23 +481,21 @@ export function streamFactoryDroidGemini(
 						block.thinking += part.text;
 						stream.push({
 							type: "thinking_delta",
-							contentIndex: thinkingIndex,
+							contentIndex: activeIndex,
 							delta: part.text,
 							partial: output,
 						});
 					} else if (part.text.length > 0 || (part.thoughtSignature && !part.functionCall)) {
-						if (activeBlock === "thinking") closeThinking();
-						if (textIndex < 0) {
-							textIndex = output.content.length;
-							output.content.push({ type: "text", text: "" } as AssistantMessage["content"][number]);
-							stream.push({ type: "text_start", contentIndex: textIndex, partial: output });
-							activeBlock = "text";
+						if (activeIndex >= 0 && output.content[activeIndex].type !== "text") closeBlock();
+						if (activeIndex < 0) {
+							activeIndex = output.content.length;
+							startTextOrThinkingBlock(false, output, stream);
 						}
-						const block = output.content[textIndex] as { text: string; textSignature?: string };
+						const block = output.content[activeIndex] as { text: string; textSignature?: string };
 						block.textSignature = retainThoughtSignature(block.textSignature, part.thoughtSignature, true);
 						if (part.text.length > 0) {
 							block.text += part.text;
-							stream.push({ type: "text_delta", contentIndex: textIndex, delta: part.text, partial: output });
+							stream.push({ type: "text_delta", contentIndex: activeIndex, delta: part.text, partial: output });
 						}
 					}
 				}
@@ -542,9 +507,8 @@ export function streamFactoryDroidGemini(
 			output.duration = performance.now() - startTime;
 			if (firstTokenTime !== undefined) output.ttft = firstTokenTime - startTime;
 
-			closeThinking();
-			closeText();
-			for (const [contentIndex] of toolCalls) {
+			closeBlock();
+			for (const contentIndex of toolCallIndices) {
 				const toolCall = output.content[contentIndex] as Extract<
 					AssistantMessage["content"][number],
 					{ type: "toolCall" }
@@ -554,7 +518,7 @@ export function streamFactoryDroidGemini(
 			// Native terminal mapping: any tool call wins over every finish
 			// reason; otherwise a promptFeedback blockReason takes precedence,
 			// then the last chunk's finishReason decides stop/length/error.
-			if (toolCalls.size > 0) {
+			if (toolCallIndices.length > 0) {
 				output.stopReason = "toolUse";
 				stream.push({ type: "done", reason: "toolUse", message: output });
 			} else if (blockReason) {
