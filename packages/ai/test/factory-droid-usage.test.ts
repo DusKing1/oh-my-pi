@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import type { UsageFetchContext } from "../src/usage";
-import { factoryDroidUsageProvider, parseFactoryDroidUsage } from "../src/usage/factory-droid";
+import {
+	factoryDroidRankingStrategy,
+	factoryDroidUsageProvider,
+	parseFactoryDroidUsage,
+} from "../src/usage/factory-droid";
 
 /** Live shape captured from GET /api/billing/limits (droid 0.189.0 account). */
 const LIVE_PAYLOAD = {
@@ -100,10 +104,93 @@ describe("parseFactoryDroidUsage", () => {
 		expect(standard5h?.status).toBe("ok");
 	});
 
+	it("treats a window ending exactly at fetch time as active but a past end as lapsed", () => {
+		const end = Date.parse("2026-08-25T12:00:00.000Z");
+		const payload = { limits: { core: { fiveHour: { usedPercent: 100, windowEnd: new Date(end).toISOString() } } } };
+		const atEnd = parseFactoryDroidUsage(payload, end)?.limits[0];
+		const afterEnd = parseFactoryDroidUsage(payload, end + 1)?.limits[0];
+		expect(atEnd?.status).toBe("exhausted");
+		expect(atEnd?.window?.resetsAt).toBe(end);
+		expect(afterEnd?.status).toBe("ok");
+		expect(afterEnd?.window?.resetsAt).toBeUndefined();
+	});
+
+	it("keeps a valid non-window-billed account visible without inventing quota", () => {
+		const fetchedAt = 123456;
+		const report = parseFactoryDroidUsage(
+			{ usesTokenRateLimitsBilling: false, overagePreference: null, canManageOverage: false },
+			fetchedAt,
+		);
+		expect(report).toMatchObject({ provider: "factory-droid", fetchedAt, limits: [] });
+		expect(parseFactoryDroidUsage({ usesTokenRateLimitsBilling: true }, fetchedAt)).toBeNull();
+	});
+
 	it("returns null for payloads without limit windows", () => {
 		expect(parseFactoryDroidUsage({})).toBeNull();
 		expect(parseFactoryDroidUsage({ limits: {} })).toBeNull();
 		expect(parseFactoryDroidUsage("nope")).toBeNull();
+	});
+});
+
+describe("Factory Droid model quota routing", () => {
+	it("MiniMax Anthropic-wire models spend Core, not Standard, quota", () => {
+		const fetchedAt = Date.parse("2026-08-07T06:00:00.000Z");
+		const report = parseFactoryDroidUsage(
+			{
+				limits: {
+					standard: {
+						fiveHour: { usedPercent: 100, windowEnd: "2026-08-07T07:00:00.000Z" },
+						weekly: { usedPercent: 95, windowEnd: "2026-08-10T07:00:00.000Z" },
+					},
+					core: {
+						fiveHour: { usedPercent: 20, windowEnd: "2026-08-07T07:00:00.000Z" },
+						weekly: { usedPercent: 30, windowEnd: "2026-08-10T07:00:00.000Z" },
+					},
+				},
+			},
+			fetchedAt,
+		);
+		if (!report) throw new Error("expected usage windows");
+		const coreContext = { modelId: "minimax-m2.5" };
+		const standardContext = { modelId: "claude-sonnet-4-5-20250929" };
+		expect(factoryDroidRankingStrategy.blockScope?.(coreContext)).toBe("pool:core");
+		expect(factoryDroidRankingStrategy.findWindowLimits(report, coreContext).primary?.amount.usedFraction).toBe(0.2);
+		expect(
+			factoryDroidRankingStrategy.scopeLimits?.(report, coreContext).every(limit => limit.id.includes(":core:")),
+		).toBe(true);
+		expect(factoryDroidRankingStrategy.blockScope?.(standardContext)).toBe("pool:standard");
+		expect(factoryDroidRankingStrategy.findWindowLimits(report, standardContext).primary?.status).toBe("exhausted");
+		expect(
+			factoryDroidRankingStrategy
+				.scopeLimits?.(report, standardContext)
+				.every(limit => limit.id.includes(":standard:")),
+		).toBe(true);
+		const healable = factoryDroidRankingStrategy.healableBlockScopes?.(report);
+		expect(
+			healable?.find(scope => scope.blockScope === "pool:core")?.limits.every(limit => limit.status !== "exhausted"),
+		).toBe(true);
+		expect(
+			healable
+				?.find(scope => scope.blockScope === "pool:standard")
+				?.limits.some(limit => limit.status === "exhausted"),
+		).toBe(true);
+		expect(factoryDroidRankingStrategy.blockScope?.({ modelId: "unknown-model" })).toBe("pool:unknown");
+		expect(factoryDroidRankingStrategy.scopeLimits?.(report, { modelId: "unknown-model" })).toHaveLength(4);
+		const fundedReport = parseFactoryDroidUsage(
+			{
+				limits: {
+					standard: { fiveHour: { usedPercent: 100, windowEnd: "2026-08-07T07:00:00.000Z" } },
+					core: { fiveHour: { usedPercent: 100, windowEnd: "2026-08-07T07:00:00.000Z" } },
+				},
+				extraUsageBalanceCents: 200,
+			},
+			fetchedAt,
+		);
+		if (!fundedReport) throw new Error("expected funded windows");
+		expect(factoryDroidRankingStrategy.scopeLimits?.(fundedReport, coreContext)).toEqual([]);
+		expect(
+			factoryDroidRankingStrategy.healableBlockScopes?.(fundedReport)?.every(scope => scope.healthy === true),
+		).toBe(true);
 	});
 });
 

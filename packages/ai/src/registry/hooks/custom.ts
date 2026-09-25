@@ -15,6 +15,6 @@ export const CUSTOM_REFRESH_HOOKS: Record<string, Lazy<RefreshHook>> = {
 	cursor: () => import("../oauth/cursor").then(module => module.refreshCursorHook),
 	"factory-droid": () =>
 		import("../oauth/factory-droid").then(
-			module => credentials => module.refreshFactoryDroidToken(credentials.refresh),
+			module => (credentials, signal) => module.refreshFactoryDroidToken(credentials.refresh, undefined, signal),
 		),
 };

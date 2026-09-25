@@ -262,6 +262,48 @@ describe("Factory Droid gemini wire — finishReason mapping", () => {
 	});
 });
 
+describe("Factory Droid gemini wire — usage", () => {
+	it("prices cached, uncached and reasoning tokens on a known-price model", async () => {
+		const model = { ...gemini(), cost: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 3 } };
+		const result = await streamFactoryDroidGemini(
+			model,
+			{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+			{
+				baseUrl: "https://api.factory.ai/api/llm/g/v1",
+				headers: { "x-api-provider": "google" },
+				fetch: captureFetch(
+					[],
+					[
+						JSON.stringify({ candidates: [{ content: { parts: [{ text: "answer" }] } }] }),
+						JSON.stringify({
+							candidates: [{ finishReason: "STOP" }],
+							usageMetadata: {
+								promptTokenCount: 1_000_000,
+								cachedContentTokenCount: 250_000,
+								candidatesTokenCount: 100_000,
+								thoughtsTokenCount: 50_000,
+								totalTokenCount: 1_150_000,
+							},
+						}),
+					],
+				),
+			},
+		).result();
+		expect(result.usage).toMatchObject({
+			input: 750_000,
+			cacheRead: 250_000,
+			output: 150_000,
+			reasoningTokens: 50_000,
+			totalTokens: 1_150_000,
+			cost: { input: 1.5, cacheRead: 0.05, output: 1.8, cacheWrite: 0 },
+		});
+		expect(result.usage.cost.total).toBeCloseTo(3.35, 10);
+		expect(result.duration).toBeGreaterThanOrEqual(0);
+		expect(result.ttft).toBeGreaterThanOrEqual(0);
+		expect(result.ttft!).toBeLessThanOrEqual(result.duration!);
+	});
+});
+
 describe("Factory Droid gemini wire — generationConfig", () => {
 	it("forwards caller temperature and omits sampling defaults unless provided", async () => {
 		const captured: CapturedRequest[] = [];
@@ -280,6 +322,52 @@ describe("Factory Droid gemini wire — generationConfig", () => {
 		expect(generation.topP).toBeUndefined();
 		expect(generation.topK).toBeUndefined();
 		expect(generation.thinkingConfig).toEqual({ includeThoughts: true, thinkingLevel: "HIGH" });
+	});
+
+	it("sends caller stop sequences in the generation config", async () => {
+		const captured: CapturedRequest[] = [];
+		await streamFactoryDroidGemini(
+			gemini(),
+			{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+			{
+				baseUrl: "https://api.factory.ai/api/llm/g/v1",
+				headers: { "x-api-provider": "google" },
+				stopSequences: ["END", "<stop>"],
+				fetch: captureFetch(captured, [finishChunk("STOP")]),
+			},
+		).result();
+		expect(captured[0].body.generationConfig).toMatchObject({ stopSequences: ["END", "<stop>"] });
+	});
+
+	it("applies a caller payload replacement and reports response and SSE metadata", async () => {
+		const captured: CapturedRequest[] = [];
+		const observed: { responseStatus?: number; requestId?: string | null; sse: string[] } = { sse: [] };
+		const result = await streamFactoryDroidGemini(
+			gemini(),
+			{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+			{
+				baseUrl: "https://api.factory.ai/api/llm/g/v1",
+				headers: { "x-api-provider": "google" },
+				fetch: captureFetch(captured, [finishChunk("STOP")], undefined, { "x-request-id": "gem-test-id" }),
+				onPayload: payload => ({
+					...(payload as object),
+					generationConfig: { thinkingConfig: { includeThoughts: false } },
+				}),
+				onResponse: response => {
+					observed.responseStatus = response.status;
+					observed.requestId = response.requestId;
+				},
+				onSseEvent: event => {
+					observed.sse.push(event.data);
+					throw new Error("observer failed");
+				},
+			},
+		).result();
+		expect(result.stopReason).toBe("stop");
+		expect(captured[0].body.generationConfig).toEqual({ thinkingConfig: { includeThoughts: false } });
+		expect(observed.responseStatus).toBe(200);
+		expect(observed.requestId).toBe("gem-test-id");
+		expect(observed.sse).toContain(finishChunk("STOP"));
 	});
 
 	it("aborts a stalled generation with a timeout error (idle watchdog)", async () => {
@@ -552,6 +640,53 @@ describe("Factory Droid gemini wire — tool schema allowlist", () => {
 		});
 	});
 
+	it("mints distinct tool-call IDs across turns and replays their matching results", async () => {
+		const captured: CapturedRequest[] = [];
+		const response = JSON.stringify({
+			candidates: [{ content: { parts: [{ functionCall: { name: "Read", args: { path: "/tmp/x" } } }] } }],
+		});
+		const model = gemini();
+		const options = {
+			baseUrl: "https://api.factory.ai/api/llm/g/v1",
+			headers: { "x-api-provider": "google" },
+			fetch: captureFetch(captured, [response, finishChunk("STOP")]),
+		};
+		const first = await streamFactoryDroidGemini(
+			model,
+			{ messages: [{ role: "user", content: "read", timestamp: 1 }] },
+			options,
+		).result();
+		const firstCall = first.content.find(block => block.type === "toolCall");
+		expect(firstCall?.type).toBe("toolCall");
+		if (!firstCall || firstCall.type !== "toolCall") throw new Error("Expected first tool call");
+		const second = await streamFactoryDroidGemini(
+			model,
+			{
+				messages: [
+					{ role: "user", content: "read", timestamp: 1 },
+					first,
+					{
+						role: "toolResult",
+						toolCallId: firstCall.id,
+						toolName: firstCall.name,
+						content: [{ type: "text", text: "body" }],
+						isError: false,
+						timestamp: 2,
+					},
+				],
+			},
+			options,
+		).result();
+		const secondCall = second.content.find(block => block.type === "toolCall");
+		expect(secondCall?.type).toBe("toolCall");
+		if (!secondCall || secondCall.type !== "toolCall") throw new Error("Expected second tool call");
+		expect(secondCall.id).not.toBe(firstCall.id);
+		const replay = captured[1].body.contents as Array<{ role: string; parts: Array<Record<string, unknown>> }>;
+		expect(replay.at(-2)?.parts[0]).toMatchObject({ functionCall: { name: "Read", args: { path: "/tmp/x" } } });
+		expect(replay.at(-1)?.parts[0]).toMatchObject({
+			functionResponse: { name: "Read", response: { result: "body" } },
+		});
+	});
 	it("truncates long tool names with a sha256 suffix", async () => {
 		const captured: CapturedRequest[] = [];
 		const context: Context = {

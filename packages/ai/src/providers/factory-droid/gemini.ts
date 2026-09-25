@@ -1,11 +1,13 @@
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
+import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { readSseJson } from "@oh-my-pi/pi-utils";
 import * as AIError from "../../error";
 import type { AssistantMessage, Context, Model, StreamOptions, Tool } from "../../types";
 import { AssistantMessageEventStream } from "../../utils/event-stream";
 import { getStreamFirstEventTimeoutMs, getStreamIdleTimeoutMs } from "../../utils/idle-iterator";
+import { notifyProviderResponse } from "../../utils/provider-response";
 import { normalizeSchemaForFactoryDroid } from "../../utils/schema";
-import { mapStopReasonString, retainThoughtSignature, SKIP_THOUGHT_SIGNATURE } from "../google-shared";
+import { mapStopReasonString, nextToolCallId, retainThoughtSignature, SKIP_THOUGHT_SIGNATURE } from "../google-shared";
 
 /**
  * Factory's Gemini path (`POST /api/llm/g/v1/generate`) speaks native
@@ -286,6 +288,8 @@ export function streamFactoryDroidGemini(
 	const stream = new AssistantMessageEventStream();
 
 	(async () => {
+		const startTime = performance.now();
+		let firstTokenTime: number | undefined;
 		const output: AssistantMessage = {
 			role: "assistant",
 			content: [],
@@ -312,7 +316,7 @@ export function streamFactoryDroidGemini(
 		try {
 			const thinkingOn = options.disableReasoning !== true;
 			const { contents, systemInstruction } = toGeminiContents(context);
-			const body: Record<string, unknown> = {
+			let body: Record<string, unknown> = {
 				model: model.requestModelId ?? model.id,
 				contents,
 				...(systemInstruction ? { systemInstruction } : {}),
@@ -323,6 +327,7 @@ export function streamFactoryDroidGemini(
 					...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
 					...(options.topP !== undefined ? { topP: options.topP } : {}),
 					...(options.topK !== undefined ? { topK: options.topK } : {}),
+					...(options.stopSequences !== undefined ? { stopSequences: options.stopSequences } : {}),
 					thinkingConfig: thinkingOn
 						? {
 								includeThoughts: true,
@@ -333,6 +338,8 @@ export function streamFactoryDroidGemini(
 			};
 			const tools = toGeminiTools(context.tools);
 			if (tools) body.tools = tools;
+			const replacement = await options.onPayload?.(body, model, options.signal);
+			if (replacement !== undefined) body = replacement as Record<string, unknown>;
 
 			// Idle watchdog: the proxy buffers generated output and can stall
 			// between events (long reasoning, post-tool-call silence). Without a
@@ -388,6 +395,7 @@ export function streamFactoryDroidGemini(
 					{ headers: response.headers, code },
 				);
 			}
+			await notifyProviderResponse(options, response, model, response.headers.get("x-request-id"));
 			if (!response.body) throw new Error("Factory Gemini generate returned an empty body");
 
 			stream.push({ type: "start", partial: output });
@@ -424,9 +432,14 @@ export function streamFactoryDroidGemini(
 			// [DONE] termination, tolerant trailing-JSON recovery) with
 			// abortableSource semantics that re-derive the abort reason after
 			// each read instead of trusting a raw read rejection.
-			for await (const chunk of readSseJson<GeminiChunk>(response.body, callSignal)) {
+			for await (const chunk of readSseJson<GeminiChunk>(response.body, callSignal, event =>
+				options.onSseEvent?.({ event: event.event, data: event.data, raw: [...event.raw] }, model),
+			)) {
 				clearTimeout(stalledTimer);
 				sawFirstEvent = true;
+				if (firstTokenTime === undefined && chunk.candidates?.[0]?.content?.parts?.some(part => part.text)) {
+					firstTokenTime = performance.now();
+				}
 				if (chunk.usageMetadata) {
 					// Mirror the shared google transport's mapping
 					// (google-shared.ts): promptTokenCount INCLUDES cached
@@ -447,6 +460,7 @@ export function streamFactoryDroidGemini(
 						...(thinkingTokens > 0 ? { reasoningTokens: thinkingTokens } : {}),
 						cost: output.usage.cost,
 					};
+					calculateCost(model, output.usage, output.timestamp);
 				}
 				// The last chunk's reason stands (streams repeat benign
 				// intermediate reasons before the terminal one).
@@ -466,7 +480,7 @@ export function streamFactoryDroidGemini(
 						const argsJson = JSON.stringify(part.functionCall.args ?? {});
 						output.content.push({
 							type: "toolCall",
-							id: `call_${contentIndex}`,
+							id: nextToolCallId(part.functionCall.name),
 							name: part.functionCall.name,
 							arguments: part.functionCall.args ?? {},
 							...(part.thoughtSignature ? { thoughtSignature: part.thoughtSignature } : {}),
@@ -525,6 +539,8 @@ export function streamFactoryDroidGemini(
 				armIdle();
 			}
 			clearTimeout(stalledTimer);
+			output.duration = performance.now() - startTime;
+			if (firstTokenTime !== undefined) output.ttft = firstTokenTime - startTime;
 
 			closeThinking();
 			closeText();
@@ -588,6 +604,8 @@ export function streamFactoryDroidGemini(
 			output.errorStatus = result.status;
 			output.errorId = result.id;
 			output.errorMessage = result.message;
+			output.duration = performance.now() - startTime;
+			if (firstTokenTime !== undefined) output.ttft = firstTokenTime - startTime;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}

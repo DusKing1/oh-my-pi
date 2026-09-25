@@ -78,26 +78,28 @@ export const FACTORY_DROID_UPSTREAM_REGIONS: Readonly<Record<FactoryDroidUpstrea
 	snowflake: ["global"],
 };
 
-/**
- * Vercel edge PoPs in Europe. Factory's proxy refuses upstreams it cannot
- * serve from the request's edge — independent of account residency — so the
- * serving edge is the availability signal for accounts whose whoami carries
- * no region. Continental EU plus Dublin and London; unmapped PoPs fall back
- * to the reactive region-error blocklist in the provider.
- */
-const FACTORY_DROID_EU_EDGE_POPS = new Set(["arn1", "cdg1", "dub1", "fra1", "lhr1", "mad1", "mxp1", "waw1"]);
+/** Vercel edge PoPs in Europe; unknown PoPs rely on the reactive edge blocklist. */
+const FACTORY_DROID_EU_EDGE_POPS: Readonly<Record<string, true>> = {
+	arn1: true,
+	cdg1: true,
+	dub1: true,
+	fra1: true,
+	lhr1: true,
+	mad1: true,
+	mxp1: true,
+	waw1: true,
+};
 
-/**
- * Serving region from a response's `x-vercel-id` header, whose first segment
- * is the client-serving edge PoP (e.g. `cdg1::sfo1::…` for a Paris edge in
- * front of a US deployment). Returns `"eu"` for European edges, undefined
- * otherwise or when the header is absent.
- */
+/** First PoP in `x-vercel-id`, the edge serving this request, not the deployment's origin. */
+export function factoryDroidServingEdge(headers: Headers): string | undefined {
+	const edge = headers.get("x-vercel-id")?.split("::", 1)[0]?.trim().toLowerCase();
+	return edge && /^[a-z]{3}\d+$/.test(edge) ? edge : undefined;
+}
+
+/** European serving region inferred from the first PoP of `x-vercel-id`. */
 export function factoryDroidEdgeRegion(headers: Headers): "eu" | undefined {
-	const id = headers.get("x-vercel-id");
-	if (!id) return undefined;
-	const pop = id.split("::", 1)[0]?.trim().toLowerCase();
-	return pop != null && FACTORY_DROID_EU_EDGE_POPS.has(pop) ? "eu" : undefined;
+	const edge = factoryDroidServingEdge(headers);
+	return edge != null && FACTORY_DROID_EU_EDGE_POPS[edge] === true ? "eu" : undefined;
 }
 
 /**
@@ -175,6 +177,8 @@ export interface FactoryDroidModelInput {
 	/** Display name, e.g. "Kimi K3 (Droid Core)". */
 	name: string;
 	wire: FactoryDroidWire;
+	/** Billing pool; when absent, the completions wire is Core and all other wires are Standard. */
+	pool?: "core" | "standard";
 	contextWindow: number;
 	maxTokens: number;
 	/** Upstream rotation list; the first entry is the default `x-api-provider`. */
@@ -1132,6 +1136,7 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelInput[] = [
 		id: "minimax-m2.5",
 		name: "MiniMax M2.5 (Droid Core)",
 		wire: "anthropic-messages",
+		pool: "core",
 		contextWindow: 204800,
 		maxTokens: 64000,
 		apiProviders: ["fireworks"],
@@ -1146,6 +1151,7 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelInput[] = [
 		id: "minimax-m2.7",
 		name: "MiniMax M2.7 (Droid Core)",
 		wire: "anthropic-messages",
+		pool: "core",
 		contextWindow: 196600,
 		maxTokens: 64000,
 		apiProviders: ["fireworks"],
@@ -1162,6 +1168,7 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelInput[] = [
 		id: "minimax-m3",
 		name: "MiniMax M3 (Droid Core)",
 		wire: "anthropic-messages",
+		pool: "core",
 		contextWindow: 448000,
 		maxTokens: 64000,
 		apiProviders: ["fireworks"],
@@ -1287,3 +1294,10 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelInput[] = [
 export const FACTORY_DROID_MODEL_META: Readonly<Record<string, FactoryDroidModelInput>> = Object.fromEntries(
 	FACTORY_DROID_MODELS.map(model => [model.id, model]),
 );
+
+/** Factory subscription billing pool; unknown IDs have no inferred entitlement. */
+export function factoryDroidPoolForModel(modelId: string): "core" | "standard" | undefined {
+	const meta = FACTORY_DROID_MODEL_META[modelId];
+	if (!meta) return undefined;
+	return meta.pool ?? (meta.wire === "openai-completions" ? "core" : "standard");
+}

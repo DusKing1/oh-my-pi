@@ -43,7 +43,9 @@ async function requestDeviceAuthorization(fetchImpl: FetchImpl, signal?: AbortSi
 		method: "POST",
 		headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
 		body: new URLSearchParams({ client_id: WORKOS_CLIENT_ID }),
-		signal: signal ?? AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
+		signal: signal
+			? AbortSignal.any([signal, AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS)])
+			: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
 	});
 	if (!response.ok) {
 		throw new AIError.OAuthError(`Factory device authorization failed: ${response.status}`, {
@@ -86,7 +88,9 @@ async function pollDeviceToken(
 			device_code: deviceCode,
 			client_id: WORKOS_CLIENT_ID,
 		}),
-		signal: signal ?? AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
+		signal: signal
+			? AbortSignal.any([signal, AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS)])
+			: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
 	});
 	const body: unknown = await response.json().catch(() => undefined);
 	if (response.ok) {
@@ -127,11 +131,9 @@ function readTokenResponse(body: Record<string, unknown>): TokenResponse {
 		accountId:
 			(typeof user?.id === "string" ? user.id : undefined) ??
 			(typeof claims?.sub === "string" ? claims.sub : undefined),
-		// X-Factory-Org-Id carries the external (Factory-side) org id, not the
-		// WorkOS-internal `org_01…` id that `organization_id` returns.
-		orgId:
-			(typeof claims?.external_org_id === "string" ? claims.external_org_id : undefined) ??
-			(typeof body.organization_id === "string" ? body.organization_id : undefined),
+		// The Factory proxy consumes external_org_id; WorkOS organization_id is
+		// an internal identifier and cannot be sent as X-Factory-Org-Id.
+		orgId: typeof claims?.external_org_id === "string" ? claims.external_org_id : undefined,
 	};
 }
 
@@ -174,7 +176,9 @@ async function fetchRegion(
 	try {
 		const response = await fetchImpl(`${factoryDroidApiBaseUrl(undefined)}/api/cli/whoami`, {
 			headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
-			signal: signal ?? AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
+			signal: signal
+				? AbortSignal.any([signal, AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS)])
+				: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
 		});
 		if (!response.ok) return undefined;
 		const body: unknown = await response.json();
@@ -182,8 +186,10 @@ async function fetchRegion(
 			return body.region;
 		}
 	} catch {
-		// Best-effort: region stays undefined (global) on any failure.
+		if (signal?.aborted) throw new AIError.LoginCancelledError("Login cancelled");
+		// Best-effort: region stays undefined (global) on non-cancellation failures.
 	}
+	if (signal?.aborted) throw new AIError.LoginCancelledError("Login cancelled");
 	return undefined;
 }
 
@@ -198,7 +204,7 @@ export async function loginFactoryDroid(ctrl: OAuthController): Promise<OAuthCre
 	});
 	ctrl.onProgress?.("Waiting for Factory authorization…");
 	const tokens = await pollOAuthDeviceCodeFlow({
-		poll: () => pollDeviceToken(device.deviceCode, fetchImpl),
+		poll: signal => pollDeviceToken(device.deviceCode, fetchImpl, signal),
 		intervalSeconds: device.intervalSeconds,
 		expiresInSeconds: device.expiresInSeconds,
 		signal: ctrl.signal,
@@ -212,6 +218,7 @@ export async function loginFactoryDroid(ctrl: OAuthController): Promise<OAuthCre
 export async function refreshFactoryDroidToken(
 	refreshToken: string,
 	fetchOverride?: FetchImpl,
+	signal?: AbortSignal,
 ): Promise<OAuthCredentials> {
 	const fetchImpl = fetchOverride ?? fetch;
 	const response = await fetchImpl(`${WORKOS_BASE_URL}/authenticate`, {
@@ -222,7 +229,9 @@ export async function refreshFactoryDroidToken(
 			refresh_token: refreshToken,
 			client_id: WORKOS_CLIENT_ID,
 		}),
-		signal: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
+		signal: signal
+			? AbortSignal.any([signal, AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS)])
+			: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
 	});
 	const body: unknown = await response.json().catch(() => undefined);
 	if (!response.ok) {
@@ -239,7 +248,7 @@ export async function refreshFactoryDroidToken(
 	// Mirror the CLI, which re-reads whoami on every token refresh: an account
 	// migrated between regions picks up the new region here, and the
 	// auth-storage merge falls back to the prior region when this call fails.
-	const region = await fetchRegion(fetchImpl, credentials.access);
+	const region = await fetchRegion(fetchImpl, credentials.access, signal);
 	return region === undefined ? credentials : { ...credentials, region };
 }
 

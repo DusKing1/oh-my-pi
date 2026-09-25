@@ -103,6 +103,8 @@ const FLAGS_TIMEOUT_MS = Number($env.PI_FACTORY_DROID_WS_FLAGS_TIMEOUT_MS || 3_0
 
 /** Feature-flag cache lifetime. Statsig gates do not flip mid-session. */
 const FLAGS_TTL_MS = Number($env.PI_FACTORY_DROID_WS_FLAGS_TTL_MS || 300_000);
+/** Bound account-wide cache retention, including failed and pending lookups. */
+const MAX_FLAG_CACHE_ENTRIES = 128;
 
 /** Statsig gate that must be on for the account to ride the socket. */
 const WS_FEATURE_FLAG = "openai_responses_websocket_mode";
@@ -181,13 +183,21 @@ async function isWebSocketFlagEnabled(input: {
 	orgId?: string;
 	fetchImpl: FetchImpl;
 	clientVersion: string;
-	signal?: AbortSignal;
 }): Promise<boolean> {
 	const url = new URL(FEATURE_FLAGS_PATH, input.responsesUrl).href;
-	const cacheKey = `${url}\u0000${input.accessToken}`;
+	const cacheKey = new Bun.CryptoHasher("sha256")
+		.update(url)
+		.update("\0")
+		.update(input.accessToken)
+		.update("\0")
+		.update(input.orgId ?? "")
+		.digest("hex");
 	const now = Date.now();
 	const cached = flagCache.get(cacheKey);
 	if (cached && cached.expiresAt > now) return cached.enabled;
+	for (const [key, entry] of flagCache) {
+		if (entry.expiresAt <= now) flagCache.delete(key);
+	}
 	const enabled = (async () => {
 		try {
 			const timeout = AbortSignal.timeout(FLAGS_TIMEOUT_MS);
@@ -199,7 +209,7 @@ async function isWebSocketFlagEnabled(input: {
 					"X-Factory-Client": "cli",
 					...(input.orgId ? { "X-Factory-Org-Id": input.orgId } : {}),
 				},
-				signal: input.signal ? AbortSignal.any([input.signal, timeout]) : timeout,
+				signal: timeout,
 			});
 			if (!response.ok) return false;
 			const body: unknown = await response.json();
@@ -211,6 +221,7 @@ async function isWebSocketFlagEnabled(input: {
 			return false;
 		}
 	})();
+	if (flagCache.size >= MAX_FLAG_CACHE_ENTRIES) flagCache.delete(flagCache.keys().next().value!);
 	flagCache.set(cacheKey, { expiresAt: now + FLAGS_TTL_MS, enabled });
 	return enabled;
 }
@@ -246,15 +257,25 @@ export async function shouldUseFactoryDroidResponsesWs(input: FactoryDroidWsGate
 	const wsState = state.get(PROVIDER_SESSION_STATE_KEY) as FactoryDroidWsProviderSessionState | undefined;
 	if (wsState?.session.disabled === true) return false;
 	const override = $env.PI_FACTORY_DROID_WS;
+	if (input.signal?.aborted) return false;
 	if (override !== undefined) return parseFlag(override);
-	return await isWebSocketFlagEnabled({
+	const enabled = isWebSocketFlagEnabled({
 		accessToken: input.accessToken,
 		responsesUrl: input.responsesUrl,
 		orgId: input.orgId,
 		fetchImpl: input.fetchImpl,
 		clientVersion: input.clientVersion,
-		signal: input.signal,
 	});
+	if (!input.signal) return await enabled;
+	const { promise, resolve } = Promise.withResolvers<boolean>();
+	const onAbort = () => resolve(false);
+	input.signal.addEventListener("abort", onAbort, { once: true });
+	try {
+		if (input.signal.aborted) return false;
+		return (await Promise.race([enabled, promise])) && !input.signal.aborted;
+	} finally {
+		input.signal.removeEventListener("abort", onAbort);
+	}
 }
 
 /** Live socket plus the fallback bookkeeping for one agent session. */
@@ -406,6 +427,7 @@ class FactoryDroidWebSocketConnection {
 		const socket = this.#socket;
 		this.#socket = null;
 		this.#stopHeartbeat();
+		if (this.#activeRequest) this.#push(new FactoryDroidWsTransportError(`websocket closed (${reason})`));
 		if (!socket || (socket.readyState !== WebSocket.OPEN && socket.readyState !== WebSocket.CONNECTING)) return;
 		try {
 			socket.close(1000, reason);
@@ -740,13 +762,19 @@ export function createFactoryDroidResponsesWsFetch(input: FactoryDroidResponsesW
 			if (opened.done) throw new FactoryDroidWsTransportError("websocket closed before the first frame");
 			first = opened.value;
 		} catch (error) {
-			await frames?.return();
-			// Nothing has been observed yet, so the HTTPS POST this stood in for
-			// is still exactly equivalent.
+			// Closing wakes a generator parked in #nextFrame before return() waits
+			// for its finally block; an aborted request cannot become an HTTPS POST.
+			if (signal?.aborted) {
+				releaseConnection(session, "aborted");
+				await frames?.return();
+				throw signal.reason ?? error;
+			}
 			recordTransportFailure(session, error);
+			await frames?.return();
 			return await input.baseFetch(url, init);
 		}
 		const activeFrames = frames;
+		let cancelled = false;
 		const sse = new ReadableStream<Uint8Array>({
 			start: controller => {
 				controller.enqueue(encoder.encode(`data: ${first.text}\n\n`));
@@ -761,13 +789,17 @@ export function createFactoryDroidResponsesWsFetch(input: FactoryDroidResponsesW
 					}
 					controller.enqueue(encoder.encode(`data: ${next.value.text}\n\n`));
 				} catch (error) {
-					recordTransportFailure(session, error);
+					if (signal?.aborted || cancelled) releaseConnection(session, "aborted");
+					else recordTransportFailure(session, error);
 					controller.error(error);
 				}
 			},
 			cancel: async () => {
+				cancelled = true;
+				// The iterator can be parked on an indefinitely silent socket. Close
+				// first to wake its read; do not park a cancelled socket for reuse.
+				releaseConnection(session, "cancelled");
 				await activeFrames.return();
-				scheduleIdleClose(session);
 			},
 		});
 		const responseId = frameResponseId(first.frame);

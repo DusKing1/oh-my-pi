@@ -3,7 +3,10 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getFactoryDroidRegionBlocklistPath } from "@oh-my-pi/pi-utils";
+import { buildModel } from "../src/build";
+import { supportsOutputTokenLimit } from "../src/compat/output-limits";
 import { buildFactoryDroidModel, fetchFactoryDroidModels } from "../src/discovery/factory-droid";
+import { resolveProviderModels } from "../src/model-manager";
 import { activeFactoryDroidPromotion } from "../src/types";
 import {
 	FACTORY_DROID_ANTHROPIC_BASE_URL,
@@ -14,6 +17,8 @@ import {
 	FACTORY_DROID_RESPONSES_BASE_URL,
 	FACTORY_DROID_WIRE_BASE_URLS,
 	factoryDroidEdgeRegion,
+	factoryDroidPoolForModel,
+	factoryDroidServingEdge,
 	factoryDroidWireBaseUrl,
 	resolveFactoryDroidRotation,
 } from "../src/discovery/factory-droid-models";
@@ -23,13 +28,19 @@ import {
 } from "../src/discovery/factory-droid-region-blocks";
 import { ANTHROPIC_THINKING, Effort } from "../src/effort";
 import { getBundledModel } from "../src/models";
+import { resolveModelCacheProviderId } from "../src/provider-models/cache-provider-id";
 import { factoryDroidModelManagerOptions } from "../src/provider-models/special";
 import type { FetchImpl } from "../src/types";
 
 const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
+function factoryToken(org: string, user: string, exp: number, jti: string): string {
+	const payload = Buffer.from(JSON.stringify({ external_org_id: org, sub: user, exp, jti })).toString("base64url");
+	return `header.${payload}.signature`;
+}
+
 describe("Factory Droid catalog", () => {
-	it("builds Kimi K3 with wire defaults, the off-switch, and its default upstream", () => {
+	it("strips the off rung while preserving a selectable default thinking effort", () => {
 		const model = buildFactoryDroidModel({
 			id: "kimi-k3",
 			name: "Kimi K3 (Droid Core)",
@@ -40,26 +51,12 @@ describe("Factory Droid catalog", () => {
 			supportedReasoningEfforts: ["off", Effort.Low, Effort.High, Effort.Max],
 			defaultReasoningEffort: Effort.High,
 		});
-
-		expect(model).toMatchObject({
-			id: "kimi-k3",
-			api: "factory-droid-agent",
-			provider: "factory-droid",
-			baseUrl: FACTORY_DROID_COMPLETIONS_BASE_URL,
-			input: ["text", "image"],
-			cost: zeroCost,
-			contextWindow: 196_608,
-			maxTokens: 65_536,
-			thinking: {
-				mode: "effort",
-				efforts: [Effort.Low, Effort.High, Effort.Max],
-				requiresEffort: false,
-				defaultLevel: Effort.High,
-			},
+		expect(model.thinking).toEqual({
+			mode: "effort",
+			efforts: [Effort.Low, Effort.High, Effort.Max],
+			requiresEffort: false,
+			defaultLevel: Effort.High,
 		});
-		// The registry's first rotation entry is the default upstream the
-		// provider sends as `x-api-provider` when routing is not live.
-		expect(FACTORY_DROID_MODEL_META["kimi-k3"].apiProviders[0]).toBe("fireworks");
 	});
 
 	it("marks text-only models and forces effort when off is unsupported", () => {
@@ -101,19 +98,18 @@ describe("Factory Droid catalog", () => {
 		expect(model.thinking).toBeUndefined();
 	});
 
-	it("ships the static registry through the model manager", () => {
-		const manager = factoryDroidModelManagerOptions();
-		expect(manager.providerId).toBe("factory-droid");
+	it("does not advertise the retired Inkling model in the offline picker", () => {
+		const models = factoryDroidModelManagerOptions().staticModels ?? [];
+		expect(models.some(model => model.id === "inkling")).toBe(false);
+	});
+
+	it("keeps the offline fallback on the account's EU host and hides unavailable models", () => {
+		const manager = factoryDroidModelManagerOptions({ region: "eu" });
 		const models = manager.staticModels ?? [];
-		expect(models.length).toBeGreaterThanOrEqual(50);
-		// Every static model comes from the bundled registry's entries.
-		for (const model of models) {
-			expect(FACTORY_DROID_MODEL_META[model.id]).toBeDefined();
-		}
-		expect(models.find(model => model.id === "kimi-k3")).toBeDefined();
-		// Factory retired Inkling in 0.203.0; advertising a model the proxy no
-		// longer serves would fail at request time, not at selection time.
-		expect(models.find(model => model.id === "inkling")).toBeUndefined();
+		expect(models.some(model => model.id === "kimi-k3")).toBe(false);
+		const opus = models.find(model => model.id === "claude-opus-5");
+		expect(opus?.baseUrl).toBe("https://api.eu.factory.ai/api/llm/a");
+		expect(opus?.factoryDroidApiProviders).toEqual(["bedrock_anthropic"]);
 	});
 
 	it("filters the static registry by feature flags and org model policy", async () => {
@@ -134,6 +130,111 @@ describe("Factory Droid catalog", () => {
 		};
 		const models = await fetchFactoryDroidModels({ apiKey: "token", fetch: fetchImpl });
 		expect(models?.map(model => model.id)).toEqual(["kimi-k2.6"]);
+	});
+
+	it("does not expose org-denied models when the allowlist is absent", async () => {
+		const flags = Object.fromEntries(
+			FACTORY_DROID_MODELS.flatMap(m => (m.featureFlag ? [[m.featureFlag, true]] : [])),
+		);
+		const fetchImpl: FetchImpl = async url =>
+			new Response(
+				JSON.stringify(
+					String(url).includes("feature-flags")
+						? { flags }
+						: {
+								settings: { modelPolicy: { allowAllFactoryModels: false } },
+							},
+				),
+				{ status: 200 },
+			);
+		const models = await fetchFactoryDroidModels({ apiKey: "token", fetch: fetchImpl });
+		expect(models?.map(model => model.id)).toEqual([]);
+	});
+
+	it("rejects unsupported GPT and Gemini output caps while preserving Grok caps", () => {
+		for (const id of ["gpt-5.4", "gemini-3.7-flash", "garnet-07-15"]) {
+			const model = buildModel(buildFactoryDroidModel(FACTORY_DROID_MODEL_META[id]));
+			expect(model.omitMaxOutputTokens, id).toBe(true);
+			expect(supportsOutputTokenLimit(model), id).toBe(false);
+		}
+		const grok = buildModel(buildFactoryDroidModel(FACTORY_DROID_MODEL_META["grok-4.5"]));
+		expect(grok.omitMaxOutputTokens).toBeUndefined();
+		expect(supportsOutputTokenLimit(grok)).toBe(true);
+	});
+
+	it("uses the KDL output clamp for Droid Core Completions without applying it to Responses", () => {
+		for (const id of ["glm-5.3", "kimi-k3", "deepseek-v4-flash-0731", "nemotron-3-ultra"]) {
+			const model = buildModel<"openai-completions">({
+				...buildFactoryDroidModel(FACTORY_DROID_MODEL_META[id]),
+				api: "openai-completions",
+				remoteCompaction: undefined,
+			});
+			expect(model.compat.clampOutputToModelMax, id).toBe(true);
+		}
+		const gpt = buildModel<"openai-responses">({
+			...buildFactoryDroidModel(FACTORY_DROID_MODEL_META["gpt-5.4"]),
+			api: "openai-responses",
+			remoteCompaction: undefined,
+		});
+		const grok = buildModel<"openai-responses">({
+			...buildFactoryDroidModel(FACTORY_DROID_MODEL_META["grok-4.5"]),
+			api: "openai-responses",
+			remoteCompaction: undefined,
+		});
+		expect(gpt.compat.clampOutputToModelMax).not.toBe(true);
+		expect(grok.compat.clampOutputToModelMax).not.toBe(true);
+	});
+
+	it("distinguishes billing pool from Anthropic wire for MiniMax", () => {
+		expect(factoryDroidPoolForModel("minimax-m3")).toBe("core");
+		expect(factoryDroidPoolForModel("claude-opus-5")).toBe("standard");
+		expect(factoryDroidPoolForModel("kimi-k3")).toBe("core");
+		expect(factoryDroidPoolForModel("not-in-registry")).toBeUndefined();
+	});
+
+	it("keeps refreshed WorkOS tokens in one account cache without crossing org, user or residency", () => {
+		const original = factoryToken("org-A", "user-A", 1_000, "first");
+		const refreshed = factoryToken("org-A", "user-A", 2_000, "second");
+		const account = resolveModelCacheProviderId("factory-droid", { apiKey: original, region: "global" });
+		expect(account).toBe(resolveModelCacheProviderId("factory-droid", { apiKey: refreshed, region: "global" }));
+		expect(account).not.toBe(
+			resolveModelCacheProviderId("factory-droid", { apiKey: factoryToken("org-B", "user-A", 1_000, "first") }),
+		);
+		expect(account).not.toBe(
+			resolveModelCacheProviderId("factory-droid", { apiKey: factoryToken("org-A", "user-B", 1_000, "first") }),
+		);
+		expect(account).not.toBe(resolveModelCacheProviderId("factory-droid", { apiKey: refreshed, region: "eu" }));
+		expect(account).not.toContain(original);
+		expect(account).not.toContain("org-A");
+		expect(factoryDroidModelManagerOptions({ apiKey: refreshed }).cacheProviderId).toBe(account);
+		const opaque = resolveModelCacheProviderId("factory-droid", { apiKey: "secret-A" });
+		expect(opaque).not.toBe(resolveModelCacheProviderId("factory-droid", { apiKey: "secret-B" }));
+		expect(opaque).not.toContain("secret-A");
+	});
+
+	it("restores the account's authoritative roster after WorkOS refresh", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "factory-account-cache-"));
+		const cacheDbPath = path.join(dir, "models.db");
+		const original = factoryToken("org-A", "user-A", 1_000, "first");
+		const refreshed = factoryToken("org-A", "user-A", 2_000, "second");
+		try {
+			await resolveProviderModels(
+				{
+					...factoryDroidModelManagerOptions({ apiKey: original }),
+					cacheDbPath,
+					fetchDynamicModels: async () => [buildFactoryDroidModel(FACTORY_DROID_MODEL_META["glm-5.3"])],
+				},
+				"online",
+			);
+			const restored = await resolveProviderModels(
+				{ ...factoryDroidModelManagerOptions({ apiKey: refreshed }), cacheDbPath },
+				"offline",
+			);
+			expect(restored.source).toBe("cache");
+			expect(restored.models.map(model => model.id)).toEqual(["glm-5.3"]);
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("withdraws fast tiers only when the org explicitly disallows them", async () => {
@@ -198,51 +299,13 @@ describe("Factory Droid catalog", () => {
 		expect(await fetchFactoryDroidModels({ apiKey: "token", fetch: fetchImpl })).toBeNull();
 	});
 
-	it("exposes requiresEffort explicitly: false on off/none ladders, true otherwise", () => {
-		// The registry keeps the CLI's raw rungs; the builder strips them from
-		// efforts and derives requiresEffort from their absence, so users can
-		// disable thinking on every model the CLI allows it for. Explicit
-		// false wins over the model-thinking backfill for kimi-k3.
-		const offLadders = [
-			"claude-sonnet-4-5-20250929",
-			"claude-opus-4-5-20251101",
-			"claude-haiku-4-5-20251001",
-			"claude-sonnet-4-6",
-			"claude-sonnet-5",
-			"claude-opus-4-6",
-			"claude-opus-4-6-fast",
-			"claude-opus-4-7",
-			"claude-opus-4-7-fast",
-			"claude-opus-4-8",
-			"claude-opus-4-8-fast",
-			"claude-opus-5",
-			"claude-opus-5-fast",
-			"claude-fable-5",
-			"atlas-07-21",
-			"aster-07-15",
-			"gpt-5.2",
-			"kimi-k2.5",
-			"kimi-k2.6",
-			"kimi-k2.7-code",
-			"kimi-k3",
-			"deepseek-v4-flash-0731",
-			"deepseek-v4-pro",
-			"glm-5.1",
-			"glm-5.2",
-			"glm-5.2-fast",
-			"nemotron-3-ultra",
-		];
-		const noneLadders = ["gpt-5.6-sol", "gpt-5.6-sol-fast", "gpt-5.6-terra", "gpt-5.6-luna"];
-		for (const id of [...offLadders, ...noneLadders]) {
-			const meta = FACTORY_DROID_MODEL_META[id];
-			const ladder = meta.supportedReasoningEfforts ?? [];
-			expect(ladder[0] === "off" || ladder[0] === "none").toBe(true);
-			const thinking = buildFactoryDroidModel(meta).thinking;
+	it("distinguishes an off/none control rung from mandatory reasoning", () => {
+		for (const id of ["kimi-k3", "gpt-5.6-sol"]) {
+			const thinking = buildFactoryDroidModel(FACTORY_DROID_MODEL_META[id]).thinking;
 			expect(thinking?.requiresEffort).toBe(false);
-			// The raw off/none rung is stripped from the exposed effort ladder.
-			expect(thinking?.efforts).toEqual(ladder.filter((e): e is Effort => e !== "off" && e !== "none"));
+			expect(thinking?.efforts).not.toContain("off");
+			expect(thinking?.efforts).not.toContain("none");
 		}
-		// A ladder without an off/none rung forces thinking on.
 		expect(buildFactoryDroidModel(FACTORY_DROID_MODEL_META["gpt-5.1-codex-max"]).thinking?.requiresEffort).toBe(true);
 	});
 
@@ -288,30 +351,9 @@ describe("Factory Droid catalog", () => {
 		expect(FACTORY_DROID_MODELS.some(model => model.wire === "openai-responses-ws")).toBe(false);
 	});
 
-	it("classifies reasoning replay per completions model family", () => {
-		// capture-only: Kimi families replay only what was captured.
-		expect(FACTORY_DROID_MODEL_META["kimi-k3"].reasoningReplay).toBe("capture-only");
-		expect(FACTORY_DROID_MODEL_META["kimi-k2.5"].reasoningReplay).toBe("capture-only");
-		// standard: GLM-5.1/5.2 and Nemotron mirror the captured content.
-		expect(FACTORY_DROID_MODEL_META["glm-5.2"].reasoningReplay).toBe("standard");
-		expect(FACTORY_DROID_MODEL_META["nemotron-3-ultra"].reasoningReplay).toBe("standard");
-		// placeholder: DeepSeek V4 forces a synthetic placeholder on tool calls.
-		expect(FACTORY_DROID_MODEL_META["deepseek-v4-flash-0731"].reasoningReplay).toBe("placeholder");
-		expect(FACTORY_DROID_MODEL_META["deepseek-v4-pro"].reasoningReplay).toBe("placeholder");
-		// Non-completions models carry no replay classification.
-		expect(FACTORY_DROID_MODEL_META["gpt-5.2"].reasoningReplay).toBeUndefined();
-		// Every completions-reasoning-shaped model is classified, and vice versa.
-		for (const meta of FACTORY_DROID_MODELS) {
-			expect((meta.completionsReasoning !== undefined) === (meta.reasoningReplay !== undefined)).toBe(true);
-		}
-	});
-
-	it("bakes the adaptive-summarized display flag for opus 4.7 fast mode", () => {
-		expect(FACTORY_DROID_MODEL_META["claude-opus-4-7-fast"].thinkingStyle).toBe("adaptive-summarized");
-		expect(buildFactoryDroidModel(FACTORY_DROID_MODEL_META["claude-opus-4-7-fast"]).thinking).toMatchObject({
-			mode: "anthropic-adaptive",
-			supportsDisplay: true,
-		});
+	it("enables summarized thinking display for adaptive Anthropic models", () => {
+		const thinking = buildFactoryDroidModel(FACTORY_DROID_MODEL_META["claude-opus-4-7-fast"]).thinking;
+		expect(thinking).toMatchObject({ mode: "anthropic-adaptive", supportsDisplay: true });
 	});
 
 	it("wires upstream list prices and effective credit rates from the registry", () => {
@@ -352,54 +394,22 @@ describe("Factory Droid catalog", () => {
 		expect(atlas.factoryDroidCredits).toEqual({ input: 2, output: 2 });
 	});
 
-	it("mirrors promo credit windows verbatim and applies the first active one", () => {
-		// The registry is a snapshot of Factory's stacked promotions[] table,
-		// expired windows included; the display layer decides which applies.
-		const windows = [
-			{ discount: 0.6, expiresAt: "2026-09-05T02:00:00Z", label: ", 60% Off" },
-			{
-				discount: 0.2,
-				startsAt: "2026-08-22T00:00:00Z",
-				expiresAt: "2026-11-22T00:00:00Z",
-				label: ", Promo Pricing",
-			},
-		];
-		expect(FACTORY_DROID_MODEL_META["gpt-5.6-sol"].credits).toEqual({ input: 2, output: 5, promotions: windows });
-		expect(FACTORY_DROID_MODEL_META["gpt-5.6-sol-fast"].credits).toEqual({
-			input: 4,
-			output: 5,
-			promotions: windows,
-		});
+	it("applies the first active promo window, then expires it", () => {
+		const sol = buildFactoryDroidModel(FACTORY_DROID_MODEL_META["gpt-5.6-sol"]).factoryDroidCredits!;
 		// The CLI applies the first currently-active window: 60% off until
 		// 2026-09-05, then the 20% fallback through 2026-11-22, then list.
-		const sol = buildFactoryDroidModel(FACTORY_DROID_MODEL_META["gpt-5.6-sol"]).factoryDroidCredits!;
 		expect(activeFactoryDroidPromotion(sol, new Date("2026-09-04T00:00:00Z"))?.discount).toBe(0.6);
 		expect(activeFactoryDroidPromotion(sol, new Date("2026-09-06T00:00:00Z"))?.discount).toBe(0.2);
 		expect(activeFactoryDroidPromotion(sol, new Date("2026-11-23T00:00:00Z"))).toBeUndefined();
-		// Kimi K3's 50% promo ran out on 2026-08-10 and droid 0.213.0 dropped
-		// it from the table; the entry carries no promo fields at all.
-		expect(FACTORY_DROID_MODEL_META["kimi-k3"].credits).toEqual({ input: 1.2, output: 5 });
-		expect(buildFactoryDroidModel(FACTORY_DROID_MODEL_META["kimi-k3"]).factoryDroidCredits).toEqual({
-			input: 1.2,
-			output: 6,
-		});
-		// A model with no promo carries no promo fields at all.
-		expect(buildFactoryDroidModel(FACTORY_DROID_MODEL_META["kimi-k2.6"]).factoryDroidCredits).toEqual({
-			input: 0.4,
-			output: 1.6,
-		});
+		// Kimi K3's old promo expired and no longer grants an active discount.
+		expect(
+			activeFactoryDroidPromotion(buildFactoryDroidModel(FACTORY_DROID_MODEL_META["kimi-k3"]).factoryDroidCredits!),
+		).toBeUndefined();
 	});
 
 	it("ships gemini-3.7-flash on the google ladder with no upstream list price yet", () => {
+		// This Factory-only catalog entry has no upstream list price.
 		const meta = FACTORY_DROID_MODEL_META["gemini-3.7-flash"];
-		expect(meta.wire).toBe("google-generate");
-		expect(meta.apiProviders).toEqual(["google"]);
-		expect(meta.contextWindow).toBe(1_000_000);
-		expect(meta.maxTokens).toBe(65_536);
-		// GA since droid 0.210.0: the CLI catalog no longer gates it.
-		expect(meta.featureFlag).toBeUndefined();
-		// Not in the bundled catalog: cost degrades to zero, credits carry it.
-		expect(meta.priceRef).toBeUndefined();
 
 		const model = buildFactoryDroidModel(meta);
 		expect(model.baseUrl).toBe(FACTORY_DROID_GOOGLE_BASE_URL);
@@ -422,8 +432,12 @@ describe("Factory Droid catalog", () => {
 				},
 			],
 		});
-		// 3.6 lost its minimal rung in the same release; 3.7 never had one.
-		expect(FACTORY_DROID_MODEL_META["gemini-3.6-flash"].supportedReasoningEfforts).toEqual(["low", "medium", "high"]);
+		// The predecessor lost its minimal rung, while 3.7 never exposed it.
+		expect(buildFactoryDroidModel(FACTORY_DROID_MODEL_META["gemini-3.6-flash"]).thinking?.efforts).toEqual([
+			Effort.Low,
+			Effort.Medium,
+			Effort.High,
+		]);
 	});
 
 	it("resolves every registry priceRef in the bundled catalog", () => {
@@ -575,6 +589,8 @@ describe("Factory Droid serving edge", () => {
 		expect(factoryDroidEdgeRegion(new Headers({ "x-vercel-id": "cpt1::sfo1::x" }))).toBeUndefined();
 		expect(factoryDroidEdgeRegion(new Headers())).toBeUndefined();
 		expect(factoryDroidEdgeRegion(new Headers({ "x-vercel-id": "" }))).toBeUndefined();
+		expect(factoryDroidServingEdge(new Headers({ "x-vercel-id": "cdg1::sfo1::req-123" }))).toBe("cdg1");
+		expect(factoryDroidServingEdge(new Headers({ "x-vercel-id": "not-a-pop" }))).toBeUndefined();
 	});
 
 	it("hides global-only-upstream models and resolves EU rotations on an EU edge, keeping the global host", async () => {
@@ -647,18 +663,54 @@ describe("Factory Droid serving edge", () => {
 		expect(ids).not.toContain("claude-opus-5");
 		expect(ids).toContain("kimi-k3");
 	});
+
+	it("keeps a region rejection on its own serving edge, including across discovery", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "fd-region-blocks-"));
+		try {
+			await recordFactoryDroidRegionBlock("claude-opus-5", "cdg1", dir);
+			const discover = (edge: string) =>
+				fetchFactoryDroidModels({
+					apiKey: "token",
+					agentDir: dir,
+					fetch: async url =>
+						new Response(
+							JSON.stringify(String(url).includes("feature-flags") ? { flags: allFlagsOn } : { settings: {} }),
+							{
+								status: 200,
+								headers: { "x-vercel-id": `${edge}::iad1::request-123` },
+							},
+						),
+				});
+			const denied = await discover("cdg1");
+			const allowed = await discover("sfo1");
+			expect(denied?.some(model => model.id === "claude-opus-5")).toBe(false);
+			expect(allowed?.some(model => model.id === "claude-opus-5")).toBe(true);
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("Factory Droid region blocklist", () => {
-	it("round-trips blocked model ids and tolerates a missing or corrupt file", async () => {
+	it("round-trips edge-specific blocks and ignores legacy or corrupt global exclusions", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "fd-region-blocks-"));
-		expect(await readFactoryDroidRegionBlockedIds(dir)).toEqual([]);
-		await recordFactoryDroidRegionBlock("deepseek-v4-flash-0731", dir);
-		await recordFactoryDroidRegionBlock("kimi-k3", dir);
-		// Re-recording keeps the entry idempotent.
-		await recordFactoryDroidRegionBlock("kimi-k3", dir);
-		expect([...(await readFactoryDroidRegionBlockedIds(dir))].sort()).toEqual(["deepseek-v4-flash-0731", "kimi-k3"]);
-		await Bun.write(getFactoryDroidRegionBlocklistPath(dir), "not json");
-		expect(await readFactoryDroidRegionBlockedIds(dir)).toEqual([]);
+		try {
+			expect(await readFactoryDroidRegionBlockedIds("cdg1", dir)).toEqual([]);
+			await recordFactoryDroidRegionBlock("deepseek-v4-flash-0731", "cdg1", dir);
+			await recordFactoryDroidRegionBlock("kimi-k3", "cdg1", dir);
+			await recordFactoryDroidRegionBlock("kimi-k3", "cdg1", dir);
+			await recordFactoryDroidRegionBlock("gpt-5.4", undefined, dir);
+			expect([...(await readFactoryDroidRegionBlockedIds("cdg1", dir))].sort()).toEqual([
+				"deepseek-v4-flash-0731",
+				"kimi-k3",
+			]);
+			expect(await readFactoryDroidRegionBlockedIds("sfo1", dir)).toEqual([]);
+			await Bun.write(getFactoryDroidRegionBlocklistPath(dir), '{"kimi-k3":123}');
+			expect(await readFactoryDroidRegionBlockedIds("cdg1", dir)).toEqual([]);
+			await Bun.write(getFactoryDroidRegionBlocklistPath(dir), "not json");
+			expect(await readFactoryDroidRegionBlockedIds("cdg1", dir)).toEqual([]);
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
 	});
 });

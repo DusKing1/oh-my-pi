@@ -1,7 +1,8 @@
-import { FACTORY_DROID_CLIENT_VERSION } from "@oh-my-pi/pi-catalog/discovery";
+import { FACTORY_DROID_CLIENT_VERSION, factoryDroidPoolForModel } from "@oh-my-pi/pi-catalog/discovery";
 import type { FetchImpl } from "@oh-my-pi/pi-catalog/types";
 import { toNumber } from "@oh-my-pi/pi-catalog/utils";
 import type {
+	CredentialRankingStrategy,
 	UsageAmount,
 	UsageFetchContext,
 	UsageFetchParams,
@@ -18,9 +19,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const FIVE_HOURS_MS = 5 * 60 * 60_000;
+const WEEK_MS = 7 * 24 * 60 * 60_000;
+
 const WINDOW_DEFS = [
-	{ key: "fiveHour", id: "5h", label: "5 Hour", durationMs: 5 * 60 * 60_000 },
-	{ key: "weekly", id: "weekly", label: "Weekly", durationMs: 7 * 24 * 60 * 60_000 },
+	{ key: "fiveHour", id: "5h", label: "5 Hour", durationMs: FIVE_HOURS_MS },
+	{ key: "weekly", id: "weekly", label: "Weekly", durationMs: WEEK_MS },
 	{ key: "monthly", id: "monthly", label: "Monthly", durationMs: 30 * 24 * 60 * 60_000 },
 ] as const;
 
@@ -42,7 +46,17 @@ function statusFor(usedFraction: number): UsageStatus {
  * usage balance when present.
  */
 export function parseFactoryDroidUsage(payload: unknown, fetchedAt = Date.now()): UsageReport | null {
-	if (!isRecord(payload) || !isRecord(payload.limits)) return null;
+	if (!isRecord(payload)) return null;
+	if (!isRecord(payload.limits)) {
+		if (payload.usesTokenRateLimitsBilling !== false) return null;
+		return {
+			provider: "factory-droid",
+			fetchedAt,
+			limits: [],
+			notes: ["This Factory account does not use token-rate-limit billing; no quota windows are exposed."],
+			raw: payload,
+		};
+	}
 	const limits: UsageLimit[] = [];
 
 	for (const pool of POOL_DEFS) {
@@ -145,6 +159,7 @@ export async function fetchFactoryDroidUsageReport(
 }
 
 export const factoryDroidUsageProvider: UsageProvider = {
+	cacheVersion: 3,
 	id: "factory-droid",
 	supports(params: UsageFetchParams): boolean {
 		if (params.provider !== "factory-droid") return false;
@@ -161,13 +176,56 @@ export const factoryDroidUsageProvider: UsageProvider = {
 			ctx.logger?.warn("Factory Droid usage request failed", { provider: params.provider });
 			return null;
 		}
-		if (report) {
-			const metadata = {
-				...(credential.email ? { email: credential.email } : {}),
-				...(credential.orgId ? { orgId: credential.orgId } : {}),
-			};
-			if (Object.keys(metadata).length > 0) report.metadata = metadata;
-		}
+		const metadata = {
+			...(credential.email ? { email: credential.email } : {}),
+			...(credential.orgId ? { orgId: credential.orgId } : {}),
+		};
+		if (Object.keys(metadata).length > 0) report.metadata = metadata;
 		return report;
 	},
+};
+
+/** Factory's Core and Standard credits have independent subscription windows. */
+export const factoryDroidRankingStrategy: CredentialRankingStrategy = {
+	findWindowLimits(report, context) {
+		const limits = factoryDroidRankingStrategy.scopeLimits?.(report, context) ?? report.limits;
+		return {
+			primary: limits.find(limit => limit.window?.id.endsWith("-5h")),
+			secondary: limits.find(limit => limit.window?.id.endsWith("-weekly")),
+		};
+	},
+	scopeLimits(report, context) {
+		const balance = report.limits.find(limit => limit.id === "factory-droid:extra-balance");
+		if ((balance?.amount.remaining ?? 0) > 0) return [];
+		const pool = context?.modelId ? factoryDroidPoolForModel(context.modelId) : undefined;
+		if (!pool) return report.limits.filter(limit => limit.id !== "factory-droid:extra-balance");
+		return report.limits.filter(limit => limit.id.startsWith(`factory-droid:${pool}:`));
+	},
+	blockScope(context) {
+		const pool = context?.modelId ? factoryDroidPoolForModel(context.modelId) : undefined;
+		return pool ? `pool:${pool}` : "pool:unknown";
+	},
+	blockScopes(context) {
+		if (!context) return ["pool:core", "pool:standard", "pool:unknown"];
+		const pool = context.modelId ? factoryDroidPoolForModel(context.modelId) : undefined;
+		return pool ? [`pool:${pool}`] : ["pool:unknown"];
+	},
+	healableBlockScopes(report) {
+		const funded = report.limits.some(
+			limit => limit.id === "factory-droid:extra-balance" && (limit.amount.remaining ?? 0) > 0,
+		);
+		return [
+			...(["core", "standard"] as const).map(pool => ({
+				blockScope: `pool:${pool}`,
+				limits: report.limits.filter(limit => limit.id.startsWith(`factory-droid:${pool}:`)),
+				healthy: funded || undefined,
+			})),
+			{
+				blockScope: "pool:unknown",
+				limits: report.limits.filter(limit => limit.id !== "factory-droid:extra-balance"),
+				healthy: funded || undefined,
+			},
+		];
+	},
+	windowDefaults: { primaryMs: FIVE_HOURS_MS, secondaryMs: WEEK_MS },
 };

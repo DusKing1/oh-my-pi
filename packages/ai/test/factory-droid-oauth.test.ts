@@ -1,4 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import { SqliteAuthCredentialStore } from "../src/auth-storage";
+import { mergeRefreshedCredential } from "../src/auth/refresh";
+import { buildRefreshableOauthCredential, mergeRefreshedUsageCredential } from "../src/auth/usage";
+import { buildUsageCredential } from "../src/auth/usage-cache";
 import { loginFactoryDroid, refreshFactoryDroidToken } from "../src/registry/oauth/factory-droid";
 import type { OAuthController } from "../src/registry/oauth/types";
 import type { FetchImpl } from "../src/types";
@@ -20,6 +24,52 @@ const DEVICE_AUTH = {
 	expires_in: 300,
 	interval: 0.05,
 };
+
+describe("Factory Droid organization identity", () => {
+	it("keeps two organizations of one account and refreshes only the matching organization", async () => {
+		const store = await SqliteAuthCredentialStore.open(":memory:");
+		const credential = (orgId: string, access: string) => ({
+			type: "oauth" as const,
+			access,
+			refresh: `refresh-${access}`,
+			expires: Date.now() + 3600000,
+			accountId: "workos-user",
+			email: "shared@example.test",
+			orgId,
+		});
+		try {
+			await store.upsertAuthCredential("factory-droid", credential("org-a", "a1"));
+			await store.upsertAuthCredential("factory-droid", credential("org-b", "b1"));
+			const rows = await store.upsertAuthCredential("factory-droid", credential("org-a", "a2"));
+			expect(
+				rows.map(row => (row.credential.type === "oauth" ? [row.credential.orgId, row.credential.access] : null)),
+			).toEqual([
+				["org-a", "a2"],
+				["org-b", "b1"],
+			]);
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("Factory Droid stored region", () => {
+	it("retains residency across a failed whoami on refresh, including usage-path refresh", () => {
+		const original = {
+			type: "oauth" as const,
+			access: "old",
+			refresh: "old-refresh",
+			expires: 1,
+			region: "eu",
+		};
+		const refreshed = { access: "new", refresh: "new-refresh", expires: 2 };
+		expect(mergeRefreshedCredential(original, refreshed)).toMatchObject({ region: "eu", access: "new" });
+		const usage = buildUsageCredential(original);
+		expect(buildRefreshableOauthCredential(usage)?.region).toBe("eu");
+		expect(mergeRefreshedUsageCredential(usage, refreshed)).toMatchObject({ region: "eu", accessToken: "new" });
+		expect(mergeRefreshedCredential(original, { ...refreshed, region: "global" }).region).toBe("global");
+	});
+});
 
 describe("Factory Droid OAuth", () => {
 	it("runs the device flow: authorize/device, user code surfacing, poll, credential mapping", async () => {
@@ -100,8 +150,47 @@ describe("Factory Droid OAuth", () => {
 		await expect(loginFactoryDroid({ fetch: fetchImpl })).rejects.toThrow("Factory device login expired");
 	});
 
+	it("cancels an in-flight device token request instead of waiting for the provider", async () => {
+		const abort = new AbortController();
+		const polling = Promise.withResolvers<void>();
+		const fetchImpl: FetchImpl = async (url, init) => {
+			if (String(url).endsWith("/authorize/device")) return jsonResponse(200, DEVICE_AUTH);
+			polling.resolve();
+			const pending = Promise.withResolvers<Response>();
+			init?.signal?.addEventListener("abort", () => pending.reject(init.signal?.reason), { once: true });
+			return pending.promise;
+		};
+		const login = loginFactoryDroid({ fetch: fetchImpl, signal: abort.signal });
+		await polling.promise;
+		abort.abort();
+		await expect(login).rejects.toThrow("Login cancelled");
+	});
+
+	it("expires an in-flight poll when the device code deadline passes even with a live caller signal", async () => {
+		const caller = new AbortController();
+		let pollSignal: AbortSignal | undefined;
+		const fetchImpl: FetchImpl = async (url, init) => {
+			if (String(url).endsWith("/authorize/device")) {
+				return jsonResponse(200, { ...DEVICE_AUTH, expires_in: 0.05 });
+			}
+			pollSignal = init?.signal ?? undefined;
+			const pending = Promise.withResolvers<Response>();
+			init?.signal?.addEventListener("abort", () => pending.reject(init.signal?.reason), { once: true });
+			return pending.promise;
+		};
+		await expect(loginFactoryDroid({ fetch: fetchImpl, signal: caller.signal })).rejects.toThrow(
+			"Device flow timed out",
+		);
+		expect(pollSignal?.aborted).toBe(true);
+		expect(caller.signal.aborted).toBe(false);
+	});
+
 	it("refreshes via the WorkOS refresh_token grant and maps the user payload", async () => {
-		const access = makeJwt({ sub: "user_9", exp: Math.floor(Date.now() / 1000) + 7200 });
+		const access = makeJwt({
+			sub: "user_9",
+			external_org_id: "factory-org-9",
+			exp: Math.floor(Date.now() / 1000) + 7200,
+		});
 		const calls: Array<{ url: string; body: string; authorization?: string }> = [];
 		const fetchImpl: FetchImpl = async (url, init) => {
 			const headers = new Headers(init?.headers);
@@ -125,11 +214,21 @@ describe("Factory Droid OAuth", () => {
 		expect(calls[0].body).toContain("refresh_token=refresh-old");
 		expect(credentials.refresh).toBe("refresh-rotated");
 		expect(credentials.email).toBe("rotated@example.com");
-		expect(credentials.orgId).toBe("org-9");
+		expect(credentials.orgId).toBe("factory-org-9");
 		// Refresh re-reads whoami with the rotated access token (mirrors the CLI).
 		expect(calls[1].url).toBe("https://api.factory.ai/api/cli/whoami");
 		expect(calls[1].authorization).toBe(`Bearer ${access}`);
 		expect(credentials.region).toBe("eu");
+	});
+
+	it("never treats WorkOS organization_id as a Factory external org", async () => {
+		const access = makeJwt({ sub: "user_9", exp: Math.floor(Date.now() / 1000) + 7200 });
+		const fetchImpl: FetchImpl = async url =>
+			String(url).endsWith("/api/cli/whoami")
+				? jsonResponse(200, {})
+				: jsonResponse(200, { access_token: access, refresh_token: "new", organization_id: "org_internal" });
+		const credentials = await refreshFactoryDroidToken("old", fetchImpl);
+		expect(credentials.orgId).toBeUndefined();
 	});
 
 	it("treats a whoami failure as region unknown, not a login failure", async () => {

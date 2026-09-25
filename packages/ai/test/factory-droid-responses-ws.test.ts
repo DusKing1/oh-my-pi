@@ -4,6 +4,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { buildFactoryDroidModel } from "@oh-my-pi/pi-catalog/discovery";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { streamFactoryDroid } from "../src/providers/factory-droid";
+import { shouldUseFactoryDroidResponsesWs } from "../src/providers/factory-droid/responses-ws";
 import type { AssistantMessageEvent, Model, ProviderSessionState, Tool } from "../src/types";
 import { workosJwt } from "./helpers/factory-droid";
 
@@ -40,7 +41,7 @@ const readTool: Tool = {
 	parameters: type({ path: "string" }),
 };
 
-type WsMode = "frames" | "reject-upgrade" | "close-midstream";
+type WsMode = "frames" | "reject-upgrade" | "close-midstream" | "silent-before-first" | "silent-midstream";
 
 interface DroidTestState {
 	/** Identity headers seen on each accepted upgrade; length = socket count. */
@@ -49,8 +50,13 @@ interface DroidTestState {
 	clientFrames: Array<Record<string, unknown>>;
 	/** Bodies of HTTPS Responses POSTs (the fallback path). */
 	posts: Array<Record<string, unknown>>;
+	requestArrived: Promise<void>;
+	flagRequests: number;
+	flagRequestArrived: Promise<void>;
+	releaseFlags(): void;
 	flagEnabled: boolean;
 	wsMode: WsMode;
+	holdFlags: boolean;
 }
 
 interface DroidTestServer extends DroidTestState {
@@ -59,19 +65,30 @@ interface DroidTestServer extends DroidTestState {
 }
 
 /** Factory's proxy surface for one test: flags, the upgrade, and the SSE POST. */
-function startDroidServer(init: { flagEnabled?: boolean; wsMode?: WsMode } = {}): DroidTestServer {
+function startDroidServer(init: { flagEnabled?: boolean; wsMode?: WsMode; holdFlags?: boolean } = {}): DroidTestServer {
+	const { promise: requestArrived, resolve: resolveRequestArrived } = Promise.withResolvers<void>();
+	const { promise: flagRequestArrived, resolve: resolveFlagRequestArrived } = Promise.withResolvers<void>();
+	const { promise: flagsReleased, resolve: releaseFlags } = Promise.withResolvers<void>();
 	const state: DroidTestState = {
 		upgrades: [],
 		clientFrames: [],
 		posts: [],
+		requestArrived,
+		flagRequests: 0,
+		flagRequestArrived,
+		releaseFlags,
 		flagEnabled: init.flagEnabled ?? true,
 		wsMode: init.wsMode ?? "frames",
+		holdFlags: init.holdFlags ?? false,
 	};
 	const server = Bun.serve({
 		port: 0,
 		fetch: async (request, bunServer) => {
 			const url = new URL(request.url);
 			if (url.pathname === "/api/feature-flags") {
+				state.flagRequests++;
+				resolveFlagRequestArrived();
+				if (state.holdFlags) await flagsReleased;
 				return Response.json({ flags: { openai_responses_websocket_mode: state.flagEnabled } });
 			}
 			if (url.pathname === "/api/llm/o/v1/responses/ws") {
@@ -94,8 +111,14 @@ function startDroidServer(init: { flagEnabled?: boolean; wsMode?: WsMode } = {})
 		websocket: {
 			message: (ws, message) => {
 				state.clientFrames.push(JSON.parse(String(message)) as Record<string, unknown>);
+				resolveRequestArrived();
+				if (state.wsMode === "silent-before-first") return;
 				const frames =
-					state.wsMode === "close-midstream" ? SERVER_FRAMES.slice(0, MIDSTREAM_FRAME_COUNT) : SERVER_FRAMES;
+					state.wsMode === "close-midstream"
+						? SERVER_FRAMES.slice(0, MIDSTREAM_FRAME_COUNT)
+						: state.wsMode === "silent-midstream"
+							? SERVER_FRAMES.slice(0, MIDSTREAM_FRAME_COUNT + 1)
+							: SERVER_FRAMES;
 				for (const frame of frames) ws.send(frame);
 				if (state.wsMode === "close-midstream") ws.close(1011, "midstream");
 			},
@@ -308,6 +331,94 @@ describe("Factory Droid responses websocket transport", () => {
 			expect(turn.text).toBe("ok");
 			expect(server.posts.length).toBe(1);
 		} finally {
+			server.stop();
+		}
+	});
+
+	it("does not retry an aborted pre-first-frame socket as a fresh HTTPS request", async () => {
+		const server = startDroidServer({ flagEnabled: true, wsMode: "silent-before-first" });
+		const session = newSession();
+		const controller = new AbortController();
+		try {
+			const stream = streamFactoryDroid(gptSol(server.baseUrl), context(), {
+				apiKey: token("cancel-before-first"),
+				providerSessionState: session,
+				signal: controller.signal,
+			});
+			await server.requestArrived;
+			controller.abort();
+			const result = await stream.result();
+			expect(result.stopReason).toBe("aborted");
+			expect(server.posts).toHaveLength(0);
+		} finally {
+			server.stop();
+		}
+	});
+
+	it("does not charge two user-aborted midstream turns against the WebSocket failure budget", async () => {
+		const server = startDroidServer({ wsMode: "silent-midstream" });
+		const session = newSession();
+		const apiKey = token("midstream-cancel");
+		try {
+			for (let turn = 0; turn < 2; turn++) {
+				const controller = new AbortController();
+				const stream = streamFactoryDroid(gptSol(server.baseUrl), context(), {
+					apiKey,
+					providerSessionState: session,
+					signal: controller.signal,
+				});
+				let receivedText = false;
+				for await (const event of stream) {
+					if (event.type === "text_delta") {
+						receivedText = true;
+						controller.abort();
+					}
+				}
+				expect(receivedText).toBe(true);
+				expect((await stream.result()).stopReason).toBe("aborted");
+			}
+			server.wsMode = "frames";
+			const third = await runTurn({ model: gptSol(server.baseUrl), apiKey, providerSessionState: session });
+			expect(third.stopReason).toBe("stop");
+			expect(third.text).toBe("ok");
+			expect(server.upgrades).toHaveLength(3);
+			expect(server.posts).toHaveLength(0);
+		} finally {
+			server.stop();
+		}
+	});
+
+	it("does not let one aborted gate waiter poison a concurrent account lookup or a later session", async () => {
+		const server = startDroidServer({ holdFlags: true });
+		const apiKey = token("shared-gate-cancel");
+		const controller = new AbortController();
+		const gate = (signal?: AbortSignal) =>
+			shouldUseFactoryDroidResponsesWs({
+				accessToken: apiKey,
+				responsesUrl: `${server.baseUrl}/api/llm/o/v1/responses`,
+				upstream: "openai",
+				registered: true,
+				clientVersion: "0.203.0",
+				orgId: "org-1",
+				providerSessionState: newSession(),
+				fetchImpl: fetch,
+				signal,
+			});
+		try {
+			const first = gate(controller.signal);
+			await server.flagRequestArrived;
+			const second = gate();
+			controller.abort();
+			expect(await first).toBe(false);
+			server.releaseFlags();
+			expect(await second).toBe(true);
+			const turn = await runTurn({ model: gptSol(server.baseUrl), apiKey, providerSessionState: newSession() });
+			expect(turn.text).toBe("ok");
+			expect(server.flagRequests).toBe(1);
+			expect(server.upgrades).toHaveLength(1);
+			expect(server.posts).toHaveLength(0);
+		} finally {
+			server.releaseFlags();
 			server.stop();
 		}
 	});

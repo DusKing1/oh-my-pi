@@ -6,24 +6,23 @@ A **provider** is the account or backend namespace, such as `anthropic`, `openai
 
 This page covers how providers become available, how credentials are resolved, the provider/environment-variable map, local engines, disabling providers, and custom providers. For endpoint-specific request, reasoning, tool, stream, usage, and retry constraints, see [Provider endpoint constraints](./provider-endpoint-constraints.md). For model selection and the full `models.yml` schema, see [Model and Provider Configuration](./models.md). For config-file locations and merge precedence, see [Settings](./settings.md). For credential storage and login flows in depth, see [Secrets and credentials](./secrets.md). For the complete environment-variable reference, see [Environment variables](./environment-variables.md). For local engine setup, see [Local models](./local-models.md). For context-file discovery providers, see [Context files](./context-files.md).
 
-## Factory Droid (Droid Core)
+## Factory Droid
 
-The `factory-droid` provider serves Factory's Droid Core subscription models through Factory's OpenAI-compatible LLM proxy directly over HTTPS — no `droid` binary, daemon, or SDK subprocess is needed at inference time.
+The `factory-droid` provider uses Factory's Droid subscription gateway directly. No `droid` binary, daemon, or SDK subprocess is needed for login or inference.
 
-1. Sign in with `/login factory-droid` (or `omp auth-broker login factory-droid`). OMP runs a WorkOS device-code flow: open the printed `auth.factory.ai/device` link, enter the code, approve. No `droid` install required.
-2. Select a model, for example:
+1. Run `omp login factory-droid` or `/login factory-droid` in an interactive session.
+2. Open the printed `auth.factory.ai/device` link in your browser, enter the displayed device code, and approve the login.
+3. Select a model, for example `factory-droid/kimi-k3`, and send a prompt. The stored WorkOS session refreshes automatically. `omp auth-broker login factory-droid` supports broker-backed credentials.
 
-   ```bash
-   omp --model factory-droid/kimi-k3
-   ```
+Use subscription OAuth for this provider. It does not discover credentials from an installed Droid CLI or read `FACTORY_API_KEY`; Factory's separate API-key products are not part of this integration.
 
-The stored session refreshes through WorkOS automatically. Factory API keys cover the control plane only and cannot authorize subscription inference — there is no API-key path; the WorkOS login is the single credential source.
+The bundled Droid catalog is narrowed by account feature flags, hard-deprecation gates, organization model policy, and serving region. It includes Core models such as Kimi, GLM, DeepSeek, MiniMax, and Nemotron, plus Claude, GPT, Gemini, and Grok. Account and residency scopes have separate caches. Online discovery refreshes region-dependent availability; offline or failed discovery can retain a cached snapshot, which is not a guarantee of current entitlement.
 
-The model surface is a bundled static registry — Factory has no model-listing endpoint in any client — narrowed live by the account's feature flags (including hard-deprecation gates) and org model policy, the same gating the first-party clients apply. That covers the Droid Core flat-rate series (Kimi, GLM, DeepSeek, MiniMax, Inkling, Nemotron), the GPT-5.x series, Claude models, and Gemini models billed in Standard Credits.
+Requests use Chat Completions, Responses, Anthropic Messages, or native Gemini `generateContent` according to each catalog entry. MiniMax uses the Anthropic wire while drawing from the Core pool. The integration supplies Droid-compatible identity headers and a short Droid system prefix without moving OMP's instructions into user messages. These gateway contracts are version-sensitive.
 
-Four wire protocols are dispatched by model family, each with the request shape the proxy expects: OpenAI chat completions for Droid Core (`reasoning_effort` + `reasoning_history: preserved` on Fireworks, `chat_template_args.enable_thinking` on Baseten), OpenAI Responses for GPT (with prompt-cache key/retention and per-model service tiers), Anthropic Messages for Claude and MiniMax (adaptive or budget thinking per model, `output_config.effort`), and Gemini's native `generateContent` SSE for Google models (`thinkingConfig` levels). Requests present the Droid CLI's client identity (user agent, client-version, `x-api-provider`, v4-shaped session/message ids) and open the system prompt with Factory's Droid identity sentence, which the proxy requires.
+Responses can use a persistent WebSocket when the account enables it and the selected upstream supports it. `PI_FACTORY_DROID_WS=0` forces HTTPS; `PI_FACTORY_DROID_WS=1` enables the WebSocket attempt on eligible routes. A transport failure before the first frame can fall back to HTTPS; cancellation does not replay the request.
 
-Subscription usage (Standard credits and Droid Core pools across the 5-hour, weekly, and monthly windows) appears in OMP's usage surfaces, read from Factory's `/api/billing/limits` endpoint.
+`/usage` and `omp usage` report Standard Credits and Droid Core quota windows when the account uses token-rate-limit billing. Accounts whose billing response explicitly disables that mode remain visible with a note that no quota windows are exposed; OMP does not invent a remaining balance. The model browser shows credit multipliers and marks active promotional rates with `*`; dollar figures are upstream list-price references, not Factory billing. Models without a dollar reference display their credit rate rather than `free`. Factory GPT and Gemini routes omit output-token caps, so bounded ephemeral turns reject a `maxTokens` request instead of silently running uncapped.
 
 ## How `omp` decides a provider is available
 
@@ -65,6 +64,8 @@ Use the interactive slash commands inside a session:
 
 - `/login` — opens the OAuth/key selector. `/login <provider>` jumps straight to one provider (e.g. `/login anthropic`); for an OAuth flow that needs a pasted callback, run `/login <redirect-url>` to complete it.
 - `/logout` — opens the provider selector to remove stored credentials.
+
+Outside a session, `omp login [<provider>]` runs the same login from the terminal: it prints the auth URL (and opens it in your browser), reads any prompts from stdin, and saves to the same store sessions use — local `agent.db`, or the configured auth broker. Without a provider it shows a numbered picker.
 
 For headless or remote setups backed by a shared auth broker, the CLI exposes `omp auth-broker login <provider>` / `omp auth-broker logout` (and `status`, `list`, `import`, `migrate`). See [Secrets and credentials](./secrets.md) for the broker model.
 
@@ -136,6 +137,7 @@ Each provider has one or more environment variables that supply a key when no st
 | `gmi-cloud`                      | `GMI_API_KEY`                                                                 |
 | `huggingface`                    | `HUGGINGFACE_HUB_TOKEN`, then `HF_TOKEN`                                      |
 | `moonshot`                       | `MOONSHOT_API_KEY`, then `KIMI_API_KEY`                                       |
+| `stepfun`                        | `STEPFUN_API_KEY`                                                             |
 | `meta`                           | `MODEL_API_KEY`, then `META_API_KEY`                                          |
 | `nanogpt`                        | `NANO_GPT_API_KEY`                                                            |
 | `novita`                         | `NOVITA_API_KEY`                                                              |
@@ -173,10 +175,21 @@ Each provider has one or more environment variables that supply a key when no st
 | `llama.cpp`                      | `LLAMA_CPP_API_KEY` (only when the server requires auth)                      |
 | `vllm`                           | `VLLM_API_KEY` (optional for an unauthenticated local server)                 |
 | `yolo-auto`                      | `YOLO_AUTO_API_KEY`                                                            |
+| `charm-hyper`                    | `CHARM_HYPER_API_KEY`, then `HYPER_API_KEY`                                   |
+| `singularityapi-dev`             | `SINGULARITYAPI_DEV_API_KEY`                                                  |
+| `singularityapi-tech`            | `SINGULARITYAPI_TECH_API_KEY`                                                 |
 
 `/login cloudflare-ai-gateway` prompts for the gateway token, Cloudflare account ID, and gateway ID, then stores all three together. To use environment variables, set all three values listed above. OMP selects the Anthropic, OpenAI, or Workers AI gateway route for each model; you do not need a `models.yml` base URL override.
 
-OAuth-backed providers such as `anthropic`, `github-copilot`, `cursor`, `ollama-cloud`, `qwen-portal`, `kimi-code`, `xai-oauth`, `wafer-serverless`, `google-gemini-cli`, `google-antigravity`, `devin`, and the GitLab providers (`gitlab-duo`, `gitlab-duo-agent`) are normally reached through `/login` rather than an environment variable. Interactive API-key logins exist too: `/login baseten`, `/login coreweave`, and `/login sakana` prompt for a dashboard/API key (`coreweave` additionally requires `COREWEAVE_PROJECT` for the `OpenAI-Project` header). See [Environment variables](./environment-variables.md) for search-tool and configuration variables not listed here.
+`charm-hyper` is Charm's OpenAI-compatible inference gateway for coding agents. Issue or manage a key at `https://hyper.charm.land/`; the model list is discovered live from the provider's public `/v1/models` endpoint, and `HYPER_API_KEY` is accepted as a fallback alias for `CHARM_HYPER_API_KEY`.
+
+SingularityAPI sells two unrelated products behind one brand, so OMP models them as two providers: they share no key, no billing model, and no effort ladder, and neither key is accepted by the other host.
+
+`singularityapi-dev` is the pay-as-you-go universal inference gateway (300+ models: DeepSeek, Kimi, GLM, frontier flagships). Create a `sk-sapi-...` key at `https://app.singularityapi.dev` (or run `/login singularityapi-dev`) and set `SINGULARITYAPI_DEV_API_KEY`; the roster, limits, and tariffs are discovered live from `https://api.singularityapi.dev/v1/models`.
+
+`singularityapi-tech` is the reserved DeepSeek lanes gateway. Usage bills against a booked reservation slot rather than prepaid credit, so a valid key with no active slot answers 403 until you book one at `https://app.singularityapi.tech`. Create an `sk-...` key there (or run `/login singularityapi-tech`), set `SINGULARITYAPI_TECH_API_KEY`, and the lane roster is discovered live from `https://api.singularityapi.tech/v1/models`.
+
+OAuth-backed providers such as `anthropic`, `github-copilot`, `cursor`, `ollama-cloud`, `qwen-portal`, `kimi-code`, `xai-oauth`, `wafer-serverless`, `google-gemini-cli`, `google-antigravity`, `devin`, and the GitLab providers (`gitlab-duo`, `gitlab-duo-agent`) are normally reached through `/login` rather than an environment variable. Interactive API-key logins exist too: `/login baseten`, `/login coreweave`, `/login sakana`, `/login singularityapi-dev`, and `/login singularityapi-tech` prompt for a dashboard/API key (`coreweave` additionally requires `COREWEAVE_PROJECT` for the `OpenAI-Project` header). See [Environment variables](./environment-variables.md) for search-tool and configuration variables not listed here.
 
 ### `.env` discovery and precedence
 

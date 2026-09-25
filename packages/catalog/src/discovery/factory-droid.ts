@@ -8,9 +8,11 @@ import {
 	type FactoryDroidModelInput,
 	factoryDroidApiBaseUrl,
 	factoryDroidEdgeRegion,
+	factoryDroidServingEdge,
 	factoryDroidWireBaseUrl,
 	resolveFactoryDroidRotation,
 } from "./factory-droid-models";
+import { readFactoryDroidRegionBlockedIds } from "./factory-droid-region-blocks";
 
 /**
  * Factory Droid (Droid Core + Standard Credits subscription) — direct HTTP
@@ -105,13 +107,7 @@ function isModelAvailable(
 	// marks an entry as one, and only an explicit `false` hides it.
 	if (model.baseVariant !== undefined && policy?.isFastModelsAllowed === false) return false;
 	if (policy?.blockedModelIds?.includes(model.id)) return false;
-	if (
-		policy?.allowAllFactoryModels === false &&
-		policy.allowedModelIds &&
-		!policy.allowedModelIds.includes(model.id)
-	) {
-		return false;
-	}
+	if (policy?.allowAllFactoryModels === false && !policy.allowedModelIds?.includes(model.id)) return false;
 	return true;
 }
 
@@ -124,12 +120,10 @@ export interface FactoryDroidModelDiscoveryOptions {
 	 * EU-serving upstream, and resolves EU rotations. Absent ⇒ `"global"`.
 	 */
 	region?: string;
-	/**
-	 * Models to hide because Factory's proxy already rejected them as
-	 * unavailable from this network's region (recorded by the provider on a
-	 * region 400). Covers serving edges the PoP table does not map.
-	 */
+	/** Additional model IDs to hide for this discovery cycle (caller-provided). */
 	excludeModelIds?: readonly string[];
+	/** Override for the persisted edge blocklist path (tests and isolated runtimes). */
+	agentDir?: string;
 	fetch?: FetchImpl;
 }
 
@@ -156,6 +150,7 @@ export async function fetchFactoryDroidModels(
 	let flags: Record<string, unknown>;
 	let policy: FactoryModelPolicy | null = null;
 	let routing: FactoryProviderRouting | null = null;
+	let servingEdge: string | undefined;
 	// Account residency selects the host; serving geography (residency, else
 	// the response's edge PoP) selects availability and rotations. The edge
 	// matters because Factory's proxy enforces per-request geography even for
@@ -168,6 +163,9 @@ export async function fetchFactoryDroidModels(
 			fetchImpl(managedSettingsUrl(options.region), { headers }).catch(() => null),
 		]);
 		if (!flagsResponse.ok) return null;
+		servingEdge =
+			factoryDroidServingEdge(flagsResponse.headers) ??
+			(settingsResponse?.ok ? factoryDroidServingEdge(settingsResponse.headers) : undefined);
 		servingRegion =
 			accountRegion ??
 			factoryDroidEdgeRegion(flagsResponse.headers) ??
@@ -184,10 +182,12 @@ export async function fetchFactoryDroidModels(
 	} catch {
 		return null;
 	}
-	const excluded = options.excludeModelIds;
+	const excluded = new Set([
+		...(options.excludeModelIds ?? []),
+		...(await readFactoryDroidRegionBlockedIds(servingEdge, options.agentDir)),
+	]);
 	return FACTORY_DROID_MODELS.filter(
-		model =>
-			(excluded == null || !excluded.includes(model.id)) && isModelAvailable(model, flags, policy, servingRegion),
+		model => !excluded.has(model.id) && isModelAvailable(model, flags, policy, servingRegion),
 	).map(model =>
 		buildFactoryDroidModel(model, resolveRotation(model, routing?.models?.[model.id], servingRegion), options.region),
 	);

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import * as discovery from "@oh-my-pi/pi-catalog/discovery";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { DROID_SYSTEM_PREFIX, streamFactoryDroid } from "../src/providers/factory-droid";
@@ -81,10 +82,49 @@ describe("Factory Droid completions wire (Droid Core)", () => {
 		expect(request.body.store).toBeUndefined();
 		const messages = request.body.messages as Array<{ role: string; content: unknown }>;
 		expect(messages[0].role).toBe("system");
-		// The proxy gates on the Droid identity prefix; OMP's own prompt must survive behind it.
+		// The identity stays in the system role and the caller's prompt follows it.
 		expect(JSON.stringify(messages[0].content)).toContain(DROID_SYSTEM_PREFIX);
 		expect(JSON.stringify(messages[0].content)).toContain("OMP system prompt");
 	});
+
+	it("does not duplicate the system identity when a caller supplies it", async () => {
+		const captured: CapturedRequest[] = [];
+		await streamFactoryDroid(
+			kimiK3(),
+			{
+				systemPrompt: [DROID_SYSTEM_PREFIX, "caller policy"],
+				messages: [{ role: "user", content: "hello", timestamp: 1 }],
+			},
+			{ apiKey: WORKOS_TOKEN, fetch: captureFetch(captured, completionsChunks("OK", "kimi-k3")) },
+		).result();
+		const system = (captured[0].body.messages as Array<{ role: string; content: unknown }>)[0];
+		expect(system.role).toBe("system");
+		expect(JSON.stringify(system.content).split(DROID_SYSTEM_PREFIX)).toHaveLength(2);
+		expect(JSON.stringify(system.content)).toContain("caller policy");
+	});
+
+	it("forwards payload replacement, response metadata and raw SSE observation through the wrapper", async () => {
+		const captured: CapturedRequest[] = [];
+		const observed = { status: 0, chunks: [] as string[] };
+		const result = await streamFactoryDroid(
+			kimiK3(),
+			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+			{
+				apiKey: WORKOS_TOKEN,
+				fetch: captureFetch(captured, completionsChunks("hooked", "kimi-k3")),
+				onPayload: payload => ({ ...(payload as object), temperature: 0.4 }),
+				onResponse: response => {
+					observed.status = response.status;
+				},
+				onSseEvent: event => observed.chunks.push(event.data),
+			},
+		).result();
+		expect(result.content).toEqual([{ type: "text", text: "hooked" }]);
+		expect(captured[0].body.temperature).toBe(0.4);
+		expect(observed.status).toBe(200);
+		expect(observed.chunks.some(chunk => chunk.includes("hooked"))).toBe(true);
+	});
+
 	it("reports cacheRead from the fireworks-cached-prompt-tokens header when the body omits cached_tokens", async () => {
 		const captured: CapturedRequest[] = [];
 		const result = await streamFactoryDroid(
@@ -484,7 +524,25 @@ describe("Factory Droid region availability", () => {
 		expect(result.errorMessage).toContain("serving edge: cdg1");
 		expect(result.errorMessage).toContain("hidden from the model picker");
 		expect(result.errorMessage).not.toContain("Bad Request");
-		expect(recordSpy).toHaveBeenCalledWith("kimi-k3");
+		expect(recordSpy).toHaveBeenCalledWith("kimi-k3", "cdg1");
+	});
+
+	it("does not persist a region block when the error omits its serving edge", async () => {
+		const recordSpy = spyOn(discovery, "recordFactoryDroidRegionBlock").mockResolvedValue(undefined);
+		const result = await streamFactoryDroid(
+			kimiK3(),
+			{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+			{
+				apiKey: WORKOS_TOKEN,
+				fetch: mock(
+					async () =>
+						new Response(JSON.stringify({ detail: "Provider not available in this region" }), { status: 400 }),
+				),
+			},
+		).result();
+		expect(result.errorMessage).toContain("Choose another model");
+		expect(result.errorMessage).not.toContain("hidden from the model picker");
+		expect(recordSpy).not.toHaveBeenCalled();
 	});
 
 	it("passes unrelated errors through untouched", async () => {
@@ -567,6 +625,19 @@ describe("Factory Droid quota exhaustion", () => {
 
 		expect(result.errorMessage).toContain("Standard Credits weekly pool is exhausted");
 		expect(result.errorMessage).toContain("Droid Core models remain available");
+	});
+
+	it("uses the Droid Core pool for MiniMax despite its Anthropic wire", async () => {
+		const result = await streamFactoryDroid(
+			buildModel(discovery.buildFactoryDroidModel(discovery.FACTORY_DROID_MODEL_META["minimax-m2.5"]!)),
+			{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+			{
+				apiKey: WORKOS_TOKEN,
+				fetch: quotaFetch(() => new Response(JSON.stringify(limitsPayload(100)), { status: 200 })),
+			},
+		).result();
+		expect(result.errorMessage).toContain("Droid Core weekly pool is exhausted");
+		expect(result.errorMessage).toContain("Standard Credits models remain available");
 	});
 
 	it("leaves a bare 403 untouched when no pool is exhausted", async () => {

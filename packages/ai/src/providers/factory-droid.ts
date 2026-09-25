@@ -8,6 +8,7 @@ import {
 	FACTORY_DROID_RESPONSES_BASE_URL,
 	type FactoryDroidModelInput,
 	type FactoryDroidWire,
+	factoryDroidPoolForModel,
 	recordFactoryDroidRegionBlock,
 } from "@oh-my-pi/pi-catalog/discovery";
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
@@ -29,6 +30,7 @@ import { deterministicUuid } from "../utils/deterministic-id";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { hasNonThinkingTurnAfterLastUser, hasThinkinglessAssistantHistory } from "./anthropic";
 import { createProviderErrorMessage } from "./error-message";
+import droidIdentity from "./factory-droid/droid-identity.md" with { type: "text" };
 import { streamFactoryDroidGemini } from "./factory-droid/gemini";
 import { createFactoryDroidResponsesWsFetch, shouldUseFactoryDroidResponsesWs } from "./factory-droid/responses-ws";
 import { streamAnthropic, streamOpenAICompletions, streamOpenAIResponses } from "./register-builtins";
@@ -53,15 +55,15 @@ import { streamAnthropic, streamOpenAICompletions, streamOpenAIResponses } from 
  *   `X-Factory-Client: cli`, `X-Factory-Org-Id`, the X-Stainless runtime
  *   fingerprint, and v4-shaped `x-session-id` /
  *   `x-assistant-message-id` used for usage attribution.
- * - System-prompt gate: the proxy rejects (403) requests whose system prompt
- *   does not start with the exact Droid identity sentence
- *   {@link DROID_SYSTEM_PREFIX}. The rest of the prompt is untouched.
+ * - System identity: one Droid identity sentence precedes the caller's system
+ *   prompt without changing its contents. A historical plugin-without-prefix
+ *   403 is not evidence that the same gate remains active today.
  * - `x-api-provider` selects the upstream router from the model's registry
  *   rotation list (first entry pinned).
  */
 
-/** Droid identity sentence; the proxy rejects requests whose system prompt lacks this prefix. */
-export const DROID_SYSTEM_PREFIX = "You are Droid, an AI software engineering agent built by Factory.";
+/** Droid identity sentence prepended once in the system channel. */
+export const DROID_SYSTEM_PREFIX = droidIdentity.trim();
 
 /**
  * Node build the CLI's packaged runtime reports. The Stainless fingerprint is
@@ -266,31 +268,32 @@ const REGION_UNAVAILABLE_PATTERN = /not available in this region/i;
 
 /**
  * Factory's proxy answers `400 Provider not available in this region` when
- * the request's serving edge cannot reach the model's upstreams. Record the
- * model so discovery hides it going forward (the edge-PoP table covers the
- * known cases; this catches the rest), and replace the raw payload with an
- * actionable message.
+ * the serving edge cannot reach the model's upstreams. Persist exclusions
+ * only for a known edge PoP; an unscoped exclusion could hide the model after
+ * the user changes networks.
  */
 function asRegionUnavailableError(model: Model<Api>, errorMessage: string | undefined): string | undefined {
 	if (errorMessage == null || !REGION_UNAVAILABLE_PATTERN.test(errorMessage)) return undefined;
-	void recordFactoryDroidRegionBlock(model.id);
-	const edge = /"requestId"\s*:\s*"([a-z]{3}\d)/i.exec(errorMessage)?.[1];
+	const edge = /"requestId"\s*:\s*"([a-z]{3}\d)(?=::)/i.exec(errorMessage)?.[1];
+	if (edge) void recordFactoryDroidRegionBlock(model.id, edge);
 	return (
 		`${model.id} is not served from your network's region` +
 		(edge ? ` (serving edge: ${edge})` : "") +
-		". It has been hidden from the model picker; choose another model."
+		(edge
+			? ". It has been hidden from the model picker on this edge; choose another model."
+			: ". Choose another model.")
 	);
 }
 
 const QUOTA_FORBIDDEN_PATTERN = /\b403\b|forbidden/i;
 
 /**
- * Factory's proxy answers a bare `403 Forbidden` (no detail string) when the
- * model's subscription pool is exhausted — on its face indistinguishable from
- * an auth failure. Re-check the live billing limits and, when the model's
- * pool has an exhausted window, rewrite the error with the binding window's
- * reset and steer to the other pool. Droid Core models are exactly the
- * `openai-completions` wire; every other wire bills Standard Credits.
+ * Factory's proxy can answer a bare `403 Forbidden` (no detail string) when
+ * the model's subscription pool is exhausted — on its face indistinguishable
+ * from an auth failure. Re-check the live billing limits and, when the model's
+ * catalog-designated pool has an exhausted window, rewrite the error with its
+ * binding window's reset and steer to the other pool. The billing pool is
+ * independent of the wire protocol (MiniMax is Core on the Anthropic wire).
  *
  * Conservative by design: any ambiguity (limits unreachable, no exhausted
  * window, extra-usage balance remaining, custom unregistered model) leaves
@@ -305,14 +308,14 @@ async function asQuotaExhaustedError(
 ): Promise<string | undefined> {
 	if (!accessToken || errorMessage == null || !QUOTA_FORBIDDEN_PATTERN.test(errorMessage)) return undefined;
 	if (REGION_UNAVAILABLE_PATTERN.test(errorMessage)) return undefined;
-	const meta = FACTORY_DROID_MODEL_META[model.id];
-	if (!meta) return undefined;
+	const pool = factoryDroidPoolForModel(model.id);
+	if (!pool) return undefined;
 	const report = await fetchFactoryDroidUsageReport(accessToken, fetchImpl ?? fetch, AbortSignal.timeout(5_000));
 	if (!report) return undefined;
 	if (report.limits.some(limit => limit.id === "factory-droid:extra-balance" && (limit.amount.remaining ?? 0) > 0)) {
 		return undefined;
 	}
-	const pool = meta.wire === "openai-completions" ? "core" : "standard";
+	// The catalog classifies MiniMax as Core even on the Anthropic wire.
 	const poolLabel = pool === "core" ? "Droid Core" : "Standard Credits";
 	const exhausted = report.limits.filter(
 		limit => limit.id.startsWith(`factory-droid:${pool}:`) && limit.status === "exhausted",
@@ -362,9 +365,11 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 			const sessionUuid = options?.sessionId ? deterministicUuid(options.sessionId) : requestId;
 			const orgId = factoryDroidOrgIdFromToken(harnessToken);
 
+			const systemPrompt = context.systemPrompt ?? [];
 			const proxiedContext: Context = {
 				...context,
-				systemPrompt: [DROID_SYSTEM_PREFIX, ...(context.systemPrompt ?? [])],
+				systemPrompt:
+					systemPrompt[0] === DROID_SYSTEM_PREFIX ? systemPrompt : [DROID_SYSTEM_PREFIX, ...systemPrompt],
 			};
 
 			const registryWire = meta?.wire ?? "openai-completions";
@@ -396,9 +401,15 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 				apiKey: harnessToken,
 				signal: options?.signal,
 				fetch: options?.fetch,
-				// Forward the watchdog knobs: without them the inner OpenAI-family
-				// transports fall back to 300s defaults and a silent stall (e.g.
-				// kimi-k3 after a tool call) would only surface at that boundary.
+				credentialId: options?.credentialId,
+				cacheRetention: options?.cacheRetention,
+				providerSessionState: options?.providerSessionState,
+				onPayload: options?.onPayload,
+				onResponse: options?.onResponse,
+				onSseEvent: options?.onSseEvent,
+				providerRetryWait: options?.providerRetryWait,
+				acceptEmptyResponse: options?.acceptEmptyResponse,
+				maxRetryDelayMs: options?.maxRetryDelayMs,
 				streamIdleTimeoutMs: options?.streamIdleTimeoutMs,
 				streamFirstEventTimeoutMs: options?.streamFirstEventTimeoutMs,
 			};
@@ -417,6 +428,7 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 					topK: options?.topK,
 					reasoning: options?.reasoning,
 					disableReasoning: options?.disableReasoning,
+					stopSequences: options?.stopSequences,
 					headers: {
 						...buildIdentityHeaders({ upstream, sessionUuid, requestId, orgId, wire: "google-generate" }),
 						...options?.headers,
@@ -452,12 +464,17 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 						effort !== undefined);
 				innerStream = streamAnthropic(anthropicModel, proxiedContext, {
 					...baseOptions,
-					// NOT isOAuth: the OAuth branch would cloak the request in Claude
-					// Code identity (billing header as system[0], cowork betas, CC user
-					// agent) and trip the proxy's Droid-prefix gate. The non-official-URL
-					// branch already sends `Authorization: Bearer <apiKey>` plus our
-					// caller headers — exactly droid's shape. The Anthropic SDK contract
-					// still wants an x-api-key, which droid fills with a placeholder.
+					// The non-OAuth client keeps Factory's system channel intact and
+					// sends its WorkOS bearer token in Authorization.
+					anthropicCacheRefresh: options?.anthropicCacheRefresh,
+					anthropicPrefixMismatchBehavior: options?.anthropicPrefixMismatchBehavior,
+					anthropicCacheRefreshRequest: options?.anthropicCacheRefreshRequest,
+					anthropicCompaction: options?.anthropicCompaction,
+					userProfileId: options?.userProfileId,
+					metadata: options?.metadata,
+					taskBudget: options?.taskBudget,
+					fallbackCreditRedemption: options?.fallbackCreditRedemption,
+					anthropicSlowMode: options?.anthropicSlowMode,
 					isOAuth: false,
 					thinkingEnabled: options?.disableReasoning !== true,
 					...(adaptive
@@ -496,18 +513,10 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 								betas: ["fallback-credit-2026-06-01"],
 							}
 						: {}),
-					// Native refusal fallbacks (fable entries): on the direct
-					// anthropic upstream the CLI sends fallbacks=[{model}] and the
-					// fallback-credit beta even without a credit token. The
-					// server-side-fallback beta is auto-attached by the transport.
-					...(upstream === "anthropic" && meta?.refusalFallbackModels?.length
-						? {
-								fallbacks: meta.refusalFallbackModels.map(model => ({ model })),
-								betas: ["fallback-credit-2026-06-01"],
-							}
-						: {}),
 					maxTokens: options?.maxTokens ?? model.maxTokens ?? undefined,
 					temperature: options?.temperature,
+					stopSequences: options?.stopSequences,
+					serviceTier: options?.serviceTier,
 					toolChoice: options?.toolChoice as "auto" | "any" | "none" | { type: "tool"; name: string } | undefined,
 					sessionId: sessionUuid,
 					headers: {
@@ -517,22 +526,14 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 				});
 			} else if (wire === "openai-responses" || wire === "openai-responses-ws") {
 				const cfg = meta?.responsesConfig;
-				// The model's registry provider ("openai" for GPT-5.x, "xai" for
-				// grok) gates the openai-family shaping — tool_choice stays "auto"
-				// and max_output_tokens stays omitted even on bedrock_openai
-				// rotations — while retention and the OpenAI-Platform header track
-				// the resolved upstream instead.
+				// Registry-family shaping and retention use the resolved upstream;
+				// max_output_tokens omission is resolved by catalog policy.
 				const family = meta?.apiProviders[0] ?? upstream;
-				const openaiFamily = family === "openai";
 				const xaiFamily = family === "xai";
 				const responsesModel = buildModel({
 					...model,
 					api: "openai-responses",
 					baseUrl: responsesBaseUrl,
-					// The CLI never sends max_output_tokens for openai-provider
-					// models; only xai (grok) carries one (63356). The shared
-					// transport honors `omitMaxOutputTokens` by dropping the field.
-					omitMaxOutputTokens: openaiFamily,
 				} as ModelSpec<"openai-responses">);
 				// dXT: the proxy's Responses surface wants "xhigh", never "max".
 				const effort = options?.disableReasoning
@@ -564,6 +565,10 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 					// null suppresses the shared transport's "auto" default.
 					reasoningSummary: effort ? (xaiFamily ? null : "auto") : undefined,
 					maxTokens: options?.maxTokens ?? model.maxTokens ?? undefined,
+					serviceTier: options?.serviceTier,
+					include: options?.include,
+					forceReasoningOff: options?.forceReasoningOff ?? options?.disableReasoning,
+					statefulResponses: options?.statefulResponses,
 					// The CLI sends no `temperature` on this wire; tool_choice is
 					// forwarded only when the caller picks one (the API's default
 					// is already "auto" — probe-verified the proxy accepts the
@@ -653,7 +658,7 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 									syntheticReasoningContentFallback: " ",
 								}
 							: {}),
-						...(model.compatConfig ?? {}),
+						...(model as Model<Api>).compatConfig,
 						...(extraBody ? { extraBody } : {}),
 					},
 				} as ModelSpec<"openai-completions">);
@@ -667,6 +672,12 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 					minP: options?.minP,
 					presencePenalty: options?.presencePenalty,
 					repetitionPenalty: options?.repetitionPenalty,
+					stopSequences: options?.stopSequences,
+					frequencyPenalty: options?.frequencyPenalty,
+					initiatorOverride: options?.initiatorOverride,
+					promptCacheKey: options?.promptCacheKey,
+					promptCache: options?.promptCache,
+					serviceTier: options?.serviceTier,
 					maxTokens: options?.maxTokens ?? model.maxTokens ?? undefined,
 					// Baseten opt-in reasoning rides chat_template_args only; the
 					// generic reasoning_effort passthrough would add a field droid

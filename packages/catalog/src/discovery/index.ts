@@ -8,3 +8,4 @@ export * from "./gemini-cli";
 export * from "./gitlab-duo-workflow";
 export * from "./openai-compatible";
 export * from "./protobuf";
+export * from "./typesafe";
