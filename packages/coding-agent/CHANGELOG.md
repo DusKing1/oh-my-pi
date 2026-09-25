@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added Factory Droid login and model selection with promotional credit badges and account-matched regional discovery ([#8577](https://github.com/can1357/oh-my-pi/pull/8577) by [@will-bogusz](https://github.com/will-bogusz)).
+- Added Factory Droid login and model selection with promotional credit badges and account-matched regional discovery ([#8577](https://github.com/can1357/oh-my-pi/pull/8577) by [@will-bogusz](https://github.com/will-bogusz), continued in [#13276](https://github.com/can1357/oh-my-pi/pull/13276) by [@DusKing1](https://github.com/DusKing1)).
 
 ## [18.3.1] - 2026-09-25
 
