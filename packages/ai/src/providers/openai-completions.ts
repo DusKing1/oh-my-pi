@@ -1342,8 +1342,9 @@ const streamOpenAICompletionsOnce = (
 						for (const part of mistralParts) {
 							if (part?.type === "thinking" && Array.isArray(part.thinking)) {
 								for (const inner of part.thinking as Array<{ type?: unknown; text?: unknown } | null>) {
-									if (inner?.type === "text" && typeof inner.text === "string") {
+									if (inner?.type === "text" && typeof inner.text === "string" && inner.text.length > 0) {
 										appendThinkingDelta(inner.text, "mistral-content-parts");
+										suppressHealedThinking = true;
 									}
 								}
 							} else if (part?.type === "text" && typeof part.text === "string") {
@@ -1353,7 +1354,7 @@ const streamOpenAICompletionsOnce = (
 									const events = hasStructuredToolCalls
 										? streamMarkupHealing.feedEventsWithoutCalls(part.text)
 										: streamMarkupHealing.feedEvents(part.text);
-									for (const event of events) emitHealingEvent(event, true);
+									for (const event of events) emitHealingEvent(event, suppressHealedThinking);
 								} else {
 									appendProcessedText(part.text);
 								}

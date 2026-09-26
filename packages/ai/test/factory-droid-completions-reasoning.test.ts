@@ -84,7 +84,6 @@ function mistralMedium35(): Model<"factory-droid-agent"> {
 			apiProviders: ["mistral"],
 			supportedReasoningEfforts: ["off", Effort.High],
 			defaultReasoningEffort: Effort.High,
-			reasoningReplayFormat: "mistral-content-parts",
 		}),
 	);
 }
@@ -307,6 +306,80 @@ describe("Factory Droid completions reasoning matrix", () => {
 		expect(captured[0].body.reasoning_effort).toBe("max");
 		expect(captured[0].body.reasoning_history).toBeUndefined();
 		expect(captured[0].body.chat_template_args).toBeUndefined();
+	});
+
+	it("decodes typed thinking for GLM routed through Mistral, not only Mistral model IDs", async () => {
+		const captured: CapturedRequest[] = [];
+		const routed = glm52();
+		routed.factoryDroidApiProviders = ["mistral"];
+		const chunks = [
+			JSON.stringify({
+				id: "glm-typed",
+				object: "chat.completion.chunk",
+				created: 1,
+				model: "glm-5.2",
+				choices: [
+					{
+						index: 0,
+						delta: {
+							content: [
+								{ type: "thinking", thinking: [{ type: "text", text: "route-specific" }] },
+								{ type: "text", text: "answer" },
+							],
+						},
+					},
+				],
+			}),
+			...completionsChunks("", "glm-5.2").slice(1),
+		];
+		const first = await streamFactoryDroid(
+			routed,
+			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+			{ apiKey: "workos-token", fetch: captureFetch(captured, chunks), reasoning: Effort.High },
+		).result();
+		expect(first.content).toContainEqual(expect.objectContaining({ type: "thinking", thinking: "route-specific" }));
+		expect(first.content).toContainEqual(expect.objectContaining({ type: "text", text: "answer" }));
+		await streamFactoryDroid(
+			routed,
+			{
+				messages: [
+					{ role: "user", content: "hello", timestamp: 1 },
+					first,
+					{ role: "user", content: "continue", timestamp: 2 },
+				],
+			},
+			{
+				apiKey: "workos-token",
+				fetch: captureFetch(captured, completionsChunks("OK", "glm-5.2")),
+				reasoning: Effort.High,
+			},
+		).result();
+		const messages = captured[1].body.messages as Array<Record<string, unknown>>;
+		expect(messages.find(message => message.role === "assistant")?.content).toEqual([
+			{ type: "thinking", thinking: [{ type: "text", text: "route-specific" }] },
+			{ type: "text", text: "answer" },
+		]);
+	});
+
+	it("heals text-only Mistral typed parts instead of dropping unstructured thinking", async () => {
+		const captured: CapturedRequest[] = [];
+		const chunks = [
+			JSON.stringify({
+				id: "mistral-think",
+				object: "chat.completion.chunk",
+				created: 1,
+				model: "mistral-medium-3.5",
+				choices: [{ index: 0, delta: { content: [{ type: "text", text: "<think>reason</think>answer" }] } }],
+			}),
+			...completionsChunks("", "mistral-medium-3.5").slice(1),
+		];
+		const result = await streamFactoryDroid(
+			mistralMedium35(),
+			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+			{ apiKey: "workos-token", fetch: captureFetch(captured, chunks), reasoning: Effort.High },
+		).result();
+		expect(result.content).toContainEqual(expect.objectContaining({ type: "thinking", thinking: "reason" }));
+		expect(result.content).toContainEqual(expect.objectContaining({ type: "text", text: "answer" }));
 	});
 
 	it("preserves Qwen's per-Fireworks reasoning_history builder", async () => {

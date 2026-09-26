@@ -94,6 +94,27 @@ describe("Factory Droid anthropic wire (Claude)", () => {
 		expect(captured[0].body.thinking).toEqual({ type: "adaptive" });
 	});
 
+	it("keeps MiniMax M2.7 on Anthropic budget-effort with Core-backed Fireworks routing", async () => {
+		const captured: CapturedRequest[] = [];
+		const model = buildModel(buildFactoryDroidModel(FACTORY_DROID_MODEL_META["minimax-m2.7"]!));
+		await streamFactoryDroid(
+			model,
+			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+			{
+				apiKey: WORKOS_TOKEN,
+				fetch: captureFetch(captured, anthropicChunks("OK"), ANTHROPIC_EVENTS),
+				reasoning: Effort.High,
+			},
+		).result();
+
+		const request = captured[0];
+		expect(request.url).toStartWith("https://api.factory.ai/api/llm/a/v1/messages");
+		expect(request.headers["x-api-provider"]).toBe("fireworks");
+		expect(request.body.thinking).toMatchObject({ type: "enabled", budget_tokens: 24_576 });
+		expect(request.body.output_config).toEqual({ effort: "high" });
+		expect(request.headers["anthropic-beta"] ?? "").not.toContain("effort-2025-11-24");
+	});
+
 	it("passes the full effort ladder through on adaptive models (max stays max)", async () => {
 		const captured: CapturedRequest[] = [];
 		await streamFactoryDroid(

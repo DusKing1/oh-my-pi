@@ -231,8 +231,6 @@ export interface FactoryDroidModelInput {
 	 * "placeholder" (DeepSeek V4) emits a synthetic placeholder on tool calls.
 	 */
 	reasoningReplay?: "capture-only" | "standard" | "placeholder";
-	/** Provider-specific replay format for assistant reasoning content parts. */
-	reasoningReplayFormat?: "mistral-content-parts";
 	fastMode?: boolean;
 	noImageSupport?: boolean;
 }
@@ -829,7 +827,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelInput[] = [
 		supportedReasoningEfforts: ["off", "high"],
 		defaultReasoningEffort: "high",
 		reasoningReplay: "standard",
-		reasoningReplayFormat: "mistral-content-parts",
 	},
 	{
 		id: "glm-5.3-flash",
@@ -1078,7 +1075,7 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelInput[] = [
 	{
 		id: "minimax-m2.7",
 		name: "MiniMax M2.7",
-		wire: "openai-completions",
+		wire: "anthropic-messages",
 		pool: "core",
 		contextWindow: 196600,
 		maxTokens: 64000,
@@ -1087,6 +1084,7 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelInput[] = [
 		priceRef: { provider: "fireworks", modelId: "minimax-m2.7" },
 		supportedReasoningEfforts: ["high"],
 		defaultReasoningEffort: "high",
+		thinkingStyle: "budget-effort",
 		noImageSupport: true,
 	},
 ];

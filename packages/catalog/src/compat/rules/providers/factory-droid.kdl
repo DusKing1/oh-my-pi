@@ -9,7 +9,7 @@ provider "factory-droid" {
 	// Droid Core's Chat Completions routes accept their full advertised output
 	// caps. Scope this to the shipped Completions families; GPT/Grok use the
 	// Responses route and retain their own output-limit policy.
-	models "glm-*" "kimi-*" "deepseek-*" "nemotron-*" "inkling" "mistral-medium-3.5" "qwen3.8-max" "minimax-m3" "minimax-m2.7" {
+	models "glm-*" "kimi-*" "deepseek-*" "nemotron-*" "inkling" "mistral-medium-3.5" "qwen3.8-max" "minimax-m3" {
 		clamp-output-to-model-max #true
 	}
 	// The CLI's GPT Responses request omits max_output_tokens, and the proxy

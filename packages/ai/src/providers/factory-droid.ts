@@ -488,10 +488,9 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 				// The proxy's completions families replay stored reasoning_content
 				// on assistant turns (streamed as `reasoning_content` deltas).
 				// Kimi/GLM/nemotron replay captured thinking; DeepSeek also
-				// requires a placeholder on tool-call turns. Mistral Medium 3.5
-				// instead streams and replays typed thinking parts in `content`.
-				// Registry classification drives replay; unregistered custom ids
-				// get no replay behavior.
+				// requires a placeholder on tool-call turns. The Mistral upstream
+				// instead streams and replays typed thinking parts in `content`,
+				// including GLM when EU routing selects Mistral.
 				const reasoningReplay = meta?.reasoningReplay;
 				const openaiModel = buildModel({
 					...model,
@@ -506,7 +505,7 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 						// Qwen; the generic Qwen dialect would send enable_thinking
 						// instead and silently drop the requested effort.
 						thinkingFormat: "openai",
-						...(meta?.reasoningReplayFormat === "mistral-content-parts"
+						...(upstream === "mistral"
 							? { mistralReasoningContentParts: true, requiresThinkingAsText: false }
 							: {}),
 						...(meta?.toolMessageIncludesName ? { requiresToolResultName: true } : {}),
