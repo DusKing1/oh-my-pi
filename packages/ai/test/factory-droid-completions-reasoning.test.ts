@@ -537,25 +537,26 @@ describe("Factory Droid completions reasoning matrix", () => {
 		expect(captured[0].body.reasoning_history).toBeUndefined();
 	});
 
-	it("expresses disabled thinking on Baseten opt-in models by omission (native fah)", async () => {
+	it("uses reasoning_effort instead of template toggle on Kimi K3 Baseten", async () => {
 		const captured: CapturedRequest[] = [];
 		const kimi = kimiK3();
 		kimi.factoryDroidApiProviders = ["baseten"];
-		await streamFactoryDroid(
-			kimi,
-			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
-			{
-				apiKey: "workos-token",
-				fetch: captureFetch(captured, completionsChunks("OK", "kimi-k3")),
-				disableReasoning: true,
-			},
-		).result();
+		for (const options of [{ reasoning: Effort.High }, { disableReasoning: true }]) {
+			await streamFactoryDroid(
+				kimi,
+				{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+				{
+					apiKey: "workos-token",
+					fetch: captureFetch(captured, completionsChunks("OK", "kimi-k3")),
+					...options,
+				},
+			).result();
+		}
 
-		// Opt-in Baseten templates default to thinking-off; the CLI's fah
-		// short-circuit sends an empty body for off/none rather than
-		// enable_thinking: false.
+		expect(captured[0].body.reasoning_effort).toBe("high");
+		expect(captured[1].body.reasoning_effort).toBe("none");
 		expect(captured[0].body.chat_template_args).toBeUndefined();
-		expect(captured[0].body.reasoning_effort).toBeUndefined();
+		expect(captured[1].body.chat_template_args).toBeUndefined();
 	});
 
 	it("does not suppress reasoning when a named tool is forced (kimi)", async () => {

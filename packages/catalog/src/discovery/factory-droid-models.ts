@@ -84,17 +84,17 @@ export function factoryDroidEdgeRegion(headers: Headers): "eu" | undefined {
 }
 
 /**
- * Effective upstream rotation for an account region, ported from the CLI's
- * resolver (`We`): an explicit per-region override wins verbatim
- * (an empty list means the model is unavailable in that region), otherwise
- * the default rotation is filtered to upstreams serving the region.
+ * Effective upstream rotation for an account region. The CLI's `We` resolves
+ * eligible upstreams and `I` preserves raw registry order for fallback choice.
+ * Explicit overrides constrain membership; otherwise filter by serving region.
  */
 export function resolveFactoryDroidRotation(
 	input: FactoryDroidModelInput,
 	region: string | undefined,
 ): readonly FactoryDroidUpstream[] {
+	const override = region === "eu" ? input.euApiProviders : input.globalApiProviders;
+	if (override !== undefined) return input.apiProviders.filter(upstream => override.includes(upstream));
 	if (region === "eu") {
-		if (input.euApiProviders !== undefined) return input.euApiProviders;
 		return input.apiProviders.filter(upstream => FACTORY_DROID_UPSTREAM_REGIONS[upstream]?.includes("eu"));
 	}
 	return input.apiProviders;
@@ -155,6 +155,8 @@ export interface FactoryDroidModelInput {
 	maxTokens: number;
 	/** Upstream rotation list; the first entry is the default `x-api-provider`. */
 	apiProviders: readonly FactoryDroidUpstream[];
+	/** Explicit global-region rotation, distinct from the registry's full upstream set. */
+	globalApiProviders?: readonly FactoryDroidUpstream[];
 	/**
 	 * Explicit rotation override for EU-resident accounts (the CLI's
 	 * `regionOverrides.eu`), mirrored verbatim. Absent ⇒ the default rotation
@@ -749,6 +751,7 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelInput[] = [
 		credits: { input: 0.6, output: 5 },
 		supportedReasoningEfforts: ["low", "medium", "high"],
 		defaultReasoningEffort: "high",
+		geminiMedium: true,
 		priceRef: { provider: "google", modelId: "gemini-3.8-flash" },
 	},
 	{
@@ -761,6 +764,7 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelInput[] = [
 		credits: { input: 0.6, output: 5 },
 		supportedReasoningEfforts: ["low", "medium", "high"],
 		defaultReasoningEffort: "high",
+		geminiMedium: true,
 		priceRef: { provider: "google", modelId: "gemini-3.7-flash" },
 	},
 	{
@@ -852,6 +856,7 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelInput[] = [
 		contextWindow: 908928,
 		maxTokens: 131072,
 		apiProviders: ["fireworks", "baseten", "mistral"],
+		globalApiProviders: ["fireworks", "baseten"],
 		euApiProviders: ["mistral"],
 		credits: { input: 0.56, output: 3.15 },
 		priceRef: { provider: "fireworks", modelId: "glm-5.3" },
@@ -869,6 +874,7 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelInput[] = [
 		contextWindow: 908928,
 		maxTokens: 131072,
 		apiProviders: ["baseten", "mistral"],
+		globalApiProviders: ["baseten"],
 		euApiProviders: ["mistral", "baseten"],
 		euContextWindow: 200000,
 		euMaxTokens: 65536,
@@ -910,7 +916,7 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelInput[] = [
 		toolMessageIncludesName: true,
 		supportedReasoningEfforts: ["off", "low", "high", "max"],
 		defaultReasoningEffort: "high",
-		completionsReasoning: { fireworks: { history: "preserved" }, baseten: { mode: "opt-in" } },
+		completionsReasoning: { fireworks: { history: "preserved" }, baseten: { mode: "reasoning-effort" } },
 		reasoningReplay: "capture-only",
 	},
 	{

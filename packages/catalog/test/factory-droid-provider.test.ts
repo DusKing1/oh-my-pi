@@ -323,9 +323,33 @@ describe("Factory Droid catalog", () => {
 		const models = await fetchFactoryDroidModels({ apiKey: "token", fetch: fetchImpl });
 		const kimi = models?.find(model => model.id === "kimi-k3");
 		expect(kimi?.factoryDroidApiProviders).toEqual(["baseten", "fireworks"]);
-		// Models without a routing entry keep the registry's static order.
+		// Explicit global restrictions apply even without a live routing entry.
 		const glm = models?.find(model => model.id === "glm-5.2");
-		expect(glm?.factoryDroidApiProviders).toBeUndefined();
+		expect(glm?.factoryDroidApiProviders).toEqual(["baseten"]);
+	});
+
+	it("keeps global overrides restrictive without removing the EU Mistral route", async () => {
+		const fetchImpl: FetchImpl = async url =>
+			Response.json(
+				String(url).includes("feature-flags")
+					? {
+							flags: {},
+							configs: {
+								provider_routing: { models: { "glm-5.3": ["mistral", "baseten"], "glm-5.2": ["mistral"] } },
+							},
+						}
+					: { settings: { modelPolicy: { allowAllFactoryModels: true } } },
+			);
+		const global = await fetchFactoryDroidModels({ apiKey: "token", fetch: fetchImpl });
+		const eu = await fetchFactoryDroidModels({ apiKey: "token", region: "eu", fetch: fetchImpl });
+		expect(global?.find(model => model.id === "glm-5.3")?.factoryDroidApiProviders).toEqual(["baseten"]);
+		expect(global?.find(model => model.id === "glm-5.2")?.factoryDroidApiProviders).toEqual(["baseten"]);
+		expect(eu?.find(model => model.id === "glm-5.3")?.factoryDroidApiProviders).toEqual(["mistral"]);
+		expect(eu?.find(model => model.id === "glm-5.2")?.factoryDroidApiProviders).toEqual(["mistral"]);
+		expect(
+			factoryDroidModelManagerOptions().staticModels?.find(model => model.id === "glm-5.2")
+				?.factoryDroidApiProviders,
+		).toEqual(["baseten"]);
 	});
 
 	it("falls back to null without credentials so the static list stays", async () => {
@@ -404,12 +428,12 @@ describe("Factory Droid EU region", () => {
 		const glm = FACTORY_DROID_MODELS.find(m => m.id === "glm-5.2")!;
 		const mistral = FACTORY_DROID_MODELS.find(m => m.id === "mistral-medium-3.5")!;
 
-		// Explicit EU override (the CLI's regionOverrides.eu) wins verbatim.
+		// An override constrains membership; the raw registry order selects the default.
 		expect(resolveFactoryDroidRotation(opus5, "eu")).toEqual(["bedrock_anthropic"]);
 		// An empty override means unavailable in the region.
 		expect(resolveFactoryDroidRotation(fable, "eu")).toEqual([]);
 		// Explicit overrides can route to an upstream absent from the EU table.
-		expect(resolveFactoryDroidRotation(glm, "eu")).toEqual(["mistral", "baseten"]);
+		expect(resolveFactoryDroidRotation(glm, "eu")).toEqual(["baseten", "mistral"]);
 		expect(resolveFactoryDroidRotation(mistral, "eu")).toEqual(["mistral"]);
 		// No override: the default rotation is filtered to EU-serving upstreams.
 		expect(resolveFactoryDroidRotation(sonnet, "eu")).toEqual(["vertex_anthropic", "bedrock_anthropic"]);
@@ -452,7 +476,7 @@ describe("Factory Droid EU region", () => {
 		expect(gpt54.factoryDroidApiProviders).toEqual(["openai"]);
 		expect(gpt54.baseUrl).toBe("https://api.eu.factory.ai/api/llm/o/v1");
 		const glm = models!.find(model => model.id === "glm-5.2")!;
-		expect(glm.factoryDroidApiProviders).toEqual(["mistral", "baseten"]);
+		expect(glm.factoryDroidApiProviders).toEqual(["baseten", "mistral"]);
 		expect(glm.contextWindow).toBe(200_000);
 		expect(glm.maxTokens).toBe(65_536);
 	});
@@ -544,7 +568,7 @@ describe("Factory Droid serving edge", () => {
 		expect(opus5?.factoryDroidApiProviders).toEqual(["bedrock_anthropic"]);
 		expect(opus5?.baseUrl).toBe(FACTORY_DROID_ANTHROPIC_BASE_URL);
 		const glm = models!.find(model => model.id === "glm-5.2");
-		expect(glm?.factoryDroidApiProviders).toEqual(["mistral", "baseten"]);
+		expect(glm?.factoryDroidApiProviders).toEqual(["baseten", "mistral"]);
 		expect(glm?.contextWindow).toBe(200_000);
 		expect(glm?.baseUrl).toBe(FACTORY_DROID_COMPLETIONS_BASE_URL);
 	});

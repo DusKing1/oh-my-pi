@@ -389,13 +389,7 @@ export function factoryDroidModelManagerOptions(
 		// Known account residency still constrains its host and rotations.
 		staticModels: FACTORY_DROID_MODELS.filter(
 			model => !model.requiresExplicitOptIn && resolveFactoryDroidRotation(model, config.region).length > 0,
-		).map(model =>
-			buildFactoryDroidModel(
-				model,
-				config.region === "eu" ? resolveFactoryDroidRotation(model, config.region) : undefined,
-				config.region,
-			),
-		),
+		).map(model => buildFactoryDroidModel(model, resolveFactoryDroidRotation(model, config.region), config.region)),
 		dynamicModelsAuthoritative: true,
 		// Region rejections are scoped by the current serving edge in discovery;
 		// a cache from another edge cannot be reused in an online refresh.

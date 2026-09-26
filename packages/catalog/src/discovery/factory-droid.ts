@@ -193,17 +193,15 @@ export async function fetchFactoryDroidModels(
 /**
  * Rotation for one discovered model: the serving region (account residency,
  * else the response's edge PoP) resolves the base rotation (override or
- * region-filtered), then a live `provider_routing` entry narrows it. For the
- * global region the routing entry applies verbatim (existing behavior); for
- * EU it is intersected with the region-resolved set so a US-centric routing
- * entry cannot resurrect a global-only upstream.
+ * region-filtered), then a live `provider_routing` entry narrows it. Explicit
+ * global overrides and EU restrictions cannot be widened by a routing entry.
  */
 function resolveRotation(
 	input: FactoryDroidModelInput,
 	routed: readonly string[] | undefined,
 	region: string | undefined,
 ): readonly string[] | undefined {
-	if (region !== "eu") return routed ?? undefined;
+	if (region !== "eu" && input.globalApiProviders === undefined) return routed ?? undefined;
 	const regionResolved = resolveFactoryDroidRotation(input, region);
 	if (!routed) return regionResolved;
 	const intersection = routed.filter(p => (regionResolved as readonly string[]).includes(p));

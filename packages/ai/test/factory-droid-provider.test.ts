@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { buildFactoryDroidModel, FACTORY_DROID_MODEL_META } from "@oh-my-pi/pi-catalog/discovery";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { DROID_SYSTEM_PREFIX, streamFactoryDroid } from "../src/providers/factory-droid";
 import {
@@ -221,9 +223,9 @@ describe("Factory Droid completions wire (Droid Core)", () => {
 		).result();
 
 		expect(captured[0].headers["x-api-provider"]).toBe("baseten");
-		// Baseten thinking rides the template switch, never reasoning_effort.
-		expect(captured[0].body.chat_template_args).toEqual({ enable_thinking: true });
-		expect(captured[0].body.reasoning_effort).toBeUndefined();
+		// Kimi K3 uses Baseten's effort dialect, unlike its opt-in models.
+		expect(captured[0].body.reasoning_effort).toBe("high");
+		expect(captured[0].body.chat_template_args).toBeUndefined();
 	});
 
 	it("includes the tool name on tool-result messages for kimi-k3", async () => {
@@ -423,6 +425,31 @@ describe("Factory Droid gemini wire (Google series)", () => {
 		expect(generation.topP).toBeUndefined();
 		expect(generation.thinkingConfig).toEqual({ includeThoughts: true, thinkingLevel: "MEDIUM" });
 		expect(JSON.stringify(request.body.systemInstruction)).toContain(DROID_SYSTEM_PREFIX);
+	});
+
+	it("uses MEDIUM for Gemini 3.7/3.8 but HIGH for 3.6 at a requested medium effort", async () => {
+		for (const [id, expected] of [
+			["gemini-3.7-flash", "MEDIUM"],
+			["gemini-3.8-flash", "MEDIUM"],
+			["gemini-3.6-flash", "HIGH"],
+		] as const) {
+			const captured: CapturedRequest[] = [];
+			const model = buildModel(buildFactoryDroidModel(FACTORY_DROID_MODEL_META[id]!));
+			await streamFactoryDroid(
+				model,
+				{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+				{ apiKey: WORKOS_TOKEN, fetch: captureFetch(captured, geminiChunks("OK")), reasoning: Effort.Medium },
+			).result();
+			const generation = captured[0].body.generationConfig;
+			if (!generation || typeof generation !== "object" || !("thinkingConfig" in generation)) {
+				throw new Error("missing Gemini generation config");
+			}
+			const thinking = generation.thinkingConfig;
+			if (!thinking || typeof thinking !== "object" || !("thinkingLevel" in thinking)) {
+				throw new Error("missing Gemini thinking level");
+			}
+			expect(thinking.thinkingLevel).toBe(expected);
+		}
 	});
 
 	it("captures thoughtSignature on tool calls and replays the droid continuation shape", async () => {
