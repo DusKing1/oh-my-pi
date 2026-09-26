@@ -26,9 +26,9 @@ import { streamAnthropic, streamOpenAICompletions, streamOpenAIResponses } from 
  *
  * | family | path | models |
  * |---|---|---|
- * | `openai-completions` | `/api/llm/o/v1/chat/completions` | Kimi, GLM, DeepSeek, Nemotron |
+ * | `openai-completions` | `/api/llm/o/v1/chat/completions` | Kimi, GLM, DeepSeek, Qwen, Inkling, MiniMax M3, Mistral, Nemotron |
  * | `openai-responses` | `/api/llm/o/v1/responses` | GPT + Grok |
- * | `anthropic-messages` | `/api/llm/a/v1/messages` | Claude + MiniMax |
+ * | `anthropic-messages` | `/api/llm/a/v1/messages` | Claude |
  * | `google-generate` | `/api/llm/g/v1/generate` | Gemini (native generateContent SSE) |
  *
  * Cross-cutting contract on every path:
@@ -161,10 +161,10 @@ function buildIdentityHeaders(input: {
  * model×upstream:
  *
  * - Fireworks takes `reasoning_effort` (the per-model effort mappers are
- *   identity for every rung, "max" included) plus `reasoning_history` while
- *   thinking: "preserved" for kimi/glm/nemotron-3-ultra/inkling,
- *   "interleaved" for deepseek. Disabled sends `reasoning_effort: "none"`
- *   with no history.
+ *   identity for every rung, "max" included). Families whose request builder
+ *   opts into reasoning history also send "preserved" (kimi/glm/nemotron/
+ *   qwen/inkling) or "interleaved" (deepseek); MiniMax M3 does not.
+ *   Disabled sends `reasoning_effort: "none"` with no history.
  * - Baseten opt-in families (kimi, glm-5.1, nemotron) take
  *   `chat_template_args.enable_thinking`; Baseten never receives
  *   `reasoning_history`.
@@ -224,7 +224,8 @@ function buildCompletionsReasoningBody(
 	// Fireworks (and any other upstream for unregistered models).
 	if (disabled) return { reasoning_effort: "none" };
 	if (options?.reasoning !== undefined) {
-		return { reasoning_history: shaping?.fireworks?.history ?? "preserved" };
+		const history = shaping?.fireworks?.history;
+		return history || !meta ? { reasoning_history: history ?? "preserved" } : undefined;
 	}
 	return undefined;
 }
@@ -429,15 +430,11 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 					api: "openai-responses",
 					baseUrl: responsesBaseUrl,
 				} as ModelSpec<"openai-responses">);
-				// dXT: the proxy's Responses surface wants "xhigh", never "max".
-				const effort = options?.disableReasoning
-					? undefined
-					: options?.reasoning === "max"
-						? "xhigh"
-						: options?.reasoning;
+				// The CLI's ZeH uses K(e) = e.toLowerCase(), preserving "max".
+				const effort = options?.disableReasoning ? undefined : options?.reasoning;
 				innerStream = streamOpenAIResponses(responsesModel, proxiedContext, {
 					...baseOptions,
-					reasoning: effort as "minimal" | "low" | "medium" | "high" | "xhigh" | undefined,
+					reasoning: effort,
 					// The CLI omits reasoning.summary for xai-routed models (grok);
 					// null suppresses the shared transport's "auto" default.
 					reasoningSummary: effort ? (xaiFamily ? null : "auto") : undefined,
@@ -490,11 +487,11 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 						meta?.completionsReasoning?.baseten?.mode === "forced-on");
 				// The proxy's completions families replay stored reasoning_content
 				// on assistant turns (streamed as `reasoning_content` deltas).
-				// Kimi/GLM/inkling/nemotron replay only what was captured; DeepSeek
-				// additionally forces a placeholder on tool-call turns (see the
-				// transport's tier-2 fallback).
-				// Registry classification (reasoningReplay) drives the replay
-				// compat flags; unregistered custom ids get no replay behavior.
+				// Kimi/GLM/nemotron replay captured thinking; DeepSeek also
+				// requires a placeholder on tool-call turns. Mistral Medium 3.5
+				// instead streams and replays typed thinking parts in `content`.
+				// Registry classification drives replay; unregistered custom ids
+				// get no replay behavior.
 				const reasoningReplay = meta?.reasoningReplay;
 				const openaiModel = buildModel({
 					...model,
@@ -505,6 +502,13 @@ export const streamFactoryDroid: StreamFunction<"factory-droid-agent"> = (
 						// `max_completion_tokens`) and have no `store` field.
 						maxTokensField: "max_tokens",
 						supportsStore: false,
+						// Factory's chat-completions proxy uses reasoning_effort even for
+						// Qwen; the generic Qwen dialect would send enable_thinking
+						// instead and silently drop the requested effort.
+						thinkingFormat: "openai",
+						...(meta?.reasoningReplayFormat === "mistral-content-parts"
+							? { mistralReasoningContentParts: true, requiresThinkingAsText: false }
+							: {}),
 						...(meta?.toolMessageIncludesName ? { requiresToolResultName: true } : {}),
 						// Generic-host heuristics that don't apply to the Factory
 						// proxy: native emits reasoning params regardless of

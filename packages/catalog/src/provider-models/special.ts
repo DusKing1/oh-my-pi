@@ -384,10 +384,11 @@ export function factoryDroidModelManagerOptions(
 	return {
 		providerId: "factory-droid",
 		cacheProviderId: resolveModelCacheProviderId("factory-droid", config),
-		// No model-listing endpoint exists. The registry is the offline seed,
-		// but known account residency still constrains its host and rotations.
+		// No model-listing endpoint exists. The registry is the offline seed;
+		// without live org policy, explicit-opt-in models must stay hidden.
+		// Known account residency still constrains its host and rotations.
 		staticModels: FACTORY_DROID_MODELS.filter(
-			model => resolveFactoryDroidRotation(model, config.region).length > 0,
+			model => !model.requiresExplicitOptIn && resolveFactoryDroidRotation(model, config.region).length > 0,
 		).map(model =>
 			buildFactoryDroidModel(
 				model,

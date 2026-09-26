@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
+import { type } from "@oh-my-pi/omptype";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { buildFactoryDroidModel } from "@oh-my-pi/pi-catalog/discovery";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
@@ -54,6 +55,37 @@ function glm52(): Model<"factory-droid-agent"> {
 			},
 			["baseten"],
 		),
+	);
+}
+
+function qwen38Max(): Model<"factory-droid-agent"> {
+	return buildModel(
+		buildFactoryDroidModel({
+			id: "qwen3.8-max",
+			name: "Qwen3.8 Max",
+			wire: "openai-completions",
+			contextWindow: 131_072,
+			maxTokens: 131_072,
+			apiProviders: ["fireworks"],
+			supportedReasoningEfforts: [Effort.Low, Effort.Medium, Effort.XHigh],
+			defaultReasoningEffort: Effort.XHigh,
+		}),
+	);
+}
+
+function mistralMedium35(): Model<"factory-droid-agent"> {
+	return buildModel(
+		buildFactoryDroidModel({
+			id: "mistral-medium-3.5",
+			name: "Mistral Medium 3.5",
+			wire: "openai-completions",
+			contextWindow: 192_000,
+			maxTokens: 64_000,
+			apiProviders: ["mistral"],
+			supportedReasoningEfforts: ["off", Effort.High],
+			defaultReasoningEffort: Effort.High,
+			reasoningReplayFormat: "mistral-content-parts",
+		}),
 	);
 }
 
@@ -275,6 +307,140 @@ describe("Factory Droid completions reasoning matrix", () => {
 		expect(captured[0].body.reasoning_effort).toBe("max");
 		expect(captured[0].body.reasoning_history).toBeUndefined();
 		expect(captured[0].body.chat_template_args).toBeUndefined();
+	});
+
+	it("preserves Qwen's per-Fireworks reasoning_history builder", async () => {
+		const captured: CapturedRequest[] = [];
+		await streamFactoryDroid(
+			qwen38Max(),
+			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+			{
+				apiKey: "workos-token",
+				fetch: captureFetch(captured, completionsChunks("OK", "qwen3.8-max")),
+				reasoning: Effort.XHigh,
+			},
+		).result();
+
+		expect(captured[0].body.reasoning_effort).toBe("xhigh");
+		expect(captured[0].body.reasoning_history).toBe("preserved");
+	});
+
+	it("omits reasoning_history for MiniMax M3's Uo() request builder", async () => {
+		const captured: CapturedRequest[] = [];
+		const minimax = buildModel(
+			buildFactoryDroidModel({
+				id: "minimax-m3",
+				name: "MiniMax M3",
+				wire: "openai-completions",
+				contextWindow: 448_000,
+				maxTokens: 64_000,
+				apiProviders: ["fireworks"],
+				supportedReasoningEfforts: [Effort.High],
+				defaultReasoningEffort: Effort.High,
+			}),
+		);
+		await streamFactoryDroid(
+			minimax,
+			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+			{
+				apiKey: "workos-token",
+				fetch: captureFetch(captured, completionsChunks("OK", "minimax-m3")),
+				reasoning: Effort.High,
+			},
+		).result();
+
+		expect(captured[0].body.reasoning_effort).toBe("high");
+		expect(captured[0].body.reasoning_history).toBeUndefined();
+	});
+
+	it("decodes Mistral split thinking/text deltas and replays ordered typed reasoning with a tool call", async () => {
+		const model = mistralMedium35();
+		const captured: CapturedRequest[] = [];
+		const modelId = "mistral-medium-3.5";
+		const chunk = (delta: Record<string, unknown>, finish_reason?: string) =>
+			JSON.stringify({
+				id: "chatcmpl-mistral",
+				object: "chat.completion.chunk",
+				created: 1,
+				model: modelId,
+				choices: [{ index: 0, delta, finish_reason }],
+			});
+		const chunks = [
+			chunk({ content: [{ type: "thinking", thinking: [{ type: "text", text: "first " }] }] }),
+			chunk({
+				reasoning_content: "step", // Alias on the same chunk must not duplicate the typed thinking part.
+				content: [
+					{ type: "thinking", thinking: [{ type: "text", text: "step" }] },
+					{ type: "text", text: "Checking " },
+				],
+			}),
+			chunk(
+				{
+					content: "file",
+					tool_calls: [
+						{
+							index: 0,
+							id: "abcdefghi",
+							type: "function",
+							function: { name: "Read", arguments: '{"path":"x"}' },
+						},
+					],
+				},
+				"tool_calls",
+			),
+		];
+		const first = await streamFactoryDroid(
+			model,
+			{
+				systemPrompt: ["Keep user policy"],
+				messages: [{ role: "user", content: "inspect", timestamp: 1 }],
+				tools: [{ name: "Read", description: "Read file", parameters: type({ path: "string" }) }],
+			},
+			{ apiKey: "workos-token", fetch: captureFetch(captured, chunks), reasoning: Effort.High },
+		).result();
+		expect(first.content.map(block => block.type)).toEqual(["thinking", "text", "toolCall"]);
+		expect(first.content[0]).toMatchObject({
+			type: "thinking",
+			thinking: "first step",
+			thinkingSignature: "mistral-content-parts",
+		});
+		expect(first.content[1]).toMatchObject({ type: "text", text: "Checking file" });
+
+		await streamFactoryDroid(
+			model,
+			{
+				systemPrompt: ["Keep user policy"],
+				tools: [{ name: "Read", description: "Read file", parameters: type({ path: "string" }) }],
+				messages: [
+					{ role: "user", content: "inspect", timestamp: 1 },
+					first,
+					{
+						role: "toolResult",
+						toolCallId: "abcdefghi",
+						toolName: "Read",
+						content: [{ type: "text", text: "body" }],
+						isError: false,
+						timestamp: 3,
+					},
+					{ role: "user", content: "summarize", timestamp: 4 },
+				],
+			},
+			{
+				apiKey: "workos-token",
+				fetch: captureFetch(captured, completionsChunks("OK", modelId)),
+				reasoning: Effort.High,
+			},
+		).result();
+		const messages = captured[1].body.messages as Array<Record<string, unknown>>;
+		expect(captured[1].body.tools).toBeDefined();
+		expect(JSON.stringify(captured[1].body.messages)).toContain("Keep user policy");
+		const replayed = messages.find(message => message.role === "assistant" && message.tool_calls);
+		expect(replayed?.content).toEqual([
+			{ type: "thinking", thinking: [{ type: "text", text: "first step" }] },
+			{ type: "text", text: "Checking file" },
+		]);
+		expect(replayed?.reasoning_content).toBeUndefined();
+		expect(messages.find(message => message.role === "tool")?.tool_call_id).toBe("abcdefghi");
 	});
 
 	it("coerces disabled Baseten thinking to low for forced-on deepseek", async () => {

@@ -65,6 +65,7 @@ import type {
 	ChatCompletionContentPartText,
 	ChatCompletionMessageFunctionToolCall,
 	ChatCompletionMessageParam,
+	ChatCompletionMistralThinkingPart,
 	ChatCompletionTool,
 	ChatCompletionToolMessageParam,
 } from "./openai-chat-wire";
@@ -1319,7 +1320,17 @@ const streamOpenAICompletionsOnce = (
 						}
 					}
 
-					if (foundReasoningField) {
+					// Mistral's native reasoning is embedded in content parts.
+					// When a chunk also carries a top-level reasoning alias, prefer
+					// the typed parts to avoid replaying the same thinking twice.
+					const mistralContent: unknown = model.compat.mistralReasoningContentParts
+						? choice.delta.content
+						: undefined;
+					const mistralParts = Array.isArray(mistralContent)
+						? (mistralContent as Array<{ type?: unknown; text?: unknown; thinking?: unknown } | null>)
+						: undefined;
+					// Array parts carry the authoritative content, including thinking.
+					if (foundReasoningField && !mistralParts) {
 						appendThinkingDelta(
 							foundReasoningDelta,
 							foundReasoningField,
@@ -1327,8 +1338,30 @@ const streamOpenAICompletionsOnce = (
 						);
 						suppressHealedThinking = true;
 					}
+					if (mistralParts) {
+						for (const part of mistralParts) {
+							if (part?.type === "thinking" && Array.isArray(part.thinking)) {
+								for (const inner of part.thinking as Array<{ type?: unknown; text?: unknown } | null>) {
+									if (inner?.type === "text" && typeof inner.text === "string") {
+										appendThinkingDelta(inner.text, "mistral-content-parts");
+									}
+								}
+							} else if (part?.type === "text" && typeof part.text === "string") {
+								if (streamMarkupHealing) {
+									const hasStructuredToolCalls =
+										Array.isArray(choice.delta.tool_calls) && choice.delta.tool_calls.length > 0;
+									const events = hasStructuredToolCalls
+										? streamMarkupHealing.feedEventsWithoutCalls(part.text)
+										: streamMarkupHealing.feedEvents(part.text);
+									for (const event of events) emitHealingEvent(event, true);
+								} else {
+									appendProcessedText(part.text);
+								}
+							}
+						}
+					}
 
-					const normalizedDeltaText = normalizeStreamingContentText(choice.delta.content);
+					const normalizedDeltaText = mistralParts ? "" : normalizeStreamingContentText(choice.delta.content);
 					if (normalizedDeltaText.length > 0) {
 						if (!firstTokenTime) firstTokenTime = performance.now();
 						const hasStructuredToolCalls =
@@ -2311,7 +2344,20 @@ export function convertMessages(
 			const thinkingBlocks = msg.content.filter(b => b.type === "thinking") as ThinkingContent[];
 			// Filter out empty thinking blocks to avoid API validation errors
 			const nonEmptyThinkingBlocks = thinkingBlocks.filter(b => b.thinking && b.thinking.trim().length > 0);
-			if (nonEmptyThinkingBlocks.length > 0) {
+			if (compat.mistralReasoningContentParts && nonEmptyThinkingBlocks.length > 0) {
+				// Mistral Medium 3.5 reads thinking from ordered content parts,
+				// not a top-level reasoning_content field. Preserve boundaries
+				// across mixed thinking/text and tool-call assistant turns.
+				const parts: Array<ChatCompletionContentPartText | ChatCompletionMistralThinkingPart> = [];
+				for (const block of msg.content) {
+					if (block.type === "thinking" && block.thinking.trim()) {
+						parts.push({ type: "thinking", thinking: [{ type: "text", text: block.thinking.toWellFormed() }] });
+					} else if (block.type === "text" && block.text.trim()) {
+						parts.push({ type: "text", text: block.text.toWellFormed() });
+					}
+				}
+				assistantMsg.content = parts;
+			} else if (nonEmptyThinkingBlocks.length > 0) {
 				if (compat.requiresThinkingAsText) {
 					const thinkingText = nonEmptyThinkingBlocks
 						.map(b => renderDemotedThinking(model.id, b.thinking))

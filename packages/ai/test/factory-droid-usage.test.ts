@@ -133,7 +133,7 @@ describe("parseFactoryDroidUsage", () => {
 });
 
 describe("Factory Droid model quota routing", () => {
-	it("MiniMax Anthropic-wire models spend Core, not Standard, quota", () => {
+	it("MiniMax M3 completions model spends Core, not Standard, quota", () => {
 		const fetchedAt = Date.parse("2026-08-07T06:00:00.000Z");
 		const report = parseFactoryDroidUsage(
 			{
@@ -151,7 +151,7 @@ describe("Factory Droid model quota routing", () => {
 			fetchedAt,
 		);
 		if (!report) throw new Error("expected usage windows");
-		const coreContext = { modelId: "minimax-m2.5" };
+		const coreContext = { modelId: "minimax-m3" };
 		const standardContext = { modelId: "claude-sonnet-4-5-20250929" };
 		expect(factoryDroidRankingStrategy.blockScope?.(coreContext)).toBe("pool:core");
 		expect(factoryDroidRankingStrategy.findWindowLimits(report, coreContext).primary?.amount.usedFraction).toBe(0.2);

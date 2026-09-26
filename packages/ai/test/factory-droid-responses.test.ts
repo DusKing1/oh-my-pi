@@ -31,18 +31,33 @@ function gpt52(): Model<"factory-droid-agent"> {
 	);
 }
 
-function gpt52Codex(): Model<"factory-droid-agent"> {
+function gpt6Sol(): Model<"factory-droid-agent"> {
 	return buildModel(
 		buildFactoryDroidModel({
-			id: "gpt-5.2-codex",
-			name: "GPT-5.2-Codex",
+			id: "gpt-6-sol",
+			name: "GPT-6 Sol",
+			wire: "openai-responses",
+			contextWindow: 922_000,
+			maxTokens: 128_000,
+			apiProviders: ["openai"],
+			supportedReasoningEfforts: ["off", Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+			defaultReasoningEffort: Effort.Medium,
+		}),
+	);
+}
+
+function gpt53Codex(): Model<"factory-droid-agent"> {
+	return buildModel(
+		buildFactoryDroidModel({
+			id: "gpt-5.3-codex",
+			name: "GPT-5.3-Codex",
 			wire: "openai-responses",
 			contextWindow: 272_000,
 			maxTokens: 128_000,
-			apiProviders: ["openai"],
+			apiProviders: ["openai", "azure_openai"],
 			supportedReasoningEfforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
 			defaultReasoningEffort: Effort.Medium,
-			responsesConfig: { parallelToolCalls: true, extendedCache: true, safetyId: true },
+			responsesConfig: { verbosity: "low", parallelToolCalls: true, extendedCache: true, safetyId: true },
 		}),
 	);
 }
@@ -136,9 +151,22 @@ describe("Factory Droid responses wire (parity fixes)", () => {
 		expect(request.body.reasoning).toEqual({ effort: "medium", summary: "auto" });
 	});
 
+	it("preserves GPT-6 Sol max on Responses instead of silently downgrading to xhigh", async () => {
+		const captured: CapturedRequest[] = [];
+		await streamFactoryDroid(gpt6Sol(), context(), {
+			apiKey: WORKOS_TOKEN_WITH_USER,
+			fetch: captureFetch(captured, responsesChunks("GPT_OK")),
+			reasoning: Effort.Max,
+		}).result();
+
+		expect(captured[0].body.reasoning).toEqual({ effort: "max", summary: "auto" });
+		expect(captured[0].body.tools).toBeDefined();
+		expect(JSON.stringify(captured[0].body.instructions)).toContain("OMP prompt");
+	});
+
 	it("codex extendedCache+safetyId sends retention and the session id as safety_identifier (native parity)", async () => {
 		const captured: CapturedRequest[] = [];
-		await streamFactoryDroid(gpt52Codex(), context(), {
+		await streamFactoryDroid(gpt53Codex(), context(), {
 			apiKey: WORKOS_TOKEN_WITH_USER,
 			fetch: captureFetch(captured, responsesChunks("GPT_OK")),
 			sessionId: "sess-1",
@@ -151,8 +179,8 @@ describe("Factory Droid responses wire (parity fixes)", () => {
 		// deterministically mapped to a v4-shaped uuid (shape pinned; exact bytes are algorithm-internal).
 		expect(request.body.safety_identifier).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 		expect(request.body.safety_identifier).toBe(request.body.prompt_cache_key);
-		// No verbosity on gpt-5.2-codex's native apiRequest.
-		expect(request.body.text).toBeUndefined();
+		// GPT-5.3 Codex advertises low verbosity alongside retention and safety id.
+		expect(request.body.text).toEqual({ verbosity: "low" });
 		// Parallel tool calls ride the API default (on); only false is written.
 		expect(request.body.parallel_tool_calls).toBeUndefined();
 		expect(request.body.tool_choice).toBeUndefined();
@@ -162,7 +190,7 @@ describe("Factory Droid responses wire (parity fixes)", () => {
 
 	it("safety_identifier falls back to the session uuid when the token has no user id claim", async () => {
 		const captured: CapturedRequest[] = [];
-		await streamFactoryDroid(gpt52Codex(), context(), {
+		await streamFactoryDroid(gpt53Codex(), context(), {
 			apiKey: WORKOS_TOKEN_NO_SUB,
 			fetch: captureFetch(captured, responsesChunks("GPT_OK")),
 			sessionId: "sess-1",

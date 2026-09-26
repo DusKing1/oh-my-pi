@@ -1,5 +1,5 @@
 import { isRecord } from "@oh-my-pi/pi-utils";
-import { ANTHROPIC_THINKING, type Effort, THINKING_EFFORTS } from "../effort";
+import { type Effort, THINKING_EFFORTS } from "../effort";
 import { getBundledModel } from "../models";
 import type { FactoryDroidCredits, FetchImpl, ModelSpec, ThinkingConfig, ThinkingControlMode } from "../types";
 import {
@@ -25,6 +25,8 @@ import {
 
 /** User-facing effort rungs, derived from the shared thinking ladder. */
 const SUPPORTED_EFFORTS = new Set<string>(THINKING_EFFORTS);
+/** Factory CLI 0.228.0's `St` budget ladder for budget-style Anthropic requests. */
+const FACTORY_DROID_THINKING = { low: 4096, medium: 12288, high: 24576 };
 
 /** Region-aware discovery endpoints; EU accounts are gated and routed from the EU host. */
 function featureFlagsUrl(region: string | undefined): string {
@@ -40,6 +42,8 @@ interface FactoryModelPolicy {
 	allowAllFactoryModels?: boolean;
 	allowedModelIds?: string[];
 	blockedModelIds?: string[];
+	/** Models requiring explicit consent are denied when listed here. */
+	requireExplicitOptInModelIds?: string[];
 	/**
 	 * Org switch for the paid fast tiers. Absent means allow: the CLI's
 	 * default policy kind is allow-all, and self-hosted/legacy servers omit
@@ -52,7 +56,7 @@ function readModelPolicy(body: unknown): FactoryModelPolicy | null {
 	if (!isRecord(body) || !isRecord(body.settings)) return null;
 	const policy = body.settings.modelPolicy;
 	if (!isRecord(policy)) return null;
-	const ids = (key: "allowedModelIds" | "blockedModelIds"): string[] | undefined => {
+	const ids = (key: "allowedModelIds" | "blockedModelIds" | "requireExplicitOptInModelIds"): string[] | undefined => {
 		const value = policy[key];
 		return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : undefined;
 	};
@@ -61,6 +65,7 @@ function readModelPolicy(body: unknown): FactoryModelPolicy | null {
 			typeof policy.allowAllFactoryModels === "boolean" ? policy.allowAllFactoryModels : undefined,
 		allowedModelIds: ids("allowedModelIds"),
 		blockedModelIds: ids("blockedModelIds"),
+		requireExplicitOptInModelIds: ids("requireExplicitOptInModelIds"),
 		isFastModelsAllowed: typeof policy.isFastModelsAllowed === "boolean" ? policy.isFastModelsAllowed : undefined,
 	};
 }
@@ -104,8 +109,11 @@ function isModelAvailable(
 	// Fast tiers are withdrawn as a class, not by id: `baseVariant` is what
 	// marks an entry as one, and only an explicit `false` hides it.
 	if (model.baseVariant !== undefined && policy?.isFastModelsAllowed === false) return false;
+	if (policy?.requireExplicitOptInModelIds?.includes(model.id) || (!policy && model.requiresExplicitOptIn))
+		return false;
+	const allowlist = policy?.allowAllFactoryModels === false || Boolean(policy?.allowedModelIds?.length);
 	if (policy?.blockedModelIds?.includes(model.id)) return false;
-	if (policy?.allowAllFactoryModels === false && !policy.allowedModelIds?.includes(model.id)) return false;
+	if (allowlist && !policy?.allowedModelIds?.includes(model.id)) return false;
 	return true;
 }
 
@@ -173,7 +181,12 @@ export async function fetchFactoryDroidModels(
 		return null;
 	}
 	return FACTORY_DROID_MODELS.filter(model => isModelAvailable(model, flags, policy, servingRegion)).map(model =>
-		buildFactoryDroidModel(model, resolveRotation(model, routing?.models?.[model.id], servingRegion), options.region),
+		buildFactoryDroidModel(
+			model,
+			resolveRotation(model, routing?.models?.[model.id], servingRegion),
+			options.region,
+			servingRegion,
+		),
 	);
 }
 
@@ -201,6 +214,7 @@ export function buildFactoryDroidModel(
 	input: FactoryDroidModelInput,
 	resolvedApiProviders?: readonly string[],
 	region?: string,
+	servingRegion: string | undefined = region,
 ): ModelSpec<"factory-droid-agent"> {
 	const thinking = buildFactoryDroidThinking(input);
 	// Runtime-unsafe lookup by design: a models.json regen can drop a referenced
@@ -216,8 +230,8 @@ export function buildFactoryDroidModel(
 		input: input.noImageSupport ? ["text"] : ["text", "image"],
 		cost: reference?.cost ? { ...reference.cost } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		thinking,
-		contextWindow: input.contextWindow,
-		maxTokens: input.maxTokens,
+		contextWindow: servingRegion === "eu" ? (input.euContextWindow ?? input.contextWindow) : input.contextWindow,
+		maxTokens: servingRegion === "eu" ? (input.euMaxTokens ?? input.maxTokens) : input.maxTokens,
 		...(input.credits ? { factoryDroidCredits: projectFactoryDroidCredits(input.credits) } : {}),
 		...(resolvedApiProviders?.length ? { factoryDroidApiProviders: [...resolvedApiProviders] } : {}),
 	};
@@ -272,8 +286,8 @@ function buildFactoryDroidThinking(input: FactoryDroidModelInput): ThinkingConfi
 		...(input.defaultReasoningEffort && SUPPORTED_EFFORTS.has(input.defaultReasoningEffort)
 			? { defaultLevel: input.defaultReasoningEffort as Effort }
 			: undefined),
-		// Budget-based thinking (budget-interleaved, budget-effort, budget-effort-beta)
-		// carries the standard OMP ladder so callers read the model, not a local table.
-		...(mode === "budget" || mode === "anthropic-budget-effort" ? { effortBudgets: ANTHROPIC_THINKING } : {}),
+		// Budget-style models use the Factory CLI's own ladder, not the shared
+		// Anthropic budget defaults used by other providers.
+		...(mode === "budget" || mode === "anthropic-budget-effort" ? { effortBudgets: FACTORY_DROID_THINKING } : {}),
 	};
 }

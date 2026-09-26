@@ -336,11 +336,8 @@ describe("Factory Droid responses wire (GPT series)", () => {
 		expect(request.body.prompt_cache_retention).toBe("24h");
 		// parallel_tool_calls defaults to the API's on; only false is written.
 		expect(request.body.parallel_tool_calls).toBeUndefined();
-		// Top-level verbosity moved to text.verbosity on the HTTPS Responses surface; omitted.
-		// dXT: the Responses surface wants xhigh, never max.
-		expect(JSON.stringify(request.body.reasoning)).toContain("xhigh");
-		expect(JSON.stringify(request.body.reasoning)).not.toContain("max");
-		expect(JSON.stringify(request.body.reasoning)).toContain("auto");
+		// ZeH serializes the requested effort unchanged (K lowercases it).
+		expect(request.body.reasoning).toEqual({ effort: "max", summary: "auto" });
 		expect(JSON.stringify(request.body.instructions)).toContain(DROID_SYSTEM_PREFIX);
 	});
 });

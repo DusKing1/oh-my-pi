@@ -285,6 +285,8 @@ export interface OpenAICompat {
 	thinkingKeep?: "all" | false;
 	/** Which reasoning content field to emit on assistant messages. Default: auto-detected. */
 	reasoningContentField?: "reasoning_content" | "reasoning" | "reasoning_text";
+	/** Decode Mistral thinking parts in streamed content and replay them as typed assistant content. */
+	mistralReasoningContentParts?: boolean;
 	/** Whether assistant tool-call messages must include reasoning content. Default: false. */
 	requiresReasoningContentForToolCalls?: boolean;
 	/** Whether all assistant messages must include reasoning content. Default: false. */
@@ -772,6 +774,7 @@ export interface ResolvedOpenAISharedCompat {
 	supportsForcedToolChoice: boolean;
 	supportsNamedToolChoice: boolean;
 	reasoningContentField?: OpenAICompat["reasoningContentField"];
+	mistralReasoningContentParts?: boolean;
 	requiresReasoningContentForToolCalls: boolean;
 	requiresReasoningContentForAllAssistantTurns: boolean;
 	allowsSyntheticReasoningContentForToolCalls: boolean;
@@ -854,6 +857,7 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "supportsForcedToolChoice"
 			| "supportsNamedToolChoice"
 			| "reasoningContentField"
+			| "mistralReasoningContentParts"
 			| "requiresReasoningContentForToolCalls"
 			| "requiresReasoningContentForAllAssistantTurns"
 			| "allowsSyntheticReasoningContentForToolCalls"
